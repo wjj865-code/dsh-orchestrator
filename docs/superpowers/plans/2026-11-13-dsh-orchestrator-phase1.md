@@ -961,6 +961,29 @@ git commit -m "feat: 插件入口"
 
 ---
 
+## 阶段 1 范围裁决（2026-11-13，R1–R8）
+
+依据设计 §14（阶段 1 = 台账、协议与渲染、派活、完成通知、会话内卡片）与验收清单 §12，逐条裁决：
+
+| # | 缺口 | 裁决 | 落在哪 |
+| --- | --- | --- | --- |
+| R1 | 每日快照 + 损坏恢复 | **只做半件**：阶段 1 打开损坏库转可读中文错误（含库路径与 snapshots 目录提示），不自动恢复、不写快照；快照生成与恢复推迟阶段 3（断线恢复） | Task 4、README 已知局限 |
+| R2 | notifications 表只建不写 | **阶段 1 做**：每次投递（成功/失败）写一行；合并投递填 `merged_into` | Task 6 |
+| R3 | task_list 无 stale 标记 | **阶段 1 做**：`task_list` 行尾标「⚠ 已 X 分钟无动静」（`last_event_at` 超 `staleMinutes`）；只标记，不自动升级 | Task 7 |
+| R4 | 协调者工具白名单 | **先探测后定**：Task 5 的 api-notes 加第 4 点（agent 工具集/白名单声明方式 + 实测证据）；有低成本声明方式就实现最小白名单，没有就 README 记局限、阶段 3 做 | Task 5、Task 9 |
+| R5 | orphaned 自动检测/重建 | **推迟阶段 3**（断线恢复）：阶段 1 不做自动检测，README 记为已知局限 | README |
+| R6 | 投递失败三次重试后 blocked | **阶段 1 做**（指 `task_message` 续派投递，不是通知投递）：`dispatch.send` 失败重试 3 次（1s/2s/4s），仍失败 → messages 记失败行、任务转 `waiting_user`、`error` 写原因、工具返回可读文案 | Task 5/7 |
+| R7 | 并发 8 / 复用判定 / 30 分钟升级 | **拆开**：并发 8 用例进阶段 1（纯测试）；复用判定不写代码（`task_list` 提供标题、目标摘要、最近消息，判定归协调者）；30 分钟打扰升级推迟阶段 3 | Task 7、Task 10 |
+| R8 | 唤醒协调者时序（忙时排队不丢） | **真机验**：单测不覆盖；我装 profile 后冒烟时验，开发在 api-notes 给机制结论与证据 | Task 10 冒烟、api-notes |
+
+各任务增量（在计划原有 Step 之外追加）：
+
+- **Task 4**：`openLedger` 打开失败时包装成 `台账损坏：<路径>（可尝试从 snapshots 目录恢复）`；测试断言不出现 `SQLITE_` 或 `at ` 堆栈。
+- **Task 5**：api-notes 增加第 4 点「协调者工具集/白名单声明方式」，必须有实测证据；不能声明时记录结论与替代方案。
+- **Task 6**：`push()` 成功后写一行 `notifications`；合并时落一行 `merged_into` 指向首条 id；失败行 `delivered_at=NULL`、`status='failed'`。
+- **Task 7**：`task_list` 每行附 stale 标记（测试：`last_event_at` 置 31 分钟前 → 出现标记；29 分钟前 → 不出现）；`task_message` 的 send 重试 3 次后转 `waiting_user` 并写 `error`。
+- **Task 10**：README 增加「已知局限（阶段 3 再做）」：快照恢复、orphaned 重建、30 分钟打扰升级、工具白名单（未实现时）。
+
 ## 自查记录
 
 - 规格覆盖：设计 §5 台账 → Task 4；§6 状态机 → Task 2；§7 协议 → Task 3；§8 回报与打扰 → Task 6/7；§9 复用判定 → Task 7 的 `task_list` + `task_message`（判定由协调者做）；§10 能力边界 → Task 7 的工具集；§11 卡片 → Task 8；§12 错误处理 → 各任务的可读文案要求；§14 阶段 1 → 本计划全部任务。
