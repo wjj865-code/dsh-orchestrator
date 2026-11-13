@@ -4,11 +4,15 @@ import { taskCard } from '../src/card.js'
 
 const task = (overrides = {}) => ({ id: 't-1', title: '甲', status: 'running', ...overrides })
 
-test('字段齐全', () => {
-  const card = taskCard(task(), { summary: '在跑' })
+test('字段齐全：带子会话 id 与打开方式，pending 标排队', () => {
+  const card = taskCard(task({ session_id: 'c-1' }), { summary: '在跑' })
   assert.deepEqual(card, {
     taskId: 't-1', title: '甲', status: 'running', label: '进行中', tone: 'info', summary: '在跑',
+    childSessionId: 'c-1', queued: false, openVia: 'subagent-catalog',
   })
+  const queued = taskCard(task({ status: 'pending' }))
+  assert.equal(queued.childSessionId, null)
+  assert.equal(queued.queued, true)
 })
 
 test('8 个状态的中文名与色值', () => {

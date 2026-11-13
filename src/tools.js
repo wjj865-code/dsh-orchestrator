@@ -186,6 +186,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
         `目标：${task.goal}`,
       ]
       if (task.error !== null && task.error !== undefined) lines.push(`原因：${task.error}`)
+      if (config?.backend !== 'team' && task.session_id !== null && task.session_id !== undefined) {
+        lines.push('打开方式：协调者会话的子代理目录（subagent catalog），按上面的子会话 id 打开；它不在普通会话列表里。')
+      }
       lines.push(`最近消息：\n${recent || '- 无'}`)
       return lines.join('\n')
     }),

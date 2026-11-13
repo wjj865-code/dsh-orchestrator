@@ -36,7 +36,7 @@
 | 术语 | 含义 |
 | --- | --- |
 | 协调者会话 | 固定一个会话，绑定协调者 agent，入口由客户端按钮打开 |
-| 子任务 | 台账一条记录 + 一个子会话（平台 agent-team 的会话） |
+| 子任务 | 台账一条记录 + 一个子会话（插件直连 `ctx.subagents.startActivation` 创建的子会话，不占 Team 名册） |
 | brief | 结构化任务对象，内部数据，不直接展示给子会话 |
 | 渲染文本 | brief 渲染成的一段结构化文字，才是子会话收到的输入 |
 | 通知 | 子任务状态变化后投递给协调者会话的消息，分三级 |
@@ -48,13 +48,14 @@
 1. **服务端插件 `dsh-orchestrator`**（cordis，ESM，无构建）
    - `ledger`：任务与消息持久化（SQLite，`$DSH_HOME/state/orchestrator/tasks.sqlite`）
    - `lifecycle`：状态机与合法迁移
-   - `dispatch`：创建子会话、投递消息、停止子会话（封装 agent-team 能力）
+   - `dispatch`：创建子会话、投递消息、停止子会话（直连 `ctx.subagents`，默认 `backend:'subagent'`；保留 `backend:'team'` 回退）
+   - `queue`：容量队列（平台不排队；满了留 `pending`，槽位释放后按创建顺序补位）
    - `brief`：结构化协议校验 + 渲染为文字
    - `notify`：分级、合并、投递协调者会话
    - `judge`：复用判定与卡点判定的辅助数据（不替代 LLM 判断）
    - `tools`：注册协调者工具与子任务回报工具
 2. **客户端薄插件**：入口按钮、历史面板；只读台账 API、负责跳转。
-3. **平台复用**：agent-team（创建/发消息/等待/停止）、`ask_user`、`show_view`、会话加载、memory。
+3. **平台复用**：`ctx.subagents`（创建/追加/中断子会话、`listChildren` 目录）、`ask_user`、`show_view`、会话加载、memory。
 
 ## 5. 数据模型
 
@@ -67,7 +68,8 @@
 | goal | 目标（渲染文本的主体） |
 | brief_json | 完整结构化对象（含约束、验收、refs、用户原话） |
 | status | 见第 6 节 |
-| session_id | 子会话 id |
+| session_id | 子会话 id（= 派发时由插件生成的 `childId`） |
+| queued_at | 非空表示任务在排队等并发槽位；为空表示新建未派发 / 派发中断 |
 | coordinator_session_id | 所属协调者会话 |
 | attempts | 被续派的次数 |
 | created_at / updated_at / last_event_at | 毫秒时间戳 |
@@ -87,14 +89,16 @@
 
 迁移规则：
 
-- `pending → failed`：派发失败（spawn 抛错）直接标失败，`error` 写原因，不留无子会话的 pending；插件启动时把「`session_id` 为空且超过 `staleMinutes`」的遗留 pending 直接清理为 failed（记清理条数）。
+- `pending → failed`：派发失败（spawn 抛非容量错误）直接标失败，`error` 写原因，不留无子会话的 pending；插件启动时把「`session_id` 为空、`queued_at` 为空且超过 `staleMinutes`」的遗留 pending 清理为 failed（记清理条数）。
+- `pending` 排队：并发满了（`ACTIVATION_LIMIT_REACHED`）任务保持 `pending` 并标 `queued_at`，不报错、不标 failed；平台结算释放槽位后按 `created_at` 补位。重启时 `pending + session_id 为空` 的任务（含 `queued_at` 为空但未超时的）重新入队，`autoResumeQueue` 默认开。
 - `task_create` 去重：`title + goal`（trim 后）相同且仍有活跃任务（`pending/running/waiting_user/waiting_auth`）时返回已有任务，不新建、不 spawn、不占额度；`done/cancelled/failed/orphaned` 不参与去重，用户重跑同一任务放行。
+- 队列安全阀 `maxQueue`（默认 50）满时拒绝创建且不落库。
 
 - 只有子会话的 `task_report` 能把状态推进到 `running` 之后。
 - 协调者只能：创建（pending）、续派消息、停止（cancelled）、对 failed 重新派发（`attempts + 1`，不新建记录）。
-- `waiting_auth` 由子任务的授权请求触发，由协调者转交用户后回到 `running`。
+- `waiting_user` / `waiting_auth` 由子任务的授权/卡点触发，由协调者转交用户后回到 `running`；这两个等待态也可以直接转 `orphaned`（子会话已不可达）。
 - 超过 30 分钟无事件且未结束 → 视为卡点候选，进入第 8 节判定。
-- 子会话被删除或不可达 → `orphaned`，可一键重建。
+- 子会话被删除或不可达 → `orphaned`：启动/协调者加载时用 `listChildren(协调者会话)` 对账，查不到 `session_id` 才标；catalog 服务本身不可用只 warn、保留原状态。`orphaned` 是终态，可再派同 title+goal 的新任务重建。
 
 ## 7. 结构化协议与渲染
 
@@ -174,10 +178,12 @@
 
 | 情况 | 行为 |
 | --- | --- |
-| 子会话创建失败 | 任务标 `failed`，`error` 写原因；同 title+goal 再 `task_create` 视为重试（终态不参与去重） |
+| 子会话创建失败（非容量） | 任务标 `failed`，`error` 写原因；同 title+goal 再 `task_create` 视为重试（终态不参与去重） |
+| 并发满（`ACTIVATION_LIMIT_REACHED`） | 任务保持 `pending` 并排队（`queued_at`），不报错；槽位释放后自动补位 |
+| 队列满（`maxQueue`） | 拒绝创建、不落库，返回当前排队数 |
 | 重复创建（title+goal 相同且仍有活跃任务） | 返回已有任务（id、状态、「已存在任务 X，未重复创建」），不新建、不 spawn、不占额度 |
 | 投递消息失败 | 记入 messages 失败态，三次重试后标 blocked |
-| 子会话被删 | 标 orphaned，卡片提供"重建会话" |
+| 子会话被删 | 启动/加载时对账标 `orphaned`，卡片提供「重建会话」 |
 | 台账损坏 | 从 `state/orchestrator/snapshots/` 最近快照恢复，丢失最近变更并提示 |
 | 协调者会话不存在 | 入口自动创建 |
 | 授权转交失败 | 任务停留 waiting_auth，卡片标红，不静默卡死 |
@@ -208,3 +214,8 @@
 - 客户端槽位：入口按钮与右上角面板所需的槽位未逐项验证，阶段 2 开工首日先确认；不成立时退化到"面板做成侧栏"。
 - 工具白名单对协调者生效范围：已确认白名单只落在协调者 agent 的 scope，子会话不受影响；但 `wait_agent`/团队类工具是 agent scope 注册，`restrict` 去不掉，阶段 1 靠 guard + 动态提示兜底，阶段 2 由 preset 固化。
 - 台账并发写：SQLite WAL + 单写者串行化。
+- **平台并发上限**：`maxActiveSubagents` 按 root 池、默认 8（用户设置可改），满了抛 `ACTIVATION_LIMIT_REACHED` 且平台不排队 → 插件自建队列（`pending` + `queued_at`），靠子会话结算唤醒补位；不能承诺「没有 8 个上限」，只能承诺「不报错、排队自动派发」。
+- **子会话不在普通会话列表**：`origin:'subagent'` 被普通会话列表/恢复排除；卡片跳转必须走父会话的 subagent catalog（`ctx.subagents.listChildren`），阶段 2 客户端按此实现。
+- **父会话关闭释放后代**：关闭协调者会话会 dispose 其实子会话，跑着的任务被中断；子会话 durable，协调者重开后可 `sendMessage` 冷恢复 → 任务不能仅凭「settle」判完成，仍以 `task_report` 为准。
+- **Team 回退**：`backend:'team'` 只为旧任务/回退保留，默认不再使用 Team 名册；旧 Team 任务的 `session_id` 是 teammate id，续派前需真机验证 `sendMessage` 仍可投递。
+- **团队工具面**：换掉 Team 后协调者仍可能看到 agent-team 注册的团队工具（`spawn_teammate` 等），`restrict` 去不掉；靠白名单/后续 preset 收窄，且非 lead 调用会被平台成员校验拒绝。

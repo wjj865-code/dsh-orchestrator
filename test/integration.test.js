@@ -86,7 +86,7 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
     const stored = db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(taskId)
     db.close()
     assert.equal(stored.status, 'done')
-    const card = taskCard({ id: taskId, title: stored.title, status: stored.status }, { summary: '改完，测试全绿' })
+    const card = taskCard({ id: taskId, title: stored.title, status: stored.status, session_id: teammate.id }, { summary: '改完，测试全绿' })
     assert.deepEqual(card, {
       taskId,
       title: '修复空数据文案',
@@ -94,6 +94,9 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
       label: '已完成',
       tone: 'good',
       summary: '改完，测试全绿',
+      childSessionId: teammate.id,
+      queued: false,
+      openVia: 'subagent-catalog',
     })
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME

@@ -2,7 +2,9 @@
 
 协调者会话 + 子任务工作台的服务端核心（阶段 1，无客户端）。
 
-协调者只做协调：把需求拆成结构化任务、派给子会话、看回报、决定是否打扰用户；子任务是普通 DSH 会话（同队 teammate），能力不受限，只多一个 `task_report` 回报工具。
+协调者只做协调：把需求拆成结构化任务、派给子会话、看回报、决定是否打扰用户；子任务就是一个独立子会话（直连 `ctx.subagents.startActivation`，不占 Team 名册），能力不受限，只多一个 `task_report` 回报工具。
+
+平台并发有上限（`maxActiveSubagents`，默认 8，满了抛 `ACTIVATION_LIMIT_REACHED` 且**平台不排队**），所以插件自己维护待派发队列：任务先进台账排队，槽位空出来按创建顺序自动补位，用户不会看到「名额满了」这种失败。
 
 ## 落盘范围
 
@@ -19,7 +21,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 协调者侧日志写在 `$DSH_HOME/state/orchestrator/logs/YYYY-MM-DD.jsonl`（按天、保留 7 天、单文件超 5MB 换新）。覆盖建任务/去重与额度拒绝/派发成败/回报/通知投递/启动清理/绑定变更，每条带 `callId` 把同一次调用串起来。`goal`/`summary` 只留 80 字摘要，**不写 `user_verbatim`**；写日志失败只 warn 一次，不影响主流程。
 
-只凭当天日志应能回答三个问题：这次创建为什么被拒（reason 码、`maxActive`、占额任务清单）、派发为什么失败（平台错误原文、provider）、通知为什么没送到（level、reason、sender/coordinator）。报问题请附当天日志。
+只凭当天日志应能回答三个问题：这次创建为什么被拒（reason 码、`maxQueue`、队列情况）、派发为什么失败（平台错误原文、provider）、通知为什么没送到（level、reason、sender/coordinator）。报问题请附当天日志。
 
 ## 安装（维护者操作，不碰用户的 `~/.dsh/profiles`）
 
@@ -43,7 +45,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
    ```
 
    无头 profile 用 `@deepseek-ai/dsh-headless`，桌面 profile 用 `@deepseek-ai/dsh-web-app`。
-   `@deepseek-ai/dsh-experimental-agent-team-profile` 提供 `ctx.agentTeams`；缺了它，插件会因缺服务加载失败。
+   `@deepseek-ai/dsh-experimental-agent-team-profile` 提供 `ctx.agentTeams`（`backend:'team'` 回退用）；直连子会话还要 `ctx.subagents` 和本地 `spawn` provider（`@deepseek-ai/dsh-subagent` + `dsh-subagent-spawn-in-process`，随平台 bundle 自带）。缺服务时插件会因 `inject` 加载失败。
 
 3. 可选：需要显式指定协调者时，profile 的 `cordis.patch.yml` 加配置行；不配就自动绑定：
 
@@ -60,7 +62,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 解析顺序：`config.coordinatorSession`（显式覆盖，优先级最高，**不写台账**）→ 台账 `settings.coordinator_session_id` → 未绑定。
 
-- 未绑定时，**root/lead 会话**第一次调用 `task_create`（通过 brief 校验和活跃上限后）会把**调用方会话**绑定为协调者；首绑用 `INSERT ... ON CONFLICT DO NOTHING` + 回读，先到先得、后到不覆盖，日志一行，并给该会话装白名单。
+- 未绑定时，**root/lead 会话**第一次调用 `task_create`（通过 brief 校验和队列容量检查后）会把**调用方会话**绑定为协调者；首绑用 `INSERT ... ON CONFLICT DO NOTHING` + 回读，先到先得、后到不覆盖，日志一行，并给该会话装白名单。
 - 子会话（`session.header.parentSession` 非空）不能首绑或重绑，避免把子任务绑成协调者。
 - 已绑定且 live 不重绑；绑定会话失效（找不到 live agent）时，只有 root/lead 调用方能重绑（CAS，先到先得），结果带「协调者会话已变更：旧 → 新」，旧协调者失效的通知记 `skipped` + `reason`，工具结果带「协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定」。
 - 未绑定时 `task_message` / `task_stop` 只返回「尚未绑定协调者，请先 task_create」，不写库、不投递、不改状态。
@@ -72,11 +74,29 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `coordinatorSession` | `undefined` | 可选显式覆盖；不配则首次 `task_create` 自动绑定调用方 |
+| `backend` | `subagent` | 派发后端：`subagent`（直连 `ctx.subagents`）或 `team`（旧的 agentTeams 名册，回退用） |
+| `spawnProvider` | `spawn` | subagent provider（本地 fresh 子会话用 `spawn`） |
 | `staleMinutes` | `30` | `task_list` 里超过这么多分钟无动静就标 `⚠` |
 | `stallRounds` | `3` | 预留：阶段 3 的连续无进展升级阈值，阶段 1 只校验并保存 |
-| `maxActive` | `8` | 并发额度上限，只算 `pending` + `running`；等待态（`waiting_user`/`waiting_auth`）不占额度 |
+| `maxQueue` | `50` | 待派发队列安全阀：`pending` 任务到这个数就拒绝新建（不落库） |
+| `autoResumeQueue` | `true` | 重启后把排队中的任务自动重新入队并派发；关掉则只恢复队列不自动跑 |
+| `maxActive` | `8` | **已废弃**：并发上限改由平台 `ACTIVATION_LIMIT_REACHED` + 插件队列自适应，这个键只为兼容旧配置保留、不再拒绝任务 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
-| `spawnProvider` | `spawn` | `spawnTeammate` 的 provider（fresh 用 `spawn`；平台要求必填） |
+
+## 派发与排队
+
+- `task_create` 只做「校验 → 去重 → 落库 → 入队」，派发由队列异步完成；返回文案区分「已派发」和「已创建，前面还有 N 个任务在排队」。
+- 队列单锁串行（同时只有一个 pump）；`spawn` 抛 `ACTIVATION_LIMIT_REACHED` 时任务留在 `pending` 并标 `queued_at`，不报错、不标 `failed`，按 2s/5s/10s/30s 退避重试。
+- 唤醒时机：子会话 `result` 结算（平台完成即释放并发槽位）、任务到终态、`task_stop`、插件启动、协调者 `agent/created`。
+- 子会话创建的非容量错误（真正的失败）才标 `failed` 并写可读原因，不留 `pending` 幽灵。
+- 排队中的任务被 `task_stop` 会直接取消并移出队列；`task_message` 对排队任务返回可读提示（还没有子会话可续派）。
+
+## 子会话与孤儿
+
+- 子会话是 `origin:'subagent'` 的会话，**不在普通会话列表里**；卡片/`task_status` 带子会话 id，客户端要按协调者会话的子代理目录（subagent catalog）打开。
+- 启动/协调者加载时对账：`running`/`waiting_*` 且 `session_id` 在 `listChildren(协调者会话)` 里查不到 → `orphaned`，卡片/`task_status` 能看出来。
+- 对账本身失败（catalog 服务不可用）只 warn、保留原状态，不把 running 全判死；`orphaned` 是终态，不参与去重，可再派同 title+goal 的新任务重建。
+- 父会话关闭会释放后代子会话，但子会话是 durable 的：协调者重开后 `task_message` 可冷恢复。
 
 插件按绑定的会话 id 惰性解析 live agent，所以协调者会话可以在插件加载后再打开；白名单在绑定时安装，并通过 `agent/created` 补装。非法值（0、负数、NaN、Infinity、字符串）一律回落默认，不会把插件带崩。
 
@@ -94,6 +114,10 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 10. **自动绑定**：无配置 profile 第一次 `task_create` 后 `settings.coordinator_session_id` = 调用方 root 会话；并发首绑先到先得、后到不覆盖；第二次不再重绑；`task_list`/`task_status` 不写 `settings`；子会话首绑被拒。
 11. **配置覆盖**：设置 `coordinatorSession` 时以配置为准、`settings` 为空，白名单只装在配置指定的会话。
 12. **失效降级**：绑定会话找不到 live agent 时，通知记 `skipped` + `reason`、结果带提示；只有 root 调用方能重绑，结果带「协调者会话已变更」；未绑定时 `task_message`/`task_stop` 只提示、不半执行。
+13. **并发排队**：连续建 12 个任务，前 8 个跑起来、第 9 个起进队列不报错；完成一个后队列自动补位，且不出现双派。
+14. **排队操作**：`task_stop` 能取消排队中的任务并从队列移除；`task_message` 对排队任务给可读提示、不写消息。
+15. **孤儿对账**：重启前让某个任务的子会话在 catalog 里查不到，重启后该任务标 `orphaned`，不留幽灵 `running`；catalog 服务不可用时只 warn、不改状态。
+16. **卡片数据**：`taskCard` 返回 `childSessionId` / `queued` / `openVia:'subagent-catalog'`，`task_status` 带打开方式。
 
 
 ## 工具
@@ -102,11 +126,11 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 | 工具 | 作用 |
 | --- | --- |
-| `task_create` | 建台账 + 渲染 brief + 派生一个 fresh 子会话；缺验收标准/超并发额度会拒绝（额度只算 `pending`+`running`，命中时列出占用任务） |
-| `task_list` | 默认只列活跃任务；带标题、目标摘要、最近一条消息、陈旧标记；`active:false` 看全量 |
-| `task_status` | 单任务详情 + 最近 3 条消息 |
-| `task_message` | 续派消息（不新建任务），失败重试 3 次后转 `waiting_user` 并记原因 |
-| `task_stop` | 中断当前一轮并标 `cancelled`；已结束任务不重复中断 |
+| `task_create` | 建台账 + 渲染 brief + 入队派发子会话；缺验收标准/队列满（`maxQueue`）会拒绝；并发满自动排队，不报错 |
+| `task_list` | 默认只列活跃任务；带标题、目标摘要、最近一条消息、排队/陈旧标记；`active:false` 看全量 |
+| `task_status` | 单任务详情 + 最近 3 条消息 + 子会话打开方式 |
+| `task_message` | 续派消息（不新建任务），失败重试 3 次后转 `waiting_user`；排队中的任务返回提示 |
+| `task_stop` | 中断当前一轮并标 `cancelled`；排队中的任务直接取消并移出队列 |
 
 子任务（1 个）：
 
@@ -171,21 +195,22 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
    任务「修复空数据文案」完成：改了空数据分支，npm test 全绿
    ```
 
-6. 会话内卡片数据用 `taskCard(task, { summary })` 产出：`taskId`、`title`、`status`、中文 `label`、`tone`、截断到 80 字的 `summary`。
+6. 会话内卡片数据用 `taskCard(task, { summary })` 产出：`taskId`、`title`、`status`、中文 `label`、`tone`、截断到 80 字的 `summary`、子会话 id（`childSessionId`）、是否排队（`queued`）、打开方式（`openVia:'subagent-catalog'`）。客户端按 `childSessionId` 走协调者会话的子代理目录打开，不要假设它是普通会话。
 
 ## 错误与降级
 
 - 打不开/损坏的台账：损坏（`SQLITE_CORRUPT`/`NOTADB`）给 `台账损坏：<路径>（可尝试从 snapshots 目录恢复）：<原因>`；目录不可用（`ENOTDIR` 等）给 `台账不可用：<路径>：<原因>`；被占用给 `台账暂时不可用（被占用）`。都不泄漏 `SQLITE_` 和堆栈。
-- 找不到协调者会话：工具仍注册，派活返回「任务协调失败：未找到协调者会话…」，任务留在 `pending` 并记原因。
+- 找不到协调者会话：工具仍注册；配置的协调者失效时 `task_create` 直接失败（任务标 `failed` + 可读原因，不挂进永远派不出去的队列）；协调者只是还没加载时任务保持排队，等 `agent/created` 后自动补跑。
 - `task_report` 归属：回报方必须是任务绑定的子会话（`exec.agent.id === task.session_id`），否则返回「回报被拒绝」，不改状态、不写消息、不发通知。
-- 子会话创建失败：任务留 `pending`，`error` 写原因；阶段 1 没有一键重派，需 `task_stop` 后重新 `task_create`。
-- 续派投递失败：重试 3 次（1s/2s/4s），仍失败标 `waiting_user`，记失败消息行。
+- 子会话创建失败（非容量错误）：任务标 `failed`，`error` 写原因；容量满不是失败，任务排队等待。
+- 子会话不可达（被删/不是直接子级）：任务标 `orphaned`，可再派同 title+goal 的新任务重建；启动对账也会做这一步。
+- 续派投递失败：重试 3 次（1s/2s/4s），仍失败标 `waiting_user`，记失败消息行；不可达则标 `orphaned`。
 - 通知投递失败/跳过：写 `notifications` 行（`failed` 带原因，`skipped` 只有状态），不产生未处理 rejection。
 
 ## 已知局限（阶段 3 再做）
 
 - **台账快照与自动恢复**：阶段 1 只把损坏库转成可读错误，不写快照、不自动恢复。
-- **orphaned 自动检测/一键重建**：子会话被删后状态会停在 `running`，阶段 1 不自动检测。
+- **卡片跳转**：子会话不在普通会话列表，阶段 1 只给数据（`childSessionId` + `openVia`），客户端入口/面板在阶段 2 按父会话的 subagent catalog 打开。
 - **30 分钟打扰升级**：`stallRounds` 只保存不生效，阶段 1 只有 `task_list` 的陈旧标记。
 - **协调者白名单的持久声明**：阶段 1 在协调者 agent 已加载时用 `agent.ctx.tools.restrict({ deny })` 做最小收窄（文件/shell/浏览器/web 类）；收窄挂在**回合边界**（绑定回合若在跑，等 `idle` 再装），所以绑定回合仍是全工具表、下一回合才收窄，避免 mid-turn `unknown tool`。真机确认 `spawn_teammate`/`send_message`/`list_agents`/`wait_agent`/`interrupt_agent`/`team_task_*` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；`wait_agent` 由执行期 guard + 动态提示兜底（见上节），其余工具阶段 2 由 agent preset 的 `composition.toolFilter` 固化，运行期白名单降为兜底。
 - **首绑回合的等待时序**：guard 管得住绑定后的同回合顺序调用；同一条 assistant 消息里并行、且在绑定前开始执行的 `wait_agent` 不承诺拦住。

@@ -19,5 +19,9 @@ export function taskCard(task, { summary = '', maxLength = 80 } = {}) {
     label: STATUS_LABEL[task.status] ?? task.status,
     tone: STATUS_TONE[task.status] ?? 'muted',
     summary: text,
+    // 子会话不在普通会话列表里，客户端要按 parent catalog 打开；pending 表示在排队。
+    childSessionId: task.session_id ?? null,
+    queued: task.status === 'pending',
+    openVia: 'subagent-catalog',
   }
 }
