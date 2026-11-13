@@ -551,38 +551,42 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 1 | 可见可点 | desktop web 加载后入口渲染；不因 ds-bot 未装/已装而消失；加载失败不拖垮宿主其他插件 |
 | 2 | 打开协调者 | 不存在 → 创建并命名「协调者」→ 打开；存在未打开 → 切过去；已打开 → 不重复创建 |
 | 3 | 自动绑定联动 | 未绑定协调者时点击入口能引导创建/绑定（具体交互按 spike 定），不出现「未配置 coordinatorSession」死路 |
-| 4 | 不抢 ds-bot 席位 | ds-bot 占 `sidebar.footer.action`；我们的注册条目（槽位/priority）与之不冲突，不覆盖账户位；注册可撤销（dispose） |
+| 4 | 不抢 ds-bot 席位 | 入口固定 `sidebar.panellist`（`id:'orchestrator'`、`order:10`，插件入口是 0、不设 priority）+ 面板页 `main`（`key:'orchestrator'`）；ds-bot 占 `sidebar.workspaces`/`footer.action`/`header`/`shell.overlay`；注册可撤销（dispose） |
 
 ### B. 历史面板
 
 | # | 验收点 | 判据 |
 | --- | --- | --- |
 | 5 | 打开/关闭 | 能稳定开关；重复开关无泄漏/无重复注册 |
+| 5b | **会话头按钮可见（Bot 模式）** | 槽位必须用 `conversation.header.leading`（**不是** `conversation.session.header.actions`：ds-bot `HeaderPill` 以 `BOT_PRIORITY=-100` 顶掉整条 `conversation.session.header` 且未 `renderSlot`，Bot 模式下 `.actions` 不可见）；按钮只做「打开面板」，不依赖 `sessionId` prop |
 | 6 | 列全部任务 | 含历史（done/cancelled/orphaned）；字段：状态色点、标题、更新时间；空台账有空态 |
 | 7 | 状态筛选 | 按状态过滤正确；「全部」恢复 |
-| 8 | 跳转子会话 | 点击有 session_id 的任务 → 按 subagent catalog 打开（不在普通会话列表）；pending/queued（无 session_id）→ 禁用或可读提示 |
-| 9 | 跳转协调者会话 | 面板内可回协调者会话；当前已在协调者时行为幂等 |
+| 8 | 跳转子会话 | 点击有 session_id 的任务 → `ctx.uiWorkspace.openSession(childId)`（subagent 不在普通会话列表；`ui-subagent` 的 `openChild` 同路径）；pending/queued → 禁用或可读提示 |
+| 9 | 跳转协调者会话 | 面板内可回协调者会话（当前会话用 `ctx.uiSession.current` / sessions 快照）；已在协调者时幂等 |
 
 ### C. 宿主接口（`/api/orchestrator`）
 
 | # | 验收点 | 判据 |
 | --- | --- | --- |
-| 10 | 只读 | 所有 endpoint 只读（list/summary），无写台账/改状态路径；越权 payload 被拒 |
-| 11 | 鉴权 | 同源 cookie；未认证/跨源 → 401/拒绝；不泄露 DSH_HOME 绝对路径等敏感信息 |
+| 10 | 只读（实测后台账不变） | 所有 endpoint 只读；调用全部端点后对比 `tasks/messages/notifications/settings` 行数与 `updated_at`，零写入；越权/写类 payload 被拒 |
+| 11 | 鉴权矩阵 | 跨站 Host/Origin → 403；无 cookie/token → 401；非 owner principal → 403；同路径重复注册 → 直接抛错；不泄露 DSH_HOME 绝对路径等敏感信息 |
 | 12 | 失败降级 | 500/超时/断网 → 面板显示可读错误 + 重试，不白屏、不抛未捕获异常、不阻塞聊天 |
-| 13 | 老宿主兼容 | 路由不存在 → 客户端优雅降级（提示/隐藏），不 JS 崩溃 |
+| 13 | 老宿主兼容 | 路由不存在（404）→ 客户端优雅降级（提示/隐藏），不 JS 崩溃 |
 
 ### D. 构建与加载
 
 | # | 验收点 | 判据 |
 | --- | --- | --- |
-| 14 | bundle 形态 | esbuild 产物；入口 `window.__ModuleLoader__.load({ id, factory })`；`package.json` 的 `files` 含产物、`exports["./client"]`、`dsh.client.platform: 'web'` |
+| 14 | bundle 形态 | MVP 手写 `client.js`（`window.__ModuleLoader__.load({ id, factory })`，不必上 esbuild）；`files` 含 `client.js`、`exports["./client"]`、`dsh.client.platform:'web'`；`dsh.client.inject` 列全所需（含 `dsh-client-ui-layout`/`-workspace`/`-session`）；primitives 不打进 bundle 时声明 `dsh.client.external` |
 | 15 | 服务端不受影响 | 客户端 bundle 加载失败不影响 `index.js` 服务端与 6 个工具 |
 
-### 待明确（spike 定后写死判据）
+### spike 定稿与审查更正（`a77e609` + 追加修改）
 
-- a. 入口最终槽位与 priority（`sidebar.footer.action` 已被 ds-bot 占，建议 `sidebar.workspaces` 或「插件」下方独立项）。
-- b. 面板形态：`shell.overlay` 还是 sidebarRight tab；以及跳转子会话的目标 URL/路由。
-- c. 未绑定协调者时点击入口：创建新会话并绑定，还是提示先去某个会话派任务。
-- d. 「更新时间」取 `updated_at` 还是 `last_event_at`；面板刷新策略（打开时/定时/手动）。
+- 入口：`sidebar.panellist`（`id:'orchestrator'`、`order:10`；插件入口 `order:0`；不设 priority）+ 面板页 `main`（`key:'orchestrator'`），点击 `ctx.layout.selectPanel('orchestrator')`；与 plugin-manager/schedule 不冲突。
+- 会话头按钮：**审查更正为 `conversation.header.leading`**（ds-bot Bot 模式会顶掉 `conversation.session.header` 且不渲染 `.actions`）；该槽位拿不到 `sessionId`，按钮只开面板；当前会话用 `ctx.uiSession.current`。
+- 跳转：`ctx.uiWorkspace.openSession(id)`（协调者/子会话同路径；`ui-subagent.openChild` 先例）。
+- 未绑定协调者：面板顶部显示「未绑定」，点击给「先从任意会话 `task_create` 派第一个任务会自动绑定」提示；客户端不创建会话、不写绑定（只读约束）。
+- 时间/刷新：主时间 `last_event_at`（与 stale 同源）、另存 `updated_at` 供排序；打开拉一次、可见时 5s 轮询、关闭即停；连续失败退避 30s 并显示「台账暂不可用」。
+- 客户端路由鉴权比文档更硬：跨站 403、无凭证 401、非 owner 403、重复注册抛；**只读不是平台保证**，handler 必须只 import 查询函数 + 端点白名单。
+- 待 Chief 拍：目标写「侧栏点任务直接打开协调者会话」，但 `sidebar.panellist` 点击被平台固定为 `selectPanel(id)`；可行路径是「侧栏 → 任务面板 → 面板里打开协调者」（推荐），否则只能贴 ds-bot 账户位加独立按钮。
 
