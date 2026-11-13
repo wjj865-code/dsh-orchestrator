@@ -358,3 +358,17 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **结论**：P0 两层防护（动态 prompt + 执行期 guard）通过；`wait_agent` 仍在工具表里是平台作用域注册的已知限制，阶段 2 用 `composition.toolFilter` 根治。**最终收口（`ef99e1f`，127/127）**：优先级声明与缺服务告警补齐，p0 探针 + 全量回归（13 个探针）全绿，P0 关闭。
 
+### P0 v2：运行期收窄延到回合边界（`b98922c`）
+
+线上 `unknown tool "pwsh"`：绑定发生在回合中，`restrict` 即时生效，模型手里还是旧工具表。修法：`scheduleRestriction` 在协调者 `status === 'running'` 时只挂 pending，监听 `agent/status` 的 `idle` 再装；不用 `pre-step`/`assemble`（平台 `tools.resolve()` 先于 `systemPrompt.assemble()`，在那两处收窄是同一个错位）。
+
+| 验收点 | 结果 | 证据 |
+| --- | --- | --- |
+| ① 绑定回合工具集不变 | 通过 | running 绑定时 `restrict` 调用 0 次；`running` 状态事件不触发收窄；guard 同回合仍可拒 `wait_agent`（不依赖工具表） |
+| ② 下一回合才生效 | 通过 | `idle` 事件后恰好装 1 次、重复 idle 不重复；下一回合可见工具 = 全量 − deny；config 覆盖且 running 时同样延后 |
+| ③ 提示点名 wait_agent | 通过 | prompt 含「wait_agent」点名禁令、`task_list`/`task_status`、主动通知、结束回合、优先于 team:policy |
+| ④ 非协调者不受影响 | 通过 | 普通会话/子会话 `restrict` 0 次、prompt 空串、guard 放行；协调者后加载补装不受影响 |
+| 降级 | 通过 | 缺 `tools.guard` 现在有可读 warn（审查建议闭环）；缺 `systemPrompt` warn 且 guard 仍装；缺 `tools` 先 warn |
+
+**P0 v2 结论**：`b98922c`（文档 `9fb92ae`）复验通过，129/129、api-probe 33/33、13 个独立探针全绿；首绑回合不再有中途收窄，**需重启 DSH 换上新构建后真机复跑**。残留极端：pending 期间绑定若变更（只在原协调者已死时发生）会晚装到旧 agent，实际不可达，留代码审阅。
+
