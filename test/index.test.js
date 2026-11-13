@@ -112,6 +112,77 @@ test('无配置首次 task_create 自动绑定调用方，已绑定不重绑', w
   db.close()
 }))
 
+test('并发首次绑定先到先得，后到不覆盖', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const s2 = makeAgent('s-2')
+  const { ctx, registered } = fakeCtx({ agents: [s1, s2] })
+  await apply(ctx, {})
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await Promise.all([
+    byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 }),
+    byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'] }, { agent: s2 }),
+  ])
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('coordinator_session_id').value, 's-1')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM tasks').get().n, 2)
+  db.close()
+  assert.equal(s1.restrictions.length, 1)
+  assert.equal(s2.restrictions.length, 0)
+}))
+
+test('子会话不能首次绑定自己', withHome(async home => {
+  const root = makeAgent('root-1')
+  const sub = makeAgent('sub-1')
+  sub.session = { header: { parentSession: 'root-1' } }
+  const { ctx, registered } = fakeCtx({ agents: [root, sub] })
+  await apply(ctx, {})
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  const result = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: sub })
+  assert.match(result, /只有协调者会话（Team Lead）/)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  assert.equal(db.prepare('SELECT count(*) AS n FROM settings').get().n, 0)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM tasks').get().n, 0)
+  db.close()
+}))
+
+test('失效重绑只允许 root/lead 调用方', withHome(async home => {
+  const root = makeAgent('root-1')
+  const sub = makeAgent('sub-1')
+  sub.session = { header: { parentSession: 'root-1' } }
+  const root2 = makeAgent('root-2')
+  const { ctx, registered, live, infos } = fakeCtx({ agents: [root, sub, root2] })
+  await apply(ctx, {})
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: root })
+  live.delete('root-1')
+
+  const denied = await byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'] }, { agent: sub })
+  assert.match(denied, /只有协调者会话（Team Lead）能重新绑定/)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('coordinator_session_id').value, 'root-1')
+
+  const rebound = await byName.task_create.execute({ title: '丙', goal: 'g', acceptance: ['a'] }, { agent: root2 })
+  assert.match(rebound, /已派发/)
+  assert.match(rebound, /协调者会话已变更：root-1 → root-2/)
+  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('coordinator_session_id').value, 'root-2')
+  db.close()
+  assert.ok(infos.some(message => /协调者会话已变更/.test(message)))
+}))
+
+test('绑定后 agent/created 给恢复的协调者补装白名单', withHome(async () => {
+  const root = makeAgent('root-1')
+  const { ctx, registered, listeners } = fakeCtx({ agents: [root] })
+  await apply(ctx, {})
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: root })
+  const resumed = makeAgent('root-1')
+  listeners.get('agent/created')({ agent: resumed })
+  assert.equal(resumed.restrictions.length, 1)
+}))
+
 test('只读工具不触发绑定', withHome(async home => {
   const s1 = makeAgent('s-1')
   const { ctx, registered } = fakeCtx({ agents: [s1] })

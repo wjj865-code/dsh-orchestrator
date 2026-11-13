@@ -2,7 +2,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from './src/config.js'
-import { openLedger, addNotification, getSetting, setSetting } from './src/ledger.js'
+import { openLedger, addNotification, getSetting, bindSettingOnce, rebindSetting } from './src/ledger.js'
 import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
@@ -74,7 +74,21 @@ export async function apply(ctx, rawConfig = {}) {
     }
   }
 
-  // 配置覆盖优先且不写台账；否则惰性绑定调用方会话，已绑定且 live 就不重绑。
+  // 只有 root/lead 会话能绑定或重绑；子会话调用 task_create 不能把自己绑成协调者。
+  const isRootOrLead = agent => {
+    if (agent === undefined) return false
+    const header = agent?.session?.header
+    if (header !== undefined) return header.parentSession === undefined
+    try {
+      const role = ctx.agentTeams?.membership?.(agent)?.role
+      if (role !== undefined) return role === 'lead'
+    } catch {
+      return false
+    }
+    return true
+  }
+
+  // 配置覆盖优先且不写台账；否则惰性绑定调用方会话。首绑走原子 upsert，失效重绑走 CAS。
   const bindCoordinator = agent => {
     if (config.coordinatorSession !== undefined) {
       const configured = resolveCoordinator()
@@ -86,11 +100,25 @@ export async function apply(ctx, rawConfig = {}) {
     if (boundId !== undefined) {
       const bound = ctx.get?.('agents')?.get?.(boundId)
       if (bound !== undefined) return { id: boundId, live: true }
+      if (!isRootOrLead(agent)) {
+        throw new Error(`已绑定的协调者会话 ${boundId} 已失效，只有协调者会话（Team Lead）能重新绑定`)
+      }
+      const won = rebindSetting(db, COORDINATOR_KEY, boundId, agent.id)
+      const finalId = won ? agent.id : getSetting(db, COORDINATOR_KEY)
+      if (won) {
+        ctx.logger?.info?.(`dsh-orchestrator: 协调者会话已变更：${boundId} → ${agent.id}`)
+        restrictCoordinator(agent)
+        return { id: agent.id, live: true, changed: true, previous: boundId }
+      }
+      return { id: finalId, live: ctx.get?.('agents')?.get?.(finalId) !== undefined }
     }
-    setSetting(db, COORDINATOR_KEY, agent.id)
-    ctx.logger?.info?.(`dsh-orchestrator: 协调者会话已绑定：${agent.id}`)
-    restrictCoordinator(agent)
-    return { id: agent.id, live: true }
+    if (!isRootOrLead(agent)) throw new Error('无法绑定协调者会话：只有协调者会话（Team Lead）能首次派任务')
+    const assigned = bindSettingOnce(db, COORDINATOR_KEY, agent.id)
+    if (assigned === agent.id) {
+      ctx.logger?.info?.(`dsh-orchestrator: 协调者会话已绑定：${agent.id}`)
+      restrictCoordinator(agent)
+    }
+    return { id: assigned, live: ctx.get?.('agents')?.get?.(assigned) !== undefined }
   }
 
   const current = resolveCoordinator()

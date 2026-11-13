@@ -94,10 +94,12 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 
 - 台账新增 `settings(key, value, updated_at)`；键 `coordinator_session_id`。
 - 解析顺序：`config.coordinatorSession`（显式覆盖，优先，不写台账）→ `settings.coordinator_session_id` → 未绑定。
-- 未绑定时，`task_create` 在 brief 校验/活跃上限通过后把 `exec.agent.id` 写入 `settings`，日志一行，并对该 agent 的 `ctx.tools` 装白名单；之后同一 live 绑定不再重绑。
-- `task_list` / `task_status` 不调用绑定逻辑。
-- 已绑定 id 找不到 live agent 时：通知返回 `{skipped:true, reason}`（落 `skipped` 行），`task_create` 允许新调用方重绑；`task_report`/`task_create` 结果带失效提示。
-- 白名单在绑定时安装而不是插件启动时：只作用于被绑定的那个 agent 的 `ctx`，`tools.restrict` 返回 disposer 并在卸载时撤销；不会作用于子任务 agent。
+- 未绑定时，`task_create` 在 brief 校验/活跃上限通过后把 `exec.agent.id` 写入 `settings`，日志一行，并对该 agent 的 `ctx.tools` 装白名单；首绑用 `INSERT ... ON CONFLICT DO NOTHING` + 回读，先到先得。
+- 只有 root/lead 会话能首绑或重绑：优先看 `agent.session.header.parentSession === undefined`，取不到再查 `ctx.agentTeams.membership(agent).role === 'lead'`；子会话调用 `task_create` 直接给可读拒绝。
+- 已绑定且 live 不重绑。绑定 id 找不到 live agent 时，只有 root/lead 调用方能重绑，走 `UPDATE ... WHERE key = ? AND value = 旧值`（CAS），成功后日志和 `task_create` 结果都带「协调者会话已变更：旧 → 新」。
+- 未绑定时 `task_message` / `task_stop` 只返回「尚未绑定协调者，请先 task_create」，不写库、不投递、不改状态；`task_list` / `task_status` 不触发绑定。
+- 已绑定 id 失效时通知返回 `{skipped:true, reason}`（落 `skipped` 行），`task_create`/`task_report` 结果带失效提示。
+- 白名单在绑定时安装而不是插件启动时：只作用于被绑定的那个 agent 的 `ctx`，`tools.restrict` 返回 disposer 并在卸载时撤销；不会作用于子任务 agent（子 agent 的 scope 不挂在协调者 scope 下）。
 
 
 

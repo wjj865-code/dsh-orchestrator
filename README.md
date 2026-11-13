@@ -53,10 +53,12 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 
 解析顺序：`config.coordinatorSession`（显式覆盖，优先级最高，**不写台账**）→ 台账 `settings.coordinator_session_id` → 未绑定。
 
-- 未绑定时，任何会话第一次调用 `task_create`（通过 brief 校验和活跃上限后）会把**调用方会话**绑定为协调者、写 `settings`、日志一行，并给该会话装白名单；之后不再重绑。
+- 未绑定时，**root/lead 会话**第一次调用 `task_create`（通过 brief 校验和活跃上限后）会把**调用方会话**绑定为协调者；首绑用 `INSERT ... ON CONFLICT DO NOTHING` + 回读，先到先得、后到不覆盖，日志一行，并给该会话装白名单。
+- 子会话（`session.header.parentSession` 非空）不能首绑或重绑，避免把子任务绑成协调者。
+- 已绑定且 live 不重绑；绑定会话失效（找不到 live agent）时，只有 root/lead 调用方能重绑（CAS，先到先得），结果带「协调者会话已变更：旧 → 新」，旧协调者失效的通知记 `skipped` + `reason`，工具结果带「协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定」。
+- 未绑定时 `task_message` / `task_stop` 只返回「尚未绑定协调者，请先 task_create」，不写库、不投递、不改状态。
 - `task_list` / `task_status` 这类只读工具不触发绑定。
-- 已绑定的协调者会话失效（找不到 live agent）时：通知记 `skipped` + `reason`，工具结果带「协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定」；新会话 `task_create` 可以重绑。
-- 误绑（例如子任务先调了 `task_create`）用配置覆盖修正；覆盖期间始终以配置为准，不改台账。
+- 误绑用配置覆盖修正；覆盖期间始终以配置为准，不写台账。
 
 ## 配置
 
@@ -82,9 +84,9 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 7. **白名单**：协调者工具列表里没有 `read`/`bash` 等；无安装失败日志。`spawn_teammate`/`send_message`/`list_agents` 阶段 1 仍可见（见已知局限）。
 8. **落盘**：`DSH_HOME` 下只新增 `state/orchestrator/tasks.sqlite`（+`-wal`/`-shm`），不写 profile 和其他会话目录。
 9. **审计口径**：插件通知与 `notifications` 行 1:1；`failed` 带 `reason`，`skipped` 的 `delivered_at` 为空；平台 settlement 通知不写行。
-10. **自动绑定**：无配置 profile 第一次 `task_create` 后 `settings.coordinator_session_id` = 调用方会话；第二次不再重绑；`task_list`/`task_status` 不写 `settings`。
+10. **自动绑定**：无配置 profile 第一次 `task_create` 后 `settings.coordinator_session_id` = 调用方 root 会话；并发首绑先到先得、后到不覆盖；第二次不再重绑；`task_list`/`task_status` 不写 `settings`；子会话首绑被拒。
 11. **配置覆盖**：设置 `coordinatorSession` 时以配置为准、`settings` 为空，白名单只装在配置指定的会话。
-12. **失效降级**：绑定会话找不到 live agent 时，通知记 `skipped` + `reason`、结果带提示；新会话 `task_create` 可重绑。
+12. **失效降级**：绑定会话找不到 live agent 时，通知记 `skipped` + `reason`、结果带提示；只有 root 调用方能重绑，结果带「协调者会话已变更」；未绑定时 `task_message`/`task_stop` 只提示、不半执行。
 
 
 ## 工具

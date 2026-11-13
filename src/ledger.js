@@ -137,3 +137,17 @@ export function setSetting(db, key, value) {
     .run(String(key), String(value), Date.now())
   return value
 }
+
+/** 首次绑定：只在 key 不存在时写入，返回最终值（并发时先到先得）。 */
+export function bindSettingOnce(db, key, value) {
+  db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING')
+    .run(String(key), String(value), Date.now())
+  return getSetting(db, key)
+}
+
+/** 失效重绑：只有当前值仍是 expected 时才替换，返回是否抢到。 */
+export function rebindSetting(db, key, expected, next) {
+  const result = db.prepare('UPDATE settings SET value = ?, updated_at = ? WHERE key = ? AND value = ?')
+    .run(String(next), Date.now(), String(key), String(expected))
+  return Number(result.changes) > 0
+}

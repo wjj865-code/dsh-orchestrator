@@ -60,6 +60,8 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
       ? '协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定。'
       : ''
   }
+  const unbound = () => status().id === undefined
+  const UNBOUND_HINT = '尚未绑定协调者，请先 task_create。'
 
   const sendFollowup = async (target, message, signal) => {
     if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal)
@@ -115,7 +117,11 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
       }
       transition(db, task.id, 'running', { sessionId: member.id, target: member.name })
       const hint = invalidHint()
-      return `任务 ${task.id}「${task.title}」已派发，子会话 ${member.name}。${hint === '' ? '' : `\n${hint}`}`
+      const changed = binding?.changed === true
+        ? `协调者会话已变更：${binding.previous} → ${binding.id}。`
+        : ''
+      const notes = [changed, hint].filter(Boolean).join('\n')
+      return `任务 ${task.id}「${task.title}」已派发，子会话 ${member.name}。${notes === '' ? '' : `\n${notes}`}`
     }),
 
     wrap('task_list', '列出任务。默认只列活跃任务（pending/running/waiting），active=false 时连同历史一起列出。', objectSchema({
@@ -146,6 +152,7 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
       task_id: str('任务编号'),
       message: str('要追加的内容'),
     }), async (args, exec) => {
+      if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
       if (TERMINAL_STATUS.has(task.status)) return `任务 ${task.id} 已结束（${labelOf(task.status)}），不能续派；需要新工作请 task_create。`
@@ -175,6 +182,7 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
     }),
 
     wrap('task_stop', '停止一个子任务（会中断它的当前一轮）。', objectSchema({ task_id: str('任务编号') }), async args => {
+      if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
       if (TERMINAL_STATUS.has(task.status)) return `任务 ${task.id} 已结束（${labelOf(task.status)}），无需停止。`

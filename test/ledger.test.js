@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, transition, touchTask, addMessage, addNotification, getSetting, setSetting } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, transition, touchTask, addMessage, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting } from '../src/ledger.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -66,6 +66,17 @@ test('settings 读写与覆盖', async () => {
   assert.equal(getSetting(db, 'coordinator_session_id'), 's-1')
   setSetting(db, 'coordinator_session_id', 's-2')
   assert.equal(getSetting(db, 'coordinator_session_id'), 's-2')
+  db.close()
+})
+
+test('首次绑定先到先得，失效重绑是 CAS', async () => {
+  const db = await openLedger(tempDir())
+  assert.equal(bindSettingOnce(db, 'k', 's-1'), 's-1')
+  assert.equal(bindSettingOnce(db, 'k', 's-2'), 's-1')
+  assert.equal(rebindSetting(db, 'k', 's-0', 's-3'), false)
+  assert.equal(getSetting(db, 'k'), 's-1')
+  assert.equal(rebindSetting(db, 'k', 's-1', 's-3'), true)
+  assert.equal(getSetting(db, 'k'), 's-3')
   db.close()
 })
 

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { openLedger, getTask, listTasks, transition } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, transition } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
@@ -224,6 +224,30 @@ test('task_message：重试 3 次仍失败 → waiting_user + error + 失败消�
   assert.match(after.error, /投递超时/)
   const kinds = db.prepare('SELECT kind, rendered FROM messages WHERE task_id = ? ORDER BY seq').all(task.id)
   assert.ok(kinds.some(row => row.kind === 'delivery_failed'))
+  db.close()
+})
+
+test('未绑定时 task_message/task_stop 给提示且不半执行', async () => {
+  const db = await openLedger(tempDir())
+  const dispatcher = fakeDispatcher()
+  const tools = Object.fromEntries(createTools({
+    db,
+    dispatcher,
+    notifier: fakeNotifier(),
+    config: {},
+    coordinatorStatus: () => ({ id: undefined, live: false }),
+  }).map(tool => [tool.name, tool]))
+  const task = createTask(db, { brief: sampleBrief({ title: '甲' }), coordinatorSession: 's-1' })
+  transition(db, task.id, 'running', { sessionId: 'm-1', target: 'w-1' })
+
+  const message = await call(tools, 'task_message', { task_id: task.id, message: '继续' })
+  assert.match(message, /尚未绑定协调者，请先 task_create/)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n, 0)
+
+  const stop = await call(tools, 'task_stop', { task_id: task.id })
+  assert.match(stop, /尚未绑定协调者，请先 task_create/)
+  assert.equal(getTask(db, task.id).status, 'running')
+  assert.equal(dispatcher.calls.length, 0)
   db.close()
 })
 
