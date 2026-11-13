@@ -28,7 +28,7 @@ export async function reconcileOrphans({ db, dispatcher, coordinatorSessionId, i
   for (const task of active) {
     const sessionId = String(task.session_id)
     if (task.status === 'running' && typeof isLive === 'function' && !isLive(sessionId)) {
-      orphaned.push({ task, reason: '进程重启后子会话没有在运行的回合（可续派，或重建）' })
+      orphaned.push({ task, reason: '进程重启后子会话没有在运行的回合（可重建）' })
       continue
     }
     if (known !== undefined && !known.has(sessionId)) {

@@ -124,8 +124,18 @@ export function createQueue({ db, dispatcher, config = {}, logger, retryDelaysMs
           dispatched += 1
           attempt = 0
         } catch (error) {
-          // 状态迁移失败也不能让 pump 死掉；子会话已起，记下来交给孤儿对账。
+          // 状态迁移失败：子会话已经起出来了，best-effort 收掉，别白占并发位。
+          // 这时任务 session_id 还是空的，孤儿对账筛不到它，所以这里必须自己收。
           remove(id)
+          try {
+            await dispatcher.stop(target)
+          } catch (stopError) {
+            log('task.spawn.stop-failed', {
+              taskId: id,
+              sessionId,
+              detail: { target, error: stopError?.message ?? String(stopError) },
+            })
+          }
           log('task.spawn.transition-failed', {
             taskId: id,
             sessionId,
