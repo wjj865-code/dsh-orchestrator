@@ -90,8 +90,10 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
           prompt: rendered,
         })
       } catch (error) {
-        setTaskError(db, task.id, `子会话创建失败：${error?.message ?? error}`)
-        throw new Error(`子会话创建失败：${error?.message ?? error}`)
+        const reason = error?.message ?? String(error)
+        const message = reason.startsWith('未找到协调者会话') ? reason : `子会话创建失败：${reason}`
+        setTaskError(db, task.id, message)
+        throw new Error(message)
       }
       transition(db, task.id, 'running', { sessionId: member.id, target: member.name })
       return `任务 ${task.id}「${task.title}」已派发，子会话 ${member.name}。`
@@ -129,9 +131,10 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
       if (TERMINAL_STATUS.has(task.status)) return `任务 ${task.id} 已结束（${labelOf(task.status)}），不能续派；需要新工作请 task_create。`
       if (task.target === null || task.target === undefined) return `任务 ${task.id} 还没有子会话，先停止再重建。`
-      addMessage(db, task.id, { kind: 'followup', rendered: args.message })
+      const message = args.message ?? ''
+      addMessage(db, task.id, { kind: 'followup', rendered: message })
       try {
-        await sendFollowup(task.target, args.message)
+        await sendFollowup(task.target, message)
       } catch (error) {
         const reason = error?.message ?? String(error)
         addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
