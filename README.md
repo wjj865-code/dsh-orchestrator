@@ -14,21 +14,65 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 
 `DSH_HOME` 未设置时用 `~/.dsh`。不写 profile、不写其他会话目录、不建快照（阶段 3 再做）。
 
-## 安装
+## 安装（维护者操作，不碰用户的 `~/.dsh/profiles`）
 
-由维护者装进 profile（本仓库不碰 `~/.dsh/profiles`）：`link:` 指向本仓库 + 在 profile 里 insert `cordis.patch.yml` 的 `dsh-orchestrator`。
+在目标 profile 目录（`~/.dsh/profiles/<name>`）做三处改动：
+
+1. `package.json` 的 `dependencies` 加本地链接：
+
+   ```json
+   "dsh-orchestrator": "link:C:/Users/72489/Documents/dsh-orchestrator"
+   ```
+
+2. `dsh.profile.bundles` 里加 `dsh-orchestrator`，并确认已有：
+
+   ```json
+   [
+     "@deepseek-ai/dsh-base",
+     "@deepseek-ai/dsh-headless",
+     "@deepseek-ai/dsh-experimental-agent-team-profile",
+     "dsh-orchestrator"
+   ]
+   ```
+
+   无头 profile 用 `@deepseek-ai/dsh-headless`，桌面 profile 用 `@deepseek-ai/dsh-web-app`。
+   `@deepseek-ai/dsh-experimental-agent-team-profile` 提供 `ctx.agentTeams`；缺了它，插件会因缺服务加载失败。
+
+3. profile 的 `cordis.patch.yml` 给插件加配置行（不是再 insert 一行）：
+
+   ```yaml
+   - id: orchestrator
+     name: dsh-orchestrator
+     config:
+       coordinatorSession: session-c0531830-f695-42d3-879c-6d5b8e9a8799
+   ```
+
+4. 重新安装/重启该 profile 使其生效。
 
 ## 配置
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `coordinatorSession` | `undefined` | 协调者会话 id，必填；插件按它现查 live agent，会话后加载也能补上 |
+| `coordinatorSession` | `undefined` | 协调者会话 id（形如 `session-...`），必填；必须指向该 Team 的 root/Lead 会话 |
 | `staleMinutes` | `30` | `task_list` 里超过这么多分钟无动静就标 `⚠` |
 | `stallRounds` | `3` | 预留：阶段 3 的连续无进展升级阈值，阶段 1 只校验并保存 |
 | `maxActive` | `8` | 同时活跃任务上限，超了 `task_create` 拒绝 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
 
-非法值（0、负数、NaN、Infinity、字符串）一律回落默认，不会把插件带崩。
+插件按 `coordinatorSession` 惰性解析 live agent，所以协调者会话可以在插件加载后再打开；白名单会通过 `agent/created` 补装。非法值（0、负数、NaN、Infinity、字符串）一律回落默认，不会把插件带崩。
+
+## 真机冒烟清单（隔离 profile）
+
+1. **加载**：6 个 `task_*` 工具出现；日志无「未找到协调者会话」「白名单安装失败」「缺 `agentTeams`」。
+2. **建任务**：`task_create` 返回「已派发」；子会话真的被创建；台账 `running` 且 `session_id`/`target` 已写。
+3. **输入**：子会话收到的是渲染文字，不是 JSON。
+4. **回报**：`progress` 不打扰；`done` 通知出现在协调者会话，发送方是子任务（不是 Lead 自己）；`notifications` 一行 `delivered`。
+5. **等待态闭环**：`blocked`/`needs_auth` → `task_message` 续派 → `running` → `done` 能走通。
+6. **R8 忙时排队**：协调者正在跑一轮时再回报，消息在下一步边界被接纳、不丢。
+7. **白名单**：协调者工具列表里没有 `read`/`bash` 等；无安装失败日志。
+8. **落盘**：`DSH_HOME` 下只新增 `state/orchestrator/tasks.sqlite`（+`-wal`/`-shm`），不写 profile 和其他会话目录。
+9. **审计口径**：跳过投递（缺 sender / 未配置协调者 / 不属于该团队）记 `skipped` 且 `delivered_at` 为空，不记 `delivered`。
+
 
 ## 工具
 
