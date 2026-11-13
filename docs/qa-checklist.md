@@ -119,6 +119,7 @@
 | **notifications 持久化（R2）** | 投递成功后查 notifications 表 | 每次成功投递写一行：`level` 正确、`status='delivered'`、`delivered_at` 非空；silent 不写行 |
 | 合并 `merged_into` | 窗口内 3 条 done 合并投递 | 合并行 `merged_into` 指向该批次首条通知 id；被合并条不重复投递 |
 | 失败行（R2） | send 抛错 | 写 `status='failed'`、`delivered_at=NULL`；onWarn 带原因；无 unhandled rejection |
+| **发送者约束（平台限制）** | 读 api-notes §4 + 代码 | 通知必须由**回报的子任务** `exec.agent` 发（`notifier.push(item, { sender })` → `send(text, items)`）；没有 sender 时只 warn 不投递；用协调者 agent 自投会 `TEAM_SELF_MESSAGE`，判不通过 |
 
 ## 8. Task 7 — 工具集（`src/tools.js`）
 
@@ -143,6 +144,7 @@
 | `task_stop` | 正常 | 状态 cancelled + interrupt 调用一次；文案 |
 | | 已结束 | 可读错误、状态不变、interrupt 不再调用 |
 | `task_report` | 四状态 | progress 只 touch；done→done；blocked→waiting_user；needs_auth→waiting_auth；通知级别正确 |
+| | **回报方发送** | `task_report` 必须把 `exec.agent` 作为 sender 传给 notifier；缺 sender 时通知降级为 warn，不抛 `TEAM_SELF_MESSAGE` |
 | | 非法 status | 不写消息、不改状态、返回含可选值列表 |
 | | 不存在 id | 可读提示，不写消息 |
 | | 重复 done | 第二次可读错误（不允许迁移），不产生第二条 done 通知 |
@@ -226,11 +228,11 @@
 
 | 任务 | 提交 | 结论 | 证据 | 未过项/备注 |
 | --- | --- | --- | --- | --- |
-| Task 1 | — | 待开发提交 | | |
-| Task 2 | | | | |
-| Task 3 | | | | |
-| Task 4 | | | | |
-| Task 5 | | | | |
+| Task 1 | 67a3669 | 通过 | 全量 50/50；独立探针 task1-config 全过（0/负/NaN/Infinity/字符串/null、不传参、未知键、空串） | 测试脚本多 `--disable-warning=ExperimentalWarning`（相对计划的小偏差，无害） |
+| Task 2 | 11f04c2 | 通过 | 8×8 矩阵独立全对；终态无出边；未知状态不抛；错误文案含方向 | |
+| Task 3 | cd26b06 | 通过 | 花括号/引号/伪小节/多行引用/10k 字/emoji/纯函数独立全过；渲染无 JSON 键名且不可 JSON.parse | |
+| Task 4 | e52f858 | 通过 | 三表+WAL+幂等；同毫秒排序稳定；seq 连续；8×20 并发不串号；patch.error 可清空；损坏库文案含路径与 snapshots、无 SQLITE_/堆栈；落盘仅传入目录 | |
+| Task 5 | 2f3c322 | 通过 | 四方法透传、重试总调用 4 次、惰性 agent 可读错误、prompt 无 JSON、slug 合法；api-probe 独立复跑 16/16 | 平台限制：协调者不能给自己发，通知须由回报子任务发（Task 6/7/9 按 api-notes §4 接线） |
 | Task 6 | | | | |
 | Task 7 | | | | |
 | Task 8 | | | | |
