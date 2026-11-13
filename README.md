@@ -67,7 +67,7 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 | `coordinatorSession` | `undefined` | 可选显式覆盖；不配则首次 `task_create` 自动绑定调用方 |
 | `staleMinutes` | `30` | `task_list` 里超过这么多分钟无动静就标 `⚠` |
 | `stallRounds` | `3` | 预留：阶段 3 的连续无进展升级阈值，阶段 1 只校验并保存 |
-| `maxActive` | `8` | 同时活跃任务上限，超了 `task_create` 拒绝 |
+| `maxActive` | `8` | 并发额度上限，只算 `pending` + `running`；等待态（`waiting_user`/`waiting_auth`）不占额度 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
 | `spawnProvider` | `spawn` | `spawnTeammate` 的 provider（fresh 用 `spawn`；平台要求必填） |
 
@@ -95,7 +95,7 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 
 | 工具 | 作用 |
 | --- | --- |
-| `task_create` | 建台账 + 渲染 brief + 派生一个 fresh 子会话；缺验收标准/超上限会拒绝 |
+| `task_create` | 建台账 + 渲染 brief + 派生一个 fresh 子会话；缺验收标准/超并发额度会拒绝（额度只算 `pending`+`running`，命中时列出占用任务） |
 | `task_list` | 默认只列活跃任务；带标题、目标摘要、最近一条消息、陈旧标记；`active:false` 看全量 |
 | `task_status` | 单任务详情 + 最近 3 条消息 |
 | `task_message` | 续派消息（不新建任务），失败重试 3 次后转 `waiting_user` 并记原因 |

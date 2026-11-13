@@ -99,6 +99,56 @@ test('task_create：缺 acceptance 返回可读提示且不建任务、不 spawn
   db.close()
 })
 
+function seedTask(db, title, status) {
+  const task = createTask(db, { brief: sampleBrief({ title }), coordinatorSession: 's-1' })
+  if (status !== 'pending') transition(db, task.id, 'running')
+  if (status !== 'pending' && status !== 'running') transition(db, task.id, status)
+  return task
+}
+
+test('额度只算 pending/running：8 个 waiting_user 不阻塞第 9 个 task_create', async () => {
+  const { db, dispatcher, tools } = await setup()
+  for (let i = 0; i < 8; i += 1) seedTask(db, `等待${i}`, 'waiting_user')
+  const text = await call(tools, 'task_create', sampleBrief({ title: '新任务' }))
+  assert.match(text, /已派发/)
+  assert.equal(listTasks(db).length, 9)
+  assert.ok(dispatcher.calls.some(call => call[0] === 'spawn'))
+  const listed = await call(tools, 'task_list', {})
+  assert.match(listed, /等待0/)
+  db.close()
+})
+
+test('额度只算 pending/running：8 个 running 阻塞第 9 个并列出占用', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const seeded = []
+  for (let i = 0; i < 8; i += 1) seeded.push(seedTask(db, `运行${i}`, 'running'))
+  const text = await call(tools, 'task_create', sampleBrief({ title: '新任务' }))
+  assert.match(text, /活跃任务已达上限 8/)
+  assert.match(text, /运行0/)
+  assert.match(text, new RegExp(`${seeded[0].id}｜运行0｜进行中`))
+  assert.match(text, /task_stop/)
+  assert.equal(listTasks(db).length, 8)
+  assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 0)
+  db.close()
+})
+
+test('done/cancelled 不计额度，等待态与运行态混合只算运行态', async () => {
+  const { db, tools } = await setup()
+  for (let i = 0; i < 8; i += 1) seedTask(db, `完成${i}`, 'done')
+  for (let i = 0; i < 8; i += 1) seedTask(db, `取消${i}`, 'cancelled')
+  for (let i = 0; i < 3; i += 1) seedTask(db, `运行${i}`, 'running')
+  for (let i = 0; i < 5; i += 1) seedTask(db, `等待${i}`, 'waiting_user')
+
+  const first = await call(tools, 'task_create', sampleBrief({ title: '可创建' }))
+  assert.match(first, /已派发/)
+  for (let i = 4; i < 8; i += 1) seedTask(db, `再运行${i}`, 'running')
+  const blocked = await call(tools, 'task_create', sampleBrief({ title: '被拒' }))
+  assert.match(blocked, /活跃任务已达上限 8/)
+  assert.match(blocked, /运行0/)
+  assert.equal(listTasks(db).length, 8 + 8 + 3 + 5 + 1 + 4)
+  db.close()
+})
+
 test('task_create：活跃上限', async () => {
   const { db, tools } = await setup()
   const db2 = await openLedger(tempDir())

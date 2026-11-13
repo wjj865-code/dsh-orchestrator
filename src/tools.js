@@ -2,7 +2,7 @@
 import { validateBrief, renderBrief } from './brief.js'
 import { canTransition } from './state.js'
 import {
-  addMessage, createTask, getTask, listTasks, recentMessages,
+  addMessage, createTask, getTask, listTasks, listQuotaTasks, recentMessages,
   setTaskError, touchTask, transition, incrementAttempts,
 } from './ledger.js'
 
@@ -93,8 +93,11 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
     }), async (args, exec) => {
       const errors = validateBrief(args)
       if (errors.length > 0) return `任务描述不完整：${errors.join('；')}。补齐后再派。`
-      const active = listTasks(db, { active: true })
-      if (active.length >= maxActive) return `活跃任务已达上限 ${maxActive}，先完成或停止一些任务。`
+      const quota = listQuotaTasks(db)
+      if (quota.length >= maxActive) {
+        const occupying = quota.map(task => `- ${task.id}｜${task.title}｜${labelOf(task.status)}`).join('\n')
+        return `活跃任务已达上限 ${maxActive}，当前占用：\n${occupying}\n可以先 task_stop 或等它们结束。`
+      }
       const binding = await bind(exec?.agent)
       const task = createTask(db, { brief: args, coordinatorSession: binding?.id ?? coordinatorSession })
       const rendered = `【任务编号】${task.id}\n${renderBrief(args)}`

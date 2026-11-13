@@ -76,6 +76,12 @@ export function listTasks(db, { active = false } = {}) {
   return db.prepare(sql).all().map(taskOf)
 }
 
+/** 并发额度只算真正占用槽位的 pending/running；等待态不计。 */
+export function listQuotaTasks(db) {
+  return db.prepare("SELECT * FROM tasks WHERE status IN ('pending','running') ORDER BY created_at DESC, rowid DESC")
+    .all().map(taskOf)
+}
+
 export function transition(db, id, to, patch = {}) {
   const task = getTask(db, id)
   if (task === undefined) throw new Error(`任务不存在：${id}`)
