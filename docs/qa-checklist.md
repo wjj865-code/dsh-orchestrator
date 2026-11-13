@@ -2,6 +2,7 @@
 
 - 依据：`docs/superpowers/specs/2026-11-13-dsh-orchestrator-design.md`（设计）、`docs/superpowers/plans/2026-11-13-dsh-orchestrator-phase1.md`（计划 Task 1–10）
 - 维护：测试。每个任务提交后在独立 worktree 按本清单复跑，**只认自己跑出来的输出**，不采信开发自测数字。
+- 裁决：计划末尾「阶段 1 范围裁决（R1–R8）」（`2689186`）。本清单 §12 按裁决执行；阶段 3 项不判 Task 失败。
 - 结论格式：一行「Task N 通过/不通过｜证据：命令 + 关键输出｜不通过项：…」。不通过必须给最小复现步骤、期望、实际、疑似代码位置。
 
 ## 0. 复跑方式（每个任务提交后）
@@ -84,7 +85,7 @@
 | **并发写** | 8 个任务各写 20 条消息（异步交错） | 每条 seq 连续、无主键冲突、无丢失；不同任务不串号 |
 | touchTask | 对 running 任务 | 状态不变，`updated_at`/`last_event_at` 增加 |
 | patch 语义 | `transition(..., { error:'x' })` 后再传 `{ error:null }` | 明确是否可清空（COALESCE 会保留旧值）——与设计「重新派发清错误」对齐则需可清 |
-| 损坏库 | 把 tasks.sqlite 写成垃圾字节后再 open | 必须给出可读错误或走快照恢复，不能原生 `SQLITE_` 抛栈（设计 §12；实现缺口见 §12） |
+| **损坏库（R1）** | 把 tasks.sqlite 写成垃圾字节后再 `openLedger` | 抛可读中文 `台账损坏：<库路径>（可尝试从 snapshots 目录恢复）`；输出不含 `SQLITE_`、不含 `at ` 堆栈；不自动恢复、不写快照（阶段 3） |
 | 落盘范围 | 只传临时目录 | 除该目录外零写入 |
 
 ## 6. Task 5 — 派活封装（`src/dispatch.js`、`docs/api-notes.md`）
@@ -99,6 +100,8 @@
 | **只依赖四方法** | 假 teams 只有四方法 + 额外方法抛错 | 全部功能可用，说明没偷偷用别的 |
 | api-notes 三点 | 读 `docs/api-notes.md` | ① inject 服务名（最终值 + 试错记录）② agent 对象来源（会话 id → 实例）③ teammate `id` 与 `session_id` 的对应关系；**每条都要有实测证据**（脚本/输出/日期），纯推测记不通过 |
 | **唤醒协调者** | api-notes 里的探测记录 | 有「向 lead 发消息能否唤醒协调者自身会话」的结论与实验证据；不能唤醒时给出替代方案；只有结论没有证据 = 不通过 |
+| **api-notes 第 4 点（R4）** | 读 `docs/api-notes.md` | 有「协调者工具集/白名单声明方式」的结论 + 实测证据；不能声明时给出结论与替代方案；只有推测 = 不通过 |
+| **send 失败重试（R6）** | 假 teams 的 `sendMessage` 前 3 次抛错、第 4 次成功；另测 4 次全失败 | 重试 3 次、间隔 1s/2s/4s（注入 sleep 断言时序）；第 4 次成功即恢复；全失败时抛错不吞，总调用 4 次 |
 
 ## 7. Task 6 — 通知分级与合并（`src/notify.js`）
 
@@ -113,6 +116,9 @@
 | drain | 窗口未到就 drain | 立即 flush 且只投一次；空 buffer 不投 |
 | 交错顺序 | 先 done 排队、再 blocked、再 drain | blocked 先到，done 合并随后，无重复无丢失 |
 | 定时器不泄漏 | 跑完测试进程 | 无残留 timer 导致 `node --test` 挂起；插件卸载后 drain 清 timer |
+| **notifications 持久化（R2）** | 投递成功后查 notifications 表 | 每次成功投递写一行：`level` 正确、`status='delivered'`、`delivered_at` 非空；silent 不写行 |
+| 合并 `merged_into` | 窗口内 3 条 done 合并投递 | 合并行 `merged_into` 指向该批次首条通知 id；被合并条不重复投递 |
+| 失败行（R2） | send 抛错 | 写 `status='failed'`、`delivered_at=NULL`；onWarn 带原因；无 unhandled rejection |
 
 ## 8. Task 7 — 工具集（`src/tools.js`）
 
@@ -123,15 +129,17 @@
 | `task_create` | 缺 acceptance | 返回含 `acceptance` 的可读提示；台账 0 条；spawn 未调用 |
 | | 正常创建 | 台账 running + `session_id/target` 已写；spawn 入参 prompt = 渲染文本（G3）；返回含任务编号 |
 | | 活跃上限 | 已有 8 条活跃时第 9 条被拒、文案含上限数、不建任务 |
-| | **spawn 失败** | 返回可读「任务协调失败：…」；核对台账残留（可能留 pending 无 session）→ 设计 §12 要求卡片显示原因可重试，缺口记 §12 |
+| | **spawn 失败** | 返回可读「任务协调失败：…」；核对台账残留（可能留 pending 无 session）→ 记录为已知行为（阶段 1 无卡片 UI），不计 Task 失败 |
 | `task_list` | 默认 | 只列活跃；空表「没有活跃任务。」；`active:false` 全量；空表「台账里还没有任何任务。」 |
 | | 行格式 | 含 id、标题、中文状态、子会话名；8 状态中文名正确 |
+| **stale 标记（R3）** | `last_event_at` 置 31 分钟前 / 29 分钟前，`staleMinutes=30` | 31 分钟行尾出现「⚠ 已 31 分钟无动静」；29 分钟不出现；只标记、状态不变；恰好 30 分钟按「超」判断 |
 | `task_status` | 存在 | 标题、状态、子会话、最近消息（最多 3 条，各取首行） |
 | | 不存在 | 文案含传入 id 且提示用 task_list |
 | `task_message` | 正常 | 写 followup + 调 send；文案含子会话名 |
 | | 无子会话 | 可读提示；不调 send |
 | | 不存在 id | 可读提示 |
 | | 终态任务 | done/cancelled 上续派的行为需明确（拒绝或允许），不能原生抛错 |
+| **续派失败重试（R6）** | send 连失败（重试 3 次后仍失败） | 任务转 `waiting_user`、`error` 写失败原因、messages 有失败记录、工具返回可读文案；不整段抛异常；重复调用副作用可控 |
 | `task_stop` | 正常 | 状态 cancelled + interrupt 调用一次；文案 |
 | | 已结束 | 可读错误、状态不变、interrupt 不再调用 |
 | `task_report` | 四状态 | progress 只 touch；done→done；blocked→waiting_user；needs_auth→waiting_auth；通知级别正确 |
@@ -140,7 +148,7 @@
 | | 重复 done | 第二次可读错误（不允许迁移），不产生第二条 done 通知 |
 | | 缺 summary | 不崩，摘要为空 |
 | 错误包裹 | 任意工具底层抛错 | `任务协调失败：<原因>`，G6 |
-| **并发 8 子任务** | 并行 8 个 create+report，用独立台账 | 台账 target/status 各归各，无串号；通知与回报不丢 |
+| **并发 8 子任务（R7）** | 并行 8 个 create+report，用独立台账 | 台账 target/status 各归各，无串号；通知与回报不丢 |
 
 ## 9. Task 8 — 卡片数据（`src/card.js`）
 
@@ -157,7 +165,7 @@
 
 | 验收点 | 怎么验 | 判据 |
 | --- | --- | --- |
-| name/inject | 导入 | `name='dsh-orchestrator'`；inject 含 `tools`/`agentTeams`/`agents`（与真实平台服务名核对，见 §12 风险） |
+| name/inject | 导入 | `name='dsh-orchestrator'`；inject 含 `tools`/`agentTeams`/`agents`（与真实平台服务名核对，证据见 Task 5 api-notes） |
 | 注册 | 假 ctx 调 apply | 6 个工具全部注册；`tools.register` 返回值被当作 disposer 使用（若使用） |
 | **DSH_HOME 隔离** | 临时 DSH_HOME 调 apply + 建任务 | 只创建 `$DSH_HOME/state/orchestrator/tasks.sqlite`（+wal/shm）；无其他文件；未设置 DSH_HOME 时才落到 `~/.dsh` |
 | 无 coordinatorSession | apply 后调用派活 | 日志有 warn；工具能注册；不抛；通知不投递（send 静默 return） |
@@ -174,33 +182,43 @@
 | README 内容 | 通读 | 定位、只写 `state/orchestrator`、配置项表（5 项与 `loadConfig` 一致）、6 工具清单、完整示例（建任务→回报→卡片→通知） |
 | 示例准确性 | 按示例逐条执行（假 teams / 单测环境） | 文案、流程、字段与实际输出一致；不夸大（不写阶段 2 的 UI 能力） |
 | 全量绿 | `npm test` | 0 fail |
-| 真机冒烟 | 归 Chief（装 profile 不归我）；我核对冒烟记录 | 子会话被创建、回报入台账、done 通知出现在协调者会话；有记录才算通过 |
+| **已知局限（R1/R5/R7）** | 读 README | 有「已知局限（阶段 3 再做）」：快照生成与恢复、orphaned 重建、30 分钟打扰升级、工具白名单（未实现时）；不把阶段 3 项写成已实现 |
+| 复用判定（R7） | README/工具说明 | 明说判定归协调者，task_list 提供标题、目标摘要、最近消息；阶段 1 无自动复用代码 |
+| 冒烟记录（R8） | 归 Chief（装 profile 不归我）；我核对冒烟记录 | 子会话创建、回报入台账、done 通知出现在协调者会话；唤醒时序（忙时排队不丢）有证据 |
 | 阶段面 | 文档 | 明确阶段 1 不含客户端；不把已知缺口写成已实现 |
 
 ---
 
-## 12. 计划/设计缺口（不判 Task 失败，但要写进结论，请 Chief 拍板）
+## 12. 设计缺口与裁决（2026-11-13，`2689186`）
 
-按设计逐条比对，计划 Task 1–10 未覆盖：
+裁决原文见计划末尾「阶段 1 范围裁决（R1–R8）」。**按裁决执行，阶段 3 项不判 Task 失败**；开发提交若与裁决不符仍算不通过。
 
-| # | 设计条款 | 现状 | 影响 |
+| # | 缺口 | 裁决（阶段 1 口径） | 复核落点 |
 | --- | --- | --- | --- |
-| R1 | §5 每天一份台账快照，保留 7 天；§12 损坏恢复 | 计划无快照实现 | 库损坏即丢数据 |
-| R2 | §5 notifications 表（level/status/delivered_at/merged_into） | 表建了但从不写入 | 通知无法审计、合并关系丢失 |
-| R3 | §8 `task_list` 带 stale 标记、30 分钟卡点候选 | 未实现 | 协调者无法自查卡点 |
-| R4 | §10 协调者工具白名单（禁止文件/shell/浏览器） | 未实现 | 阶段 1 协调者权限未收窄 |
-| R5 | §6/§12 orphaned 自动检测、一键重建 | 未实现 | 子会话被删后状态停留在 running |
-| R6 | §12 投递失败三次重试后 blocked | 未实现 | 失败只 warn，任务不转 blocked |
-| R7 | §13 并发 8 子任务、复用判定、打扰升级（30 分钟） | 计划无对应用例 | 需我补集成测试或确认阶段 2 |
-| R8 | §15 唤醒协调者会话的时序（忙时排队不丢） | 仅 api-notes 结论 | 需真实环境复验 |
+| R1 | 每日快照 + 损坏恢复 | 只做半件：打开损坏库转可读中文错误（含库路径与 snapshots 目录提示），不自动恢复、不写快照；快照生成/恢复阶段 3 | Task 4「损坏库」行 |
+| R2 | notifications 表只建不写 | 阶段 1 做：每次投递（成功/失败）写一行；合并投递填 `merged_into` 指向首条；失败行 `delivered_at=NULL`、`status='failed'` | Task 6「notifications 持久化」组 |
+| R3 | task_list 无 stale 标记 | 阶段 1 做：行尾标「⚠ 已 X 分钟无动静」（`last_event_at` 超 `staleMinutes`），只标记不自动升级 | Task 7「stale 标记」行 |
+| R4 | 协调者工具白名单 | 先探测：api-notes 第 4 点（工具集/白名单声明方式 + 实测证据）；有低成本声明就实现最小白名单，没有则 README 记局限、阶段 3 | Task 5「api-notes 第 4 点」行 |
+| R5 | orphaned 自动检测/重建 | 推迟阶段 3，README 记为已知局限 | Task 10「已知局限」行 |
+| R6 | 投递失败三次重试后 blocked | 阶段 1 做，指 `task_message` 续派：send 失败重试 3 次（1s/2s/4s）→ messages 记失败行、任务转 `waiting_user`、`error` 写原因、返回可读文案 | Task 5「send 失败重试」、Task 7「续派失败重试」 |
+| R7 | 并发 8 / 复用判定 / 30 分钟升级 | 拆开：并发 8 用例进阶段 1（纯测试）；复用判定不写代码（task_list 提供标题/目标摘要/最近消息）；30 分钟升级阶段 3 | Task 7「并发 8 子任务」、Task 10「复用判定」 |
+| R8 | 唤醒协调者时序（忙时排队不丢） | 单测不覆盖；Chief 装 profile 冒烟时真机验；开发在 api-notes 给机制结论与证据 | Task 10「冒烟记录」、Task 5 api-notes 三点 |
+
+各任务增量（复核时逐条对照计划）：
+
+- **Task 4**：`openLedger` 打开失败 → `台账损坏：<路径>（可尝试从 snapshots 目录恢复）`；不含 `SQLITE_`/`at ` 堆栈。
+- **Task 5**：api-notes 加第 4 点「协调者工具集/白名单声明方式」+ 实测证据；不能声明时写结论与替代方案。
+- **Task 6**：投递成功/失败各写一行 notifications；合并投递 `merged_into` 指向首条；失败行 `delivered_at=NULL`、`status='failed'`。
+- **Task 7**：`task_list` 行尾 stale 标记（31 分钟有、29 分钟无）；`task_message` send 重试 3 次后转 `waiting_user` 并写 `error`。
+- **Task 10**：README「已知局限（阶段 3 再做）」：快照恢复、orphaned 重建、30 分钟打扰升级、工具白名单（未实现时）。
 
 ## 13. 我的独立补充测试（不依赖开发用例）
 
 - 状态机 64 格全矩阵；非法迁移不落库。
 - brief 特殊字符/花括号/超长/伪小节注入。
-- 台账同毫秒排序、patch.error 清空语义、8 任务并发写。
-- 通知「send 抛错 + drain」「interrupt 与 done 合并交错」「timer 泄漏」。
-- tools 非法 status 不落库、重复 done、spawn 失败残留、8 路并发派活。
+- 台账同毫秒排序、patch.error 清空语义、8 任务并发写、损坏库可读错误（R1）。
+- 通知「send 抛错 + drain」「interrupt 与 done 合并交错」「timer 泄漏」「notifications 成功/失败/merged_into 落库」（R2）。
+- tools 非法 status 不落库、重复 done、spawn 失败残留、stale 31/29 分钟边界（R3）、续派重试 3 次转 waiting_user（R6）、8 路并发派活（R7）。
 - DSH_HOME 全目录审计（G4）与工具 schema 递归扫描（G5）。
 - 这些脚本放 worktree 的 `qa/` 或临时目录，不进开发提交。
 
@@ -208,7 +226,7 @@
 
 | 任务 | 提交 | 结论 | 证据 | 未过项/备注 |
 | --- | --- | --- | --- | --- |
-| Task 1 | eca6198 | 待开发提交 | | |
+| Task 1 | — | 待开发提交 | | |
 | Task 2 | | | | |
 | Task 3 | | | | |
 | Task 4 | | | | |
