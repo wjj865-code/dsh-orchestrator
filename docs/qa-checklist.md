@@ -321,3 +321,26 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **结论**：§16 十条全部通过 @ `f6a1c7a`；白名单真机「子会话工具数」由 Chief 冒烟复核（进程内已证 restrict 只落在绑定 agent）。
 
+## 17. P0：协调者阻塞等待（`wait_agent`）
+
+线上事故：协调者建完任务后调 `wait_agent` 阻塞 5 分 46 秒，用户无法发消息。`COORDINATOR_DENY` 里写了 `wait_agent` 但没生效。
+
+**测试侧独立 asar 复核（结论：`restrict` 拦不住，非配置错误）**：
+
+- Team 工具由 `install(agent, ctx, config)` 用 `const scoped = agent.ctx` 注册在**成员 agent 自己的作用域**（`scoped.tools.register(defineTool({ name: 'wait_agent', … }))`，asar @104105518；`spawn_teammate` @104102857 同处）。
+- `restrict()` 校验/遮罩的集合是 `view(scope).restrictableNames`（asar @122952256），即**全局**工具名；scope 内注册的工具不在其中，也不会被 mask。所以 `COORDINATOR_DENY ∩ restrictableNames` 会静默过滤掉 `wait_agent`、`spawn_teammate`、`send_message`、`list_agents`、`interrupt_agent`、`team_task_*` 这一整类。
+- 平台还通过 `team:policy` 系统提示（同一 `install` 里注册）告诉 Lead「The Lead must wait for required teammates before giving the final answer」，因此只加一句禁令容易被 policy 盖过，必须显式声明优先级。
+- **更硬的拦截手段（建议开发采用）**：`agent.ctx.tools.guard(guard)` 注册**单调拒绝**（asar @122960454），`checkGuards(exec)` 在 dispatch 前按 `exec.agent` 的 scope 链求值，guard 返回 reason 即拒绝，且没有更晚的监听器能翻转。`ToolExecution` 有 `name` 字段，可 `exec.name === 'wait_agent'` 精确拒。绑定时给协调者 agent 装 guard，**同一回合后续的工具调用就会生效**（guard 在执行期读取），比只能下一回合生效的系统提示更硬。
+
+**验收点（dev HEAD 后执行）**：
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | restrict 拦不住的证据 | api-notes/探针引用上面的注册与 `restrictableNames` 事实 | 不把 `wait_agent` 记成「已 deny」，明确列为 scope-local 一类 |
+| 2 | 系统提示禁令 | 假 ctx 捕获 `systemPrompt.context` 回调，分别以绑定协调者/非协调者会话 id 渲染 | 协调者文本含：禁止 `wait_agent`/任何阻塞等待、进度只用 `task_list`/`task_status`、子任务完成会主动通知、需要等就结束本回合；非协调者无此段 |
+| 3 | 不串会话 | A 绑定 → A 有禁令；B 会话渲染无禁令；重绑后旧会话无、新会话有 | 按会话 id 动态渲染，无全局串扰 |
+| 4 | 非协调者不受影响 | 非协调者会话调 `wait_agent` | 照常可用（工具未被遮罩/未被 guard） |
+| 5 | 硬拦截（若采用 guard） | 假 agent 捕获 `tools.guard`；`{name:'wait_agent'}` → reason，`{name:'task_list'}` → undefined；绑定时装、卸载/重绑撤销；子任务 agent 无 guard | 返回可读中文 reason；只作用于绑定 agent |
+| 6 | 惰性绑定首回合时序 | 文档 + 代码路径核对 | 写清：系统提示下一回合生效；guard 从同回合后续步骤生效；绑定那一步本身已装配的工具表无法回滚 |
+| 7 | 降级 | 无 `systemPrompt` 服务时 apply | 可读 warn、不崩；guard 路径（若有）仍生效 |
+
