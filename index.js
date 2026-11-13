@@ -43,9 +43,11 @@ export async function apply(ctx, rawConfig = {}) {
   const db = await openLedger(stateDir())
   const warnings = message => ctx.logger?.warn?.(message)
   if (ctx.tools === undefined) warnings('dsh-orchestrator: 缺少 tools 服务，工具注册/白名单/guard 不可用')
+  else if (typeof ctx.tools.guard !== 'function') warnings('dsh-orchestrator: tools.guard 缺失，wait_agent 执行期拦截不可用')
   if (ctx.systemPrompt === undefined) warnings('dsh-orchestrator: 缺少 systemPrompt 服务，协调者等待禁令只剩执行期 guard')
   const restrictionDisposers = []
   const restrictedAgents = new WeakSet()
+  const pendingRestrictions = new WeakSet()
 
   const resolvedCoordinatorId = () => config.coordinatorSession ?? getSetting(db, COORDINATOR_KEY)
   const resolveCoordinator = () => {
@@ -101,7 +103,7 @@ export async function apply(ctx, rawConfig = {}) {
   const bindCoordinator = agent => {
     if (config.coordinatorSession !== undefined) {
       const configured = resolveCoordinator()
-      if (configured !== undefined) restrictCoordinator(configured)
+      if (configured !== undefined) scheduleRestriction(configured)
       return { id: config.coordinatorSession, live: configured !== undefined }
     }
     if (agent === undefined) throw new Error('无法绑定协调者会话：task_create 需要调用方 agent')
@@ -116,7 +118,7 @@ export async function apply(ctx, rawConfig = {}) {
       const finalId = won ? agent.id : getSetting(db, COORDINATOR_KEY)
       if (won) {
         ctx.logger?.info?.(`dsh-orchestrator: 协调者会话已变更：${boundId} → ${agent.id}`)
-        restrictCoordinator(agent)
+        scheduleRestriction(agent)
         return { id: agent.id, live: true, changed: true, previous: boundId }
       }
       return { id: finalId, live: ctx.get?.('agents')?.get?.(finalId) !== undefined }
@@ -125,9 +127,20 @@ export async function apply(ctx, rawConfig = {}) {
     const assigned = bindSettingOnce(db, COORDINATOR_KEY, agent.id)
     if (assigned === agent.id) {
       ctx.logger?.info?.(`dsh-orchestrator: 协调者会话已绑定：${agent.id}`)
-      restrictCoordinator(agent)
+      scheduleRestriction(agent)
     }
     return { id: assigned, live: ctx.get?.('agents')?.get?.(assigned) !== undefined }
+  }
+
+  // 运行期收窄只在回合边界生效：回合中改工具集会跟当前请求的工具表错位，
+  // 模型会调用已被遮罩的工具（Unknown tool）。所以 running 时挂起，idle 后装。
+  const scheduleRestriction = agent => {
+    if (agent === undefined) return false
+    if (agent.status === 'running') {
+      pendingRestrictions.add(agent)
+      return false
+    }
+    return restrictCoordinator(agent)
   }
 
   const current = resolveCoordinator()
@@ -139,16 +152,21 @@ export async function apply(ctx, rawConfig = {}) {
         ? `dsh-orchestrator: 已绑定的协调者会话 ${boundId} 当前未加载，首次 task_create 会重新绑定`
         : 'dsh-orchestrator: 尚未绑定 coordinatorSession，首次 task_create 会自动绑定协调者会话')
   } else {
-    restrictCoordinator(current)
+    scheduleRestriction(current)
   }
   ctx.on?.('agent/created', ({ agent }) => {
     const id = resolvedCoordinatorId()
-    if (agent !== undefined && id !== undefined && agent.id === id) restrictCoordinator(agent)
+    if (agent !== undefined && id !== undefined && agent.id === id) scheduleRestriction(agent)
+  })
+  ctx.on?.('agent/status', ({ agent, status }) => {
+    if (agent === undefined || status !== 'idle' || !pendingRestrictions.has(agent)) return
+    pendingRestrictions.delete(agent)
+    restrictCoordinator(agent)
   })
 
   // 白名单去不掉 agent scope 注册的 wait_agent，所以在执行层再拦一道。
   // guard 在绑定后对后续调用立即生效，连 task_create 当回合的 wait_agent 也能拒绝。
-  const guardDisposer = ctx.tools.guard?.(exec => {
+  const guardDisposer = ctx.tools?.guard?.(exec => {
     if (exec?.name !== 'wait_agent') return undefined
     const id = resolvedCoordinatorId()
     if (id === undefined || exec.agent?.id !== id) return undefined

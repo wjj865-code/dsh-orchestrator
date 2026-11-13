@@ -337,6 +337,31 @@ test('wait_agent 是 scope 注册，不在 restrictableNames 时 deny 不包含�
   assert.equal(deny.includes('spawn_teammate'), false)
 }))
 
+test('绑定发生在回合中时，白名单延到 idle 后才装（当前回合工具表不变）', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  s1.status = 'running'
+  const other = makeAgent('s-2')
+  const { ctx, registered, listeners } = fakeCtx({ agents: [s1, other] })
+  await apply(ctx, {})
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.equal(s1.restrictions.length, 0)
+  listeners.get('agent/status')({ agent: s1, status: 'idle' })
+  assert.equal(s1.restrictions.length, 1)
+  listeners.get('agent/status')({ agent: s1, status: 'idle' })
+  assert.equal(s1.restrictions.length, 1)
+  listeners.get('agent/status')({ agent: other, status: 'idle' })
+  assert.equal(other.restrictions.length, 0)
+}))
+
+test('缺 tools.guard 时 warn 不崩，6 工具照常注册', withHome(async () => {
+  const { ctx, warnings, registered } = fakeCtx()
+  delete ctx.tools.guard
+  await apply(ctx, {})
+  assert.ok(warnings.some(message => /tools\.guard/.test(message)))
+  assert.equal(registered.length, 6)
+}))
+
 test('系统提示只渲染给已绑定协调者，绑定后下一步生效', withHome(async () => {
   const s1 = makeAgent('s-1')
   const other = makeAgent('s-2')
