@@ -372,3 +372,19 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **P0 v2 结论**：`b98922c`（文档 `9fb92ae`）复验通过，129/129、api-probe 33/33、13 个独立探针全绿；首绑回合不再有中途收窄，**需重启 DSH 换上新构建后真机复跑**。残留极端：pending 期间绑定若变更（只在原协调者已死时发生）会晚装到旧 agent，实际不可达，留代码审阅。
 
+## 18. 并发额度口径（`maxActive`）
+
+背景：等待态（`waiting_user`/`waiting_auth`）被算进 `maxActive`，卡在等用户决定的任务占死名额，新建不了。修法：额度只算 `pending` + `running`；`task_list` 的 `active` 语义不变。
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 等待态不占额度 | 8 条 `waiting_user` 后第 9 个 `task_create` | 创建成功；额度只算 0 占用 |
+| 2 | 运行态占额度 | 8 条 `running` 后第 9 个 | 拒绝；不写 tasks/messages 行 |
+| 3 | 终态不计入 | 各 8 条 `done`/`cancelled`/`failed`/`orphaned` + 新建 | 全部允许 |
+| 4 | 混合只算运行态 | 4 `running` + 4 `waiting_user`，继续建 | 还能建 4 条 `running`，第 5 条被拒（running 达 8） |
+| 5 | `pending` 计入 | 1 `pending`（spawn 失败残留）+ 7 `running` | 第 9 个被拒，占用清单含 `pending` 行 |
+| 6 | 拒绝文案 | 命中上限的返回 | 列出占用任务 `id｜标题｜状态`，数量恰好 = pending+running 集合（不列等待态），含「先 `task_stop` 或等结束」提示 |
+| 7 | list 语义不变 | `task_list` 默认 | 仍列出 `waiting_user`/`waiting_auth` 任务 |
+| 8 | 集合分离 | 代码复核 + 行为 | 额度集合与列表集合是两个不同查询/常量，不为省事合并 |
+| 9 | 并发不超发 | 8 个并行 `task_create` | 成功数 ≤ `maxActive`，其余拒绝且不建行 |
+
