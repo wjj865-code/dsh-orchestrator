@@ -233,6 +233,8 @@
 | Task 3 | cd26b06 | 通过 | 花括号/引号/伪小节/多行引用/10k 字/emoji/纯函数独立全过；渲染无 JSON 键名且不可 JSON.parse | |
 | Task 4 | e52f858 | 通过 | 三表+WAL+幂等；同毫秒排序稳定；seq 连续；8×20 并发不串号；patch.error 可清空；损坏库文案含路径与 snapshots、无 SQLITE_/堆栈；落盘仅传入目录 | |
 | Task 5 | 2f3c322 | 通过 | 四方法透传、重试总调用 4 次、惰性 agent 可读错误、prompt 无 JSON、slug 合法；api-probe 独立复跑 16/16 | 平台限制：协调者不能给自己发，通知须由回报子任务发（Task 6/7/9 按 api-notes §4 接线） |
+| Task 6 | 5898843 | 通过 | 分级映射、progress 零投递、单条/3 条合并文案、merged_into 指向首条、失败行 delivered_at=NULL、落库、二次 drain 不重复、timer 不泄漏 | 最终发送函数在 index.js（Task 9），「无 sender 只 warn 不投递」留到 Task 9 验 |
+| Task 7 | 3a5a979 | 通过 | 6 工具对象根 schema 无 min/max、render 返回 text 数组；create 上限/spawn 失败留 pending+error；list stale 31/29；message 重试转 waiting_user+error+失败行；report 四态/非法 status 不落库/重复 done 不重复通知；8 路并发不串号 | 重复回报会先写 report 消息再报错（可接受）；失败文案写死「已重试 3 次」（生产 dispatcher 恒有 sendReliable，无害） |
 | Task 6 | | | | |
 | Task 7 | | | | |
 | Task 8 | | | | |
