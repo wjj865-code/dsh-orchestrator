@@ -402,3 +402,20 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 8 | 通过 | `listQuotaTasks` 只 `pending`+`running`，`listTasks(active)` 语义未动，行为验证集合分离 |
 | 9 | **不通过** | 12 个并发 `task_create` 全部成功（ok=12，rejected=0），`maxActive=8` 被绕过。根因：quota 检查在 `await bind()` 之前，并发调用在任何 `createTask` 发生前都已通过检查（检查与创建之间有 await 空档）。建议：bind 后同一同步段内 check+create，或插件内串行队列/异步锁；修后重跑 12 并发应 ≤8 |
 
+## 19. 幽灵任务 / 幂等去重 / 启动清理
+
+背景：`task_create` 先 `createTask` 落库、再 `dispatcher.spawn`；spawn 抛错（平台成员上限、会话创建失败）不回滚，台账留下无 `session_id` 的 `pending` 幽灵（用户侧 `t-c84fbb2c`、`t-b228e7f8`），成员空出后可能重复派发、两份报告打架。
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | spawn 失败收尾 | fake dispatcher `spawn` 抛错 | 返回可读中文（含原因与任务 id）；任务 `failed` + `error` 记录；不存在无 `session_id` 的 `pending`；`task_list(active)` 不含它 |
+| 2 | 幂等去重 | 同 `title`+`goal` 的 `pending`/`running` 已存在，再 `task_create` | 返回「已存在任务 X，未重复创建」；不 spawn；台账仍一条 |
+| 3 | 去重键精确 | title 同/ goal 不同；goal 同/ title 不同 | 两种情况都新建 |
+| 4 | done 不误判 | 已 `done` 的同 `title`+`goal` 任务存在，再创建 | 允许，生成新任务（新 id） |
+| 5 | 终态不误判 | `cancelled`/`failed`/`orphaned` 同目标存在 | 允许新建 |
+| 6 | 启动清理 | 预置 `pending` 无 `session_id` 且 `created_at` 早于 `staleMinutes` → `apply` | 变 `failed` + 原因「派发中断」；未超时 pending 不动；running/waiting/终态不动 |
+| 7 | 清理幂等 | 连续两次 `apply` | 不重复改状态、不误伤其他行 |
+| 8 | 清理范围 | 有 `session_id` 的 pending / 近期 pending | 不动（或按明确文档口径） |
+| 9 | 并发同目标 | 两个并发 `task_create` 同 `title`+`goal` | 只产生一条，另一次返回已存在；不重复 spawn |
+| 10 | 与额度交互 | 满额时同目标重复创建 / 不同目标新建 | 同目标应识别为已有任务（不新建）；不同目标按额度拒绝 |
+
