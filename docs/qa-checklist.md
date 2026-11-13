@@ -48,7 +48,7 @@
 | 验收点 | 怎么验 | 判据 |
 | --- | --- | --- |
 | 状态集合完整 | `STATUSES` 排序 | 8 个：`pending running waiting_user waiting_auth done failed cancelled orphaned` |
-| **全迁移矩阵** | 我自己生成 8×8 全组合断言（不只计划里的样例） | 只有 `pending→running/cancelled`、`running→waiting_user/waiting_auth/done/failed/cancelled/orphaned`、`waiting_user→running/cancelled/failed`、`waiting_auth→running/cancelled/failed`、`failed→running/cancelled`、`orphaned→pending/cancelled` 为 true，其余 false |
+| **全迁移矩阵** | 我自己生成 8×8 全组合断言（不只计划里的样例） | 只有 `pending→running/failed/cancelled`（`pending→failed` 为设计 `7413a2b` 新增，供 spawn 失败收尾）、`running→waiting_user/waiting_auth/done/failed/cancelled/orphaned`、`waiting_user→running/cancelled/failed`、`waiting_auth→running/cancelled/failed`、`failed→running/cancelled`、`orphaned→pending/cancelled` 为 true，其余 false |
 | 终态无出边 | 矩阵里 `done`、`cancelled` 行 | 全 false |
 | 未知状态 | `canTransition('x','running')`、`canTransition('running','x')` | 返回 false 不抛 |
 | 抛错文案 | `nextStatus('done','running')` | 抛 `/不允许/`，带 from→to |
@@ -409,13 +409,38 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | # | 验收点 | 怎么验 | 判据 |
 | --- | --- | --- | --- |
 | 1 | spawn 失败收尾 | fake dispatcher `spawn` 抛错 | 返回可读中文（含原因与任务 id）；任务 `failed` + `error` 记录；不存在无 `session_id` 的 `pending`；`task_list(active)` 不含它 |
-| 2 | 幂等去重 | 同 `title`+`goal` 的 `pending`/`running` 已存在，再 `task_create` | 返回「已存在任务 X，未重复创建」；不 spawn；台账仍一条 |
-| 3 | 去重键精确 | title 同/ goal 不同；goal 同/ title 不同 | 两种情况都新建 |
+| 2 | 幂等去重 | 同 `title`+`goal`（trim 后）且状态**活跃**（`pending/running/waiting_user/waiting_auth`）的任务已存在，再 `task_create` | 返回「已存在任务 X，未重复创建」+ 任务 id/状态；不 spawn；台账仍一条；不占额度 |
+| 3 | 去重键精确 | title 同/ goal 不同；goal 同/ title 不同；title/goal 仅首尾空格差异 | 前两种新建；仅空格差异视为同一条（trim 归一） |
 | 4 | done 不误判 | 已 `done` 的同 `title`+`goal` 任务存在，再创建 | 允许，生成新任务（新 id） |
 | 5 | 终态不误判 | `cancelled`/`failed`/`orphaned` 同目标存在 | 允许新建 |
-| 6 | 启动清理 | 预置 `pending` 无 `session_id` 且 `created_at` 早于 `staleMinutes` → `apply` | 变 `failed` + 原因「派发中断」；未超时 pending 不动；running/waiting/终态不动 |
+| 6 | 启动清理 | 预置 `pending` 无 `session_id` 且 `created_at` 早于 `staleMinutes` → `apply` | 变 `failed` + 原因「派发中断」；未超时 pending 不动；running/waiting/终态不动；只通过 `UPDATE` 直改、记录清理条数 |
 | 7 | 清理幂等 | 连续两次 `apply` | 不重复改状态、不误伤其他行 |
 | 8 | 清理范围 | 有 `session_id` 的 pending / 近期 pending | 不动（或按明确文档口径） |
 | 9 | 并发同目标 | 两个并发 `task_create` 同 `title`+`goal` | 只产生一条，另一次返回已存在；不重复 spawn |
 | 10 | 与额度交互 | 满额时同目标重复创建 / 不同目标新建 | 同目标应识别为已有任务（不新建）；不同目标按额度拒绝 |
+| 11 | spawn 失败走新边 | `pending→failed` 状态迁移 | 设计 `7413a2b` 已加该边；spawn 失败可合法迁到 `failed`（不再留 ghost pending）；`pending` 其余非法边不变 |
+
+## 20. 协调者「不得凭记忆推断」硬规则（系统提示）
+
+背景：协调者没派过 subagent，却断言「和我用 subagent 派的 Rust 审查是同一件事」并据此停了任务——凭记忆推断，不是工具返回。
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 规则在 prompt 里 | 绑定协调者后渲染 `systemPrompt.context` | 文本明确：任何任务数量/重复/冲突/状态断言，必须先调 `task_list`/`task_status` 拿到返回；不得凭记忆推断 |
+| 2 | 三路隔离 | 协调者/普通会话/子会话 | 只有协调者带该段；重绑后跟随 |
+| 3 | 与既有禁令共存 | 同一段 prompt | `wait_agent` 禁令、进度方式、结束回合、优先于 team policy 仍在 |
+
+## 21. 结构化日志（排查用）
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 路径与命名 | 触发事件后查目录 | `$DSH_HOME/state/orchestrator/logs/orchestrator-YYYY-MM-DD.jsonl`，每天一个 |
+| 2 | 保留 7 天 | 预置 8 天前的 `orchestrator-*.jsonl` | apply 后旧文件被清理，7 天内保留 |
+| 3 | 单文件 5MB 换新 | 预置一个 >5MB 的当天日志 | 新事件不追加到超限文件，另起新文件且不崩 |
+| 4 | 行格式 | 逐行 `JSON.parse` | `{ at, event, taskId?, sessionId?, agentId?, detail }`；缺字段不能是坏 JSON |
+| 5 | 不写全文 | 用超长 goal（>80 字）和唯一 `user_verbatim` 触发事件 | 日志中 goal/摘要截断 ≤80；完整 `user_verbatim` 字符串不出现 |
+| 6 | 事件覆盖 | 跑 create/重复/rejected/spawn 失败/report/notify 三种/cleanup/bind | 对应事件都有：`task.create.requested|created|rejected`、`task.spawn.requested|ok|failed`、`task.report`、`notify.delivered|failed|skipped`、`cleanup.pending`、`bind.coordinator`；rejected/failed/skipped 带原因 |
+| 7 | 写失败不影响主流程 | 让 logs 路径不可写（用文件占位/只读），再跑 `task_create` | 主流程成功；只 warn 一次；不抛错、不阻塞 |
+| 8 | README | 文档 | 写清日志路径、保留策略、5MB 换新、「排查请附当天日志」 |
+| 9 | 排查价值（审查主验） | 用日志还原：一次 create 被拒原因、一次 spawn 失败原文、一次通知 skipped 原因 | 三条都能仅凭当天日志还原 |
 
