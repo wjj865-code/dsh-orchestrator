@@ -1,0 +1,229 @@
+#!/usr/bin/env node
+/**
+ * QA 阶段 2 L1：客户端 bundle 槽位 / 注册捕获探针
+ *
+ * 用法: node docs/probes/qa-stage2-slots.mjs <client.js 路径>
+ * 退出码: 0 全 PASS；1 有 FAIL；2 用法错误
+ *
+ * 做法：把 client.js 当经典脚本在 vm 里跑，伪造 window.__ModuleLoader__、假 React、假 ctx，
+ * 直接断言 register 入参（槽位名 / id / order / priority / 单席位 / 打开面板路径 / inject 清单）。
+ * 不需要 DSH，也不需要真台账。
+ */
+import { readFileSync } from 'node:fs'
+import vm from 'node:vm'
+
+const target = process.argv[2]
+if (!target) {
+  console.error('用法: node docs/probes/qa-stage2-slots.mjs <client.js>')
+  process.exit(2)
+}
+
+let failures = 0
+const check = (name, cond, detail = '') => {
+  if (cond) console.log(`PASS ${name}${detail ? ` — ${detail}` : ''}`)
+  else { failures += 1; console.log(`FAIL ${name}${detail ? ` — ${detail}` : ''}`) }
+}
+const warn = (name, detail = '') => console.log(`WARN ${name}${detail ? ` — ${detail}` : ''}`)
+
+let src
+try { src = readFileSync(target, 'utf8') } catch (e) {
+  console.error(`读不到 ${target}: ${e.message}`)
+  process.exit(2)
+}
+
+// ---------- 静态检查（与运行无关的部分） ----------
+const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+check('无顶层 import/export（经典脚本）', !/(^|\n)\s*(import|export)[\s{*]/.test(stripped))
+
+const fetchRegisters = (src.match(/fetch\s*\.\s*register/g) ?? []).length
+check('client.js 不自己注册 host 路由（注册属 host 侧）', fetchRegisters === 0, `实际 ${fetchRegisters}`)
+const fetchTargets = [...src.matchAll(/\bfetch\s*\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1])
+check('client.js 的 fetch 目标只有 /api/orchestrator',
+  fetchTargets.every((t) => t === 'api/orchestrator' || t === '/api/orchestrator'),
+  fetchTargets.length ? [...new Set(fetchTargets)].join(', ') : '未直接调 fetch（走封装也可，需人工确认目标）')
+for (const bad of ['task_create', 'task_stop', 'bindCoordinator', 'rebindSetting']) {
+  check(`client.js 不调写接口 ${bad}`, !src.includes(bad))
+}
+const endpoints = [...src.matchAll(/endpoint\s*:\s*['"]([^'"]+)['"]/g)].map((m) => m[1])
+if (endpoints.length) warn('客户端用到的 endpoint（人工核对是否只读）', [...new Set(endpoints)].join(', '))
+
+// ---------- 运行 bundle ----------
+const loadCalls = []
+const windowObj = {
+  __ModuleLoader__: { load(mod) { loadCalls.push(mod) } },
+  addEventListener() {},
+  removeEventListener() {},
+}
+const sandbox = {
+  window: windowObj,
+  __ModuleLoader__: windowObj.__ModuleLoader__,
+  console,
+  setTimeout: () => 0,
+  clearTimeout: () => {},
+  setInterval: () => 0,
+  clearInterval: () => {},
+  fetch: () => Promise.reject(new Error('qa: fetch not mocked')),
+}
+vm.createContext(sandbox)
+try {
+  vm.runInContext(src, sandbox, { filename: target, timeout: 5000 })
+} catch (e) {
+  check('bundle 执行不抛异常', false, e.message)
+  process.exit(1)
+}
+check('__ModuleLoader__.load 调用 1 次', loadCalls.length === 1, `实际 ${loadCalls.length}`)
+const mod = loadCalls[0] ?? {}
+check("bundle id === 'dsh-orchestrator'", mod.id === 'dsh-orchestrator', String(mod.id))
+check('factory 是函数', typeof mod.factory === 'function')
+
+// ---------- 假 React ----------
+const el = (type, props, ...children) => ({ __el: true, type, props: props ?? {}, children })
+const reactMock = {
+  createElement: el,
+  Fragment: Symbol('Fragment'),
+  useState: (v) => [v, () => {}],
+  useEffect: () => {},
+  useMemo: (fn) => fn(),
+  useCallback: (fn) => fn,
+  useRef: (v) => ({ current: v }),
+}
+let clientExports
+try {
+  clientExports = mod.factory((id) => {
+    if (id === 'react') return reactMock
+    throw new Error(`qa: 未预期的 require('${id}')，请声明 dsh.client.external 或补 mock`)
+  })
+} catch (e) {
+  check('factory 执行不抛异常', false, e.message)
+  process.exit(1)
+}
+const client = clientExports?.default ?? clientExports
+check('factory 返回 { apply, inject }', typeof client?.apply === 'function' && Array.isArray(client?.inject), `inject=${JSON.stringify(client?.inject)}`)
+
+// ---------- 假 ctx ----------
+const regs = []
+const injectNames = []
+const selectPanelCalls = []
+let currentVia = null
+const ctx = {
+  slots: {
+    inject(name, setup) {
+      injectNames.push(name)
+      currentVia = name
+      let result
+      try { result = setup() } finally { currentVia = null }
+      const items = Array.isArray(result) ? result : [result]
+      for (const it of items) if (it && typeof it === 'object') it.__via = name
+      return () => { for (const it of items) { try { it?.dispose?.() } catch {} } }
+    },
+    register(spec, component) {
+      const entry = { spec: spec ?? {}, component, via: currentVia, disposed: false }
+      regs.push(entry)
+      return { spec, dispose() { entry.disposed = true } }
+    },
+    entries() { return regs },
+  },
+  layout: {
+    selectPanel(id) { selectPanelCalls.push(id); return Promise.resolve() },
+    panelInfo: { getSnapshot: () => ({ activePanelId: null }) },
+  },
+  uiSession: { current: 'session-qa' },
+  sessions: { list: { getSnapshot: () => ({ byId: {} }) } },
+  effect(fn) { const d = fn(); return () => { try { d?.() } catch {} } },
+  get() { return undefined },
+}
+
+try {
+  await client.apply(ctx)
+} catch (e) {
+  check('apply 执行不抛异常', false, e.message)
+  process.exit(1)
+}
+check('apply 执行不抛异常', true)
+
+// ---------- 槽位断言 ----------
+const byName = (name) => regs.filter((r) => r.spec?.name === name)
+const ALLOWED = new Set(['sidebar.panellist', 'main', 'conversation.header.leading', 'shell.overlay'])
+const FORBIDDEN = ['sidebar.workspaces', 'sidebar.footer.action', 'sidebar.brand.mark', 'sidebar.brand.name',
+  'conversation.session.header', 'conversation.session.header.actions', 'conversation.session.header.views.actions']
+for (const name of FORBIDDEN) check(`不注册 ds-bot 的 ${name}`, byName(name).length === 0)
+for (const r of regs) {
+  const name = r.spec?.name
+  if (!ALLOWED.has(name)) check(`未登记的槽位 ${name}`, false)
+  else if (name === 'shell.overlay') warn('注册了 shell.overlay（阶段 2 范围外，需另立条目）', String(r.spec?.id))
+}
+
+const panellist = byName('sidebar.panellist')
+check('sidebar.panellist 恰 1 次', panellist.length === 1, `实际 ${panellist.length}`)
+if (panellist[0]) {
+  const s = panellist[0].spec
+  check("入口 id === 'orchestrator'", s.id === 'orchestrator', String(s.id))
+  check('入口 order === 10', s.order === 10, String(s.order))
+  check('入口不设 priority', !('priority' in s), s.priority === undefined ? '无' : `priority=${s.priority}`)
+  const label = typeof s.label === 'function' ? s.label() : s.label
+  check('入口 label 非空', typeof label === 'string' && label.trim().length > 0, JSON.stringify(label))
+  check('入口经 slots.inject 包装（可撤销）', panellist[0].via === 'sidebar.panellist', String(panellist[0].via))
+}
+
+const main = byName('main')
+check('main 恰 1 次', main.length === 1, `实际 ${main.length}`)
+if (main[0]) {
+  const s = main[0].spec
+  check("面板 key === 'orchestrator'", s.key === 'orchestrator', String(s.key))
+  if (s.locale) warn("main 带 locale，需同时注册字典（否则去掉）", String(s.locale))
+  check('面板经 slots.inject 包装', main[0].via === 'main', String(main[0].via))
+}
+
+const leading = byName('conversation.header.leading')
+check('conversation.header.leading 恰 1 次', leading.length === 1, `实际 ${leading.length}`)
+if (leading[0]) {
+  check('leading 是单席位（不带 id）', !('id' in leading[0].spec), JSON.stringify(leading[0].spec.id))
+  check('leading 经 slots.inject 包装', leading[0].via === 'conversation.header.leading', String(leading[0].via))
+}
+
+// ---------- 头部按钮点击 → 打开面板 ----------
+function walk(node, visit) {
+  if (!node) return
+  if (Array.isArray(node)) { for (const n of node) walk(n, visit); return }
+  if (typeof node !== 'object') return
+  visit(node)
+  for (const c of node.children ?? []) walk(c, visit)
+}
+if (leading[0]?.component) {
+  let props = {}
+  if (typeof leading[0].spec?.inject === 'function') {
+    try { props = leading[0].spec.inject({}) ?? {} } catch (e) { warn('spec.inject 调用异常', e.message) }
+  }
+  let tree
+  try { tree = leading[0].component(props) } catch (e) { warn('组件无法直接调用（可能用了 hooks），跳过点击验证', e.message) }
+  const clicks = []
+  walk(tree, (n) => { if (n.props && typeof n.props.onClick === 'function') clicks.push(n.props.onClick) })
+  if (tree) {
+    check('头部按钮可渲染出 onClick', clicks.length > 0, `找到 ${clicks.length} 个`)
+    for (const fn of clicks) {
+      try { fn({ preventDefault() {}, stopPropagation() {}, currentTarget: null }) } catch (e) { check('onClick 不抛异常', false, e.message) }
+    }
+    check("点击触发 ctx.layout.selectPanel('orchestrator')", selectPanelCalls.includes('orchestrator'), JSON.stringify(selectPanelCalls))
+  }
+}
+
+// ---------- inject 服务清单 ----------
+const usedServices = new Set(['slots', 'layout'])
+if (/\bctx\.uiSession\b/.test(src)) usedServices.add('uiSession')
+if (/\bctx\.sessions\b/.test(src)) usedServices.add('sessions')
+if (/\bctx\.uiWorkspace\b/.test(src)) usedServices.add('uiWorkspace')
+if (/\bctx\.uiLayout\b/.test(src)) usedServices.add('uiLayout')
+if (/\bctx\.i18n\b/.test(src)) usedServices.add('i18n')
+for (const s of usedServices) check(`inject 含实际用到的服务 ${s}`, client.inject.includes(s), JSON.stringify(client.inject))
+for (const s of client.inject) if (!usedServices.has(s)) warn(`inject 声明了未使用的服务 ${s}`, '检查是否多余')
+
+// ---------- 生命周期 ----------
+try {
+  await client.apply(ctx)
+} catch (e) {
+  check('重复 apply 不抛异常', false, e.message)
+}
+check('重复 apply 会重复注册（平台侧 effect 负责去重，此处仅记录）', regs.length >= 3, `累计 ${regs.length} 条`)
+
+console.log(failures === 0 ? '\nRESULT: PASS' : `\nRESULT: FAIL (${failures})`)
+process.exit(failures === 0 ? 0 : 1)
