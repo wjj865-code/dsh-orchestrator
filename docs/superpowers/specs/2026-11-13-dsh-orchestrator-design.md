@@ -85,6 +85,9 @@
 
 迁移规则：
 
+- `pending → failed`：派发失败（spawn 抛错）直接标失败，`error` 写原因，不留无子会话的 pending；插件启动时把「`session_id` 为空且超过 `staleMinutes`」的遗留 pending 直接清理为 failed（记清理条数）。
+- `task_create` 去重：`title + goal`（trim 后）相同且仍有活跃任务（`pending/running/waiting_user/waiting_auth`）时返回已有任务，不新建、不 spawn、不占额度；`done/cancelled/failed/orphaned` 不参与去重，用户重跑同一任务放行。
+
 - 只有子会话的 `task_report` 能把状态推进到 `running` 之后。
 - 协调者只能：创建（pending）、续派消息、停止（cancelled）、对 failed 重新派发（`attempts + 1`，不新建记录）。
 - `waiting_auth` 由子任务的授权请求触发，由协调者转交用户后回到 `running`。
@@ -168,7 +171,8 @@
 
 | 情况 | 行为 |
 | --- | --- |
-| 子会话创建失败 | 任务保持 pending，卡片显示原因，可重试 |
+| 子会话创建失败 | 任务标 `failed`，`error` 写原因；同 title+goal 再 `task_create` 视为重试（终态不参与去重） |
+| 重复创建（title+goal 相同且仍有活跃任务） | 返回已有任务（id、状态、「已存在任务 X，未重复创建」），不新建、不 spawn、不占额度 |
 | 投递消息失败 | 记入 messages 失败态，三次重试后标 blocked |
 | 子会话被删 | 标 orphaned，卡片提供"重建会话" |
 | 台账损坏 | 从 `state/orchestrator/snapshots/` 最近快照恢复，丢失最近变更并提示 |
