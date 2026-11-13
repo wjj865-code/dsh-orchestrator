@@ -143,9 +143,11 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
         })
         member = await dispatcher.spawn({
           name: memberName,
+          label: args.title,
           description: args.title,
           prompt: rendered,
           signal: exec?.signal,
+          taskId: task.id,
         })
       } catch (error) {
         const reason = error?.message ?? String(error)
@@ -156,8 +158,10 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
         transition(db, task.id, 'failed', { error: message })
         throw new Error(message)
       }
-      log('task.spawn.ok', { taskId: task.id, sessionId: member.id, agentId, detail: { target: member.name, callId } })
-      transition(db, task.id, 'running', { sessionId: member.id, target: member.name })
+      const memberId = member.sessionId ?? member.id
+      const memberTarget = member.target ?? member.name
+      log('task.spawn.ok', { taskId: task.id, sessionId: memberId, agentId, detail: { target: memberTarget, callId } })
+      transition(db, task.id, 'running', { sessionId: memberId, target: memberTarget })
       const hint = invalidHint()
       const changed = binding?.changed === true
         ? `协调者会话已变更：${binding.previous} → ${binding.id}。`

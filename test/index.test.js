@@ -56,6 +56,20 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       async interrupt() {},
       listMembers() { return [] },
     },
+    subagents: {
+      async startActivation(spec) {
+        const childId = spawnResult?.member?.id ?? 'm-1'
+        return {
+          childId,
+          messageId: 'msg-1',
+          result: Promise.resolve({ output: [], stopReason: 'completed' }),
+          dispose: async () => {},
+        }
+      },
+      async sendMessage(sender, target, content, options) { sent.push([sender, { target, content, options }]) },
+      async interruptByParent() {},
+      async listChildren() { return [] },
+    },
   }
   return { ctx, registered, warnings, infos, listeners, sent, disposers, agent, live, guards, promptContexts }
 }
@@ -74,9 +88,9 @@ function withHome(fn) {
   }
 }
 
-test('inject 声明包含 tools、agentTeams、agents、systemPrompt', () => {
+test('inject 声明包含 tools、agentTeams、agents、systemPrompt、subagents', () => {
   assert.equal(name, 'dsh-orchestrator')
-  assert.deepEqual(new Set(inject), new Set(['tools', 'agentTeams', 'agents', 'systemPrompt']))
+  assert.deepEqual(new Set(inject), new Set(['tools', 'agentTeams', 'agents', 'systemPrompt', 'subagents']))
 })
 
 test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {

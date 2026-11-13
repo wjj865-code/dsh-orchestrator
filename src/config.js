@@ -18,6 +18,7 @@ export function loadConfig(raw = {}) {
     config[key] = positive(raw?.[key], DEFAULTS[key])
   }
   config.spawnProvider = nonEmpty(raw?.spawnProvider, 'spawn')
+  config.backend = raw?.backend === 'team' ? 'team' : 'subagent'
   config.coordinatorSession = nonEmpty(raw?.coordinatorSession, undefined)
   return config
 }

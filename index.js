@@ -10,7 +10,7 @@ import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
 
 export const name = 'dsh-orchestrator'
-export const inject = ['tools', 'agentTeams', 'agents', 'systemPrompt']
+export const inject = ['tools', 'agentTeams', 'agents', 'systemPrompt', 'subagents']
 
 const COORDINATOR_KEY = 'coordinator_session_id'
 const COORDINATOR_INVALID_HINT = '协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定。'
@@ -193,10 +193,13 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   const dispatcher = createDispatcher({
+    backend: config.backend,
     agentTeams: ctx.agentTeams,
+    subagents: ctx.subagents,
     getAgent: resolveCoordinator,
     provider: config.spawnProvider,
     onWarn: warnings,
+    onEvent: (event, fields) => logger.log(event, fields),
   })
 
   const notifier = createNotifier({

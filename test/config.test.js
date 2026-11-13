@@ -53,6 +53,12 @@ test('spawnProvider 可覆盖，空值/非字符串回落 spawn', () => {
   assert.equal(loadConfig({ spawnProvider: 42 }).spawnProvider, 'spawn')
 })
 
+test('backend 默认 subagent，仅 team 是合法回退', () => {
+  assert.equal(loadConfig({}).backend, 'subagent')
+  assert.equal(loadConfig({ backend: 'team' }).backend, 'team')
+  assert.equal(loadConfig({ backend: 'nope' }).backend, 'subagent')
+})
+
 test('不泄漏未声明的原始键', () => {
   const config = loadConfig({ foo: 1, coordinatorSession: 's-1' })
   assert.equal('foo' in config, false)

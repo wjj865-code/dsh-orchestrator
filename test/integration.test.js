@@ -30,12 +30,26 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
     effect: () => () => {},
     agentTeams: {
       async spawnTeammate(agent, input) {
-        spawned.push(input)
+        spawned.push({ team: input })
         return { member: { id: teammate.id, name: 'w-1' } }
       },
       async sendMessage(sender, input) { sent.push({ sender, input }) },
       async interrupt() {},
       listMembers() { return [] },
+    },
+    subagents: {
+      async startActivation(spec) {
+        spawned.push(spec)
+        return {
+          childId: teammate.id,
+          messageId: 'msg-1',
+          result: Promise.resolve({ output: [], stopReason: 'completed' }),
+          dispose: async () => {},
+        }
+      },
+      async sendMessage(sender, target, content, options) { sent.push({ sender, target, content, options }) },
+      async interruptByParent() {},
+      async listChildren() { return [] },
     },
   }
   try {
@@ -50,10 +64,13 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
     }, { agent: coordinator })
     const taskId = created.match(/任务 (t-[0-9a-f]+)/)[1]
     assert.equal(spawned.length, 1)
-    assert.equal(spawned[0].context, 'fresh')
-    assert.match(spawned[0].prompt[0].text, /【验收标准】/)
-    assert.throws(() => JSON.parse(spawned[0].prompt[0].text))
-    assert.equal(spawned[0].prompt[0].text.includes('"title"'), false)
+    assert.equal(spawned[0].team, undefined)
+    assert.equal(spawned[0].provider, 'spawn')
+    assert.equal(spawned[0].delivery, 'caller')
+    assert.equal(spawned[0].request.parent, coordinator)
+    assert.match(spawned[0].request.prompt[0].text, /【验收标准】/)
+    assert.throws(() => JSON.parse(spawned[0].request.prompt[0].text))
+    assert.equal(spawned[0].request.prompt[0].text.includes('"title"'), false)
 
     await byName.task_report.execute({ task_id: taskId, status: 'progress', summary: '已定位分支' }, { agent: teammate })
     assert.equal(sent.length, 0)
