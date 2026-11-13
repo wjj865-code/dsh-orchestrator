@@ -239,9 +239,11 @@
 | Task 9 | a4d90e1/5a97216/652d593/488257f | 通过 | 6 工具注册；DSH_HOME 只落 `state/orchestrator/tasks.sqlite`(+wal/shm)；白名单按 `view(agent).restrictableNames` 求交集（与真实 `restrict()` 校验口径一致，对照 asar 确认）；scope 内工具（send_message）不喂 restrict、view 无该字段时退回 knownNames；通知由回报方 agent 发 target=lead、非自投；缺 sender/未配置协调者记 `skipped` 且 `delivered_at=NULL`；后加载补装；重复 apply 不崩 | 白名单缺口：`spawn_teammate/send_message/list_agents` 不在 `restrictableNames`，deny 不掉（真机 34→21，其余生效），阶段 3 用 `composition.toolFilter`；卸载竞态 `void drain()`→`db.close()` 致通知到达但行丢失（待修） |
 | Task 10 | b7a307d/5a97216 | 通过 | README 落盘/配置表 5 项与 loadConfig 一致/6 工具/完整示例/错误降级/已知局限（R1/R5/R7）齐全；集成冒烟测试真实执行；全量 93/93（终版 100/100） | 真机冒烟：派活/渲染/回报/blocked 即时/R8/白名单主项通过；done 通知未通（`TEAM_NOT_MEMBER`，平台自动结语兜底）→ 修复后复验 |
 
-**总评（2026-11-13，HEAD `3be1b99`，100/100）**：代码级 Task 1–10 全过；真机联调 R8（blocked 忙时插入）、白名单主项、派活/渲染/回报通过；**done 通知因「5s 合并 + 谁回报谁发」与 fresh teammate 生命周期冲突而 failed，阶段 1 暂不签收**，待 A（当步同步发）/B（steer 直插）修复后按清单复验。另两项待收口：卸载竞态（通知到达但行丢失）、白名单 3 个团队控制工具 deny 不掉（阶段 3）。
+**总评（2026-11-13，HEAD `8956d89`，105/105）**：Task 1–10 代码级全过；B 通知方案经进程内探针 + Chief 真机冒烟双验证通过（done delivered、sender 离队仍送达、忙时排队、卸载不丢行、单通道不重复计）。剩 1 个审计归类小修（注入失败应记 `failed`+reason，现记 skipped）；白名单 3 个团队控制工具 deny 不掉、平台 settlement 与插件通知的用户体感重复分别留阶段 3 与阶段 2。测试侧具备验收条件。
 
-**真机冒烟复核（Chief 2026-11-13，HEAD `3be1b99`，隔离 smoke profile）**：通——插件加载、`task_create` 真派子会话并跑模型回合、brief 进子会话、回报入台账、blocked 即时通知在协调者回合中插入（R8）、白名单真实生效（协调者工具 34→21，read/write/pwsh/glob/grep/skill/web_search/web_fetch/task_report 移除）。不通——done 通知行 `failed`，根因 `TEAM_NOT_MEMBER`：fresh 子任务回报完回合即结束，5s 合并窗口后 sender 已离 roster；窗口设 0 同样失败（发送发生在子会话回合结束之后）。测试侧已按两种失败点（membership 抛 / sendAdmitted 抛）在进程内构造：均记 `failed`+`delivered_at=NULL`+可读 warn、不崩，证明是时序/生命周期问题而非落库丢失。
+**真机冒烟复核（`3be1b99`，问题定位；已由 `8956d89` 修复）**：通——插件加载、`task_create` 真派子会话并跑模型回合、brief 进子会话、回报入台账、blocked 即时通知在协调者回合中插入（R8）、白名单真实生效（协调者工具 34→21，read/write/pwsh/glob/grep/skill/web_search/web_fetch/task_report 移除）。不通——done 通知行 `failed`，根因 `TEAM_NOT_MEMBER`：fresh 子任务回报完回合即结束，5s 合并窗口后 sender 已离 roster；窗口设 0 同样失败（发送发生在子会话回合结束之后）。测试侧已按两种失败点（membership 抛 / sendAdmitted 抛）在进程内构造：均记 `failed`+`delivered_at=NULL`+可读 warn、不崩，证明是时序/生命周期问题而非落库丢失。
+
+**真机冒烟复核（`8956d89`，B 修复后，通过）**：`notifications` 里 `t-ceb5740c` 为 `delivered`、`delivered_at` 有值、`reason` 空；协调者会话日志收到插件注入的 `任务「冒烟任务E」完成：冒烟E完成`（source `agent-message`/`relay`，sender 是子会话），且是在协调者回合进行中排队、下一步边界交付（R8 忙时也过）；5 秒窗口后 sender 已离队仍送达；进程退出后行仍在（卸载不丢）；平台 settlement 与插件通知两条链路并存，README 已分开写，用户体感重复留阶段 2。
 
 **B 方向可行性（供 A/B 决策）**：真实 `agent.steer(input)` 是公开方法，走 `send(input,'next-step',true)` → inbox 排队 + `wakeDriver`，**不经过 Team roster 校验**（`sendAdmitted` 的 membership 检查在 agentTeams 层）；但 `createUserMessage` 是包内内部函数，B 需自行构造合法 user message（`{ id, role:'user', content, source }`，见 `createMessage` 内部实现：`brandString(randomUUID())` + `role/description`），`source.kind` 能否被会话日志接受必须实测。另卸载竞态仍待修：`index.js:118-119` 先 `void notifier.drain()` 再 `db.close()`，窗口内 done 通知已发出但落库报 `database is not open`（sent=1/rows=0），建议 async disposer 先 `await drain()` 再 close。
 
@@ -255,4 +257,17 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 4. **两条链路不重复计**：平台 settlement 通知不经过 notifier、不写行、不计入插件投递；插件 done 写且只写 1 行；`notifications` 行数 = 插件实际投递尝试数，不与平台消息相加。
 5. **卸载不丢行**：`await notifier.drain()` 后再 `db.close()`；窗口内 done 卸载场景 `sent=1 / rows=1`（现为 sent=1/rows=0，作为回归必须翻绿）。
 6. **顺带收口**：failed 行带失败原因（建议 #4）、`provider` 走 config（建议 #6）；sender 离 roster 用例保留（B 下应不再触发 membership，但回归仍要断言）。
+
+**复验结果（2026-11-13，HEAD `8956d89`，105/105；真机冒烟同时通过）**：
+
+| # | 结果 | 证据 |
+| --- | --- | --- |
+| 1 | 通过 | 窗口后协调者 `steer` 1 次，done 行 `delivered`+`delivered_at`；窗口内多条合并后只投 1 条 |
+| 2 | 通过 | 注入消息 `{id, role:'user', content:[text], source:{kind:'agent-message', form:'relay', senderSessionId}}`；asar 确认 `AgentMessageSource` 类型一致、`brandString` 是恒等函数（`randomUUID` 合法）；api-probe 独立复跑 24/24 |
+| 3 | 通过 | 真实忙时排队由 Chief 冒烟：协调者回合中注入、下一步边界交付（R8 过） |
+| 4 | 通过 | 插件只走 steer（0 次 `sendMessage`、0 次 `membership`），`notifications` 行数 = 注入次数；平台 settlement 不写行（api-notes §6） |
+| 5 | 通过 | 窗口内卸载：sent=1 / rows=1、`delivered_at` 非空；DSH_HOME 只含 orchestrator 库（回归由红转绿） |
+| 6 | 部分 | `spawnProvider` 走 config ✓、旧库自动补 `reason` ✓；但 `steer` 抛错时 `index.js` 捕获后 `return false` → notify 记 `skipped`、`reason=null`，而 api-notes §6 说投递失败应 `failed`+reason → 审计归类缺口，待小修 |
+
+**待修（小，审计口径）**：`index.js:104-110` 注入失败 `return false` 被 notify 当成 skip；改为抛错（或返回可区分标记）让失败写 `failed` + `reason`。修后只需复跑「steer 抛错」一条，其余 §15 项已锁定。
 
