@@ -613,3 +613,26 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - 路由鉴权：跨站 403 / 无凭证 401 / 非 owner 403 / 重复注册抛；**只读靠 handler 白名单**，不靠平台。
 - bundle：经典脚本手写 `__ModuleLoader__.load`，顶层禁止 ESM；`files` 必含 `client.js`。
 
+### 26.1 独立验收记录（`98642d3`，2026-11-14）
+
+**基线（我自己跑）**：`npm test` → `# pass 179 # fail 0`（exit 0）；`node docs/probes/api-probe.mjs` → 33/33 PASS；`node --check client.js` → exit 0。
+
+**L1（`node docs/probes/qa-stage2-slots.mjs client.js`）→ `RESULT: PASS`，39 条全过**：经典脚本无顶层 ESM；`__ModuleLoader__.load` 的 id 为 `dsh-orchestrator`；factory 返回 `{inject, apply}` 且 `inject=['slots','layout','uiWorkspace']` 与实际调用一致；panellist `id:'orchestrator'/order:10/无 priority/label='任务'`；main `key:'orchestrator'`；leading 单席位不带 `id`；头部按钮点击 → `selectPanel('orchestrator')`；不注册任何 ds-bot 槽位；注册全走 `slots.inject` 包装（可撤销）。
+
+**L2（`node docs/probes/qa-stage2-route.mjs`）→ `RESULT: PASS`，48 条全过**：临时 `DSH_HOME` 起真台账，种 4 任务/1 消息/1 通知/1 设置。
+
+- `snapshot` 200：4 条任务、字段齐全、不返回 `goal`/`brief` 原文；`queued`/`stale`/`childSessionId` 判定正确（排队→true、running→false、2 小时无动静→stale）。
+- `tasks`/`create`/空 body/坏 JSON/无 endpoint → 400 `unknown-endpoint`，错误体不含绝对路径；payload 不能覆盖真实数据。
+- **100 次调用后四表行数+`updated_at`+设置内容+目录文件 mtime 完全不变**（零写入硬断言）。
+- 注册选项 = `{path:'/api/orchestrator', methods:['POST'], requestBody:'buffered'}`；平台契约（`review/client-connection-index.js`）核对：跨站 403 / 无凭据 401 / 非 owner 403 / 重复 path 抛；同 path 二次注册按平台行为抛错。
+- `src/host-route.js` 只 import `listTasks` + `taskCard`，不 import 任何写函数；关库后 handler 以 rejection 结束（`database is not open`，不带绝对路径）。
+
+**与设计/探针文档的偏差（不阻塞阶段 2 完成标准）**：
+
+1. **缺状态筛选**：设计 §11 写「可按状态筛选」，`client.js` 只有列表 + 刷新，无筛选控件。完成标准（四件事可用）不含筛选，故不判不通过，建议补或记阶段 3。
+2. **失败退避未实现**：探针文档 §7-4 写「连续失败退避 30s」，实现是固定 5s `setInterval`，失败后仍 5s 重试。只影响后台请求频率。
+3. **错误体口径修正**：handler 未 try/catch，库异常时 rejection，由平台 `host-webserver.js:475-483` 统一返回 400 空体 + warn，客户端显示「台账暂不可用：HTTP 400」；探针文档写的「500 + 错误体」与平台实际不符——按平台实际，降级可读，不算缺陷。
+4. 小瑕疵：pending 行同时显示「排队中」和「待派发」两个标签（冗余，不影响功能）。
+
+**结论**：阶段 2 代码侧通过（L1 39/39、L2 48/48、179/179、api-probe 33/33）；L3 真机（Bot 模式头部按钮、面板数据/跳转、ds-bot 侧栏不受影响、401/403 真实表现）留阶段 3 装 desktop 时做。
+
