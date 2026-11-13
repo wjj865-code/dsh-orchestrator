@@ -540,3 +540,49 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - `maxActive` 与 `listQuotaTasks` 已从 config/ledger 移除（探针断言）；设计 §6/README 已同步 `waiting_*→orphaned` 与对账口径。
 - **遗留风险（不阻塞）**：`inject` 仍同时声明 `agentTeams` 与 `subagents`，两个后端互相绑死（缺任一服务会加载失败）；开发决定等真机确认缺服务再拆，先记录。
 
+## 26. 阶段 2 客户端薄插件（入口 + 历史面板 + 跳转）
+
+依据设计 §11。验收分三层：**槽位/注册层**（可进程内捕获）、**宿主路由层**（可 mock `ctx.connection.fetch.register` + 请求）、**真机 UI**（需 Chief 装临时 profile，我读页面核对）。
+
+### A. 入口（左上角）
+
+| # | 验收点 | 判据 |
+| --- | --- | --- |
+| 1 | 可见可点 | desktop web 加载后入口渲染；不因 ds-bot 未装/已装而消失；加载失败不拖垮宿主其他插件 |
+| 2 | 打开协调者 | 不存在 → 创建并命名「协调者」→ 打开；存在未打开 → 切过去；已打开 → 不重复创建 |
+| 3 | 自动绑定联动 | 未绑定协调者时点击入口能引导创建/绑定（具体交互按 spike 定），不出现「未配置 coordinatorSession」死路 |
+| 4 | 不抢 ds-bot 席位 | ds-bot 占 `sidebar.footer.action`；我们的注册条目（槽位/priority）与之不冲突，不覆盖账户位；注册可撤销（dispose） |
+
+### B. 历史面板
+
+| # | 验收点 | 判据 |
+| --- | --- | --- |
+| 5 | 打开/关闭 | 能稳定开关；重复开关无泄漏/无重复注册 |
+| 6 | 列全部任务 | 含历史（done/cancelled/orphaned）；字段：状态色点、标题、更新时间；空台账有空态 |
+| 7 | 状态筛选 | 按状态过滤正确；「全部」恢复 |
+| 8 | 跳转子会话 | 点击有 session_id 的任务 → 按 subagent catalog 打开（不在普通会话列表）；pending/queued（无 session_id）→ 禁用或可读提示 |
+| 9 | 跳转协调者会话 | 面板内可回协调者会话；当前已在协调者时行为幂等 |
+
+### C. 宿主接口（`/api/orchestrator`）
+
+| # | 验收点 | 判据 |
+| --- | --- | --- |
+| 10 | 只读 | 所有 endpoint 只读（list/summary），无写台账/改状态路径；越权 payload 被拒 |
+| 11 | 鉴权 | 同源 cookie；未认证/跨源 → 401/拒绝；不泄露 DSH_HOME 绝对路径等敏感信息 |
+| 12 | 失败降级 | 500/超时/断网 → 面板显示可读错误 + 重试，不白屏、不抛未捕获异常、不阻塞聊天 |
+| 13 | 老宿主兼容 | 路由不存在 → 客户端优雅降级（提示/隐藏），不 JS 崩溃 |
+
+### D. 构建与加载
+
+| # | 验收点 | 判据 |
+| --- | --- | --- |
+| 14 | bundle 形态 | esbuild 产物；入口 `window.__ModuleLoader__.load({ id, factory })`；`package.json` 的 `files` 含产物、`exports["./client"]`、`dsh.client.platform: 'web'` |
+| 15 | 服务端不受影响 | 客户端 bundle 加载失败不影响 `index.js` 服务端与 6 个工具 |
+
+### 待明确（spike 定后写死判据）
+
+- a. 入口最终槽位与 priority（`sidebar.footer.action` 已被 ds-bot 占，建议 `sidebar.workspaces` 或「插件」下方独立项）。
+- b. 面板形态：`shell.overlay` 还是 sidebarRight tab；以及跳转子会话的目标 URL/路由。
+- c. 未绑定协调者时点击入口：创建新会话并绑定，还是提示先去某个会话派任务。
+- d. 「更新时间」取 `updated_at` 还是 `last_event_at`；面板刷新策略（打开时/定时/手动）。
+
