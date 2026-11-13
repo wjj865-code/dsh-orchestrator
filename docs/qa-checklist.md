@@ -532,3 +532,11 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 2. **未写进设计的迁移边**：`src/state.js` 新增 `waiting_user/waiting_auth → orphaned`，但设计 `7413a2b` 只加了 `pending→failed`；且 reconcile 会把 catalog 缺失的等待态任务标 orphaned——「等待态不 live 也保持」与「catalog 缺失才 orphaned」两种口径需在文档写清。
 3. `maxActive` 仍在 config（默认 8）但队列语义下未使用；文档应标废弃或删除。
 
+**修复复验（`f971b9e`，166/166；独立探针 v24b 13/13、v24/v21/v19 全绿）**：
+
+- **spawn 在途被 stop**：stop 立即返回、A 子会话被 `dispose`（不白占槽位）、B 不被连带删并正常派发、pump 不死（v24b A 段）。
+- **整队列 `queued_at`**：cap=1 建 12 个后 11 个 pending 全部有 `queued_at`；把 `created_at` 改到 2 小时前模拟重启，`failStalePending` 不再误杀排队任务（v24b B 段）。
+- **对账 liveness 口径**：running 且 `agents.get(session_id)` 不存在 → orphaned（即使 catalog 有记录，幽灵被收掉）；waiting_user 不 live 但 catalog 有 → 保持；waiting 且 catalog 查不到 → orphaned；catalog 读失败仍按 liveness 判 running（v24b C 段、v24 已同步改判据）。
+- `maxActive` 与 `listQuotaTasks` 已从 config/ledger 移除（探针断言）；设计 §6/README 已同步 `waiting_*→orphaned` 与对账口径。
+- **遗留风险（不阻塞）**：`inject` 仍同时声明 `agentTeams` 与 `subagents`，两个后端互相绑死（缺任一服务会加载失败）；开发决定等真机确认缺服务再拆，先记录。
+
