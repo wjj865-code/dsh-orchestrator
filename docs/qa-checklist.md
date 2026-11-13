@@ -22,7 +22,7 @@
 | G1 | 全量测试绿 | 干净副本 `npm test` | 0 fail；pass 数与用例数一致；无未说明的 skip；进程正常退出不挂起 |
 | G2 | 提交干净 | `git show --stat <sha>`、`git status --porcelain` | 只含该任务的文件；无 `node_modules/`、`*.sqlite`、临时脚本、`.env` 混入 |
 | G3 | **JSON 绝不进子会话** | 捕获 `dispatcher.spawn` 收到的 `prompt` 文本；用含 `{}`、引号、换行、超长的边界 brief 渲染 | prompt 是渲染文字；无 `"title":`、`"acceptance":` 等键名；整体不是可 `JSON.parse` 的对象 |
-| G4 | **台账只写 `$DSH_HOME/state/orchestrator`** | 临时 `DSH_HOME` 跑「建任务→回报→停止」；`Get-ChildItem -Recurse` 审计整个临时 home 与仓库 | 临时 home 下除 `state/orchestrator/` 外零新增；仓库内无 sqlite/wal/shm；`~/.dsh` 真实目录不被写（DSH_HOME 覆盖时） |
+| G4 | **台账/日志只写 `$DSH_HOME/state/orchestrator`** | 临时 `DSH_HOME` 跑「建任务→回报→停止」；`Get-ChildItem -Recurse` 审计整个临时 home 与仓库 | 临时 home 下除 `state/orchestrator/` 外零新增；其中允许 `tasks.sqlite(+wal/shm)` 与 `logs/orchestrator-YYYY-MM-DD.jsonl`（`logs/` 仍算合规），不得有其他文件；仓库内无 sqlite/wal/shm；`~/.dsh` 真实目录不被写（DSH_HOME 覆盖时） |
 | G5 | 工具 schema 契约 | 6 个工具逐个体检 | `parameters.type === 'object'` 且根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都存在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 返回中文字符串；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面出现 |
 | G7 | 依赖收窄 | 源码 grep `ctx.`、`agentTeams.` | `dispatch.js` 只调 `spawnTeammate / sendMessage / interrupt / listMembers`（+ `membership` 若用到必须说明）；不偷偷用 `ctx.tools` 之外的平台服务做派活 |
@@ -439,7 +439,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 3 | 单文件 5MB 换新 | 预置一个 >5MB 的当天日志 | 新事件不追加到超限文件，另起新文件且不崩 |
 | 4 | 行格式 | 逐行 `JSON.parse` | `{ at, event, taskId?, sessionId?, agentId?, detail }`；缺字段不能是坏 JSON |
 | 5 | 不写全文 | 用超长 goal（>80 字）和唯一 `user_verbatim` 触发事件 | 日志中 goal/摘要截断 ≤80；完整 `user_verbatim` 字符串不出现 |
-| 6 | 事件覆盖 | 跑 create/重复/rejected/spawn 失败/report/notify 三种/cleanup/bind | 对应事件都有：`task.create.requested|created|rejected`、`task.spawn.requested|ok|failed`、`task.report`、`notify.delivered|failed|skipped`、`cleanup.pending`、`bind.coordinator`；rejected/failed/skipped 带原因 |
+| 6 | 事件覆盖 | 跑 create/重复/rejected/spawn 失败/report/notify 三种/cleanup/bind | 对应事件都有：`task.create.requested|created|rejected`、`task.spawn.requested|ok|failed`、`task.report`、`notify.delivered|failed|skipped`、`cleanup.pending`、`bind.coordinator`；带 `callId` 可把同一次调用串成线；`rejected` 带 reason 码（validation/limit/duplicate）+ `maxActive` + 占额 `id+status`（duplicate 带 existing `taskId+status`）；`spawn.failed` 带 taskId、平台错误原文、provider；`notify.*` 带 taskId、level、reason、sender session id、coordinator id；`cleanup.pending` 列被清 task ids；`bind.coordinator` 记 old → new |
 | 7 | 写失败不影响主流程 | 让 logs 路径不可写（用文件占位/只读），再跑 `task_create` | 主流程成功；只 warn 一次；不抛错、不阻塞 |
 | 8 | README | 文档 | 写清日志路径、保留策略、5MB 换新、「排查请附当天日志」 |
 | 9 | 排查价值（审查主验） | 用日志还原：一次 create 被拒原因、一次 spawn 失败原文、一次通知 skipped 原因 | 三条都能仅凭当天日志还原 |
