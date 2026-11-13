@@ -12,7 +12,7 @@ function slugify(title) {
 
 const sleep = ms => ms <= 0 ? Promise.resolve() : new Promise(resolve => setTimeout(resolve, ms))
 
-export function createDispatcher({ agentTeams, agent, getAgent, provider, retryDelaysMs = [1000, 2000, 4000], onWarn = () => {} }) {
+export function createDispatcher({ agentTeams, agent, getAgent, provider = 'spawn', retryDelaysMs = [1000, 2000, 4000], onWarn = () => {} }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
   const requireAgent = () => {
     const current = currentAgent()
@@ -24,26 +24,32 @@ export function createDispatcher({ agentTeams, agent, getAgent, provider, retryD
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, description, prompt }) {
+    async spawn({ name, description, prompt, signal }) {
+      // 真实 spawnTeammate 要求 provider（fresh 用 'spawn'）和 AbortSignal，缺一个都会被拒。
       const input = {
         name: name ?? slugify(prompt.slice(0, 20)),
         description: description ?? 'orchestrator task',
         prompt: [{ type: 'text', text: prompt }],
         context: 'fresh',
-        ...(provider === undefined ? {} : { provider }),
+        provider,
+        ...(signal === undefined ? {} : { signal }),
       }
       const result = await agentTeams.spawnTeammate(requireAgent(), input)
       return result.member
     },
-    async send(target, message) {
-      return agentTeams.sendMessage(requireAgent(), { target, content: [{ type: 'text', text: message }] })
+    async send(target, message, signal) {
+      return agentTeams.sendMessage(requireAgent(), {
+        target,
+        content: [{ type: 'text', text: message }],
+        ...(signal === undefined ? {} : { signal }),
+      })
     },
     /** 续派消息：失败按 retryDelaysMs 重试；全部失败时抛出最后一次原因。 */
-    async sendReliable(target, message) {
+    async sendReliable(target, message, signal) {
       let lastError
       for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
         try {
-          return await this.send(target, message)
+          return await this.send(target, message, signal)
         } catch (error) {
           lastError = error
           if (attempt < retryDelaysMs.length) {

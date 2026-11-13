@@ -38,6 +38,8 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 - `member.id` 就是子会话 id（`childId`），台账的 `session_id` 用它；阶段 2 UI 跳转也用它。
 - `member.name` 是模型侧 `target`（`listMembers` 的 `modelMember()` 会去掉 `id`，只暴露 `target`），`sendMessage` / `interrupt` 都用这个 name。
 - 台账因此分别写 `session_id = member.id`、`target = member.name`。
+- **`spawnTeammate` 的 `provider` 和 `signal` 都是必填**：`spawnAdmitted` 里 `provider: requiredText(request.provider, "provider", 200)`，且 `AbortSignal.any([request.signal, this.lifecycle.signal])` 遇到 `undefined` 会直接抛 `TypeError`。平台工具插件的 fresh 默认是 `freshProvider = "spawn"`，所以本插件 dispatcher 固定传 `provider: 'spawn'`，并从工具 `exec.signal` 透传 `signal`。
+- **`sendMessage` 的 `signal` 也是必填**：服务内部同样先 `AbortSignal.any([request.signal, ...])`。续派消息与 `task_report` 通知都从 `exec.signal` 透传。
 
 ## 4. 向 lead 发消息能不能唤醒协调者自身会话
 

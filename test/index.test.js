@@ -127,14 +127,16 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
     { agent: coordinator },
   )
   assert.match(created, /已派发/)
+  const signal = new AbortController().signal
   await byName.task_report.execute(
     { task_id: created.match(/任务 (t-[0-9a-f]+)/)[1], status: 'done', summary: '完成' },
-    { agent: teammate },
+    { agent: teammate, signal },
   )
   await wait(30)
   assert.equal(sent.length, 1)
   assert.equal(sent[0][0], teammate)
   assert.equal(sent[0][1].target, 'lead')
+  assert.equal(sent[0][1].signal, signal)
   assert.match(sent[0][1].content[0].text, /任务「甲」完成/)
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))

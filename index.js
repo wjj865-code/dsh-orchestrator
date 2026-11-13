@@ -98,7 +98,12 @@ export async function apply(ctx, rawConfig = {}) {
         warnings(`dsh-orchestrator: 回报方不属于协调者团队（${String(sender.id)}），已跳过投递`)
         return false
       }
-      await ctx.agentTeams.sendMessage(sender, { target: 'lead', content: [{ type: 'text', text }] })
+      const signal = items.map(item => item.signal).find(value => value !== undefined)
+      await ctx.agentTeams.sendMessage(sender, {
+        target: 'lead',
+        content: [{ type: 'text', text }],
+        ...(signal === undefined ? {} : { signal }),
+      })
       return true
     },
   })

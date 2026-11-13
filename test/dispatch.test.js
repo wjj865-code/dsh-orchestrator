@@ -26,16 +26,18 @@ function fakeTeams({ failTimes = 0 } = {}) {
 
 const agent = { id: 'a1' }
 
-test('spawn 透传合法名字与渲染文本 prompt', async () => {
+test('spawn 透传合法名字、渲染文本 prompt、fresh provider 与 signal', async () => {
   const teams = fakeTeams()
   const dispatcher = createDispatcher({ agentTeams: teams, agent })
-  const member = await dispatcher.spawn({ name: 'worker-1', description: 'd', prompt: '【任务】x' })
+  const signal = new AbortController().signal
+  const member = await dispatcher.spawn({ name: 'worker-1', description: 'd', prompt: '【任务】x', signal })
   assert.equal(member.name, 'worker-1')
   const input = teams.calls[0][1]
   assert.deepEqual(input.prompt, [{ type: 'text', text: '【任务】x' }])
   assert.equal(input.description, 'd')
   assert.equal(input.context, 'fresh')
-  assert.equal('provider' in input, false)
+  assert.equal(input.provider, 'spawn')
+  assert.equal(input.signal, signal)
 })
 
 test('spawn 未给名字时生成 kebab 名', async () => {
@@ -45,20 +47,21 @@ test('spawn 未给名字时生成 kebab 名', async () => {
   assert.match(teams.calls[0][1].name, /^task-\d+-\d+$/)
 })
 
-test('显式 provider 才透传', async () => {
+test('显式 provider 覆盖默认 fresh provider', async () => {
   const teams = fakeTeams()
-  const dispatcher = createDispatcher({ agentTeams: teams, agent, provider: 'spawn' })
+  const dispatcher = createDispatcher({ agentTeams: teams, agent, provider: 'fork' })
   await dispatcher.spawn({ name: 'w-1', prompt: 'x' })
-  assert.equal(teams.calls[0][1].provider, 'spawn')
+  assert.equal(teams.calls[0][1].provider, 'fork')
 })
 
-test('send 与 stop 透传四方法之一', async () => {
+test('send 透传 target、content 与 signal', async () => {
   const teams = fakeTeams()
   const dispatcher = createDispatcher({ agentTeams: teams, agent })
-  await dispatcher.send('worker-1', '继续')
+  const signal = new AbortController().signal
+  await dispatcher.send('worker-1', '继续', signal)
   await dispatcher.stop('worker-1')
   assert.deepEqual(teams.calls.map(call => call[0]), ['send', 'interrupt'])
-  assert.deepEqual(teams.calls[0][1], { target: 'worker-1', content: [{ type: 'text', text: '继续' }] })
+  assert.deepEqual(teams.calls[0][1], { target: 'worker-1', content: [{ type: 'text', text: '继续' }], signal })
   assert.equal(teams.calls[1][1], 'worker-1')
 })
 

@@ -49,9 +49,9 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
 
-  const sendFollowup = async (target, message) => {
-    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message)
-    return dispatcher.send(target, message)
+  const sendFollowup = async (target, message, signal) => {
+    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal)
+    return dispatcher.send(target, message, signal)
   }
 
   const wrap = (name, description, parameters, execute) => ({
@@ -76,7 +76,7 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
       acceptance: strList('验收标准，至少一条'),
       refs: strList('背景资料，如文件路径，可空'),
       user_verbatim: str('用户原话，可空'),
-    }), async args => {
+    }), async (args, exec) => {
       const errors = validateBrief(args)
       if (errors.length > 0) return `任务描述不完整：${errors.join('；')}。补齐后再派。`
       const active = listTasks(db, { active: true })
@@ -90,6 +90,7 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
           name: dispatcher.slug(args.title),
           description: args.title,
           prompt: rendered,
+          signal: exec?.signal,
         })
       } catch (error) {
         const reason = error?.message ?? String(error)
@@ -128,7 +129,7 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
     wrap('task_message', '给已有子任务追加一条消息（续派），不新建任务。投递失败会重试 3 次，仍失败则任务转「等你确认」。', objectSchema({
       task_id: str('任务编号'),
       message: str('要追加的内容'),
-    }), async args => {
+    }), async (args, exec) => {
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
       if (TERMINAL_STATUS.has(task.status)) return `任务 ${task.id} 已结束（${labelOf(task.status)}），不能续派；需要新工作请 task_create。`
@@ -136,7 +137,7 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
       const message = args.message ?? ''
       addMessage(db, task.id, { kind: 'followup', rendered: message })
       try {
-        await sendFollowup(task.target, message)
+        await sendFollowup(task.target, message, exec?.signal)
       } catch (error) {
         const reason = error?.message ?? String(error)
         addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
@@ -190,6 +191,7 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
         status: args.status,
         summary: args.summary ?? '',
         sender: exec?.agent,
+        signal: exec?.signal,
       })
       return `已记录任务 ${next.id} 的 ${args.status} 回报。`
     }),

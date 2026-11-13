@@ -10,15 +10,15 @@ function fakeDispatcher({ failSpawn = false, failSend = false } = {}) {
   return {
     calls,
     slug(title) { counter += 1; return `task-${counter}` },
-    async spawn({ name, prompt }) {
-      calls.push(['spawn', name, prompt])
+    async spawn({ name, prompt, signal }) {
+      calls.push(['spawn', name, prompt, signal])
       if (failSpawn) throw new Error('子会话创建失败')
       counter += 1
       return { id: `s-${counter}`, name: name ?? `w-${counter}` }
     },
     async send(target, message) { calls.push(['send', target, message]) },
-    async sendReliable(target, message) {
-      calls.push(['sendReliable', target, message])
+    async sendReliable(target, message, signal) {
+      calls.push(['sendReliable', target, message, signal])
       if (failSend) throw new Error('投递超时')
       return { messageId: 'm-1' }
     },
@@ -72,7 +72,8 @@ test('注册 6 个工具，schema 对象根、无 minimum/maximum、有 output.s
 
 test('task_create：正常创建、子会话 spawn、台账 running，prompt 是渲染文本', async () => {
   const { db, dispatcher, tools } = await setup()
-  const text = await call(tools, 'task_create', sampleBrief({ title: 'A', goal: '目标A', user_verbatim: '原话' }))
+  const signal = new AbortController().signal
+  const text = await call(tools, 'task_create', sampleBrief({ title: 'A', goal: '目标A', user_verbatim: '原话' }), { signal })
   assert.match(text, /已派发/)
   const [task] = listTasks(db, { active: true })
   assert.equal(task.status, 'running')
@@ -81,6 +82,7 @@ test('task_create：正常创建、子会话 spawn、台账 running，prompt 是
   assert.ok(task.target)
   const spawn = dispatcher.calls.find(call => call[0] === 'spawn')
   assert.equal(spawn[1], 'task-1')
+  assert.equal(spawn[3], signal)
   assert.match(spawn[2], /【任务】A/)
   assert.match(spawn[2], /【目标】目标A/)
   assert.match(spawn[2], /【用户原话】/)
@@ -174,9 +176,12 @@ test('task_message：正常写 followup 并投递，attempts +1', async () => {
   const { db, dispatcher, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   const task = listTasks(db)[0]
-  const text = await call(tools, 'task_message', { task_id: task.id, message: '继续' })
+  const signal = new AbortController().signal
+  const text = await call(tools, 'task_message', { task_id: task.id, message: '继续' }, { signal })
   assert.match(text, /已把消息追加/)
-  assert.ok(dispatcher.calls.some(call => call[0] === 'sendReliable' && call[2] === '继续'))
+  const call2 = dispatcher.calls.find(call => call[0] === 'sendReliable')
+  assert.equal(call2[2], '继续')
+  assert.equal(call2[3], signal)
   assert.equal(getTask(db, task.id).attempts, 1)
   const kinds = db.prepare('SELECT kind FROM messages WHERE task_id = ? ORDER BY seq').all(task.id).map(row => row.kind)
   assert.deepEqual(kinds, ['brief', 'followup'])
@@ -256,11 +261,13 @@ test('task_report：done/blocked/needs_auth 迁移并通知，sender 透传', as
     await call(tools, 'task_create', sampleBrief({ title: '甲' }))
     const task = listTasks(db)[0]
     const sender = { id: 'teammate-1' }
-    await call(tools, 'task_report', { task_id: task.id, status, summary: '说明' }, { agent: sender })
+    const signal = new AbortController().signal
+    await call(tools, 'task_report', { task_id: task.id, status, summary: '说明' }, { agent: sender, signal })
     assert.equal(getTask(db, task.id).status, expected)
     assert.equal(notifier.pushed.length, 1)
     assert.equal(notifier.pushed[0].status, status)
     assert.equal(notifier.pushed[0].sender, sender)
+    assert.equal(notifier.pushed[0].signal, signal)
     db.close()
   }
 })
