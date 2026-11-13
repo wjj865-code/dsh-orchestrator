@@ -100,17 +100,19 @@ ctx.effect(() => ctx.connection.fetch.register({
     "client": {
       "platform": "web",
       "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-workspace",
-        "@deepseek-ai/dsh-client-ui-session",
-        "@deepseek-ai/dsh-client-ui-renderer"
+        "@deepseek-ai/dsh-client-ui-session"
       ]
     }
   }
 }
 ```
 
-- `dsh.client.inject` 是客户端激活顺序/依赖声明（官方文档要求列出依赖的客户端包）；`dsh.client.external` 用于声明不打进 bundle 的运行时导入（如 `dsh-client-ui-primitives` 之类；不打进 bundle 就必须声明）。
+- `dsh.client.inject` 是**加载/预取 metadata，不是激活顺序**（client-runner 注释原文：*inject edges are informational … never apply sequencing*）；列依赖的客户端包只为预取提示。这里列的是我们用到的槽位/服务 owner：`ui-sidebar`（`sidebar.panellist`）、`ui-conversation`（`conversation.header.leading`）、`ui-layout`（`main` / `ctx.layout`）、`ui-workspace`（`uiWorkspace.openSession`）、`ui-session`（`ctx.sessions`）。`dsh.client.external` 用于声明不打进 bundle 的运行时导入（如 `dsh-client-ui-primitives`；不打进 bundle 就必须声明）。
+- **加载方式是经典脚本，不是 ESM**：`client.js` 由 `document.createElement("script")` 加载（asar `@deepseek-ai/dsh-client-modules/lib/client.js` 的 `defaultLoadBundle`），所以**顶层不能有 `import`**，否则直接 SyntaxError。骨架必须写成官方 `templates/decoration/client.js` 的形态：`window.__ModuleLoader__.load({ id, factory(require){ const h = require('react').createElement; …; return { inject, apply } } })`。想用 ESM/JSX 就得先 esbuild 打成经典脚本再提交产物。
 - **加载方式**：`client.js` 是手写的 `window.__ModuleLoader__.load({ id:'dsh-orchestrator', factory:(require)=>{ const module={exports:{}}; ...; return module.exports } })`，`factory` 返回 `{ apply, inject }` 客户端插件；React 通过 `require('react')` 从浏览器模块表取。官方 `templates/decoration` 就是手写 loader，**MVP 不需要 esbuild**；组件多到值得上构建时再加（esbuild 参照 ds-bot `scripts/build-client.mjs`）。
 - `immediately` 只是预取提示，不是加载开关；不写也能加载。
 - `files` 必须包含 `client.js`，否则装进 profile 后客户端 half 缺失（少一个文件就加载失败）。
@@ -143,36 +145,42 @@ ctx.effect(() => ctx.connection.fetch.register({
 
 ## 8. 客户端产物最小形态（骨架）
 
-`src/client/index.js`（手写加载，可直接照抄结构）：
+`client.js`（手写经典脚本，**不能有顶层 `import`/`export`**；模块加载器用 `document.createElement("script")` 加载）：
 
 ```js
-import { createElement as h } from 'react'
+// client.js — classic script，官方 templates/decoration/client.js 同款形态
+window.__ModuleLoader__.load({
+  id: 'dsh-orchestrator',
+  factory: (require) => {
+    const h = require('react').createElement
+    const inject = ['slots', 'layout', 'sessions', 'uiWorkspace']
 
-export const name = 'dsh-orchestrator-client'
-export const inject = ['slots', 'layout', 'sessions', 'uiWorkspace']
+    const TaskIcon = () => h('span', { 'aria-hidden': true }, '\u25c6')
+    const HeaderButton = ({ openPanel }) => h('button', { type: 'button', onClick: openPanel }, '任务')
+    const TasksPanel = () => h('div', null, 'orchestrator tasks')
 
-export function apply(ctx) {
-  // 左侧入口：插件（order 0）下方
-  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-    name: 'sidebar.panellist', id: 'orchestrator', order: 10, label: () => '任务',
-  }, TaskIcon))
-  // 面板页（keyed，与内置插件页同构）
-  ctx.slots.inject('main', () => ctx.slots.register({
-    name: 'main', key: 'orchestrator', locale: 'orchestrator',
-  }, TasksPanel))
-  // 会话头按钮：leading 席位，Bot 模式下也可见；没有 sessionId，只打开面板
-  ctx.slots.inject('conversation.header.leading', () => ctx.slots.register({
-    name: 'conversation.header.leading', id: 'orchestrator',
-    inject: () => ({ openPanel: () => ctx.layout.selectPanel('orchestrator') }),
-  }, HeaderButton))
-}
+    function apply(ctx) {
+      // 左侧入口：插件（order 0）下方
+      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+        name: 'sidebar.panellist', id: 'orchestrator', order: 10, label: () => '任务',
+      }, TaskIcon))
+      // 面板页（keyed，与内置插件页同构）
+      ctx.slots.inject('main', () => ctx.slots.register({
+        name: 'main', key: 'orchestrator', locale: 'orchestrator',
+      }, TasksPanel))
+      // 会话头按钮：leading 是单席位，不带 id
+      ctx.slots.inject('conversation.header.leading', () => ctx.slots.register({
+        name: 'conversation.header.leading',
+        inject: () => ({ openPanel: () => ctx.layout.selectPanel('orchestrator') }),
+      }, HeaderButton))
+    }
 
-const TaskIcon = () => h('span', { 'aria-hidden': true }, '◆')
-const HeaderButton = ({ openPanel }) => h('button', { type: 'button', onClick: openPanel }, '任务')
-const TasksPanel = () => h('div', null, 'orchestrator tasks')
+    return { inject, apply }
+  },
+})
 ```
 
-> 当前会话 id 不在 `leading`/`main` 的 props 里：用 `ctx.uiSession.current` 或 `ctx.sessions.list.getSnapshot()` + `retainedBy.mainView` 兜底。上面是骨架，不是可交付代码。
+> 当前会话 id 不在 `leading`/`main` 的 props 里：用 `ctx.uiSession.current` 或 `ctx.sessions.list.getSnapshot()` + `retainedBy.mainView` 兜底。上面是骨架，不是可交付代码；要上 JSX/ESM 就先 esbuild 打成经典脚本再提交 `client.js`。
 
 ## 9. 证据位置
 
