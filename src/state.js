@@ -5,8 +5,8 @@ export const STATUSES = ['pending', 'running', 'waiting_user', 'waiting_auth', '
 const TRANSITIONS = {
   pending: ['running', 'failed', 'cancelled'],
   running: ['waiting_user', 'waiting_auth', 'done', 'failed', 'cancelled', 'orphaned'],
-  waiting_user: ['running', 'cancelled', 'failed'],
-  waiting_auth: ['running', 'cancelled', 'failed'],
+  waiting_user: ['running', 'cancelled', 'failed', 'orphaned'],
+  waiting_auth: ['running', 'cancelled', 'failed', 'orphaned'],
   failed: ['running', 'cancelled'],
   done: [],
   cancelled: [],

@@ -31,8 +31,8 @@ test('8×8 全迁移矩阵只放行设计允许的边', () => {
   const allowed = new Set([
     'pending→running', 'pending→failed', 'pending→cancelled',
     'running→waiting_user', 'running→waiting_auth', 'running→done', 'running→failed', 'running→cancelled', 'running→orphaned',
-    'waiting_user→running', 'waiting_user→cancelled', 'waiting_user→failed',
-    'waiting_auth→running', 'waiting_auth→cancelled', 'waiting_auth→failed',
+    'waiting_user→running', 'waiting_user→cancelled', 'waiting_user→failed', 'waiting_user→orphaned',
+    'waiting_auth→running', 'waiting_auth→cancelled', 'waiting_auth→failed', 'waiting_auth→orphaned',
     'failed→running', 'failed→cancelled',
     'orphaned→pending', 'orphaned→cancelled',
   ])

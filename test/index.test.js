@@ -68,7 +68,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       },
       async sendMessage(sender, target, content, options) { sent.push([sender, { target, content, options }]) },
       async interruptByParent() {},
-      async listChildren() { return [] },
+      async listChildren() { return [{ id: spawnResult?.member?.id ?? 'm-1', mode: 'continuable', label: 'x', activity: 'inactive' }] },
     },
   }
   return { ctx, registered, warnings, infos, listeners, sent, disposers, agent, live, guards, promptContexts }

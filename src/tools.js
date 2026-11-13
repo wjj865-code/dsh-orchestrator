@@ -73,6 +73,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
     return dispatcher.send(target, message, signal)
   }
 
+  // 子会话彻底不可达（被删/不是直接子级）才标 orphaned；协调者未加载不是孤儿。
+  const UNREACHABLE_CODES = new Set([
+    'NOT_FOUND', 'SUBAGENT_NOT_FOUND', 'UNAUTHORIZED', 'CONTINUATION_UNAVAILABLE', 'UNSUPPORTED_CAPABILITY',
+  ])
+  const isUnreachable = error => {
+    if (UNREACHABLE_CODES.has(error?.code)) return true
+    const message = error?.message ?? ''
+    if (/未找到协调者会话/.test(message)) return false
+    return /not a direct child|does not exist|doesn't exist|not found|会话不存在|子会话不可达/i.test(message)
+  }
+
   const wrap = (name, description, parameters, execute) => ({
     name,
     description,
@@ -201,6 +212,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
         const reason = error?.message ?? String(error)
         addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
         const current = getTask(db, task.id)
+        if (isUnreachable(error) && canTransition(current.status, 'orphaned')) {
+          log('task.orphaned', { taskId: task.id, sessionId: task.session_id, detail: { reason } })
+          transition(db, task.id, 'orphaned', { error: `子会话不可达：${reason}` })
+          return `续派失败：任务 ${task.id} 的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`
+        }
         if (current.status === 'waiting_user') {
           setTaskError(db, task.id, reason)
         } else if (canTransition(current.status, 'waiting_user')) {
@@ -227,7 +243,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
         transition(db, task.id, 'cancelled')
         return `任务 ${task.id} 已取消（还在排队，没有派发出去）。`
       }
-      if (task.target !== null && task.target !== undefined) await dispatcher.stop(task.target)
+      if (task.target !== null && task.target !== undefined) {
+        // 停止失败也要把任务标掉：用户要的是「停」，不是让 stop 抛错卡住。
+        try {
+          await dispatcher.stop(task.target)
+        } catch (error) {
+          log('task.stop.failed', { taskId: task.id, sessionId: task.session_id, detail: { reason: error?.message ?? String(error) } })
+        }
+      }
       queue.remove(task.id)
       transition(db, task.id, 'cancelled')
       queue.pump()

@@ -7,6 +7,7 @@ import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
 import { createQueue } from './src/queue.js'
+import { reconcileOrphans } from './src/reconcile.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
 
@@ -167,8 +168,10 @@ export async function apply(ctx, rawConfig = {}) {
     const id = resolvedCoordinatorId()
     if (agent !== undefined && id !== undefined && agent.id === id) {
       scheduleRestriction(agent)
-      // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑。
+      // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑，并对一次子会话目录。
       queue?.pump()
+      reconcileOrphans({ db, dispatcher, coordinatorSessionId: id, logger, onWarn: warnings })
+        .catch(error => warnings(`dsh-orchestrator: 重启对账失败：${error?.message ?? error}`))
     }
   })
   ctx.on?.('agent/status', ({ agent, status }) => {
@@ -213,7 +216,16 @@ export async function apply(ctx, rawConfig = {}) {
   })
   queue = createQueue({ db, dispatcher, config, logger })
 
-  // 启动对账：pending 且没有子会话的任务重新入队；超时的（非排队）已在上面标 failed。
+  // 启动对账：catalog 里查不到的活跃任务标 orphaned；catalog 读不到只 warn。
+  await reconcileOrphans({
+    db,
+    dispatcher,
+    coordinatorSessionId: resolvedCoordinatorId(),
+    logger,
+    onWarn: warnings,
+  })
+
+  // 启动恢复：pending 且没有子会话的任务重新入队；超时的（非排队）已在上面标 failed。
   queue.load()
   if (config.autoResumeQueue) queue.pump()
 
