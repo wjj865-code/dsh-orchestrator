@@ -233,17 +233,26 @@
 | Task 3 | cd26b06 | 通过 | 花括号/引号/伪小节/多行引用/10k 字/emoji/纯函数独立全过；渲染无 JSON 键名且不可 JSON.parse | |
 | Task 4 | e52f858 | 通过 | 三表+WAL+幂等；同毫秒排序稳定；seq 连续；8×20 并发不串号；patch.error 可清空；损坏库文案含路径与 snapshots、无 SQLITE_/堆栈；落盘仅传入目录 | |
 | Task 5 | 2f3c322 | 通过 | 四方法透传、重试总调用 4 次、惰性 agent 可读错误、prompt 无 JSON、slug 合法；api-probe 独立复跑 16/16 | 平台限制：协调者不能给自己发，通知须由回报子任务发（Task 6/7/9 按 api-notes §4 接线） |
-| Task 6 | 5898843 | 通过 | 分级映射、progress 零投递、单条/3 条合并文案、merged_into 指向首条、失败行 delivered_at=NULL、落库、二次 drain 不重复、timer 不泄漏 | 最终发送函数在 index.js（Task 9），「无 sender 只 warn 不投递」留到 Task 9 验 |
-| Task 7 | 3a5a979（+488257f） | 通过 | 6 工具对象根 schema 无 min/max、render 返回 text 数组；create 上限/spawn 失败留 pending+error；list stale 31/29；message 重试转 waiting_user+error+失败行；report 四态/非法 status 不落库/重复 done 不重复通知；8 路并发不串号；**等待态闭环**：blocked/needs_auth 续派回 running 清 error、waiting 直接 done、progress 从等待态恢复、failed 续派回 running | 重复回报会先写 report 消息再报错（可接受）；失败文案写死「已重试 3 次」（生产 dispatcher 恒有 sendReliable，无害） |
+| Task 6 | 5898843 | 通过 | 分级映射、progress 零投递、单条/3 条合并文案、merged_into 指向首条、失败行 delivered_at=NULL、落库、二次 drain 不重复、timer 不泄漏；**sender 离 roster**（membership/sendAdmitted 抛 TEAM_NOT_MEMBER）→ failed+delivered_at=NULL+可读 warn、不崩、无 unhandled | 真机已复现：done 在 5s 合并窗口后 sender 已离 roster，`TEAM_NOT_MEMBER`；「谁回报谁发 + 5s 合并」与 fresh teammate 生命周期冲突（设计层），修复后复验 |
+| Task 7 | 3a5a979（+488257f） | 通过 | 6 工具对象根 schema 无 min/max、render 返回 text 数组；create 上限/spawn 失败留 pending+error；list stale 31/29；message 重试转 waiting_user+error+失败行；report 四态/非法 status 不落库/重复 done 不重复通知；8 路并发不串号；**等待态闭环**：blocked/needs_auth 续派回 running 清 error、waiting 直接 done、progress 从等待态恢复、failed 续派回 running | 真机联调未过：done 通知在子任务回合结束后才发 → `TEAM_NOT_MEMBER`，协调者靠平台自动结语唤醒；A（当步同步发）/B（steer 直插）修完按本行复验 |
 | Task 8 | f572730（+488257f） | 通过 | 8 状态文案/色值全对、未知状态回落、80/81/自定义 maxLength 截断边界、字段透传；emoji 边界按码点截断（80 个 emoji 不截、81→80+…、无半个代理对）；全量 100/100 | 无遗留 |
-| Task 9 | a4d90e1/5a97216/652d593/488257f | 通过 | 6 工具注册；DSH_HOME 只落 `state/orchestrator/tasks.sqlite`(+wal/shm)；白名单按 `view(agent).restrictableNames` 求交集（与真实 `restrict()` 校验口径一致，对照 asar 确认）；scope 内工具（send_message）不喂 restrict、view 无该字段时退回 knownNames；通知由回报方 agent 发 target=lead、非自投；缺 sender/未配置协调者记 `skipped` 且 `delivered_at=NULL`；后加载补装；重复 apply 不崩；卸载关库 | 真机冒烟确认无白名单安装失败日志 |
-| Task 10 | b7a307d/5a97216 | 通过 | README 落盘/配置表 5 项与 loadConfig 一致/6 工具/完整示例/错误降级/已知局限（R1/R5/R7）齐全；集成冒烟测试真实执行；全量 93/93（终版 94/94） | 真机冒烟（装 profile、子会话创建、done 通知进协调者、忙时排队、白名单无失败日志）归 Chief，R8 凭冒烟证据关闭 |
+| Task 9 | a4d90e1/5a97216/652d593/488257f | 通过 | 6 工具注册；DSH_HOME 只落 `state/orchestrator/tasks.sqlite`(+wal/shm)；白名单按 `view(agent).restrictableNames` 求交集（与真实 `restrict()` 校验口径一致，对照 asar 确认）；scope 内工具（send_message）不喂 restrict、view 无该字段时退回 knownNames；通知由回报方 agent 发 target=lead、非自投；缺 sender/未配置协调者记 `skipped` 且 `delivered_at=NULL`；后加载补装；重复 apply 不崩 | 白名单缺口：`spawn_teammate/send_message/list_agents` 不在 `restrictableNames`，deny 不掉（真机 34→21，其余生效），阶段 3 用 `composition.toolFilter`；卸载竞态 `void drain()`→`db.close()` 致通知到达但行丢失（待修） |
+| Task 10 | b7a307d/5a97216 | 通过 | README 落盘/配置表 5 项与 loadConfig 一致/6 工具/完整示例/错误降级/已知局限（R1/R5/R7）齐全；集成冒烟测试真实执行；全量 93/93（终版 100/100） | 真机冒烟：派活/渲染/回报/blocked 即时/R8/白名单主项通过；done 通知未通（`TEAM_NOT_MEMBER`，平台自动结语兜底）→ 修复后复验 |
 
-**总评（2026-11-13，最终 HEAD `488257f`，100/100）**：Task 1–10 全部通过，阶段 1 可交付；此前的 2 个低危项（emoji 截断、缺 sender 误记 delivered）已修复并复验关闭。仅剩 R8 唤醒时序与白名单真实安装由 Chief 真机冒烟关闭。
+**总评（2026-11-13，HEAD `3be1b99`，100/100）**：代码级 Task 1–10 全过；真机联调 R8（blocked 忙时插入）、白名单主项、派活/渲染/回报通过；**done 通知因「5s 合并 + 谁回报谁发」与 fresh teammate 生命周期冲突而 failed，阶段 1 暂不签收**，待 A（当步同步发）/B（steer 直插）修复后按清单复验。另两项待收口：卸载竞态（通知到达但行丢失）、白名单 3 个团队控制工具 deny 不掉（阶段 3）。
 
-**真机冒烟复核（Chief 2026-11-13，HEAD `3be1b99`）**：建任务/子会话/回报/唤醒/台账 task+message 行都成立；但 `notifications` 表为空与「通知到达」不一致，违反「每次投递尝试一行」的口径。测试侧独立复现为**卸载竞态**：`index.js:118-119` 先 `void notifier.drain()` 再 `db.close()`，合并窗口内的 done 通知已发出（sent=1）但落库报 `database is not open`（rows=0，warn「通知记录失败」）；正常等窗口 flush 再卸载则 rows=1。建议阶段 1 收尾修：disposer 改 async，`await drain()` 后再 close，并补回归用例；另把「通知到达」的真实来源（notifier team 消息 vs 平台自动投递子任务回复）写进 `docs/api-notes.md`。
-| Task 6 | | | | |
-| Task 7 | | | | |
-| Task 8 | | | | |
-| Task 9 | | | | |
-| Task 10 | | | | |
+**真机冒烟复核（Chief 2026-11-13，HEAD `3be1b99`，隔离 smoke profile）**：通——插件加载、`task_create` 真派子会话并跑模型回合、brief 进子会话、回报入台账、blocked 即时通知在协调者回合中插入（R8）、白名单真实生效（协调者工具 34→21，read/write/pwsh/glob/grep/skill/web_search/web_fetch/task_report 移除）。不通——done 通知行 `failed`，根因 `TEAM_NOT_MEMBER`：fresh 子任务回报完回合即结束，5s 合并窗口后 sender 已离 roster；窗口设 0 同样失败（发送发生在子会话回合结束之后）。测试侧已按两种失败点（membership 抛 / sendAdmitted 抛）在进程内构造：均记 `failed`+`delivered_at=NULL`+可读 warn、不崩，证明是时序/生命周期问题而非落库丢失。
+
+**B 方向可行性（供 A/B 决策）**：真实 `agent.steer(input)` 是公开方法，走 `send(input,'next-step',true)` → inbox 排队 + `wakeDriver`，**不经过 Team roster 校验**（`sendAdmitted` 的 membership 检查在 agentTeams 层）；但 `createUserMessage` 是包内内部函数，B 需自行构造合法 user message（`{ id, role:'user', content, source }`，见 `createMessage` 内部实现：`brandString(randomUUID())` + `role/description`），`source.kind` 能否被会话日志接受必须实测。另卸载竞态仍待修：`index.js:118-119` 先 `void notifier.drain()` 再 `db.close()`，窗口内 done 通知已发出但落库报 `database is not open`（sent=1/rows=0），建议 async disposer 先 `await drain()` 再 close。
+
+## 15. B 方案复验清单（等待开发提交后执行）
+
+Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（steer 入参/唤醒/忙时排队实测证据写进 api-notes 与探针；README 分清「插件通知」与「平台 settlement 通知」两条链路）。复验必须覆盖：
+
+1. **B 投递成功**：done 在 5 秒窗口后仍 `delivered`（发送方是协调者 live agent，不依赖回报子会话 roster）；窗口内多条 done 合并后只投 1 条。
+2. **入参契约**：`agent.steer` 收到的消息结构合法（`id/role/content/source`），会话日志能正常记录、不报 unknown source / 校验错误；证据写进 api-notes + 探针。
+3. **忙时排队**：协调者回合进行中投递 → 在下一步边界插入、不丢、不打断当前步骤（真机由 Chief 冒烟，进程内验调用序列）。
+4. **两条链路不重复计**：平台 settlement 通知不经过 notifier、不写行、不计入插件投递；插件 done 写且只写 1 行；`notifications` 行数 = 插件实际投递尝试数，不与平台消息相加。
+5. **卸载不丢行**：`await notifier.drain()` 后再 `db.close()`；窗口内 done 卸载场景 `sent=1 / rows=1`（现为 sent=1/rows=0，作为回归必须翻绿）。
+6. **顺带收口**：failed 行带失败原因（建议 #4）、`provider` 走 config（建议 #6）；sender 离 roster 用例保留（B 下应不再触发 membership，但回归仍要断言）。
+
