@@ -200,6 +200,26 @@ test('卸载时窗口内的 done 通知不丢行', withHome(async home => {
   db.close()
 }))
 
+test('注入失败记 failed + reason，不是 skipped', withHome(async home => {
+  const coordinator = makeAgent('s-1')
+  coordinator.steer = () => { throw new Error('steer 失败') }
+  const teammate = { id: 'm-1' }
+  const { ctx, registered } = fakeCtx({ agent: coordinator })
+  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
+  const taskId = created.match(/任务 (t-[0-9a-f]+)/)[1]
+  await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: teammate })
+  await wait(30)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const row = db.prepare('SELECT status, delivered_at, reason FROM notifications').get()
+  assert.equal(row.status, 'failed')
+  assert.equal(row.delivered_at, null)
+  assert.match(row.reason, /steer 失败/)
+  db.close()
+}))
+
 test('cordis.patch.yml 指向 dsh-orchestrator', () => {
   const yaml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(yaml, /insert:/)

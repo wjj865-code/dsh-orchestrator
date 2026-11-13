@@ -101,13 +101,9 @@ export async function apply(ctx, rawConfig = {}) {
       }
       // 直接对协调者会话 steer：与 TeamService 给 lead 投递时内部做的事同构，
       // 但不要求发送方此刻还在 roster，所以 5 秒合并窗口后仍能送达。
-      try {
-        injectNotification(coordinator, { text, senderId: sender.id })
-        return true
-      } catch (error) {
-        warnings(`dsh-orchestrator: 通知注入失败：${error?.message ?? error}`)
-        return false
-      }
+      // 注入失败不在这里吞掉：交给 notifier 记 failed + reason，而不是 skipped。
+      injectNotification(coordinator, { text, senderId: sender.id })
+      return true
     },
   })
 
