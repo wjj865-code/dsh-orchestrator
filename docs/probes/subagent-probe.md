@@ -38,7 +38,7 @@ interface SubagentActivationSpec {
 
 - `dsh-subagent` 的 `maxActiveSubagents` 默认 **8**，可配置（`subagent` 设置，@119662563）。
 - 每次 activation 向 root pool `reserve(capacity)`；满了直接抛 `ACTIVATION_LIMIT_REACHED`（错误文案含 `subagent limit reached (active child limit: 8)`，@119583743），**不排队**。
-- 完成/`dispose()` 会释放槽位，所以不是「用过就永久占一个成员」；这是和 Team 名册的根本区别。
+- `dispose()` 会释放槽位（清理完成后归还）；smoke spike 里**顺序**完成后再起也能成功（看起来完成即释放），但平台文档措辞是「清理后才归还」，**实现必须显式 `dispose()`，不得依赖「完成即释放」**。这是和 Team 名册的根本区别。
 - `maxDepth` 默认 1，root 只能直接开一层；子级再开子级要显式提高。
 
 结论：直连 subagent 也默认只能同时跑 8 个，但**可配置、可释放、没有名册成员概念**；要支持更多任务仍需自己排队，或在部署配置里提高 `maxActiveSubagents`。

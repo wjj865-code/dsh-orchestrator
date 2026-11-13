@@ -1,0 +1,8 @@
+{
+  "name": "spike-probe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Throwaway smoke-profile probe for the direct subagent (startActivation) spike. Not shipped, not part of dsh-orchestrator.",
+  "type": "module",
+  "main": "index.js"
+}
