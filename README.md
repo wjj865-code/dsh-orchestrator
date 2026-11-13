@@ -157,6 +157,7 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 - **协调者白名单的持久声明**：阶段 1 在协调者 agent 已加载时用 `agent.ctx.tools.restrict({ deny })` 做最小收窄（文件/shell/浏览器/web 类）；协调者未加载时只能跳过。真机确认 `spawn_teammate`/`send_message`/`list_agents` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；阶段 3 改由 agent preset 的 `composition.toolFilter` 固化。
 - **唤醒时序**：通知走 `agent.steer` 直插协调者会话（等价于 TeamService 给 lead 投递时的 `root.steer`），空闲唤醒、忙时 `next-step` 排队；机制证据见 `docs/api-notes.md`。真机忙时排队由维护者冒烟验证。
 - **平台 settlement 通知**：`subagent-settled` 是平台独立链路，不受本插件控制、不写 `notifications`。
+- **headless 收尾竞态**：一次性进程在 5 秒合并窗口内退出时，`steer` 可能抛 `agent initiator scope is disposed`（进程级 initiator 作用域已 dispose），此时消息可能已进 inbox 但没有回合消费，`notifications` 记 `failed` + reason 是正确审计；长驻 desktop/服务进程不受影响。冒烟要在最后一条回报后保持进程活过 `mergeWindowMs` 才能看到 `delivered`。
 - 阶段 1 没有客户端入口/历史面板；卡片只提供数据，不渲染 UI。
 
 ## 开发
