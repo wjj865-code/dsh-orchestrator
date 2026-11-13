@@ -14,14 +14,16 @@ const setup = async () => {
   return { db, running }
 }
 
-test('catalog 里查不到 → orphaned；查得到 → 保持 running；waiting 同样对账', async () => {
+test('catalog 里查不到 → orphaned；live 的 running 保持；waiting 查不到也 orphaned', async () => {
   const { db, running } = await setup()
   const alive = running('活着', 'c-1')
   const gone = running('丢了', 'c-2')
   const waiting = running('等用户', 'c-3')
   transition(db, waiting.id, 'waiting_user')
   const dispatcher = { catalog: async () => [{ id: 'c-1', mode: 'continuable', label: 'x', activity: 'inactive' }] }
-  const result = await reconcileOrphans({ db, dispatcher, coordinatorSessionId: 's-1' })
+  const result = await reconcileOrphans({
+    db, dispatcher, coordinatorSessionId: 's-1', isLive: id => id === 'c-1',
+  })
   assert.deepEqual(new Set(result.ids), new Set([gone.id, waiting.id]))
   assert.equal(getTask(db, alive.id).status, 'running')
   assert.equal(getTask(db, gone.id).status, 'orphaned')
@@ -29,16 +31,39 @@ test('catalog 里查不到 → orphaned；查得到 → 保持 running；waiting
   db.close()
 })
 
-test('catalog 读取失败：只 warn，不把 running 判死', async () => {
+test('running 不 live：catalog 有也标 orphaned；waiting 不 live 保持（可冷恢复）', async () => {
+  const { db, running } = await setup()
+  const ghost = running('幽灵', 'c-1')
+  const waiting = running('等授权', 'c-2')
+  transition(db, waiting.id, 'waiting_auth')
+  const dispatcher = { catalog: async () => [
+    { id: 'c-1', mode: 'continuable', label: 'x', activity: 'inactive' },
+    { id: 'c-2', mode: 'continuable', label: 'y', activity: 'inactive' },
+  ] }
+  const result = await reconcileOrphans({
+    db, dispatcher, coordinatorSessionId: 's-1', isLive: () => false,
+  })
+  assert.deepEqual(result.ids, [ghost.id])
+  assert.equal(getTask(db, ghost.id).status, 'orphaned')
+  assert.match(getTask(db, ghost.id).error, /没有在运行的回合/)
+  assert.equal(getTask(db, waiting.id).status, 'waiting_auth')
+  db.close()
+})
+
+test('catalog 读取失败：只 warn，不把 live 的 running 和 waiting 判死', async () => {
   const { db, running } = await setup()
   const task = running('任务', 'c-1')
+  const waiting = running('等用户', 'c-2')
+  transition(db, waiting.id, 'waiting_user')
   const warnings = []
   const dispatcher = { catalog: async () => { throw new Error('catalog 挂了') } }
-  const result = await reconcileOrphans({ db, dispatcher, coordinatorSessionId: 's-1', onWarn: message => warnings.push(message) })
+  const result = await reconcileOrphans({
+    db, dispatcher, coordinatorSessionId: 's-1', isLive: () => true, onWarn: message => warnings.push(message),
+  })
   assert.equal(result.count, 0)
-  assert.equal(result.skipped, 'no-catalog')
   assert.match(warnings[0], /目录读取失败/)
   assert.equal(getTask(db, task.id).status, 'running')
+  assert.equal(getTask(db, waiting.id).status, 'waiting_user')
   db.close()
 })
 

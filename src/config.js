@@ -2,7 +2,6 @@
 const DEFAULTS = {
   staleMinutes: 30,
   stallRounds: 3,
-  maxActive: 8,
   mergeWindowMs: 5000,
 }
 

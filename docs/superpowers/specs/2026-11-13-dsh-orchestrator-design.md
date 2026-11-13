@@ -81,7 +81,7 @@
 
 每天一份台账快照，存在 `$DSH_HOME/state/orchestrator/snapshots/`，保留最近 7 天，用于损坏恢复。
 
-协调者侧日志：`$DSH_HOME/state/orchestrator/logs/YYYY-MM-DD.jsonl`，按天一个文件、保留 7 天、单文件超 5MB 换新。覆盖 create（含拒绝原因、`maxActive`、占额任务清单）、spawn 成败、report、notify、启动清理、绑定变更，带 `callId` 串联同一次调用；`goal`/`summary` 只截 80 字摘要，不写 `user_verbatim`；写日志失败只 warn、不阻塞主流程。验收要求：只凭当天日志能还原「这次创建为什么被拒 / 派发为什么失败 / 通知为什么没到」。
+协调者侧日志：`$DSH_HOME/state/orchestrator/logs/YYYY-MM-DD.jsonl`，按天一个文件、保留 7 天、单文件超 5MB 换新。覆盖 create（含拒绝原因、`maxQueue`、队列情况）、spawn 成败、report、notify、启动清理/对账、绑定变更，带 `callId` 串联同一次调用；`goal`/`summary` 只截 80 字摘要，不写 `user_verbatim`；写日志失败只 warn、不阻塞主流程。验收要求：只凭当天日志能还原「这次创建为什么被拒 / 派发为什么失败 / 通知为什么没到」。
 
 ## 6. 生命周期与状态机
 
@@ -98,7 +98,7 @@
 - 协调者只能：创建（pending）、续派消息、停止（cancelled）、对 failed 重新派发（`attempts + 1`，不新建记录）。
 - `waiting_user` / `waiting_auth` 由子任务的授权/卡点触发，由协调者转交用户后回到 `running`；这两个等待态也可以直接转 `orphaned`（子会话已不可达）。
 - 超过 30 分钟无事件且未结束 → 视为卡点候选，进入第 8 节判定。
-- 子会话被删除或不可达 → `orphaned`：启动/协调者加载时用 `listChildren(协调者会话)` 对账，查不到 `session_id` 才标；catalog 服务本身不可用只 warn、保留原状态。`orphaned` 是终态，可再派同 title+goal 的新任务重建。
+- 子会话被删除或不可达 → `orphaned`：启动/协调者加载时对账。两条判据：① `running` 且 `agents.get(session_id)` 不存在（进程重启后本来就没有在跑的回合）→ `orphaned`；② `listChildren(协调者会话)` 里查不到 `session_id` → `orphaned`（已丢失）。`waiting_user`/`waiting_auth` 即使子级不 live 也保持原状态（故意停下，靠 `task_message` 冷恢复），只有 catalog 查不到才标 `orphaned`。catalog 服务本身不可用只 warn、不误判。`orphaned` 是终态，可再派同 title+goal 的新任务重建。
 
 ## 7. 结构化协议与渲染
 

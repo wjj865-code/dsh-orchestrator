@@ -598,6 +598,36 @@ test('结算唤醒：容量 1 时第二个任务排队，第一个 settle 后自
   db.close()
 }))
 
+test('重启对账：running 子会话不 live 标 orphaned；waiting 不 live 保持', withHome(async home => {
+  const { openLedger, createTask, transition } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const runningTask = createTask(ledger, { brief: { title: '跑着', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  transition(ledger, runningTask.id, 'running', { sessionId: 'c-run', target: 'c-run' })
+  const waitingTask = createTask(ledger, { brief: { title: '等授权', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  transition(ledger, waitingTask.id, 'running', { sessionId: 'c-wait', target: 'c-wait' })
+  transition(ledger, waitingTask.id, 'waiting_auth')
+  ledger.close()
+
+  const s1 = makeAgent('s-1')
+  const subagents = {
+    async startActivation() { throw new Error('不应派发') },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() {
+      return [{ id: 'c-run', mode: 'continuable' }, { id: 'c-wait', mode: 'continuable' }]
+    },
+  }
+  const { ctx, disposers } = fakeCtx({ agents: [s1], subagents })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  await wait(20)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(runningTask.id).status, 'orphaned')
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(waitingTask.id).status, 'waiting_auth')
+  db.close()
+  await disposers[0]()
+}))
+
 test('cordis.patch.yml 指向 dsh-orchestrator', () => {
   const yaml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(yaml, /insert:/)

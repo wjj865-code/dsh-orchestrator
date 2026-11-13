@@ -78,12 +78,6 @@ export function listTasks(db, { active = false } = {}) {
   return db.prepare(sql).all().map(taskOf)
 }
 
-/** 并发额度只算真正占用槽位的 pending/running；等待态不计。 */
-export function listQuotaTasks(db) {
-  return db.prepare("SELECT * FROM tasks WHERE status IN ('pending','running') ORDER BY created_at DESC, rowid DESC")
-    .all().map(taskOf)
-}
-
 /** 标记「在排队」：pending + queued_at 非空，与「创建后没派出去」区分。 */
 export function markQueued(db, id, at = Date.now()) {
   db.prepare('UPDATE tasks SET queued_at = ?, updated_at = ? WHERE id = ?').run(at, at, id)

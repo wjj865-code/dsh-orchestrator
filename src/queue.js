@@ -56,25 +56,22 @@ export function createQueue({ db, dispatcher, config = {}, logger, retryDelaysMs
           continue
         }
         const rendered = briefText(db, id) ?? `【任务】${task.title}\n目标：${task.goal}`
+        let member
         try {
-          const member = await dispatcher.spawn({
+          member = await dispatcher.spawn({
             name: dispatcher.slug?.(task.title) ?? task.title,
             label: task.title,
             prompt: rendered,
             signal: abort.signal,
             taskId: id,
           })
-          const sessionId = member.sessionId ?? member.id
-          const target = member.target ?? member.name
-          clearQueued(db, id)
-          transition(db, id, 'running', { sessionId, target })
-          log('task.spawn.ok', { taskId: id, sessionId, detail: { target } })
-          ids.shift()
-          dispatched += 1
-          attempt = 0
         } catch (error) {
           if (retryable(error)) {
-            markQueued(db, id)
+            // 容量满：整条队列都算「排队中」，不能只标队首，否则重启时后面的任务会被当派发中断误杀。
+            for (const queuedId of [...ids]) {
+              const queuedTask = getTask(db, queuedId)
+              if (queuedTask !== undefined && queuedTask.status === 'pending') markQueued(db, queuedId)
+            }
             log('task.spawn.blocked', {
               taskId: id,
               detail: { reason: error?.message ?? String(error), queued: ids.length },
@@ -84,11 +81,56 @@ export function createQueue({ db, dispatcher, config = {}, logger, retryDelaysMs
             schedule(delay)
             return
           }
-          ids.shift()
+          remove(id)
           const reason = error?.message ?? String(error)
           const message = /^未找到协调者会话/.test(reason) ? reason : `子会话创建失败：${reason}`
           log('task.spawn.failed', { taskId: id, detail: { error: reason } })
-          transition(db, id, 'failed', { error: message })
+          try {
+            transition(db, id, 'failed', { error: message })
+          } catch (failure) {
+            log('task.spawn.transition-failed', {
+              taskId: id,
+              detail: { error: failure?.message ?? String(failure) },
+            })
+          }
+          continue
+        }
+
+        // spawn 在途时任务可能已被 task_stop/取消：把刚起的子会话收掉，别让它白占一个并发位，
+        // 也不能把队列里后面的任务一起 shift 掉（审查 probe-queue-race）。
+        const sessionId = member.sessionId ?? member.id
+        const target = member.target ?? member.name
+        const current = getTask(db, id)
+        if (current === undefined || current.status !== 'pending') {
+          remove(id)
+          try {
+            await dispatcher.stop(target)
+          } catch (error) {
+            log('task.spawn.discarded', { taskId: id, detail: { target, disposeError: error?.message ?? String(error) } })
+            continue
+          }
+          log('task.spawn.discarded', {
+            taskId: id,
+            sessionId,
+            detail: { target, status: current?.status ?? 'missing' },
+          })
+          continue
+        }
+        try {
+          clearQueued(db, id)
+          transition(db, id, 'running', { sessionId, target })
+          remove(id)
+          log('task.spawn.ok', { taskId: id, sessionId, detail: { target } })
+          dispatched += 1
+          attempt = 0
+        } catch (error) {
+          // 状态迁移失败也不能让 pump 死掉；子会话已起，记下来交给孤儿对账。
+          remove(id)
+          log('task.spawn.transition-failed', {
+            taskId: id,
+            sessionId,
+            detail: { target, error: error?.message ?? String(error) },
+          })
         }
       }
       if (dispatched > 0) log('task.queue.drained', { detail: { dispatched } })

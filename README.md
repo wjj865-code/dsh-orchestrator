@@ -80,7 +80,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 | `stallRounds` | `3` | 预留：阶段 3 的连续无进展升级阈值，阶段 1 只校验并保存 |
 | `maxQueue` | `50` | 待派发队列安全阀：`pending` 任务到这个数就拒绝新建（不落库） |
 | `autoResumeQueue` | `true` | 重启后把排队中的任务自动重新入队并派发；关掉则只恢复队列不自动跑 |
-| `maxActive` | `8` | **已废弃**：并发上限改由平台 `ACTIVATION_LIMIT_REACHED` + 插件队列自适应，这个键只为兼容旧配置保留、不再拒绝任务 |
+| `maxActive` | — | **已移除**：并发上限改由平台 `ACTIVATION_LIMIT_REACHED` + 插件队列自适应，旧配置里写了也会被忽略 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
 
 ## 派发与排队
@@ -94,7 +94,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 ## 子会话与孤儿
 
 - 子会话是 `origin:'subagent'` 的会话，**不在普通会话列表里**；卡片/`task_status` 带子会话 id，客户端要按协调者会话的子代理目录（subagent catalog）打开。
-- 启动/协调者加载时对账：`running`/`waiting_*` 且 `session_id` 在 `listChildren(协调者会话)` 里查不到 → `orphaned`，卡片/`task_status` 能看出来。
+- 启动/协调者加载时对账，两条判据：① `running` 但子代理不 live（进程重启后本来就没有在跑的回合）→ `orphaned`，不留「台账在跑、实际没人在跑」的幽灵；② `running`/`waiting_*` 的 `session_id` 在 `listChildren(协调者会话)` 里查不到 → `orphaned`（已丢失）。`waiting_user`/`waiting_auth` 即使子级不 live 也保持原状态（故意停下，靠 `task_message` 冷恢复）。
 - 对账本身失败（catalog 服务不可用）只 warn、保留原状态，不把 running 全判死；`orphaned` 是终态，不参与去重，可再派同 title+goal 的新任务重建。
 - 父会话关闭会释放后代子会话，但子会话是 durable 的：协调者重开后 `task_message` 可冷恢复。
 

@@ -45,7 +45,7 @@ async function setup(options = {}) {
   const db = await openLedger(tempDir())
   const dispatcher = fakeDispatcher(options)
   const notifier = fakeNotifier()
-  const config = { staleMinutes: 30, maxActive: 8, maxQueue: 50, coordinatorSession: 's-1', ...(options.config ?? {}) }
+  const config = { staleMinutes: 30, maxQueue: 50, coordinatorSession: 's-1', ...(options.config ?? {}) }
   const queue = createQueue({ db, dispatcher, config })
   const tools = Object.fromEntries(createTools({
     db,

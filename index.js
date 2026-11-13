@@ -58,6 +58,7 @@ export async function apply(ctx, rawConfig = {}) {
   const pendingRestrictions = new WeakSet()
 
   const resolvedCoordinatorId = () => config.coordinatorSession ?? getSetting(db, COORDINATOR_KEY)
+  const isChildLive = sessionId => ctx.get?.('agents')?.get?.(sessionId) !== undefined
   const resolveCoordinator = () => {
     const id = resolvedCoordinatorId()
     return id === undefined ? undefined : ctx.get?.('agents')?.get?.(id)
@@ -170,7 +171,7 @@ export async function apply(ctx, rawConfig = {}) {
       scheduleRestriction(agent)
       // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑，并对一次子会话目录。
       queue?.pump()
-      reconcileOrphans({ db, dispatcher, coordinatorSessionId: id, logger, onWarn: warnings })
+      reconcileOrphans({ db, dispatcher, coordinatorSessionId: id, isLive: isChildLive, logger, onWarn: warnings })
         .catch(error => warnings(`dsh-orchestrator: 重启对账失败：${error?.message ?? error}`))
     }
   })
@@ -221,6 +222,7 @@ export async function apply(ctx, rawConfig = {}) {
     db,
     dispatcher,
     coordinatorSessionId: resolvedCoordinatorId(),
+    isLive: isChildLive,
     logger,
     onWarn: warnings,
   })

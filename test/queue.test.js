@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { openLedger, createTask, getTask, listTasks, transition } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, transition, failStalePending } from '../src/ledger.js'
 import { createQueue } from '../src/queue.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
@@ -81,6 +81,66 @@ test('非容量错误：标 failed 并继续下一个', async () => {
   assert.equal(getTask(db, first.id).status, 'failed')
   assert.match(getTask(db, first.id).error, /子会话创建失败/)
   assert.equal(getTask(db, second.id).status, 'failed')
+  db.close()
+})
+
+test('容量满时整条队列都标 queued_at，重启清理不会误杀', async () => {
+  const { db, queue } = await setup({ limit: 1 })
+  const first = createTask(db, { brief: sampleBrief({ title: '甲' }), coordinatorSession: 's-1' })
+  const second = createTask(db, { brief: sampleBrief({ title: '乙' }), coordinatorSession: 's-1' })
+  const third = createTask(db, { brief: sampleBrief({ title: '丙' }), coordinatorSession: 's-1' })
+  queue.enqueue(first.id)
+  queue.enqueue(second.id)
+  queue.enqueue(third.id)
+  await queue.pump()
+
+  assert.equal(getTask(db, first.id).status, 'running')
+  assert.equal(getTask(db, second.id).status, 'pending')
+  assert.equal(getTask(db, third.id).status, 'pending')
+  assert.notEqual(getTask(db, second.id).queued_at, null)
+  assert.notEqual(getTask(db, third.id).queued_at, null)
+
+  // 把创建时间调到很老，模拟重启时已经超过 staleMinutes；排队中的任务不能被判「派发中断」
+  db.prepare("UPDATE tasks SET created_at = 1 WHERE status = 'pending'").run()
+  const cleanup = failStalePending(db, { staleMinutes: 1 })
+  assert.equal(cleanup.count, 0)
+  assert.equal(getTask(db, second.id).status, 'pending')
+  db.close()
+})
+
+test('spawn 在途时任务被取消：收掉子会话、不误删后续任务、pump 不死', async () => {
+  const db = await openLedger(tempDir())
+  let releaseSpawn
+  const gate = new Promise(resolve => { releaseSpawn = resolve })
+  const calls = []
+  const disposed = []
+  const dispatcher = {
+    slug: title => `slug-${title}`,
+    async spawn({ taskId }) {
+      calls.push(taskId)
+      await gate
+      return { id: `child-${taskId}`, sessionId: `child-${taskId}`, target: `child-${taskId}`, name: taskId }
+    },
+    async stop(target) { disposed.push(target) },
+  }
+  const queue = createQueue({ db, dispatcher, retryDelaysMs: [0] })
+  const first = createTask(db, { brief: sampleBrief({ title: '甲' }), coordinatorSession: 's-1' })
+  const second = createTask(db, { brief: sampleBrief({ title: '乙' }), coordinatorSession: 's-1' })
+  queue.enqueue(first.id)
+  queue.enqueue(second.id)
+
+  const pumping = queue.pump()
+  // A 的 spawn 还在等，用户把 A 停掉（task_stop 的 pending 分支）
+  transition(db, first.id, 'cancelled')
+  queue.remove(first.id)
+  releaseSpawn()
+  await pumping
+
+  assert.equal(calls[0], first.id)
+  assert.deepEqual(disposed, [`child-${first.id}`])
+  assert.equal(getTask(db, first.id).status, 'cancelled')
+  assert.equal(getTask(db, second.id).status, 'running')
+  assert.equal(queue.size(), 0)
   db.close()
 })
 

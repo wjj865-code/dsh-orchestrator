@@ -6,17 +6,16 @@ test('loadConfig 填默认值', () => {
   const config = loadConfig({})
   assert.equal(config.staleMinutes, 30)
   assert.equal(config.stallRounds, 3)
-  assert.equal(config.maxActive, 8)
+  assert.equal(config.maxActive, undefined)
   assert.equal(config.mergeWindowMs, 5000)
   assert.equal(config.spawnProvider, 'spawn')
   assert.equal(config.coordinatorSession, undefined)
 })
 
 test('loadConfig 覆盖合法值、忽略非法值', () => {
-  const config = loadConfig({ staleMinutes: 10, stallRounds: -1, maxActive: 'x', mergeWindowMs: 0 })
+  const config = loadConfig({ staleMinutes: 10, stallRounds: -1, mergeWindowMs: 0 })
   assert.equal(config.staleMinutes, 10)
   assert.equal(config.stallRounds, 3)
-  assert.equal(config.maxActive, 8)
   assert.equal(config.mergeWindowMs, 5000)
 })
 
@@ -24,7 +23,6 @@ test('loadConfig 无参调用返回默认值', () => {
   const config = loadConfig()
   assert.equal(config.staleMinutes, 30)
   assert.equal(config.stallRounds, 3)
-  assert.equal(config.maxActive, 8)
   assert.equal(config.mergeWindowMs, 5000)
 })
 
@@ -32,12 +30,10 @@ test('loadConfig 对 NaN / Infinity / null / 字符串 / 零一律回落', () =>
   const config = loadConfig({
     staleMinutes: Number.NaN,
     stallRounds: Infinity,
-    maxActive: null,
     mergeWindowMs: '30',
   })
   assert.equal(config.staleMinutes, 30)
   assert.equal(config.stallRounds, 3)
-  assert.equal(config.maxActive, 8)
   assert.equal(config.mergeWindowMs, 5000)
 })
 
