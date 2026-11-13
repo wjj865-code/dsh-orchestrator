@@ -2,7 +2,7 @@
 import { validateBrief, renderBrief } from './brief.js'
 import { canTransition } from './state.js'
 import {
-  addMessage, createTask, getTask, listTasks, listQuotaTasks, recentMessages,
+  addMessage, createTask, getTask, listTasks, recentMessages,
   setTaskError, touchTask, transition, incrementAttempts,
 } from './ledger.js'
 
@@ -37,6 +37,9 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   ]
   const latest = recentMessages(db, task.id, 1)[0]
   parts.push(`最近：${latest === undefined ? '-' : short(latest.rendered)}`)
+  if (task.status === 'pending' && task.session_id === null) {
+    parts.push(task.queued_at === null || task.queued_at === undefined ? '待派发' : '排队中（等并发槽位）')
+  }
   if (ACTIVE_STATUS.has(task.status)) {
     const idleMs = Date.now() - task.last_event_at
     if (idleMs > staleMinutes * 60_000) parts.push(`⚠ 已 ${Math.floor(idleMs / 60_000)} 分钟无动静`)
@@ -44,8 +47,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, notifier, config, bindCoordinator, coordinatorStatus, logger }) {
-  const maxActive = config?.maxActive ?? 8
+export function createTools({ db, dispatcher, queue, notifier, config, bindCoordinator, coordinatorStatus, logger }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   const log = (event, fields) => {
@@ -103,7 +105,7 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
         return `任务描述不完整：${errors.join('；')}。补齐后再派。`
       }
       const binding = await bind(exec?.agent)
-      // 去重、额度、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
+      // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
       const title = String(args.title).trim()
       const goal = String(args.goal).trim()
       const duplicate = listTasks(db, { active: true })
@@ -115,59 +117,39 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
         })
         return `已存在任务 ${duplicate.id}「${duplicate.title}」（${labelOf(duplicate.status)}），未重复创建。`
       }
-      const quota = listQuotaTasks(db)
-      if (quota.length >= maxActive) {
-        const occupying = quota.map(task => `- ${task.id}｜${task.title}｜${labelOf(task.status)}`).join('\n')
+      const maxQueue = config?.maxQueue ?? 50
+      const queuedCount = queue?.pendingCount?.() ?? 0
+      if (queuedCount >= maxQueue) {
         log('task.create.rejected', {
           agentId,
-          detail: {
-            reason: 'limit',
-            maxActive,
-            occupying: quota.map(task => ({ taskId: task.id, status: task.status })),
-            callId,
-          },
+          detail: { reason: 'queue-full', maxQueue, pending: queuedCount, callId },
         })
-        return `活跃任务已达上限 ${maxActive}，当前占用：\n${occupying}\n可以先 task_stop 或等它们结束。`
+        return `待派发队列已满（${maxQueue} 个），先 task_stop 或等队列消化后再派。`
       }
       const task = createTask(db, { brief: args, coordinatorSession: binding?.id ?? coordinatorSession })
       log('task.create.created', { taskId: task.id, agentId, sessionId: binding?.id, detail: { title, callId } })
       const rendered = `【任务编号】${task.id}\n${renderBrief(args)}`
       addMessage(db, task.id, { kind: 'brief', rendered })
-      const memberName = dispatcher.slug(args.title)
-      let member
-      try {
-        log('task.spawn.requested', {
-          taskId: task.id,
-          agentId,
-          detail: { name: memberName, provider: config?.spawnProvider ?? 'spawn', callId },
-        })
-        member = await dispatcher.spawn({
-          name: memberName,
-          label: args.title,
-          description: args.title,
-          prompt: rendered,
-          signal: exec?.signal,
-          taskId: task.id,
-        })
-      } catch (error) {
-        const reason = error?.message ?? String(error)
-        const base = reason.startsWith('未找到协调者会话') ? reason : `子会话创建失败：${reason}`
-        const hint = invalidHint()
-        const message = hint === '' ? base : `${base}\n${hint}`
-        log('task.spawn.failed', { taskId: task.id, agentId, detail: { error: reason, callId } })
+      // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
+      if (binding?.live === false) {
+        const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
+        log('task.spawn.failed', { taskId: task.id, agentId, detail: { error: message, callId } })
         transition(db, task.id, 'failed', { error: message })
         throw new Error(message)
       }
-      const memberId = member.sessionId ?? member.id
-      const memberTarget = member.target ?? member.name
-      log('task.spawn.ok', { taskId: task.id, sessionId: memberId, agentId, detail: { target: memberTarget, callId } })
-      transition(db, task.id, 'running', { sessionId: memberId, target: memberTarget })
+      const outcome = await queue.enqueueAndPump(task.id)
+      const current = outcome.task
       const hint = invalidHint()
       const changed = binding?.changed === true
         ? `协调者会话已变更：${binding.previous} → ${binding.id}。`
         : ''
       const notes = [changed, hint].filter(Boolean).join('\n')
-      return `任务 ${task.id}「${task.title}」已派发，子会话 ${member.name}。${notes === '' ? '' : `\n${notes}`}`
+      if (current?.status === 'failed') throw new Error(current.error ?? '子会话创建失败')
+      if (current?.status === 'running') {
+        return `任务 ${task.id}「${task.title}」已派发，子会话 ${current.target}。${notes === '' ? '' : `\n${notes}`}`
+      }
+      const ahead = Math.max(outcome.position - 1, 0)
+      return `任务 ${task.id}「${task.title}」已创建，前面还有 ${ahead} 个任务在排队，轮到时自动派发。${notes === '' ? '' : `\n${notes}`}`
     }),
 
     wrap('task_list', '列出任务。默认只列活跃任务（pending/running/waiting），active=false 时连同历史一起列出。', objectSchema({
@@ -187,6 +169,9 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
         `任务 ${task.id}「${task.title}」`,
         `状态：${labelOf(task.status)}`,
         `子会话：${task.target ?? '-'}`,
+        ...(task.status === 'pending'
+          ? [`排队：${task.queued_at === null || task.queued_at === undefined ? '待派发（刚创建）' : '排队中（等待并发槽位）'}`]
+          : []),
         `目标：${task.goal}`,
       ]
       if (task.error !== null && task.error !== undefined) lines.push(`原因：${task.error}`)
@@ -202,6 +187,11 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
       if (TERMINAL_STATUS.has(task.status)) return `任务 ${task.id} 已结束（${labelOf(task.status)}），不能续派；需要新工作请 task_create。`
+      if (task.status === 'pending' && (task.target === null || task.target === undefined)) {
+        return task.queued_at === null || task.queued_at === undefined
+          ? `任务 ${task.id} 还没有子会话，先停止再重建。`
+          : `任务 ${task.id} 正在排队（前面还有 ${Math.max(queue.position(task.id) - 1, 0)} 个），轮到时自动派发，暂不能续派。`
+      }
       if (task.target === null || task.target === undefined) return `任务 ${task.id} 还没有子会话，先停止再重建。`
       const message = args.message ?? ''
       addMessage(db, task.id, { kind: 'followup', rendered: message })
@@ -232,8 +222,15 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
       if (TERMINAL_STATUS.has(task.status)) return `任务 ${task.id} 已结束（${labelOf(task.status)}），无需停止。`
+      if (task.status === 'pending') {
+        queue.remove(task.id)
+        transition(db, task.id, 'cancelled')
+        return `任务 ${task.id} 已取消（还在排队，没有派发出去）。`
+      }
       if (task.target !== null && task.target !== undefined) await dispatcher.stop(task.target)
+      queue.remove(task.id)
       transition(db, task.id, 'cancelled')
+      queue.pump()
       return `任务 ${task.id} 已停止。`
     }),
 
@@ -275,6 +272,8 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
         agentId: exec?.agent?.id,
         detail: { status: args.status, summary: args.summary ?? '', callId: exec?.callId },
       })
+      // 任务到终态意味着并发槽位空出来了，唤醒队列补位。
+      if (next.status === 'done' || next.status === 'failed' || next.status === 'cancelled') queue.pump()
       const hint = invalidHint()
       return `已记录任务 ${next.id} 的 ${args.status} 回报。${hint === '' ? '' : `\n${hint}`}`
     }),

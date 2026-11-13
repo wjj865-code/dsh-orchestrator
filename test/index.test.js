@@ -520,6 +520,40 @@ test('注入失败记 failed + reason，不是 skipped', withHome(async home => 
   db.close()
 }))
 
+test('启动恢复：pending 且无子会话的任务自动入队并派发', withHome(async home => {
+  const { openLedger, createTask } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = createTask(ledger, { brief: { title: '恢复', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  ledger.close()
+
+  const s1 = makeAgent('s-1')
+  const { ctx, disposers } = fakeCtx({ agents: [s1] })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  await wait(20)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(task.id).status, 'running')
+  db.close()
+  await disposers[0]()
+}))
+
+test('autoResumeQueue=false：只恢复队列不自动派发', withHome(async home => {
+  const { openLedger, createTask } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = createTask(ledger, { brief: { title: '暂停', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  ledger.close()
+
+  const s1 = makeAgent('s-1')
+  const { ctx, disposers } = fakeCtx({ agents: [s1] })
+  await apply(ctx, { autoResumeQueue: false })
+  await wait(20)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(task.id).status, 'pending')
+  db.close()
+  await disposers[0]()
+}))
+
 test('cordis.patch.yml 指向 dsh-orchestrator', () => {
   const yaml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(yaml, /insert:/)

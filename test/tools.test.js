@@ -2,19 +2,29 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { openLedger, createTask, getTask, listTasks, transition } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
+import { createQueue } from '../src/queue.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
-function fakeDispatcher({ failSpawn = false, failSend = false } = {}) {
+function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity } = {}) {
   let counter = 0
+  let spawned = 0
   const calls = []
   return {
     calls,
+    get spawned() { return spawned },
+    release(count = 1) { spawned = Math.max(0, spawned - count) },
     slug(title) { counter += 1; return `task-${counter}` },
     async spawn({ name, prompt, signal }) {
       calls.push(['spawn', name, prompt, signal])
       if (failSpawn) throw new Error('子会话创建失败')
+      if (spawned >= limit) {
+        const error = new Error('subagent limit reached (active child limit)')
+        error.code = 'ACTIVATION_LIMIT_REACHED'
+        throw error
+      }
+      spawned += 1
       counter += 1
-      return { id: `s-${counter}`, name: name ?? `w-${counter}` }
+      return { id: `s-${counter}`, name: name ?? `w-${counter}`, sessionId: `s-${counter}`, target: `s-${counter}` }
     },
     async send(target, message) { calls.push(['send', target, message]) },
     async sendReliable(target, message, signal) {
@@ -35,14 +45,16 @@ async function setup(options = {}) {
   const db = await openLedger(tempDir())
   const dispatcher = fakeDispatcher(options)
   const notifier = fakeNotifier()
+  const config = { staleMinutes: 30, maxActive: 8, maxQueue: 50, coordinatorSession: 's-1', ...(options.config ?? {}) }
+  const queue = createQueue({ db, dispatcher, config })
   const tools = Object.fromEntries(createTools({
     db,
     dispatcher,
+    queue,
     notifier,
-    config: { staleMinutes: 30, maxActive: 8, coordinatorSession: 's-1' },
-    retryDelaysMs: [0, 0, 0],
+    config,
   }).map(tool => [tool.name, tool]))
-  return { db, dispatcher, notifier, tools }
+  return { db, dispatcher, queue, notifier, tools }
 }
 
 const call = (tools, name, args, exec) => tools[name].execute(args, exec)
@@ -82,7 +94,9 @@ test('task_create：正常创建、子会话 spawn、台账 running，prompt 是
   assert.ok(task.target)
   const spawn = dispatcher.calls.find(call => call[0] === 'spawn')
   assert.equal(spawn[1], 'task-1')
-  assert.equal(spawn[3], signal)
+  // 派发是异步队列，用的是插件自有 signal，不能复用这次工具调用的 signal（回合结束会被 abort）。
+  assert.ok(spawn[3] instanceof AbortSignal)
+  assert.equal(spawn[3].aborted, false)
   assert.match(spawn[2], /【任务】A/)
   assert.match(spawn[2], /【目标】目标A/)
   assert.match(spawn[2], /【用户原话】/)
@@ -118,46 +132,59 @@ test('额度只算 pending/running：8 个 waiting_user 不阻塞第 9 个 task_
   db.close()
 })
 
-test('额度只算 pending/running：8 个 running 阻塞第 9 个并列出占用', async () => {
-  const { db, dispatcher, tools } = await setup()
-  const seeded = []
-  for (let i = 0; i < 8; i += 1) seeded.push(seedTask(db, `运行${i}`, 'running'))
-  const text = await call(tools, 'task_create', sampleBrief({ title: '新任务' }))
-  assert.match(text, /活跃任务已达上限 8/)
-  assert.match(text, /运行0/)
-  assert.match(text, new RegExp(`${seeded[0].id}｜运行0｜进行中`))
-  assert.match(text, /task_stop/)
-  assert.equal(listTasks(db).length, 8)
-  assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 0)
-  db.close()
-})
-
-test('done/cancelled 不计额度，等待态与运行态混合只算运行态', async () => {
-  const { db, tools } = await setup()
-  for (let i = 0; i < 8; i += 1) seedTask(db, `完成${i}`, 'done')
-  for (let i = 0; i < 8; i += 1) seedTask(db, `取消${i}`, 'cancelled')
-  for (let i = 0; i < 3; i += 1) seedTask(db, `运行${i}`, 'running')
-  for (let i = 0; i < 5; i += 1) seedTask(db, `等待${i}`, 'waiting_user')
-
-  const first = await call(tools, 'task_create', sampleBrief({ title: '可创建' }))
+test('排队：容量满时任务进队列不报错，结算后自动补位', async () => {
+  const { db, dispatcher, queue, tools } = await setup({ limit: 1 })
+  const first = await call(tools, 'task_create', sampleBrief({ title: 'A' }))
   assert.match(first, /已派发/)
-  for (let i = 4; i < 8; i += 1) seedTask(db, `再运行${i}`, 'running')
-  const blocked = await call(tools, 'task_create', sampleBrief({ title: '被拒' }))
-  assert.match(blocked, /活跃任务已达上限 8/)
-  assert.match(blocked, /运行0/)
-  assert.equal(listTasks(db).length, 8 + 8 + 3 + 5 + 1 + 4)
+  const second = await call(tools, 'task_create', sampleBrief({ title: 'B' }))
+  assert.match(second, /排队/)
+  const tasks = Object.fromEntries(listTasks(db).map(task => [task.title, task]))
+  assert.equal(tasks.A.status, 'running')
+  assert.equal(tasks.B.status, 'pending')
+  assert.notEqual(tasks.B.queued_at, null)
+
+  // A 完成释放并发槽位后，队列补位派发 B
+  dispatcher.release()
+  transition(db, tasks.A.id, 'done')
+  await queue.pump()
+  const resumed = getTask(db, tasks.B.id)
+  assert.equal(resumed.status, 'running')
+  assert.equal(resumed.queued_at, null)
   db.close()
 })
 
-test('并发 12 个 task_create 不超发，拒绝不落行', async () => {
+test('排队：task_stop 移出队列，不再派发', async () => {
+  const { db, dispatcher, queue, tools } = await setup({ limit: 1 })
+  await call(tools, 'task_create', sampleBrief({ title: 'A' }))
+  await call(tools, 'task_create', sampleBrief({ title: 'B' }))
+  const queued = listTasks(db).find(task => task.title === 'B')
+  const text = await call(tools, 'task_stop', { task_id: queued.id })
+  assert.match(text, /排队/)
+  assert.equal(getTask(db, queued.id).status, 'cancelled')
+  assert.equal(queue.size(), 0)
+  db.close()
+})
+
+test('排队：task_message 给排队提示，不写 messages、不改状态', async () => {
+  const { db, tools } = await setup({ limit: 0 })
+  await call(tools, 'task_create', sampleBrief({ title: 'A' }))
+  const task = listTasks(db)[0]
+  const before = db.prepare('SELECT count(*) AS n FROM messages').get().n
+  const text = await call(tools, 'task_message', { task_id: task.id, message: '继续' })
+  assert.match(text, /排队/)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages').get().n, before)
+  assert.equal(getTask(db, task.id).status, 'pending')
+  db.close()
+})
+
+test('并发 12 个 task_create：全部落库，各 spawn 一次', async () => {
   const { db, dispatcher, tools } = await setup()
   const results = await Promise.all(Array.from({ length: 12 }, (_, i) =>
     call(tools, 'task_create', sampleBrief({ title: `并发${i}` }))))
-  assert.equal(results.filter(text => /已派发/.test(text)).length, 8)
-  assert.equal(results.filter(text => /活跃任务已达上限 8/.test(text)).length, 4)
-  assert.equal(listTasks(db).length, 8)
-  assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 8)
-  assert.equal(db.prepare('SELECT count(*) AS n FROM messages').get().n, 8)
+  assert.equal(results.filter(text => /已派发/.test(text)).length, 12)
+  assert.equal(listTasks(db).length, 12)
+  assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 12)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM tasks WHERE session_id IS NULL').get().n, 0)
   db.close()
 })
 
@@ -207,24 +234,17 @@ test('task_create：并发同目标只建一条', async () => {
   db.close()
 })
 
-test('task_create：活跃上限', async () => {
-  const { db, tools } = await setup()
-  const db2 = await openLedger(tempDir())
-  const tools2 = Object.fromEntries(createTools({
-    db: db2,
-    dispatcher: fakeDispatcher(),
-    notifier: fakeNotifier(),
-    config: { staleMinutes: 30, maxActive: 2, coordinatorSession: 's-1' },
-  }).map(tool => [tool.name, tool]))
-  await call(tools2, 'task_create', sampleBrief({ title: 'A' }))
-  await call(tools2, 'task_create', sampleBrief({ title: 'B' }))
-  const text = await call(tools2, 'task_create', sampleBrief({ title: 'C' }))
-  assert.match(text, /上限 2/)
-  assert.equal(listTasks(db2).length, 2)
-  db.close(); db2.close()
+test('maxQueue 满时拒绝创建且不落库', async () => {
+  const { db, tools } = await setup({ limit: 0, config: { maxQueue: 2 } })
+  await call(tools, 'task_create', sampleBrief({ title: 'A' }))
+  await call(tools, 'task_create', sampleBrief({ title: 'B' }))
+  const text = await call(tools, 'task_create', sampleBrief({ title: 'C' }))
+  assert.match(text, /队列已满/)
+  assert.equal(listTasks(db).length, 2)
+  db.close()
 })
 
-test('task_create：spawn 失败标 failed，不留 pending 幽灵', async () => {
+test('spawn 非容量失败标 failed，不留 pending 幽灵', async () => {
   const { db, tools } = await setup({ failSpawn: true })
   const text = await call(tools, 'task_create', sampleBrief({ title: 'A' }))
   assert.match(text, /任务协调失败：子会话创建失败/)

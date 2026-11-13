@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
   status TEXT NOT NULL, session_id TEXT, target TEXT, coordinator_session TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  last_event_at INTEGER NOT NULL, error TEXT
+  last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -36,6 +36,8 @@ export async function openLedger(stateDir) {
     // 旧库补列（阶段 1 早期版本没有）。
     const columns = db.prepare('PRAGMA table_info(notifications)').all().map(row => row.name)
     if (!columns.includes('reason')) db.exec('ALTER TABLE notifications ADD COLUMN reason TEXT')
+    const taskColumns = db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+    if (!taskColumns.includes('queued_at')) db.exec('ALTER TABLE tasks ADD COLUMN queued_at INTEGER')
     return db
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
@@ -82,6 +84,33 @@ export function listQuotaTasks(db) {
     .all().map(taskOf)
 }
 
+/** 标记「在排队」：pending + queued_at 非空，与「创建后没派出去」区分。 */
+export function markQueued(db, id, at = Date.now()) {
+  db.prepare('UPDATE tasks SET queued_at = ?, updated_at = ? WHERE id = ?').run(at, at, id)
+  return getTask(db, id)
+}
+
+export function clearQueued(db, id) {
+  db.prepare('UPDATE tasks SET queued_at = NULL, updated_at = ? WHERE id = ?').run(Date.now(), id)
+  return getTask(db, id)
+}
+
+/** 待派发队列：pending 且还没有子会话，按创建顺序。 */
+export function listPendingQueue(db) {
+  return db.prepare("SELECT * FROM tasks WHERE status = 'pending' AND session_id IS NULL ORDER BY created_at ASC, rowid ASC")
+    .all().map(taskOf)
+}
+
+export function countPending(db) {
+  return db.prepare("SELECT count(*) AS n FROM tasks WHERE status = 'pending'").get().n
+}
+
+/** 任务的渲染文本（派发时用），取第一条 brief 消息。 */
+export function briefText(db, id) {
+  const row = db.prepare("SELECT rendered FROM messages WHERE task_id = ? AND kind = 'brief' ORDER BY seq ASC LIMIT 1").get(id)
+  return row?.rendered
+}
+
 export function transition(db, id, to, patch = {}) {
   const task = getTask(db, id)
   if (task === undefined) throw new Error(`任务不存在：${id}`)
@@ -111,10 +140,10 @@ export function setTaskError(db, id, error) {
   return getTask(db, id)
 }
 
-/** 启动清理：把超时仍未派发出子会话的 pending 标成 failed，running 和排队中的任务不动。 */
+/** 启动清理：把超时仍未派发出子会话的 pending 标成 failed；排队中的（queued_at 非空）和 running 不动。 */
 export function failStalePending(db, { staleMinutes = 30, now = Date.now() } = {}) {
   const cutoff = now - staleMinutes * 60_000
-  const rows = db.prepare("SELECT id FROM tasks WHERE status = 'pending' AND session_id IS NULL AND created_at < ?").all(cutoff)
+  const rows = db.prepare("SELECT id FROM tasks WHERE status = 'pending' AND session_id IS NULL AND queued_at IS NULL AND created_at < ?").all(cutoff)
   if (rows.length === 0) return { count: 0, ids: [] }
   const at = Date.now()
   const update = db.prepare("UPDATE tasks SET status = 'failed', error = ?, updated_at = ?, last_event_at = ? WHERE id = ? AND status = 'pending'")

@@ -19,6 +19,8 @@ export function loadConfig(raw = {}) {
   }
   config.spawnProvider = nonEmpty(raw?.spawnProvider, 'spawn')
   config.backend = raw?.backend === 'team' ? 'team' : 'subagent'
+  config.maxQueue = Number.isFinite(raw?.maxQueue) && raw.maxQueue >= 1 ? Math.floor(raw.maxQueue) : 50
+  config.autoResumeQueue = raw?.autoResumeQueue !== false
   config.coordinatorSession = nonEmpty(raw?.coordinatorSession, undefined)
   return config
 }

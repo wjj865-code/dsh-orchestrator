@@ -6,6 +6,7 @@ import { openLedger, addNotification, getSetting, bindSettingOnce, rebindSetting
 import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
+import { createQueue } from './src/queue.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
 
@@ -164,7 +165,11 @@ export async function apply(ctx, rawConfig = {}) {
   }
   ctx.on?.('agent/created', ({ agent }) => {
     const id = resolvedCoordinatorId()
-    if (agent !== undefined && id !== undefined && agent.id === id) scheduleRestriction(agent)
+    if (agent !== undefined && id !== undefined && agent.id === id) {
+      scheduleRestriction(agent)
+      // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑。
+      queue?.pump()
+    }
   })
   ctx.on?.('agent/status', ({ agent, status }) => {
     if (agent === undefined || status !== 'idle' || !pendingRestrictions.has(agent)) return
@@ -192,6 +197,7 @@ export async function apply(ctx, rawConfig = {}) {
     },
   })
 
+  let queue
   const dispatcher = createDispatcher({
     backend: config.backend,
     agentTeams: ctx.agentTeams,
@@ -199,8 +205,17 @@ export async function apply(ctx, rawConfig = {}) {
     getAgent: resolveCoordinator,
     provider: config.spawnProvider,
     onWarn: warnings,
-    onEvent: (event, fields) => logger.log(event, fields),
+    onEvent: (event, fields) => {
+      logger.log(event, fields)
+      // 子会话结算 = 并发槽位释放，唤醒队列补位。
+      if (event === 'subagent.settled' || event === 'subagent.failed') queue?.pump()
+    },
   })
+  queue = createQueue({ db, dispatcher, config, logger })
+
+  // 启动对账：pending 且没有子会话的任务重新入队；超时的（非排队）已在上面标 failed。
+  queue.load()
+  if (config.autoResumeQueue) queue.pump()
 
   const notifier = createNotifier({
     mergeWindowMs: config.mergeWindowMs,
@@ -235,10 +250,11 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   const toolDisposers = createTools({
-    db, dispatcher, notifier, config, bindCoordinator, coordinatorStatus, logger,
+    db, dispatcher, queue, notifier, config, bindCoordinator, coordinatorStatus, logger,
   }).map(tool => ctx.tools.register(tool))
 
   ctx.effect?.(() => async () => {
+    queue.stop()
     for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
