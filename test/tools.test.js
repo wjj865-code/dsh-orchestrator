@@ -161,6 +161,52 @@ test('并发 12 个 task_create 不超发，拒绝不落行', async () => {
   db.close()
 })
 
+test('task_create：同 title+goal 的活跃任务视为重复，返回已有任务', async () => {
+  const { db, dispatcher, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '同一个活' }))
+  const text = await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '同一个活' }))
+  assert.match(text, /已存在任务 t-/)
+  assert.match(text, /未重复创建/)
+  assert.equal(listTasks(db).length, 1)
+  assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 1)
+  db.close()
+})
+
+test('task_create：等待态也参与去重', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '等用户' }))
+  const task = listTasks(db)[0]
+  transition(db, task.id, 'waiting_user')
+  const text = await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '等用户' }))
+  assert.match(text, /已存在任务/)
+  assert.match(text, /等你确认/)
+  assert.equal(listTasks(db).length, 1)
+  db.close()
+})
+
+test('task_create：done 后同 title+goal 允许重新创建', async () => {
+  const { db, dispatcher, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '再跑一遍' }))
+  const task = listTasks(db)[0]
+  transition(db, task.id, 'done')
+  const text = await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '再跑一遍' }))
+  assert.match(text, /已派发/)
+  assert.equal(listTasks(db).length, 2)
+  assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 2)
+  db.close()
+})
+
+test('task_create：并发同目标只建一条', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const results = await Promise.all(Array.from({ length: 12 }, () =>
+    call(tools, 'task_create', sampleBrief({ title: '同一个活', goal: '并发' }))))
+  assert.equal(results.filter(text => /已派发/.test(text)).length, 1)
+  assert.equal(results.filter(text => /已存在任务/.test(text)).length, 11)
+  assert.equal(listTasks(db).length, 1)
+  assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 1)
+  db.close()
+})
+
 test('task_create：活跃上限', async () => {
   const { db, tools } = await setup()
   const db2 = await openLedger(tempDir())
@@ -178,13 +224,14 @@ test('task_create：活跃上限', async () => {
   db.close(); db2.close()
 })
 
-test('task_create：spawn 失败返回可读错误，pending 保留原因', async () => {
+test('task_create：spawn 失败标 failed，不留 pending 幽灵', async () => {
   const { db, tools } = await setup({ failSpawn: true })
   const text = await call(tools, 'task_create', sampleBrief({ title: 'A' }))
   assert.match(text, /任务协调失败：子会话创建失败/)
   const [task] = listTasks(db)
-  assert.equal(task.status, 'pending')
+  assert.equal(task.status, 'failed')
   assert.match(task.error, /子会话创建失败/)
+  assert.equal(listTasks(db, { active: true }).length, 0)
   db.close()
 })
 

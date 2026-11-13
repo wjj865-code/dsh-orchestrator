@@ -33,7 +33,7 @@ export async function openLedger(stateDir) {
     db.exec('PRAGMA journal_mode = WAL')
     db.exec('PRAGMA busy_timeout = 5000')
     db.exec(SCHEMA)
-    // 旧库补 reason 列（阶段 1 早期版本没有）。
+    // 旧库补列（阶段 1 早期版本没有）。
     const columns = db.prepare('PRAGMA table_info(notifications)').all().map(row => row.name)
     if (!columns.includes('reason')) db.exec('ALTER TABLE notifications ADD COLUMN reason TEXT')
     return db
@@ -109,6 +109,17 @@ export function setTaskError(db, id, error) {
   db.prepare('UPDATE tasks SET error = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
     .run(error, now, now, id)
   return getTask(db, id)
+}
+
+/** 启动清理：把超时仍未派发出子会话的 pending 标成 failed，running 和排队中的任务不动。 */
+export function failStalePending(db, { staleMinutes = 30, now = Date.now() } = {}) {
+  const cutoff = now - staleMinutes * 60_000
+  const rows = db.prepare("SELECT id FROM tasks WHERE status = 'pending' AND session_id IS NULL AND created_at < ?").all(cutoff)
+  if (rows.length === 0) return { count: 0, ids: [] }
+  const at = Date.now()
+  const update = db.prepare("UPDATE tasks SET status = 'failed', error = ?, updated_at = ?, last_event_at = ? WHERE id = ? AND status = 'pending'")
+  for (const row of rows) update.run('派发中断：创建后没有派发出子会话', at, at, row.id)
+  return { count: rows.length, ids: rows.map(row => row.id) }
 }
 
 export function incrementAttempts(db, id) {

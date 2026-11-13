@@ -2,11 +2,12 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from './src/config.js'
-import { openLedger, addNotification, getSetting, bindSettingOnce, rebindSetting } from './src/ledger.js'
+import { openLedger, addNotification, getSetting, bindSettingOnce, rebindSetting, failStalePending } from './src/ledger.js'
 import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
 import { injectNotification } from './src/inject.js'
+import { createLogger } from './src/log.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agentTeams', 'agents', 'systemPrompt']
@@ -17,6 +18,7 @@ const WAIT_AGENT_DENIAL = '协调者禁止阻塞等待：不要调用 wait_agent
 const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则（优先于平台默认的 Team Lead 等待要求）：
 - 禁止使用 wait_agent 或任何阻塞等待、轮询；不要 sleep，不要反复查询来等子任务。
 - 查看进度只用 task_list / task_status。
+- 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
 - 本回合没有别的事就立即结束回合；通知会开启新回合。
 - 以上规则优先于平台 team policy 的 “The Lead must wait for required teammates” 等默认等待要求。`
@@ -40,11 +42,15 @@ const stateDir = () => join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'st
 
 export async function apply(ctx, rawConfig = {}) {
   const config = loadConfig(rawConfig)
-  const db = await openLedger(stateDir())
+  const dir = stateDir()
+  const db = await openLedger(dir)
   const warnings = message => ctx.logger?.warn?.(message)
+  const logger = createLogger({ stateDir: dir, onWarn: warnings })
   if (ctx.tools === undefined) warnings('dsh-orchestrator: 缺少 tools 服务，工具注册/白名单/guard 不可用')
   else if (typeof ctx.tools.guard !== 'function') warnings('dsh-orchestrator: tools.guard 缺失，wait_agent 执行期拦截不可用')
   if (ctx.systemPrompt === undefined) warnings('dsh-orchestrator: 缺少 systemPrompt 服务，协调者等待禁令只剩执行期 guard')
+  const cleanup = failStalePending(db, { staleMinutes: config.staleMinutes })
+  if (cleanup.count > 0) logger.log('cleanup.pending', { detail: { count: cleanup.count, taskIds: cleanup.ids } })
   const restrictionDisposers = []
   const restrictedAgents = new WeakSet()
   const pendingRestrictions = new WeakSet()
@@ -118,6 +124,7 @@ export async function apply(ctx, rawConfig = {}) {
       const finalId = won ? agent.id : getSetting(db, COORDINATOR_KEY)
       if (won) {
         ctx.logger?.info?.(`dsh-orchestrator: 协调者会话已变更：${boundId} → ${agent.id}`)
+        logger.log('bind.coordinator', { sessionId: agent.id, agentId: agent.id, detail: { previous: boundId, reason: 'rebind' } })
         scheduleRestriction(agent)
         return { id: agent.id, live: true, changed: true, previous: boundId }
       }
@@ -127,6 +134,7 @@ export async function apply(ctx, rawConfig = {}) {
     const assigned = bindSettingOnce(db, COORDINATOR_KEY, agent.id)
     if (assigned === agent.id) {
       ctx.logger?.info?.(`dsh-orchestrator: 协调者会话已绑定：${agent.id}`)
+      logger.log('bind.coordinator', { sessionId: agent.id, agentId: agent.id, detail: { previous: null, reason: 'first' } })
       scheduleRestriction(agent)
     }
     return { id: assigned, live: ctx.get?.('agents')?.get?.(assigned) !== undefined }
@@ -195,6 +203,10 @@ export async function apply(ctx, rawConfig = {}) {
     mergeWindowMs: config.mergeWindowMs,
     onWarn: warnings,
     record: entry => addNotification(db, entry),
+    onEvent: (event, fields) => logger.log(event, {
+      ...fields,
+      detail: { ...(fields.detail ?? {}), coordinatorId: resolvedCoordinatorId() ?? null },
+    }),
     send: (text, items) => {
       const id = resolvedCoordinatorId()
       if (id === undefined) {
@@ -220,7 +232,7 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   const toolDisposers = createTools({
-    db, dispatcher, notifier, config, bindCoordinator, coordinatorStatus,
+    db, dispatcher, notifier, config, bindCoordinator, coordinatorStatus, logger,
   }).map(tool => ctx.tools.register(tool))
 
   ctx.effect?.(() => async () => {

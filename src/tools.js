@@ -44,10 +44,13 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, notifier, config, bindCoordinator, coordinatorStatus }) {
+export function createTools({ db, dispatcher, notifier, config, bindCoordinator, coordinatorStatus, logger }) {
   const maxActive = config?.maxActive ?? 8
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
+  const log = (event, fields) => {
+    try { logger?.log?.(event, fields) } catch { /* 日志绝不能打断主流程 */ }
+  }
   const bind = typeof bindCoordinator === 'function'
     ? bindCoordinator
     : async () => ({ id: config?.coordinatorSession, live: true })
@@ -91,22 +94,55 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
       refs: strList('背景资料，如文件路径，可空'),
       user_verbatim: str('用户原话，可空'),
     }), async (args, exec) => {
+      const callId = exec?.callId
+      const agentId = exec?.agent?.id
+      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, callId } })
       const errors = validateBrief(args)
-      if (errors.length > 0) return `任务描述不完整：${errors.join('；')}。补齐后再派。`
+      if (errors.length > 0) {
+        log('task.create.rejected', { agentId, detail: { reason: 'validation', message: errors.join('；'), callId } })
+        return `任务描述不完整：${errors.join('；')}。补齐后再派。`
+      }
       const binding = await bind(exec?.agent)
-      // 额度检查必须紧贴 createTask，中间不能再有 await，否则并发调用会一起通过检查。
+      // 去重、额度、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
+      const title = String(args.title).trim()
+      const goal = String(args.goal).trim()
+      const duplicate = listTasks(db, { active: true })
+        .find(task => task.title.trim() === title && task.goal.trim() === goal)
+      if (duplicate !== undefined) {
+        log('task.create.rejected', {
+          agentId,
+          detail: { reason: 'duplicate', existingTaskId: duplicate.id, existingStatus: duplicate.status, callId },
+        })
+        return `已存在任务 ${duplicate.id}「${duplicate.title}」（${labelOf(duplicate.status)}），未重复创建。`
+      }
       const quota = listQuotaTasks(db)
       if (quota.length >= maxActive) {
         const occupying = quota.map(task => `- ${task.id}｜${task.title}｜${labelOf(task.status)}`).join('\n')
+        log('task.create.rejected', {
+          agentId,
+          detail: {
+            reason: 'limit',
+            maxActive,
+            occupying: quota.map(task => ({ taskId: task.id, status: task.status })),
+            callId,
+          },
+        })
         return `活跃任务已达上限 ${maxActive}，当前占用：\n${occupying}\n可以先 task_stop 或等它们结束。`
       }
       const task = createTask(db, { brief: args, coordinatorSession: binding?.id ?? coordinatorSession })
+      log('task.create.created', { taskId: task.id, agentId, sessionId: binding?.id, detail: { title, callId } })
       const rendered = `【任务编号】${task.id}\n${renderBrief(args)}`
       addMessage(db, task.id, { kind: 'brief', rendered })
+      const memberName = dispatcher.slug(args.title)
       let member
       try {
+        log('task.spawn.requested', {
+          taskId: task.id,
+          agentId,
+          detail: { name: memberName, provider: config?.spawnProvider ?? 'spawn', callId },
+        })
         member = await dispatcher.spawn({
-          name: dispatcher.slug(args.title),
+          name: memberName,
           description: args.title,
           prompt: rendered,
           signal: exec?.signal,
@@ -116,9 +152,11 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
         const base = reason.startsWith('未找到协调者会话') ? reason : `子会话创建失败：${reason}`
         const hint = invalidHint()
         const message = hint === '' ? base : `${base}\n${hint}`
-        setTaskError(db, task.id, message)
+        log('task.spawn.failed', { taskId: task.id, agentId, detail: { error: reason, callId } })
+        transition(db, task.id, 'failed', { error: message })
         throw new Error(message)
       }
+      log('task.spawn.ok', { taskId: task.id, sessionId: member.id, agentId, detail: { target: member.name, callId } })
       transition(db, task.id, 'running', { sessionId: member.id, target: member.name })
       const hint = invalidHint()
       const changed = binding?.changed === true
@@ -185,7 +223,7 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
       return `已把消息追加给任务 ${task.id}（子会话 ${task.target}）。`
     }),
 
-    wrap('task_stop', '停止一个子任务（会中断它的当前一轮）。', objectSchema({ task_id: str('任务编号') }), async args => {
+    wrap('task_stop', '停止一个子任务（会中断它的当前一轮）。', objectSchema({ task_id: str('任务编号') }), async (args, exec) => {
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
@@ -226,6 +264,12 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
         summary: args.summary ?? '',
         sender: exec?.agent,
         signal: exec?.signal,
+      })
+      log('task.report', {
+        taskId: next.id,
+        sessionId: task.session_id,
+        agentId: exec?.agent?.id,
+        detail: { status: args.status, summary: args.summary ?? '', callId: exec?.callId },
       })
       const hint = invalidHint()
       return `已记录任务 ${next.id} 的 ${args.status} 回报。${hint === '' ? '' : `\n${hint}`}`

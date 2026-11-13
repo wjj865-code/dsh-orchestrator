@@ -7,9 +7,19 @@ export function levelOf(status) {
 
 const line = item => `- ${item.title}：${item.summary}`
 
-export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {} }) {
+export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {}, onEvent = () => {} }) {
   let buffer = []
   let timer = null
+
+  const emit = (event, item, detail = {}) => {
+    try {
+      onEvent(event, {
+        taskId: item.taskId,
+        sessionId: item.sender?.id,
+        detail: { level: levelOf(item.status), ...detail },
+      })
+    } catch { /* 日志事件不能打断通知 */ }
+  }
 
   const recordOne = (item, status, mergedInto = null, reason = null) => {
     try {
@@ -31,13 +41,22 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     let firstId
     for (const item of items) {
       const id = recordOne(item, 'delivered', firstId ?? null)
+      emit('notify.delivered', item, { mergedInto: firstId ?? null, notificationId: id })
       if (firstId === undefined) firstId = id
     }
   }
-  const recordSkipped = (items, reason = null) => { for (const item of items) recordOne(item, 'skipped', null, reason) }
+  const recordSkipped = (items, reason = null) => {
+    for (const item of items) {
+      recordOne(item, 'skipped', null, reason)
+      emit('notify.skipped', item, { reason })
+    }
+  }
   const recordFailed = (items, error) => {
     const reason = error?.message ?? String(error)
-    for (const item of items) recordOne(item, 'failed', null, reason)
+    for (const item of items) {
+      recordOne(item, 'failed', null, reason)
+      emit('notify.failed', item, { reason })
+    }
     onWarn(`通知投递失败：${reason}`)
   }
 

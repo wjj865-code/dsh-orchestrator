@@ -263,7 +263,7 @@ test('配置的协调者失效：task_create 结果带失效提示', withHome(as
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   assert.equal(db.prepare('SELECT count(*) AS n FROM settings').get().n, 0)
   const task = db.prepare('SELECT status, error FROM tasks').get()
-  assert.equal(task.status, 'pending')
+  assert.equal(task.status, 'failed')
   assert.match(task.error, /协调者会话已失效/)
   db.close()
 }))
