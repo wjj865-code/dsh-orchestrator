@@ -79,6 +79,14 @@ test('inject 声明包含 tools、agentTeams、agents、systemPrompt', () => {
   assert.deepEqual(new Set(inject), new Set(['tools', 'agentTeams', 'agents', 'systemPrompt']))
 })
 
+test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {
+  const { ctx, warnings, guards } = fakeCtx()
+  delete ctx.systemPrompt
+  await apply(ctx, {})
+  assert.ok(warnings.some(message => /systemPrompt/.test(message)))
+  assert.equal(guards.length, 1)
+}))
+
 test('apply 注册 6 个工具，只写 $DSH_HOME/state/orchestrator', withHome(async home => {
   const { ctx, registered } = fakeCtx()
   await apply(ctx, { coordinatorSession: 's-1' })
@@ -343,6 +351,8 @@ test('系统提示只渲染给已绑定协调者，绑定后下一步生效', wi
   await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   assert.match(entry.text({ agent: s1 }), /禁止使用 wait_agent/)
   assert.match(entry.text({ agent: s1 }), /task_list \/ task_status/)
+  assert.match(entry.text({ agent: s1 }), /优先于平台默认的 Team Lead 等待要求/)
+  assert.match(entry.text({ agent: s1 }), /The Lead must wait for required teammates/)
   assert.equal(entry.text({ agent: other }), '')
 }))
 

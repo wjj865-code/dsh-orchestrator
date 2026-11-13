@@ -79,6 +79,7 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
   `ctx.systemPrompt.context({ name: 'orchestrator:coordinator-policy', order: 130, interpolate: false, text: context => ... })`。
   - `order` 用数字（`context()` 要求 finite）；`text(context)` 在每次 `systemPrompt.assemble` 时调用，`context.agent` 就是当前会话。
   - 渲染时现查 `config.coordinatorSession ?? settings.coordinator_session_id`，只有 `context.agent.id` 等于协调者才返回禁令，其他会话/子会话返回 `''`，不会串会话；重绑后自动跟着变。
+  - 提示里显式声明优先级：以上规则优先于平台 `team:policy` 的 “The Lead must wait for required teammates” 等默认等待要求。
   - 时序：绑定发生在 step N，step N+1 的 prompt 起带禁令；step N 的请求已经组装完，不能承诺首绑回合一定带提示。
 - **执行期 guard（同一回合也能拦）**：`ctx.tools.guard(exec => string | undefined)` 是同步、单调的拒绝；返回原因字符串即拒绝，后续监听器无法翻案。guard 在插件 apply 时注册、每次调用时现查绑定 id：只拒绝 `exec.name === 'wait_agent' && exec.agent.id === 协调者`，子任务/普通会话照常。
   - 因为 guard 不依赖工具表，`task_create` 写入绑定后，**同一回合里顺序执行的 `wait_agent`** 也会被拒绝；同一条 assistant 消息里并行发出、且在绑定写入前就开始执行的 `wait_agent` 仍可能漏过（执行顺序不保证），所以「首绑回合绝对安全」不承诺。

@@ -14,11 +14,12 @@ export const inject = ['tools', 'agentTeams', 'agents', 'systemPrompt']
 const COORDINATOR_KEY = 'coordinator_session_id'
 const COORDINATOR_INVALID_HINT = '协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定。'
 const WAIT_AGENT_DENIAL = '协调者禁止阻塞等待：不要调用 wait_agent；查看进度用 task_list / task_status，本回合没有别的事就立即结束回合。'
-const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则：
+const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则（优先于平台默认的 Team Lead 等待要求）：
 - 禁止使用 wait_agent 或任何阻塞等待、轮询；不要 sleep，不要反复查询来等子任务。
 - 查看进度只用 task_list / task_status。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
-- 本回合没有别的事就立即结束回合；通知会开启新回合。`
+- 本回合没有别的事就立即结束回合；通知会开启新回合。
+- 以上规则优先于平台 team policy 的 “The Lead must wait for required teammates” 等默认等待要求。`
 
 // 协调者只做协调：这些是设计 §10 明令禁止或属于别人职责的工具。
 const COORDINATOR_DENY = [
@@ -41,6 +42,8 @@ export async function apply(ctx, rawConfig = {}) {
   const config = loadConfig(rawConfig)
   const db = await openLedger(stateDir())
   const warnings = message => ctx.logger?.warn?.(message)
+  if (ctx.tools === undefined) warnings('dsh-orchestrator: 缺少 tools 服务，工具注册/白名单/guard 不可用')
+  if (ctx.systemPrompt === undefined) warnings('dsh-orchestrator: 缺少 systemPrompt 服务，协调者等待禁令只剩执行期 guard')
   const restrictionDisposers = []
   const restrictedAgents = new WeakSet()
 
