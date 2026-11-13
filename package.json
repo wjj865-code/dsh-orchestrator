@@ -1,0 +1,14 @@
+{
+  "name": "dsh-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, brief rendering, progress reports, interrupt-controlled notifications.",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js" },
+  "files": ["index.js", "src/", "cordis.patch.yml", "README.md"],
+  "engines": { "node": ">=22.15" },
+  "scripts": { "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "keywords": ["dsh-plugin", "orchestrator", "tasks"]
+}
