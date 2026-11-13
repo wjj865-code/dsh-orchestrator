@@ -92,6 +92,11 @@ export function setTaskError(db, id, error) {
   return getTask(db, id)
 }
 
+export function incrementAttempts(db, id) {
+  db.prepare('UPDATE tasks SET attempts = attempts + 1 WHERE id = ?').run(id)
+  return getTask(db, id)
+}
+
 export function addMessage(db, taskId, { kind, rendered, meta = null }) {
   const next = db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages WHERE task_id = ?').get(taskId).seq
   db.prepare('INSERT INTO messages (task_id, seq, kind, rendered, meta_json, at) VALUES (?, ?, ?, ?, ?, ?)')
