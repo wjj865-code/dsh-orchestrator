@@ -275,3 +275,26 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 7. **收尾期 disposed（F 轮真机，`ceb9516`）**：headless 一次性进程在 `mergeWindowMs` 内退出时，`steer` 可能抛 `agent initiator scope is disposed`。测试侧独立对照 asar 确认：这是**进程级 `AgentRegistry` 的 initiator 作用域**（`wakeDriver` 走 `loopCtx.agents.withInitiator(this, () => this.kick())`，`runWithInitiator` 在 `initiatorState !== 'active'` 时抛），不是 sender 子会话 scope、也不是协调者 scope。`steer` 先 splice 再唤醒，所以现象是「inbox 有注入、无回合消费、行 failed+reason」——属正确审计，不判 Task 失败。冒烟前置：最后一条回报后进程需活过 `mergeWindowMs` 才看得到 `delivered`；长驻 desktop 不受影响（README 已知局限）。
 
+## 16. 协调者自动绑定验收（新增，待开发提交）
+
+背景：插件要给别人用，不能手填 `coordinatorSession`。解析顺序 `config.coordinatorSession`（显式覆盖）→ `settings.coordinator_session_id`（台账绑定）→ 未绑定；首次 `task_create` 把调用方会话绑为协调者并落库。
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 无配置首次绑定 | 临时 DSH_HOME、无 config；会话 A `task_create` | `settings` 出现 `coordinator_session_id=A.id`；有日志一行；任务行 `coordinator_session` 与绑定一致 |
+| 2 | 二次不重绑 | 会话 B 紧接着 `task_create` | 绑定仍为 A、settings 不变、白名单不重复装 |
+| 3 | 只读工具不绑定 | 未绑定时带 exec.agent 调 `task_list`/`task_status` | settings 无绑定行、不装白名单 |
+| 4 | 配置覆盖优先且不写库 | config 有值 + settings 空/不同 | `task_create` 用 config；settings 不被写；通知发 config 会话 |
+| 5 | 绑定持久化 | 关闭后重开台账再解析 | 仍解析到 A；重启后 `task_create` 不重绑 |
+| 6 | 失效提示 | 绑定/配置会话无 live agent 时 `task_create` 与 `task_report` | 通知行 `skipped`（`delivered_at=NULL`）；结果含「会话已失效…重新绑定」类可读提示；不抛异常 |
+| 7 | 绑定时白名单 | 绑定后查绑定 agent 的 `restrict` 调用 | 绑定会话被 deny 一次；子任务 agent 不收窄；重复不重复装 |
+| 8 | 并发首次 | 未绑定时 8 个不同会话同时 `task_create` | 只产生一个绑定（规则明确、不振荡）；所有任务指向同一协调者 |
+| 9 | 旧库迁移 | 旧库无 `settings` 表 | `openLedger` 自动建表；旧任务仍可读 |
+| 10 | 未绑定时其他写工具 | `task_message`/`task_stop` 带 exec.agent 且未绑定 | 行为明确：不绑定；可读提示或按既有逻辑执行，不能静默半执行 |
+
+**待明确（需拍板后写死判据）**：
+
+- a. 并发首次绑定规则：建议先到先得（`UPDATE ... WHERE value IS NULL` 或唯一键），不接受后写覆盖。
+- b. 失效后「在新会话里派任务重新绑定」是自动重绑还是仅提示？两种实现与文案不同。
+- c. 任务行 `coordinator_session` 是否一律写绑定的协调者 id（不同会话后来派的任务也写它），建议是。
+
