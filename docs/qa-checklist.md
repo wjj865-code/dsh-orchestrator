@@ -239,11 +239,13 @@
 | Task 9 | a4d90e1/5a97216/652d593/488257f/15464b7 | 通过 | 6 工具注册；DSH_HOME 只落 `state/orchestrator/tasks.sqlite`(+wal/shm)；白名单按 `view(agent).restrictableNames` 求交集（与真实 `restrict()` 校验口径一致，对照 asar 确认）；scope 内工具（send_message）不喂 restrict、view 无该字段时退回 knownNames；通知由回报方 agent 发 target=lead、非自投；缺 sender/未配置协调者记 `skipped` 且 `delivered_at=NULL`；后加载补装；重复 apply 不崩；卸载 `await notifier.flushNow()` 后再 close | 白名单缺口：`spawn_teammate/send_message/list_agents` 不在 `restrictableNames`，deny 不掉（真机 34→21，其余生效），阶段 3 用 `composition.toolFilter` |
 | Task 10 | b7a307d/5a97216 | 通过 | README 落盘/配置表 5 项与 loadConfig 一致/6 工具/完整示例/错误降级/已知局限（R1/R5/R7）齐全；集成冒烟测试真实执行；全量 93/93（终版 100/100） | 真机冒烟：派活/渲染/回报/blocked 即时/R8/白名单主项通过；done 通知未通（`TEAM_NOT_MEMBER`，平台自动结语兜底）→ 修复后复验 |
 
-**总评（2026-11-13，最终 HEAD `15464b7`，108/108）**：Task 1–10 代码级全过；B 通知方案经进程内探针 + Chief 真机冒烟双验证通过；三条硬化（台账错误分流、回报归属、卸载 `await flushNow()`）复验通过。测试侧最终验收通过。白名单 3 个团队控制工具 deny 不掉留阶段 3，平台 settlement 与插件通知的用户体感重复留阶段 2（均已在 README/裁决中记录）。
+**总评（2026-11-13，最终 HEAD `ceb9516`，108/108）**：Task 1–10 代码级全过；B 通知方案经进程内探针 + Chief 真机冒烟双验证通过；三条硬化（台账错误分流、回报归属、卸载 `await flushNow()`）复验通过；F 轮「收尾期 initiator disposed」定位为进程级收尾竞态，`failed`+reason 属正确审计。测试侧最终验收通过。白名单 3 个团队控制工具 deny 不掉留阶段 3，平台 settlement 与插件通知的用户体感重复留阶段 2（均已在 README/裁决中记录）。
 
 **真机冒烟复核（`3be1b99`，问题定位；已由 `8956d89` 修复）**：通——插件加载、`task_create` 真派子会话并跑模型回合、brief 进子会话、回报入台账、blocked 即时通知在协调者回合中插入（R8）、白名单真实生效（协调者工具 34→21，read/write/pwsh/glob/grep/skill/web_search/web_fetch/task_report 移除）。不通——done 通知行 `failed`，根因 `TEAM_NOT_MEMBER`：fresh 子任务回报完回合即结束，5s 合并窗口后 sender 已离 roster；窗口设 0 同样失败（发送发生在子会话回合结束之后）。测试侧已按两种失败点（membership 抛 / sendAdmitted 抛）在进程内构造：均记 `failed`+`delivered_at=NULL`+可读 warn、不崩，证明是时序/生命周期问题而非落库丢失。
 
 **真机冒烟复核（`8956d89`，B 修复后，通过）**：`notifications` 里 `t-ceb5740c` 为 `delivered`、`delivered_at` 有值、`reason` 空；协调者会话日志收到插件注入的 `任务「冒烟任务E」完成：冒烟E完成`（source `agent-message`/`relay`，sender 是子会话），且是在协调者回合进行中排队、下一步边界交付（R8 忙时也过）；5 秒窗口后 sender 已离队仍送达；进程退出后行仍在（卸载不丢）；平台 settlement 与插件通知两条链路并存，README 已分开写，用户体感重复留阶段 2。
+
+**真机冒烟复核（F 轮，`15464b7`）**：归属校验未误伤——子会话 `f-1` 正常回报 done，`t-16a2bd7e` 已完成；但该轮 done 通知 `failed`、reason「agent initiator scope is disposed」：消息已 splice 进协调者 `next-step`（seq 101 有注入记录）但没有回合消费，属 headless 收尾竞态（见 §15 第 7 条），`failed`+reason 为正确审计；`ceb9516` 已把定位写进 api-notes §6 与 README 已知局限。
 
 **B 方向可行性（供 A/B 决策）**：真实 `agent.steer(input)` 是公开方法，走 `send(input,'next-step',true)` → inbox 排队 + `wakeDriver`，**不经过 Team roster 校验**（`sendAdmitted` 的 membership 检查在 agentTeams 层）；但 `createUserMessage` 是包内内部函数，B 需自行构造合法 user message（`{ id, role:'user', content, source }`，见 `createMessage` 内部实现：`brandString(randomUUID())` + `role/description`），`source.kind` 能否被会话日志接受必须实测。另卸载竞态仍待修：`index.js:118-119` 先 `void notifier.drain()` 再 `db.close()`，窗口内 done 通知已发出但落库报 `database is not open`（sent=1/rows=0），建议 async disposer 先 `await drain()` 再 close。
 
@@ -270,4 +272,6 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 6 | 通过 | `spawnProvider` 走 config（默认 `spawn`、空白/非法回落、去空格）✓；旧库自动补 `reason` ✓；`steer` 抛错记 `failed`+`reason`、`delivered_at=NULL`、可读 warn ✓（`642eba0`） |
 
 **审计归类缺口已关闭（`642eba0`）**：`index.js` 注入失败不再吞成 `false`，异常交给 notifier 记 `failed`+`reason`；「steer 抛错」独立探针复跑通过，§15 六项全绿。
+
+7. **收尾期 disposed（F 轮真机，`ceb9516`）**：headless 一次性进程在 `mergeWindowMs` 内退出时，`steer` 可能抛 `agent initiator scope is disposed`。测试侧独立对照 asar 确认：这是**进程级 `AgentRegistry` 的 initiator 作用域**（`wakeDriver` 走 `loopCtx.agents.withInitiator(this, () => this.kick())`，`runWithInitiator` 在 `initiatorState !== 'active'` 时抛），不是 sender 子会话 scope、也不是协调者 scope。`steer` 先 splice 再唤醒，所以现象是「inbox 有注入、无回合消费、行 failed+reason」——属正确审计，不判 Task 失败。冒烟前置：最后一条回报后进程需活过 `mergeWindowMs` 才看得到 `delivered`；长驻 desktop 不受影响（README 已知局限）。
 
