@@ -133,6 +133,20 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
   db.close()
 }))
 
+test('无 coordinatorSession 时不投递通知', withHome(async home => {
+  const { ctx, registered, sent } = fakeCtx()
+  await apply(ctx, { mergeWindowMs: 5 })
+  const { openLedger, createTask, transition } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = createTask(ledger, { brief: { title: 't', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  transition(ledger, task.id, 'running')
+  ledger.close()
+  const report = registered.find(tool => tool.name === 'task_report')
+  await report.execute({ task_id: task.id, status: 'done', summary: 'x' }, { agent: { id: 'm-1' } })
+  await wait(30)
+  assert.equal(sent.length, 0)
+}))
+
 test('cordis.patch.yml 指向 dsh-orchestrator', () => {
   const yaml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(yaml, /insert:/)
