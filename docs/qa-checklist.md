@@ -236,6 +236,10 @@
 | Task 6 | 5898843 | 通过 | 分级映射、progress 零投递、单条/3 条合并文案、merged_into 指向首条、失败行 delivered_at=NULL、落库、二次 drain 不重复、timer 不泄漏 | 最终发送函数在 index.js（Task 9），「无 sender 只 warn 不投递」留到 Task 9 验 |
 | Task 7 | 3a5a979 | 通过 | 6 工具对象根 schema 无 min/max、render 返回 text 数组；create 上限/spawn 失败留 pending+error；list stale 31/29；message 重试转 waiting_user+error+失败行；report 四态/非法 status 不落库/重复 done 不重复通知；8 路并发不串号 | 重复回报会先写 report 消息再报错（可接受）；失败文案写死「已重试 3 次」（生产 dispatcher 恒有 sendReliable，无害） |
 | Task 8 | f572730 | 通过 | 8 状态文案/色值全对、未知状态回落、80/81/自定义 maxLength 截断边界、字段透传；全量 84/84 | 低危缺陷：emoji 落在 80 code unit 边界时会截出半个代理对（乱码），建议阶段 2 渲染前修，不影响阶段 1 验收 |
+| Task 9 | a4d90e1/5a97216/652d593 | 通过 | 6 工具注册；DSH_HOME 只落 `state/orchestrator/tasks.sqlite`(+wal/shm)；白名单按 `view(agent).restrictableNames` 求交集（与真实 `restrict()` 校验口径一致，对照 asar 确认）；scope 内工具（send_message）不喂 restrict、view 无该字段时退回 knownNames；通知由回报方 agent 发 target=lead、非自投、缺 sender 只 warn；后加载补装；重复 apply 不崩；卸载关库 | 缺 sender 的通知仍记 `delivered`（审计口径不准，低危）；真机冒烟确认无白名单安装失败日志 |
+| Task 10 | b7a307d/5a97216 | 通过 | README 落盘/配置表 5 项与 loadConfig 一致/6 工具/完整示例/错误降级/已知局限（R1/R5/R7）齐全；集成冒烟测试真实执行；全量 93/93（终版 94/94） | 真机冒烟（装 profile、子会话创建、done 通知进协调者、忙时排队、白名单无失败日志）归 Chief，R8 凭冒烟证据关闭 |
+
+**总评（2026-11-13，最终 HEAD `652d593`）**：Task 1–10 全部通过，94/94，阶段 1 可交付。遗留 2 个低危项不阻塞验收：卡片 emoji 边界截断、缺 sender 的通知误记 delivered；R8 唤醒时序与白名单真实安装待 Chief 真机冒烟关闭。
 | Task 6 | | | | |
 | Task 7 | | | | |
 | Task 8 | | | | |
