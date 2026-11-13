@@ -173,6 +173,21 @@ test('损坏账本给出可读中文错误，不泄漏 SQLITE_ 或堆栈', async
   )
 })
 
+test('非损坏的打开失败不报「台账损坏」，保留原始原因', async () => {
+  const dir = tempDir()
+  const file = join(dir, 'plain-file')
+  writeFileSync(file, 'x')
+  await assert.rejects(
+    () => openLedger(join(file, 'state')),
+    error => {
+      assert.match(error.message, /台账不可用/)
+      assert.equal(error.message.includes('台账损坏'), false)
+      assert.match(error.message, /ENOTDIR|not a directory/i)
+      return true
+    },
+  )
+})
+
 test('落盘范围仅限传入目录', async () => {
   const dir = tempDir()
   const db = await openLedger(dir)

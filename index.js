@@ -114,8 +114,7 @@ export async function apply(ctx, rawConfig = {}) {
     for (const dispose of [...restrictionDisposers, ...toolDisposers].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
-    notifier.flushNow()
-    await notifier.drain()
+    await notifier.flushNow()
     try { db.close() } catch { /* 关闭失败不影响已完成的写入 */ }
   })
 }

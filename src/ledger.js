@@ -37,7 +37,14 @@ export async function openLedger(stateDir) {
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
     const reason = error?.message ?? String(error)
-    throw new Error(`台账损坏：${dbPath}（可尝试从 snapshots 目录恢复）：${reason}`)
+    const corrupt = error?.errcode === 11 || error?.errcode === 26
+      || /not a database|malformed|corrupt/i.test(reason)
+    if (corrupt) {
+      throw new Error(`台账损坏：${dbPath}（可尝试从 snapshots 目录恢复）：${reason}`)
+    }
+    const busy = error?.errcode === 5 || error?.errcode === 6 || /database is locked|database table is locked/i.test(reason)
+    if (busy) throw new Error(`台账暂时不可用（被占用）：${dbPath}：${reason}`)
+    throw new Error(`台账不可用：${dbPath}：${reason}`)
   }
 }
 

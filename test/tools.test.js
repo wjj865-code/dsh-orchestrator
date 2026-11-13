@@ -260,7 +260,7 @@ test('task_report：done/blocked/needs_auth 迁移并通知，sender 透传', as
     const { db, notifier, tools } = await setup()
     await call(tools, 'task_create', sampleBrief({ title: '甲' }))
     const task = listTasks(db)[0]
-    const sender = { id: 'teammate-1' }
+    const sender = { id: task.session_id }
     const signal = new AbortController().signal
     await call(tools, 'task_report', { task_id: task.id, status, summary: '说明' }, { agent: sender, signal })
     assert.equal(getTask(db, task.id).status, expected)
@@ -270,6 +270,21 @@ test('task_report：done/blocked/needs_auth 迁移并通知，sender 透传', as
     assert.equal(notifier.pushed[0].signal, signal)
     db.close()
   }
+})
+
+test('task_report：非本任务子会话回报被拒绝，不落库、不通知', async () => {
+  const { db, notifier, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲' }))
+  await call(tools, 'task_create', sampleBrief({ title: '乙' }))
+  const task = listTasks(db).find(item => item.title === '甲')
+  const beforeMessages = db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n
+  const text = await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '冒名' }, { agent: { id: 'someone-else' } })
+  assert.match(text, /回报被拒绝/)
+  assert.match(text, /不是它/)
+  assert.equal(getTask(db, task.id).status, 'running')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n, beforeMessages)
+  assert.equal(notifier.pushed.length, 0)
+  db.close()
 })
 
 test('task_report：非法 status 不写消息不改状态', async () => {
@@ -361,7 +376,7 @@ test('并发 8 个子任务：target/status 各归各，通知不丢', async () 
   assert.equal(new Set(tasks.map(task => task.target)).size, 8)
   assert.ok(tasks.every(task => task.status === 'running'))
   await Promise.all(tasks.map(task =>
-    call(tools, 'task_report', { task_id: task.id, status: 'done', summary: task.title }, exec)))
+    call(tools, 'task_report', { task_id: task.id, status: 'done', summary: task.title }, { agent: { id: task.session_id } })))
   assert.equal(listTasks(db, { active: true }).length, 0)
   assert.equal(notifier.pushed.length, 8)
   assert.deepEqual(new Set(notifier.pushed.map(item => item.taskId)), new Set(tasks.map(task => task.id)))

@@ -142,8 +142,9 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 
 ## 错误与降级
 
-- 打不开/损坏的台账：`台账损坏：<路径>（可尝试从 snapshots 目录恢复）：<原因>`，不泄漏 `SQLITE_` 和堆栈。
+- 打不开/损坏的台账：损坏（`SQLITE_CORRUPT`/`NOTADB`）给 `台账损坏：<路径>（可尝试从 snapshots 目录恢复）：<原因>`；目录不可用（`ENOTDIR` 等）给 `台账不可用：<路径>：<原因>`；被占用给 `台账暂时不可用（被占用）`。都不泄漏 `SQLITE_` 和堆栈。
 - 找不到协调者会话：工具仍注册，派活返回「任务协调失败：未找到协调者会话…」，任务留在 `pending` 并记原因。
+- `task_report` 归属：回报方必须是任务绑定的子会话（`exec.agent.id === task.session_id`），否则返回「回报被拒绝」，不改状态、不写消息、不发通知。
 - 子会话创建失败：任务留 `pending`，`error` 写原因；阶段 1 没有一键重派，需 `task_stop` 后重新 `task_create`。
 - 续派投递失败：重试 3 次（1s/2s/4s），仍失败标 `waiting_user`，记失败消息行。
 - 通知投递失败/跳过：写 `notifications` 行（`failed` 带原因，`skipped` 只有状态），不产生未处理 rejection。

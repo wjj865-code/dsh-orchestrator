@@ -175,6 +175,12 @@ export function createTools({ db, dispatcher, notifier, config }) {
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}，确认 task_id 是否抄错。`
       if (!REPORT_STATUS.includes(args.status)) return `status 只能是 ${REPORT_STATUS.join(' / ')}。`
+      const reporter = exec?.agent
+      const reporterId = reporter?.id ?? reporter?.session?.id
+      if (reporter !== undefined && task.session_id !== null && task.session_id !== undefined
+        && String(reporterId) !== String(task.session_id)) {
+        return `回报被拒绝：任务 ${task.id} 属于子会话 ${task.target ?? task.session_id}，当前回报方不是它。`
+      }
       addMessage(db, task.id, { kind: 'report', rendered: `[${args.status}] ${args.summary ?? ''}` })
       let next = task
       if (args.status === 'done') {
