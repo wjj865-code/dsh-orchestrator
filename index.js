@@ -6,6 +6,7 @@ import { openLedger, addNotification } from './src/ledger.js'
 import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
+import { injectNotification } from './src/inject.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agentTeams', 'agents']
@@ -75,6 +76,7 @@ export async function apply(ctx, rawConfig = {}) {
   const dispatcher = createDispatcher({
     agentTeams: ctx.agentTeams,
     getAgent: resolveCoordinator,
+    provider: config.spawnProvider,
     onWarn: warnings,
   })
 
@@ -82,40 +84,42 @@ export async function apply(ctx, rawConfig = {}) {
     mergeWindowMs: config.mergeWindowMs,
     onWarn: warnings,
     record: entry => addNotification(db, entry),
-    send: async (text, items) => {
+    send: (text, items) => {
       if (config.coordinatorSession === undefined) {
         warnings('dsh-orchestrator: 未配置 coordinatorSession，通知不投递')
         return false
       }
-      // 协调者不能给自己发消息（TEAM_SELF_MESSAGE）；由正在回报的子任务 agent 发给 lead。
       const sender = items.map(item => item.sender).find(value => value !== undefined)
       if (sender === undefined) {
         warnings('dsh-orchestrator: 通知缺少发送方 agent，已跳过投递')
         return false
       }
-      const membership = ctx.agentTeams.membership?.(sender)
-      if (membership !== undefined && membership.root?.id !== config.coordinatorSession) {
-        warnings(`dsh-orchestrator: 回报方不属于协调者团队（${String(sender.id)}），已跳过投递`)
+      const coordinator = resolveCoordinator()
+      if (coordinator === undefined) {
+        warnings('dsh-orchestrator: 协调者会话未加载，通知不投递')
         return false
       }
-      const signal = items.map(item => item.signal).find(value => value !== undefined)
-      await ctx.agentTeams.sendMessage(sender, {
-        target: 'lead',
-        content: [{ type: 'text', text }],
-        ...(signal === undefined ? {} : { signal }),
-      })
-      return true
+      // 直接对协调者会话 steer：与 TeamService 给 lead 投递时内部做的事同构，
+      // 但不要求发送方此刻还在 roster，所以 5 秒合并窗口后仍能送达。
+      try {
+        injectNotification(coordinator, { text, senderId: sender.id })
+        return true
+      } catch (error) {
+        warnings(`dsh-orchestrator: 通知注入失败：${error?.message ?? error}`)
+        return false
+      }
     },
   })
 
   const toolDisposers = createTools({ db, dispatcher, notifier, config })
     .map(tool => ctx.tools.register(tool))
 
-  ctx.effect?.(() => () => {
+  ctx.effect?.(() => async () => {
     for (const dispose of [...restrictionDisposers, ...toolDisposers].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
-    void notifier.drain()
+    notifier.flushNow()
+    await notifier.drain()
     try { db.close() } catch { /* 关闭失败不影响已完成的写入 */ }
   })
 }

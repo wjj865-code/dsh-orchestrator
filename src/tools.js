@@ -44,7 +44,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = [1000, 2000, 4000] }) {
+export function createTools({ db, dispatcher, notifier, config }) {
   const maxActive = config?.maxActive ?? 8
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'

@@ -9,9 +9,12 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', 'ask_user', 'show_view'], restrictableTools = knownTools } = {}) {
   const restrictions = []
+  const injected = []
   return {
     id,
     restrictions,
+    injected,
+    steer(message) { injected.push(message) },
     ctx: {
       tools: {
         view: () => ({ knownNames: new Set(knownTools), restrictableNames: new Set(restrictableTools) }),
@@ -133,11 +136,10 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
     { agent: teammate, signal },
   )
   await wait(30)
-  assert.equal(sent.length, 1)
-  assert.equal(sent[0][0], teammate)
-  assert.equal(sent[0][1].target, 'lead')
-  assert.equal(sent[0][1].signal, signal)
-  assert.match(sent[0][1].content[0].text, /任务「甲」完成/)
+  assert.equal(sent.length, 0)
+  assert.equal(coordinator.injected.length, 1)
+  assert.match(coordinator.injected[0].content[0].text, /任务「甲」完成/)
+  assert.deepEqual(coordinator.injected[0].source, { kind: 'agent-message', form: 'relay', senderSessionId: teammate.id })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))
   const row = db.prepare('SELECT status, level FROM notifications').get()
@@ -175,6 +177,26 @@ test('回报缺少 sender：不投递，通知行记 skipped', withHome(async ho
   const row = db.prepare('SELECT status, delivered_at FROM notifications').get()
   assert.equal(row.status, 'skipped')
   assert.equal(row.delivered_at, null)
+  db.close()
+}))
+
+test('卸载时窗口内的 done 通知不丢行', withHome(async home => {
+  const coordinator = makeAgent('s-1')
+  const teammate = { id: 'm-1' }
+  const { ctx, registered, disposers } = fakeCtx({ agent: coordinator })
+  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 600000 })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
+  const taskId = created.match(/任务 (t-[0-9a-f]+)/)[1]
+  await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: teammate })
+  assert.equal(coordinator.injected.length, 0)
+  await disposers[0]()
+  assert.equal(coordinator.injected.length, 1)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const row = db.prepare('SELECT status, delivered_at FROM notifications').get()
+  assert.equal(row.status, 'delivered')
+  assert.ok(row.delivered_at > 0)
   db.close()
 }))
 

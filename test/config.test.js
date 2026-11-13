@@ -8,6 +8,7 @@ test('loadConfig 填默认值', () => {
   assert.equal(config.stallRounds, 3)
   assert.equal(config.maxActive, 8)
   assert.equal(config.mergeWindowMs, 5000)
+  assert.equal(config.spawnProvider, 'spawn')
   assert.equal(config.coordinatorSession, undefined)
 })
 
@@ -44,6 +45,12 @@ test('coordinatorSession 只接受非空字符串', () => {
   assert.equal(loadConfig({ coordinatorSession: 's-1' }).coordinatorSession, 's-1')
   assert.equal(loadConfig({ coordinatorSession: '' }).coordinatorSession, undefined)
   assert.equal(loadConfig({ coordinatorSession: 42 }).coordinatorSession, undefined)
+})
+
+test('spawnProvider 可覆盖，空值/非字符串回落 spawn', () => {
+  assert.equal(loadConfig({ spawnProvider: 'fork' }).spawnProvider, 'fork')
+  assert.equal(loadConfig({ spawnProvider: '' }).spawnProvider, 'spawn')
+  assert.equal(loadConfig({ spawnProvider: 42 }).spawnProvider, 'spawn')
 })
 
 test('不泄漏未声明的原始键', () => {

@@ -58,6 +58,7 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 | `stallRounds` | `3` | 预留：阶段 3 的连续无进展升级阈值，阶段 1 只校验并保存 |
 | `maxActive` | `8` | 同时活跃任务上限，超了 `task_create` 拒绝 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
+| `spawnProvider` | `spawn` | `spawnTeammate` 的 provider（fresh 用 `spawn`；平台要求必填） |
 
 插件按 `coordinatorSession` 惰性解析 live agent，所以协调者会话可以在插件加载后再打开；白名单会通过 `agent/created` 补装。非法值（0、负数、NaN、Infinity、字符串）一律回落默认，不会把插件带崩。
 
@@ -66,12 +67,12 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 1. **加载**：6 个 `task_*` 工具出现；日志无「未找到协调者会话」「白名单安装失败」「缺 `agentTeams`」。
 2. **建任务**：`task_create` 返回「已派发」；子会话真的被创建；台账 `running` 且 `session_id`/`target` 已写。
 3. **输入**：子会话收到的是渲染文字，不是 JSON。
-4. **回报**：`progress` 不打扰；`done` 通知出现在协调者会话，发送方是子任务（不是 Lead 自己）；`notifications` 一行 `delivered`。
+4. **回报**：`progress` 不打扰；`done` 是插件 5 秒合并后 `agent.steer` 注入协调者会话，`notifications` 一行 `delivered`；平台自己还会发一条 `subagent-settled`，不写行、不算插件通知。
 5. **等待态闭环**：`blocked`/`needs_auth` → `task_message` 续派 → `running` → `done` 能走通。
-6. **R8 忙时排队**：协调者正在跑一轮时再回报，消息在下一步边界被接纳、不丢。
-7. **白名单**：协调者工具列表里没有 `read`/`bash` 等；无安装失败日志。
+6. **R8 忙时排队**：协调者正在跑一轮时再回报，插件注入在下一步边界被接纳、不丢。
+7. **白名单**：协调者工具列表里没有 `read`/`bash` 等；无安装失败日志。`spawn_teammate`/`send_message`/`list_agents` 阶段 1 仍可见（见已知局限）。
 8. **落盘**：`DSH_HOME` 下只新增 `state/orchestrator/tasks.sqlite`（+`-wal`/`-shm`），不写 profile 和其他会话目录。
-9. **审计口径**：跳过投递（缺 sender / 未配置协调者 / 不属于该团队）记 `skipped` 且 `delivered_at` 为空，不记 `delivered`。
+9. **审计口径**：插件通知与 `notifications` 行 1:1；`failed` 带 `reason`，`skipped` 的 `delivered_at` 为空；平台 settlement 通知不写行。
 
 
 ## 工具
@@ -92,7 +93,13 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 | --- | --- |
 | `task_report` | 每轮结束调用：`progress` / `done` / `blocked` / `needs_auth` |
 
-`task_report` 的四档通知：`progress` 静默只写台账；`done` 在 5 秒窗口内合并后汇报；`blocked` / `needs_auth` 立即打扰。每次实际投递（成功/失败）都写 `notifications` 表（跳过投递记 `skipped`，没有 `delivered_at`），合并的后续行 `merged_into` 指向首条。`task_message` 续派成功会把 `waiting_user`/`waiting_auth`/`failed` 拉回 `running`，`task_report` 的 `progress` 也会从等待态恢复，`done` 从等待态会先回 `running` 再完成。
+6 个工具是**全局注册**，子任务会话也能看到协调者工具；阶段 1 靠协调者侧白名单收窄，子任务侧不做限制（设计允许），阶段 3 再用 agent preset 收口。
+
+`task_report` 的四档通知：`progress` 静默只写台账；`done` 在 5 秒窗口内合并后汇报；`blocked` / `needs_auth` 立即打扰。插件通知**不经过 Team 的 `sendMessage`**（延迟后发送方已离队，会 `TEAM_NOT_MEMBER`），而是 5 秒合并后直接 `agent.steer` 注入协调者会话，所以合并窗口保得住。每次插件投递尝试都写 `notifications` 表：成功 `delivered`、失败 `failed`（带 `reason`）、跳过 `skipped`；后两者 `delivered_at` 为空。合并的后续行 `merged_into` 指向首条。
+
+平台另有一条 `subagent-settled` 通知：continuable 子会话 settle/dispose 时由 `dsh-subagent` 自动发给父会话，不经过本插件、不写 `notifications`，只能解释「协调者为什么被唤醒」，不能当成插件通知成功。审计看 `notifications` 行与插件注入是否 1:1。
+
+`task_message` 续派成功会把 `waiting_user`/`waiting_auth`/`failed` 拉回 `running`，`task_report` 的 `progress` 也会从等待态恢复，`done` 从等待态会先回 `running` 再完成。
 
 ## 一次完整流程
 
@@ -137,17 +144,18 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 
 - 打不开/损坏的台账：`台账损坏：<路径>（可尝试从 snapshots 目录恢复）：<原因>`，不泄漏 `SQLITE_` 和堆栈。
 - 找不到协调者会话：工具仍注册，派活返回「任务协调失败：未找到协调者会话…」，任务留在 `pending` 并记原因。
-- 子会话创建失败：任务留 `pending`，`error` 写原因，可重试。
+- 子会话创建失败：任务留 `pending`，`error` 写原因；阶段 1 没有一键重派，需 `task_stop` 后重新 `task_create`。
 - 续派投递失败：重试 3 次（1s/2s/4s），仍失败标 `waiting_user`，记失败消息行。
-- 通知发送失败：写 `notifications` 失败行 + warn，不产生未处理 rejection。
+- 通知投递失败/跳过：写 `notifications` 行（`failed` 带原因，`skipped` 只有状态），不产生未处理 rejection。
 
 ## 已知局限（阶段 3 再做）
 
 - **台账快照与自动恢复**：阶段 1 只把损坏库转成可读错误，不写快照、不自动恢复。
 - **orphaned 自动检测/一键重建**：子会话被删后状态会停在 `running`，阶段 1 不自动检测。
 - **30 分钟打扰升级**：`stallRounds` 只保存不生效，阶段 1 只有 `task_list` 的陈旧标记。
-- **协调者白名单的持久声明**：阶段 1 在协调者 agent 已加载时用 `agent.ctx.tools.restrict({ deny })` 做最小收窄（文件/shell/浏览器/web/团队控制类）；协调者未加载时只能跳过，阶段 3 改由 agent preset 的 `composition.toolFilter` 固化。
-- **唤醒时序**：`sendMessage` 到 lead 走 `root.steer`（wakeup=true）会唤醒协调者，机制见 `docs/api-notes.md`；忙时排队不丢的真机时序由维护者冒烟验证。
+- **协调者白名单的持久声明**：阶段 1 在协调者 agent 已加载时用 `agent.ctx.tools.restrict({ deny })` 做最小收窄（文件/shell/浏览器/web 类）；协调者未加载时只能跳过。真机确认 `spawn_teammate`/`send_message`/`list_agents` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；阶段 3 改由 agent preset 的 `composition.toolFilter` 固化。
+- **唤醒时序**：通知走 `agent.steer` 直插协调者会话（等价于 TeamService 给 lead 投递时的 `root.steer`），空闲唤醒、忙时 `next-step` 排队；机制证据见 `docs/api-notes.md`。真机忙时排队由维护者冒烟验证。
+- **平台 settlement 通知**：`subagent-settled` 是平台独立链路，不受本插件控制、不写 `notifications`。
 - 阶段 1 没有客户端入口/历史面板；卡片只提供数据，不渲染 UI。
 
 ## 开发

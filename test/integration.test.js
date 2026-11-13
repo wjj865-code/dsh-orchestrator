@@ -14,6 +14,8 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
   process.env.DSH_HOME = home
   const coordinator = {
     id: 's-1',
+    injected: [],
+    steer(message) { this.injected.push(message) },
     ctx: { tools: { view: () => ({ knownNames: new Set() }), restrict: () => () => {} } },
   }
   const teammate = { id: 'm-1' }
@@ -58,10 +60,9 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
 
     await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '改完，测试全绿' }, { agent: teammate })
     await wait(30)
-    assert.equal(sent.length, 1)
-    assert.equal(sent[0].sender, teammate)
-    assert.equal(sent[0].input.target, 'lead')
-    assert.match(sent[0].input.content[0].text, /任务「修复空数据文案」完成/)
+    assert.equal(sent.length, 0)
+    assert.equal(coordinator.injected.length, 1)
+    assert.match(coordinator.injected[0].content[0].text, /任务「修复空数据文案」完成/)
 
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))

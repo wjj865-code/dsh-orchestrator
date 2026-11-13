@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE TABLE IF NOT EXISTS notifications (
   task_id TEXT NOT NULL, level TEXT NOT NULL, status TEXT NOT NULL,
-  created_at INTEGER NOT NULL, delivered_at INTEGER, merged_into INTEGER
+  created_at INTEGER NOT NULL, delivered_at INTEGER, merged_into INTEGER, reason TEXT
 );`
 
 export async function openLedger(stateDir) {
@@ -30,6 +30,9 @@ export async function openLedger(stateDir) {
     db.exec('PRAGMA journal_mode = WAL')
     db.exec('PRAGMA busy_timeout = 5000')
     db.exec(SCHEMA)
+    // 旧库补 reason 列（阶段 1 早期版本没有）。
+    const columns = db.prepare('PRAGMA table_info(notifications)').all().map(row => row.name)
+    if (!columns.includes('reason')) db.exec('ALTER TABLE notifications ADD COLUMN reason TEXT')
     return db
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
@@ -108,8 +111,8 @@ export function recentMessages(db, taskId, limit = 3) {
   return db.prepare('SELECT kind, rendered, at FROM messages WHERE task_id = ? ORDER BY seq DESC LIMIT ?').all(taskId, limit)
 }
 
-export function addNotification(db, { taskId, level, status = 'delivered', deliveredAt = Date.now(), mergedInto = null }) {
-  const result = db.prepare('INSERT INTO notifications (task_id, level, status, created_at, delivered_at, merged_into) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(String(taskId), String(level), String(status), Date.now(), deliveredAt, mergedInto)
+export function addNotification(db, { taskId, level, status = 'delivered', deliveredAt = Date.now(), mergedInto = null, reason = null }) {
+  const result = db.prepare('INSERT INTO notifications (task_id, level, status, created_at, delivered_at, merged_into, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(String(taskId), String(level), String(status), Date.now(), deliveredAt, mergedInto, reason)
   return Number(result.lastInsertRowid)
 }

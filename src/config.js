@@ -6,6 +6,9 @@ const DEFAULTS = {
   mergeWindowMs: 5000,
 }
 
+const nonEmpty = (value, fallback) =>
+  typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback
+
 const positive = (value, fallback) =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
 
@@ -14,8 +17,7 @@ export function loadConfig(raw = {}) {
   for (const key of Object.keys(DEFAULTS)) {
     config[key] = positive(raw?.[key], DEFAULTS[key])
   }
-  config.coordinatorSession = typeof raw?.coordinatorSession === 'string' && raw.coordinatorSession !== ''
-    ? raw.coordinatorSession
-    : undefined
+  config.spawnProvider = nonEmpty(raw?.spawnProvider, 'spawn')
+  config.coordinatorSession = nonEmpty(raw?.coordinatorSession, undefined)
   return config
 }
