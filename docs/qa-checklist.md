@@ -344,3 +344,17 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 6 | 惰性绑定首回合时序 | 文档 + 代码路径核对 | 写清：系统提示下一回合生效；guard 从同回合后续步骤生效；绑定那一步本身已装配的工具表无法回滚 |
 | 7 | 降级 | 无 `systemPrompt` 服务时 apply | 可读 warn、不崩；guard 路径（若有）仍生效 |
 
+**复验结果（2026-11-13，HEAD `fd0e041`，126/126；api-probe 独立复跑 33/33）**：
+
+| # | 结果 | 证据 |
+| --- | --- | --- |
+| 1 | 通过 | api-notes §5/§8 锁定 `wait_agent` 为 agent scope 注册；api-probe 新增「scope 内注册只进 knownNames / restrictableNames 只收全局工具」机制检查，我独立复跑 33/33；与我的 asar 直读一致，deny 不掉属结构事实，不是配置错 |
+| 2 | 通过 | `inject` 含 `systemPrompt`；context 注册 `order:130`（数字）、`interpolate:false`；绑定后文本含「禁止使用 wait_agent」「task_list / task_status」「主动通知」「结束回合」全文 |
+| 3 | 通过 | 协调者/普通会话/子会话三路渲染隔离；重绑后 prompt 跟着新协调者、旧会话恢复空串；config 覆盖只给配置会话 |
+| 4 | 通过 | 普通会话与子会话的 `wait_agent` guard 返回 undefined（不拒），工具面未被遮罩 |
+| 5 | 通过 | guard 只拒 `exec.name==='wait_agent' && exec.agent.id===协调者`，返回中文原因；`task_list` 不拒；重绑后随新协调者、卸载撤销；绑定写入后同回合顺序调用即被拒 |
+| 6 | 通过（文档） | api-notes §8 写清 step N+1 带提示、guard 同回合顺序生效、并行且在绑定前开始的调用仍可能漏、「首绑回合绝对安全」不承诺 |
+| 7 | 通过 | 缺 `systemPrompt`/`tools.guard` 时 apply 不崩、6 工具仍注册（真实平台 inject 保证服务存在）；建议补一条 warn 便于排障（非阻塞） |
+
+**结论**：P0 两层防护（动态 prompt + 执行期 guard）通过；`wait_agent` 仍在工具表里是平台作用域注册的已知限制，阶段 2 用 `composition.toolFilter` 根治。
+
