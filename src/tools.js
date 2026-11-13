@@ -20,6 +20,8 @@ const STATUS_LABEL = {
   done: '已完成', failed: '失败', cancelled: '已取消', orphaned: '会话丢失',
 }
 const ACTIVE_STATUS = new Set(['pending', 'running', 'waiting_user', 'waiting_auth'])
+const WAITING_STATUS = new Set(['waiting_user', 'waiting_auth'])
+const RESUME_STATUS = new Set(['waiting_user', 'waiting_auth', 'failed'])
 const TERMINAL_STATUS = new Set(['done', 'cancelled', 'orphaned'])
 
 const labelOf = status => STATUS_LABEL[status] ?? status
@@ -149,6 +151,8 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
         return `续派失败：任务 ${task.id} 已转为「等你确认」（已重试 3 次）。原因：${reason}`
       }
       touchTask(db, task.id)
+      const current = getTask(db, task.id)
+      if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
       incrementAttempts(db, task.id)
       return `已把消息追加给任务 ${task.id}（子会话 ${task.target}）。`
     }),
@@ -172,9 +176,13 @@ export function createTools({ db, dispatcher, notifier, config, retryDelaysMs = 
       if (!REPORT_STATUS.includes(args.status)) return `status 只能是 ${REPORT_STATUS.join(' / ')}。`
       addMessage(db, task.id, { kind: 'report', rendered: `[${args.status}] ${args.summary ?? ''}` })
       let next = task
-      if (args.status === 'done') next = transition(db, task.id, 'done')
-      else if (args.status === 'blocked') next = transition(db, task.id, 'waiting_user')
+      if (args.status === 'done') {
+        // blocked/needs_auth 之后子任务直接完成：先回到 running，再走合法迁移到 done。
+        if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
+        next = transition(db, task.id, 'done')
+      } else if (args.status === 'blocked') next = transition(db, task.id, 'waiting_user')
       else if (args.status === 'needs_auth') next = transition(db, task.id, 'waiting_auth')
+      else if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
       else next = touchTask(db, task.id)
       notifier.push({
         taskId: next.id,

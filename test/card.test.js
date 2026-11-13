@@ -46,3 +46,11 @@ test('摘要截断到 80 字', () => {
 test('自定义截断长度', () => {
   assert.equal(taskCard(task(), { summary: '123456', maxLength: 5 }).summary, '12345…')
 })
+
+test('emoji 不在 80 边界被截成半个代理对', () => {
+  const summary = `${'a'.repeat(79)}😀b`
+  const text = taskCard(task(), { summary }).summary
+  assert.equal(text, `${'a'.repeat(79)}😀…`)
+  assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(text), false)
+  assert.equal(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text), false)
+})

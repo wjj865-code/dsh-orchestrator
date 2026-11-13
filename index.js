@@ -85,20 +85,21 @@ export async function apply(ctx, rawConfig = {}) {
     send: async (text, items) => {
       if (config.coordinatorSession === undefined) {
         warnings('dsh-orchestrator: 未配置 coordinatorSession，通知不投递')
-        return
+        return false
       }
       // 协调者不能给自己发消息（TEAM_SELF_MESSAGE）；由正在回报的子任务 agent 发给 lead。
       const sender = items.map(item => item.sender).find(value => value !== undefined)
       if (sender === undefined) {
         warnings('dsh-orchestrator: 通知缺少发送方 agent，已跳过投递')
-        return
+        return false
       }
       const membership = ctx.agentTeams.membership?.(sender)
       if (membership !== undefined && membership.root?.id !== config.coordinatorSession) {
         warnings(`dsh-orchestrator: 回报方不属于协调者团队（${String(sender.id)}），已跳过投递`)
-        return
+        return false
       }
       await ctx.agentTeams.sendMessage(sender, { target: 'lead', content: [{ type: 'text', text }] })
+      return true
     },
   })
 

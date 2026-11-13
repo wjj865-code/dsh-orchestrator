@@ -28,7 +28,11 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
 
   const deliver = async (text, items) => {
     try {
-      await send(text, items)
+      const result = await send(text, items)
+      if (result === false) {
+        for (const item of items) recordOne(item, 'skipped')
+        return
+      }
       let firstId
       for (const item of items) {
         const id = recordOne(item, 'delivered', firstId ?? null)

@@ -104,6 +104,22 @@ test('通知成功与失败都落 notifications，合并填 merged_into', async 
   db.close()
 })
 
+test('send 返回 false 时落 skipped 而不是 delivered', async () => {
+  const db = await openLedger(tempDir())
+  const notifier = createNotifier({
+    mergeWindowMs: 5,
+    send: async () => false,
+    record: entry => addNotification(db, entry),
+    onWarn: () => {},
+  })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成' })
+  await wait(20)
+  const row = db.prepare('SELECT status, delivered_at FROM notifications').get()
+  assert.equal(row.status, 'skipped')
+  assert.equal(row.delivered_at, null)
+  db.close()
+})
+
 test('投递失败落一条 failed 记录，delivered_at 为空', async () => {
   const db = await openLedger(tempDir())
   const notifier = createNotifier({

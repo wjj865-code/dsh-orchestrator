@@ -48,7 +48,7 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 | --- | --- |
 | `task_report` | 每轮结束调用：`progress` / `done` / `blocked` / `needs_auth` |
 
-`task_report` 的四档通知：`progress` 静默只写台账；`done` 在 5 秒窗口内合并后汇报；`blocked` / `needs_auth` 立即打扰。每次投递（成功/失败）都写 `notifications` 表，合并的后续行 `merged_into` 指向首条。
+`task_report` 的四档通知：`progress` 静默只写台账；`done` 在 5 秒窗口内合并后汇报；`blocked` / `needs_auth` 立即打扰。每次实际投递（成功/失败）都写 `notifications` 表（跳过投递记 `skipped`，没有 `delivered_at`），合并的后续行 `merged_into` 指向首条。`task_message` 续派成功会把 `waiting_user`/`waiting_auth`/`failed` 拉回 `running`，`task_report` 的 `progress` 也会从等待态恢复，`done` 从等待态会先回 `running` 再完成。
 
 ## 一次完整流程
 

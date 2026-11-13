@@ -158,6 +158,24 @@ test('无 coordinatorSession 时不投递通知', withHome(async home => {
   assert.equal(sent.length, 0)
 }))
 
+test('回报缺少 sender：不投递，通知行记 skipped', withHome(async home => {
+  const { ctx, registered, sent } = fakeCtx()
+  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
+  const create = registered.find(tool => tool.name === 'task_create')
+  const created = await create.execute({ title: '甲', goal: 'g', acceptance: ['a'] })
+  const taskId = created.match(/任务 (t-[0-9a-f]+)/)[1]
+  const report = registered.find(tool => tool.name === 'task_report')
+  await report.execute({ task_id: taskId, status: 'done', summary: '完成' })
+  await wait(30)
+  assert.equal(sent.length, 0)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const row = db.prepare('SELECT status, delivered_at FROM notifications').get()
+  assert.equal(row.status, 'skipped')
+  assert.equal(row.delivered_at, null)
+  db.close()
+}))
+
 test('cordis.patch.yml 指向 dsh-orchestrator', () => {
   const yaml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(yaml, /insert:/)

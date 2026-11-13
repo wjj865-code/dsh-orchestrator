@@ -9,7 +9,9 @@ const STATUS_TONE = {
 }
 
 export function taskCard(task, { summary = '', maxLength = 80 } = {}) {
-  const text = summary.length > maxLength ? `${summary.slice(0, maxLength)}…` : summary
+  // 按 Unicode 码点截断，避免在 80 边界把 emoji 的代理对切成两半。
+  const chars = Array.from(summary)
+  const text = chars.length > maxLength ? `${chars.slice(0, maxLength).join('')}…` : summary
   return {
     taskId: task.id,
     title: task.title,

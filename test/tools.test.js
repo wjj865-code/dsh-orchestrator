@@ -307,6 +307,43 @@ test('task_report：缺 summary 不崩', async () => {
   db.close()
 })
 
+test('blocked → 续派 → done 闭环', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲' }))
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', { task_id: task.id, status: 'blocked', summary: '等用户拍板' })
+  assert.equal(getTask(db, task.id).status, 'waiting_user')
+  const resumed = await call(tools, 'task_message', { task_id: task.id, message: '用户选 A' })
+  assert.match(resumed, /已把消息追加/)
+  assert.equal(getTask(db, task.id).status, 'running')
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '做完了' })
+  assert.equal(getTask(db, task.id).status, 'done')
+  db.close()
+})
+
+test('needs_auth → 续派 → done 闭环', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲' }))
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', { task_id: task.id, status: 'needs_auth', summary: '要授权' })
+  assert.equal(getTask(db, task.id).status, 'waiting_auth')
+  await call(tools, 'task_message', { task_id: task.id, message: '授权已给' })
+  assert.equal(getTask(db, task.id).status, 'running')
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' })
+  assert.equal(getTask(db, task.id).status, 'done')
+  db.close()
+})
+
+test('waiting_user 直接收到 done 回报也能闭环', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲' }))
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', { task_id: task.id, status: 'blocked', summary: '卡住' })
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '已自行完成' })
+  assert.equal(getTask(db, task.id).status, 'done')
+  db.close()
+})
+
 test('并发 8 个子任务：target/status 各归各，通知不丢', async () => {
   const { db, notifier, tools } = await setup()
   const exec = { agent: { id: 'worker' } }
