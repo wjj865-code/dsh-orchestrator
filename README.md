@@ -6,13 +6,20 @@
 
 ## 落盘范围
 
-唯一写入是：
+唯一写入都在 `$DSH_HOME/state/orchestrator/` 下：
 
 ```
-$DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
+tasks.sqlite                      （+ -wal / -shm）
+logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文件超 5MB 换新）
 ```
 
 `DSH_HOME` 未设置时用 `~/.dsh`。不写 profile、不写其他会话目录、不建快照（阶段 3 再做）。
+
+## 日志与排障
+
+协调者侧日志写在 `$DSH_HOME/state/orchestrator/logs/YYYY-MM-DD.jsonl`（按天、保留 7 天、单文件超 5MB 换新）。覆盖建任务/去重与额度拒绝/派发成败/回报/通知投递/启动清理/绑定变更，每条带 `callId` 把同一次调用串起来。`goal`/`summary` 只留 80 字摘要，**不写 `user_verbatim`**；写日志失败只 warn 一次，不影响主流程。
+
+只凭当天日志应能回答三个问题：这次创建为什么被拒（reason 码、`maxActive`、占额任务清单）、派发为什么失败（平台错误原文、provider）、通知为什么没送到（level、reason、sender/coordinator）。报问题请附当天日志。
 
 ## 安装（维护者操作，不碰用户的 `~/.dsh/profiles`）
 

@@ -79,6 +79,8 @@
 
 每天一份台账快照，存在 `$DSH_HOME/state/orchestrator/snapshots/`，保留最近 7 天，用于损坏恢复。
 
+协调者侧日志：`$DSH_HOME/state/orchestrator/logs/YYYY-MM-DD.jsonl`，按天一个文件、保留 7 天、单文件超 5MB 换新。覆盖 create（含拒绝原因、`maxActive`、占额任务清单）、spawn 成败、report、notify、启动清理、绑定变更，带 `callId` 串联同一次调用；`goal`/`summary` 只截 80 字摘要，不写 `user_verbatim`；写日志失败只 warn、不阻塞主流程。验收要求：只凭当天日志能还原「这次创建为什么被拒 / 派发为什么失败 / 通知为什么没到」。
+
 ## 6. 生命周期与状态机
 
 状态：`pending → running → (waiting_user | waiting_auth) → running → done | failed | cancelled`，异常态 `orphaned`。
@@ -157,6 +159,7 @@
 
 - 允许：`task_create`、`task_list`、`task_status`、`task_message`、`task_stop`、`ask_user`、`show_view`、memory 读写。
 - 禁止：文件读写、shell、浏览器、web 搜索、其他执行类工具（通过工具白名单实现，而不是靠提示词自觉）。
+- 不得凭记忆推断状态：涉及任务数量、重复、冲突、状态的结论，必须先取 `task_list`/`task_status` 的真实返回作为依据。
 - 禁止 `wait_agent` 及任何阻塞等待：协调者看进度只用 `task_list`/`task_status`，子任务完成会主动通知，需要等就结束回合。`wait_agent` 是平台按 agent scope 注册的工具，运行期 `restrict` 去不掉，阶段 1 用 `ctx.tools.guard` 执行期硬拒绝 + 按会话动态渲染的系统提示兜底；同一条 assistant 消息里并行、且在绑定写入前就开始执行的等待不承诺拦住。阶段 2 由 agent preset 的 `composition.toolFilter` 固化整个工具集，运行期 guard/白名单降为兜底。
 
 子任务会话不施加任何限制，只多一个 `task_report` 工具。
