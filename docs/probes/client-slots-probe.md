@@ -2,23 +2,22 @@
 
 - 日期：2026-11-14
 - 作者：开发（团队研发 Bot）
-- 对象：本机已安装 DeepSeek Harness（desktop profile，`~/.dsh/profiles/desktop`）+ 已安装的 `ds-bot@0.3.6`
-- 目的：验证阶段 2 客户端薄插件的槽位、导航、数据与打包契约，产出实现计划前的事实依据
-- 方法：读安装包内实现（`ds-bot/client.js`、`ds-bot/src/host/channel.js`、app.asar 内的客户端包源码/文档），**没有**在真机装探针；标「待装验证」的项必须装了探针才算数
+- 状态：已按审查复核意见修订（header 槽位改为 `conversation.header.leading`，路由鉴权/加载清单补全）
+- 对象：本机已安装 DeepSeek Harness（desktop profile）+ 已安装的 `ds-bot@0.3.6`
+- 方法：读安装包内实现（`ds-bot/client.js`、`ds-bot/src/host/channel.js`、app.asar 内客户端包与 live 槽位目录），**没有**在真机装探针；标「待装验证」的必须装了探针才算数
 
 ## 结论摘要
 
-1. **左侧入口可用 `sidebar.panellist`**：这是左侧栏图标列表（id/order/label + 图标组件），面板页注册到 `main` 槽位（`key` = 面板 id），点击用 `ctx.layout.selectPanel(id)` 打开。这与内置「插件」页（`sidebar.panellist` 的 `id:'plugins'` + `main` 的 `key:'plugins'`）完全同构，可以放在插件入口下方（`order` 比插件大）。
-2. **ds-bot 不占这两个槽位**：它占的是 `sidebar.workspaces`（主会话/团队列表）、`sidebar.footer.action`（账户位）、`conversation.session.header`（整条会话头，单席位，靠 priority 抢）、`shell.overlay`。所以 `sidebar.panellist` / `main` 与它不冲突。
-3. **会话头部按钮用 `conversation.session.header.actions`**：这是头部动作列表槽位；**不要**注册 `conversation.session.header`——那是单席位，ds-bot 用 `priority` 抢下了，注册进去会和它打架。头部组件能拿到 `sessionId`（ds-bot 的 `HeaderPill({ sessionId, ... })` 证明 props 里有）。
-4. **跳转会话用 `ctx.uiWorkspace.openSession(id)`**：ds-bot 全部用它（bot 会话、普通会话、复制出来的会话）。打开协调者会话 = 面板里调用 `openSession(coordinatorSessionId)`。
-5. **面板 MVP 建议用 `main` 面板页**（和插件页同构，占满左侧内容区），不要先做右侧栏；`shell.overlay` 作为浮层备选。右侧栏能用（`ctx.sidebarRight.openTab(kind, { params })` + `sidebar.right.pane.tab` 注册 tab 类型），但复杂，阶段 2 不做。
-6. **数据走 host 只读路由**：`ctx.connection.fetch.register({ path, methods:['POST'], requestBody:'buffered', fetch })`，connection 服务负责鉴权（asar 原文：*The connection service supplies authentication*；ds-bot 注释：*the browser authenticates with its session cookie*）。ds-bot 的 `/api/bot` 是同款模式，可直接照抄结构。
-7. **打包**：客户端产物是 `client.js`，头部 `window.__ModuleLoader__.load({ id, factory })`；`package.json` 加 `dsh.client.platform: 'web'` 和 `exports["./client"]`，`files` 包含 `client.js`。React 由浏览器模块表提供，不打包 React。
+1. **左侧入口用 `sidebar.panellist`**：左侧图标列表（`id/order/label` + 图标组件），面板页注册到 keyed 的 `main`（`key` = 面板 id），点击后平台固定调用 `ctx.layout.selectPanel(id)` 打开面板。内置「插件」页就是 `sidebar.panellist` 的 `id:'plugins'` + `main` 的 `key:'plugins'`，我们放 `order:10` 即在它下方。live 目录里该席位 occupants 只有 plugin-manager（Plugins）与 schedule（TaskManager），`replaceRisk:'none'`；ds-bot 没有碰。
+2. **会话头按钮必须用 `conversation.header.leading`，不能用 `conversation.session.header.actions`**：ds-bot 在 Bot 模式用 `HeaderPill` 把整条 `conversation.session.header`（单席位）以 `priority:-100` 顶掉，而 `HeaderPill` 不渲染 `.actions` 子槽位——按钮会看不见。`conversation.header.leading` 由 `ConversationRoot` 在 header 左侧独立 `renderSlot("conversation.header.leading", {})`，不被 ds-bot 的 shadow 覆盖；该席位目前无占用者（single / `replaceRisk:none`）。它拿不到 `sessionId`，但按钮只做「打开面板」，不需要。
+3. **跳转会话用 `ctx.uiWorkspace.openSession(id)`**；平台自己的子代理目录也是这么做的：`ui-subagent` 的 `openChild({ parentSessionId, childSessionId, mode })` 内部调 `uiWorkspace.openSession`。子会话跳转从「大概率」升级为「平台同款路径」，仍需真机验一条。
+4. **面板 MVP 用 `main` 面板页**（与内置插件页同构；侧栏点击被平台固定为 `selectPanel`，所以流程是「侧栏 → 任务面板 → 面板里点打开协调者」）。`shell.overlay` 只作临时浮层备选；右侧栏不做。
+5. **数据走 host 只读路由**：`ctx.connection.fetch.register({ path, methods:['POST'], requestBody:'buffered', fetch })`。鉴权由 connection 的 `admit()` 负责：Host/Origin 围栏（跨站 403）→ cookie/token（无 401）；exact 路由还要求 `principal.kind === 'owner'`（非 owner 403）；同路径重复注册直接抛。**只读不是平台保证**，handler 必须只 import 查询函数 + 端点白名单，测试断言调用后台账零写入。
+6. **打包**：`dsh.client.platform:'web'` + `exports["./client"]` + `files` 含 `client.js`；`dsh.client.inject` 列出依赖的客户端包；官方模板的 `client.js` 是**手写**的 `__ModuleLoader__.load`，MVP 不必上 esbuild；`immediately` 只是预取提示。
 
-## 1. 槽位清单（与我们的选择）
+## 1. 槽位清单与我们的选择
 
-ds-bot 客户端里出现的槽位（可作为已存在槽位清单的交叉验证）：
+ds-bot 客户端里出现的槽位（交叉验证用）：
 
 ```
 sidebar.brand.mark / sidebar.brand.name / sidebar.workspaces / sidebar.footer.action
@@ -30,45 +29,42 @@ conversation.chat.node / conversation.chat.turnTail
 shell.overlay
 ```
 
-平台内置包里的补充（asar）：
+平台侧补充（asar）：
 
-- `sidebar.panellist`：左侧图标列表；`@deepseek-ai/dsh-client-ui-plugin-manager` 用 `id:'plugins', order:0` 注册「插件」入口。
-- `sidebar.panellist.actions`：图标列表的「更多」菜单行（entry-customization 用它加「浏览插件 / 创建插件」）。
-- `main`：主面板页槽位，**keyed**，`key` 就是面板 id。插件管理页注册方式：
-
-  ```js
-  ctx.slots.register({ name: 'main', key: PANEL_ID, store, inject: () => ({...}), children: {...} }, PageComponent)
-  ctx.layout.selectPanel(PANEL_ID)   // 打开面板
-  ctx.layout.panelInfo.getSnapshot().activePanelId  // 当前面板
-  ```
-
-- `sidebar.right.pane.tab`：右侧栏 tab 类型注册（keyed 座位，builtin 档）；用 `ctx.sidebarRight.openTab(kind, { params })` 打开，`ctx.sidebarRight.isExpanded()/toggleExpanded()/mounted` 可读状态。
-- `shell.overlay`：全屏浮层列表，多个注册项按 `id/order` 共存（ds-bot 注册了 `bot-computer`、`bot`；ui-chat 注册了 `chat.quota-notice`）。
+- `conversation.header.leading`：`ConversationHeader` 左侧独立渲染，`renderSlot("conversation.header.leading", {})`；single、`scope:'root'`、`occupants:[]`、`replaceRisk:'none'`。**没有 `sessionId` prop。**
+- `conversation.session.header`：单席位，ds-bot 用 `HeaderPill` + priority 抢下；它不渲染 `.actions`。
+- `conversation.session.header.actions`：列表槽位，只在平台自己的 header 里渲染（Bot 模式下被盖住，不可用）。
+- `sidebar.panellist`：左侧图标列表；plugin-manager 用 `id:'plugins', order:0`。
+- `sidebar.panellist.actions`：图标列表「更多」菜单行。
+- `main`：主面板页，**keyed**；`key` 即面板 id，打开用 `ctx.layout.selectPanel(id)`，当前面板读 `ctx.layout.panelInfo.getSnapshot().activePanelId`。
+- `sidebar.right.pane.tab`：右侧栏 tab 类型（keyed 座位），`ctx.sidebarRight.openTab(kind, { params })` 打开；`isExpanded()/toggleExpanded()/mounted` 可读状态。阶段 2 不做。
+- `shell.overlay`：全屏浮层列表，多注册项按 `id/order` 共存。
 
 ### 我们的选择
 
 | 需求 | 槽位 | 理由 |
 | --- | --- | --- |
-| 左侧栏入口（插件下方） | `sidebar.panellist`，`id:'orchestrator'`，`order: 10`（插件是 0） | 与内置插件页同构；ds-bot 不占 |
-| 任务面板主体 | `main`，`key:'orchestrator'` | 占满内容区，和插件页一致 |
-| 打开面板 | `ctx.layout.selectPanel('orchestrator')` | 内置页同款 |
-| 会话头按钮 | `conversation.session.header.actions` | 列表槽位，不抢 ds-bot 的单席位 |
-| 浮层（可选） | `shell.overlay`，`id:'orchestrator-panel'` | 只在需要盖住会话时用 |
-| 右侧栏（阶段 2 不做） | `sidebar.right.pane.tab` + `sidebarRight.openTab` | 可行但成本高 |
+| 左侧入口（插件下方） | `sidebar.panellist`，`id:'orchestrator'`，`order:10` | 与内置插件页同构；occupants 无冲突；`order` 排在插件后面 |
+| 任务面板主体 | `main`，`key:'orchestrator'` | 占满内容区 |
+| 打开面板 | `ctx.layout.selectPanel('orchestrator')` | 内置页同款；sidebar 行点击被平台固定为此行为 |
+| 会话头按钮 | `conversation.header.leading` | 不被 ds-bot 的 header shadow 覆盖；Bot 模式可见；无 `sessionId` 但按钮只用打开面板 |
+| 浮层（可选） | `shell.overlay`，`id:'orchestrator-panel'` | 需要盖住会话时 |
+| 右侧栏（阶段 2 不做） | `sidebar.right.pane.tab` + `sidebarRight.openTab` | 成本高，且规则要求不抢 ds-bot 右侧栏 tab |
+
+> 关于 priority：单席位（`conversation.session.header`、`conversation.header.leading`）用 priority 抢位；**列表槽位（`sidebar.panellist`、`shell.overlay` 等）也按 priority 排序，同 `id` 的低 priority 会被顶掉**。我们的入口用 `order` 排序、不设 priority，避免顶掉别人。
 
 ## 2. 会话与导航
 
-- **当前会话 id**：头部/动作槽位组件的 props 里有 `sessionId`（ds-bot `HeaderPill({ sessionId, useSessions, ... })`）。面板里如果拿不到 props，可用
-  `Object.values(ctx.sessions.list.getSnapshot().byId).find(s => (s.retainedBy?.mainView ?? 0) > 0)?.id`
-  （ds-bot 的 `shownSession()` 就是这么取的）。
-- **跳转**：`ctx.uiWorkspace.openSession(sessionId)`（ds-bot 全用它）。
-- **新建**：`ctx.uiWorkspace.startSession(undefined, { ... })`（不用于本阶段）。
-- **子会话能不能跳**：**待装验证**。web 客户端的历史列表代码 `flattenLineage` 明确处理 `origin === 'subagent'` 的行（把子会话排在父会话下面），说明 web 的 session 列表数据里**有**子会话；`uiWorkspace.openSession(childId)` 大概率可行。装探针后验证：在面板点一条任务的 `childSessionId`，看是否切到子会话；失败则退化为「复制 id + 提示从父会话的子代理目录打开」。
-- **协调者会话 id**：来自 host 路由返回（台账 `settings.coordinator_session_id`），面板只读展示 + 「打开协调者」按钮。
+- **当前会话 id**：`conversation.header.leading` / `main` 组件**都没有 `sessionId` prop**；走 `ctx.uiSession.current`（若可用）或
+  `Object.values(ctx.sessions.list.getSnapshot().byId).find(s => (s.retainedBy?.mainView ?? 0) > 0)?.id`。
+  ds-bot 的 `shownSession()` 就是后者。
+- **跳转**：`ctx.uiWorkspace.openSession(sessionId)`（ds-bot 全用它；`ui-subagent.openChild` 内部也是它）。
+- **子会话**：平台 `ui-subagent` 的 `openChild({ parentSessionId, childSessionId, mode })` —— 面板里可以直接 `ctx.uiWorkspace.openSession(childSessionId)`；待装验证一条（§6-3）。
+- **协调者会话 id**：host 路由返回（台账 `settings.coordinator_session_id`）；面板只读展示 + 「打开协调者」按钮。
 
 ## 3. 数据接口（host 侧只读路由）
 
-ds-bot 的注册方式（`src/host/channel.js:845`，可直接照抄结构）：
+注册形态（`src/host/channel.js:845` 同款）：
 
 ```js
 ctx.effect(() => ctx.connection.fetch.register({
@@ -84,88 +80,16 @@ ctx.effect(() => ctx.connection.fetch.register({
 }), 'dsh-orchestrator: api route')
 ```
 
-- 鉴权由 connection 服务统一负责（同源 cookie），handler 内**不再信任 body 里的身份**；只提供只读端点（`listTasks` / `taskStatus` / `coordinatorId`），不写台账。
-- 客户端调用（ds-bot `/api/bot` 同款）：
+鉴权与边界（审查从 connection 源码核过）：
 
-  ```js
-  const res = await fetch('api/orchestrator', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ endpoint: 'tasks', payload: {} }),
-    signal,
-  })
-  ```
-
-- 建议端点：`tasks`（全部任务，字段：id/title/status/label/tone/childSessionId/coordinatorSessionId/updatedAt/stale 摘要）、`coordinator`（当前绑定会话 id 与 live 状态）。失败/离线：客户端显示「台账不可用」并在下次打开面板时重试，不阻塞会话。
-- 只读路由不触发协调者绑定、不写 `notifications`、不 spawn。
+- `admit()` 先查 Host/Origin 围栏（跨站 403），再查 cookie/token（无凭据 401）；exact 注册的路由还要求 `principal.kind === 'owner'`（非 owner 403）；同 path 重复注册会抛。
+- **平台不保证只读**：handler 必须只 import 查询函数（`listTasks`/`getTask`/`recentMessages`/`getSetting`），端点白名单校验（`tasks` / `coordinator`），不调用任何写函数、不触发绑定、不 spawn、不写 `notifications`。
+- 客户端调用：`fetch('api/orchestrator', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ endpoint:'tasks', payload:{} }), signal })`。
+- 降级：非 200/断网 → 显示「台账暂不可用」并保留上次数据，面板不阻塞会话；下次打开/轮询重试。
 
 ## 4. 打包与加载
 
-已验证的形态（ds-bot `package.json` + `client.js` 头部）：
-
-```json
-{
-  "exports": { ".": "./index.js", "./client": "./client.js" },
-  "files": ["index.js", "client.js", "src/host/", ...],
-  "dsh": { "client": { "platform": "web" }, "bundle": { "patch": "./cordis.patch.yml" } }
-}
-```
-
-`client.js`：
-
-```js
-// Generated from src/client by the build; do not edit by hand.
-window.__ModuleLoader__.load({
-  id: 'ds-bot',           // 必须等于 package 名
-  factory: (require) => {
-    const module = { exports: {} }
-    // ... 这里拿到 React：const React = require('react')
-    module.exports = { apply, inject }
-    return module.exports
-  },
-})
-```
-
-- 浏览器模块表提供 React；客户端插件是 cordis 插件（`apply(ctx)` + `inject`），用 `ctx.slots.inject/register` 注册 UI。
-- 构建用 esbuild（ds-bot：`scripts/build-client.mjs`；我们仓库目前无构建，阶段 2 需要加一个最小 `scripts/build-client.mjs`，把 `src/client/` 打成 `client.js`）。
-- 加载路径：profile 的 bundle patch 挂 host 插件即可；客户端 half 由 `dsh.client` 清单发现（模块系统做 `dsh.client` 扫描 + bundle route），不需要再单独注册。
-
-## 5. 与 ds-bot 的冲突评估
-
-| 座位 | ds-bot 用法 | 我们 | 冲突 |
-| --- | --- | --- | --- |
-| `sidebar.workspaces` | 整块换成 TeamSidebar | 不用 | 无 |
-| `sidebar.footer.action` | 账户位（`bot-account`，order -200） | 不用 | 无 |
-| `conversation.session.header` | 单席位，`priority` 抢下 | 不用（用 `.actions`） | 无 |
-| `shell.overlay` | 两个浮层（`bot-computer`、`bot`） | 可选，only if needed | 有多个注册项共存机制，不覆盖 |
-| `sidebar.panellist` / `main` | 不用 | 用 | 无（待装验证） |
-
-## 6. 待装验证清单（装探针后逐条勾）
-
-1. `sidebar.panellist` 注册后图标出现在「插件」下方；`order` 生效；点击 `ctx.layout.selectPanel('orchestrator')` 能打开 `main` 面板页。
-2. `conversation.session.header.actions` 的按钮出现在会话头；组件 props 里能拿到 `sessionId`（拿不到时用 sessions 快照兜底，但要记录）。
-3. `ctx.uiWorkspace.openSession(childSessionId)` 能否切到 `origin:'subagent'` 的子会话；不能时记录错误与退化方案。
-4. `/api/orchestrator` 路由：未登录/跨源被拒，登录后 200；只读端点不产生台账写入。
-5. ds-bot 侧栏、账户位、会话头不受影响；刷新/插件重载后入口仍注册（`ctx.slots.inject` 的生命周期）。
-
-## 7. 建议的阶段 2 实现切分
-
-1. host：`/api/orchestrator` 只读路由 + 查询函数（读台账，不写）。
-2. client：`sidebar.panellist` 图标入口 + `main` 面板页（任务列表、状态色、协调者/子会话跳转按钮、离线降级）。
-3. 会话头按钮（`conversation.session.header.actions`）打开同一面板。
-4. 构建脚本 + `package.json` 的 `dsh.client` / `exports["./client"]` / `files`。
-5. 真机验证 + 测试清单（入口可见可点、面板数据、跳转、离线、ds-bot 不受影响）。
-
-## 7. 对测试四个待明确的结论
-
-1. **入口槽位与 priority**：`sidebar.panellist`，`id:'orchestrator'`，`order:10`（内置插件入口是 `order:0`），**不设 priority**——priority 是单席位（如 `conversation.session.header`）的抢位机制，图标列表是按 `order` 排序，不用 priority。`sidebar.footer.action` 完全不碰（ds-bot 账户位，`id:'bot-account'`）。
-2. **面板形态与跳转**：MVP 用 `main` 面板页（`key:'orchestrator'`，与内置插件页同构），不用 `shell.overlay`；只有需要盖住会话的临时弹层才用 overlay。子会话跳转 `ctx.uiWorkspace.openSession(childSessionId)`（**待装验证**，见 §6-3）；没有 URL/路由可拼，客户端是进程内调用，不是页面跳转。右侧栏不做（不抢 ds-bot 的右侧栏 tab）。
-3. **未绑定协调者**：面板顶部显示「未绑定」，入口照常可点；点击给「先从任意会话用 `task_create` 派第一个任务，会自动绑定协调者」的提示。**不在客户端创建会话或写绑定**（只读约束）。
-4. **时间与刷新**：列表主时间用 `last_event_at`（「最近动静」，与 `task_list` 的 stale 标记同源），另存 `updated_at` 供排序；打开面板拉一次，面板可见时每 5s 轮询，关闭即停；连续失败退避到 30s，并显示「台账暂不可用」，不阻塞会话。
-
-## 8. 客户端产物最小形态（可直接作为阶段 2 骨架）
-
-`package.json`（在现有 host 包上补）：
+`package.json`：
 
 ```json
 {
@@ -173,32 +97,73 @@ window.__ModuleLoader__.load({
   "files": ["index.js", "src/", "client.js", "cordis.patch.yml", "README.md"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "platform": "web" }
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
+    }
   }
 }
 ```
 
-`src/client/index.js`（构建入口，esbuild 打包成根目录 `client.js`）：
+- `dsh.client.inject` 是客户端激活顺序/依赖声明（官方文档要求列出依赖的客户端包）；`dsh.client.external` 用于声明不打进 bundle 的运行时导入（如 `dsh-client-ui-primitives` 之类；不打进 bundle 就必须声明）。
+- **加载方式**：`client.js` 是手写的 `window.__ModuleLoader__.load({ id:'dsh-orchestrator', factory:(require)=>{ const module={exports:{}}; ...; return module.exports } })`，`factory` 返回 `{ apply, inject }` 客户端插件；React 通过 `require('react')` 从浏览器模块表取。官方 `templates/decoration` 就是手写 loader，**MVP 不需要 esbuild**；组件多到值得上构建时再加（esbuild 参照 ds-bot `scripts/build-client.mjs`）。
+- `immediately` 只是预取提示，不是加载开关；不写也能加载。
+- `files` 必须包含 `client.js`，否则装进 profile 后客户端 half 缺失（少一个文件就加载失败）。
+
+## 5. 与 ds-bot 的冲突评估
+
+| 座位 | ds-bot 用法 | 我们 | 冲突 |
+| --- | --- | --- | --- |
+| `sidebar.workspaces` | 整块换 TeamSidebar | 不用 | 无 |
+| `sidebar.footer.action` | 账户位（`bot-account`，order -200） | 不用 | 无 |
+| `sidebar.panellist` / `main` | 不用（occupants 只有 plugin-manager、schedule） | 用 | 无 |
+| `conversation.session.header` | 单席位，`priority` 抢下；不渲染 `.actions` | 不用 | 无（所以按钮改到 `leading`） |
+| `conversation.header.leading` | 不用 | 用（按钮） | 无 |
+| `shell.overlay` | 两个浮层（`bot-computer`、`bot`） | 可选 | 多注册项共存，不覆盖 |
+
+## 6. 待装验证清单（装探针后逐条勾）
+
+1. `sidebar.panellist` 图标出现在「插件」下方；点击打开 `main` 面板页（`ctx.layout.selectPanel('orchestrator')`）。
+2. **ds-bot 的 Bot 模式**下 `conversation.header.leading` 按钮仍可见（这是本次修正的原因）；点击打开面板。
+3. `ctx.uiWorkspace.openSession(childSessionId)` 能切到 `origin:'subagent'` 的子会话；失败则退化为「复制 id + 提示从父会话子代理目录打开」。
+4. `/api/orchestrator`：未登录 401、跨源 403、非 owner 403、正常 200；调用前后台账行数/`settings` 不变（只读断言）。
+5. ds-bot 侧栏、账户位、会话头不受影响；插件重载后入口仍注册（`ctx.slots.inject` 生命周期）。
+
+## 7. 对测试四个待明确的结论
+
+1. **入口槽位与 priority**：`sidebar.panellist`，`id:'orchestrator'`，`order:10`（插件是 0），**不设 priority**；ds-bot 的 `sidebar.footer.action` 完全不碰。
+2. **面板形态与跳转**：`main` 面板页（`key:'orchestrator'`），不是 `shell.overlay`；侧栏行点击被平台固定为 `selectPanel`，因此流程是「侧栏 → 面板 → 打开协调者会话」。子会话跳转 `ctx.uiWorkspace.openSession(childSessionId)`（平台 `ui-subagent.openChild` 同款），无 URL。
+3. **未绑定协调者**：入口照常可点，面板顶部显示「未绑定」+「先从任意会话 task_create 派第一个任务」提示；**客户端不创建会话、不写绑定**。
+4. **时间与刷新**：列表主时间用 `last_event_at`（最近动静，与 `task_list` stale 同源），另存 `updated_at` 供排序；打开拉一次，可见时 5s 轮询，关闭即停；连续失败退避 30s，显示「台账暂不可用」。
+
+## 8. 客户端产物最小形态（骨架）
+
+`src/client/index.js`（手写加载，可直接照抄结构）：
 
 ```js
 import { createElement as h } from 'react'
 
 export const name = 'dsh-orchestrator-client'
-export const inject = ['slots', 'sessions', 'uiWorkspace']
+export const inject = ['slots', 'layout', 'sessions', 'uiWorkspace']
 
 export function apply(ctx) {
-  // 左侧入口
+  // 左侧入口：插件（order 0）下方
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
     name: 'sidebar.panellist', id: 'orchestrator', order: 10, label: () => '任务',
   }, TaskIcon))
-  // 面板页（keyed）
+  // 面板页（keyed，与内置插件页同构）
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main', key: 'orchestrator', locale: 'orchestrator',
   }, TasksPanel))
-  // 会话头按钮（列表槽位，不抢单席位）
-  ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
-    name: 'conversation.session.header.actions', id: 'orchestrator', order: 10,
-    inject: (sessionId) => ({ openPanel: () => ctx.layout.selectPanel('orchestrator'), sessionId }),
+  // 会话头按钮：leading 席位，Bot 模式下也可见；没有 sessionId，只打开面板
+  ctx.slots.inject('conversation.header.leading', () => ctx.slots.register({
+    name: 'conversation.header.leading', id: 'orchestrator',
+    inject: () => ({ openPanel: () => ctx.layout.selectPanel('orchestrator') }),
   }, HeaderButton))
 }
 
@@ -207,14 +172,15 @@ const HeaderButton = ({ openPanel }) => h('button', { type: 'button', onClick: o
 const TasksPanel = () => h('div', null, 'orchestrator tasks')
 ```
 
-构建脚本（`scripts/build-client.mjs`）：用 esbuild 把 `src/client/index.js` 打成 CJS，外层套 `window.__ModuleLoader__.load({ id:'dsh-orchestrator', factory:(require)=>{ const module={exports:{}}; ...; return module.exports } })`。ds-bot 的 `scripts/build-client.mjs` 是参考实现（本机只有其产物，没有源码）；阶段 2 落地时优先复制官方 `templates/decoration` 的构建配置，别手写 loader 协议。
+> 当前会话 id 不在 `leading`/`main` 的 props 里：用 `ctx.uiSession.current` 或 `ctx.sessions.list.getSnapshot()` + `retainedBy.mainView` 兜底。上面是骨架，不是可交付代码。
 
 ## 9. 证据位置
 
-
 - ds-bot 包：`~/.dsh/profiles/desktop/node_modules/ds-bot`（`package.json`、`client.js`、`src/host/channel.js`）
-- ds-bot 客户端槽位注册：`client.js` `shadow(...)` / `ctx.slots.inject` 段（`sidebar.panellist`、`conversation.session.header.actions`、`shell.overlay`）
-- 会话导航：`client.js` `ctx.uiWorkspace.openSession(...)`、`shownSession()`、`HeaderPill({ sessionId, ... })`
-- host 路由：`src/host/channel.js:845`（`ctx.connection.fetch.register`，注释「browser authenticates with its session cookie」）
-- 平台槽位实现：app.asar 内 `@deepseek-ai/dsh-client-ui-plugin-manager`（`sidebar.panellist` + `main` keyed 页）、`@deepseek-ai/dsh-client-ui-entry-customization`（`sidebar.panellist.actions`）、`@deepseek-ai/dsh-client-ui-layout`（`ctx.layout`）、`@deepseek-ai/dsh-client-ui-deliverables` 文档（`sidebarRight.openResource` / `sidebar.right.pane.tab`）
-- 客户端加载：asar 文档「UI plugins in the Web page」「Client module」段（`dsh.client` / `exports["./client"]` / `window.__ModuleLoader__.load`）
+- ds-bot `HeaderPill({ sessionId, … })`：`client.js:34811`；`installHeader` + `BOT_PRIORITY=-100`：`client.js:41712`
+- ds-bot host 路由：`src/host/channel.js:845`（`ctx.connection.fetch.register`，注释 *browser authenticates with its session cookie*）
+- `ConversationHeader` 渲染 `conversation.header.leading`：`conversation-client.js`（`renderSlot("conversation.header.leading", {})`，与 `conversation.session.header` 并列、在其左侧）
+- `ui-subagent` 目录打开子会话：`openChild({ parentSessionId, childSessionId, mode })` → `uiWorkspace.openSession`
+- 平台侧 `sidebar.panellist` + `main` 注册：app.asar `@deepseek-ai/dsh-client-ui-plugin-manager`（`id:'plugins'`、`key: PANEL_ID`、`ctx.layout.selectPanel`）
+- 连接鉴权：asar `client-connection-index.js`（`admit()` 403/401、exact route owner 403、重复 path 抛）
+- 客户端加载：asar 文档「UI plugins in the Web page」「Client module」；官方 `templates/decoration/{client.js,package.json}`（手写 loader、`dsh.client` 字段）
