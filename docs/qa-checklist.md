@@ -509,3 +509,26 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **可测性要求**：`createDispatcher`/工具层需要可注入的 `startActivation`/子会话 runner（测试用假实现），否则容量、settle、双派只能真机验；请给注入点。
 
+## 25. 本轮复验记录（HEAD `1a85b4a`，npm test 162/162，api-probe 33/33）
+
+**§24 subagent + 队列（独立探针 v24，23/23 通过）**：
+
+- 12 连建（cap=1）→ 1 running + 11 pending，无 failed、无报错，排队文案带位置；成功 `startActivation` 恰 1 次。
+- done + 结算后 FIFO 补位（补第 2 个而非第 1 个），总 spawn 2 次、childId 不重复（无双派）。
+- 排队任务 `task_stop` → cancelled、不 spawn；`task_message` → 排队提示、不写 messages、状态不变。
+- `maxQueue=2` 第 3 个排队后拒绝且不落库；重启 `autoResumeQueue` 默认入队派发，`false` 不动。
+- catalog 读不到 → 只 warn 不误判；catalog 查不到 child → `orphaned`。
+- `task_report` 用 childId 归属通过、冒名拒绝；非容量错误（普通异常）→ `failed` + error、不留 ghost pending。
+
+**§21 日志（独立探针 v21，11/11 通过）**：路径 `state/orchestrator/logs/orchestrator-YYYY-MM-DD.jsonl`；事件含 `task.create.requested/created/rejected`（rejected 带 reason+callId）；不出现完整 `user_verbatim`；goal 截断 ≤80（带省略号）；每行合法 JSON；写失败主流程不受影响且只 warn 一次；7 天保留（惰性：首次写入时清理）；>5MB 换新文件且超限文件不再追加。
+
+**§19/§20（独立探针 v19，10/10 通过）**：`waiting_user` 同 title+goal 被去重、仅空白差异 trim 归一、`done` 后可重建；超时无 session 的 pending 启动清理为 `failed`、近期 pending 不动；协调者 prompt 含「不得凭记忆推断 / 先调 task_list·task_status」，普通会话为空。
+
+**当前有效探针**：task1/2/3/4/6/8（单元，已按新 config 9 键与 `waiting_*→orphaned` 边更新）+ v19/v21/v24。**旧 task5/7、binding/b-injection/b-roster/quota 等为 Team 后端/旧额度语义编写，已停用**（代码 162/162 覆盖）。
+
+**待拍板/缺口（不阻塞本次测试，但影响验收判据）**：
+
+1. **§24 #6 与实现不一致**：`reconcile.js` 只按 `catalog` 查不到才 orphaned；父会话关闭后 catalog 仍留有记录，running 任务会保持 running（幽灵），达不到「父会话关闭后标 orphaned」的判据。审查建议：启动对账加 `agents.get(session_id)` 不存在的 running → orphaned；等待态保持原状。需确认后实现。
+2. **未写进设计的迁移边**：`src/state.js` 新增 `waiting_user/waiting_auth → orphaned`，但设计 `7413a2b` 只加了 `pending→failed`；且 reconcile 会把 catalog 缺失的等待态任务标 orphaned——「等待态不 live 也保持」与「catalog 缺失才 orphaned」两种口径需在文档写清。
+3. `maxActive` 仍在 config（默认 8）但队列语义下未使用；文档应标废弃或删除。
+
