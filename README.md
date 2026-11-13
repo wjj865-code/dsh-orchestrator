@@ -115,6 +115,17 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 
 `task_message` 续派成功会把 `waiting_user`/`waiting_auth`/`failed` 拉回 `running`，`task_report` 的 `progress` 也会从等待态恢复，`done` 从等待态会先回 `running` 再完成。
 
+## 协调者不得等待
+
+协调者会话**禁止 `wait_agent` 和任何阻塞等待**：会把当前回合卡住，用户没法再发消息。看进度只用 `task_list` / `task_status`；子任务完成会主动通知；需要等就结束回合，等通知回来再处理。平台 `team:policy` 里有「Lead must wait for required teammates」，本插件的协调者提示会显式覆盖它。
+
+`wait_agent` 是平台按 agent scope 注册的工具，`restrict` 去不掉（`restrictableNames` 里没有），所以用两层保护：
+
+- **执行期 guard**：`ctx.tools.guard` 同步拒绝协调者调 `wait_agent`（返回中文原因）。`task_create` 写入绑定后，**同一回合里顺序执行**的 `wait_agent` 也会被拒；子任务和普通会话不受影响。
+- **系统提示**：`orchestrator:coordinator-policy`（`order:130`）只对协调者会话渲染；绑定发生在 step N，禁令从 **step N+1** 的 prompt 起生效（prompt 每步重新装配）。
+
+时序上**不承诺「首绑回合绝对安全」**：同一条 assistant 消息里并行发出、且在绑定写入前就开始执行的 `wait_agent` 可能漏过（执行顺序不保证）。首绑回合里 `task_create` 之后要么结束回合、要么只做只读查看，别并发等待类工具。阶段 2 用 agent preset 的 `composition.toolFilter` 把协调者工具集从根上固化，运行期 guard/白名单降为兜底。
+
 ## 一次完整流程
 
 1. 用户说「空数据时报表啥也不显示，修一下」。
@@ -168,7 +179,8 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 - **台账快照与自动恢复**：阶段 1 只把损坏库转成可读错误，不写快照、不自动恢复。
 - **orphaned 自动检测/一键重建**：子会话被删后状态会停在 `running`，阶段 1 不自动检测。
 - **30 分钟打扰升级**：`stallRounds` 只保存不生效，阶段 1 只有 `task_list` 的陈旧标记。
-- **协调者白名单的持久声明**：阶段 1 在协调者 agent 已加载时用 `agent.ctx.tools.restrict({ deny })` 做最小收窄（文件/shell/浏览器/web 类）；协调者未加载时只能跳过。真机确认 `spawn_teammate`/`send_message`/`list_agents` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；阶段 3 改由 agent preset 的 `composition.toolFilter` 固化。
+- **协调者白名单的持久声明**：阶段 1 在协调者 agent 已加载时用 `agent.ctx.tools.restrict({ deny })` 做最小收窄（文件/shell/浏览器/web 类）；协调者未加载时只能跳过。真机确认 `spawn_teammate`/`send_message`/`list_agents`/`wait_agent`/`interrupt_agent`/`team_task_*` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；`wait_agent` 由执行期 guard + 动态提示兜底（见上节），其余工具阶段 2 由 agent preset 的 `composition.toolFilter` 固化，运行期白名单降为兜底。
+- **首绑回合的等待时序**：guard 管得住绑定后的同回合顺序调用；同一条 assistant 消息里并行、且在绑定前开始执行的 `wait_agent` 不承诺拦住。
 - **唤醒时序**：通知走 `agent.steer` 直插协调者会话（等价于 TeamService 给 lead 投递时的 `root.steer`），空闲唤醒、忙时 `next-step` 排队；机制证据见 `docs/api-notes.md`。真机忙时排队由维护者冒烟验证。
 - **平台 settlement 通知**：`subagent-settled` 是平台独立链路，不受本插件控制、不写 `notifications`。
 - **headless 收尾竞态**：一次性进程在 5 秒合并窗口内退出时，`steer` 可能抛 `agent initiator scope is disposed`（进程级 initiator 作用域已 dispose），此时消息可能已进 inbox 但没有回合消费，`notifications` 记 `failed` + reason 是正确审计；长驻 desktop/服务进程不受影响。冒烟要在最后一条回报后保持进程活过 `mergeWindowMs` 才能看到 `delivered`。
