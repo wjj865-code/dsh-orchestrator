@@ -100,6 +100,13 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 插件按绑定的会话 id 惰性解析 live agent，所以协调者会话可以在插件加载后再打开；白名单在绑定时安装，并通过 `agent/created` 补装。非法值（0、负数、NaN、Infinity、字符串）一律回落默认，不会把插件带崩。
 
+## 客户端入口与任务面板（阶段 2）
+
+- **槽位**：`sidebar.panellist`（`id:'orchestrator'`、`order:10`，排在「插件」下面）→ `main` 的 `key:'orchestrator'` 任务面板；会话头按钮用 `conversation.header.leading`（单席位，Bot 模式下也可见；不用会被 ds-bot `HeaderPill` 顶掉的 `.header.actions`）。不碰 ds-bot 的 `sidebar.workspaces`/`sidebar.footer.action`/`conversation.session.header`。
+- **流程**：侧栏「任务」→ 面板（面板内「打开协调者会话」）；会话头按钮打开同一面板；每条任务可「打开子会话」，走 `ctx.uiWorkspace.openSession(id)`（与平台 `ui-subagent.openChild` 同款）。
+- **数据**：`/api/orchestrator` 只读 POST（`{ endpoint: 'snapshot' }`）。鉴权由 connection 服务统一负责（401/403、exact 路由 owner-only），handler 只 import 查询函数、只认白名单端点，**不写台账**。面板打开时拉一次、可见时 5s 轮询，失败显示「台账暂不可用」，不阻塞会话。
+- **产物**：`client.js` 是**经典脚本**（`window.__ModuleLoader__.load({ id:'dsh-orchestrator', factory })`，顶层无 import/export），`package.json` 声明 `dsh.client.platform:'web'`、`exports["./client"]`、`files` 含 `client.js`。MVP 无构建；`npm run check:client` 只做语法检查。
+
 ## 真机冒烟清单（隔离 profile）
 
 1. **加载**：6 个 `task_*` 工具出现；日志无「未找到协调者会话」「白名单安装失败」「缺 `agentTeams`」。

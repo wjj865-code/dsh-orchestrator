@@ -1,14 +1,28 @@
 {
   "name": "dsh-orchestrator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, brief rendering, progress reports, interrupt-controlled notifications.",
+  "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, brief rendering, progress reports, interrupt-controlled notifications, and a browser task panel.",
   "type": "module",
   "main": "index.js",
-  "exports": { ".": "./index.js" },
-  "files": ["index.js", "src/", "cordis.patch.yml", "README.md"],
+  "exports": { ".": "./index.js", "./client": "./client.js" },
+  "files": ["index.js", "client.js", "src/", "cordis.patch.yml", "README.md"],
   "engines": { "node": ">=22.15" },
-  "scripts": { "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"" },
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": {
+    "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"",
+    "check:client": "node --check client.js"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  },
   "keywords": ["dsh-plugin", "orchestrator", "tasks"]
 }
