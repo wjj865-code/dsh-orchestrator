@@ -372,7 +372,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **P0 v2 结论**：`b98922c`（文档 `9fb92ae`）复验通过，129/129、api-probe 33/33、13 个独立探针全绿；首绑回合不再有中途收窄，**需重启 DSH 换上新构建后真机复跑**。残留极端：pending 期间绑定若变更（只在原协调者已死时发生）会晚装到旧 agent，实际不可达，留代码审阅。
 
-## 18. 并发额度口径（`maxActive`）
+## 18. 并发额度口径（`maxActive`）— **已被 §24 取代：`maxActive` 废弃，改 `maxQueue` 安全阀**
 
 背景：等待态（`waiting_user`/`waiting_auth`）被算进 `maxActive`，卡在等用户决定的任务占死名额，新建不了。修法：额度只算 `pending` + `running`；`task_list` 的 `active` 语义不变。
 
@@ -466,9 +466,9 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - a. `maxSlots` 与旧 `maxActive` 的关系：任务数超过 `maxActive=8` 但槽位已满时，是继续排队还是仍报 `maxActive` 上限失败？槽位语义下应排队（否则「满了进队列」不成立）。
 - b. 迁移：已有 `running`/`waiting_*` 任务（旧版本创建、无槽位记录）启动时如何归位——补建槽位并绑定，还是保持原样？需要文档口径。
 
-## 23. 协调者轮换（满 8 自动新开会话）
+## 23. 协调者轮换（满 8 自动新开会话）— **已撤销（2026-11-13，改 §24 换 subagent）**
 
-背景：平台 Team 名册不可变、`maxMembers=8`、无移除 API。任务超过 8 个时，`spawnTeammate` 抛 `TEAM_MEMBER_LIMIT`；改为自动新建一个协调者会话接管，旧会话退役。
+背景：平台 Team 名册不可变、`maxMembers=8`、无移除 API。任务超过 8 个时，`spawnTeammate` 抛 `TEAM_MEMBER_LIMIT`；改为自动新建一个协调者会话接管，旧会话退役。**用户改选「dispatch 换 subagent + 容量队列」（§24），本方案废弃。**
 
 | # | 验收点 | 怎么验 | 判据 |
 | --- | --- | --- | --- |
@@ -487,4 +487,25 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - a. 「旧标记 retired」的存储位置（settings key / 新表）；重启后旧会话再次 `task_create` 必须仍被拒。
 - b. 轮换后旧协调者名下已派任务的通知/回报去哪个会话（全局绑定只有一个协调者）；文档写清口径。
 - c. 交接清单里 goal/摘要的截断长度（建议 ≤80 字，与日志一致）。
+
+## 24. dispatch 换 subagent + 容量队列（当前方案）
+
+背景：Team 名册不可变（8 上限、无移除 API）；spike 实测 `startActivation` 起子会话可行、`maxActiveSubagents=N` 并发上限、完成即释放容量、平台不排队。插件自己排队；`maxActive` 废弃，改 `maxQueue=50` 安全阀；`autoResumeQueue` 默认开；协调者不再用 Team 工具面。
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 12 连建不报错 | 容量 N（如 1/3/8）下连续 `task_create` 12 个 | 前 N 个 `running`（各一次 `startActivation`），其余 `pending` 排队（`queued_at` 非空）；不报上限、不 `failed` |
+| 2 | 完成补位不双派 | 完成一个 running 任务 | 队列按 `created_at` FIFO 补 1 个；补位任务 `session_id`=新 childId；每个任务只 spawn 一次，无双派 |
+| 3 | 队列满 `maxQueue` | 容量 1 + 队列 50 已满，再建 | 拒绝且不落库（无 tasks/messages 行）；文案可读 |
+| 4 | 重启自动入队 | `autoResumeQueue=true`（默认）预置 `queued_at` 非空与空但未超时的 pending | 启动后均重新入队并派发；`false` 时不动（文档口径） |
+| 5 | 排队任务 stop/message | `task_stop` 排队任务；`task_message` 排队任务 | stop：移出队列、`cancelled`、不 spawn；message：可读「排队中还没有子会话」、不写 messages、不转 `waiting_user` |
+| 6 | 孤儿兜底 | 父会话关闭后 running 任务；`listChildren` 查询不可用 | 前者标 `orphaned`（卡片/`task_status` 可见），不留幽灵 running；后者只 warn 保留现状，不误判 orphaned；catalog 是历史≠活着 |
+| 7 | 回报归属 | 子会话 `task_report` | `task.session_id` = childId；归属校验通过；冒名仍被拒 |
+| 8 | 旧 Team 任务 | 一条真实旧数据 `sendMessage` 续派 | 结果写进文档：可续派 or 只能只读提示重建 |
+| 9 | 启动参数 | 捕获 `startActivation` 入参 | `provider=spawnProvider`、`delivery:'caller'`、`childId=uuid`、`request.parent`=协调者 agent、`prompt`=渲染文本、`signal`=插件自有 AbortController（非 `exec.signal`） |
+| 10 | 结算驱动 | `activation.result` settle / reject | 均挂 `.catch`；settle 后同步 pump 下一个（单锁串行，防双派） |
+| 11 | 非容量错误 | `startActivation` 抛普通错误 | 任务 `failed`+error（不留 `pending` 幽灵）；容量错误才排队 |
+| 12 | 卡片/跳转 | `task_status`/卡片数据 | 能看出 child/槽位；子会话跳转按 catalog（阶段 2 入口，阶段 1 文档写清） |
+
+**可测性要求**：`createDispatcher`/工具层需要可注入的 `startActivation`/子会话 runner（测试用假实现），否则容量、settle、双派只能真机验；请给注入点。
 
