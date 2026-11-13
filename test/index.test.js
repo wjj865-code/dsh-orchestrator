@@ -7,14 +7,14 @@ import { apply, inject, name } from '../index.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', 'ask_user', 'show_view'] } = {}) {
+function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', 'ask_user', 'show_view'], restrictableTools = knownTools } = {}) {
   const restrictions = []
   return {
     id,
     restrictions,
     ctx: {
       tools: {
-        view: () => ({ knownNames: new Set(knownTools) }),
+        view: () => ({ knownNames: new Set(knownTools), restrictableNames: new Set(restrictableTools) }),
         restrict(filter) { restrictions.push(filter); return () => {} },
       },
     },
@@ -93,6 +93,17 @@ test('协调者白名单：只 deny 已知的危险工具，保留 ask_user/show
   assert.ok(deny.includes('task_report'))
   assert.equal(deny.includes('ask_user'), false)
   assert.equal(deny.includes('show_view'), false)
+}))
+
+test('白名单只取 restrictableNames，不把 scope 内工具当全局工具', withHome(async () => {
+  const agent = makeAgent('s-1', {
+    knownTools: ['read', 'send_message', 'ask_user'],
+    restrictableTools: ['read', 'ask_user'],
+  })
+  const { ctx } = fakeCtx({ agent })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  assert.equal(agent.restrictions.length, 1)
+  assert.deepEqual(agent.restrictions[0].deny, ['read'])
 }))
 
 test('协调者后加载：agent/created 时补装白名单', withHome(async () => {

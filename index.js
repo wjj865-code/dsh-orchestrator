@@ -43,7 +43,9 @@ export async function apply(ctx, rawConfig = {}) {
     if (tools === undefined || typeof tools.restrict !== 'function' || typeof tools.view !== 'function') return false
     let known
     try {
-      known = tools.view(agent)?.knownNames
+      const view = tools.view(agent)
+      // restrict() 只接受全局工具名；view(agent) 收的是 agent 作用域对象（不是 session id）。
+      known = view?.restrictableNames ?? view?.knownNames
     } catch {
       return false
     }
