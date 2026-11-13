@@ -228,7 +228,7 @@
 
 | 任务 | 提交 | 结论 | 证据 | 未过项/备注 |
 | --- | --- | --- | --- | --- |
-| Task 1 | 67a3669 | 通过 | 全量 50/50；独立探针 task1-config 全过（0/负/NaN/Infinity/字符串/null、不传参、未知键、空串） | 测试脚本多 `--disable-warning=ExperimentalWarning`（相对计划的小偏差，无害） |
+| Task 1 | 67a3669 | 通过 | 全量 50/50；独立探针 task1-config 全过（0/负/NaN/Infinity/字符串/null、不传参、未知键、空串）；配置 6 键含 `spawnProvider`（默认 `spawn`、空白/非法回落、去空格） | 测试脚本多 `--disable-warning=ExperimentalWarning`（相对计划的小偏差，无害） |
 | Task 2 | 11f04c2 | 通过 | 8×8 矩阵独立全对；终态无出边；未知状态不抛；错误文案含方向 | |
 | Task 3 | cd26b06 | 通过 | 花括号/引号/伪小节/多行引用/10k 字/emoji/纯函数独立全过；渲染无 JSON 键名且不可 JSON.parse | |
 | Task 4 | e52f858 | 通过 | 三表+WAL+幂等；同毫秒排序稳定；seq 连续；8×20 并发不串号；patch.error 可清空；损坏库文案含路径与 snapshots、无 SQLITE_/堆栈；落盘仅传入目录 | |
@@ -239,7 +239,7 @@
 | Task 9 | a4d90e1/5a97216/652d593/488257f | 通过 | 6 工具注册；DSH_HOME 只落 `state/orchestrator/tasks.sqlite`(+wal/shm)；白名单按 `view(agent).restrictableNames` 求交集（与真实 `restrict()` 校验口径一致，对照 asar 确认）；scope 内工具（send_message）不喂 restrict、view 无该字段时退回 knownNames；通知由回报方 agent 发 target=lead、非自投；缺 sender/未配置协调者记 `skipped` 且 `delivered_at=NULL`；后加载补装；重复 apply 不崩 | 白名单缺口：`spawn_teammate/send_message/list_agents` 不在 `restrictableNames`，deny 不掉（真机 34→21，其余生效），阶段 3 用 `composition.toolFilter`；卸载竞态 `void drain()`→`db.close()` 致通知到达但行丢失（待修） |
 | Task 10 | b7a307d/5a97216 | 通过 | README 落盘/配置表 5 项与 loadConfig 一致/6 工具/完整示例/错误降级/已知局限（R1/R5/R7）齐全；集成冒烟测试真实执行；全量 93/93（终版 100/100） | 真机冒烟：派活/渲染/回报/blocked 即时/R8/白名单主项通过；done 通知未通（`TEAM_NOT_MEMBER`，平台自动结语兜底）→ 修复后复验 |
 
-**总评（2026-11-13，HEAD `8956d89`，105/105）**：Task 1–10 代码级全过；B 通知方案经进程内探针 + Chief 真机冒烟双验证通过（done delivered、sender 离队仍送达、忙时排队、卸载不丢行、单通道不重复计）。剩 1 个审计归类小修（注入失败应记 `failed`+reason，现记 skipped）；白名单 3 个团队控制工具 deny 不掉、平台 settlement 与插件通知的用户体感重复分别留阶段 3 与阶段 2。测试侧具备验收条件。
+**总评（2026-11-13，最终 HEAD `642eba0`，106/106）**：Task 1–10 代码级全过；B 通知方案经进程内探针 + Chief 真机冒烟双验证通过（done delivered、sender 离队仍送达、忙时排队、卸载不丢行、单通道不重复计、注入失败记 failed+reason）。测试侧验收通过。白名单 3 个团队控制工具 deny 不掉留阶段 3，平台 settlement 与插件通知的用户体感重复留阶段 2（均已在 README/裁决中记录）。
 
 **真机冒烟复核（`3be1b99`，问题定位；已由 `8956d89` 修复）**：通——插件加载、`task_create` 真派子会话并跑模型回合、brief 进子会话、回报入台账、blocked 即时通知在协调者回合中插入（R8）、白名单真实生效（协调者工具 34→21，read/write/pwsh/glob/grep/skill/web_search/web_fetch/task_report 移除）。不通——done 通知行 `failed`，根因 `TEAM_NOT_MEMBER`：fresh 子任务回报完回合即结束，5s 合并窗口后 sender 已离 roster；窗口设 0 同样失败（发送发生在子会话回合结束之后）。测试侧已按两种失败点（membership 抛 / sendAdmitted 抛）在进程内构造：均记 `failed`+`delivered_at=NULL`+可读 warn、不崩，证明是时序/生命周期问题而非落库丢失。
 
@@ -267,7 +267,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 3 | 通过 | 真实忙时排队由 Chief 冒烟：协调者回合中注入、下一步边界交付（R8 过） |
 | 4 | 通过 | 插件只走 steer（0 次 `sendMessage`、0 次 `membership`），`notifications` 行数 = 注入次数；平台 settlement 不写行（api-notes §6） |
 | 5 | 通过 | 窗口内卸载：sent=1 / rows=1、`delivered_at` 非空；DSH_HOME 只含 orchestrator 库（回归由红转绿） |
-| 6 | 部分 | `spawnProvider` 走 config ✓、旧库自动补 `reason` ✓；但 `steer` 抛错时 `index.js` 捕获后 `return false` → notify 记 `skipped`、`reason=null`，而 api-notes §6 说投递失败应 `failed`+reason → 审计归类缺口，待小修 |
+| 6 | 通过 | `spawnProvider` 走 config（默认 `spawn`、空白/非法回落、去空格）✓；旧库自动补 `reason` ✓；`steer` 抛错记 `failed`+`reason`、`delivered_at=NULL`、可读 warn ✓（`642eba0`） |
 
-**待修（小，审计口径）**：`index.js:104-110` 注入失败 `return false` 被 notify 当成 skip；改为抛错（或返回可区分标记）让失败写 `failed` + `reason`。修后只需复跑「steer 抛错」一条，其余 §15 项已锁定。
+**审计归类缺口已关闭（`642eba0`）**：`index.js` 注入失败不再吞成 `false`，异常交给 notifier 记 `failed`+`reason`；「steer 抛错」独立探针复跑通过，§15 六项全绿。
 
