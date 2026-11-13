@@ -93,12 +93,13 @@ export function createTools({ db, dispatcher, notifier, config, bindCoordinator,
     }), async (args, exec) => {
       const errors = validateBrief(args)
       if (errors.length > 0) return `任务描述不完整：${errors.join('；')}。补齐后再派。`
+      const binding = await bind(exec?.agent)
+      // 额度检查必须紧贴 createTask，中间不能再有 await，否则并发调用会一起通过检查。
       const quota = listQuotaTasks(db)
       if (quota.length >= maxActive) {
         const occupying = quota.map(task => `- ${task.id}｜${task.title}｜${labelOf(task.status)}`).join('\n')
         return `活跃任务已达上限 ${maxActive}，当前占用：\n${occupying}\n可以先 task_stop 或等它们结束。`
       }
-      const binding = await bind(exec?.agent)
       const task = createTask(db, { brief: args, coordinatorSession: binding?.id ?? coordinatorSession })
       const rendered = `【任务编号】${task.id}\n${renderBrief(args)}`
       addMessage(db, task.id, { kind: 'brief', rendered })

@@ -149,6 +149,18 @@ test('done/cancelled 不计额度，等待态与运行态混合只算运行态',
   db.close()
 })
 
+test('并发 12 个 task_create 不超发，拒绝不落行', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const results = await Promise.all(Array.from({ length: 12 }, (_, i) =>
+    call(tools, 'task_create', sampleBrief({ title: `并发${i}` }))))
+  assert.equal(results.filter(text => /已派发/.test(text)).length, 8)
+  assert.equal(results.filter(text => /活跃任务已达上限 8/.test(text)).length, 4)
+  assert.equal(listTasks(db).length, 8)
+  assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 8)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages').get().n, 8)
+  db.close()
+})
+
 test('task_create：活跃上限', async () => {
   const { db, tools } = await setup()
   const db2 = await openLedger(tempDir())
