@@ -235,6 +235,7 @@
 | Task 5 | 2f3c322 | 通过 | 四方法透传、重试总调用 4 次、惰性 agent 可读错误、prompt 无 JSON、slug 合法；api-probe 独立复跑 16/16 | 平台限制：协调者不能给自己发，通知须由回报子任务发（Task 6/7/9 按 api-notes §4 接线） |
 | Task 6 | 5898843 | 通过 | 分级映射、progress 零投递、单条/3 条合并文案、merged_into 指向首条、失败行 delivered_at=NULL、落库、二次 drain 不重复、timer 不泄漏 | 最终发送函数在 index.js（Task 9），「无 sender 只 warn 不投递」留到 Task 9 验 |
 | Task 7 | 3a5a979 | 通过 | 6 工具对象根 schema 无 min/max、render 返回 text 数组；create 上限/spawn 失败留 pending+error；list stale 31/29；message 重试转 waiting_user+error+失败行；report 四态/非法 status 不落库/重复 done 不重复通知；8 路并发不串号 | 重复回报会先写 report 消息再报错（可接受）；失败文案写死「已重试 3 次」（生产 dispatcher 恒有 sendReliable，无害） |
+| Task 8 | f572730 | 通过 | 8 状态文案/色值全对、未知状态回落、80/81/自定义 maxLength 截断边界、字段透传；全量 84/84 | 低危缺陷：emoji 落在 80 code unit 边界时会截出半个代理对（乱码），建议阶段 2 渲染前修，不影响阶段 1 验收 |
 | Task 6 | | | | |
 | Task 7 | | | | |
 | Task 8 | | | | |
