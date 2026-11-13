@@ -68,7 +68,21 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 
 决定（阶段 1 最小实现）：协调者 agent 可解析时，对 `agent.ctx.tools` 用 `deny` 列表限制文件/shell/浏览器/web 类工具；取 `view(agent).restrictableNames` 求交集再 `restrict`，避免未知名字抛错。协调者当时未加载时跳过并 warn，靠 `agent/created` 补装。
 
-**已知缺口（真机确认）**：`spawn_teammate` / `send_message` / `list_agents` 是平台按 agent scope 注册的团队工具，不在 `restrictableNames` 里，`tools.restrict({deny})` 去不掉；真机冒烟里协调者工具 34→21，这三个仍在。阶段 3 用 agent preset 的 `composition.toolFilter` 固化。
+**已知缺口（真机确认）**：`spawn_teammate` / `send_message` / `list_agents` 是平台按 agent scope 注册的团队工具，不在 `restrictableNames` 里，`tools.restrict({deny})` 去不掉；`wait_agent` 同样是 `register(scoped.tools.register(defineTool({ name: "wait_agent" ... })))` 的 scope 注册，也去不掉。真机冒烟里协调者工具 34→21，这些仍在。阶段 2 用 agent preset 的 `composition.toolFilter` 固化。
+- 机制证据：`view(scope)` 只把**继承来的全局工具**同时加进 `knownNames` 和 `restrictableNames`；`own.tools`（scope 内注册）只加进 `knownNames`，而 `restrict()` 校验用的是 `restrictableNames`。
+
+## 8. `wait_agent` 等待禁令（P0）
+
+`wait_agent` 会阻塞当前模型回合；白名单去不掉它，所以运行期用两层保护：
+
+- **系统提示（按会话动态）**：`inject` 必须包含 `systemPrompt`；注册
+  `ctx.systemPrompt.context({ name: 'orchestrator:coordinator-policy', order: 130, interpolate: false, text: context => ... })`。
+  - `order` 用数字（`context()` 要求 finite）；`text(context)` 在每次 `systemPrompt.assemble` 时调用，`context.agent` 就是当前会话。
+  - 渲染时现查 `config.coordinatorSession ?? settings.coordinator_session_id`，只有 `context.agent.id` 等于协调者才返回禁令，其他会话/子会话返回 `''`，不会串会话；重绑后自动跟着变。
+  - 时序：绑定发生在 step N，step N+1 的 prompt 起带禁令；step N 的请求已经组装完，不能承诺首绑回合一定带提示。
+- **执行期 guard（同一回合也能拦）**：`ctx.tools.guard(exec => string | undefined)` 是同步、单调的拒绝；返回原因字符串即拒绝，后续监听器无法翻案。guard 在插件 apply 时注册、每次调用时现查绑定 id：只拒绝 `exec.name === 'wait_agent' && exec.agent.id === 协调者`，子任务/普通会话照常。
+  - 因为 guard 不依赖工具表，`task_create` 写入绑定后，**同一回合里顺序执行的 `wait_agent`** 也会被拒绝；同一条 assistant 消息里并行发出、且在绑定写入前就开始执行的 `wait_agent` 仍可能漏过（执行顺序不保证），所以「首绑回合绝对安全」不承诺。
+- 阶段 2 用 agent preset 的 `composition.toolFilter` 从工具表层面根治，运行期白名单/guard 降为兜底。
 
 ## 6. 通知投递与审计口径
 

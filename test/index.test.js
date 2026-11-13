@@ -32,12 +32,21 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
   const listeners = new Map()
   const sent = []
   const disposers = []
+  const guards = []
+  const promptContexts = []
   const ctx = {
     logger: {
       warn(message) { warnings.push(message) },
       info(message) { infos.push(message) },
     },
-    tools: { register(tool) { registered.push(tool); return () => {} } },
+    tools: {
+      register(tool) { registered.push(tool); return () => {} },
+      guard(guard) { guards.push(guard); return () => {} },
+    },
+    systemPrompt: {
+      getContextOrder: () => 125,
+      context(entry) { promptContexts.push(entry); return () => {} },
+    },
     get: () => ({ get: id => live.get(id) }),
     on(event, handler) { listeners.set(event, handler); return () => {} },
     effect(callback) { disposers.push(callback()); return () => {} },
@@ -48,7 +57,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       listMembers() { return [] },
     },
   }
-  return { ctx, registered, warnings, infos, listeners, sent, disposers, agent, live }
+  return { ctx, registered, warnings, infos, listeners, sent, disposers, agent, live, guards, promptContexts }
 }
 
 function withHome(fn) {
@@ -65,9 +74,9 @@ function withHome(fn) {
   }
 }
 
-test('inject 声明包含 tools、agentTeams、agents', () => {
+test('inject 声明包含 tools、agentTeams、agents、systemPrompt', () => {
   assert.equal(name, 'dsh-orchestrator')
-  assert.deepEqual(new Set(inject), new Set(['tools', 'agentTeams', 'agents']))
+  assert.deepEqual(new Set(inject), new Set(['tools', 'agentTeams', 'agents', 'systemPrompt']))
 })
 
 test('apply 注册 6 个工具，只写 $DSH_HOME/state/orchestrator', withHome(async home => {
@@ -305,6 +314,50 @@ test('白名单只取 restrictableNames，不把 scope 内工具当全局工具'
   await apply(ctx, { coordinatorSession: 's-1' })
   assert.equal(agent.restrictions.length, 1)
   assert.deepEqual(agent.restrictions[0].deny, ['read'])
+}))
+
+test('wait_agent 是 scope 注册，不在 restrictableNames 时 deny 不包含它', withHome(async () => {
+  const agent = makeAgent('s-1', {
+    knownTools: ['read', 'wait_agent', 'spawn_teammate', 'ask_user'],
+    restrictableTools: ['read', 'ask_user'],
+  })
+  const { ctx } = fakeCtx({ agent })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const deny = agent.restrictions[0].deny
+  assert.ok(deny.includes('read'))
+  assert.equal(deny.includes('wait_agent'), false)
+  assert.equal(deny.includes('spawn_teammate'), false)
+}))
+
+test('系统提示只渲染给已绑定协调者，绑定后下一步生效', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const other = makeAgent('s-2')
+  const { ctx, registered, promptContexts } = fakeCtx({ agents: [s1, other] })
+  await apply(ctx, {})
+  assert.equal(promptContexts.length, 1)
+  const entry = promptContexts[0]
+  assert.equal(entry.order, 130)
+  assert.equal(entry.interpolate, false)
+  assert.equal(entry.text({ agent: s1 }), '')
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.match(entry.text({ agent: s1 }), /禁止使用 wait_agent/)
+  assert.match(entry.text({ agent: s1 }), /task_list \/ task_status/)
+  assert.equal(entry.text({ agent: other }), '')
+}))
+
+test('guard 拒绝协调者的 wait_agent，子任务不受影响', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const other = makeAgent('s-2')
+  const { ctx, registered, guards } = fakeCtx({ agents: [s1, other] })
+  await apply(ctx, {})
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.equal(guards.length, 1)
+  const guard = guards[0]
+  assert.match(guard({ name: 'wait_agent', agent: s1 }), /禁止阻塞等待/)
+  assert.equal(guard({ name: 'wait_agent', agent: other }), undefined)
+  assert.equal(guard({ name: 'task_list', agent: s1 }), undefined)
 }))
 
 test('协调者后加载：agent/created 时补装白名单', withHome(async () => {

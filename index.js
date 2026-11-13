@@ -9,10 +9,16 @@ import { createTools } from './src/tools.js'
 import { injectNotification } from './src/inject.js'
 
 export const name = 'dsh-orchestrator'
-export const inject = ['tools', 'agentTeams', 'agents']
+export const inject = ['tools', 'agentTeams', 'agents', 'systemPrompt']
 
 const COORDINATOR_KEY = 'coordinator_session_id'
 const COORDINATOR_INVALID_HINT = '协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定。'
+const WAIT_AGENT_DENIAL = '协调者禁止阻塞等待：不要调用 wait_agent；查看进度用 task_list / task_status，本回合没有别的事就立即结束回合。'
+const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则：
+- 禁止使用 wait_agent 或任何阻塞等待、轮询；不要 sleep，不要反复查询来等子任务。
+- 查看进度只用 task_list / task_status。
+- 子任务完成或需要你决定时会主动通知你；收到通知再行动。
+- 本回合没有别的事就立即结束回合；通知会开启新回合。`
 
 // 协调者只做协调：这些是设计 §10 明令禁止或属于别人职责的工具。
 const COORDINATOR_DENY = [
@@ -137,6 +143,26 @@ export async function apply(ctx, rawConfig = {}) {
     if (agent !== undefined && id !== undefined && agent.id === id) restrictCoordinator(agent)
   })
 
+  // 白名单去不掉 agent scope 注册的 wait_agent，所以在执行层再拦一道。
+  // guard 在绑定后对后续调用立即生效，连 task_create 当回合的 wait_agent 也能拒绝。
+  const guardDisposer = ctx.tools.guard?.(exec => {
+    if (exec?.name !== 'wait_agent') return undefined
+    const id = resolvedCoordinatorId()
+    if (id === undefined || exec.agent?.id !== id) return undefined
+    return WAIT_AGENT_DENIAL
+  })
+
+  // 系统提示只给当前已绑定的协调者；按回合动态渲染，非协调者返回空。
+  const promptDisposer = ctx.systemPrompt?.context?.({
+    name: 'orchestrator:coordinator-policy',
+    order: 130,
+    interpolate: false,
+    text: context => {
+      const id = resolvedCoordinatorId()
+      return id !== undefined && context?.agent?.id === id ? COORDINATOR_POLICY : ''
+    },
+  })
+
   const dispatcher = createDispatcher({
     agentTeams: ctx.agentTeams,
     getAgent: resolveCoordinator,
@@ -177,7 +203,7 @@ export async function apply(ctx, rawConfig = {}) {
   }).map(tool => ctx.tools.register(tool))
 
   ctx.effect?.(() => async () => {
-    for (const dispose of [...restrictionDisposers, ...toolDisposers].reverse()) {
+    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
     await notifier.flushNow()
