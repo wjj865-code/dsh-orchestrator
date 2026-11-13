@@ -8,6 +8,7 @@ import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
 import { createQueue } from './src/queue.js'
 import { reconcileOrphans } from './src/reconcile.js'
+import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
 
@@ -267,9 +268,26 @@ export async function apply(ctx, rawConfig = {}) {
     db, dispatcher, queue, notifier, config, bindCoordinator, coordinatorStatus, logger,
   }).map(tool => ctx.tools.register(tool))
 
+  // 客户端只读路由：鉴权由 connection 服务统一负责；handler 只查台账、不写。
+  const connection = ctx.get?.('connection') ?? ctx.connection
+  let routeDisposer = () => {}
+  if (typeof connection?.fetch?.register === 'function') {
+    try {
+      routeDisposer = connection.fetch.register({
+        ...HOST_ROUTE_OPTIONS,
+        fetch: createHostRoute({ db, coordinatorStatus, staleMinutes: config.staleMinutes }),
+      })
+      ctx.logger?.info?.(`dsh-orchestrator: 只读路由已注册 ${HOST_ROUTE}`)
+    } catch (error) {
+      warnings(`dsh-orchestrator: 只读路由注册失败：${error?.message ?? error}`)
+    }
+  } else {
+    warnings('dsh-orchestrator: 缺少 connection 服务，/api/orchestrator 只读路由不可用')
+  }
+
   ctx.effect?.(() => async () => {
     queue.stop()
-    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer].reverse()) {
+    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, routeDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
     await notifier.flushNow()

@@ -103,17 +103,15 @@ ctx.effect(() => ctx.connection.fetch.register({
         "@deepseek-ai/dsh-client-ui-sidebar",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-layout",
-        "@deepseek-ai/dsh-client-ui-workspace",
-        "@deepseek-ai/dsh-client-ui-session"
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
   }
 }
 ```
 
-- `dsh.client.inject` 是**加载/预取 metadata，不是激活顺序**（client-runner 注释原文：*inject edges are informational … never apply sequencing*）；列依赖的客户端包只为预取提示。这里列的是我们用到的槽位/服务 owner：`ui-sidebar`（`sidebar.panellist`）、`ui-conversation`（`conversation.header.leading`）、`ui-layout`（`main` / `ctx.layout`）、`ui-workspace`（`uiWorkspace.openSession`）、`ui-session`（`ctx.sessions`）。`dsh.client.external` 用于声明不打进 bundle 的运行时导入（如 `dsh-client-ui-primitives`；不打进 bundle 就必须声明）。
-- **加载方式是经典脚本，不是 ESM**：`client.js` 由 `document.createElement("script")` 加载（asar `@deepseek-ai/dsh-client-modules/lib/client.js` 的 `defaultLoadBundle`），所以**顶层不能有 `import`**，否则直接 SyntaxError。骨架必须写成官方 `templates/decoration/client.js` 的形态：`window.__ModuleLoader__.load({ id, factory(require){ const h = require('react').createElement; …; return { inject, apply } } })`。想用 ESM/JSX 就得先 esbuild 打成经典脚本再提交产物。
-- **加载方式**：`client.js` 是手写的 `window.__ModuleLoader__.load({ id:'dsh-orchestrator', factory:(require)=>{ const module={exports:{}}; ...; return module.exports } })`，`factory` 返回 `{ apply, inject }` 客户端插件；React 通过 `require('react')` 从浏览器模块表取。官方 `templates/decoration` 就是手写 loader，**MVP 不需要 esbuild**；组件多到值得上构建时再加（esbuild 参照 ds-bot `scripts/build-client.mjs`）。
+- `dsh.client.inject` 是**加载/预取 metadata，不是激活顺序**（client-runner 注释原文：*inject edges are informational … never apply sequencing*）；列依赖的客户端包只为预取提示。这里列的是我们用到的槽位/服务 owner：`ui-sidebar`（`sidebar.panellist`）、`ui-conversation`（`conversation.header.leading`）、`ui-layout`（`main` / `ctx.layout`）、`ui-workspace`（`uiWorkspace.openSession`）。`dsh.client.external` 用于声明不打进 bundle 的运行时导入（如 `dsh-client-ui-primitives`；不打进 bundle 就必须声明）。
+- **加载方式是经典脚本，不是 ESM**：`client.js` 由 `document.createElement("script")` 加载（asar `@deepseek-ai/dsh-client-modules/lib/client.js` 的 `defaultLoadBundle`），所以**顶层不能有 `import`**，否则直接 SyntaxError。骨架必须写成官方 `templates/decoration/client.js` 的形态：`window.__ModuleLoader__.load({ id, factory(require){ const h = require('react').createElement; …; return { inject, apply } } })`。想用 ESM/JSX 就得先 esbuild 打成经典脚本再提交产物；**MVP 直接手写 `client.js`，不需要 esbuild**。
 - `immediately` 只是预取提示，不是加载开关；不写也能加载。
 - `files` 必须包含 `client.js`，否则装进 profile 后客户端 half 缺失（少一个文件就加载失败）。
 
@@ -153,7 +151,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-orchestrator',
   factory: (require) => {
     const h = require('react').createElement
-    const inject = ['slots', 'layout', 'sessions', 'uiWorkspace']
+    const inject = ['slots', 'layout', 'uiWorkspace']
 
     const TaskIcon = () => h('span', { 'aria-hidden': true }, '\u25c6')
     const HeaderButton = ({ openPanel }) => h('button', { type: 'button', onClick: openPanel }, '任务')
@@ -164,9 +162,9 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
         name: 'sidebar.panellist', id: 'orchestrator', order: 10, label: () => '任务',
       }, TaskIcon))
-      // 面板页（keyed，与内置插件页同构）
+      // 面板页（keyed，与内置插件页同构；不注册 locale 字典就用字面量）
       ctx.slots.inject('main', () => ctx.slots.register({
-        name: 'main', key: 'orchestrator', locale: 'orchestrator',
+        name: 'main', key: 'orchestrator',
       }, TasksPanel))
       // 会话头按钮：leading 是单席位，不带 id
       ctx.slots.inject('conversation.header.leading', () => ctx.slots.register({
@@ -187,8 +185,16 @@ window.__ModuleLoader__.load({
 - ds-bot 包：`~/.dsh/profiles/desktop/node_modules/ds-bot`（`package.json`、`client.js`、`src/host/channel.js`）
 - ds-bot `HeaderPill({ sessionId, … })`：`client.js:34811`；`installHeader` + `BOT_PRIORITY=-100`：`client.js:41712`
 - ds-bot host 路由：`src/host/channel.js:845`（`ctx.connection.fetch.register`，注释 *browser authenticates with its session cookie*）
-- `ConversationHeader` 渲染 `conversation.header.leading`：`conversation-client.js`（`renderSlot("conversation.header.leading", {})`，与 `conversation.session.header` 并列、在其左侧）
-- `ui-subagent` 目录打开子会话：`openChild({ parentSessionId, childSessionId, mode })` → `uiWorkspace.openSession`
-- 平台侧 `sidebar.panellist` + `main` 注册：app.asar `@deepseek-ai/dsh-client-ui-plugin-manager`（`id:'plugins'`、`key: PANEL_ID`、`ctx.layout.selectPanel`）
-- 连接鉴权：asar `client-connection-index.js`（`admit()` 403/401、exact route owner 403、重复 path 抛）
-- 客户端加载：asar 文档「UI plugins in the Web page」「Client module」；官方 `templates/decoration/{client.js,package.json}`（手写 loader、`dsh.client` 字段）
+- `ConversationHeader` 渲染 `conversation.header.leading`：asar `@deepseek-ai/dsh-client-ui-conversation`（`renderSlot("conversation.header.leading", {})`，与 `conversation.session.header` 并列、在其左侧）
+- `ui-subagent` 目录打开子会话：asar `@deepseek-ai/dsh-client-ui-subagent`（`openChild({ parentSessionId, childSessionId, mode })` → `uiWorkspace.openSession`）
+- 平台侧 `sidebar.panellist` + `main` 注册：asar `@deepseek-ai/dsh-client-ui-plugin-manager`（`id:'plugins'`、`key: PANEL_ID`、`ctx.layout.selectPanel`）
+- 连接鉴权：asar `@deepseek-ai/dsh-client-connection`（`admit()` 403/401、exact route owner 403、重复 path 抛）
+- 客户端加载：asar `@deepseek-ai/dsh-client-modules`（`defaultLoadBundle` 的 `document.createElement("script")`）；官方 `templates/decoration/{client.js,package.json}`（手写 loader、`dsh.client` 字段）
+
+## 10. 阶段 2 落地位置
+
+- `client.js`：根目录经典脚本产物（侧栏入口 / `main` 面板 / `conversation.header.leading` 按钮；面板 5s 轮询 + 失败提示 + 打开协调者/子会话）。
+- `src/host-route.js`：`/api/orchestrator` 只读 handler（端点白名单 `snapshot`；只 import 查询函数）。
+- `index.js`：`ctx.get('connection').fetch.register` 注册路由，卸载时 dispose；缺服务只 warn。
+- `package.json`：`exports["./client"]`、`files` 含 `client.js`、`dsh.client.platform/inject`。
+- 验收：`test/client.test.js`（注册捕获 + 经典脚本解析 + 清单）、`test/host-route.test.js`（白名单/零写入/降级）、`node docs/probes/qa-stage2-slots.mjs client.js`（测试维护的 L1 探针）。

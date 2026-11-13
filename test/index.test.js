@@ -27,6 +27,7 @@ function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', '
 function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
+  const routes = []
   const warnings = []
   const infos = []
   const listeners = new Map()
@@ -47,7 +48,11 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       getContextOrder: () => 125,
       context(entry) { promptContexts.push(entry); return () => {} },
     },
-    get: () => ({ get: id => live.get(id) }),
+    get(name) {
+      if (name === 'agents') return { get: id => live.get(id) }
+      if (name === 'connection') return { fetch: { register(spec) { routes.push(spec); return () => {} } } }
+      return undefined
+    },
     on(event, handler) { listeners.set(event, handler); return () => {} },
     effect(callback) { disposers.push(callback()); return () => {} },
     agentTeams: {
@@ -71,7 +76,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       async listChildren() { return [{ id: spawnResult?.member?.id ?? 'm-1', mode: 'continuable', label: 'x', activity: 'inactive' }] },
     },
   }
-  return { ctx, registered, warnings, infos, listeners, sent, disposers, agent, live, guards, promptContexts }
+  return { ctx, registered, routes, warnings, infos, listeners, sent, disposers, agent, live, guards, promptContexts }
 }
 
 function withHome(fn) {
@@ -626,6 +631,25 @@ test('重启对账：running 子会话不 live 标 orphaned；waiting 不 live �
   assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(waitingTask.id).status, 'waiting_auth')
   db.close()
   await disposers[0]()
+}))
+
+test('注册 /api/orchestrator 只读路由：POST + buffered + snapshot', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const { ctx, routes } = fakeCtx({ agents: [s1] })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const route = routes.find(spec => spec.path === '/api/orchestrator')
+  assert.ok(route !== undefined, '未注册只读路由')
+  assert.deepEqual(route.methods, ['POST'])
+  assert.equal(route.requestBody, 'buffered')
+  const response = await route.fetch(new Request('http://localhost/api/orchestrator', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ endpoint: 'snapshot' }),
+  }))
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.equal(body.ok, true)
+  assert.deepEqual(body.coordinator, { id: 's-1', live: true })
 }))
 
 test('cordis.patch.yml 指向 dsh-orchestrator', () => {
