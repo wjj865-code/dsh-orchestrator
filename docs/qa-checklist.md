@@ -240,6 +240,8 @@
 | Task 10 | b7a307d/5a97216 | 通过 | README 落盘/配置表 5 项与 loadConfig 一致/6 工具/完整示例/错误降级/已知局限（R1/R5/R7）齐全；集成冒烟测试真实执行；全量 93/93（终版 94/94） | 真机冒烟（装 profile、子会话创建、done 通知进协调者、忙时排队、白名单无失败日志）归 Chief，R8 凭冒烟证据关闭 |
 
 **总评（2026-11-13，最终 HEAD `488257f`，100/100）**：Task 1–10 全部通过，阶段 1 可交付；此前的 2 个低危项（emoji 截断、缺 sender 误记 delivered）已修复并复验关闭。仅剩 R8 唤醒时序与白名单真实安装由 Chief 真机冒烟关闭。
+
+**真机冒烟复核（Chief 2026-11-13，HEAD `3be1b99`）**：建任务/子会话/回报/唤醒/台账 task+message 行都成立；但 `notifications` 表为空与「通知到达」不一致，违反「每次投递尝试一行」的口径。测试侧独立复现为**卸载竞态**：`index.js:118-119` 先 `void notifier.drain()` 再 `db.close()`，合并窗口内的 done 通知已发出（sent=1）但落库报 `database is not open`（rows=0，warn「通知记录失败」）；正常等窗口 flush 再卸载则 rows=1。建议阶段 1 收尾修：disposer 改 async，`await drain()` 后再 close，并补回归用例；另把「通知到达」的真实来源（notifier team 消息 vs 平台自动投递子任务回复）写进 `docs/api-notes.md`。
 | Task 6 | | | | |
 | Task 7 | | | | |
 | Task 8 | | | | |
