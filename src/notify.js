@@ -34,7 +34,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
       if (firstId === undefined) firstId = id
     }
   }
-  const recordSkipped = items => { for (const item of items) recordOne(item, 'skipped') }
+  const recordSkipped = (items, reason = null) => { for (const item of items) recordOne(item, 'skipped', null, reason) }
   const recordFailed = (items, error) => {
     const reason = error?.message ?? String(error)
     for (const item of items) recordOne(item, 'failed', null, reason)
@@ -52,11 +52,16 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     }
     if (result !== null && typeof result?.then === 'function') {
       return result.then(
-        value => { if (value === false) recordSkipped(items); else recordDelivered(items) },
+        value => {
+          if (value === false) recordSkipped(items)
+          else if (value?.skipped === true) recordSkipped(items, value.reason ?? null)
+          else recordDelivered(items)
+        },
         error => recordFailed(items, error),
       )
     }
     if (result === false) { recordSkipped(items); return undefined }
+    if (result?.skipped === true) { recordSkipped(items, result.reason ?? null); return undefined }
     recordDelivered(items)
     return undefined
   }

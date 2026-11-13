@@ -44,10 +44,22 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, notifier, config }) {
+export function createTools({ db, dispatcher, notifier, config, bindCoordinator, coordinatorStatus }) {
   const maxActive = config?.maxActive ?? 8
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
+  const bind = typeof bindCoordinator === 'function'
+    ? bindCoordinator
+    : async () => ({ id: config?.coordinatorSession, live: true })
+  const status = typeof coordinatorStatus === 'function'
+    ? coordinatorStatus
+    : () => ({ id: config?.coordinatorSession, live: true })
+  const invalidHint = () => {
+    const value = status()
+    return value?.id !== undefined && value.live === false
+      ? '协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定。'
+      : ''
+  }
 
   const sendFollowup = async (target, message, signal) => {
     if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal)
@@ -81,7 +93,8 @@ export function createTools({ db, dispatcher, notifier, config }) {
       if (errors.length > 0) return `任务描述不完整：${errors.join('；')}。补齐后再派。`
       const active = listTasks(db, { active: true })
       if (active.length >= maxActive) return `活跃任务已达上限 ${maxActive}，先完成或停止一些任务。`
-      const task = createTask(db, { brief: args, coordinatorSession })
+      const binding = await bind(exec?.agent)
+      const task = createTask(db, { brief: args, coordinatorSession: binding?.id ?? coordinatorSession })
       const rendered = `【任务编号】${task.id}\n${renderBrief(args)}`
       addMessage(db, task.id, { kind: 'brief', rendered })
       let member
@@ -94,12 +107,15 @@ export function createTools({ db, dispatcher, notifier, config }) {
         })
       } catch (error) {
         const reason = error?.message ?? String(error)
-        const message = reason.startsWith('未找到协调者会话') ? reason : `子会话创建失败：${reason}`
+        const base = reason.startsWith('未找到协调者会话') ? reason : `子会话创建失败：${reason}`
+        const hint = invalidHint()
+        const message = hint === '' ? base : `${base}\n${hint}`
         setTaskError(db, task.id, message)
         throw new Error(message)
       }
       transition(db, task.id, 'running', { sessionId: member.id, target: member.name })
-      return `任务 ${task.id}「${task.title}」已派发，子会话 ${member.name}。`
+      const hint = invalidHint()
+      return `任务 ${task.id}「${task.title}」已派发，子会话 ${member.name}。${hint === '' ? '' : `\n${hint}`}`
     }),
 
     wrap('task_list', '列出任务。默认只列活跃任务（pending/running/waiting），active=false 时连同历史一起列出。', objectSchema({
@@ -199,7 +215,8 @@ export function createTools({ db, dispatcher, notifier, config }) {
         sender: exec?.agent,
         signal: exec?.signal,
       })
-      return `已记录任务 ${next.id} 的 ${args.status} 回报。`
+      const hint = invalidHint()
+      return `已记录任务 ${next.id} 的 ${args.status} 回报。${hint === '' ? '' : `\n${hint}`}`
     }),
   ]
 }

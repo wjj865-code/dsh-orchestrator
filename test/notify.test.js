@@ -120,6 +120,23 @@ test('send 返回 false 时落 skipped 而不是 delivered', async () => {
   db.close()
 })
 
+test('send 返回 skipped 时落 skipped + reason', async () => {
+  const db = await openLedger(tempDir())
+  const notifier = createNotifier({
+    mergeWindowMs: 5,
+    send: () => ({ skipped: true, reason: '协调者会话已失效' }),
+    record: entry => addNotification(db, entry),
+    onWarn: () => {},
+  })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成' })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const row = db.prepare('SELECT status, delivered_at, reason FROM notifications').get()
+  assert.equal(row.status, 'skipped')
+  assert.equal(row.delivered_at, null)
+  assert.match(row.reason, /协调者会话已失效/)
+  db.close()
+})
+
 test('投递失败落一条 failed 记录，delivered_at 为空', async () => {
   const db = await openLedger(tempDir())
   const notifier = createNotifier({

@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS notifications (
   task_id TEXT NOT NULL, level TEXT NOT NULL, status TEXT NOT NULL,
   created_at INTEGER NOT NULL, delivered_at INTEGER, merged_into INTEGER, reason TEXT
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL
 );`
 
 export async function openLedger(stateDir) {
@@ -122,4 +125,15 @@ export function addNotification(db, { taskId, level, status = 'delivered', deliv
   const result = db.prepare('INSERT INTO notifications (task_id, level, status, created_at, delivered_at, merged_into, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(String(taskId), String(level), String(status), Date.now(), deliveredAt, mergedInto, reason)
   return Number(result.lastInsertRowid)
+}
+
+export function getSetting(db, key) {
+  return db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value
+}
+
+export function setSetting(db, key, value) {
+  db.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+    .run(String(key), String(value), Date.now())
+  return value
 }

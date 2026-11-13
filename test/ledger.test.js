@@ -3,18 +3,18 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, transition, touchTask, addMessage, addNotification } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, transition, touchTask, addMessage, addNotification, getSetting, setSetting } from '../src/ledger.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
   const dir = tempDir()
   const db = await openLedger(dir)
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name)
-  assert.deepEqual(tables, ['messages', 'notifications', 'tasks'])
+  assert.deepEqual(tables, ['messages', 'notifications', 'settings', 'tasks'])
   assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'wal')
   db.close()
   const again = await openLedger(dir)
-  assert.equal(again.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table'").get().n, 3)
+  assert.equal(again.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table'").get().n, 4)
   again.close()
 })
 
@@ -56,6 +56,16 @@ test('listTasks 活跃集合覆盖四种状态', async () => {
   transition(db, ids.done, 'done')
   transition(db, ids.cancelled, 'cancelled')
   assert.deepEqual(listTasks(db, { active: true }).map(t => t.title).sort(), ['pending', 'running', 'waiting_auth', 'waiting_user'])
+  db.close()
+})
+
+test('settings 读写与覆盖', async () => {
+  const db = await openLedger(tempDir())
+  assert.equal(getSetting(db, 'coordinator_session_id'), undefined)
+  setSetting(db, 'coordinator_session_id', 's-1')
+  assert.equal(getSetting(db, 'coordinator_session_id'), 's-1')
+  setSetting(db, 'coordinator_session_id', 's-2')
+  assert.equal(getSetting(db, 'coordinator_session_id'), 's-2')
   db.close()
 })
 

@@ -16,7 +16,7 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 
 ## 安装（维护者操作，不碰用户的 `~/.dsh/profiles`）
 
-在目标 profile 目录（`~/.dsh/profiles/<name>`）做三处改动：
+在目标 profile 目录（`~/.dsh/profiles/<name>`）做两处必改：
 
 1. `package.json` 的 `dependencies` 加本地链接：
 
@@ -38,7 +38,7 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
    无头 profile 用 `@deepseek-ai/dsh-headless`，桌面 profile 用 `@deepseek-ai/dsh-web-app`。
    `@deepseek-ai/dsh-experimental-agent-team-profile` 提供 `ctx.agentTeams`；缺了它，插件会因缺服务加载失败。
 
-3. profile 的 `cordis.patch.yml` 给插件加配置行（不是再 insert 一行）：
+3. 可选：需要显式指定协调者时，profile 的 `cordis.patch.yml` 加配置行；不配就自动绑定：
 
    ```yaml
    - id: orchestrator
@@ -49,18 +49,27 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 
 4. 重新安装/重启该 profile 使其生效。
 
+## 协调者绑定
+
+解析顺序：`config.coordinatorSession`（显式覆盖，优先级最高，**不写台账**）→ 台账 `settings.coordinator_session_id` → 未绑定。
+
+- 未绑定时，任何会话第一次调用 `task_create`（通过 brief 校验和活跃上限后）会把**调用方会话**绑定为协调者、写 `settings`、日志一行，并给该会话装白名单；之后不再重绑。
+- `task_list` / `task_status` 这类只读工具不触发绑定。
+- 已绑定的协调者会话失效（找不到 live agent）时：通知记 `skipped` + `reason`，工具结果带「协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定」；新会话 `task_create` 可以重绑。
+- 误绑（例如子任务先调了 `task_create`）用配置覆盖修正；覆盖期间始终以配置为准，不改台账。
+
 ## 配置
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `coordinatorSession` | `undefined` | 协调者会话 id（形如 `session-...`），必填；必须指向该 Team 的 root/Lead 会话 |
+| `coordinatorSession` | `undefined` | 可选显式覆盖；不配则首次 `task_create` 自动绑定调用方 |
 | `staleMinutes` | `30` | `task_list` 里超过这么多分钟无动静就标 `⚠` |
 | `stallRounds` | `3` | 预留：阶段 3 的连续无进展升级阈值，阶段 1 只校验并保存 |
 | `maxActive` | `8` | 同时活跃任务上限，超了 `task_create` 拒绝 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
 | `spawnProvider` | `spawn` | `spawnTeammate` 的 provider（fresh 用 `spawn`；平台要求必填） |
 
-插件按 `coordinatorSession` 惰性解析 live agent，所以协调者会话可以在插件加载后再打开；白名单会通过 `agent/created` 补装。非法值（0、负数、NaN、Infinity、字符串）一律回落默认，不会把插件带崩。
+插件按绑定的会话 id 惰性解析 live agent，所以协调者会话可以在插件加载后再打开；白名单在绑定时安装，并通过 `agent/created` 补装。非法值（0、负数、NaN、Infinity、字符串）一律回落默认，不会把插件带崩。
 
 ## 真机冒烟清单（隔离 profile）
 
@@ -73,6 +82,9 @@ $DSH_HOME/state/orchestrator/tasks.sqlite        （+ -wal / -shm）
 7. **白名单**：协调者工具列表里没有 `read`/`bash` 等；无安装失败日志。`spawn_teammate`/`send_message`/`list_agents` 阶段 1 仍可见（见已知局限）。
 8. **落盘**：`DSH_HOME` 下只新增 `state/orchestrator/tasks.sqlite`（+`-wal`/`-shm`），不写 profile 和其他会话目录。
 9. **审计口径**：插件通知与 `notifications` 行 1:1；`failed` 带 `reason`，`skipped` 的 `delivered_at` 为空；平台 settlement 通知不写行。
+10. **自动绑定**：无配置 profile 第一次 `task_create` 后 `settings.coordinator_session_id` = 调用方会话；第二次不再重绑；`task_list`/`task_status` 不写 `settings`。
+11. **配置覆盖**：设置 `coordinatorSession` 时以配置为准、`settings` 为空，白名单只装在配置指定的会话。
+12. **失效降级**：绑定会话找不到 live agent 时，通知记 `skipped` + `reason`、结果带提示；新会话 `task_create` 可重绑。
 
 
 ## 工具

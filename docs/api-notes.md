@@ -90,4 +90,14 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 - 状态保持 `failed` + reason 是正确审计：注入发生了，但没有回合消费它。headless 冒烟若要在收尾前看到 `delivered`，需让进程在最后一条回报后活过 `mergeWindowMs`。
 - source 仍用 `{kind:'agent-message', form:'relay', senderSessionId}`，因为 sender scope 不在这条失败路径上；换成 `orchestrator-notification` 不能解决进程收尾。
 
+## 7. 协调者自动绑定（插件内部，不依赖平台新 API）
+
+- 台账新增 `settings(key, value, updated_at)`；键 `coordinator_session_id`。
+- 解析顺序：`config.coordinatorSession`（显式覆盖，优先，不写台账）→ `settings.coordinator_session_id` → 未绑定。
+- 未绑定时，`task_create` 在 brief 校验/活跃上限通过后把 `exec.agent.id` 写入 `settings`，日志一行，并对该 agent 的 `ctx.tools` 装白名单；之后同一 live 绑定不再重绑。
+- `task_list` / `task_status` 不调用绑定逻辑。
+- 已绑定 id 找不到 live agent 时：通知返回 `{skipped:true, reason}`（落 `skipped` 行），`task_create` 允许新调用方重绑；`task_report`/`task_create` 结果带失效提示。
+- 白名单在绑定时安装而不是插件启动时：只作用于被绑定的那个 agent 的 `ctx`，`tools.restrict` 返回 disposer 并在卸载时撤销；不会作用于子任务 agent。
+
+
 
