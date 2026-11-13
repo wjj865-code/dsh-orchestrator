@@ -24,7 +24,7 @@ function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', '
   }
 }
 
-function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } } } = {}) {
+function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
   const warnings = []
@@ -56,7 +56,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       async interrupt() {},
       listMembers() { return [] },
     },
-    subagents: {
+    subagents: subagentsOverride ?? {
       async startActivation(spec) {
         const childId = spawnResult?.member?.id ?? 'm-1'
         return {
@@ -552,6 +552,50 @@ test('autoResumeQueue=false：只恢复队列不自动派发', withHome(async ho
   assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(task.id).status, 'pending')
   db.close()
   await disposers[0]()
+}))
+
+test('结算唤醒：容量 1 时第二个任务排队，第一个 settle 后自动补位且不双派', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  let alive = 0
+  const spawned = []
+  let settleFirst
+  const subagents = {
+    async startActivation(spec) {
+      if (alive >= 1) {
+        const error = new Error('subagent limit reached')
+        error.code = 'ACTIVATION_LIMIT_REACHED'
+        throw error
+      }
+      alive += 1
+      spawned.push(spec)
+      const result = new Promise(resolve => {
+        if (settleFirst === undefined) settleFirst = () => { alive = 0; resolve({ output: [], stopReason: 'completed' }) }
+      })
+      return { childId: spec.childId, messageId: 'msg-1', result, dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() {
+      return spawned.map(spec => ({ id: spec.childId, mode: 'continuable', label: 'x', activity: 'inactive' }))
+    },
+  }
+  const { ctx, registered } = fakeCtx({ agents: [s1], subagents })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: 'A', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const second = await byName.task_create.execute({ title: 'B', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.match(second, /排队/)
+  assert.equal(spawned.length, 1)
+
+  settleFirst()
+  await wait(30)
+  assert.equal(spawned.length, 2)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))
+  const rows = db.prepare('SELECT status, session_id FROM tasks').all()
+  assert.equal(rows.filter(row => row.status === 'running').length, 2)
+  assert.equal(new Set(rows.map(row => row.session_id)).size, 2)
+  db.close()
 }))
 
 test('cordis.patch.yml 指向 dsh-orchestrator', () => {

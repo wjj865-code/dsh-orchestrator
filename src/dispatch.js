@@ -129,10 +129,10 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         },
       }
       let activation
+      onEvent('subagent.spawn.requested', { taskId, detail: { childId, label: spec.label, provider } })
       try {
         activation = await subagents.startActivation(spec)
       } catch (error) {
-        onEvent('subagent.spawn.requested', { taskId, detail: { childId, label: spec.label, provider } })
         throw error
       }
       onEvent('subagent.spawn.accepted', {
