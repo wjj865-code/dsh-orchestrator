@@ -22,7 +22,7 @@
 | G1 | 全量测试绿 | 干净副本 `npm test` | 0 fail；pass 数与用例数一致；无未说明的 skip；进程正常退出不挂起 |
 | G2 | 提交干净 | `git show --stat <sha>`、`git status --porcelain` | 只含该任务的文件；无 `node_modules/`、`*.sqlite`、临时脚本、`.env` 混入 |
 | G3 | **JSON 绝不进子会话** | 捕获 `dispatcher.spawn` 收到的 `prompt` 文本；用含 `{}`、引号、换行、超长的边界 brief 渲染 | prompt 是渲染文字；无 `"title":`、`"acceptance":` 等键名；整体不是可 `JSON.parse` 的对象 |
-| G4 | **台账只写 `$DSH_HOME/state/orchestrator`** | 临时 `DSH_HOME` 跑「建任务→回报→停止」；`Get-ChildItem -Recurse` 审计整个临时 home 与仓库 | 临时 home 下除 `state/orchestrator/` 外零新增；仓库内无 sqlite/wal/shm；`~/.dsh` 真实目录不被写（DSH_HOME 覆盖时） |
+| G4 | **台账/日志只写 `$DSH_HOME/state/orchestrator`** | 临时 `DSH_HOME` 跑「建任务→回报→停止」；`Get-ChildItem -Recurse` 审计整个临时 home 与仓库 | 临时 home 下除 `state/orchestrator/` 外零新增；其中允许 `tasks.sqlite(+wal/shm)` 与 `logs/orchestrator-YYYY-MM-DD.jsonl`（`logs/` 仍算合规），不得有其他文件；仓库内无 sqlite/wal/shm；`~/.dsh` 真实目录不被写（DSH_HOME 覆盖时） |
 | G5 | 工具 schema 契约 | 6 个工具逐个体检 | `parameters.type === 'object'` 且根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都存在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 返回中文字符串；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面出现 |
 | G7 | 依赖收窄 | 源码 grep `ctx.`、`agentTeams.` | `dispatch.js` 只调 `spawnTeammate / sendMessage / interrupt / listMembers`（+ `membership` 若用到必须说明）；不偷偷用 `ctx.tools` 之外的平台服务做派活 |
@@ -48,7 +48,7 @@
 | 验收点 | 怎么验 | 判据 |
 | --- | --- | --- |
 | 状态集合完整 | `STATUSES` 排序 | 8 个：`pending running waiting_user waiting_auth done failed cancelled orphaned` |
-| **全迁移矩阵** | 我自己生成 8×8 全组合断言（不只计划里的样例） | 只有 `pending→running/cancelled`、`running→waiting_user/waiting_auth/done/failed/cancelled/orphaned`、`waiting_user→running/cancelled/failed`、`waiting_auth→running/cancelled/failed`、`failed→running/cancelled`、`orphaned→pending/cancelled` 为 true，其余 false |
+| **全迁移矩阵** | 我自己生成 8×8 全组合断言（不只计划里的样例） | 只有 `pending→running/failed/cancelled`（`pending→failed` 为设计 `7413a2b` 新增，供 spawn 失败收尾）、`running→waiting_user/waiting_auth/done/failed/cancelled/orphaned`、`waiting_user→running/cancelled/failed`、`waiting_auth→running/cancelled/failed`、`failed→running/cancelled`、`orphaned→pending/cancelled` 为 true，其余 false |
 | 终态无出边 | 矩阵里 `done`、`cancelled` 行 | 全 false |
 | 未知状态 | `canTransition('x','running')`、`canTransition('running','x')` | 返回 false 不抛 |
 | 抛错文案 | `nextStatus('done','running')` | 抛 `/不允许/`，带 from→to |
@@ -371,4 +371,172 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 降级 | 通过 | 缺 `tools.guard` 现在有可读 warn（审查建议闭环）；缺 `systemPrompt` warn 且 guard 仍装；缺 `tools` 先 warn |
 
 **P0 v2 结论**：`b98922c`（文档 `9fb92ae`）复验通过，129/129、api-probe 33/33、13 个独立探针全绿；首绑回合不再有中途收窄，**需重启 DSH 换上新构建后真机复跑**。残留极端：pending 期间绑定若变更（只在原协调者已死时发生）会晚装到旧 agent，实际不可达，留代码审阅。
+
+## 18. 并发额度口径（`maxActive`）— **已被 §24 取代：`maxActive` 废弃，改 `maxQueue` 安全阀**
+
+背景：等待态（`waiting_user`/`waiting_auth`）被算进 `maxActive`，卡在等用户决定的任务占死名额，新建不了。修法：额度只算 `pending` + `running`；`task_list` 的 `active` 语义不变。
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 等待态不占额度 | 8 条 `waiting_user` 后第 9 个 `task_create` | 创建成功；额度只算 0 占用 |
+| 2 | 运行态占额度 | 8 条 `running` 后第 9 个 | 拒绝；不写 tasks/messages 行 |
+| 3 | 终态不计入 | 各 8 条 `done`/`cancelled`/`failed`/`orphaned` + 新建 | 全部允许 |
+| 4 | 混合只算运行态 | 4 `running` + 4 `waiting_user`，继续建 | 还能建 4 条 `running`，第 5 条被拒（running 达 8） |
+| 5 | `pending` 计入 | 1 `pending`（spawn 失败残留）+ 7 `running` | 第 9 个被拒，占用清单含 `pending` 行 |
+| 6 | 拒绝文案 | 命中上限的返回 | 列出占用任务 `id｜标题｜状态`，数量恰好 = pending+running 集合（不列等待态），含「先 `task_stop` 或等结束」提示 |
+| 7 | list 语义不变 | `task_list` 默认 | 仍列出 `waiting_user`/`waiting_auth` 任务 |
+| 8 | 集合分离 | 代码复核 + 行为 | 额度集合与列表集合是两个不同查询/常量，不为省事合并 |
+| 9 | 并发不超发 | 8 个并行 `task_create` | 成功数 ≤ `maxActive`，其余拒绝且不建行 |
+
+**复验结果（2026-11-13，`f02bd10`+`60d8ef9`，133/133）**：
+
+| # | 结果 | 证据 |
+| --- | --- | --- |
+| 1 | 通过 | 8 条 `waiting_user` 后第 9 个创建成功并落库；quota 只含新的 1 条 |
+| 2 | 通过 | 8 `running` 后拒绝；文案列 8 条 `id｜标题｜进行中`、含「先 task_stop 或等它们结束」；不写 tasks/messages 行 |
+| 3 | 通过 | `done`/`cancelled`/`failed`/`orphaned` 各 8 条后仍可建 |
+| 4 | 通过 | 4 running + 4 waiting_user → 再建 4 条 running 成功；第 9 条 running 被拒，占用清单不列等待态；`task_list` 仍列等待态（12 条 active） |
+| 5 | 通过 | 1 `pending`（spawn 失败残留）+ 7 running → 被拒；占用清单含 pending 行与「待派发」 |
+| 6 | 通过 | 占用清单数量/内容恰好等于 quota 集合，中文状态正确 |
+| 7 | 通过 | `task_list(active:true)` 仍含 `waiting_user`；`task_stop` 后额度立即释放（新建立即可成功） |
+| 8 | 通过 | `listQuotaTasks` 只 `pending`+`running`，`listTasks(active)` 语义未动，行为验证集合分离 |
+| 9 | 通过（`60d8ef9`） | 首次复验 12 并发全部成功（quota 检查在 `await bind()` 前）。修后：`bind()` 提前、额度检查与 `createTask` 同一同步段（中间无 await），12 并发 → 成功 8 / 拒绝 4、台账恰好 8 条，不超发 |
+
+## 19. 幽灵任务 / 幂等去重 / 启动清理
+
+背景：`task_create` 先 `createTask` 落库、再 `dispatcher.spawn`；spawn 抛错（平台成员上限、会话创建失败）不回滚，台账留下无 `session_id` 的 `pending` 幽灵（用户侧 `t-c84fbb2c`、`t-b228e7f8`），成员空出后可能重复派发、两份报告打架。
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | spawn 失败收尾 | fake dispatcher `spawn` 抛错 | 返回可读中文（含原因与任务 id）；任务 `failed` + `error` 记录；不存在无 `session_id` 的 `pending`；`task_list(active)` 不含它 |
+| 2 | 幂等去重 | 同 `title`+`goal`（trim 后）且状态**活跃**（`pending/running/waiting_user/waiting_auth`）的任务已存在，再 `task_create` | 返回「已存在任务 X，未重复创建」+ 任务 id/状态；不 spawn；台账仍一条；不占额度 |
+| 3 | 去重键精确 | title 同/ goal 不同；goal 同/ title 不同；title/goal 仅首尾空格差异 | 前两种新建；仅空格差异视为同一条（trim 归一） |
+| 4 | done 不误判 | 已 `done` 的同 `title`+`goal` 任务存在，再创建 | 允许，生成新任务（新 id） |
+| 5 | 终态不误判 | `cancelled`/`failed`/`orphaned` 同目标存在 | 允许新建 |
+| 6 | 启动清理 | 预置 `pending` 无 `session_id` 且 `created_at` 早于 `staleMinutes` → `apply` | 变 `failed` + 原因「派发中断」；未超时 pending 不动；running/waiting/终态不动；只通过 `UPDATE` 直改、记录清理条数 |
+| 7 | 清理幂等 | 连续两次 `apply` | 不重复改状态、不误伤其他行 |
+| 8 | 清理范围 | 有 `session_id` 的 pending / 近期 pending | 不动（或按明确文档口径） |
+| 9 | 并发同目标 | 两个并发 `task_create` 同 `title`+`goal` | 只产生一条，另一次返回已存在；不重复 spawn |
+| 10 | 与额度交互 | 满额时同目标重复创建 / 不同目标新建 | 同目标应识别为已有任务（不新建）；不同目标按额度拒绝 |
+| 11 | spawn 失败走新边 | `pending→failed` 状态迁移 | 设计 `7413a2b` 已加该边；spawn 失败可合法迁到 `failed`（不再留 ghost pending）；`pending` 其余非法边不变 |
+
+## 20. 协调者「不得凭记忆推断」硬规则（系统提示）
+
+背景：协调者没派过 subagent，却断言「和我用 subagent 派的 Rust 审查是同一件事」并据此停了任务——凭记忆推断，不是工具返回。
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 规则在 prompt 里 | 绑定协调者后渲染 `systemPrompt.context` | 文本明确：任何任务数量/重复/冲突/状态断言，必须先调 `task_list`/`task_status` 拿到返回；不得凭记忆推断 |
+| 2 | 三路隔离 | 协调者/普通会话/子会话 | 只有协调者带该段；重绑后跟随 |
+| 3 | 与既有禁令共存 | 同一段 prompt | `wait_agent` 禁令、进度方式、结束回合、优先于 team policy 仍在 |
+
+## 21. 结构化日志（排查用）
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 路径与命名 | 触发事件后查目录 | `$DSH_HOME/state/orchestrator/logs/orchestrator-YYYY-MM-DD.jsonl`，每天一个 |
+| 2 | 保留 7 天 | 预置 8 天前的 `orchestrator-*.jsonl` | apply 后旧文件被清理，7 天内保留 |
+| 3 | 单文件 5MB 换新 | 预置一个 >5MB 的当天日志 | 新事件不追加到超限文件，另起新文件且不崩 |
+| 4 | 行格式 | 逐行 `JSON.parse` | `{ at, event, taskId?, sessionId?, agentId?, detail }`；缺字段不能是坏 JSON |
+| 5 | 不写全文 | 用超长 goal（>80 字）和唯一 `user_verbatim` 触发事件 | 日志中 goal/摘要截断 ≤80；完整 `user_verbatim` 字符串不出现 |
+| 6 | 事件覆盖 | 跑 create/重复/rejected/spawn 失败/report/notify 三种/cleanup/bind | 对应事件都有：`task.create.requested|created|rejected`、`task.spawn.requested|ok|failed`、`task.report`、`notify.delivered|failed|skipped`、`cleanup.pending`、`bind.coordinator`；带 `callId` 可把同一次调用串成线；`rejected` 带 reason 码（validation/limit/duplicate）+ `maxActive` + 占额 `id+status`（duplicate 带 existing `taskId+status`）；`spawn.failed` 带 taskId、平台错误原文、provider；`notify.*` 带 taskId、level、reason、sender session id、coordinator id；`cleanup.pending` 列被清 task ids；`bind.coordinator` 记 old → new |
+| 7 | 写失败不影响主流程 | 让 logs 路径不可写（用文件占位/只读），再跑 `task_create` | 主流程成功；只 warn 一次；不抛错、不阻塞 |
+| 8 | README | 文档 | 写清日志路径、保留策略、5MB 换新、「排查请附当天日志」 |
+| 9 | 排查价值（审查主验） | 用日志还原：一次 create 被拒原因、一次 spawn 失败原文、一次通知 skipped 原因 | 三条都能仅凭当天日志还原 |
+
+## 22. 槽位复用（行为变更）— **已撤销（2026-11-13，改 §23 协调者轮换）**
+
+背景（已核实）：平台 Team 名册不可变、`maxMembers` 硬上限 8、无移除成员 API（`TEAM_MEMBER_LIMIT`）。「一个任务一个子会话」最多 8 个，必须改为槽位复用。**用户改选「满 8 自动新开协调者会话」（§23），本方案废弃；若已有提交需记录并撤销。**
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | slots 表与迁移 | 旧库（无 slots）打开 | 自动建表；字段 `id/target/member_id/session_id/status/current_task_id/created_at` 齐全 |
+| 2 | `maxSlots` 配置 | 默认/1/8/0/-1/9/字符串 | 默认 3；1 与 8 生效；非法值有明确回落（0/-1/9/字符串 → 期望回落默认或夹取，以实现文档口径为准） |
+| 3 | 槽位上限 | `maxSlots=3` 连续建 5 个任务 | spawn 恰好 3 次；slots=3；前 3 条 `running`、后 2 条 `pending` 排队（不报上限失败） |
+| 4 | 释放后 FIFO 派发 | 完成/停止第 1 条任务 | 槽位回 `idle`、`current_task_id` 清空；第 4 条自动派发到该槽位（不新增 spawn） |
+| 5 | 1:1 占用与续派 | 各任务与槽位关系；`task_message` | 一个槽位同时只挂 1 条 running；续派走原槽位、不新建 teammate |
+| 6 | 复用防污染 | 第二次在同槽位派任务 | 渲染文本头部含「上一个任务已结束，不要引用它的任何上下文或产物；……从零开始，只做这一件事」，后接新 brief |
+| 7 | 释放不调移除 API | 代码/行为 | 不调用任何 teammate 移除；spawn 计数不因释放变化 |
+| 8 | 平台上限不突破 | `maxSlots=3` 建 20 条任务；`maxSlots=8` 建 20 条 | 未释放时 spawn 恒为 3 / 8，绝不出现第 4 / 第 9 个 teammate |
+| 9 | 启动复位 | 预置 busy 但任务终态/缺失的槽位；busy 且任务 running 的槽位 | 前者复位 `idle` + 清 `current_task_id`；后者不动，不误伤在跑任务 |
+| 10 | 可观测 | `task_status` / 卡片数据 | 能看出任务用哪个槽位（`target`）；文档写清「槽位会话里可能有多个任务历史」 |
+
+**待明确（影响判据）**：
+
+- a. `maxSlots` 与旧 `maxActive` 的关系：任务数超过 `maxActive=8` 但槽位已满时，是继续排队还是仍报 `maxActive` 上限失败？槽位语义下应排队（否则「满了进队列」不成立）。
+- b. 迁移：已有 `running`/`waiting_*` 任务（旧版本创建、无槽位记录）启动时如何归位——补建槽位并绑定，还是保持原样？需要文档口径。
+
+## 23. 协调者轮换（满 8 自动新开会话）— **已撤销（2026-11-13，改 §24 换 subagent）**
+
+背景：平台 Team 名册不可变、`maxMembers=8`、无移除 API。任务超过 8 个时，`spawnTeammate` 抛 `TEAM_MEMBER_LIMIT`；改为自动新建一个协调者会话接管，旧会话退役。**用户改选「dispatch 换 subagent + 容量队列」（§24），本方案废弃。**
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 触发识别 | 假 spawn 抛 `TEAM_MEMBER_LIMIT` / message 含 `Team member limit` | 触发轮换；不靠猜成员数；其他 spawn 错误仍走普通失败（标 failed） |
+| 2 | 新协调者绑定 | 假 `sessionController.create({ workspaceId })` | 调用一次；`settings.coordinator_session_id` 更新为新 `sessionId`；旧标记 retired（持久化，重启后仍生效） |
+| 3 | 交接消息 | 捕获 `sessionController.prompt` / 新会话 prompt | 含「你是新的协调者」、活跃任务清单（id/标题/状态）、台账位置、「继续接活，不要重复派发已有活跃任务」；**不含用户完整原话**（隐私与体积），标题/摘要需截断 |
+| 4 | 新会话带规则 | 新会话 id 渲染 `systemPrompt.context` | 与首个协调者同一套：禁止 `wait_agent`、不得凭记忆推断状态等 |
+| 5 | 旧协调者退役 | 旧会话再调 `task_create` | 返回「本会话的团队已达成员上限，已迁移到新协调者会话 X，请到那里继续」；不 spawn；`task_list`/`task_status` 仍可用 |
+| 6 | 轮换后闭环 | 新协调者第一次 `task_create` | 正常派活成功（真机闭环的主验收）；新任务 `coordinator_session` = 新 id |
+| 7 | 失败回滚 | `create` 抛错 / `prompt` 抛错 | 绑定回滚为旧协调者；不出现 retired 半状态；旧协调者仍可用；给用户可读提示；不静默 |
+| 8 | 配置 | `autoRotateOnLimit`（默认 true）、`maxSpawnsPerCoordinator`（默认 8，≤8） | 关闭时只报错并提示手动开新会话、不建会话；上限 >8 有明确回落；默认值正确 |
+| 9 | 并发触发 | 多个 `task_create` 同时撞 limit | 只轮换一次、只建 1 个新会话（防多开）；其余按退役提示返回 |
+
+**待明确**：
+
+- a. 「旧标记 retired」的存储位置（settings key / 新表）；重启后旧会话再次 `task_create` 必须仍被拒。
+- b. 轮换后旧协调者名下已派任务的通知/回报去哪个会话（全局绑定只有一个协调者）；文档写清口径。
+- c. 交接清单里 goal/摘要的截断长度（建议 ≤80 字，与日志一致）。
+
+## 24. dispatch 换 subagent + 容量队列（当前方案）
+
+背景：Team 名册不可变（8 上限、无移除 API）；spike 实测 `startActivation` 起子会话可行、`maxActiveSubagents=N` 并发上限、完成即释放容量、平台不排队。插件自己排队；`maxActive` 废弃，改 `maxQueue=50` 安全阀；`autoResumeQueue` 默认开；协调者不再用 Team 工具面。
+
+| # | 验收点 | 怎么验 | 判据 |
+| --- | --- | --- | --- |
+| 1 | 12 连建不报错 | 容量 N（如 1/3/8）下连续 `task_create` 12 个 | 前 N 个 `running`（各一次 `startActivation`），其余 `pending` 排队（`queued_at` 非空）；不报上限、不 `failed` |
+| 2 | 完成补位不双派 | 完成一个 running 任务 | 队列按 `created_at` FIFO 补 1 个；补位任务 `session_id`=新 childId；每个任务只 spawn 一次，无双派 |
+| 3 | 队列满 `maxQueue` | 容量 1 + 队列 50 已满，再建 | 拒绝且不落库（无 tasks/messages 行）；文案可读 |
+| 4 | 重启自动入队 | `autoResumeQueue=true`（默认）预置 `queued_at` 非空与空但未超时的 pending | 启动后均重新入队并派发；`false` 时不动（文档口径） |
+| 5 | 排队任务 stop/message | `task_stop` 排队任务；`task_message` 排队任务 | stop：移出队列、`cancelled`、不 spawn；message：可读「排队中还没有子会话」、不写 messages、不转 `waiting_user` |
+| 6 | 孤儿兜底 | 父会话关闭后 running 任务；`listChildren` 查询不可用 | 前者标 `orphaned`（卡片/`task_status` 可见），不留幽灵 running；后者只 warn 保留现状，不误判 orphaned；catalog 是历史≠活着 |
+| 7 | 回报归属 | 子会话 `task_report` | `task.session_id` = childId；归属校验通过；冒名仍被拒 |
+| 8 | 旧 Team 任务 | 一条真实旧数据 `sendMessage` 续派 | 结果写进文档：可续派 or 只能只读提示重建 |
+| 9 | 启动参数 | 捕获 `startActivation` 入参 | `provider=spawnProvider`、`delivery:'caller'`、`childId=uuid`、`request.parent`=协调者 agent、`prompt`=渲染文本、`signal`=插件自有 AbortController（非 `exec.signal`） |
+| 10 | 结算驱动 | `activation.result` settle / reject | 均挂 `.catch`；settle 后同步 pump 下一个（单锁串行，防双派） |
+| 11 | 非容量错误 | `startActivation` 抛普通错误 | 任务 `failed`+error（不留 `pending` 幽灵）；容量错误才排队 |
+| 12 | 卡片/跳转 | `task_status`/卡片数据 | 能看出 child/槽位；子会话跳转按 catalog（阶段 2 入口，阶段 1 文档写清） |
+
+**可测性要求**：`createDispatcher`/工具层需要可注入的 `startActivation`/子会话 runner（测试用假实现），否则容量、settle、双派只能真机验；请给注入点。
+
+## 25. 本轮复验记录（HEAD `1a85b4a`，npm test 162/162，api-probe 33/33）
+
+**§24 subagent + 队列（独立探针 v24，23/23 通过）**：
+
+- 12 连建（cap=1）→ 1 running + 11 pending，无 failed、无报错，排队文案带位置；成功 `startActivation` 恰 1 次。
+- done + 结算后 FIFO 补位（补第 2 个而非第 1 个），总 spawn 2 次、childId 不重复（无双派）。
+- 排队任务 `task_stop` → cancelled、不 spawn；`task_message` → 排队提示、不写 messages、状态不变。
+- `maxQueue=2` 第 3 个排队后拒绝且不落库；重启 `autoResumeQueue` 默认入队派发，`false` 不动。
+- catalog 读不到 → 只 warn 不误判；catalog 查不到 child → `orphaned`。
+- `task_report` 用 childId 归属通过、冒名拒绝；非容量错误（普通异常）→ `failed` + error、不留 ghost pending。
+
+**§21 日志（独立探针 v21，11/11 通过）**：路径 `state/orchestrator/logs/orchestrator-YYYY-MM-DD.jsonl`；事件含 `task.create.requested/created/rejected`（rejected 带 reason+callId）；不出现完整 `user_verbatim`；goal 截断 ≤80（带省略号）；每行合法 JSON；写失败主流程不受影响且只 warn 一次；7 天保留（惰性：首次写入时清理）；>5MB 换新文件且超限文件不再追加。
+
+**§19/§20（独立探针 v19，10/10 通过）**：`waiting_user` 同 title+goal 被去重、仅空白差异 trim 归一、`done` 后可重建；超时无 session 的 pending 启动清理为 `failed`、近期 pending 不动；协调者 prompt 含「不得凭记忆推断 / 先调 task_list·task_status」，普通会话为空。
+
+**当前有效探针**：task1/2/3/4/6/8（单元，已按新 config 9 键与 `waiting_*→orphaned` 边更新）+ v19/v21/v24。**旧 task5/7、binding/b-injection/b-roster/quota 等为 Team 后端/旧额度语义编写，已停用**（代码 162/162 覆盖）。
+
+**待拍板/缺口（不阻塞本次测试，但影响验收判据）**：
+
+1. **§24 #6 与实现不一致**：`reconcile.js` 只按 `catalog` 查不到才 orphaned；父会话关闭后 catalog 仍留有记录，running 任务会保持 running（幽灵），达不到「父会话关闭后标 orphaned」的判据。审查建议：启动对账加 `agents.get(session_id)` 不存在的 running → orphaned；等待态保持原状。需确认后实现。
+2. **未写进设计的迁移边**：`src/state.js` 新增 `waiting_user/waiting_auth → orphaned`，但设计 `7413a2b` 只加了 `pending→failed`；且 reconcile 会把 catalog 缺失的等待态任务标 orphaned——「等待态不 live 也保持」与「catalog 缺失才 orphaned」两种口径需在文档写清。
+3. `maxActive` 仍在 config（默认 8）但队列语义下未使用；文档应标废弃或删除。
+
+**修复复验（`f971b9e`，166/166；独立探针 v24b 13/13、v24/v21/v19 全绿）**：
+
+- **spawn 在途被 stop**：stop 立即返回、A 子会话被 `dispose`（不白占槽位）、B 不被连带删并正常派发、pump 不死（v24b A 段）。
+- **整队列 `queued_at`**：cap=1 建 12 个后 11 个 pending 全部有 `queued_at`；把 `created_at` 改到 2 小时前模拟重启，`failStalePending` 不再误杀排队任务（v24b B 段）。
+- **对账 liveness 口径**：running 且 `agents.get(session_id)` 不存在 → orphaned（即使 catalog 有记录，幽灵被收掉）；waiting_user 不 live 但 catalog 有 → 保持；waiting 且 catalog 查不到 → orphaned；catalog 读失败仍按 liveness 判 running（v24b C 段、v24 已同步改判据）。
+- `maxActive` 与 `listQuotaTasks` 已从 config/ledger 移除（探针断言）；设计 §6/README 已同步 `waiting_*→orphaned` 与对账口径。
+- **遗留风险（不阻塞）**：`inject` 仍同时声明 `agentTeams` 与 `subagents`，两个后端互相绑死（缺任一服务会加载失败）；开发决定等真机确认缺服务再拆，先记录。
 
