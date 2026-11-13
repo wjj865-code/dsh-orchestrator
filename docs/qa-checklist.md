@@ -388,3 +388,17 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 8 | 集合分离 | 代码复核 + 行为 | 额度集合与列表集合是两个不同查询/常量，不为省事合并 |
 | 9 | 并发不超发 | 8 个并行 `task_create` | 成功数 ≤ `maxActive`，其余拒绝且不建行 |
 
+**复验结果（2026-11-13，HEAD `f02bd10`，132/132）**：
+
+| # | 结果 | 证据 |
+| --- | --- | --- |
+| 1 | 通过 | 8 条 `waiting_user` 后第 9 个创建成功并落库；quota 只含新的 1 条 |
+| 2 | 通过 | 8 `running` 后拒绝；文案列 8 条 `id｜标题｜进行中`、含「先 task_stop 或等它们结束」；不写 tasks/messages 行 |
+| 3 | 通过 | `done`/`cancelled`/`failed`/`orphaned` 各 8 条后仍可建 |
+| 4 | 通过 | 4 running + 4 waiting_user → 再建 4 条 running 成功；第 9 条 running 被拒，占用清单不列等待态；`task_list` 仍列等待态（12 条 active） |
+| 5 | 通过 | 1 `pending`（spawn 失败残留）+ 7 running → 被拒；占用清单含 pending 行与「待派发」 |
+| 6 | 通过 | 占用清单数量/内容恰好等于 quota 集合，中文状态正确 |
+| 7 | 通过 | `task_list(active:true)` 仍含 `waiting_user`；`task_stop` 后额度立即释放（新建立即可成功） |
+| 8 | 通过 | `listQuotaTasks` 只 `pending`+`running`，`listTasks(active)` 语义未动，行为验证集合分离 |
+| 9 | **不通过** | 12 个并发 `task_create` 全部成功（ok=12，rejected=0），`maxActive=8` 被绕过。根因：quota 检查在 `await bind()` 之前，并发调用在任何 `createTask` 发生前都已通过检查（检查与创建之间有 await 空档）。建议：bind 后同一同步段内 check+create，或插件内串行队列/异步锁；修后重跑 12 并发应 ≤8 |
+
