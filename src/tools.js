@@ -80,10 +80,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
 
   // 产物路径：相对路径按任务目录解析；非法条目静默丢弃；只 stat 存在性，不读文件、不让 report 失败。
   const normalizeArtifacts = (task, input) => {
-    if (!Array.isArray(input)) return []
+    if (!Array.isArray(input)) return { artifacts: [], omitted: 0 }
+    // 入口先截断，避免为几百条无关键做 resolve/stat。
+    const entries = input.slice(0, MAX_ARTIFACTS)
+    const omitted = input.length - entries.length
     const base = task.target_dir ?? defaultCwd
     const out = []
-    for (const entry of input) {
+    for (const entry of entries) {
       if (entry === null || typeof entry !== 'object') continue
       const raw = typeof entry.path === 'string' ? entry.path.trim() : ''
       if (raw === '') continue
@@ -100,9 +103,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       } catch { exists = false }
       const label = typeof entry.label === 'string' ? entry.label.trim() : ''
       out.push({ path: absolute, label: label.length > MAX_ARTIFACT_LABEL ? `${label.slice(0, MAX_ARTIFACT_LABEL)}…` : label, exists })
-      if (out.length >= MAX_ARTIFACTS) break
     }
-    return out
+    return { artifacts: out, omitted }
   }
 
   // 工作区服务用惰性 getter（index 传入），取不到就按「无工作区」降级，不影响派发。
@@ -370,12 +372,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         && String(reporterId) !== String(task.session_id)) {
         return `回报被拒绝：任务 ${task.id} 属于子会话 ${task.target ?? task.session_id}，当前回报方不是它。`
       }
-      const artifacts = normalizeArtifacts(task, args.artifacts)
+      const normalized = normalizeArtifacts(task, args.artifacts)
+      const artifacts = normalized.artifacts
       if (artifacts.length > 0) {
         setTaskArtifacts(db, task.id, artifacts)
         log('task.report.artifacts', {
           taskId: task.id,
-          detail: { count: artifacts.length, missing: artifacts.filter(item => item.exists === false).length },
+          detail: {
+            count: artifacts.length,
+            omitted: normalized.omitted,
+            missing: artifacts.filter(item => item.exists === false).length,
+          },
         })
       }
       addMessage(db, task.id, { kind: 'report', rendered: `[${args.status}] ${args.summary ?? ''}` })
@@ -394,6 +401,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         status: args.status,
         summary: args.summary ?? '',
         artifacts,
+        artifactsTruncated: normalized.omitted,
         sender: exec?.agent,
         signal: exec?.signal,
       })

@@ -10,7 +10,10 @@ const artifactBlock = item => {
   if (artifacts.length === 0) return ''
   const rows = artifacts.map(entry =>
     `  - ${entry.path}${entry.label ? ` — ${entry.label}` : ''}${entry.exists === false ? '（未找到）' : ''}`)
-  return `\n  产物：\n${rows.join('\n')}`
+  const truncated = typeof item.artifactsTruncated === 'number' && item.artifactsTruncated > 0
+    ? `\n  另有 ${item.artifactsTruncated} 条产物未列出`
+    : ''
+  return `\n  产物：\n${rows.join('\n')}${truncated}`
 }
 
 const line = item => `- ${item.title}：${item.summary}${artifactBlock(item)}`

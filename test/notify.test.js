@@ -182,3 +182,12 @@ test('合并窗口内多条 report 的产物各自保留，不互相覆盖', asy
   assert.match(delivered[0], /C:\/a\.txt — 甲/)
   assert.match(delivered[0], /C:\/b\.txt — 乙/)
 })
+
+
+test('产物被截断时通知追加「另有 N 条产物未列出」', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成', artifacts: [{ path: 'C:/a.txt', label: '甲', exists: true }], artifactsTruncated: 5 })
+  await wait(25)
+  assert.match(delivered[0], /另有 5 条产物未列出/)
+})

@@ -630,7 +630,7 @@ test('不传 target：无命中 → 不写 target_dir，行为与旧版一致', 
 test('target 为空串/全空白与不传等价：走推断、不写空串', async () => {
   const inferredDir = tempDir()
   const workspaces = { list: () => [{ id: 'w1', title: '公众号文章', path: inferredDir }] }
-  const { db, tools } = await setup({ workspaces })
+  const { db, dispatcher, tools } = await setup({ workspaces })
   const first = await call(tools, 'task_create', { title: '公众号文章选题', goal: 'g', acceptance: ['a'], target: '' })
   assert.match(first, /已派发/)
   assert.equal(listTasks(db)[0].target_dir, inferredDir)
@@ -638,6 +638,9 @@ test('target 为空串/全空白与不传等价：走推断、不写空串', asy
   assert.match(second, /已派发/)
   const other = listTasks(db).find(task => task.title === '无关任务')
   assert.equal(other.target_dir, null)
+  // 空串/全空白都不能把 '' 传给 spawn 的 cwd。
+  assert.equal(dispatcher.calls[0][4], inferredDir)
+  assert.equal(dispatcher.calls[1][4], undefined)
   db.close()
 })
 
@@ -692,8 +695,8 @@ test('task_report 不传 artifacts：完全兼容旧行为，任务照常 done',
 })
 
 
-test('artifacts 最多保留 20 条，说明超长截断', async () => {
-  const { db, tools } = await setup()
+test('artifacts 最多保留 20 条，说明超长截断，通知标注未列出数量', async () => {
+  const { db, notifier, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '多产物' }))
   const task = listTasks(db)[0]
   const artifacts = Array.from({ length: 25 }, (_, index) => ({ path: `file-${index}.txt`, label: '说'.repeat(200) }))
@@ -703,6 +706,8 @@ test('artifacts 最多保留 20 条，说明超长截断', async () => {
   assert.equal(saved[0].path.endsWith('file-0.txt'), true)
   assert.equal(saved[0].label.length, 161)
   assert.equal(saved[0].label.endsWith('…'), true)
+  assert.equal(notifier.pushed.at(-1).artifactsTruncated, 5)
+  assert.equal(notifier.pushed.at(-1).artifacts.length, 20)
 })
 
 test('产物是目录时也算存在（只 stat，不读文件）', async () => {
