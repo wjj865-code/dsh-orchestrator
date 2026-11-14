@@ -219,6 +219,89 @@ check('旧库自动补 artifacts_json', cols.includes('artifacts_json'))
 check('旧任务 artifacts 按空数组', Array.isArray(oldTask.artifacts) && oldTask.artifacts.length === 0, JSON.stringify(oldTask.artifacts))
 migrated.close()
 
+// ======================= 5. 只读子任务（readOnly） =======================
+console.log('\n== 5. readOnly ==')
+const { createQueue } = await src('queue.js')
+const roHome = tmp('qa-ro-')
+const roDb = await ledger.openLedger(join(roHome, 'state', 'orchestrator'))
+const roMain = join(roHome, '指挥舱')
+const roWs = join(roHome, 'Gomoku-AI')
+mkdirSync(roMain, { recursive: true })
+mkdirSync(roWs, { recursive: true })
+const spawns = []
+const sends = []
+const roNotes = []
+const roDispatcher = {
+  spawn: async (args) => { spawns.push(args); return { sessionId: 'child-ro', target: 'child-ro' } },
+  send: async (...args) => { sends.push({ via: 'send', args }) },
+  sendReliable: async (...args) => { sends.push({ via: 'sendReliable', args }) },
+  stop: async () => {},
+}
+const roQueue = createQueue({ db: roDb, dispatcher: roDispatcher, config: {}, logger: {}, notifier: { push: (item) => roNotes.push(item) } })
+const roTools = createTools({
+  db: roDb,
+  dispatcher: roDispatcher,
+  queue: roQueue,
+  notifier: { push: (item) => roNotes.push(item) },
+  config: {},
+  coordinatorStatus: () => ({ id: 'main-1', live: true }),
+  workspaces: () => ({ list: () => [{ id: 'w-ro', title: 'Gomoku AI', path: roWs }] }),
+  defaultCwd: roMain,
+})
+const roTool = (name) => roTools.find((item) => item.name === name)
+const roExec = { agent: { id: 'main-1' } }
+
+const roCreated = await roTool('task_create').execute({ title: '只读审计 Gomoku AI', goal: '读代码并报告', acceptance: ['a'], readOnly: true }, roExec)
+const roRow = roDb.prepare("SELECT * FROM tasks WHERE title = '只读审计 Gomoku AI'").get()
+check('readOnly:true 落库', roRow?.read_only === 1, String(roRow?.read_only))
+check('readOnly 与 target 推断可组合', roRow?.target_dir === roWs, String(roRow?.target_dir))
+check('只读 spawn 收到 readOnly=true 且 cwd=推断目录', spawns[0]?.readOnly === true && spawns[0]?.cwd === roWs, JSON.stringify(spawns[0]))
+const roBrief = ledger.briefText(roDb, roRow?.id)
+check('只读 brief 有【权限】只读与禁写提示', roBrief.includes('【权限】只读') && roBrief.includes('不要写文件'), roBrief.slice(0, 120))
+check('task_create 回执带只读', /只读/.test(String(roCreated)), String(roCreated).slice(0, 80))
+
+await roTool('task_create').execute({ title: '普通任务对照', goal: 'g', acceptance: ['a'] }, roExec)
+const plainRoRow = roDb.prepare("SELECT * FROM tasks WHERE title = '普通任务对照'").get()
+check('默认非只读落库 0', plainRoRow?.read_only === 0, String(plainRoRow?.read_only))
+check('非只读 spawn readOnly=false', spawns[1]?.readOnly === false, String(spawns[1]?.readOnly))
+const plainBrief = ledger.briefText(roDb, plainRoRow?.id)
+check('非只读 brief 无【权限】行', !plainBrief.includes('【权限】'), plainBrief.slice(0, 120))
+
+await roTool('task_create').execute({ title: '字符串只读不算', goal: 'g', acceptance: ['a'], readOnly: 'true' }, roExec)
+const stringRow = roDb.prepare("SELECT * FROM tasks WHERE title = '字符串只读不算'").get()
+check("readOnly:'true' 不生效", stringRow?.read_only === 0, String(stringRow?.read_only))
+
+const listText = String(await roTool('task_list').execute({}, roExec))
+check('task_list 标只读（对照任务无标记）', listText.includes('只读') && !/普通任务对照[^\n]*只读/.test(listText), listText.slice(0, 160))
+const statusText = String(await roTool('task_status').execute({ task_id: roRow.id }, roExec))
+check('task_status 标权限只读', statusText.includes('权限：只读'), statusText.slice(0, 120))
+
+// 续派仍只读（waiting_user 是合法续派状态；done 之后不能续派）
+ledger.transition(roDb, roRow.id, 'waiting_user')
+await roTool('task_message').execute({ task_id: roRow.id, message: '继续读' }, roExec)
+const lastSend = sends[sends.length - 1]
+check('续派走 sendReliable 且带 readOnly=true', lastSend?.via === 'sendReliable' && lastSend.args[5] === true, JSON.stringify(lastSend?.args?.slice(3)))
+
+// 只读任务照常 report 与 artifacts（task_message 已把状态带回 running，不能再迁移一次）
+await roTool('task_report').execute({ task_id: roRow.id, status: 'done', summary: '读完了', artifacts: [{ path: 'out.txt', label: '结论' }] }, { agent: { id: 'child-ro' } })
+const roAfter = ledger.getTask(roDb, roRow.id)
+check('只读任务可报 artifacts（只标存在性）', roAfter.artifacts.length === 1 && roAfter.artifacts[0].exists === false, JSON.stringify(roAfter.artifacts))
+
+const roNote = roNotes.find((item) => item.status === 'done' && item.taskId === roRow.id)
+check('notifier 收到 readOnly 标记', roNote?.readOnly === true, JSON.stringify(roNote?.readOnly))
+const roTexts = []
+const roNotifier = createNotifier({ send: (text) => roTexts.push(text), record: () => {}, mergeWindowMs: 1000 })
+roNotifier.push({ taskId: 't9', title: '只读任务', status: 'blocked', summary: '要看', readOnly: true })
+await roNotifier.drain()
+check('通知标题标（只读）', (roTexts[roTexts.length - 1] ?? '').includes('（只读）'), (roTexts[roTexts.length - 1] ?? '').slice(0, 80))
+const roRoute = createHostRoute({ db: roDb, coordinatorStatus: () => ({ id: 'main-1', live: true }) })
+const roSnap = await (await roRoute({ json: async () => ({ endpoint: 'snapshot' }) })).json()
+const roSnapTask = roSnap.tasks.find((item) => item.id === roRow.id)
+check('snapshot.tasks[].readOnly', roSnapTask?.readOnly === true, JSON.stringify(roSnapTask?.readOnly))
+
+roDb.close()
+clean(roHome)
+
 db.close()
 clean(home)
 clean(oldHome)
