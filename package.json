@@ -1,14 +1,16 @@
 {
   "name": "@wjj865-code/dsh-orchestrator",
-  "version": "0.5.0",
-  "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, cross-project memory, project context, progress reports, interrupt-controlled notifications, snapshots, and a browser task panel.",
+  "version": "0.5.1",
+  "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, cross-project memory, dependency orchestration, inbox/digest, snapshots, and a browser task panel.",
   "type": "module",
   "license": "MIT",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
-    "./preset-tools": "./preset-tools.js"
+    "./preset-tools": "./preset-tools.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
@@ -16,6 +18,9 @@
     "preset-tools.js",
     "src/",
     "cordis.patch.yml",
+    "locale/*.json",
+    "docs/DETAIL.md",
+    "icon.svg",
     "README.md"
   ],
   "engines": {

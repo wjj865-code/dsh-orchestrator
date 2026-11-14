@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { loadConfig } from '../src/config.js'
 
 test('loadConfig 填默认值', () => {
@@ -121,4 +121,20 @@ test('package.json 导出 preset-tools', () => {
   assert.equal(pkg.publishConfig.access, 'public')
   assert.equal(pkg.exports['./preset-tools'], './preset-tools.js')
   assert.ok(pkg.files.includes('preset-tools.js'))
+})
+
+test('插件展示元数据：locale/icon/docs 都在文件与 exports 里', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.exports['./icon'], './icon.svg')
+  assert.equal(pkg.exports['./locale/*.json'], './locale/*.json')
+  for (const file of ['icon.svg', 'locale/zh.json', 'locale/en.json', 'docs/DETAIL.md']) {
+    assert.equal(existsSync(new URL(`../${file}`, import.meta.url)), true, file)
+  }
+  assert.ok(pkg.files.includes('locale/*.json'))
+  assert.ok(pkg.files.includes('docs/DETAIL.md'))
+  assert.ok(pkg.files.includes('icon.svg'))
+  const zh = JSON.parse(readFileSync(new URL('../locale/zh.json', import.meta.url), 'utf8'))
+  assert.equal(typeof zh.meta.title, 'string')
+  assert.equal(typeof zh.meta.description, 'string')
+  assert.equal(zh.meta.detail, 'docs/DETAIL.md')
 })

@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Task orchestration",
+    "description": "Coordinator and task sessions with cross-project memory, dependency orchestration, inbox, digest, and a task panel.",
+    "detail": "docs/DETAIL.md"
+  }
+}

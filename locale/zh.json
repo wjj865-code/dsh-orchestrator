@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "任务编排",
+    "description": "协调者 + 子任务工作台：跨项目记忆、依赖编排、收件箱、日报和任务面板。",
+    "detail": "docs/DETAIL.md"
+  }
+}
