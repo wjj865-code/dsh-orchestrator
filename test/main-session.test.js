@@ -206,3 +206,28 @@ test('resolveByPath 返回 Promise 但目录已存在时直接复用工作区', 
   assert.deepEqual(f.workspacesCreated, [])
   db.close()
 })
+
+
+test('open() 对调用方永不 reject：台账写主会话失败时返回可读错误，且无 unhandledRejection', async () => {
+  const f = fake()
+  const db = {
+    prepare(sql) {
+      if (sql.includes('SELECT value FROM settings')) return { get: () => undefined }
+      if (sql.includes('INSERT INTO settings')) return { run: () => { throw new Error('disk full') } }
+      throw new Error('unexpected SQL: ' + sql)
+    },
+  }
+  let unhandled = 0
+  const onUnhandled = () => { unhandled += 1 }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, workspacePath: 'C:/ws' })
+    const result = await main.open()
+    assert.equal(result.ok, false)
+    assert.match(result.error, /disk full/)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(unhandled, 0)
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled)
+  }
+})

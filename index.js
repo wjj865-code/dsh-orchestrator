@@ -272,7 +272,8 @@ export async function apply(ctx, rawConfig = {}) {
     for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, routeDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
-    await notifier.flushNow()
+    // 卸载期间的收尾也不能变成未处理拒绝（宿主会判 fatal load failure）。
+    try { await notifier.flushNow() } catch { /* 通知收尾失败不影响卸载 */ }
     try { db.close() } catch { /* 关闭失败不影响已完成的写入 */ }
   })
 }

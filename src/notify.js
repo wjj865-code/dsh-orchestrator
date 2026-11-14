@@ -70,6 +70,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
       return undefined
     }
     if (result !== null && typeof result?.then === 'function') {
+      // 回调里的落库/告警也可能抛错；这里兜底，避免 `void deliver(...)` 变成未处理拒绝。
       return result.then(
         value => {
           if (value === false) recordSkipped(items)
@@ -77,7 +78,9 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
           else recordDelivered(items)
         },
         error => recordFailed(items, error),
-      )
+      ).catch(error => {
+        try { onWarn(`通知收尾失败：${error?.message ?? error}`) } catch { /* 告警失败也不能外溢 */ }
+      })
     }
     if (result === false) { recordSkipped(items); return undefined }
     if (result?.skipped === true) { recordSkipped(items, result.reason ?? null); return undefined }

@@ -90,21 +90,26 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   const live = new Map()
 
   // delivery: 'caller' 时没人 await 会变成未处理拒绝，这里必须挂上；同时把 settle 抛给上层驱动队列。
+  // 回调里的异常（日志/事件消费方抛错）也不能变成宿主层面的未处理拒绝。
   const track = activation => {
     live.set(activation.childId, activation)
     activation.result.then(
       result => {
-        live.delete(activation.childId)
-        onEvent('subagent.settled', {
-          sessionId: activation.childId,
-          detail: { stopReason: result?.stopReason ?? null },
-        })
+        try {
+          live.delete(activation.childId)
+          onEvent('subagent.settled', {
+            sessionId: activation.childId,
+            detail: { stopReason: result?.stopReason ?? null },
+          })
+        } catch { /* 结算事件失败不能外溢 */ }
       },
       error => {
-        live.delete(activation.childId)
-        onEvent('subagent.failed', { sessionId: activation.childId, detail: { error: errorText(error) } })
+        try {
+          live.delete(activation.childId)
+          onEvent('subagent.failed', { sessionId: activation.childId, detail: { error: errorText(error) } })
+        } catch { /* 结算事件失败不能外溢 */ }
       },
-    )
+    ).catch(() => {})
     return activation
   }
 

@@ -67,10 +67,14 @@ export function createMainSession({ db, config, agents, sessionController, works
 
   // 并发点击/路由重复调用只建一次：后来者 await 同一个 in-flight Promise。
   // finally 里清掉（失败也清），否则一次创建失败会让后续点击永久复用失败结果。
+  // catch 兜底：open() 对调用方永不 reject（宿主把未处理拒绝当 fatal load failure）。
   let opening
   const open = () => {
     if (opening !== undefined) return opening
-    opening = openOnce().finally(() => { opening = undefined })
+    opening = Promise.resolve()
+      .then(openOnce)
+      .catch(error => ({ ok: false, error: `打开主会话失败：${error?.message ?? error}` }))
+      .finally(() => { opening = undefined })
     return opening
   }
 
