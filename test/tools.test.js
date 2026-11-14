@@ -561,6 +561,7 @@ test('task_create 校验 target 并落 target_dir，brief 带【工作目录】'
   const { db, tools } = await setup()
   const bad = await call(tools, 'task_create', { ...sampleBrief({ title: 'b' }), target: 'relative/dir' })
   assert.match(bad, /绝对路径/)
+  assert.equal((bad.match(/绝对路径/g) ?? []).length, 1, '文案不应重复')
   const target = tempDir()
   const ok = await call(tools, 'task_create', { ...sampleBrief({ title: '带目录' }), target })
   assert.match(ok, /已派发/)

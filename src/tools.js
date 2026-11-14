@@ -126,7 +126,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
       const targetError = validateTargetDir(args.target)
       if (targetError !== undefined) {
         log('task.create.rejected', { agentId, detail: { reason: 'target', message: targetError, callId } })
-        return `${targetError}。目标目录必须是已存在的绝对路径。`
+        return `${targetError}。`
       }
       const current = status()
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
