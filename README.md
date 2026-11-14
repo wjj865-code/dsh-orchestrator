@@ -45,7 +45,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
    ```
 
    无头 profile 用 `@deepseek-ai/dsh-headless`，桌面 profile 用 `@deepseek-ai/dsh-web-app`。
-   `@deepseek-ai/dsh-experimental-agent-team-profile` 提供 `ctx.agentTeams`（`backend:'team'` 回退用）；直连子会话还要 `ctx.subagents` 和本地 `spawn` provider（`@deepseek-ai/dsh-subagent` + `dsh-subagent-spawn-in-process`，随平台 bundle 自带）。缺服务时插件会因 `inject` 加载失败。
+   `@deepseek-ai/dsh-experimental-agent-team-profile` 提供 `ctx.agentTeams`（`backend:'team'` 回退用）；直连子会话还要 `ctx.subagents` 和本地 `spawn` provider（`@deepseek-ai/dsh-subagent` + `dsh-subagent-spawn-in-process`，随平台 bundle 自带）。**profile 缺 `agentTeams` 时插件不会报加载失败，而是一直停在 `pending (waiting for service: agentTeams)`、整条不激活**（web 模板默认就没有 agent-team，需要显式加这个 bundle）。
 
 3. 可选：需要显式指定协调者时，profile 的 `cordis.patch.yml` 加配置行；不配就自动绑定：
 
@@ -229,7 +229,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - **唤醒时序**：通知走 `agent.steer` 直插协调者会话（等价于 TeamService 给 lead 投递时的 `root.steer`），空闲唤醒、忙时 `next-step` 排队；机制证据见 `docs/api-notes.md`。真机忙时排队由维护者冒烟验证。
 - **平台 settlement 通知**：`subagent-settled` 是平台独立链路，不受本插件控制、不写 `notifications`。
 - **headless 收尾竞态**：一次性进程在 5 秒合并窗口内退出时，`steer` 可能抛 `agent initiator scope is disposed`（进程级 initiator 作用域已 dispose），此时消息可能已进 inbox 但没有回合消费，`notifications` 记 `failed` + reason 是正确审计；长驻 desktop/服务进程不受影响。冒烟要在最后一条回报后保持进程活过 `mergeWindowMs` 才能看到 `delivered`。
-- **`inject` 同时要求 `agentTeams` + `subagents`**：两套后端都挂在 `inject` 里，subagent 模式在没有 agent-team 的环境会因缺 `agentTeams` 加载失败（反之亦然）。对外发布给没装 agent-team 的用户前必须按 `ctx.get` 惰性判后端、缺哪个给可读错误；内部 profile 两套都自带，暂不阻塞。
+- **`inject` 同时要求 `agentTeams` + `subagents`**：两套后端都挂在 `inject` 里，所以缺 `agentTeams` 的 profile（例如**默认的 web 模板**）里插件会一直停在 `pending (waiting for service: agentTeams)`，**不报错、也不激活**，看起来像“装了没用”（真机在隔离 profile 复现过）。装到没有 agent-team 的 profile 时，必须把 `@deepseek-ai/dsh-experimental-agent-team-profile` 加进 `dsh.profile.bundles`（或改造成按 `ctx.get` 惰性判后端、缺哪个给可读错误）。内部 profile 两套都自带，暂不阻塞。
 - **重启窗口**：子会话已完成但 `task_report` 还没被协调者消费时恰好重启，对账会按「running 不 live」标 `orphaned`；这个窗口里报告本来也会丢，重建即可。
 - 会话内卡片仍只提供数据（`taskCard`），不渲染 UI；可见的入口/面板在阶段 2 的侧栏与面板里，卡片渲染 UI 留阶段 3。
 
