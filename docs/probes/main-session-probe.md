@@ -231,6 +231,8 @@ plugins:
 8. **rename 服务**：desktop 真机 `sessionController.rename({sessionId, title:'主会话'})` 成功（`sessionTitle` 已挂）。
 9. **target 目录**：`cwd=target` 时 `sandboxPolicy.resolve` 的 `workspaceRoot === target`，writes 成功、越界 writes 被拒。
 10. **预设 broken 排查**：`agentPreset` 创建失败时错误信息能看到 `agent preset …: …`（`diagnostic`），Task 10 记录一次。
+11. **PTC / `run_code`**：确认 desktop 默认没有 PTC executor；若有，协调者可能经 `run_code` 绕过 allow，记录并禁用该路。
+12. **deny 审计日志**：`preset-tools: deny …` 走平台 `ctx.logger.info`，Task 10 在 desktop 日志里确认可查；查不到再考虑桥接进插件 JSONL。
 
 ## 9. 证据位置
 

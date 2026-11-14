@@ -1117,7 +1117,7 @@ git commit -m "feat: 协调者预设与主会话文档"
 
 - [ ] **Step 1: 隔离 profile 冒烟**
 
-按 `docs/qa-checklist.md` 的新章节逐条跑：打开主会话（指挥舱 + 协调者预设）→ 工具表只剩允许项 → 带 target 派任务 → 子会话在目标目录 → 删除主会话后点入口重建 → 旧任务仍在面板。
+按 `docs/qa-checklist.md` 的新章节逐条跑：打开主会话（指挥舱 + 协调者预设）→ 工具表只剩允许项 → 带 target 派任务 → 子会话在目标目录 → 删除主会话后点入口重建 → 旧任务仍在面板。另查：desktop 默认无 PTC executor（有则记录并禁用协调者的 `run_code` 路径）、平台日志里有 `preset-tools: deny …` 审计行。
 
 - [ ] **Step 2: 装 desktop 并重启一次**
 
