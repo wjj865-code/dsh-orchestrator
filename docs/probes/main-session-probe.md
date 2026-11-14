@@ -5,6 +5,7 @@
 - 对象：本机已安装 DeepSeek Harness（asar，203.3 MB / 22102 files）
 - 方法：`docs/probes/main-session-probe.mjs` 解析 asar 文件表、按包路径取源码取证（不启动 app），本机 `结果：40/40 PASS`；`docs/probes/preset-scope-restrict.mjs` 解出 `cordis`/`dsh-tools`/`dsh-scope` 跑真实 `ToolsService`，`结果：7/7 PASS`
 - 用途：给「协调者主会话（预设开启）」的 Task 1–10 提供平台契约依据；静态探针不能证明的项列在 §8，留 Task 10 真机/单测
+- rc.3 复跑：同一脚本在 0.2.2-rc.3 上 `40/40 PASS`。三处形状变化（`composition.agentPreset`、沙箱 `workspaceRoot`、`resolveDirectory` 入参）改成「两版形状分别断言」：每条断言保留 rc.3 与 rc.1 的精确原文、命中哪版打印在结论行，两版都不在才红（`docs/probes/lib/phrase-match.mjs`，单测 `test/probe-phrase.test.js`）。
 
 ## 结论摘要
 

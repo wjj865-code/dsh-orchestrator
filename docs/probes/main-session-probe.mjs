@@ -1,6 +1,7 @@
 // 主会话平台契约探测：解析已安装 app.asar 的文件表，按包路径取源码取证；不启动 app。
 // 用法：node docs/probes/main-session-probe.mjs [app.asar 路径]
 import { readFileSync } from 'node:fs'
+import { matchesPhrase } from './lib/phrase-match.mjs'
 
 const ASAR = process.argv[2] ?? 'C:/Users/72489/AppData/Local/Programs/DeepSeek Harness/resources/app.asar'
 const bytes = readFileSync(ASAR)
@@ -30,12 +31,13 @@ const read = suffix => {
 }
 
 const results = []
+// phrase 支持「多版同义写法」：rc.1→rc.3 改过入参形状，一条断言要为两版留位；
+// 每个写法都是精确子串，全部不在时红（平台再改形状不会继续绿）。
 const check = (label, file, phrase, { absent = false } = {}) => {
   const text = read(file)
-  const at = text.indexOf(phrase)
-  const hit = absent ? at === -1 : at !== -1
+  const { hit, at, matched } = matchesPhrase(text, phrase, { absent })
   results.push({ label, file, hit })
-  const where = at === -1 ? '' : ` @${at}`
+  const where = at === -1 ? '' : ` @${at}${matched === undefined ? '' : `，命中 ${matched} 形状`}`
   console.log(`${hit ? 'PASS' : 'FAIL'} ${label}（${file}${where}）`)
   return hit
 }
@@ -72,7 +74,10 @@ check('工具 restrict 是 agent-scoped 的 allow/deny 掩码', TOOLS, 'restrict
 check('preset 挂载用共享 scope（createScope(owner, key)）', '@deepseek-ai/dsh-agent-preset-registry/lib/index.js', 'createScope(this.owner, key)')
 check('agent 绑定 preset scope（bindScopeParent）', '@deepseek-ai/dsh-agent-preset-registry/lib/index.js', 'bindScopeParent')
 check('子会话未指定 preset 时 composeFrom 继承父 preset', SUBAGENT, 'composeFrom(childCtx, parent.ctx)')
-check('worker 显式 preset：request.agentPreset 传给 composition', SUBAGENT, 'composition: { agentPreset: request.agentPreset }')
+check('worker 显式 preset：agentPreset 传给 composition（两版形状分别断言）', SUBAGENT, [
+  { name: 'rc.3', phrase: 'composition: { agentPreset: spec.agentPreset }' },
+  { name: 'rc.1', phrase: 'composition: { agentPreset: request.agentPreset }' },
+])
 check('显式 preset 走 presets.mount（不 composeFrom）', SUBAGENT, 'presets.mount(childCtx, composition.agentPreset)')
 check('空 plugins 是合法预设（entryListProblem 只拒非数组）', '@deepseek-ai/dsh-agent-preset-registry/lib/index.js', 'the composition must be a top-level list of plugin rows')
 check('标准预设自己声明 tool-fs（工具是 preset 行，不是全局）', PRESET_PATCH, '@deepseek-ai/dsh-tool-fs')
@@ -98,9 +103,15 @@ check('Workspace.setTitle(title)', WORKSPACE, 'setTitle(title)')
 // Q4 子会话 cwd / 沙箱
 console.log('\n## Q4 子会话 cwd 与沙箱')
 check('沙箱：session cwd 就是 workspace-write 边界', SANDBOX, 'A session cwd is its workspace-write boundary')
-check('sandboxPolicy.resolve 用 header.cwd 作 workspaceRoot', SANDBOX, 'workspaceRoot: resolveWorkspaceRoot(session?.header.cwd ?? this.workspaceRoot)')
+check('sandboxPolicy.resolve 用 header.cwd 作 workspaceRoot（两版形状分别断言）', SANDBOX, [
+  { name: 'rc.3', phrase: 'workspaceRoot: this.sessionWorkspaceRoot(session)' },
+  { name: 'rc.1', phrase: 'workspaceRoot: resolveWorkspaceRoot(session?.header.cwd ?? this.workspaceRoot)' },
+])
 check('工作目录 set 要求目录存在（fs.stat → directory）', WORKDIR, 'info?.type === "directory"')
-check('子代理 request.cwd 直接采用（resolveDirectory）', SUBAGENT, 'const cwd = await this.resolveDirectory(request, spec.signal)')
+check('子代理 cwd 直接采用（resolveDirectory 两版入参形状分别断言）', SUBAGENT, [
+  { name: 'rc.3', phrase: 'const cwd = await this.resolveDirectory(spec, signal)' },
+  { name: 'rc.1', phrase: 'const cwd = await this.resolveDirectory(request, spec.signal)' },
+])
 check('子代理继承父会话的 sandbox 模式', SUBAGENT, 'sandboxMode: parent.ctx.get("sandboxPolicy")?.overrideOf(parent.session)')
 
 // Q5 session/created
@@ -136,7 +147,7 @@ for (const [title, file, phrase] of [
   ['Q2 rename', SESSION_API, 'async rename(request)'],
   ['Q3 工作区 create', WORKSPACE, 'async create(path: string, title?: string)'],
   ['Q4 沙箱边界', SANDBOX, 'A session cwd is its workspace-write boundary'],
-  ['Q4 子会话 cwd', SUBAGENT, 'const cwd = await this.resolveDirectory(request, spec.signal)'],
+  ['Q4 子会话 cwd', SUBAGENT, 'const cwd = await this.resolveDirectory('],
   ['Q5 session/created', SESSION, "'session/created'"],
   ['Q5 标准预设 stack', PRESET_PATCH, '@deepseek-ai/dsh-persona'],
 ]) {
