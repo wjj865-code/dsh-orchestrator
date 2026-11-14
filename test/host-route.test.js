@@ -128,3 +128,39 @@ test('快照：活跃任务全量 + 历史最多 limit 条（老 running 不被�
   assert.equal(body.tasks.length, 3)
   db.close()
 })
+
+test('snapshot 带 mainSession 与 targetDir；open-main 只建主会话', async () => {
+  const db = await openLedger(tempDir())
+  createTask(db, { brief: sampleBrief({ title: 't', goal: 'g', acceptance: ['a'] }), coordinatorSession: 's', targetDir: 'C:/work' })
+  const calls = []
+  const handler = createHostRoute({
+    db,
+    coordinatorStatus: () => ({ id: 's', live: true }),
+    openMain: async () => { calls.push('open'); return { ok: true, sessionId: 'session-main' } },
+  })
+  const before = counts(db)
+  const snapshot = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  assert.deepEqual(snapshot.mainSession, { id: 's', live: true })
+  assert.equal(snapshot.tasks[0].targetDir, 'C:/work')
+  assert.deepEqual(counts(db), before, 'snapshot 不应写库')
+  const opened = await handler(request({ endpoint: 'open-main' }))
+  const body = await opened.json()
+  assert.equal(opened.status, 200)
+  assert.equal(body.sessionId, 'session-main')
+  assert.equal(body.created, false)
+  assert.deepEqual(calls, ['open'])
+  db.close()
+})
+
+test('open-main 失败返回 500 与可读原因；无 openMain 时 500', async () => {
+  const db = await openLedger(tempDir())
+  const failing = createHostRoute({ db, openMain: async () => ({ ok: false, error: '指挥舱工作区不可用' }) })
+  const failed = await failing(request({ endpoint: 'open-main' }))
+  assert.equal(failed.status, 500)
+  assert.match((await failed.json()).error, /指挥舱/)
+  const unavailable = createHostRoute({ db })
+  const missing = await unavailable(request({ endpoint: 'open-main' }))
+  assert.equal(missing.status, 500)
+  assert.equal((await missing.json()).error, 'open-main-unavailable')
+  db.close()
+})
