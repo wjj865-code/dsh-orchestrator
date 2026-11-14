@@ -98,6 +98,8 @@ test('面板提供「打开主会话」并调用 open-main', () => {
   assert.match(source, /snapshot\.mainSession/)
   assert.doesNotMatch(source, /snapshot\.coordinator/)
   assert.match(source, /task\.targetDir/)
+  assert.match(source, /openingMain/)
+  assert.match(source, /打开中…/)
 })
 
 test('入口/头部按钮的文案仍是任务', () => {

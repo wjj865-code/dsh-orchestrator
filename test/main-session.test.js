@@ -130,3 +130,43 @@ test('没有 workspaceRegistry（undefined）时也能创建主会话', async ()
   assert.equal(f.created[0].workspaceId, undefined)
   db.close()
 })
+
+test('并发 open 只创建一次主会话，两个调用拿到同一个结果', async () => {
+  const db = await ledger()
+  const f = fake()
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  f.sessionController.create = async request => {
+    f.created.push(request)
+    await gate
+    return { sessionId: 'session-main-new' }
+  }
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, workspacePath: 'C:/ws' })
+  const first = main.open()
+  const second = main.open()
+  release()
+  const [a, b] = await Promise.all([first, second])
+  assert.equal(f.created.length, 1)
+  assert.deepEqual(a, b)
+  assert.equal(getMainSessionId(db), 'session-main-new')
+  db.close()
+})
+
+test('创建失败后 in-flight 清掉，可以再点一次成功', async () => {
+  const db = await ledger()
+  const f = fake()
+  let attempts = 0
+  f.sessionController.create = async () => {
+    attempts += 1
+    if (attempts === 1) throw new Error('boom')
+    return { sessionId: 'session-main-new' }
+  }
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, workspacePath: 'C:/ws' })
+  const failed = await main.open()
+  assert.equal(failed.ok, false)
+  const retried = await main.open()
+  assert.equal(retried.ok, true)
+  assert.equal(retried.sessionId, 'session-main-new')
+  assert.equal(attempts, 2)
+  db.close()
+})

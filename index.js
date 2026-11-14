@@ -107,12 +107,14 @@ export async function apply(ctx, rawConfig = {}) {
   }
 
   // 主会话：固定入口创建/打开唯一协调者会话；不再由 task_create 自动绑定。
+  // 服务用 getter 惰性取：cordis 并发加载条目，apply 时服务可能还没就绪（同上 connection）。
+  const service = name => ctx.get?.(name)
   const mainSession = createMainSession({
     db,
     config,
-    agents: ctx.get?.('agents'),
-    sessionController: ctx.get?.('sessionController'),
-    workspaces: ctx.get?.('workspaceRegistry'),
+    agents: () => service('agents'),
+    sessionController: () => service('sessionController'),
+    workspaces: () => service('workspaceRegistry'),
     workspacePath: join(stateDir(), 'workspace'),
     workspaceName: '指挥舱',
     log: (event, detail) => logger.log(event, { detail }),

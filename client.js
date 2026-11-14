@@ -106,6 +106,7 @@ window.__ModuleLoader__.load({
       const [snapshot, setSnapshot] = React.useState(null)
       const [error, setError] = React.useState(null)
       const [refreshing, setRefreshing] = React.useState(false)
+      const [openingMain, setOpeningMain] = React.useState(false)
       const [filter, setFilter] = React.useState('all')
 
       const load = React.useCallback(async (signal) => {
@@ -154,11 +155,16 @@ window.__ModuleLoader__.load({
       }
 
       const handleOpenMain = async () => {
+        // 双击会并发两次 open-main；主会话创建没有互斥，客户端先自己挡一层。
+        if (openingMain) return
+        setOpeningMain(true)
         try {
           const body = await openMainSession()
           open(body.sessionId)
         } catch (failure) {
           setError(String((failure && failure.message) || failure))
+        } finally {
+          setOpeningMain(false)
         }
       }
 
@@ -176,7 +182,7 @@ window.__ModuleLoader__.load({
             style: Object.assign({}, styles.button, { padding: '2px 4px' }),
           }, FILTERS.map(([value, label]) => h('option', { key: value, value }, label))),
           h('button', { type: 'button', style: styles.button, onClick: refresh, disabled: refreshing }, refreshing ? '刷新中…' : '刷新'),
-          h('button', { type: 'button', style: styles.button, onClick: handleOpenMain }, '打开主会话'),
+          h('button', { type: 'button', style: styles.button, onClick: handleOpenMain, disabled: openingMain }, openingMain ? '打开中…' : '打开主会话'),
         ),
         error !== null ? h('div', { style: styles.error }, `台账暂不可用：${error}`) : null,
         snapshot !== null && mainSession.id === null

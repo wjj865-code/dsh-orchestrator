@@ -268,3 +268,12 @@ test('未传 workerPreset 时默认仍用 dsh-orchestrator-worker', async () => 
   await dispatcher.spawn({ prompt: 'p' })
   assert.equal(service.calls[0][1].request.agentPreset, 'dsh-orchestrator-worker')
 })
+
+test('fork provider 不注入 agentPreset（平台不支持，避免 UNSUPPORTED_CAPABILITY）', async () => {
+  const service = fakeSubagents()
+  const dispatcher = createSubagentDispatcher({ subagents: service, agent, provider: 'fork' })
+  await dispatcher.spawn({ prompt: 'p' })
+  const request = service.calls[0][1].request
+  assert.equal('agentPreset' in request, false)
+  assert.equal(service.calls[0][1].provider, 'fork')
+})

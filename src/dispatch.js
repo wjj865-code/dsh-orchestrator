@@ -127,7 +127,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
           parent,
           prompt: [{ type: 'text', text: String(prompt ?? '') }],
           // 子会话显式用 worker 预设，绕开 composeFrom 继承协调者的 preset restrict（探针 §1）。
-          agentPreset: workerPreset ?? 'dsh-orchestrator-worker',
+          // 只有 spawn provider 支持 agentPreset；fork 没有该能力，带上去会被平台拒绝（UNSUPPORTED_CAPABILITY）。
+          ...(provider === 'spawn' ? { agentPreset: workerPreset ?? 'dsh-orchestrator-worker' } : {}),
           ...(baseCwd === undefined ? {} : { cwd: baseCwd }),
         },
       }

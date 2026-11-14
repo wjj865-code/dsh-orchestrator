@@ -83,6 +83,7 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   assert.equal((source.match(/id: tool-result-pruner/g) ?? []).length, 2)
   assert.match(source, /tool-jobs/)
   assert.match(source, /prefix:/)
+  assert.doesNotMatch(source, /createRequire\(baseUrl\)/, 'bundle 在磁盘求值会 MODULE_NOT_FOUND')
 })
 
 test('package.json 导出 preset-tools', () => {
