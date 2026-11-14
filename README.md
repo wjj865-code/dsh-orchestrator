@@ -99,7 +99,7 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
    @wjj865-code/dsh-orchestrator
    ```
 
-   也可以安装指定版本：`@wjj865-code/dsh-orchestrator@0.3.0`。
+   也可以安装指定版本：`@wjj865-code/dsh-orchestrator@0.3.1`。
 2. 装完彻底退出 DSH 再启动。
 3. 以后升级：`npm version patch` → `npm publish` → 在 DSH 插件页用 registry 包的更新入口升级（DSH 的 plugin manager 对 registry 包支持 `listVersions` / `updateBundle`），不再需要卸了重装 GitHub 版。
 
@@ -212,7 +212,7 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
 - **任务面板**：从会话头按钮 `conversation.header.leading` 进入（`selectPanel('orchestrator')`）。**侧栏底部 `sidebar.footer.action` 不再注册**（用户要求删掉底部「任务」入口）。面板页是 `main` 的 `key:'orchestrator'`；每条任务可「打开子会话」，走 `ctx.uiWorkspace.openSession(id)`（与平台 `ui-subagent.openChild` 同款）。任务行显示目标目录（截断 60 字）。
 - **Bot 模式**：ds-bot 用 `!important` 藏掉整个 shell 面板列表（`nav[class*="_panelList"]{display:none!important}`），所以侧栏启动器只在**纯 dsh 表面**可见；Bot 模式仍可用会话头按钮打开任务面板。不碰 ds-bot 的 `sidebar.workspaces`/`conversation.session.header`。
 - **数据**：`/api/orchestrator` POST。`{ endpoint: 'snapshot' }` 只读；`{ endpoint: 'open-main' }` 是唯一动作端点（创建/打开主会话，返回 `sessionId`）。鉴权由 connection 服务统一负责（401/403、exact 路由 owner-only）；snapshot handler 只 import 查询函数、**不写台账**。面板打开时拉一次、可见时 5s 轮询，连续失败退避 30s，可按状态筛选；失败显示「台账暂不可用」，不阻塞会话（平台对 handler 异常回 400 空体，客户端会显示 `HTTP 400`）。
-- **产物**：`client.js` 是**经典脚本**（`window.__ModuleLoader__.load({ id:'dsh-orchestrator', factory })`，顶层无 import/export），`package.json` 声明 `dsh.client.platform:'web'`、`exports["./client"]`、`files` 含 `client.js`。MVP 无构建；`npm run check:client` 只做语法检查。
+- **产物**：`client.js` 是**经典脚本**（`window.__ModuleLoader__.load({ id:'@wjj865-code/dsh-orchestrator', factory })`，顶层无 import/export），`package.json` 声明 `dsh.client.platform:'web'`、`exports["./client"]`、`files` 含 `client.js`。MVP 无构建；`npm run check:client` 只做语法检查。
 
 ## 真机冒烟清单（隔离 profile）
 

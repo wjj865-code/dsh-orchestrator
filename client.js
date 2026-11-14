@@ -1,7 +1,8 @@
 // dsh-orchestrator 客户端薄插件（经典脚本，模块加载器用 <script> 加载，顶层不能有 import/export）。
 // 槽位：sidebar.panellist 启动器入口（插件下方）、main 任务面板 + 启动器面板、conversation.header.leading 会话头按钮。
 window.__ModuleLoader__.load({
-  id: 'dsh-orchestrator',
+  // 客户端工厂 id 必须等于包名（DSH client-modules 按包名索引），scoped 包也一样。
+  id: '@wjj865-code/dsh-orchestrator',
   factory: (require) => {
     const React = require('react')
     const h = React.createElement
