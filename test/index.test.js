@@ -685,11 +685,11 @@ test('connection 晚于插件加载：ctx.inject 就绪后仍注册只读路由'
   assert.deepEqual(routes[0].methods, ['POST'])
 }))
 
-test('cordis.patch.yml 指向 dsh-orchestrator', () => {
+test('cordis.patch.yml 指向 scoped 包名', () => {
   const yaml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(yaml, /insert:/)
   assert.match(yaml, /id: orchestrator/)
-  assert.match(yaml, /name: dsh-orchestrator/)
+  assert.match(yaml, /name: '@wjj865-code\/dsh-orchestrator'/)
 })
 
 
