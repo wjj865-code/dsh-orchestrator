@@ -5,6 +5,7 @@ import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
 import { taskLabel, taskLabelWithId } from './task-label.js'
 import { canTransition } from './state.js'
+import { dependencyState, promoteDependents, validateDepends } from './deps.js'
 import {
   GLOBAL_PROJECT, addMemory, buildMemoryBlock, memoryTokens, projectKeyOf, remember, searchMemories,
 } from './memory.js'
@@ -25,10 +26,10 @@ const REPORT_STATUS = ['progress', 'done', 'blocked', 'needs_auth']
 const MAX_ARTIFACTS = 20
 const MAX_ARTIFACT_LABEL = 160
 const STATUS_LABEL = {
-  pending: '待派发', running: '进行中', waiting_user: '等你确认', waiting_auth: '要授权',
+  waiting_dep: '等前置', pending: '待派发', running: '进行中', waiting_user: '等你确认', waiting_auth: '要授权',
   done: '已完成', failed: '失败', cancelled: '已取消', orphaned: '会话丢失',
 }
-const ACTIVE_STATUS = new Set(['pending', 'running', 'waiting_user', 'waiting_auth'])
+const ACTIVE_STATUS = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
 const WAITING_STATUS = new Set(['waiting_user', 'waiting_auth'])
 const RESUME_STATUS = new Set(['waiting_user', 'waiting_auth', 'failed'])
 const TERMINAL_STATUS = new Set(['done', 'cancelled', 'orphaned'])
@@ -45,6 +46,10 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
     `- ${taskLabelWithId(task)}`, task.read_only ? `${labelOf(task.status)}·只读` : labelOf(task.status), `子会话 ${task.target ?? '-'}`,
     `目标：${short(task.goal)}`,
   ]
+  if (task.status === 'waiting_dep') {
+    parts.push(`等前置 ${task.depends_on.length} 个${task.priority ? `｜P${task.priority}` : ''}`)
+  }
+  if (task.group_id) parts.push(`组 ${task.group_id}`)
   const latest = recentMessages(db, task.id, 1)[0]
   parts.push(`最近：${latest === undefined ? '-' : short(latest.rendered)}`)
   if (task.status === 'pending' && task.session_id === null) {
@@ -85,7 +90,47 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     return undefined
   }
 
-  // 无 target 时相对产物按主会话目录解析（defaultCwd 可以是 getter，主会话重建后跟新目录）。
+  // 分组 / 写域 / 优先级：都只做轻量归一，非法值忽略。
+  const normalizeGroup = value => {
+    if (typeof value !== 'string') return null
+    const text = value.trim()
+    return text === '' ? null : text.slice(0, 80)
+  }
+  const normalizeScopes = value => {
+    if (!Array.isArray(value)) return []
+    const out = []
+    for (const item of value) {
+      if (typeof item !== 'string') continue
+      const text = item.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+      if (text === '' || out.includes(text)) continue
+      out.push(text.slice(0, 200))
+      if (out.length >= 20) break
+    }
+    return out
+  }
+  const normalizePriority = value => {
+    if (!Number.isFinite(value)) return 0
+    return Math.max(-10, Math.min(10, Math.trunc(value)))
+  }
+  const sameScope = (left, right) => left === right
+    || left.startsWith(`${right}/`)
+    || right.startsWith(`${left}/`)
+  const writeScopeConflicts = (scopes, excludeId) => {
+    if (scopes.length === 0) return []
+    const conflicts = []
+    for (const task of listTasks(db, { active: true })) {
+      if (task.id === excludeId) continue
+      const other = Array.isArray(task.write_scopes) ? task.write_scopes : []
+      const overlap = scopes.find(scope => other.some(candidate => sameScope(scope, candidate)))
+      if (overlap !== undefined) conflicts.push({ task, scope: overlap })
+      if (conflicts.length >= 5) break
+    }
+    return conflicts
+  }
+  const conflictsText = conflicts => conflicts.length === 0 ? ''
+    : `写域与活跃任务冲突：${conflicts.map(({ task, scope }) => `${taskLabelWithId(task)}（${scope}）`).join('、')}；建议拆分或串行。`
+
+
   const baseDirOf = task => {
     if (typeof task?.target_dir === 'string' && task.target_dir !== '') return task.target_dir
     let fallback
@@ -276,6 +321,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       user_verbatim: str('用户原话，可空'),
       target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
       readOnly: { type: 'boolean', description: '只读任务：子会话沙箱 read-only（读正常，写文件/写 shell 被拒）；默认 false，只在明确需要时传 true' },
+      dependsOn: strList('前置任务编号数组；依赖全部完成后才派发；任一前置失败则本任务失败'),
+      group: str('可选分组名，如“登录改造”；面板按组汇总进度'),
+      writeScopes: strList('可选写域（目录/文件路径）；与活跃任务重叠时给冲突提示（advisory）'),
+      priority: { type: 'number', description: '优先级，-10..10，默认 0；高的先派发' },
     }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
@@ -321,6 +370,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
       const title = String(args.title).trim()
       const goal = String(args.goal).trim()
+      const depends = validateDepends(db, args.dependsOn)
+      if (depends.ok === false) {
+        log('task.create.rejected', { agentId, detail: { reason: 'depends', message: depends.error, callId } })
+        return `依赖不合法：${depends.error}。`
+      }
+      const groupId = normalizeGroup(args.group)
+      const writeScopes = normalizeScopes(args.writeScopes)
+      const priority = normalizePriority(args.priority)
+      const depState = dependencyState(db, { depends_on: depends.ids })
+      const initialStatus = depState.ready ? 'pending' : 'waiting_dep'
+      const conflicts = writeScopeConflicts(writeScopes)
       const duplicate = listTasks(db, { active: true })
         .find(task => task.title.trim() === title && task.goal.trim() === goal)
       if (duplicate !== undefined) {
@@ -339,8 +399,33 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         })
         return `待派发队列已满（${maxQueue} 个），先 task_stop 或等队列消化后再派。`
       }
-      const task = createTask(db, { brief, coordinatorSession: current.id ?? coordinatorSession, targetDir: effectiveTarget, readOnly })
-      log('task.create.created', { taskId: task.id, agentId, sessionId: current.id, detail: { title, callId, targetDir: effectiveTarget ?? null, readOnly } })
+      const task = createTask(db, {
+        brief,
+        coordinatorSession: current.id ?? coordinatorSession,
+        targetDir: effectiveTarget,
+        readOnly,
+        dependsOn: depends.ids,
+        groupId,
+        writeScopes,
+        priority,
+        status: initialStatus,
+      })
+      log('task.create.created', {
+        taskId: task.id,
+        agentId,
+        sessionId: current.id,
+        detail: {
+          title,
+          callId,
+          targetDir: effectiveTarget ?? null,
+          readOnly,
+          dependsOn: depends.ids,
+          group: groupId,
+          writeScopes,
+          priority,
+          status: initialStatus,
+        },
+      })
       let memoryBlock = ''
       if (config?.memoryInject !== false) {
         try {
@@ -353,6 +438,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       const rendered = `【任务编号】${task.id}\n${renderBrief(brief)}${memoryBlock === '' ? '' : `\n${memoryBlock}`}`
       addMessage(db, task.id, { kind: 'brief', rendered })
+      const conflictNote = conflictsText(conflicts)
+      const depNames = depends.ids.map(id => {
+        const dep = getTask(db, id)
+        return dep === undefined ? id : `「${dep.title}」（${labelOf(dep.status)}）`
+      }).join('、')
+      const dependencyNote = depends.ids.length === 0 ? '' : `前置任务：${depNames}`
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
       if (current.live === false) {
         const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
@@ -360,10 +451,15 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         transition(db, task.id, 'failed', { error: message })
         throw new Error(message)
       }
+      if (initialStatus === 'waiting_dep') {
+        const notes = [dependencyNote, conflictNote].filter(Boolean).join('\n')
+        log('task.dep.waiting', { taskId: task.id, detail: { dependsOn: depends.ids, callId } })
+        return `任务「${taskLabelWithId(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
+      }
       const outcome = await queue.enqueueAndPump(task.id)
       const resultTask = outcome.task
       const inferredNote = inferred === undefined ? '' : `（目标目录按工作区推断：${inferred.path}）`
-      const notes = [invalidHint(), inferredNote].filter(Boolean).join('\n')
+      const notes = [invalidHint(), inferredNote, conflictNote, dependencyNote].filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? '子会话创建失败')
       if (resultTask?.status === 'running') {
         return `任务「${taskLabelWithId(task)}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
@@ -372,14 +468,23 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return `任务「${taskLabelWithId(task)}」已创建，前面还有 ${ahead} 个任务在排队，轮到时自动派发。${notes === '' ? '' : `\n${notes}`}`
     }),
 
-    wrap('task_list', '列出任务。默认只列活跃任务（pending/running/waiting），active=false 时连同历史一起列出。', objectSchema({
+    wrap('task_list', '列出任务。默认只列活跃任务（waiting_dep/pending/running/waiting），active=false 时连同历史一起列出；可按 group 过滤并看组进度。', objectSchema({
       active: { type: 'boolean', description: '是否只看活跃任务，默认 true' },
+      group: str('可选：只看这个分组的任务'),
     }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
-      const tasks = listTasks(db, { active: args.active !== false })
-      if (tasks.length === 0) return args.active === false ? '台账里还没有任何任务。' : '没有活跃任务。'
-      return tasks.map(task => taskLine(db, task, { staleMinutes })).join('\n')
+      const all = listTasks(db, { active: args.active !== false })
+      const group = typeof args.group === 'string' ? args.group.trim() : ''
+      const tasks = group === '' ? all : all.filter(task => task.group_id === group)
+      if (tasks.length === 0) {
+        if (group !== '') return `组「${group}」里没有任务。`
+        return args.active === false ? '台账里还没有任何任务。' : '没有活跃任务。'
+      }
+      const header = group === ''
+        ? ''
+        : `组「${group}」：${tasks.filter(task => task.status === 'done').length}/${tasks.length} 完成\n`
+      return header + tasks.map(task => taskLine(db, task, { staleMinutes })).join('\n')
     }),
 
     wrap('task_status', '查看一个任务的详情与最近消息。', objectSchema({ task_id: str('任务编号，如 t-1a2b3c4d') }), async (args, exec) => {
@@ -393,12 +498,27 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         `任务「${taskLabelWithId(task)}」`,
         `状态：${labelOf(task.status)}`,
         ...(task.read_only ? ['权限：只读（读正常，写文件/写 shell 被拒绝）'] : []),
+        ...(task.group_id ? [`分组：${task.group_id}`] : []),
+        ...(task.priority !== 0 ? [`优先级：${task.priority}`] : []),
         `子会话：${task.target ?? '-'}`,
+        ...(task.status === 'waiting_dep'
+          ? [`等待前置：${task.depends_on.map(id => {
+            const dep = getTask(db, id)
+            return dep === undefined ? id : `${id}（${labelOf(dep.status)}）`
+          }).join('、')}`]
+          : []),
         ...(task.status === 'pending'
           ? [`排队：${task.queued_at === null || task.queued_at === undefined ? '待派发（刚创建）' : '排队中（等待并发槽位）'}`]
           : []),
         `目标：${task.goal}`,
       ]
+      if (task.depends_on.length > 0 && task.status !== 'waiting_dep') {
+        lines.push(`前置任务：${task.depends_on.map(id => {
+          const dep = getTask(db, id)
+          return dep === undefined ? id : `「${dep.title}」（${labelOf(dep.status)}）`
+        }).join('、')}`)
+      }
+      if (task.write_scopes.length > 0) lines.push(`写域：${task.write_scopes.join('、')}`)
       if (task.retry_of) lines.push(`重派自：${task.retry_of}`)
       if (task.error !== null && task.error !== undefined) lines.push(`原因：${task.error}`)
       if (config?.backend !== 'team' && task.session_id !== null && task.session_id !== undefined) {
@@ -418,6 +538,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
       if (TERMINAL_STATUS.has(task.status)) return `任务「${labelFor(task)}」已结束（${labelOf(task.status)}），不能续派；需要新工作请 task_create。`
+      if (task.status === 'waiting_dep') {
+        return `任务「${labelFor(task)}」还在等待前置任务（${task.depends_on.join('、')}），依赖完成后会派发，暂不能续派；要取消用 task_stop。`
+      }
       if (task.status === 'pending' && (task.target === null || task.target === undefined)) {
         return task.queued_at === null || task.queued_at === undefined
           ? `任务「${labelFor(task)}」还没有子会话，先停止再重建。`
@@ -462,11 +585,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
       if (TERMINAL_STATUS.has(task.status)) return `任务「${labelFor(task)}」已结束（${labelOf(task.status)}），无需停止。`
-      if (task.status === 'pending') {
+      if (task.status === 'pending' || task.status === 'waiting_dep') {
         queue.remove(task.id)
         transition(db, task.id, 'cancelled')
         releaseTaskSession(task)
-        return `任务「${labelFor(task)}」已取消（还在排队，没有派发出去）。`
+        queue.pump()
+        return task.status === 'waiting_dep'
+          ? `任务「${labelFor(task)}」已取消（还在等待前置任务）。`
+          : `任务「${labelFor(task)}」已取消（还在排队，没有派发出去）。`
       }
       if (task.target !== null && task.target !== undefined) {
         // 停止失败也要把任务标掉：用户要的是「停」，不是让 stop 抛错卡住。
@@ -500,20 +626,35 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return `已存在活跃任务「${taskLabelWithId(duplicate)}」（${labelOf(duplicate.status)}），未重复重派。`
       }
       const current = status()
+      const depends = validateDepends(db, task.depends_on)
+      if (depends.ok === false) return `不能重派：${depends.error}。`
+      const depState = dependencyState(db, { depends_on: depends.ids })
       const retried = createTask(db, {
         brief: task.brief,
         coordinatorSession: current.id ?? coordinatorSession,
         targetDir: task.target_dir,
         readOnly: task.read_only === true,
         retryOf: task.id,
+        dependsOn: depends.ids,
+        groupId: task.group_id,
+        writeScopes: task.write_scopes,
+        priority: task.priority,
+        status: depState.ready ? 'pending' : 'waiting_dep',
       })
-      log('task.retry', { taskId: retried.id, sessionId: current.id, detail: { retryOf: task.id, callId: exec?.callId } })
+      log('task.retry', {
+        taskId: retried.id,
+        sessionId: current.id,
+        detail: { retryOf: task.id, dependsOn: depends.ids, status: retried.status, callId: exec?.callId },
+      })
       addMessage(db, retried.id, { kind: 'brief', rendered: `【任务编号】${retried.id}\n${renderBrief(task.brief)}` })
       if (current.live === false) {
         const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
         log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })
         transition(db, retried.id, 'failed', { error: message })
         throw new Error(message)
+      }
+      if (retried.status === 'waiting_dep') {
+        return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，等待前置任务完成后派发。`
       }
       const outcome = await queue.enqueueAndPump(retried.id)
       const resultTask = outcome.task

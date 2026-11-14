@@ -15,8 +15,9 @@ test('字段齐全：带子会话 id 与打开方式，pending 标排队', () =>
   assert.equal(queued.queued, true)
 })
 
-test('8 个状态的中文名与色值', () => {
+test('9 个状态的中文名与色值', () => {
   const expected = {
+    waiting_dep: ['等前置', 'muted'],
     pending: ['待派发', 'muted'],
     running: ['进行中', 'info'],
     waiting_user: ['等你确认', 'warn'],

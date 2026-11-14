@@ -1002,3 +1002,114 @@ test('project_context 读取白名单文件与顶层结构，不读 .env，不�
   assert.doesNotMatch(text, /should-not-appear/)
   assert.doesNotMatch(text, /SECRET=/)
 })
+
+test('依赖：前置未完成时建 waiting_dep、不派发；前置 done 后自动晋升并注入前置摘要/产物', async () => {
+  const { writeFileSync } = await import('node:fs')
+  const target = tempDir()
+  const depFile = join(target, 'dep.md')
+  writeFileSync(depFile, '# dep', 'utf8')
+  const { db, dispatcher, tools } = await setup()
+  const first = await call(tools, 'task_create', { ...sampleBrief({ title: '前置' }), target })
+  assert.match(first, /已派发/)
+  const depTask = listTasks(db).find(task => task.title === '前置')
+  await call(tools, 'task_report', {
+    task_id: depTask.id, status: 'done', summary: '前置已完成', artifacts: [{ path: 'dep.md', label: '前置产物' }],
+  }, { agent: { id: depTask.session_id } })
+
+  const second = await call(tools, 'task_create', {
+    ...sampleBrief({ title: '下游' }), target, dependsOn: [depTask.id], group: '发布', priority: 5,
+  })
+  assert.match(second, /已派发/)
+  const downstream = listTasks(db).find(task => task.title === '下游')
+  assert.equal(downstream.depends_on[0], depTask.id)
+  assert.equal(downstream.group_id, '发布')
+  assert.equal(downstream.priority, 5)
+  const prompt = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').at(-1)[2]
+  assert.match(prompt, /【前置任务】/)
+  assert.match(prompt, /前置已完成/)
+  assert.match(prompt, /dep\.md/)
+})
+
+test('依赖：前置运行中时下游 waiting_dep，前置完成后晋升；前置失败时下游自动失败', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const first = await call(tools, 'task_create', sampleBrief({ title: '前置A' }))
+  assert.match(first, /已派发/)
+  const dep = listTasks(db).find(task => task.title === '前置A')
+  const second = await call(tools, 'task_create', { ...sampleBrief({ title: '下游B' }), dependsOn: [dep.id] })
+  assert.match(second, /等待前置任务/)
+  const waiting = listTasks(db).find(task => task.title === '下游B')
+  assert.equal(waiting.status, 'waiting_dep')
+  assert.equal(dispatcher.calls.filter(callRow => callRow[0] === 'spawn').length, 1)
+
+  await call(tools, 'task_report', { task_id: dep.id, status: 'done', summary: 'A 完成' }, { agent: { id: dep.session_id } })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  const promoted = listTasks(db).find(task => task.title === '下游B')
+  assert.equal(promoted.status, 'running')
+  assert.equal(dispatcher.calls.filter(callRow => callRow[0] === 'spawn').length, 2)
+
+  const third = await call(tools, 'task_create', sampleBrief({ title: '前置C' }))
+  assert.match(third, /已派发/)
+  const depC = listTasks(db).find(task => task.title === '前置C')
+  const fourth = await call(tools, 'task_create', { ...sampleBrief({ title: '下游D' }), dependsOn: [depC.id] })
+  assert.match(fourth, /等待前置任务/)
+  const failedDown = listTasks(db).find(task => task.title === '下游D')
+  await call(tools, 'task_stop', { task_id: depC.id })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(getTask(db, failedDown.id).status, 'failed')
+  assert.match(getTask(db, failedDown.id).error, /前置任务未完成/)
+})
+
+test('优先级：高优先级任务先派发', async () => {
+  const { db, dispatcher, tools, queue } = await setup({ limit: 1 })
+  const low = await call(tools, 'task_create', { ...sampleBrief({ title: '低优先级' }), priority: 1 })
+  assert.match(low, /已派发/)
+  const high = await call(tools, 'task_create', { ...sampleBrief({ title: '高优先级' }), priority: 9 })
+  assert.match(high, /排队/)
+  dispatcher.release()
+  await queue.pump()
+  const prompts = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').map(callRow => callRow[2])
+  assert.ok(prompts.length >= 2)
+  assert.match(prompts.at(-1), /高优先级/)
+})
+
+test('写域冲突只提示不阻断；同组任务可按 group 过滤看进度', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', { ...sampleBrief({ title: '写域A' }), writeScopes: ['src/api'], group: 'G' })
+  const second = await call(tools, 'task_create', { ...sampleBrief({ title: '写域B' }), writeScopes: ['src'], group: 'G' })
+  assert.match(second, /已派发/)
+  assert.match(second, /写域与活跃任务冲突/)
+  const list = await call(tools, 'task_list', { group: 'G', active: true })
+  assert.match(list, /组「G」/)
+  assert.match(list, /写域A/)
+  assert.match(list, /写域B/)
+  assert.equal(listTasks(db).filter(task => task.group_id === 'G').length, 2)
+})
+
+test('依赖校验：不存在或已失败的前置任务不能作为依赖', async () => {
+  const { db, tools } = await setup()
+  const missing = await call(tools, 'task_create', { ...sampleBrief({ title: '缺前置' }), dependsOn: ['t-nope'] })
+  assert.match(missing, /前置任务不存在/)
+  const failed = createTask(db, { brief: sampleBrief({ title: '失败前置' }), coordinatorSession: 's-1' })
+  transition(db, failed.id, 'failed', { error: 'boom' })
+  const rejected = await call(tools, 'task_create', { ...sampleBrief({ title: '依赖失败前置' }), dependsOn: [failed.id] })
+  assert.match(rejected, /不能作为依赖/)
+})
+
+test('task_retry 保留依赖/分组/写域/优先级', async () => {
+  const { db, tools } = await setup()
+  const dep = createTask(db, { brief: sampleBrief({ title: '已完成前置' }), coordinatorSession: 's-1' })
+  transition(db, dep.id, 'running', { sessionId: 'c-dep', target: 'c-dep' })
+  transition(db, dep.id, 'done')
+  const old = createTask(db, {
+    brief: sampleBrief({ title: '待重派' }), coordinatorSession: 's-1',
+    dependsOn: [dep.id], groupId: 'G', writeScopes: ['src'], priority: 3, status: 'pending',
+  })
+  transition(db, old.id, 'failed', { error: 'boom' })
+  const text = await call(tools, 'task_retry', { task_id: old.id })
+  assert.match(text, /已重派/)
+  const retried = listTasks(db).find(task => task.retry_of === old.id)
+  assert.deepEqual(retried.depends_on, [dep.id])
+  assert.equal(retried.group_id, 'G')
+  assert.deepEqual(retried.write_scopes, ['src'])
+  assert.equal(retried.priority, 3)
+})

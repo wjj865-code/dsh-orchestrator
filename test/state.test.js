@@ -24,11 +24,12 @@ test('nextStatus 返回新状态或抛错', () => {
 })
 
 test('状态集合完整', () => {
-  assert.deepEqual([...STATUSES].sort(), ['cancelled', 'done', 'failed', 'orphaned', 'pending', 'running', 'waiting_auth', 'waiting_user'])
+  assert.deepEqual([...STATUSES].sort(), ['cancelled', 'done', 'failed', 'orphaned', 'pending', 'running', 'waiting_auth', 'waiting_dep', 'waiting_user'])
 })
 
-test('8×8 全迁移矩阵只放行设计允许的边', () => {
+test('9×9 全迁移矩阵只放行设计允许的边', () => {
   const allowed = new Set([
+    'waiting_dep→pending', 'waiting_dep→failed', 'waiting_dep→cancelled',
     'pending→running', 'pending→failed', 'pending→cancelled',
     'running→waiting_user', 'running→waiting_auth', 'running→done', 'running→failed', 'running→cancelled', 'running→orphaned',
     'waiting_user→running', 'waiting_user→cancelled', 'waiting_user→failed', 'waiting_user→orphaned',

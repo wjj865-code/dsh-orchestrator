@@ -18,7 +18,7 @@ window.__ModuleLoader__.load({
     ]
 
     const STATUS_LABEL = {
-      pending: '待派发', running: '进行中', waiting_user: '等你确认', waiting_auth: '要授权',
+      waiting_dep: '等前置', pending: '待派发', running: '进行中', waiting_user: '等你确认', waiting_auth: '要授权',
       done: '已完成', failed: '失败', cancelled: '已取消', orphaned: '会话丢失',
     }
     const TONE_COLOR = {
@@ -186,7 +186,7 @@ window.__ModuleLoader__.load({
       }
 
       const matchFilter = task => filter === 'all' ? true
-        : filter === 'active' ? (task.status === 'pending' || task.status === 'running')
+        : filter === 'active' ? (task.status === 'waiting_dep' || task.status === 'pending' || task.status === 'running')
           : filter === 'waiting' ? (task.status === 'waiting_user' || task.status === 'waiting_auth')
             : filter === 'done' ? task.status === 'done'
               : filter === 'failed' ? task.status === 'failed'
@@ -268,6 +268,10 @@ window.__ModuleLoader__.load({
                   h('span', { style: styles.taskTitle, title: displayName }, displayName),
                   task.targetDir !== null && task.targetDir !== undefined
                     ? h('span', { style: styles.meta, title: task.targetDir }, shortPath(task.targetDir))
+                    : null,
+                  task.groupId ? h('span', { style: styles.meta, title: '分组' }, `组 ${task.groupId}`) : null,
+                  task.dependsOn && task.dependsOn.length > 0
+                    ? h('span', { style: styles.meta, title: task.dependsOn.join('、') }, `依赖 ${task.dependsOn.length}`)
                     : null,
                   task.queued ? h('span', { style: styles.meta }, '排队中') : null,
                   task.stale ? h('span', { style: styles.meta }, '⚠') : null,

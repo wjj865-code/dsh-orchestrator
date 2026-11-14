@@ -1,8 +1,9 @@
 // 任务状态机。只有子会话的回报能推进 running 之后的状态；
 // 协调者只能创建、续派、停止、重派。
-export const STATUSES = ['pending', 'running', 'waiting_user', 'waiting_auth', 'done', 'failed', 'cancelled', 'orphaned']
+export const STATUSES = ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'done', 'failed', 'cancelled', 'orphaned']
 
 const TRANSITIONS = {
+  waiting_dep: ['pending', 'failed', 'cancelled'],
   pending: ['running', 'failed', 'cancelled'],
   running: ['waiting_user', 'waiting_auth', 'done', 'failed', 'cancelled', 'orphaned'],
   waiting_user: ['running', 'cancelled', 'failed', 'orphaned'],

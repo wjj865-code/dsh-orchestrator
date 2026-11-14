@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, transition, touchTask, addMessage, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts } from '../src/ledger.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -343,8 +343,29 @@ test('setTaskArtifacts 累积合并：不同路径保留，同路径后报覆盖
   db.close()
 })
 
-test('artifacts_json 损坏或非数组时读回空数组', async () => {
+test('P1 字段：依赖/分组/写域/优先级落库，waiting_dep 算活跃，队列按优先级排', async () => {
   const db = await openLedger(tempDir())
+  const low = createTask(db, {
+    brief: sampleBrief({ title: '低' }), coordinatorSession: 's-1', priority: 1,
+    dependsOn: ['t-a'], groupId: 'G', writeScopes: ['src'],
+  })
+  const high = createTask(db, {
+    brief: sampleBrief({ title: '高' }), coordinatorSession: 's-1', priority: 9,
+    status: 'waiting_dep',
+  })
+  assert.deepEqual(low.depends_on, ['t-a'])
+  assert.equal(low.group_id, 'G')
+  assert.deepEqual(low.write_scopes, ['src'])
+  assert.equal(low.priority, 1)
+  assert.equal(high.status, 'waiting_dep')
+  assert.deepEqual(listTasks(db, { active: true }).map(task => task.id).sort(), [low.id, high.id].sort())
+  assert.deepEqual(listHistoryTasks(db).map(task => task.id), [])
+  assert.equal(countPending(db), 2)
+  assert.deepEqual(listPendingQueue(db).map(task => task.priority), [1])
+  db.close()
+})
+
+test('artifacts_json 损坏或非数组时读回空数组', async () => {  const db = await openLedger(tempDir())
   const task = createTask(db, { brief: sampleBrief({ title: '坏数据' }), coordinatorSession: 's-1' })
   db.prepare('UPDATE tasks SET artifacts_json = ? WHERE id = ?').run('not-json', task.id)
   assert.deepEqual(getTask(db, task.id).artifacts, [])

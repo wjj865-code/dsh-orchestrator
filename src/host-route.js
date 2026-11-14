@@ -5,7 +5,7 @@ import { listTasks, listHistoryTasks } from './ledger.js'
 import { taskCard } from './card.js'
 
 const ENDPOINTS = new Set(['snapshot'])
-const ACTIVE = new Set(['pending', 'running', 'waiting_user', 'waiting_auth'])
+const ACTIVE = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
 
 const json = (value, status) => new Response(JSON.stringify(value), {
   status,
@@ -35,6 +35,10 @@ export function createHostRoute({ db, coordinatorStatus, openMain, staleMinutes 
           targetDir: task.target_dir ?? null,
           readOnly: task.read_only === true,
           retryOf: task.retry_of ?? null,
+          groupId: task.group_id ?? null,
+          dependsOn: Array.isArray(task.depends_on) ? task.depends_on : [],
+          writeScopes: Array.isArray(task.write_scopes) ? task.write_scopes : [],
+          priority: task.priority ?? 0,
           artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
           queued: task.status === 'pending' && task.queued_at !== null && task.queued_at !== undefined,
           stale: ACTIVE.has(task.status) && at - task.last_event_at > staleMinutes * 60_000,

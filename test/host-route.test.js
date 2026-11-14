@@ -70,6 +70,22 @@ test('snapshot 返回待决计数（waiting_user / waiting_auth）', async () =>
   db.close()
 })
 
+test('snapshot 带 P1 字段：依赖/分组/写域/优先级', async () => {
+  const { db, handler } = await setup()
+  const task = createTask(db, {
+    brief: sampleBrief({ title: 'P1 任务' }), coordinatorSession: 's-1',
+    dependsOn: ['t-upstream'], groupId: '发布', writeScopes: ['src/api'], priority: 7,
+    status: 'waiting_dep',
+  })
+  const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  const row = body.tasks.find(item => item.id === task.id)
+  assert.deepEqual(row.dependsOn, ['t-upstream'])
+  assert.equal(row.groupId, '发布')
+  assert.deepEqual(row.writeScopes, ['src/api'])
+  assert.equal(row.priority, 7)
+  db.close()
+})
+
 test('未知端点返回 400，不泄漏内部错误', async () => {
   const { db, handler } = await setup()
   const response = await handler(request({ endpoint: 'delete-everything' }))

@@ -3,6 +3,7 @@
 import {
   briefText, clearQueued, countPending, getTask, listPendingQueue, listTasks, markQueued, transition,
 } from './ledger.js'
+import { promoteDependents, upstreamBrief } from './deps.js'
 import { taskLabel } from './task-label.js'
 
 export function createQueue({ db, dispatcher, config = {}, logger, notifier, retryDelaysMs = [2000, 5000, 10000, 30000] }) {
@@ -22,7 +23,16 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
     return index === -1 ? 0 : index + 1
   }
   const enqueue = id => {
-    if (!ids.includes(id)) ids.push(id)
+    if (ids.includes(id)) return
+    ids.push(id)
+    // 优先级高的先派；同优先级按创建时间 FIFO（JS sort 稳定，等值时保留入队顺序）。
+    ids.sort((left, right) => {
+      const a = getTask(db, left)
+      const b = getTask(db, right)
+      const priorityDelta = (b?.priority ?? 0) - (a?.priority ?? 0)
+      if (priorityDelta !== 0) return priorityDelta
+      return (a?.created_at ?? 0) - (b?.created_at ?? 0)
+    })
   }
   const remove = id => {
     const index = ids.indexOf(id)
@@ -40,6 +50,10 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
 
   async function pump() {
     if (stopped) return
+    // 先把依赖已完成的 waiting_dep 晋升为 pending；晋升动作只会发生在等待中的任务上。
+    try { promoteDependents(db, { enqueue, log }) } catch (error) {
+      log('task.dep.promote-failed', { detail: { error: error?.message ?? String(error) } })
+    }
     // 单锁：已有 pump 在跑时，新调用等同一个 promise，避免并发 create 各自提前返回导致漏派。
     if (pumpPromise !== null) return pumpPromise
     pumpPromise = runPump().finally(() => { pumpPromise = null })
@@ -56,7 +70,9 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
           ids.shift()
           continue
         }
-        const rendered = briefText(db, id) ?? `【任务】${task.title}\n目标：${task.goal}`
+        const rendered = [briefText(db, id) ?? `【任务】${task.title}\n目标：${task.goal}`, upstreamBrief(db, task.depends_on)]
+          .filter(text => typeof text === 'string' && text !== '')
+          .join('\n')
         let member
         try {
           member = await dispatcher.spawn({
@@ -111,6 +127,8 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
             summary: message,
             system: true,
           })
+          // 失败沿依赖链传播：下游 waiting_dep 立即失败，不再假装在等。
+          try { promoteDependents(db, { enqueue, log }) } catch { /* 传播失败只影响下游，不打断队列 */ }
           continue
         }
 

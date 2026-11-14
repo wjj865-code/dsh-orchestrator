@@ -25,6 +25,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 工具表里可能仍列出这些团队工具（agent-scope 自注册，预设层删不掉），看到也不要调用；执行层会直接拒绝并返回原因。
 - 查看进度只用 task_list / task_status。
 - 派任务前可用 history_search 查跨项目记忆与历史任务，用 project_context 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
+- 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域；紧急任务用 priority（-10..10）。
 - 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
 - 本回合没有别的事就立即结束回合；通知会开启新回合。
@@ -150,6 +151,7 @@ export async function apply(ctx, rawConfig = {}) {
       // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑，并对一次子会话目录。
       queue?.pump()
       reconcileOrphans({ db, dispatcher, coordinatorSessionId: id, isLive: isChildLive, logger, onWarn: warnings })
+        .then(() => queue?.pump())
         .catch(error => warnings(`dsh-orchestrator: 重启对账失败：${error?.message ?? error}`))
     }
   })

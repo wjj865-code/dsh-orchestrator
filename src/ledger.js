@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL, session_id TEXT, target TEXT, target_dir TEXT, artifacts_json TEXT, coordinator_session TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0,
-  retry_of TEXT
+  retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -49,6 +49,10 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('artifacts_json')) db.exec('ALTER TABLE tasks ADD COLUMN artifacts_json TEXT')
     if (!taskColumns.includes('read_only')) db.exec('ALTER TABLE tasks ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('retry_of')) db.exec('ALTER TABLE tasks ADD COLUMN retry_of TEXT')
+    if (!taskColumns.includes('depends_json')) db.exec('ALTER TABLE tasks ADD COLUMN depends_json TEXT')
+    if (!taskColumns.includes('group_id')) db.exec('ALTER TABLE tasks ADD COLUMN group_id TEXT')
+    if (!taskColumns.includes('write_scopes_json')) db.exec('ALTER TABLE tasks ADD COLUMN write_scopes_json TEXT')
+    if (!taskColumns.includes('priority')) db.exec('ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
     return db
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
@@ -74,19 +78,52 @@ const parseArtifacts = value => {
   }
 }
 
+const parseStringArray = value => {
+  if (value === null || value === undefined) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter(item => typeof item === 'string' && item !== '') : []
+  } catch {
+    return []
+  }
+}
+
 const taskOf = row => row === undefined ? undefined : ({
   ...row,
   read_only: row.read_only === 1 || row.read_only === true,
   brief: JSON.parse(row.brief_json),
   artifacts: parseArtifacts(row.artifacts_json),
+  depends_on: parseStringArray(row.depends_json),
+  write_scopes: parseStringArray(row.write_scopes_json),
+  priority: Number.isFinite(row.priority) ? row.priority : 0,
 })
 
-export function createTask(db, { brief, coordinatorSession, targetDir, readOnly = false, retryOf = null }) {
+export function createTask(db, {
+  brief,
+  coordinatorSession,
+  targetDir,
+  readOnly = false,
+  retryOf = null,
+  dependsOn = [],
+  groupId = null,
+  writeScopes = [],
+  priority = 0,
+  status = 'pending',
+} = {}) {
   const now = Date.now()
   const id = `t-${randomUUID().slice(0, 8)}`
-  db.prepare(`INSERT INTO tasks (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of, created_at, updated_at, last_event_at)
-    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, String(brief.title), String(brief.goal), JSON.stringify(brief), String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null, now, now, now)
+  db.prepare(`INSERT INTO tasks
+    (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of,
+     depends_json, group_id, write_scopes_json, priority, created_at, updated_at, last_event_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      id, String(brief.title), String(brief.goal), JSON.stringify(brief), status,
+      String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null,
+      JSON.stringify(Array.isArray(dependsOn) ? dependsOn : []), groupId ?? null,
+      JSON.stringify(Array.isArray(writeScopes) ? writeScopes : []),
+      Number.isFinite(priority) ? Math.trunc(priority) : 0,
+      now, now, now,
+    )
   return getTask(db, id)
 }
 
@@ -96,7 +133,7 @@ export function getTask(db, id) {
 
 export function listTasks(db, { active = false } = {}) {
   const sql = active
-    ? "SELECT * FROM tasks WHERE status IN ('pending','running','waiting_user','waiting_auth') ORDER BY created_at DESC, rowid DESC"
+    ? "SELECT * FROM tasks WHERE status IN ('waiting_dep','pending','running','waiting_user','waiting_auth') ORDER BY created_at DESC, rowid DESC"
     : 'SELECT * FROM tasks ORDER BY created_at DESC, rowid DESC'
   return db.prepare(sql).all().map(taskOf)
 }
@@ -104,7 +141,7 @@ export function listTasks(db, { active = false } = {}) {
 /** 终态历史：按创建时间倒序取最多 limit 条（面板快照用，避免把活跃任务挤掉）。 */
 export function listHistoryTasks(db, limit = 200) {
   return db.prepare(`SELECT * FROM tasks
-    WHERE status NOT IN ('pending','running','waiting_user','waiting_auth')
+    WHERE status NOT IN ('waiting_dep','pending','running','waiting_user','waiting_auth')
     ORDER BY created_at DESC, rowid DESC LIMIT ?`)
     .all(Math.max(0, Math.floor(limit))).map(taskOf)
 }
@@ -120,14 +157,17 @@ export function clearQueued(db, id) {
   return getTask(db, id)
 }
 
-/** 待派发队列：pending 且还没有子会话，按创建顺序。 */
+/** 待派发队列：pending 且还没有子会话，按优先级降序、创建顺序升序。 */
 export function listPendingQueue(db) {
-  return db.prepare("SELECT * FROM tasks WHERE status = 'pending' AND session_id IS NULL ORDER BY created_at ASC, rowid ASC")
+  return db.prepare(`SELECT * FROM tasks
+    WHERE status = 'pending' AND session_id IS NULL
+    ORDER BY priority DESC, created_at ASC, rowid ASC`)
     .all().map(taskOf)
 }
 
+/** 队列安全阀口径：等待依赖的任务也算占位，避免等待中的图无限膨胀。 */
 export function countPending(db) {
-  return db.prepare("SELECT count(*) AS n FROM tasks WHERE status = 'pending'").get().n
+  return db.prepare("SELECT count(*) AS n FROM tasks WHERE status IN ('pending','waiting_dep')").get().n
 }
 
 /** 任务的渲染文本（派发时用），取第一条 brief 消息。 */

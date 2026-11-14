@@ -134,7 +134,7 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
 | `spawnProvider` | `spawn` | subagent provider（本地 fresh 子会话用 `spawn`） |
 | `staleMinutes` | `30` | `task_list` 里超过这么多分钟无动静就标 `⚠` |
 | `stallRounds` | `3` | 预留：阶段 3 的连续无进展升级阈值，阶段 1 只校验并保存 |
-| `maxQueue` | `50` | 待派发队列安全阀：`pending` 任务到这个数就拒绝新建（不落库） |
+| `maxQueue` | `50` | 队列安全阀：`pending` + `waiting_dep` 到这个数就拒绝新建（不落库） |
 | `autoResumeQueue` | `true` | 重启后把排队中的任务自动重新入队并派发；关掉则只恢复队列不自动跑 |
 | `maxActive` | — | **已移除**：并发上限改由平台 `ACTIVATION_LIMIT_REACHED` + 插件队列自适应，旧配置里写了也会被忽略 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
@@ -150,6 +150,20 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
 - 子会话创建的非容量错误（真正的失败）才标 `failed` 并写可读原因，不留 `pending` 幽灵；**失败会给主会话推一条「任务「X」失败：原因」通知**（系统通知没有子会话 sender，用主会话自身 id 投递），不再静默 failed。
 - 「协调者会话尚未就绪（`agent.session` 为空）」按可重试处理：任务留在队列，等主会话就绪后重试，不标 failed。
 - 排队中的任务被 `task_stop` 会直接取消并移出队列；`task_message` 对排队任务返回可读提示（还没有子会话可续派）。
+
+## 依赖、分组、写域与优先级（P1）
+
+- `task_create` 新增可选参数：
+  - `dependsOn`：前置任务编号数组（最多 20 个），必须存在且不能是 `failed/cancelled/orphaned`。
+  - `group`：分组名，`task_list({ group })` 可看该组进度；面板行显示分组。
+  - `writeScopes`：写域（目录/文件路径），与活跃任务重叠时返回冲突提示，仅 advisory，不阻断。
+  - `priority`：`-10..10`，高的先派发；同优先级按创建时间 FIFO。
+- 前置未完成时任务落 `waiting_dep`（不派发、不占并发位）；每次 `queue.pump` 先做依赖晋升：
+  - 前置全部 `done` → `pending` 并入队；派发时 brief 追加 `【前置任务】` 摘要和产物路径。
+  - 前置 `failed/cancelled/orphaned` 或不存在 → 下游自动 `failed`，错误写明哪个前置未完成。
+- 只允许依赖已存在的任务，创建时不接受“未来的 id”，因此不会出现环；依赖失败后先 `task_retry` 前置，再重派下游。
+- `maxQueue` 口径包含 `waiting_dep`，避免等待图无限膨胀。
+- 面板/快照行新增 `dependsOn`、`groupId`、`writeScopes`、`priority`；`waiting_dep` 显示「等前置」。
 
 ## 只读子任务（显式 `readOnly`）
 
@@ -235,6 +249,7 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
 17. **记忆闭环**：`memory_note` 写一条 → `history_search` 能查到 → 新建相关任务时 brief 带 `【历史经验】`；`task_report done` 后再 `history_search` 能查到该任务摘要。
 18. **项目上下文**：`project_context` 对项目目录返回 README/package/顶层结构/最近任务；不出现 `.env` 内容；不存在的 target 给可读错误。
 19. **重派与快照**：人为让任务 `failed` 后 `task_retry` 生成新任务、旧任务保留；`snapshots/tasks-YYYY-MM-DD.sqlite` 可打开且含任务；重启同一天不重复覆盖。
+20. **依赖/分组/优先级**：A 运行中建 `dependsOn:[A]` 的 B → B 是 `waiting_dep` 不派发；A `done` 后 B 自动派发且 brief 带 `【前置任务】`；A 失败时 B 自动失败。高 `priority` 任务先派发；同 `group` 可在 `task_list({group})` 看进度；`writeScopes` 重叠只提示不阻断。
 
 
 ## 工具
@@ -243,12 +258,12 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
 
 | 工具 | 作用 |
 | --- | --- |
-| `task_create` | 建台账 + 渲染 brief + 入队派发子会话；缺验收标准/队列满（`maxQueue`）会拒绝；并发满自动排队，不报错；`readOnly:true` 时子会话沙箱只读 |
-| `task_list` | 默认只列活跃任务；带标题、目标摘要、最近一条消息、排队/陈旧标记；`active:false` 看全量 |
-| `task_status` | 单任务详情 + 最近 3 条消息 + 子会话打开方式 |
-| `task_message` | 续派消息（不新建任务），失败重试 3 次后转 `waiting_user`；排队中的任务返回提示 |
-| `task_stop` | 中断当前一轮并标 `cancelled`；排队中的任务直接取消并移出队列 |
-| `task_retry` | 重派 `failed`/`orphaned` 任务：用原 brief 新建一次尝试（新任务号，`retry_of` 留审计）；旧任务保留 |
+| `task_create` | 建台账 + 渲染 brief + 入队派发；支持 `dependsOn`（前置）、`group`（分组）、`writeScopes`（写域冲突提示）、`priority`（-10..10）；缺验收标准/队列满（`maxQueue`）会拒绝；并发满自动排队，不报错；`readOnly:true` 时子会话沙箱只读 |
+| `task_list` | 默认只列活跃任务（含 `waiting_dep`）；带标题、目标摘要、最近一条消息、排队/缺前置/陈旧标记；`group` 过滤并看组进度；`active:false` 看全量 |
+| `task_status` | 单任务详情 + 依赖/写域/分组/优先级 + 最近 3 条消息 + 子会话打开方式 |
+| `task_message` | 续派消息（不新建任务），失败重试 3 次后转 `waiting_user`；排队/等前置任务返回提示 |
+| `task_stop` | 中断当前一轮并标 `cancelled`；排队中或 `waiting_dep` 的任务直接取消 |
+| `task_retry` | 重派 `failed`/`orphaned` 任务：用原 brief 新建一次尝试（新任务号，`retry_of` 留审计）；保留依赖/分组/写域/优先级 |
 | `history_search` | 查跨项目记忆、历史任务、平台历史会话；给新任务补上下文 |
 | `project_context` | 读项目背景白名单文件、顶层结构、最近任务与相关记忆；只读 |
 | `memory_note` | 记一条跨任务有效的决策/偏好/约束，供之后检索与 brief 注入 |
