@@ -8,7 +8,7 @@ test('字段齐全：带子会话 id 与打开方式，pending 标排队', () =>
   const card = taskCard(task({ session_id: 'c-1' }), { summary: '在跑' })
   assert.deepEqual(card, {
     taskId: 't-1', title: '甲', status: 'running', label: '进行中', tone: 'info', summary: '在跑',
-    childSessionId: 'c-1', queued: false, openVia: 'subagent-catalog',
+    childSessionId: 'c-1', queued: false, openVia: 'subagent-catalog', artifactCount: 0,
   })
   const queued = taskCard(task({ status: 'pending' }))
   assert.equal(queued.childSessionId, null)
@@ -57,4 +57,11 @@ test('emoji 不在 80 边界被截成半个代理对', () => {
   assert.equal(text, `${'a'.repeat(79)}😀…`)
   assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(text), false)
   assert.equal(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text), false)
+})
+
+
+test('taskCard 带 artifactCount，缺失按 0', () => {
+  const card = taskCard({ id: 't-1', title: 'x', status: 'done', artifacts: [{ path: 'C:/a', label: '', exists: true }, { path: 'C:/b', label: '', exists: false }] })
+  assert.equal(card.artifactCount, 2)
+  assert.equal(taskCard({ id: 't-2', title: 'y', status: 'done' }).artifactCount, 0)
 })

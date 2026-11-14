@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { openLedger, createTask, transition, markQueued } from '../src/ledger.js'
+import { openLedger, createTask, transition, markQueued, setTaskArtifacts } from '../src/ledger.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from '../src/host-route.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
@@ -184,4 +184,22 @@ test('open-main 抛异常时返回 500 可读错误，且不产生 unhandledReje
     process.removeListener('unhandledRejection', onUnhandled)
     db.close()
   }
+})
+
+
+test('snapshot 任务行带 artifacts（path/label/exists），旧任务按空数组', async () => {
+  const { db, handler } = await setup()
+  const task = createTask(db, { brief: sampleBrief({ title: '有产物' }), coordinatorSession: 's-1' })
+  transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  setTaskArtifacts(db, task.id, [{ path: 'C:/w/a.md', label: '报告', exists: true }, { path: 'C:/w/b.txt', label: '', exists: false }])
+  createTask(db, { brief: sampleBrief({ title: '旧任务' }), coordinatorSession: 's-1' })
+  const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  const withArtifacts = body.tasks.find(row => row.title === '有产物')
+  assert.deepEqual(withArtifacts.artifacts, [
+    { path: 'C:/w/a.md', label: '报告', exists: true },
+    { path: 'C:/w/b.txt', label: '', exists: false },
+  ])
+  const legacy = body.tasks.find(row => row.title === '旧任务')
+  assert.deepEqual(legacy.artifacts, [])
+  db.close()
 })

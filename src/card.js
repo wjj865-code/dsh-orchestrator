@@ -21,6 +21,7 @@ export function taskCard(task, { summary = '', maxLength = 80 } = {}) {
     summary: text,
     // 子会话不在普通会话列表里，客户端要按 parent catalog 打开；pending 表示在排队。
     childSessionId: task.session_id ?? null,
+    artifactCount: Array.isArray(task.artifacts) ? task.artifacts.length : 0,
     queued: task.status === 'pending',
     openVia: 'subagent-catalog',
   }

@@ -97,6 +97,7 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
       childSessionId: teammate.id,
       queued: false,
       openVia: 'subagent-catalog',
+      artifactCount: 0,
     })
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME

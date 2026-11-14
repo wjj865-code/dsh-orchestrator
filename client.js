@@ -110,6 +110,7 @@ window.__ModuleLoader__.load({
       const [refreshing, setRefreshing] = React.useState(false)
       const [openingMain, setOpeningMain] = React.useState(false)
       const [openedMain, setOpenedMain] = React.useState(false)
+      const [expanded, setExpanded] = React.useState([])
       const [filter, setFilter] = React.useState('all')
 
       const load = React.useCallback(async (signal) => {
@@ -180,6 +181,10 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const toggleArtifacts = id => {
+        setExpanded(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
+      }
+
       const mainSession = (snapshot && snapshot.mainSession) || { id: null, live: false }
       const tasks = Array.isArray(snapshot && snapshot.tasks) ? snapshot.tasks : []
       const visible = tasks.filter(matchFilter)
@@ -209,22 +214,36 @@ window.__ModuleLoader__.load({
             ? (snapshotError === null ? h('div', { style: styles.meta }, '加载中…') : null)
             : h('div', { style: styles.meta }, tasks.length === 0 ? '还没有任务。' : '没有匹配的任务。'))
           : h('ul', { style: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 } },
-            visible.map(task => h('li', { key: task.id, style: styles.row },
-              h('span', { style: Object.assign({}, styles.dot, { background: TONE_COLOR[task.tone] || TONE_COLOR.muted }) }),
-              h('span', { style: styles.taskTitle, title: task.title }, task.title),
-              task.targetDir !== null && task.targetDir !== undefined
-                ? h('span', { style: styles.meta, title: task.targetDir }, shortPath(task.targetDir))
-                : null,
-              task.queued ? h('span', { style: styles.meta }, '排队中') : null,
-              task.stale ? h('span', { style: styles.meta }, '⚠') : null,
-              h('span', { style: styles.meta }, STATUS_LABEL[task.status] || task.status),
-              h('span', { style: styles.meta }, timeLabel(task.lastEventAt)),
-              h('button', {
-                type: 'button', style: styles.button,
-                disabled: task.childSessionId === null || task.childSessionId === undefined,
-                onClick: () => open(task.childSessionId),
-              }, '打开子会话'),
-            )),
+            visible.map(task => {
+              const artifacts = Array.isArray(task.artifacts) ? task.artifacts : []
+              const isExpanded = expanded.includes(task.id)
+              return h('li', { key: task.id, style: { listStyle: 'none' } },
+                h('div', { style: styles.row },
+                  h('span', { style: Object.assign({}, styles.dot, { background: TONE_COLOR[task.tone] || TONE_COLOR.muted }) }),
+                  h('span', { style: styles.taskTitle, title: task.title }, task.title),
+                  task.targetDir !== null && task.targetDir !== undefined
+                    ? h('span', { style: styles.meta, title: task.targetDir }, shortPath(task.targetDir))
+                    : null,
+                  task.queued ? h('span', { style: styles.meta }, '排队中') : null,
+                  task.stale ? h('span', { style: styles.meta }, '⚠') : null,
+                  h('span', { style: styles.meta }, STATUS_LABEL[task.status] || task.status),
+                  h('span', { style: styles.meta }, timeLabel(task.lastEventAt)),
+                  artifacts.length > 0
+                    ? h('button', { type: 'button', style: styles.button, onClick: () => toggleArtifacts(task.id) }, `产物 ${artifacts.length}`)
+                    : null,
+                  h('button', {
+                    type: 'button', style: styles.button,
+                    disabled: task.childSessionId === null || task.childSessionId === undefined,
+                    onClick: () => open(task.childSessionId),
+                  }, '打开子会话'),
+                ),
+                isExpanded && artifacts.length > 0
+                  ? h('div', { style: Object.assign({}, styles.meta, { padding: '4px 8px' }) },
+                    artifacts.map((item, index) => h('div', { key: index, title: item.path },
+                      `${item.exists === false ? '⚠ ' : '• '}${item.path}${item.label ? ` — ${item.label}` : ''}${item.exists === false ? '（未找到）' : ''}`)))
+                  : null,
+              )
+            }),
           ),
       )
     }
