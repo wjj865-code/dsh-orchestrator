@@ -102,6 +102,12 @@ test('面板提供「打开主会话」并调用 open-main', () => {
   assert.match(source, /打开中…/)
   assert.match(source, /openedMain/)
   assert.match(source, /主会话已就绪；若仍停在 Bot 会话里/)
+  // 快照错误与动作错误分开显示：动作失败不能被写成「台账暂不可用」。
+  assert.match(source, /snapshotError/)
+  assert.match(source, /actionError/)
+  assert.match(source, /打开主会话失败：/)
+  assert.match(source, /台账暂不可用：\$\{snapshotError\}/)
+  assert.doesNotMatch(source, /setError\(/)
 })
 
 test('入口/头部按钮的文案仍是任务', () => {

@@ -104,7 +104,9 @@ window.__ModuleLoader__.load({
 
     const TasksPanel = ({ openSession }) => {
       const [snapshot, setSnapshot] = React.useState(null)
-      const [error, setError] = React.useState(null)
+      // 快照（轮询/刷新）和动作（打开主会话/打开会话）分开记，避免把动作错误显示成「台账暂不可用」。
+      const [snapshotError, setSnapshotError] = React.useState(null)
+      const [actionError, setActionError] = React.useState(null)
       const [refreshing, setRefreshing] = React.useState(false)
       const [openingMain, setOpeningMain] = React.useState(false)
       const [openedMain, setOpenedMain] = React.useState(false)
@@ -114,10 +116,10 @@ window.__ModuleLoader__.load({
         try {
           const next = await readSnapshot(signal)
           setSnapshot(next)
-          setError(null)
+          setSnapshotError(null)
           return true
         } catch (failure) {
-          if (signal === undefined || !signal.aborted) setError(String((failure && failure.message) || failure))
+          if (signal === undefined || !signal.aborted) setSnapshotError(String((failure && failure.message) || failure))
           return false
         }
       }, [])
@@ -152,7 +154,12 @@ window.__ModuleLoader__.load({
 
       const open = id => {
         if (typeof id !== 'string' || id === '') return
-        try { openSession(id) } catch (failure) { setError(String((failure && failure.message) || failure)) }
+        try {
+          openSession(id)
+          setActionError(null)
+        } catch (failure) {
+          setActionError(`打开会话失败：${String((failure && failure.message) || failure)}`)
+        }
       }
 
       const handleOpenMain = async () => {
@@ -162,11 +169,12 @@ window.__ModuleLoader__.load({
         setOpenedMain(false)
         try {
           const body = await openMainSession()
+          setActionError(null)
           open(body.sessionId)
           // 静态提示（不做 mainView 检测）：Bot 模式下主视图其实已切，错位的是 ds-bot 的皮肤/输入框。
           setOpenedMain(true)
         } catch (failure) {
-          setError(String((failure && failure.message) || failure))
+          setActionError(`打开主会话失败：${String((failure && failure.message) || failure)}`)
         } finally {
           setOpeningMain(false)
         }
@@ -188,7 +196,8 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', style: styles.button, onClick: refresh, disabled: refreshing }, refreshing ? '刷新中…' : '刷新'),
           h('button', { type: 'button', style: styles.button, onClick: handleOpenMain, disabled: openingMain }, openingMain ? '打开中…' : '打开主会话'),
         ),
-        error !== null ? h('div', { style: styles.error }, `台账暂不可用：${error}`) : null,
+        snapshotError !== null ? h('div', { style: styles.error }, `台账暂不可用：${snapshotError}`) : null,
+        actionError !== null ? h('div', { style: styles.error }, actionError) : null,
         openedMain
           ? h('div', { style: styles.notice }, '主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」。')
           : null,
@@ -197,7 +206,7 @@ window.__ModuleLoader__.load({
           : null,
         visible.length === 0
           ? (snapshot === null
-            ? (error === null ? h('div', { style: styles.meta }, '加载中…') : null)
+            ? (snapshotError === null ? h('div', { style: styles.meta }, '加载中…') : null)
             : h('div', { style: styles.meta }, tasks.length === 0 ? '还没有任务。' : '没有匹配的任务。'))
           : h('ul', { style: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 } },
             visible.map(task => h('li', { key: task.id, style: styles.row },
