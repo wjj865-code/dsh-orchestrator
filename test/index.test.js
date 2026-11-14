@@ -361,6 +361,9 @@ test('系统提示只渲染给已绑定协调者，绑定后下一步生效', wi
   assert.match(entry.text({ agent: s1 }), /task_list \/ task_status/)
   assert.match(entry.text({ agent: s1 }), /优先于平台默认的 Team Lead 等待要求/)
   assert.match(entry.text({ agent: s1 }), /The Lead must wait for required teammates/)
+  assert.match(entry.text({ agent: s1 }), /禁止调用 spawn_teammate/)
+  assert.match(entry.text({ agent: s1 }), /team_task_create/)
+  assert.match(entry.text({ agent: s1 }), /预设层删不掉/)
   assert.equal(entry.text({ agent: other }), '')
 }))
 
