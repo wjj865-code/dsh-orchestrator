@@ -90,6 +90,7 @@ check('不返回 brief/goal 原文', !Object.hasOwn(taskById(done), 'goal') && !
 check('running 任务 childSessionId 正确', taskById(running).childSessionId === 'child-1', String(taskById(running).childSessionId))
 check('pending 且无子会话 → queued=true', taskById(queued).queued === true)
 check('running → queued=false', taskById(running).queued === false)
+check('新建未排队的 pending → queued=false（queued_at 精确判定）', taskById(stale).queued === false)
 check('2 小时没动静 → stale=true', taskById(stale).stale === true)
 check('已完成任务 stale=false', taskById(done).stale === false)
 check('label/tone 是字符串', typeof taskById(done).label === 'string' && typeof taskById(done).tone === 'string',
@@ -133,6 +134,33 @@ check('调用后四表行数/时间戳/设置完全不变', eq(tableFingerprint(
 check('调用后目录文件集合与 mtime 不变', eq(fileFingerprint(), filesBefore),
   `before=${JSON.stringify(filesBefore)} after=${JSON.stringify(fileFingerprint())}`)
 
+// ---------- 4b. 快照截断语义：活跃全量 + 历史 LIMIT ----------
+const dir2 = mkdtempSync(join(tmpdir(), 'qa-orch-limit-'))
+const db2 = await openLedger(dir2)
+const oldRunning = createTask(db2, { brief: { title: '老的活跃任务', goal: 'g' }, coordinatorSession: 'session-qa' })
+db2.prepare("UPDATE tasks SET status = 'running', session_id = 'child-old', created_at = ?, updated_at = ? WHERE id = ?")
+  .run(NOW - 3000, NOW - 3000, oldRunning.id)
+for (let i = 1; i <= 3; i += 1) {
+  const doneTask = createTask(db2, { brief: { title: `新完成${i}`, goal: 'g' }, coordinatorSession: 'session-qa' })
+  db2.prepare("UPDATE tasks SET status = 'done', session_id = ?, created_at = ?, updated_at = ? WHERE id = ?")
+    .run(`child-done-${i}`, NOW - 3000 + i * 1000, NOW - 3000 + i * 1000, doneTask.id)
+}
+const limited = createHostRoute({ db: db2, coordinatorStatus: () => ({ id: 'session-qa', live: true }), limit: 2 })
+const limitedBody = await (await limited(request({ endpoint: 'snapshot' }))).json()
+const limitedIds = limitedBody.tasks.map((t) => t.id)
+check('小 limit 下活跃任务不被截掉', limitedIds.includes(oldRunning.id), `返回 ${limitedIds.length} 条`)
+check('小 limit 下历史只返回 limit 条', limitedBody.tasks.filter((t) => t.status === 'done').length === 2,
+  limitedBody.tasks.map((t) => `${t.title}:${t.status}`).join(' | '))
+check('活跃任务排在历史之前', limitedBody.tasks[0]?.id === oldRunning.id, limitedBody.tasks[0]?.title)
+check('历史按 created_at 倒序（最新在前）', limitedBody.tasks.slice(1).every((t, i, arr) => i === 0 || arr[i - 1].lastEventAt >= t.lastEventAt),
+  limitedBody.tasks.slice(1).map((t) => t.title).join(' > '))
+const onlyActive = createHostRoute({ db: db2, coordinatorStatus: () => ({ id: 'session-qa', live: true }), limit: 0 })
+const onlyActiveBody = await (await onlyActive(request({ endpoint: 'snapshot' }))).json()
+check('limit=0 只返回活跃任务', onlyActiveBody.tasks.length === 1 && onlyActiveBody.tasks[0].id === oldRunning.id,
+  `len=${onlyActiveBody.tasks.length}`)
+db2.close()
+try { rmSync(dir2, { recursive: true, force: true }) } catch { /* 清理失败不影响结论 */ }
+
 // ---------- 5. 注册形态（平台契约） ----------
 check("HOST_ROUTE === '/api/orchestrator'", HOST_ROUTE === '/api/orchestrator', HOST_ROUTE)
 check('注册选项 = POST + buffered body', eq(HOST_ROUTE_OPTIONS, { path: '/api/orchestrator', methods: ['POST'], requestBody: 'buffered' }),
@@ -164,7 +192,14 @@ const source = readFileSync(join(here, '..', '..', 'src', 'host-route.js'), 'utf
 const imports = [...source.matchAll(/import\s*\{([^}]+)\}\s*from\s*'([^']+)'/g)].map((m) => ({ names: m[1].split(',').map((s) => s.trim()).filter(Boolean), from: m[2] }))
 check('只 import 两个模块', imports.length === 2 && imports.every((i) => i.from === './ledger.js' || i.from === './card.js'),
   JSON.stringify(imports.map((i) => i.from)))
-check('ledger 只取 listTasks', imports.find((i) => i.from === './ledger.js')?.names.join(',') === 'listTasks')
+const ledgerNames = (imports.find((i) => i.from === './ledger.js')?.names ?? []).sort()
+check('ledger 只取查询函数 listTasks/listHistoryTasks',
+  eq(ledgerNames, ['listHistoryTasks', 'listTasks']), ledgerNames.join(','))
+const ledgerSource = readFileSync(join(here, '..', '..', 'src', 'ledger.js'), 'utf8')
+check('listHistoryTasks 用 SQL LIMIT 取历史（不先全量再 slice）',
+  /export function listHistoryTasks[\s\S]{0,400}LIMIT \?/.test(ledgerSource))
+check('listHistoryTasks 只取终态（NOT IN 活跃态）',
+  /NOT IN \('pending','running','waiting_user','waiting_auth'\)/.test(ledgerSource))
 const writeNames = ['createTask', 'transition', 'touchTask', 'setTaskError', 'markQueued', 'clearQueued', 'addMessage',
   'addNotification', 'setSetting', 'bindSettingOnce', 'rebindSetting', 'failStalePending', 'incrementAttempts']
 check('不 import 任何写函数', writeNames.every((name) => !new RegExp(`\\b${name}\\b`).test(source)), writeNames.filter((n) => new RegExp(`\\b${n}\\b`).test(source)).join(','))

@@ -636,5 +636,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **`d59da8f` delta 复验（筛选 + 退避）**：L1 探针扩到 **47 条全过**（新增：无 `setInterval`、`POLL_BACKOFF_MS=30000`、面板下拉 6 档且文案正确、下拉受控 `value+onChange`、有「打开协调者会话」/「刷新」按钮、未绑定提示）；L2 重跑 `RESULT: PASS`（`host-route.js` 未改动，零写入结论不变）；`npm test` 179/179。
 
-**结论**：阶段 2 代码侧通过（L1 47/47、L2 48/48、179/179、api-probe 33/33）；L3 真机（Bot 模式头部按钮、面板数据/跳转、ds-bot 侧栏不受影响、401/403 真实表现）留阶段 3 装 desktop 时做。
+**`f515a4a` + `6a8f07e` delta 复验（connection 晚到 / 快照截断）**：`index.js` 改为 `ctx.inject(['connection'], …)` + `scope.effect` 清理，保留 `ctx.get` 兜底（读 `index.js:272-299`；该路径由 181 测试里的「connection 晚到」用例覆盖，我未单独复跑）。L2 探针同步更新：静态断言改成「ledger 只取 `listTasks`/`listHistoryTasks` 两个查询函数 + `listHistoryTasks` 用 SQL `LIMIT`/`NOT IN` 活跃态」；新增动态用例「1 个早创建 running + 3 个新 done、limit=2」→ 返回 3 条、running 在、done 只 2 条、活跃排前、历史倒序；`limit=0` 只返回活跃。结果：L2 **57 条全过**、L1 47/47、`npm test` 181/181、api-probe 33/33、`node --check client.js` exit 0。
+
+**结论**：阶段 2 代码侧通过（L1 47/47、L2 57/57、181/181、api-probe 33/33）；L3 真机（Bot 模式头部按钮、面板数据/跳转、ds-bot 侧栏不受影响、401/403 真实表现）留阶段 3 装 desktop 时做。
 
