@@ -10,6 +10,7 @@ const load = () => {
   const registrations = []
   const selected = []
   const opened = []
+  const loadedIds = []
   let loaded
   const ctx = {
     slots: {
@@ -25,13 +26,30 @@ const load = () => {
   const sandbox = {
     window: {
       __ModuleLoader__: {
-        load: ({ id, factory }) => { loaded = { id, ...factory(requireFn) } },
+        load: ({ id, factory }) => { loadedIds.push(id); loaded = { id, ...factory(requireFn) } },
       },
     },
   }
   vm.runInNewContext(source, sandbox)
-  return { loaded, ctx, registrations, selected, opened }
+  return { loaded, ctx, registrations, selected, opened, loadedIds }
 }
+
+// 回归：0.3.0 那次 npm 包名改成 @wjj865-code/dsh-orchestrator 后，client.js 仍注册
+// 无 scope 的 'dsh-orchestrator'，DSH client-modules 按包名索引 → 客户端半静默不加载
+// （侧栏入口和面板全没了，服务端日志还一切正常）。这条用例把「模块 id == package.json
+// name」钉成硬约束：改包名不跟着改 id，npm test 必红。
+test('模块 id 回归：__ModuleLoader__.load({ id }) 必须等于 package.json 的 name', () => {
+  const { loadedIds } = load()
+  assert.equal(loadedIds.length, 1, '客户端应只调用一次 window.__ModuleLoader__.load')
+  assert.equal(typeof loadedIds[0], 'string')
+  assert.equal(
+    loadedIds[0],
+    pkg.name,
+    `client.js 注册的模块 id 是 ${JSON.stringify(loadedIds[0])}，必须等于 package.json 的 name ${JSON.stringify(pkg.name)}；`
+      + '不一致时客户端半会被 DSH 按包名索引时丢弃，且服务端不报错。',
+  )
+  assert.doesNotMatch(loadedIds[0], /\s/, '模块 id 不应含空白字符')
+})
 
 test('经典脚本：能被 <script> 解析，无顶层 import/export，id 等于包名', () => {
   assert.doesNotMatch(source, /^\s*(import|export)\s/m)

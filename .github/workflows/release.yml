@@ -1,7 +1,23 @@
 name: release
 
-# 打 v* tag 时发布到 npm；日常 push 不发布。
-# 需要在仓库 Settings -> Secrets and variables -> Actions 配置 NPM_TOKEN。
+# 打 v* tag 时跑测试并发布到 npm（带 provenance 签名）。日常 push 不发布。
+#
+# 一次性配置：
+#   1. npm 令牌：npmjs.com → Access Tokens → Generate New Token → Granular Access Token
+#      - Permissions: Read and write
+#      - Packages: 选中 @wjj865-code/dsh-orchestrator
+#      - 账号开了 2FA 时勾上 "Bypass two-factor authentication"（CI 无法输 OTP）
+#   2. 仓库配置：Settings → Secrets and variables → Actions → New repository secret
+#      Name: NPM_TOKEN    Value: 上一步的令牌
+#      （这是唯一需要人工配置的密钥；不配则 Publish 步骤报 ENEEDAUTH。）
+#   3. 可选、更推荐：不用长期令牌，改用 npm 的 Trusted Publishing——
+#      npmjs.com → 包 → Settings → Trusted publishing → 绑定 GitHub 仓库
+#      工作流文件名填 release.yml；然后在 Publish 步骤里删掉下面三行 env。
+#
+# 发布流程（版本号是唯一真源）：
+#   npm version patch          # 或 minor / major，同时改 package.json 并建 tag
+#   git push --follow-tags     # 推提交 + 推 tag vX.Y.Z → 本工作流接管
+#   首次对已有版本补 tag：git tag v0.3.1 && git push origin v0.3.1（版本已在 npm 上会被下面「已在 npm 上」的步骤拦下）
 on:
   push:
     tags:
@@ -9,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # npm publish --provenance 用 GitHub OIDC 签发行来源证明
 
 concurrency:
   group: npm-release-${{ github.ref }}
@@ -27,14 +44,24 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - name: Verify tag matches package version
+      - name: Tag 必须等于 package.json version
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
-          test "v${version}" = "${GITHUB_REF_NAME}" || {
-            echo "tag ${GITHUB_REF_NAME} does not match package.json ${version}" >&2
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 与 package.json version ${version} 不一致：先 npm version 再打 tag"
             exit 1
-          }
+          fi
+
+      - name: 该版本不能已经在 npm 上
+        shell: bash
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "::error::${name}@${version} 已发布过：先 npm version patch 再打新 tag（npm 不允许覆盖已发布版本）"
+            exit 1
+          fi
 
       - name: Test
         run: |
@@ -43,6 +70,6 @@ jobs:
 
       - name: Publish
         # prepublishOnly 会再跑一次测试，这里已经显式跑过，跳过重复生命周期。
-        run: npm publish --access public --ignore-scripts
+        run: npm publish --provenance --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
