@@ -701,3 +701,52 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **分工**：Chief 负责装 profile + 重启；用户按表点一遍并回报现象；我负责接口/日志/network 取证与汇总，不通过项按「步骤/期望/实际/可疑文件」记录。
 
+## 28. 阶段 2（主会话）逐任务复核矩阵
+
+依据 `docs/superpowers/plans/2026-11-14-coordinator-main-session.md` Task 1–9 与设计 §11。每个任务提交后我在 worktree 同步并独立复跑：`node --test <该任务测试>`、`npm test`、对应手写探针；不采信开发的测试输出。
+
+| 任务 | 复核点 | 独立判据 |
+| --- | --- | --- |
+| 1 台账 | `target_dir` 列、旧库补列、`createTask(targetDir)`、`main_session_id` 读写 | 新库 `PRAGMA table_info(tasks)` 含 `target_dir`；旧 schema 建库后 `openLedger` 自动补列且旧行 `target_dir=NULL`；`getMainSessionId` 初始 `undefined`；`setMainSessionId` 后读回 |
+| 2 brief | `validateTargetDir` 四类输入、`renderBrief` 的【工作目录】 | 相对路径→「必须是绝对路径」；不存在/不是目录→「不存在或不是目录」；`undefined`/空串→通过；有 target 时【工作目录】在【目标】之后，无 target 不出现 |
+| 3 派发/队列 | `request.cwd` 优先 target、缺省父 cwd；`agentPreset` 固定 worker；queue 透传 `task.target_dir` | 捕获 `startActivation` 入参：`request.cwd === 'C:/target'`；无 target 时等于父会话 cwd；`request.agentPreset === 'dsh-orchestrator-worker'`（每任务都带） |
+| 4 工具 | 6 个 `task_*` 只允许主会话；`task_create` 校验 target 并落库 | 非主会话调用返回含「主会话」；无主会话返回「请先从面板打开主会话」；`target:'relative'`→「绝对路径」；成功任务 `target_dir='C:/work'`；未误伤 `ask_user`/`show_view` |
+| 5 主会话模块 | 创建/复用/失效重建/override/失败不写库 | 创建顺序：workspace resolve→create→`sessionController.create({agentPreset:PRESET_ID})`→rename「主会话」→写 `main_session_id`；live 直接返回不建；`spawnProvider!=='spawn'` 拒绝且不写库；create 抛错不写库；`coordinatorSession` 覆盖失效→返回 error 不建 |
+| 6 装配 | 移除自动绑定、`open-main` 端点、运行期兜底只对 override | `apply` 后 `task_create` 不写 `main_session_id`；`open-main` 创建并写 `settings.main_session_id`；旧 `coordinator_session_id` 不再写；prompt/guard 只认主会话 |
+| 7 路由 | `snapshot.mainSession`/`targetDir`、`open-main` 动作 | `snapshot.mainSession={id,live}`、`tasks[].targetDir`；`open-main` 走 `openMain` 一次，成功 200 `{ok,sessionId,created}`，失败 500 `{ok:false,error}`，无 `openMain`→500 `open-main-unavailable`；未知端点仍 400；**snapshot 仍零写入**（open-main 属动作端点，不在只读断言内） |
+| 8 客户端 | 「打开主会话」、三态文案、`targetDir` 展示 | 面板按钮文案为「打开主会话」；点击 POST `open-main` 后 `uiWorkspace.openSession(sessionId)`；状态三态（在线/未创建/已失效）；入口与头部按钮文案仍是「任务」/「任务面板」 |
+| 9 预设/文档 | `cordis.patch.yml`、`preset-tools.js`、package 清单、README/api-notes | 协调者 preset 只留计划里的工具 + ask_user/show_view/memory；worker preset `plugins: []`；`exports['./preset-tools']`、`files` 含 `preset-tools.js`；README 与 api-notes 对齐主会话语义 |
+
+**L1/L2 探针更新点（随 Task 7/8 落地后改）**：
+
+- L1（`qa-stage2-slots.mjs`）：面板按钮断言从「打开协调者会话」改「打开主会话」；断言点击会 POST `open-main`（mock fetch）而不是直接 `openSession` 空 id；补 `targetDir` 渲染断言；入口/头部槽位与文案不变。
+- L2（`qa-stage2-route.mjs`）：补 `snapshot.mainSession`、`tasks[].targetDir`；补 `open-main` 200/500 与 `open-main-unavailable`；零写入断言只覆盖 `snapshot`（`open-main` 是动作端点，写主会话与 settings 是设计行为，由 Task 5/6 的用例覆盖）。
+
+**不回退**：主会话改动不得影响子代理派发、容量队列、orphaned 对账、日志、去重、禁编提示、客户端入口/面板/跳转。每个任务后我跑 `npm test` + L1 + L2 全量，任一红即回给开发。
+
+### 28.1 独立复跑结果（`5bdca13`，干净克隆 `qa/orch-final3`）
+
+**基线**：`npm test` 213/213、`api-probe` 33/33、`npm pack --dry-run` 20 个文件（含 `client.js` 11.0kB、`preset-tools.js` 2.3kB）。
+
+**新探针 `docs/probes/qa-main-session.mjs` → 62 条全过**，逐任务：
+
+| 任务 | 独立断言（全 PASS） |
+| --- | --- |
+| 1 台账 | 新库有 `target_dir`；`createTask` 落库、未给为 null；`main_session_id` 初始 undefined→读写；**旧 schema 建库后 `openLedger` 自动补列，旧行保持 null（不臆造）** |
+| 2 brief | 相对路径/不存在/文件（非目录）三类拒绝，`undefined`/空串通过，真实目录通过；【工作目录】只在有 target 时出现且在【目标】之后 |
+| 3 派发/队列 | `request.cwd` 优先 target、缺省父 cwd、父子都无 cwd 时不带该键；`agentPreset` 固定 `dsh-orchestrator-worker` 且可被 `workerPreset` 覆盖；队列把 `target_dir` 透传为 `cwd`，无 target 时为 undefined |
+| 4 工具 | `task_create/list/status/message/stop` 对非主会话全部返回「请从主会话操作任务」；`task_report` 不受限；无主会话返回「尚未打开主会话」；相对 target 拒绝且不落库；合法 target 落 `target_dir` 并派发 |
+| 5 主会话 | 创建顺序 workspace→会话→rename→写台账；带协调者预设、创建时不传 title；工作区复用；live 复用；override 失效报错不建；`spawnProvider=fork` 拒绝且不写库；create 抛错不写库；rename 失败仍可用并记日志 |
+| 6/7 装配/路由 | 不再调 `bindSettingOnce`/`rebindSetting`、无 `COORDINATOR_KEY`；装配 `createMainSession` 且 `open-main` 交给 `mainSession.open`；route 不直接写台账 |
+| 9 预设/打包 | 协调者与 worker 预设、`preset-tools`、compaction 组都在；`exports['./preset-tools']`、`files` 含 `preset-tools.js` |
+
+**L1 更新后 54 条全过**：面板按钮「打开主会话」、状态文案「主会话未创建」、点击 POST `open-main`（mock fetch）后用返回的 `sessionId` 调 `uiWorkspace.openSession`、任务行渲染 `targetDir`；入口/头部槽位不变。**L2 更新后 57 条全过**：`snapshot.mainSession{id,live}`、`tasks[].targetDir`（有无 target 两态）、`open-main` 成功 200/失败 500/无 `openMain` 500 `open-main-unavailable`、只调一次；零写入断言仍只覆盖 `snapshot`。
+
+**非阻塞观察**：
+
+1. `task_create` 相对 target 的文案重复：「target 必须是绝对路径。目标目录必须是已存在的绝对路径。」（`validateTargetDir` 的文案 + 拼接的后缀重复），建议只留一句。
+2. `client.js` 的 `readSnapshot` 用相对 `api/orchestrator`，`openMainSession` 用绝对 `/api/orchestrator`；根路径下都可用，建议统一。
+3. 计划内红点已确认：`25ca34a`/`5723514` 两个提交时 `index.test.js` 旧自动绑定用例为红，`10f684a` 起 213/213 全绿，属计划删改顺序，不算缺陷。
+
+**结论**：阶段 2 测试侧通过（L1 54/54、L2 57/57、main-session 62/62、213/213、api-probe 33/33），无必须改项；两条非阻塞观察可随手修。
+

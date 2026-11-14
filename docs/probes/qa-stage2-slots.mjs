@@ -51,6 +51,7 @@ if (endpoints.length) warn('客户端用到的 endpoint（人工核对是否只�
 
 // ---------- 运行 bundle ----------
 const loadCalls = []
+const fetchCalls = []
 const windowObj = {
   __ModuleLoader__: { load(mod) { loadCalls.push(mod) } },
   addEventListener() {},
@@ -64,7 +65,11 @@ const sandbox = {
   clearTimeout: () => {},
   setInterval: () => 0,
   clearInterval: () => {},
-  fetch: () => Promise.reject(new Error('qa: fetch not mocked')),
+  // 面板「打开主会话」会 POST open-main；这里返回成功体，用来验证点击后的跳转。
+  fetch: async (url, init) => {
+    fetchCalls.push({ url, init })
+    return { ok: true, status: 200, json: async () => ({ ok: true, sessionId: 'session-main', created: true }) }
+  },
 }
 vm.createContext(sandbox)
 try {
@@ -106,6 +111,7 @@ check('factory 返回 { apply, inject }', typeof client?.apply === 'function' &&
 const regs = []
 const injectNames = []
 const selectPanelCalls = []
+const openedSessions = []
 let currentVia = null
 const ctx = {
   slots: {
@@ -130,6 +136,7 @@ const ctx = {
     panelInfo: { getSnapshot: () => ({ activePanelId: null }) },
   },
   uiSession: { current: 'session-qa' },
+  uiWorkspace: { openSession(id) { openedSessions.push(id); return Promise.resolve() } },
   sessions: { list: { getSnapshot: () => ({ byId: {} }) } },
   effect(fn) { const d = fn(); return () => { try { d?.() } catch {} } },
   get() { return undefined },
@@ -256,9 +263,28 @@ if (main[0]?.component) {
     check('面板有状态筛选下拉', selects.length === 1, `select=${selects.length}`)
     check('筛选 6 档且含全部/已完成/已取消丢失', optionLabels.length === 6 && ['全部', '进行中', '等待', '已完成', '失败', '已取消/丢失'].every((l) => optionLabels.includes(l)), optionLabels.join(','))
     check('下拉受控（value + onChange）', selects.length === 1 && selects[0].props.value !== undefined && typeof selects[0].props.onChange === 'function')
-    check('面板有「打开协调者会话」按钮', texts.includes('打开协调者会话'), texts.join('|'))
+    check('面板有「打开主会话」按钮', texts.includes('打开主会话'), texts.join('|'))
     check('面板有「刷新」按钮', texts.includes('刷新'))
-    check('未绑定协调者时有「未绑定」提示', texts.some((t) => t.includes('未绑定')), texts.filter((t) => t.includes('未绑定')).join('|'))
+    check('主会话状态文案（未创建）', texts.includes('主会话未创建'), texts.filter((t) => t.includes('主会话')).join('|'))
+    check('未创建主会话时提示从面板打开（源码，snapshot 未到达时不渲染）', /尚未打开主会话/.test(src), '「尚未打开主会话：点右上角…」')
+    check('任务行渲染目标目录（源码含 targetDir + 截断）', /targetDir/.test(src) && /shortPath\(/.test(src), 'shortPath(60)')
+    const openMainButton = []
+    walk(tree, (n) => {
+      if (n && n.props && typeof n.props.onClick === 'function' && Array.isArray(n.children) && n.children.includes('打开主会话')) openMainButton.push(n)
+    })
+    check('「打开主会话」按钮绑定了 onClick', openMainButton.length === 1, `找到 ${openMainButton.length}`)
+    if (openMainButton[0]) {
+      fetchCalls.length = 0
+      openedSessions.length = 0
+      try { await openMainButton[0].props.onClick({ preventDefault() {}, stopPropagation() {} }) } catch (e) { check('点击打开主会话不抛异常', false, e.message) }
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      const sent = fetchCalls.find((call) => typeof call.init?.body === 'string')
+      let payload
+      try { payload = sent ? JSON.parse(sent.init.body) : undefined } catch { payload = undefined }
+      check('点击后 POST open-main', payload?.endpoint === 'open-main', JSON.stringify(payload))
+      check('请求路径是 /api/orchestrator', sent !== undefined && /(^|\/)api\/orchestrator$/.test(String(sent.url)), String(sent?.url))
+      check('open-main 成功后跳到返回的 sessionId', openedSessions.includes('session-main'), JSON.stringify(openedSessions))
+    }
   }
 }
 

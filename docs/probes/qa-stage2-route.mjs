@@ -41,6 +41,7 @@ markQueued(db, queued)
 const done = mk('已完成任务', 'done', 'child-3')
 const stale = mk('两小时没动静的待派发', 'pending')
 db.prepare('UPDATE tasks SET last_event_at = ? WHERE id = ?').run(NOW - 2 * 60 * 60 * 1000, stale)
+db.prepare('UPDATE tasks SET target_dir = ? WHERE id = ?').run('C:/work/project', done)
 addMessage(db, running, { kind: 'brief', rendered: '派发文本' })
 addNotification(db, { taskId: running, level: 'info' })
 setSetting(db, 'coordinator_session_id', 'session-qa')
@@ -81,13 +82,15 @@ const ok = await call({ endpoint: 'snapshot' })
 check('snapshot 返回 200', ok.status === 200, String(ok.status))
 check('content-type 是 application/json', /application\/json/.test(ok.headers.get('content-type') ?? ''), ok.headers.get('content-type'))
 check('body.ok === true', ok.body?.ok === true, JSON.stringify(ok.body?.ok))
-check('coordinator 带 id/live', eq(ok.body?.coordinator, { id: 'session-qa', live: true }), JSON.stringify(ok.body?.coordinator))
+check('mainSession 带 id/live', eq(ok.body?.mainSession, { id: 'session-qa', live: true }), JSON.stringify(ok.body?.mainSession))
 check('tasks 是数组且含全部 4 个', Array.isArray(ok.body?.tasks) && ok.body.tasks.length === 4, `len=${ok.body?.tasks?.length}`)
 const taskById = (id) => ok.body.tasks.find((t) => t.id === id)
-check('任务字段齐全', ['id', 'title', 'status', 'label', 'tone', 'childSessionId', 'queued', 'stale', 'updatedAt', 'lastEventAt', 'error']
+check('任务字段齐全', ['id', 'title', 'status', 'label', 'tone', 'childSessionId', 'targetDir', 'queued', 'stale', 'updatedAt', 'lastEventAt', 'error']
   .every((k) => Object.hasOwn(taskById(done), k)), JSON.stringify(Object.keys(taskById(done))))
 check('不返回 brief/goal 原文', !Object.hasOwn(taskById(done), 'goal') && !Object.hasOwn(taskById(done), 'brief'))
 check('running 任务 childSessionId 正确', taskById(running).childSessionId === 'child-1', String(taskById(running).childSessionId))
+check('没有 target 的任务 targetDir 为 null', taskById(running).targetDir === null, String(taskById(running).targetDir))
+check('带 target 的任务 targetDir 透出', taskById(done).targetDir === 'C:/work/project', String(taskById(done).targetDir))
 check('pending 且无子会话 → queued=true', taskById(queued).queued === true)
 check('running → queued=false', taskById(running).queued === false)
 check('新建未排队的 pending → queued=false（queued_at 精确判定）', taskById(stale).queued === false)
@@ -116,6 +119,26 @@ for (const [name, body] of [
 const withPayload = await call({ endpoint: 'snapshot', payload: { status: 'cancelled', taskId: running, tasks: [] } })
 check('带 payload 的 snapshot 仍 200 且按台账返回', withPayload.status === 200 && withPayload.body.tasks.length === 4)
 check('payload 里的 tasks 未覆盖真实数据', withPayload.body.tasks.some((t) => t.id === running))
+
+// ---------- 3b. open-main 动作端点（写主会话是设计行为，不是只读端点） ----------
+const openCalls = []
+const openRoute = createHostRoute({
+  db,
+  coordinatorStatus: () => ({ id: 'session-qa', live: true }),
+  openMain: async () => { openCalls.push(1); return { ok: true, sessionId: 'session-main', created: true } },
+  now: () => NOW,
+})
+const opened = await (await openRoute(request({ endpoint: 'open-main' }))).json()
+check('open-main 成功 200 + sessionId', opened.ok === true && opened.sessionId === 'session-main' && opened.created === true, JSON.stringify(opened))
+check('open-main 只调 openMain 一次', openCalls.length === 1, `实际 ${openCalls.length}`)
+const failBody = await (await createHostRoute({
+  db, coordinatorStatus: () => ({ id: 'session-qa', live: true }), now: () => NOW,
+  openMain: async () => ({ ok: false, error: 'boom' }),
+})(request({ endpoint: 'open-main' }))).json()
+check('open-main 失败 → 500 + 可读 error', failBody.ok === false && failBody.error === 'boom', JSON.stringify(failBody))
+const unavailableResponse = await createHostRoute({ db, coordinatorStatus: () => ({ id: 'session-qa', live: true }), now: () => NOW })(request({ endpoint: 'open-main' }))
+const unavailableBody = await unavailableResponse.json()
+check('无 openMain → 500 open-main-unavailable', unavailableResponse.status === 500 && unavailableBody.error === 'open-main-unavailable', `${unavailableResponse.status} ${JSON.stringify(unavailableBody)}`)
 
 // ---------- 4. 反复调用零写入 ----------
 let errors = 0
