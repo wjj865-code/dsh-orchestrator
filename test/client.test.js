@@ -187,6 +187,36 @@ test('package.json 声明 client 产物与 dsh.client 清单', () => {
   assert.equal(inject.includes('@deepseek-ai/dsh-client-ui-session'), false)
 })
 
+test('产物页：调用 artifacts 端点、按项目/日期分组、预览/复制/打开与空态', () => {
+  // artifacts 端点真正被前端调用（不再只从 snapshot 拼）。
+  assert.match(source, /const readArtifacts = async/)
+  assert.match(source, /endpoint: 'artifacts'/)
+  assert.match(source, /loadArtifacts/)
+  assert.match(source, /filter !== 'artifacts'/)
+  // 分组切换：项目 / 日期。
+  assert.match(source, /artifactGroup/)
+  assert.match(source, /'project'/)
+  assert.match(source, /'date'/)
+  assert.match(source, /按项目/)
+  assert.match(source, /按日期/)
+  assert.match(source, /artifactProject/)
+  assert.match(source, /artifactDate/)
+  // 交互：预览（独立 preview 端点）、复制路径、打开子会话。
+  assert.match(source, /const readPreview = async/)
+  assert.match(source, /endpoint: 'preview'/)
+  assert.match(source, /togglePreview/)
+  assert.match(source, /收起预览/)
+  assert.match(source, /复制路径/)
+  assert.match(source, /打开子会话/)
+  // 空态和失败态。
+  assert.match(source, /共 \$\{artifactItems\.length\} 个产物/)
+  assert.match(source, /产物加载失败/)
+  assert.match(source, /还没有产物。任务 done 时会自动收集改动文件/)
+  assert.match(source, /kind === 'text'/)
+  assert.match(source, /kind === 'binary'/)
+  assert.match(source, /kind === 'directory'/)
+})
+
 test('详情抽屉四区块：brief/消息/依赖/产物、空态与投递状态', () => {
   // 四区块都在同一详情视图里渲染。
   assert.match(source, /detailSection\('Brief'/)

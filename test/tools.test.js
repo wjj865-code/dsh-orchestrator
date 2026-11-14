@@ -61,6 +61,8 @@ async function setup(options = {}) {
     workspaces: options.workspaces,
     defaultCwd: options.defaultCwd,
     sessionQuery: options.sessionQuery,
+    sessions: options.sessions,
+    workspaceChanges: options.workspaceChanges,
     logger: options.logger,
   }).map(tool => [tool.name, tool]))
   return { db, dispatcher, queue, notifier, tools }
@@ -857,6 +859,67 @@ test('task_report 不传 artifacts：完全兼容旧行为，任务照常 done',
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id } })
   assert.equal(getTask(db, task.id).status, 'done')
   assert.deepEqual(getTask(db, task.id).artifacts, [])
+})
+
+test('task_report done 自动收集：未显式产物时用 workspaceChanges.summary 收集本会话全部改动', async () => {
+  const { writeFileSync: write, mkdirSync } = await import('node:fs')
+  const target = tempDir()
+  mkdirSync(join(target, 'sub'))
+  const first = join(target, 'a.md')
+  const second = join(target, 'sub', 'b.txt')
+  write(first, 'a', 'utf8')
+  write(second, 'b', 'utf8')
+  const changeEvents = [{ type: 'workspace/changes', seq: 7, data: { turn: 1 } }, { type: 'workspace/changes', seq: 11, data: { turn: 2 } }]
+  const summaries = {
+    7: { cwd: target, files: [{ path: 'a.md', added: 2, deleted: 0 }] },
+    11: { cwd: target, files: [{ path: 'a.md', added: 4, deleted: 1 }, { path: 'sub/b.txt', added: 1, deleted: 0 }] },
+  }
+  const session = { id: 'c-auto', ownEvents: () => changeEvents }
+  const { db, notifier, tools } = await setup({ workspaceChanges: { summary: (_id, seq) => summaries[seq] } })
+  await call(tools, 'task_create', { ...sampleBrief({ title: '自动收集' }), target })
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id, session } })
+  const saved = getTask(db, task.id).artifacts
+  assert.deepEqual(saved.map(item => item.path), [first, second])
+  assert.deepEqual(saved.map(item => item.label), ['+4/-1', '+1/-0'])
+  assert.deepEqual(saved.map(item => item.exists), [true, true])
+  assert.equal(notifier.pushed.at(-1).artifacts.length, 2)
+})
+
+test('task_report done 自动收集：没有改动事件时保持空产物，不伪造', async () => {
+  const { db, tools } = await setup({ workspaceChanges: { summary: () => ({ cwd: tempDir(), files: [] }) } })
+  await call(tools, 'task_create', sampleBrief({ title: '无改动' }))
+  const task = listTasks(db)[0]
+  const session = { id: 'c-empty', ownEvents: () => [] }
+  const text = await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id, session } })
+  assert.match(text, /已记录/)
+  assert.equal(getTask(db, task.id).status, 'done')
+  assert.deepEqual(getTask(db, task.id).artifacts, [])
+})
+
+test('task_report done 自动收集：显式产物与自动收集按路径合并去重，显式标签优先', async () => {
+  const { writeFileSync: write } = await import('node:fs')
+  const target = tempDir()
+  const shared = join(target, 'a.md')
+  const autoOnly = join(target, 'b.txt')
+  write(shared, 'a', 'utf8')
+  write(autoOnly, 'b', 'utf8')
+  const session = { id: 'c-merge', ownEvents: () => [{ type: 'workspace/changes', seq: 3, data: { turn: 1 } }] }
+  const { db, tools } = await setup({
+    workspaceChanges: {
+      summary: () => ({ cwd: target, files: [{ path: 'a.md', added: 1, deleted: 0 }, { path: 'b.txt', added: 2, deleted: 0 }] }),
+    },
+  })
+  await call(tools, 'task_create', { ...sampleBrief({ title: '合并去重' }), target })
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', {
+    task_id: task.id, status: 'done', summary: '完成',
+    artifacts: [{ path: 'a.md', label: '显式说明' }, { path: 'c.md', label: '手工补的' }],
+  }, { agent: { id: task.session_id, session } })
+  const saved = getTask(db, task.id).artifacts
+  assert.deepEqual(saved.map(item => item.path), [shared, autoOnly, join(target, 'c.md')])
+  assert.equal(saved.find(item => item.path === shared).label, '显式说明')
+  assert.equal(saved.find(item => item.path === autoOnly).label, '+2/-0')
 })
 
 

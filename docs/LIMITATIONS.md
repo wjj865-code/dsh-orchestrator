@@ -6,8 +6,9 @@
 
 - 台账每天生成快照，但**不自动恢复**；损坏时需手工用 `snapshots/tasks-YYYY-MM-DD.sqlite` 替换 `tasks.sqlite`。
 - 快照按天保留，周期内重启不会重复覆盖。
-- 产物只收子任务显式 `task_report.artifacts`；`workspaceChanges` 自动收集改动文件尚未接入（需要 session event seq）。
-- 详情里的产物只能**复制路径**，不能直接打开：面板是网页，浏览器不允许脚本静默打开本地文件。
+- 产物自动收集依赖平台 `workspace/changes` + `workspaceChanges` 服务：Host 没挂这两个能力、会话在摘要登记前被释放、或改动发生在临时目录时，自动收集为空；显式 `task_report.artifacts` 始终保留。
+- 现有回合的摘要要等 turn stopping 才追加；`task_report done` 当刻只能收到之前回合的摘要，当前回合由 `session/event` 监听在微任务里补收（面板下一次轮询可见）。
+- 产物预览只读前 64 KiB 文本；二进制/目录只显示元信息。详情与产物页都只能**复制路径**，不能直接打开本地文件：面板是网页，浏览器不允许脚本静默打开本地文件。产物页的「打开子会话」打开的是产出它的任务会话，不是文件本身。
 - 消息投递状态（待发/已投递/投递失败）写在台账 `messages.meta_json`；A3 之前的旧行没有该字段，只能按紧随的 `delivery_failed` 行推断，失败行落到 50 条消息窗口外的会显示成已投递。
 
 ## 编排

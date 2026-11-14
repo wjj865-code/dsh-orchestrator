@@ -7,7 +7,7 @@ import { panelFailure, panelHttpStatus } from './action-errors.js'
 import { createRequestDedupe } from './request-dedupe.js'
 
 const ENDPOINTS = new Set(['snapshot'])
-const ACTIONS = new Set(['detail', 'artifacts', 'stop', 'retry', 'message'])
+const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message'])
 const ACTIVE = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
 
 const json = (value, status) => new Response(JSON.stringify(value), {
@@ -79,6 +79,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
         let result
         if (endpoint === 'detail') result = panel.detail(body?.taskId)
         else if (endpoint === 'artifacts') result = panel.artifacts(body?.limit)
+        else if (endpoint === 'preview') result = panel.preview(body?.taskId, body?.path)
         else if (endpoint === 'stop') result = await panel.stop(body?.taskId)
         else if (endpoint === 'retry') result = await panel.retry(body?.taskId)
         else if (endpoint === 'message') {

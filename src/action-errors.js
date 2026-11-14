@@ -82,6 +82,23 @@ export const ACTION_ERRORS = Object.freeze({
     http: 502,
     tool: ({ label, reason }) => `续派失败：任务「${label}」的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`,
   }),
+  // artifacts 预览
+  ARTIFACT_NOT_FOUND: define({
+    http: 404,
+    panel: ({ path }) => `这条任务的产物里没有 ${path ?? ''}`,
+  }),
+  ARTIFACT_MISSING: define({
+    http: 404,
+    panel: ({ path }) => `产物文件不存在：${path ?? ''}`,
+  }),
+  ARTIFACT_NOT_FILE: define({
+    http: 400,
+    panel: ({ path }) => `只能预览普通文件：${path ?? ''}`,
+  }),
+  ARTIFACT_READ_FAILED: define({
+    http: 500,
+    panel: ({ reason }) => `读取产物失败：${reason ?? ''}`,
+  }),
   // host-route（路由层兜底，不是 panel/工具动作本身）
   PANEL_ACTIONS_UNAVAILABLE: define({ http: 500, panel: () => 'panel-actions-unavailable' }),
   ACTION_FAILED: define({ http: 500, panel: ({ reason }) => `动作失败：${reason}` }),

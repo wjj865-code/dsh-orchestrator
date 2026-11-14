@@ -2,7 +2,8 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from './src/config.js'
-import { openLedger, addNotification, getMainSessionId, failStalePending } from './src/ledger.js'
+import { openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts } from './src/ledger.js'
+import { collectWorkspaceArtifacts, appendMissingArtifacts, MAX_AUTO_ARTIFACTS } from './src/artifact-collect.js'
 import { createMainSession } from './src/main-session.js'
 import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
@@ -285,7 +286,38 @@ export async function apply(ctx, rawConfig = {}) {
     // 相对产物/项目上下文默认跟主会话目录；主会话重建后 getter 自动取到新目录。
     defaultCwd: () => resolveCoordinator()?.session?.header?.cwd ?? join(stateDir(), 'workspace'),
     sessionQuery: () => service('sessionQuery'),
+    sessions: () => service('sessions'),
+    workspaceChanges: () => service('workspaceChanges'),
   }).map(tool => ctx.tools.register(tool))
+
+  // task_report done 所在回合的 workspace/changes 事件在 turn stopping 时才追加：
+  // 监听提交后的事件（摘要服务在 append 返回后才登记，所以推迟到微任务再读），把当前回合的改动补进已结束任务。
+  const collectArtifactsAfterTurn = session => {
+    queueMicrotask(() => {
+      try {
+        const task = findTaskBySession(db, session?.id, { status: 'done' })
+        if (task === undefined) return
+        const result = collectWorkspaceArtifacts({
+          session,
+          workspaceChanges: service('workspaceChanges'),
+          fallbackCwd: task.target_dir ?? join(stateDir(), 'workspace'),
+          max: MAX_AUTO_ARTIFACTS,
+        })
+        const added = appendMissingArtifacts(task.artifacts, result.artifacts)
+        if (added.length === 0) return
+        const next = setTaskArtifacts(db, task.id, added)
+        logger.log('task.report.artifacts.auto', {
+          taskId: task.id,
+          detail: { added: added.length, turns: result.turns, total: next.artifacts.length },
+        })
+      } catch (error) {
+        warnings(`dsh-orchestrator: 产物自动收集失败：${error?.message ?? error}`)
+      }
+    })
+  }
+  const artifactDisposer = ctx.on?.('session/event', (session, event) => {
+    if (event?.type === 'workspace/changes') collectArtifactsAfterTurn(session)
+  })
 
   const panel = createPanelActions({
     db,
@@ -297,7 +329,7 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   // 客户端面板路由：鉴权由 connection 服务统一负责；snapshot 只查台账；
-  // detail/artifacts 只读，stop/retry/message 是面板动作（owner-only）。
+  // detail/artifacts/preview 只读，stop/retry/message 是面板动作（owner-only）。
   const routeOptions = {
     ...HOST_ROUTE_OPTIONS,
     fetch: createHostRoute({
@@ -344,7 +376,7 @@ export async function apply(ctx, rawConfig = {}) {
   ctx.effect?.(() => async () => {
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
-    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, routeDisposer].reverse()) {
+    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, routeDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
     // 卸载期间的收尾也不能变成未处理拒绝（宿主会判 fatal load failure）。

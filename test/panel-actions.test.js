@@ -135,6 +135,51 @@ test('artifacts 汇总所有任务的产物', async () => {
   db.close()
 })
 
+test('artifacts 带项目/目标目录/子会话与总数，供产物页分组和打开', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const task = runningTask(db, '产物元数据', { targetDir: 'C:/work/project-a' })
+  setTaskArtifacts(db, task.id, [{ path: 'C:/work/project-a/a.md', label: 'A', exists: true }])
+  const result = actions.artifacts(10)
+  assert.equal(result.ok, true)
+  assert.equal(result.total, 1)
+  assert.equal(result.items[0].project, 'project-a')
+  assert.equal(result.items[0].targetDir, 'C:/work/project-a')
+  assert.equal(result.items[0].childSessionId, `c-${task.id}`)
+  assert.equal(result.items[0].status, 'running')
+  db.close()
+})
+
+test('preview 只读台账里登记过的产物：文本 / 二进制 / 目录 / 缺失 / 未登记', async () => {
+  const { writeFileSync, mkdirSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const dir = tempDir()
+  const textFile = join(dir, 'note.md')
+  writeFileSync(textFile, '# 标题\n正文', 'utf8')
+  const binaryFile = join(dir, 'bin.dat')
+  writeFileSync(binaryFile, Buffer.from([0x61, 0x00, 0x62]))
+  mkdirSync(join(dir, 'dist'))
+  const env = setup()
+  const { db, actions } = await env.init()
+  const task = createTask(db, { brief: sampleBrief({ title: '预览任务' }), coordinatorSession: 's-1' })
+  setTaskArtifacts(db, task.id, [
+    { path: textFile, label: '文本', exists: true },
+    { path: binaryFile, label: '二进制', exists: true },
+    { path: join(dir, 'dist'), label: '目录', exists: true },
+    { path: join(dir, 'gone.txt'), label: '已删除', exists: false },
+  ])
+  const text = actions.preview(task.id, textFile)
+  assert.equal(text.ok, true)
+  assert.equal(text.kind, 'text')
+  assert.equal(text.text, '# 标题\n正文')
+  assert.equal(text.truncated, false)
+  assert.equal(actions.preview(task.id, binaryFile).kind, 'binary')
+  assert.equal(actions.preview(task.id, join(dir, 'dist')).kind, 'directory')
+  assert.equal(actions.preview(task.id, join(dir, 'gone.txt')).code, 'ARTIFACT_MISSING')
+  assert.equal(actions.preview(task.id, 'C:/not-recorded.md').code, 'ARTIFACT_NOT_FOUND')
+  db.close()
+})
+
 test('stop 幂等：重复 stop 返回 already，不再中断子会话', async () => {
   const env = setup()
   const { db, actions, calls } = await env.init()

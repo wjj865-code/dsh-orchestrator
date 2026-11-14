@@ -12,8 +12,9 @@ import {
 import {
   addMessage, createTask, getTask, listTasks, recentMessages, setMessageDelivery,
   setTaskArtifacts, setTaskError, touchTask, transition, incrementAttempts,
-  setTaskQuestion, clearTaskQuestion, recordProgress,
+  setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
 } from './ledger.js'
+import { collectWorkspaceArtifacts } from './artifact-collect.js'
 import { toolFailure } from './action-errors.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
@@ -60,7 +61,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   const log = (event, fields) => {
@@ -139,10 +140,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   }
 
   // 产物路径：相对路径按任务目录解析；非法条目静默丢弃；只 stat 存在性，不读文件、不让 report 失败。
-  const normalizeArtifacts = (task, input) => {
+  const normalizeArtifacts = (task, input, limit = MAX_ARTIFACTS) => {
     if (!Array.isArray(input)) return { artifacts: [], omitted: 0 }
+    const max = Math.max(1, Math.floor(Number.isFinite(limit) ? limit : MAX_ARTIFACTS))
     // 入口先截断，避免为几百条无关键做 resolve/stat。
-    const entries = input.slice(0, MAX_ARTIFACTS)
+    const entries = input.slice(0, max)
     const omitted = input.length - entries.length
     const base = baseDirOf(task)
     const out = []
@@ -165,6 +167,34 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       out.push({ path: absolute, label: label.length > MAX_ARTIFACT_LABEL ? `${label.slice(0, MAX_ARTIFACT_LABEL)}…` : label, exists })
     }
     return { artifacts: out, omitted }
+  }
+
+  // done 自动收集：优先用回报方自己的 Session（事件最全）；测试/惰性场景再按 task.session_id 查 sessions 服务。
+  const reportSession = (task, exec) => {
+    const direct = exec?.agent?.session
+    if (direct !== undefined && direct !== null) return direct
+    try {
+      const service = typeof sessions === 'function' ? sessions() : sessions
+      return service?.get?.(task.session_id ?? '')
+    } catch {
+      return undefined
+    }
+  }
+  const autoArtifacts = (task, exec) => {
+    const session = reportSession(task, exec)
+    if (session === undefined || session === null) return { artifacts: [], turns: 0, omitted: 0 }
+    let service
+    try {
+      service = typeof workspaceChanges === 'function' ? workspaceChanges() : workspaceChanges
+    } catch {
+      service = undefined
+    }
+    return collectWorkspaceArtifacts({
+      session,
+      workspaceChanges: service,
+      fallbackCwd: baseDirOf(task),
+      max: MAX_TASK_ARTIFACTS,
+    })
   }
 
   // 工作区服务用惰性 getter（index 传入），取不到就按「无工作区」降级，不影响派发。
@@ -837,8 +867,20 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         && String(reporterId) !== String(task.session_id)) {
         return `回报被拒绝：任务「${labelFor(task)}」属于子会话 ${task.target ?? task.session_id}，当前回报方不是它。`
       }
+      // 显式产物优先；done 时再用 workspaceChanges 摘要补齐整轮改动文件（同路径去重，显式标签覆盖自动标签）。
       const normalized = normalizeArtifacts(task, args.artifacts)
-      const artifacts = normalized.artifacts
+      let artifacts = normalized.artifacts
+      let artifactsOmitted = normalized.omitted
+      let auto = { artifacts: [], turns: 0, omitted: 0 }
+      if (args.status === 'done') {
+        auto = autoArtifacts(task, exec)
+        if (auto.artifacts.length > 0) {
+          const autoPaths = new Set(auto.artifacts.map(item => item.path))
+          const unique = autoPaths.size + artifacts.filter(item => !autoPaths.has(item.path)).length
+          artifacts = mergeArtifacts(auto.artifacts, artifacts, MAX_TASK_ARTIFACTS)
+          artifactsOmitted += auto.omitted + Math.max(0, unique - artifacts.length)
+        }
+      }
       const question = typeof args.question === 'string' ? args.question.trim().slice(0, 500) : ''
       const options = Array.isArray(args.options)
         ? args.options.filter(item => typeof item === 'string' && item.trim() !== '').map(item => item.trim().slice(0, 120)).slice(0, 10)
@@ -849,8 +891,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           taskId: task.id,
           detail: {
             count: artifacts.length,
-            omitted: normalized.omitted,
+            omitted: artifactsOmitted,
             missing: artifacts.filter(item => item.exists === false).length,
+            autoTurns: auto.turns,
+            autoCount: auto.artifacts.length,
           },
         })
       }
@@ -902,7 +946,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         question: args.status === 'blocked' || args.status === 'needs_auth' ? question : null,
         options: args.status === 'blocked' || args.status === 'needs_auth' ? options : [],
         artifacts,
-        artifactsTruncated: normalized.omitted,
+        artifactsTruncated: artifactsOmitted,
         sender: exec?.agent,
         signal: exec?.signal,
       })

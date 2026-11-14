@@ -102,6 +102,30 @@ window.__ModuleLoader__.load({
       throw actionFailure(body, response.status)
     }
 
+    // 产物库：一次取最多 200 条，前端按项目/日期分组；预览端点只读文件前 64 KiB。
+    const readArtifacts = async (limit = 200, signal) => {
+      const response = await fetch(ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: 'artifacts', limit }),
+        signal,
+      })
+      const body = await response.json()
+      if (body && body.ok === true) return body
+      throw actionFailure(body, response.status)
+    }
+
+    const readPreview = async (taskId, path) => {
+      const response = await fetch(ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: 'preview', taskId, path }),
+      })
+      const body = await response.json()
+      if (body && body.ok === true) return body
+      throw actionFailure(body, response.status)
+    }
+
     const panelAction = async (endpoint, taskId, extra = {}) => {
       const payload = { endpoint, taskId, ...extra }
       if (endpoint === 'message' && (typeof payload.clientRequestId !== 'string' || payload.clientRequestId === '')) {
@@ -183,6 +207,20 @@ window.__ModuleLoader__.load({
         padding: '0 6px', borderRadius: 8, border: '1px solid currentColor',
       },
       depLine: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+      // 产物库：分组标题 / 行内预览。
+      group: {
+        display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 8,
+        borderTop: '1px solid var(--dsw-alias-color-border, #e0e0e0)',
+      },
+      preview: {
+        flexBasis: '100%', display: 'flex', flexDirection: 'column', gap: 4,
+        borderTop: '1px dashed var(--dsw-alias-color-border, #d0d0d0)', paddingTop: 6, marginTop: 2,
+      },
+      pre: {
+        margin: 0, maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+        fontSize: 11, lineHeight: 1.5, padding: 6, borderRadius: 6,
+        background: 'var(--dsw-alias-color-bg-tertiary, #f2f2f2)',
+      },
     }
 
     const HeaderButton = ({ openPanel }) => h('button', {
@@ -231,6 +269,11 @@ window.__ModuleLoader__.load({
       const [filter, setFilter] = React.useState('all')
       const [detail, setDetail] = React.useState(null)
       const [detailError, setDetailError] = React.useState(null)
+      const [artifactData, setArtifactData] = React.useState(null)
+      const [artifactError, setArtifactError] = React.useState(null)
+      const [artifactLoading, setArtifactLoading] = React.useState(false)
+      const [artifactGroup, setArtifactGroup] = React.useState('project')
+      const [preview, setPreview] = React.useState(null)
       const [copyNotice, setCopyNotice] = React.useState(null)
       const [busy, setBusy] = React.useState(null)
       // 同一 (动作, 任务) 只允许一个请求在途：双击不会发两条 stop/retry/message。
@@ -247,6 +290,27 @@ window.__ModuleLoader__.load({
           return false
         }
       }, [])
+
+      const loadArtifacts = React.useCallback(async signal => {
+        setArtifactLoading(true)
+        try {
+          const next = await readArtifacts(200, signal)
+          setArtifactData(next)
+          setArtifactError(null)
+        } catch (failure) {
+          if (signal === undefined || !signal.aborted) setArtifactError(String((failure && failure.message) || failure))
+        } finally {
+          if (signal === undefined || !signal.aborted) setArtifactLoading(false)
+        }
+      }, [])
+
+      // 切到「产物」筛选时调用 artifacts 端点；不跟着 2s 快照轮询重复拉取。
+      React.useEffect(() => {
+        if (filter !== 'artifacts') return undefined
+        const controller = new AbortController()
+        void loadArtifacts(controller.signal)
+        return () => controller.abort()
+      }, [filter, loadArtifacts])
 
       React.useEffect(() => {
         const controller = new AbortController()
@@ -265,6 +329,7 @@ window.__ModuleLoader__.load({
       const refresh = async () => {
         setRefreshing(true)
         await load(undefined)
+        if (filter === 'artifacts') await loadArtifacts(undefined)
         setRefreshing(false)
       }
 
@@ -354,6 +419,23 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 预览：同一行再点一次收起；请求带 key，避免慢响应覆盖后来点的另一行。
+      const togglePreview = async (taskId, path) => {
+        const key = `${taskId}:${path}`
+        if (preview !== null && preview.key === key && preview.loading !== true) {
+          setPreview(null)
+          return
+        }
+        setPreview({ key, loading: true, data: null, error: null })
+        try {
+          const data = await readPreview(taskId, path)
+          setPreview(current => current !== null && current.key === key ? { key, loading: false, data, error: null } : current)
+        } catch (failure) {
+          const message = String((failure && failure.message) || failure)
+          setPreview(current => current !== null && current.key === key ? { key, loading: false, data: null, error: message } : current)
+        }
+      }
+
       const runPanel = async (endpoint, id, extra = {}) => {
         const key = `${endpoint}:${id}`
         if (inFlight.current.has(key)) return
@@ -373,6 +455,7 @@ window.__ModuleLoader__.load({
             }
           }
           await load(undefined)
+          if (filter === 'artifacts') await loadArtifacts(undefined)
           if (detail && detail.task && detail.task.id === id) await openDetail(id)
         } catch (failure) {
           const code = failure && typeof failure.code === 'string' && failure.code !== '' ? `（${failure.code}）` : ''
@@ -534,31 +617,99 @@ window.__ModuleLoader__.load({
         )
       })()
       const detailErrorBlock = detailError === null ? null : h('div', { style: styles.error }, detailError)
-      const artifactRows = []
-      for (const task of tasks) {
-        for (const artifact of Array.isArray(task.artifacts) ? task.artifacts : []) {
-          artifactRows.push({ task, artifact })
-          if (artifactRows.length >= 200) break
-        }
-        if (artifactRows.length >= 200) break
+      const artifactItems = Array.isArray(artifactData && artifactData.items) ? artifactData.items : []
+      const artifactDate = at => {
+        if (typeof at !== 'number' || !Number.isFinite(at)) return '日期未知'
+        const date = new Date(at)
+        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
       }
-      const artifactView = artifactRows.length === 0
-        ? h('div', { style: styles.meta }, '还没有产物。')
-        : h('ul', { style: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 } },
-          artifactRows.map(({ task, artifact }) => h('li', { key: `${task.id}:${artifact.path}`, style: { listStyle: 'none' } },
-            h('div', { style: styles.row },
-              h('span', { style: Object.assign({}, styles.dot, { background: artifact.exists === false ? TONE_COLOR.bad : TONE_COLOR.good }) }),
-              h('span', { style: styles.taskTitle, title: artifact.path }, artifact.path),
-              artifact.label ? h('span', { style: styles.meta }, artifact.label) : null,
-              h('span', { style: styles.meta }, task.title),
-              h('span', { style: styles.meta }, timeLabel(task.lastEventAt)),
-              h('button', {
-                type: 'button', style: styles.button,
-                disabled: task.childSessionId === null || task.childSessionId === undefined,
-                onClick: () => open(task.childSessionId),
-              }, '打开子会话'),
-            ),
-          )),
+      const artifactProject = item => {
+        if (typeof item.project === 'string' && item.project !== '') return item.project
+        const dir = textOf(item.targetDir)
+        if (dir === '') return '未关联项目'
+        return dir.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || dir
+      }
+      const artifactGroups = mode => {
+        const groups = new Map()
+        for (const item of artifactItems) {
+          if (item === null || typeof item !== 'object' || typeof item.path !== 'string') continue
+          const key = mode === 'date' ? artifactDate(item.at) : artifactProject(item)
+          if (!groups.has(key)) groups.set(key, [])
+          groups.get(key).push(item)
+        }
+        const rows = [...groups.entries()]
+        rows.sort((left, right) => mode === 'date'
+          ? right[0].localeCompare(left[0])
+          : left[0].localeCompare(right[0], 'zh-CN'))
+        for (const [, list] of rows) {
+          list.sort((left, right) => (right.at ?? 0) - (left.at ?? 0) || String(left.path).localeCompare(String(right.path)))
+        }
+        return rows
+      }
+      const previewBlock = () => {
+        if (preview === null) return null
+        if (preview.loading === true) return h('div', { style: styles.preview }, h('div', { style: styles.meta }, '加载预览…'))
+        if (preview.error !== null) return h('div', { style: styles.preview }, h('div', { style: styles.error }, `预览失败：${preview.error}`))
+        const data = preview.data || {}
+        if (data.kind === 'text') {
+          return h('div', { style: styles.preview },
+            h('div', { style: styles.meta }, `${data.size ?? 0} 字节${data.truncated === true ? '（仅显示前 64 KiB）' : ''}`),
+            h('pre', { style: styles.pre }, data.text === '' ? '（空文件）' : data.text),
+          )
+        }
+        if (data.kind === 'directory') return h('div', { style: styles.preview }, h('div', { style: styles.notice }, '这是目录，不能预览内容；复制路径后在文件管理器打开。'))
+        if (data.kind === 'binary') return h('div', { style: styles.preview }, h('div', { style: styles.notice }, '二进制文件，不能按文本预览；复制路径后在本地打开。'))
+        return h('div', { style: styles.preview }, h('div', { style: styles.meta }, '没有可预览的内容。'))
+      }
+      const artifactRow = item => {
+        const key = `${item.taskId}:${item.path}`
+        const isPreview = preview !== null && preview.key === key
+        return h('div', { key, style: Object.assign({}, styles.row, { flexWrap: 'wrap' }) },
+          h('span', { style: Object.assign({}, styles.dot, { background: item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good }) }),
+          h('span', { style: { overflowWrap: 'anywhere', flex: '1 1 260px', minWidth: 0 }, title: item.path }, item.path),
+          item.label ? h('span', { style: styles.meta }, item.label) : null,
+          item.exists === false ? h('span', { style: styles.meta }, '（未找到）') : null,
+          h('span', { style: styles.meta }, `${item.title || item.taskId}${item.status ? ` · ${STATUS_LABEL[item.status] || item.status}` : ''}`),
+          h('span', { style: styles.meta }, timeLabel(item.at)),
+          h('button', {
+            type: 'button', style: styles.button,
+            disabled: item.exists === false,
+            onClick: () => void togglePreview(item.taskId, item.path),
+          }, isPreview ? '收起预览' : '预览'),
+          h('button', { type: 'button', style: styles.button, onClick: () => void copyPath(item.path) }, '复制路径'),
+          item.childSessionId
+            ? h('button', { type: 'button', style: styles.button, onClick: () => open(item.childSessionId) }, '打开子会话')
+            : null,
+          h('button', { type: 'button', style: styles.button, onClick: () => void openDetail(item.taskId) }, '详情'),
+          isPreview ? previewBlock() : null,
+        )
+      }
+      const artifactView = artifactData === null
+        ? h('div', { style: styles.meta }, artifactError !== null ? `产物加载失败：${artifactError}` : (artifactLoading ? '产物加载中…' : '还没有产物。'))
+        : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+          h('div', { style: styles.bar },
+            h('span', { style: styles.meta }, `共 ${artifactItems.length} 个产物${artifactError !== null ? '（刷新失败，显示上次结果）' : ''}`),
+            h('button', {
+              type: 'button', style: styles.button,
+              disabled: artifactGroup === 'project',
+              onClick: () => setArtifactGroup('project'),
+            }, '按项目'),
+            h('button', {
+              type: 'button', style: styles.button,
+              disabled: artifactGroup === 'date',
+              onClick: () => setArtifactGroup('date'),
+            }, '按日期'),
+          ),
+          artifactError !== null ? h('div', { style: styles.error }, `产物加载失败：${artifactError}`) : null,
+          artifactItems.length === 0
+            ? h('div', { style: styles.empty }, '还没有产物。任务 done 时会自动收集改动文件；也可以显式传 task_report.artifacts。')
+            : artifactGroups(artifactGroup).map(([name, rows]) => h('section', { key: `${artifactGroup}:${name}`, style: styles.group },
+              h('div', { style: styles.bar },
+                h('span', { style: styles.sectionTitle }, name),
+                h('span', { style: styles.meta }, `${rows.length} 个`),
+              ),
+              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } }, rows.map(artifactRow)),
+            )),
         )
 
       return h('div', { style: styles.panel },

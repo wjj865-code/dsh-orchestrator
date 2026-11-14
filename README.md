@@ -16,7 +16,8 @@
 | 分组/写域/优先级 | `group` 分组、`writeScopes` 冲突提示、`priority` 队列排序 |
 | 跨项目记忆 | 完成摘要自动沉淀；`history_search` / `project_context` 补上下文 |
 | 收件箱/日报 | `task_inbox` 看待决与卡点；`digestAt` 开每日汇总 |
-| 任务面板 | 侧栏入口 + 会话头面板；详情/停止/重派/追加/产物筛选 |
+| 任务面板 | 侧栏入口 + 会话头面板；详情/停止/重派/追加；产物库按项目/日期分组、可预览/复制 |
+| 产物收集 | done 自动从 `workspaceChanges` 收集改动文件，与显式 `artifacts` 按路径去重合并 |
 
 协调者不阻塞等待：进度用 `task_list` / `task_inbox`，子任务完成会主动通知。
 
@@ -165,7 +166,7 @@ workspace/                          # 「指挥舱」工作区
 
 - 协调者预设只挂 `persona` / `agent-instructions` / `time-context` / `tool-ask-user` / `compaction` / `preset-tools`；执行层还有 guard 硬拦 `read`/`write`/`bash`/`wait_agent` 等。
 - 子任务用 worker 预设，文件/shell/web/todo/skill/compaction/present，不含 delegation/goal/plan/schedule。
-- `/api/orchestrator` 由 connection owner-only 鉴权；`snapshot`/`detail`/`artifacts` 只读，`stop`/`retry`/`message` 是面板动作。
+- `/api/orchestrator` 由 connection owner-only 鉴权；`snapshot`/`detail`/`artifacts`/`preview` 只读，`stop`/`retry`/`message` 是面板动作。
 - 通知走 `agent.steer`，5 秒合并；每次投递写 `notifications`。
 
 更细的机制、目标目录推断、沙箱与错误降级见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
@@ -212,7 +213,7 @@ git push origin main --tags
 ## 已知限制
 
 - `writeScopes` 只做冲突提示；依赖关系创建后不可编辑；`dependsOn` 不允许指向未来 id。
-- 产物目前只收显式 `task_report.artifacts`，`workspaceChanges` 自动收集尚未接入。
+- 产物在 done 时自动从 `workspaceChanges` 收集改动文件，并与显式 `task_report.artifacts` 按路径去重合并；Host 未挂 `workspaceChanges` 时只剩显式产物。
 - 日报默认关闭；`stallRounds` 只提醒一次，没有二次升级阶梯。
 - 主会话工具表可能仍残留团队工具（agent-scope 自注册，`restrict` 遮不到）；执行层 guard 会硬拦。
 - 平台 rc.3 子会话沙箱根、Bot 模式视图、headless 收尾竞态等平台侧限制，详见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。

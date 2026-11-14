@@ -139,6 +139,15 @@ export function getTask(db, id) {
   return taskOf(db.prepare('SELECT * FROM tasks WHERE id = ?').get(id))
 }
 
+/** 按子会话反查任务（回合结束后的自动产物收集用）；同一会话只可能属于一条任务。 */
+export function findTaskBySession(db, sessionId, { status } = {}) {
+  if (sessionId === null || sessionId === undefined || sessionId === '') return undefined
+  const row = status === undefined
+    ? db.prepare('SELECT * FROM tasks WHERE session_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1').get(String(sessionId))
+    : db.prepare('SELECT * FROM tasks WHERE session_id = ? AND status = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1').get(String(sessionId), status)
+  return taskOf(row)
+}
+
 export function listTasks(db, { active = false } = {}) {
   const sql = active
     ? "SELECT * FROM tasks WHERE status IN ('waiting_dep','pending','running','waiting_user','waiting_auth') ORDER BY created_at DESC, rowid DESC"

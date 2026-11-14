@@ -65,8 +65,9 @@
 - `task_report.artifacts: [{path,label?}]`，相对路径按 `target_dir`（无则主会话目录）解析。
 - 只 `stat` 存在性，非法条目静默丢弃，不阻断任务完成。
 - 同一任务多次回报按 `path` 合并：不同路径保留，同路径后报覆盖，最多 50 条。
-- 面板「产物」筛选汇总所有任务产物；详情抽屉显示路径/标签/存在性。
-- **尚未**从 `workspaceChanges` 自动收集改动文件。
+- **done 自动收集**：`task_report done` 时若报错方 Session 有 `workspace/changes` 事件，用 `workspaceChanges.summary(sessionId, seq)` 汇总所有回合的改动文件（相对路径按摘要 `cwd` 解析），按路径去重后与显式产物合并；显式产物标签优先，单任务仍受 50 条上限。
+- 当前回合的摘要要等 turn stopping 才追加，`index.js` 监听 `session/event` 的 `workspace/changes`，在摘要服务登记后（微任务）把新增路径补进已 done 的任务；没有 `workspaceChanges` 服务或会话已释放时自动收集为空，不影响显式产物。
+- 面板「产物」筛选调用 `artifacts` 端点并打开产物库：可按项目（目标目录末段）或日期分组，复制路径、文本预览（前 64 KiB）、打开子会话/详情；详情抽屉显示路径/标签/存在性。
 
 ## 只读子任务
 
@@ -92,12 +93,13 @@
 | `snapshot` | 只读快照 |
 | `open-main` | 创建/打开主会话 |
 | `detail` | 任务详情、消息、依赖、产物 |
-| `artifacts` | 产物汇总 |
+| `artifacts` | 产物汇总（项目/日期分组所需字段） |
+| `preview` | 预览台账里登记的文本产物（前 64 KiB） |
 | `stop` | 停止任务 |
 | `retry` | 重派 failed/orphaned |
 | `message` | 追加消息 |
 
-面板 2s 轮询，连续失败退避 30s；任务行「详情/停止/重派/追加」；「产物」筛选打开产物库。
+面板 2s 轮询，连续失败退避 30s；任务行「详情/停止/重派/追加」；「产物」筛选打开产物库（按项目/日期分组，预览/复制/打开子会话）。
 
 详情抽屉分四区块：**brief**（验收/约束/背景/用户原话）、**消息**（最近 20 条；`followup` 标待发/已投递/投递失败）、**依赖**（上游前置 + 下游依赖本任务，各带状态与错误）、**产物**（路径/标签/存在性，路径可一键复制）。四区块都有空态。投递状态落在 `messages.meta_json.delivery`（pending → delivered/failed，只改 meta 不加行）；A3 之前的旧消息按紧随其后的 `delivery_failed` 行推断。
 

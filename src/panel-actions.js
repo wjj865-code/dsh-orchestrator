@@ -1,5 +1,6 @@
-// 面板动作：/api/orchestrator 的 stop/retry/message/detail/artifacts。
+// 面板动作：/api/orchestrator 的 stop/retry/message/detail/artifacts/preview。
 // 与工具层共享同一台账/队列/派发器；鉴权由连接层 owner-only 负责。
+import { closeSync, openSync, readSync, statSync } from 'node:fs'
 import { renderBrief } from './brief.js'
 import {
   addMessage, clearTaskQuestion, createTask, findRecentDeliveredFollowup, getTask, listTasks,
@@ -19,6 +20,15 @@ const MESSAGE_DEDUPE_MS = 3000
 // 详情一次最多回 50 条消息、50 个下游任务；面板只展示最近 20 条消息（更早的靠台账/日志）。
 const DETAIL_MESSAGE_LIMIT = 50
 const DETAIL_DEPENDENT_LIMIT = 50
+// 预览只读前 64 KiB：足够看文本产物，避免把大文件整个读进内存。
+const PREVIEW_BYTES = 64 * 1024
+
+const projectOf = task => {
+  const dir = typeof task.target_dir === 'string' ? task.target_dir.trim() : ''
+  if (dir === '') return null
+  const tail = dir.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop()
+  return tail === undefined || tail === '' ? dir : tail
+}
 
 const short = (value, max = 100) => {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim()
@@ -118,16 +128,62 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
           taskId: task.id,
           title: task.title,
           status: task.status,
+          childSessionId: task.session_id ?? null,
+          targetDir: task.target_dir ?? null,
+          project: projectOf(task),
           path: artifact.path,
           label: artifact.label ?? '',
           exists: artifact.exists !== false,
           at: task.updated_at,
           group: task.group_id ?? null,
         })
-        if (items.length >= max) return { ok: true, items }
       }
     }
-    return { ok: true, items }
+    // 产物库按任务最近更新倒序；同时回传项目/分组/会话，前端可切「项目 / 日期」视图。
+    items.sort((left, right) => (right.at ?? 0) - (left.at ?? 0) || left.path.localeCompare(right.path))
+    return { ok: true, items: items.slice(0, max), total: items.length }
+  }
+
+  const preview = (taskId, path) => {
+    const task = getTask(db, String(taskId ?? ''))
+    if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
+    const target = typeof path === 'string' ? path : ''
+    const artifact = task.artifacts.find(item => item?.path === target)
+    if (artifact === undefined) return panelFailure('ARTIFACT_NOT_FOUND', { path: target })
+    let stats
+    try {
+      stats = statSync(artifact.path)
+    } catch {
+      return panelFailure('ARTIFACT_MISSING', { path: artifact.path })
+    }
+    if (stats.isDirectory()) return { ok: true, kind: 'directory', path: artifact.path, size: null, text: '' }
+    if (!stats.isFile()) return panelFailure('ARTIFACT_NOT_FILE', { path: artifact.path })
+    const length = Math.min(stats.size, PREVIEW_BYTES)
+    const buffer = Buffer.alloc(length)
+    let fd
+    let read = 0
+    try {
+      fd = openSync(artifact.path, 'r')
+      read = readSync(fd, buffer, 0, length, 0)
+    } catch (error) {
+      return panelFailure('ARTIFACT_READ_FAILED', { reason: error?.message ?? error })
+    } finally {
+      if (fd !== undefined) {
+        try { closeSync(fd) } catch { /* 关闭失败不覆盖已读内容 */ }
+      }
+    }
+    const body = buffer.subarray(0, read)
+    if (body.includes(0)) {
+      return { ok: true, kind: 'binary', path: artifact.path, size: stats.size, text: '', truncated: stats.size > read }
+    }
+    return {
+      ok: true,
+      kind: 'text',
+      path: artifact.path,
+      size: stats.size,
+      truncated: stats.size > read,
+      text: body.toString('utf8'),
+    }
   }
 
   const stop = async taskId => {
@@ -289,7 +345,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     return { ok: true, taskId: task.id }
   }
 
-  return { detail: detailOf, artifacts: artifactsOf, stop, retry, message, short }
+  return { detail: detailOf, artifacts: artifactsOf, preview, stop, retry, message, short }
 }
 
 export { short as panelShort }

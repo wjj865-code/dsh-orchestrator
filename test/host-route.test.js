@@ -124,6 +124,22 @@ test('面板动作端点：detail/artifacts/stop/retry/message 走 panel，失�
   db.close()
 })
 
+test('preview 端点把 taskId/path 透传给 panel.preview', async () => {
+  const db = await openLedger(tempDir())
+  const calls = []
+  const panel = {
+    detail: () => ({ ok: true }),
+    artifacts: () => ({ ok: true, items: [] }),
+    preview: (taskId, path) => { calls.push([taskId, path]); return { ok: true, kind: 'text', text: 'hi' } },
+  }
+  const handler = createHostRoute({ db, panel })
+  const response = await handler(request({ endpoint: 'preview', taskId: 't-1', path: 'C:/w/a.md' }))
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), { ok: true, kind: 'text', text: 'hi' })
+  assert.deepEqual(calls, [['t-1', 'C:/w/a.md']])
+  db.close()
+})
+
 test('坏 body / 空 body 也不会写台账', async () => {
   const { db, handler } = await setup()
   const before = counts(db)
