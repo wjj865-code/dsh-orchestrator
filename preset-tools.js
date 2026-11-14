@@ -36,10 +36,12 @@ export function apply(ctx, config = {}) {
   const denied = new Set()
   const lifts = []
   let fileLog
+  // stateDir 可注入（测试传临时目录，别改 process.env）；默认与 index.js 一致。
+  const resolveLogDir = () => typeof config.stateDir === 'function' ? config.stateDir() : (config.stateDir ?? stateDir())
   const audit = fresh => {
     // 审计日志失败不能打断预设挂载。
     try {
-      fileLog ??= createLogger({ stateDir: stateDir() })
+      fileLog ??= createLogger({ stateDir: resolveLogDir() })
       fileLog.log('preset.deny', { detail: { tools: fresh } })
     } catch { /* 忽略 */ }
   }

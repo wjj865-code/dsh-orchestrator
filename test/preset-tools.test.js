@@ -1,19 +1,15 @@
-import test, { after, before } from 'node:test'
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply, name } from '../preset-tools.js'
 
-// 审计日志会写 $DSH_HOME/state/orchestrator/logs；测试必须隔离到临时 home，不能碰用户目录。
+// 审计日志目录通过 config.stateDir 注入临时目录，不改 process.env（避免与 index.test 的 DSH_HOME 交错）。
 const logHome = mkdtempSync(join(tmpdir(), 'orch-preset-log-'))
-const previousHome = process.env.DSH_HOME
-before(() => { process.env.DSH_HOME = logHome })
-after(() => {
-  if (previousHome === undefined) delete process.env.DSH_HOME
-  else process.env.DSH_HOME = previousHome
-  rmSync(logHome, { recursive: true, force: true })
-})
+const logStateDir = join(logHome, 'state', 'orchestrator')
+const applyIsolated = (ctx, config = {}) => apply(ctx, { stateDir: logStateDir, ...config })
+after(() => { rmSync(logHome, { recursive: true, force: true }) })
 
 // 假 ctx：模拟预设 scope 的 tools/change 事件、restrict 返回值与 effect 清理。
 const makeCtx = (globals = []) => {
@@ -64,14 +60,14 @@ const makeCtx = (globals = []) => {
 
 test('preset-tools 用 deny 补集保留 allow，不把 allow 交给 restrict', () => {
   const ctx = makeCtx(['task_create', 'read', 'bash'])
-  apply(ctx, { allow: ['task_create'] })
+  applyIsolated(ctx, { allow: ['task_create'] })
   assert.deepEqual(ctx.calls, [{ deny: ['read', 'bash'] }])
   assert.equal(name, 'dsh-orchestrator-preset-tools')
 })
 
 test('mount 后动态注册的全局工具被 deny，协调者工具表不增加', () => {
   const ctx = makeCtx(['task_create', 'read'])
-  apply(ctx, { allow: ['task_create'] })
+  applyIsolated(ctx, { allow: ['task_create'] })
   assert.deepEqual(ctx.visible(['ask_user_question']), ['ask_user_question', 'task_create'])
   // 模拟别的插件后注册一个新工具（不写死工具名，按「不在 allow 的全局工具」判定）。
   ctx.setGlobals(['task_create', 'read', 'exec_shell'])
@@ -82,7 +78,7 @@ test('mount 后动态注册的全局工具被 deny，协调者工具表不增加
 
 test('mount 时一次性 deny 已存在的全部非 allow 全局工具，并写审计日志', () => {
   const ctx = makeCtx(['task_create', 'read', 'bash', 'glob'])
-  apply(ctx, { allow: ['task_create'] })
+  applyIsolated(ctx, { allow: ['task_create'] })
   assert.deepEqual(ctx.calls, [{ deny: ['read', 'bash', 'glob'] }])
   assert.deepEqual(ctx.logLines, ['preset-tools: deny read, bash, glob'])
   ctx.setGlobals(['task_create', 'read', 'bash', 'glob', 'web_search'])
@@ -92,7 +88,7 @@ test('mount 时一次性 deny 已存在的全部非 allow 全局工具，并写�
 
 test('后注册的全局工具在 tools/change 后补 deny，且不重复', () => {
   const ctx = makeCtx(['task_create', 'task_list'])
-  apply(ctx, { allow: ['task_create', 'task_list'] })
+  applyIsolated(ctx, { allow: ['task_create', 'task_list'] })
   assert.equal(ctx.calls.length, 0)
   ctx.setGlobals(['task_create', 'task_list', 'show_view'])
   ctx.fire()
@@ -103,7 +99,7 @@ test('后注册的全局工具在 tools/change 后补 deny，且不重复', () =
 
 test('allow 名单里的工具即使后注册也不会被 deny', () => {
   const ctx = makeCtx([])
-  apply(ctx, { allow: ['task_create'] })
+  applyIsolated(ctx, { allow: ['task_create'] })
   assert.equal(ctx.calls.length, 0)
   ctx.setGlobals(['task_create', 'task_status'])
   ctx.fire()
@@ -112,7 +108,7 @@ test('allow 名单里的工具即使后注册也不会被 deny', () => {
 
 test('run_code 不可 deny，跳过', () => {
   const ctx = makeCtx(['run_code', 'read'])
-  apply(ctx, { allow: ['task_create'] })
+  applyIsolated(ctx, { allow: ['task_create'] })
   assert.deepEqual(ctx.calls, [{ deny: ['read'] }])
 })
 
@@ -123,7 +119,7 @@ test('空 allow 直接报错（避免协调者工具全开或全空）', () => {
 
 test('dispose 时移除 tools/change 监听并解除 deny', () => {
   const ctx = makeCtx(['read'])
-  apply(ctx, { allow: ['task_create'] })
+  applyIsolated(ctx, { allow: ['task_create'] })
   assert.equal(ctx.listenerCount(), 1)
   assert.equal(ctx.calls.length, 1)
   ctx.cleanup()
@@ -134,8 +130,8 @@ test('dispose 时移除 tools/change 监听并解除 deny', () => {
 
 test('deny 审计同时写插件自己的 JSONL', () => {
   const ctx = makeCtx(['read', 'bash'])
-  apply(ctx, { allow: ['task_create'] })
-  const dir = join(logHome, 'state', 'orchestrator', 'logs')
+  applyIsolated(ctx, { allow: ['task_create'] })
+  const dir = join(logStateDir, 'logs')
   const files = readdirSync(dir).filter(file => file.endsWith('.jsonl'))
   assert.ok(files.length > 0, '没有写日志文件')
   const text = files.map(file => readFileSync(join(dir, file), 'utf8')).join('')

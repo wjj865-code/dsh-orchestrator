@@ -784,7 +784,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **以后 ds-bot 修这行时的对表点**：放宽 `plain` 判据，让非 Bot/room 的外部 root 会话也撤皮肤；或给外部插件一个「打开纯 dsh 会话」的 action。修好后复跑本清单 Task 10 ① 的跳转半条即可。
 
-**对照实验（判定是否甩锅）**：Bot 模式下用 ds-bot 自己的会话列表打开任意一个普通 root 会话，若视图同样不切 → 坐实 ds-bot 表面问题；只有我们的主会话不行 → 回查我们的会话特殊性（`agentPreset`/cwd）。
+**为什么做不了严格对照**：ds-bot Bot 表面只列它自己 DSH Agent 名下的 Bot 会话，用户在 Bot 模式里造不出「非 bot 的普通 root 会话」，所以「打开任意普通 root 会话」的对照实验不可达。**反向证据**：同一个主会话在不带 ds-bot 的纯 dsh 表面点一次「打开主会话」，`openSession` 一次就切到「工作区 指挥舱 / 协调者」（隔离实例 `AFTER_OPEN` 原文）；且 ds-bot `client.js:41886` 的 `plain = isAgentSessionId(main)` 对外部 root 会话恒 `false`，该判据覆盖所有非 bot root 会话，与「只有我们的会话不切」相互排除。
 
 
 ## 30. 主会话工具表残留团队工具（② 降级口径，平台无干净解）
