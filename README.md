@@ -33,19 +33,18 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
    "dsh-orchestrator": "link:C:/Users/72489/Documents/dsh-orchestrator"
    ```
 
-2. `dsh.profile.bundles` 里加 `dsh-orchestrator`，并确认已有：
+2. `dsh.profile.bundles` 里加 `dsh-orchestrator`：
 
    ```json
    [
      "@deepseek-ai/dsh-base",
      "@deepseek-ai/dsh-headless",
-     "@deepseek-ai/dsh-experimental-agent-team-profile",
      "dsh-orchestrator"
    ]
    ```
 
    无头 profile 用 `@deepseek-ai/dsh-headless`，桌面 profile 用 `@deepseek-ai/dsh-web-app`。
-   `@deepseek-ai/dsh-experimental-agent-team-profile` 提供 `ctx.agentTeams`（`backend:'team'` 回退用）；直连子会话还要 `ctx.subagents` 和本地 `spawn` provider（`@deepseek-ai/dsh-subagent` + `dsh-subagent-spawn-in-process`，随平台 bundle 自带）。**profile 缺 `agentTeams` 时插件不会报加载失败，而是一直停在 `pending (waiting for service: agentTeams)`、整条不激活**（web 模板默认就没有 agent-team，需要显式加这个 bundle）。
+   直连子会话还要 `ctx.subagents` 和本地 `spawn` provider（`@deepseek-ai/dsh-subagent` + `dsh-subagent-spawn-in-process`，随平台 bundle 自带）。`agentTeams` **不再是前置**：插件按需惰性获取，缺它照常激活、subagent 后端正常工作；只有显式把 `backend` 配成 `team` 时才需要 `@deepseek-ai/dsh-experimental-agent-team-profile`（缺了给可读错误，不影响其它功能）。
 
 3. 可选：需要显式指定协调者时，profile 的 `cordis.patch.yml` 加配置行；不配就自动绑定：
 
@@ -69,10 +68,10 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
    ```
 
    仓库是 Public，直接粘贴地址即可安装（私有仓库才需要先配 SSH key）。
-2. **前置 profile 依赖**：该 profile 的 `dsh.profile.bundles` 里要有 `@deepseek-ai/dsh-experimental-agent-team-profile`（提供 `ctx.agentTeams`）。缺了插件**不会报错**，而是一直停在 `pending (waiting for service: agentTeams)`、整条不激活；web 模板默认没有这个 bundle，团队模板已自带。
-3. **装完必须彻底退出 DSH 再启动**（只关窗口不生效）：宿主进程只在启动时加载插件。
-4. **升级**：先卸载旧版、再安装新版（平台不对非官方插件做原地升级），装完同样彻底重启。
-5. **入口**：纯 dsh 表面左侧栏「插件」下方有「◈ 主会话」，点一下直达主会话对话；Bot 模式下 ds-bot 会隐藏整条侧栏面板列表，此时用会话头「☰ 任务」按钮进任务面板，也可在面板里点「打开主会话」。
+2. **装完必须彻底退出 DSH 再启动**（只关窗口不生效）：宿主进程只在启动时加载插件。
+3. **升级**：先卸载旧版、再安装新版（平台不对非官方插件做原地升级），装完同样彻底重启。
+4. **入口**：纯 dsh 表面左侧栏「插件」下方有「◈ 主会话」，点一下直达主会话对话；Bot 模式下 ds-bot 会隐藏整条侧栏面板列表，此时用会话头「☰ 任务」按钮进任务面板，也可在面板里点「打开主会话」。
+5. **无需额外配置 profile**：`agentTeams` 不是前置（插件惰性获取，缺它照常激活、subagent 派发正常）；只有把 `backend` 配成 `team` 才需要 agent-team profile。
 
 装好后按「真机冒烟清单（隔离 profile）」逐条确认。
 
@@ -280,7 +279,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - **唤醒时序**：通知走 `agent.steer` 直插协调者会话（等价于 TeamService 给 lead 投递时的 `root.steer`），空闲唤醒、忙时 `next-step` 排队；机制证据见 `docs/api-notes.md`。真机忙时排队由维护者冒烟验证。
 - **平台 settlement 通知**：`subagent-settled` 是平台独立链路，不受本插件控制、不写 `notifications`。
 - **headless 收尾竞态**：一次性进程在 5 秒合并窗口内退出时，`steer` 可能抛 `agent initiator scope is disposed`（进程级 initiator 作用域已 dispose），此时消息可能已进 inbox 但没有回合消费，`notifications` 记 `failed` + reason 是正确审计；长驻 desktop/服务进程不受影响。冒烟要在最后一条回报后保持进程活过 `mergeWindowMs` 才能看到 `delivered`。
-- **`inject` 同时要求 `agentTeams` + `subagents`**：两套后端都挂在 `inject` 里，所以缺 `agentTeams` 的 profile（例如**默认的 web 模板**）里插件会一直停在 `pending (waiting for service: agentTeams)`，**不报错、也不激活**，看起来像“装了没用”（真机在隔离 profile 复现过）。装到没有 agent-team 的 profile 时，必须把 `@deepseek-ai/dsh-experimental-agent-team-profile` 加进 `dsh.profile.bundles`（或改造成按 `ctx.get` 惰性判后端、缺哪个给可读错误）。内部 profile 两套都自带，暂不阻塞。
+- **`inject` 只要求 `tools`/`agents`/`systemPrompt`/`subagents`（阶段 4 起）**：`agentTeams` 不在 `inject` 里，按需惰性获取，所以缺 agent-team 的 profile（如默认 web 模板）也能正常激活、subagent 派发可用——真机在无 agent-team 的隔离 profile 验过。只有显式 `backend:'team'` 才需要它：缺服务或 rc.3 缺成员 API 时都返回可读错误「请把 backend 改回 subagent」，不影响其它功能。旧平台（team 仍可用）上若插件先于 agent-team 加载，显式选 `team` 可能落到占位派发器；rc.3 无实际影响。
 - **主会话工具表残留团队工具（平台无干净解，双保险）**：主会话预设能收窄全局工具，但 `spawn_teammate`/`send_message`/`list_agents`/`interrupt_agent`/`wait_agent`/`team_task_*` 是 **agent-scope 自注册**的团队工具，`restrict` 遮不到（`view()` 里 own 无条件可见、`restrictableNames` 不含 own），`ToolsService` 也没有 unregister/remove API；`session.create` 入参只有 `{workspaceId?, cwd?, sessionId?, agentPreset?}`，没有 composition/toolFilter 通道；agent-team 工具组 Config 只有 `interrupt` 一个开关且是 profile 全局（会误伤子会话）。`session.create` 的 schema 也堵死了旁路。因此这一版：preset 层收窄全局工具 + 提示词明确禁止 + **执行层 guard 对主会话硬拦整个 `COORDINATOR_DENY` 名单**（`wait_agent` 返回禁止阻塞提示，其余返回可读拒绝；只对 `settings.main_session_id`/`coordinatorSession` 指向的主会话生效，子会话同名工具放行）。工具表里仍能看到这些残留，属于已知局限；guard 是唯一硬拦截点。
 - **`backend:'team'` 在 rc.3 不可用**：rc.3 的 `agentTeams` 只剩 `state`/`transact` 与团队任务板，`spawnTeammate`/`sendMessage`/`interrupt`/`listMembers` 整体移除。插件在构造 team 派发器时按服务方法探测，缺方法则**插件照常加载**、启动时告警一条，派发/续派/停止返回可读错误「team 后端不可用…请把 backend 改回 subagent」（不再是 `is not a function`）；`catalog()` 也抛同一条错误，让启动对账走「目录不可用 → 跳过 catalog 维度」而不是把 running 任务误标 orphaned。文档与接口保持两版兼容，旧安装（rc.1）仍可选 team。
 - **rc.3 子会话沙箱根取父会话目录（平台缺陷，插件兜一半）**：rc.3 的 `childSessionMeta` 把子会话 `header.cwd` 写成 `parentHeader.cwd`，派发时给的 `cwd` 只记一条 `working-directory` 事件；而 `sandboxPolicy` 的 `workspaceRoot` 只读 `session.header.cwd`。所以 `workspace-write` 下子会话**写不进 target**（`%TEMP%` 属平台豁免例外，之前的真机证据都在 `%TEMP%` 下，不算数）。插件兜法：派发成功后，用 `sandboxPolicy.registerWritableRoot(agents.get(childId).session, targetDir)` 给子会话登记 target 可写根（必须传 agent 的 Session **对象**，平台按对象身份查 WeakMap；同一 `(session 对象, 目录)` 幂等；**settle 不释放**，`task_stop` 与任务进终态时释放）。续派时子会话在发送前通常已 settle/冷恢复、解析不到，**投递成功后**再幂等补注册（恢复后会拿到新的 Session 对象，只有按新对象注册才生效）；注册只追加不替换，终态按会话 id 把新旧对象的 disposer 全部释放。边界：Windows 上只对 harness 文件工具（`read`/`write`/`edit`）生效，**`pwsh`/`bash` 子进程写 target 仍会被拒**；`target` 不要用符号链接（注册只校验绝对路径，执行侧才拒符号链接）。冷恢复/续派首回合与派发首回合一样，有极小窗口可能先写后注册、被拒一次，下一回合 policy 行会带 `Additional writable directories`，可重试。彻底修复需平台把 `meta.cwd` 改成 `create.cwd`，插件不 patch asar。审计字段：`subagent.writable-root`（`sessionId` + `detail.directory`）与 `task.message.sent`（`taskId`、`sessionId`、`detail.targetDir`），按日志时间序即「投递 → 注册」，可与子会话 transcript 首个 `tool/call` 对表。
