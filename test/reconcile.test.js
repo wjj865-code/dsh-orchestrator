@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { openLedger, createTask, getTask, transition } from '../src/ledger.js'
 import { reconcileOrphans } from '../src/reconcile.js'
+import { createDispatcher } from '../src/dispatch.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 const setup = async () => {
@@ -64,6 +65,27 @@ test('catalog 读取失败：只 warn，不把 live 的 running 和 waiting 判�
   assert.match(warnings[0], /目录读取失败/)
   assert.equal(getTask(db, task.id).status, 'running')
   assert.equal(getTask(db, waiting.id).status, 'waiting_user')
+  db.close()
+})
+
+test('team 后端不可用（占位派发器）：catalog 抛错走不可用分支，running 不被误标 orphaned', async () => {
+  const { db, running } = await setup()
+  const task = running('任务', 'c-1')
+  const warnings = []
+  // 真实占位派发器：rc.3 的 agentTeams 只剩 state/transact。
+  const dispatcher = createDispatcher({
+    backend: 'team',
+    agentTeams: { state() {}, transact() {} },
+    getAgent: () => ({ id: 's-1' }),
+    onWarn: message => warnings.push(message),
+  })
+  const result = await reconcileOrphans({
+    db, dispatcher, coordinatorSessionId: 's-1', isLive: () => true, onWarn: message => warnings.push(message),
+  })
+  assert.equal(result.count, 0)
+  assert.equal(getTask(db, task.id).status, 'running')
+  assert.ok(warnings.some(message => /目录读取失败/.test(message)))
+  assert.ok(warnings.some(message => /backend 改回 subagent/.test(message)))
   db.close()
 })
 

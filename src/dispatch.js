@@ -248,7 +248,9 @@ function createUnavailableDispatcher(reason) {
     async sendReliable() { fail() },
     async stop() { fail() },
     async members() { return [] },
-    async catalog() { return [] },
+    // catalog 只有 reconcile 一个调用点：必须抛错让对账走「目录不可用 → known=undefined」分支。
+    // 返回 [] 会被当成「目录为空」，把所有 running/waiting 任务误标 orphaned。
+    async catalog() { fail() },
     has() { return false },
   }
 }

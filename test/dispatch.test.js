@@ -210,9 +210,9 @@ test('team：backend:team 且平台缺能力时插件不炸，派发返回同一
   })
   await assert.rejects(() => dispatcher.spawn({ prompt: 'p' }), /backend 改回 subagent/)
   await assert.rejects(() => dispatcher.send('m1', 'x'), /backend 改回 subagent/)
-  // 目录类查询降级为空，孤儿巡检/面板不被拖死。
+  // members 没人用，降级为空即可；catalog 必须抛错，否则对账会把 running 全误标 orphaned。
   assert.deepEqual(await dispatcher.members(), [])
-  assert.deepEqual(await dispatcher.catalog(), [])
+  await assert.rejects(() => dispatcher.catalog(), /backend 改回 subagent/)
   assert.equal(warnings.length, 1)
   assert.match(warnings[0], /backend 改回 subagent/)
 })
