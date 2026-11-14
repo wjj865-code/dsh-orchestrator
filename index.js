@@ -235,6 +235,7 @@ export async function apply(ctx, rawConfig = {}) {
 
   const toolDisposers = createTools({
     db, dispatcher, queue, notifier, config, coordinatorStatus, logger,
+    workspaces: () => service('workspaceRegistry'),
   }).map(tool => ctx.tools.register(tool))
 
   // 客户端只读路由：鉴权由 connection 服务统一负责；handler 只查台账、不写。

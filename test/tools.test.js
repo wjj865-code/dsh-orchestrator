@@ -55,6 +55,7 @@ async function setup(options = {}) {
     notifier,
     config,
     coordinatorStatus: () => ({ id: 's-1', live: true }),
+    workspaces: options.workspaces,
   }).map(tool => [tool.name, tool]))
   return { db, dispatcher, queue, notifier, tools }
 }
@@ -578,5 +579,68 @@ test('task_create 拒绝不存在的绝对目录', async () => {
   const result = await call(tools, 'task_create', { ...sampleBrief({ title: 'x' }), target: missing })
   assert.match(result, /不存在或不是目录/)
   assert.equal(listTasks(db).length, 0)
+  db.close()
+})
+
+
+test('不传 target：唯一命中工作区 → target_dir 落工作区目录，brief 带【工作目录】', async () => {
+  const target = tempDir()
+  const workspaces = { list: () => [{ id: 'w1', title: '公众号文章', path: target }] }
+  const { db, dispatcher, tools } = await setup({ workspaces })
+  const result = await call(tools, 'task_create', { title: '公众号文章选题整理', goal: '给下一篇做准备', acceptance: ['a'] })
+  assert.match(result, /已派发/)
+  assert.match(result, /目标目录按工作区推断/)
+  const task = listTasks(db)[0]
+  assert.equal(task.target_dir, target)
+  assert.equal(task.brief.target, target)
+  const brief = db.prepare("SELECT rendered FROM messages WHERE kind = 'brief' ORDER BY rowid DESC LIMIT 1").get()
+  assert.match(brief.rendered, /【工作目录】/)
+  assert.equal(dispatcher.calls.length, 1)
+  db.close()
+})
+
+test('不传 target：多命中工作区 → 列候选、不建任务、不派发', async () => {
+  const workspaces = {
+    list: () => [
+      { id: 'a', title: '项目甲', path: tempDir() },
+      { id: 'b', title: '项目乙', path: tempDir() },
+    ],
+  }
+  const { db, dispatcher, tools } = await setup({ workspaces })
+  const result = await call(tools, 'task_create', { title: '项目甲和项目乙的对比', goal: 'g', acceptance: ['a'] })
+  assert.match(result, /匹配到多个工作区/)
+  assert.match(result, /项目甲/)
+  assert.match(result, /项目乙/)
+  assert.equal(listTasks(db).length, 0)
+  assert.equal(dispatcher.calls.length, 0)
+  db.close()
+})
+
+test('不传 target：无命中 → 不写 target_dir，行为与旧版一致', async () => {
+  const workspaces = { list: () => [{ id: 'w1', title: '公众号文章', path: tempDir() }] }
+  const { db, tools } = await setup({ workspaces })
+  const result = await call(tools, 'task_create', { title: '评审 Rust 文章', goal: '找错', acceptance: ['a'] })
+  assert.match(result, /已派发/)
+  assert.doesNotMatch(result, /按工作区推断/)
+  assert.equal(listTasks(db)[0].target_dir, null)
+  db.close()
+})
+
+test('显式 target 优先于工作区推断，且不受标题命中影响', async () => {
+  const explicit = tempDir()
+  const workspaces = { list: () => [{ id: 'w1', title: '公众号文章', path: tempDir() }] }
+  const { db, tools } = await setup({ workspaces })
+  const result = await call(tools, 'task_create', { title: '公众号文章选题', goal: 'g', acceptance: ['a'], target: explicit })
+  assert.match(result, /已派发/)
+  assert.doesNotMatch(result, /按工作区推断/)
+  assert.equal(listTasks(db)[0].target_dir, explicit)
+  db.close()
+})
+
+test('workspaces 服务缺失时按无工作区降级，不崩', async () => {
+  const { db, tools } = await setup()
+  const result = await call(tools, 'task_create', { title: '公众号文章选题', goal: 'g', acceptance: ['a'] })
+  assert.match(result, /已派发/)
+  assert.equal(listTasks(db)[0].target_dir, null)
   db.close()
 })

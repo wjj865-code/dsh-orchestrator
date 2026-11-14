@@ -1,5 +1,6 @@
 // 工具层：只做参数校验、编排与可读文案；规则都在 brief / ledger / state / notify。
 import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
+import { inferWorkspaceTarget } from './workspace-match.js'
 import { canTransition } from './state.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages,
@@ -47,7 +48,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, bindCoordinator, coordinatorStatus, logger }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   const log = (event, fields) => {
@@ -71,6 +72,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
     if (current.id === undefined) return UNBOUND_HINT
     if (exec?.agent?.id !== current.id) return MAIN_ONLY_HINT
     return undefined
+  }
+
+  // 工作区服务用惰性 getter（index 传入），取不到就按「无工作区」降级，不影响派发。
+  const workspaceList = () => {
+    try {
+      const service = typeof workspaces === 'function' ? workspaces() : workspaces
+      const list = service?.list?.()
+      return Array.isArray(list) ? list : []
+    } catch {
+      return []
+    }
   }
 
   const sendFollowup = async (target, message, signal) => {
@@ -128,6 +140,26 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
         log('task.create.rejected', { agentId, detail: { reason: 'target', message: targetError, callId } })
         return `${targetError}。`
       }
+      // 没传 target 时才推断：唯一命中用它的 path 并落 target_dir；多命中列候选、不建任务；无命中仍回指挥舱。
+      let effectiveTarget = args.target
+      let inferred
+      if (String(args.target ?? '').trim() === '') {
+        const match = inferWorkspaceTarget({ title: args.title, goal: args.goal }, workspaceList())
+        if (match.ok === false) {
+          const lines = match.candidates.map(item => `- ${item.title ?? item.path} → ${item.path}`).join('\n')
+          log('task.create.rejected', { agentId, detail: { reason: 'target-ambiguous', candidates: match.candidates.length, callId } })
+          return `匹配到多个工作区，未创建任务。请让用户确认目标目录，再用 target 指定绝对路径：\n${lines}`
+        }
+        if (match.workspace !== undefined) {
+          effectiveTarget = match.workspace.path
+          inferred = match.workspace
+          log('task.create.target-inferred', {
+            agentId,
+            detail: { workspaceId: match.workspace.id, path: match.workspace.path, callId },
+          })
+        }
+      }
+      const brief = effectiveTarget === undefined ? args : { ...args, target: effectiveTarget }
       const current = status()
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
       const title = String(args.title).trim()
@@ -150,9 +182,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
         })
         return `待派发队列已满（${maxQueue} 个），先 task_stop 或等队列消化后再派。`
       }
-      const task = createTask(db, { brief: args, coordinatorSession: current.id ?? coordinatorSession, targetDir: args.target })
-      log('task.create.created', { taskId: task.id, agentId, sessionId: current.id, detail: { title, callId } })
-      const rendered = `【任务编号】${task.id}\n${renderBrief(args)}`
+      const task = createTask(db, { brief, coordinatorSession: current.id ?? coordinatorSession, targetDir: effectiveTarget })
+      log('task.create.created', { taskId: task.id, agentId, sessionId: current.id, detail: { title, callId, targetDir: effectiveTarget ?? null } })
+      const rendered = `【任务编号】${task.id}\n${renderBrief(brief)}`
       addMessage(db, task.id, { kind: 'brief', rendered })
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
       if (current.live === false) {
@@ -163,7 +195,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
       }
       const outcome = await queue.enqueueAndPump(task.id)
       const resultTask = outcome.task
-      const notes = invalidHint()
+      const inferredNote = inferred === undefined ? '' : `（目标目录按工作区推断：${inferred.path}）`
+      const notes = [invalidHint(), inferredNote].filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? '子会话创建失败')
       if (resultTask?.status === 'running') {
         return `任务 ${task.id}「${task.title}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
