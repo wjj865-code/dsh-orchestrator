@@ -920,6 +920,8 @@ export function apply(ctx, config = {}) {
     if (fresh.length === 0) return
     for (const item of fresh) denied.add(item)
     lifts.push(ctx.tools.restrict({ deny: fresh }))
+    // 审计：记录实际被 deny 的工具，后续 tools/change 的批次也逐条记。
+    ctx.logger?.info?.(`preset-tools: deny ${fresh.join(', ')}`)
   }
   const off = ctx.on('tools/change', sync)
   ctx.effect(() => () => {
@@ -952,6 +954,15 @@ test('后注册的全局工具在 tools/change 后补 deny，且不重复', () =
 
 test('空 allow 直接报错', () => {
   assert.throws(() => apply(makeCtx(['read']), {}), /allow/)
+})
+
+test('mount 后动态注册的工具被 deny，协调者工具表不增加', () => {
+  const ctx = makeCtx(['task_create', 'read'])
+  apply(ctx, { allow: ['task_create'] })
+  ctx.setGlobals(['task_create', 'read', 'exec_shell'])
+  ctx.fire()
+  assert.deepEqual(ctx.calls.at(-1), { deny: ['exec_shell'] })
+  assert.deepEqual(ctx.visible(['ask_user_question']), ['ask_user_question', 'task_create'])
 })
 ```
 

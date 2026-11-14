@@ -31,6 +31,8 @@ export function apply(ctx, config = {}) {
     if (fresh.length === 0) return
     for (const item of fresh) denied.add(item)
     lifts.push(ctx.tools.restrict({ deny: fresh }))
+    // 审计：记下实际被 deny 的工具；后续 tools/change 补的批次也逐条记录。
+    ctx.logger?.info?.(`preset-tools: deny ${fresh.join(', ')}`)
   }
   const off = ctx.on('tools/change', sync)
   ctx.effect(() => () => {

@@ -9,6 +9,7 @@ const makeCtx = (globals = []) => {
   const calls = []
   const lifts = []
   const cleanups = []
+  const logLines = []
   const ctx = {
     tools: {
       view: () => ({ restrictableNames: new Set(names) }),
@@ -31,10 +32,17 @@ const makeCtx = (globals = []) => {
       cleanups.push(fn())
       return () => {}
     },
+    logger: { info: message => logLines.push(message) },
     setGlobals: next => { names = [...next] },
     fire: () => { for (const listener of [...listeners]) listener() },
     calls,
     lifts,
+    logLines,
+    // 协调者最终能看到的工具表：全局工具去掉被 deny 的，加上预设自有工具。
+    visible: (presetOwned = []) => {
+      const denied = new Set(calls.flatMap(call => call.deny ?? []))
+      return [...names.filter(item => !denied.has(item)), ...presetOwned].sort()
+    },
     listenerCount: () => listeners.length,
     cleanup: () => { for (const fn of cleanups) fn() },
   }
@@ -46,6 +54,27 @@ test('preset-tools 用 deny 补集保留 allow，不把 allow 交给 restrict', 
   apply(ctx, { allow: ['task_create'] })
   assert.deepEqual(ctx.calls, [{ deny: ['read', 'bash'] }])
   assert.equal(name, 'dsh-orchestrator-preset-tools')
+})
+
+test('mount 后动态注册的全局工具被 deny，协调者工具表不增加', () => {
+  const ctx = makeCtx(['task_create', 'read'])
+  apply(ctx, { allow: ['task_create'] })
+  assert.deepEqual(ctx.visible(['ask_user_question']), ['ask_user_question', 'task_create'])
+  // 模拟别的插件后注册一个新工具（不写死工具名，按「不在 allow 的全局工具」判定）。
+  ctx.setGlobals(['task_create', 'read', 'exec_shell'])
+  ctx.fire()
+  assert.deepEqual(ctx.calls.at(-1), { deny: ['exec_shell'] })
+  assert.deepEqual(ctx.visible(['ask_user_question']), ['ask_user_question', 'task_create'])
+})
+
+test('mount 时一次性 deny 已存在的全部非 allow 全局工具，并写审计日志', () => {
+  const ctx = makeCtx(['task_create', 'read', 'bash', 'glob'])
+  apply(ctx, { allow: ['task_create'] })
+  assert.deepEqual(ctx.calls, [{ deny: ['read', 'bash', 'glob'] }])
+  assert.deepEqual(ctx.logLines, ['preset-tools: deny read, bash, glob'])
+  ctx.setGlobals(['task_create', 'read', 'bash', 'glob', 'web_search'])
+  ctx.fire()
+  assert.deepEqual(ctx.logLines.at(-1), 'preset-tools: deny web_search')
 })
 
 test('后注册的全局工具在 tools/change 后补 deny，且不重复', () => {

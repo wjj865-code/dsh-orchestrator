@@ -39,8 +39,9 @@
 | `restrict({ deny: ['read'] })`（deny 补集） | agent 视图 = `ask_user_question` + `task_create`，`read` 被遮 |
 | 之后全局注册 `show_view` | `tools/change` 监听补 deny，agent 视图随即不含 `show_view` |
 
-- 结论：预设层的「allow 名单」只能用 **deny 补集**实现，见根目录 `preset-tools.js`：`allow` 是显式保留名单；mount 时和每次 `tools/change` 只 deny 新出现的、不在 allow 里的全局工具。`run_code`（PTC 保留传输）平台禁止 deny，跳过并在文档标注。
+- 结论：预设层的「allow 名单」只能用 **deny 补集**实现，见根目录 `preset-tools.js`：`allow` 是显式保留名单；mount 时一次性 deny 掉所有已注册、不在 allow 里的全局工具，之后每次 `tools/change` 只 deny 新出现的同类工具（按「不在 allow 的全局工具」判定，不写死工具名）。每批实际被 deny 的工具都写 `preset-tools: deny …` 进日志，便于审计。`run_code`（PTC 保留传输）平台禁止 deny，跳过并在文档标注。
 - 时序：预设是 eager 挂载，`task_*` 可能还没注册；deny 补集天然处理顺序——只 deny 已出现的全局工具，allow 名单里的工具后注册也不会被 deny，不硬抛、不把协调者削成空表。
+- 覆盖用例（`test/preset-tools.test.js`，8/8 PASS）：`mount 后动态注册的全局工具被 deny，协调者工具表不增加`、`mount 时一次性 deny 已存在的全部非 allow 全局工具，并写审计日志`、`后注册的全局工具在 tools/change 后补 deny，且不重复`。
 - `ask_user_question` 由预设行 `tool-ask-user` 自己注册，**不放进 allow**（放进去会 unknown name 抛错）。
 
 **退化方案（若 worker 栈复制不可接受）**：不把 restrict 放进 preset scope，只在**主会话自己的 agent scope** 装 `agent.ctx.tools.restrict`（创建后 / `agent/created`）。子会话 scope 链是「child agent → preset scope」，不含父 agent 自己的 layer，所以不会漏给子会话；代价是退回「运行期收窄」，不是预设层。
