@@ -72,6 +72,40 @@ test('包含消歧不能吞掉同名工作区（key 完全相同仍走候选）'
   assert.deepEqual(result.candidates.map(item => item.id), ['n1', 'n2'])
 })
 
+test('通用词末段被黑：指挥舱（末段 workspace）与 default-workspace 不再歧义', () => {
+  const workspaces = [
+    ws('w-ms', '指挥舱', 'C:/Users/me/.dsh/state/orchestrator/workspace'),
+    ws('w-dw', 'default-workspace', 'D:/default-workspace'),
+  ]
+  // 真机原案：任务标题里带 default-workspace。
+  const result = inferWorkspaceTarget({ title: 'default-workspace 真机推断验证', goal: '' }, workspaces)
+  assert.equal(result.ok, true)
+  assert.equal(result.workspace.id, 'w-dw')
+})
+
+test('通用词末段被黑：只写 workspace 这类通用词不再弹候选（无命中回指挥舱）', () => {
+  const workspaces = [
+    ws('w-ms', '指挥舱', 'C:/Users/me/.dsh/state/orchestrator/workspace'),
+    ws('w-dw', 'default-workspace', 'D:/default-workspace'),
+  ]
+  const result = inferWorkspaceTarget({ title: 'workspace 清理一下', goal: '顺手整理' }, workspaces)
+  assert.equal(result.ok, true)
+  assert.equal(result.workspace, undefined)
+})
+
+test('通用词末段被黑：末段为 documents 的工作区不参与路径末段匹配', () => {
+  const workspaces = [ws('w-docs', '我的资料', 'C:/Users/me/documents')]
+  const result = inferWorkspaceTarget({ title: 'documents 归档', goal: '' }, workspaces)
+  assert.equal(result.ok, true)
+  assert.equal(result.workspace, undefined)
+})
+
+test('通用词末段被黑不影响显示名：title 叫 app 的工作区仍能精确/子串命中', () => {
+  const workspaces = [ws('w-app', 'app', 'C:/x/app')]
+  assert.equal(inferWorkspaceTarget({ title: 'app', goal: '' }, workspaces).workspace.id, 'w-app')
+  assert.equal(inferWorkspaceTarget({ title: 'app 部署', goal: '' }, workspaces).workspace.id, 'w-app')
+})
+
 test('无命中返回 ok:true 且 workspace 为空（落指挥舱）', () => {
   const result = inferWorkspaceTarget({ title: '无关任务', goal: '随便干点' }, WORKSPACES)
   assert.equal(result.ok, true)

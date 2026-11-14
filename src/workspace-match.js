@@ -16,13 +16,17 @@ export function pathTail(path) {
   return parts.length === 0 ? '' : parts[parts.length - 1]
 }
 
+// 通用词末段不参与「路径末段」匹配（显示名照常参与），否则 `...\workspace` 的 workspace
+// 会把任何提到 workspace 的任务都算命中。按归一化后的末段**全等**判断，不误伤 `default-workspace`。
+const GENERIC_TAILS = new Set(['workspace', 'documents', 'document', 'desktop', 'default', 'src', 'app', 'tmp'])
+
 // 全等匹配用全部非空键（2 字 title 全等也应命中）；子串匹配才用长度过滤防误伤。
 const keysOf = workspace => {
   const keys = new Set()
-  for (const value of [workspace?.title, pathTail(workspace?.path)]) {
-    const key = normalize(value)
-    if (key !== '') keys.add(key)
-  }
+  const titleKey = normalize(workspace?.title)
+  if (titleKey !== '') keys.add(titleKey)
+  const tailKey = normalize(pathTail(workspace?.path))
+  if (tailKey !== '' && !GENERIC_TAILS.has(tailKey)) keys.add(tailKey)
   return keys
 }
 

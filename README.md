@@ -100,11 +100,13 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - 显式传 `target`：必须是已存在的绝对目录，行为不变（相对/不存在/非目录都拒绝）。
 - 不传 `target`：用 `title` + `goal` 匹配 `workspaceRegistry.list()` 的工作区**显示名（`title`）与路径末段**，大小写不敏感；纯 ASCII 键至少 3 个字母数字、CJK 键至少 2 字，避免 `ai`/`main` 误命中。
 - 精确名（与 title 或 goal 全等）优先，且只在精确命中集合里取结果；否则看子串层。
+- **通用词末段黑名单**：路径末段归一化后全等 `workspace / documents / document / desktop / default / src / app / tmp` 时不参与路径末段匹配（显示名照常参与），避免「指挥舱」的末段 `workspace` 把任何提到 workspace 的任务都算命中；`default-workspace` 这类更具体的末段不受影响。
+- **子串层包含消歧**：某个命中的全部匹配文本都被另一命中的某个文本**严格包含**时，丢掉更泛的那条（`orchestrator ⊂ dsh-orchestrator` 只留更具体的）；key 相等（两个同名工作区）或互不包含时都保留，仍走多命中候选。
 - **唯一命中**：直接用该工作区 `path`，同时写入 `tasks.target_dir`（面板显示、artifacts 相对路径都靠它）。
 - **多命中**：不建任务、不猜测，返回「匹配到多个工作区」+ 候选 `title → path`，请协调者让用户用 `target` 指定绝对路径。
 - **无命中**：不写 `target_dir`，**沿用主会话所在目录**（通常是指挥舱；用 `coordinatorSession` 显式覆盖时跟随该会话目录），与旧行为一致。
 - `workspaceRegistry` 不可用时按无工作区降级，不影响派发。
-- **已知取舍（真机验证过的误伤）**：路径末段不做词性判断，像 `workspace` 这类通用末段会让「指挥舱 workspace」和 `default-workspace` 同时命中，本应唯一的命中变成候选列表（「不猜」是规则要求，不算错）。需要唯一命中时请显式给 `target`；后续若要收紧，可加通用词排除或整词匹配，这一版不做。
+- **已知取舍**：黑名单是固定小词表，不按语言/词频扩展；末段是表外通用词时仍可能多命中。此时按「不猜」给候选，用户用显式 `target` 即可；要收紧就往表里加词，不在命中逻辑里做猜测。
 
 **交付产物**（`task_report`）：
 
