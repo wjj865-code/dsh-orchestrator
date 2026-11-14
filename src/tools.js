@@ -119,9 +119,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   }
 
   // targetDir 用于续派前幂等补注册 target 可写根（resume 后 session 对象会换，旧授权不生效）。
-  const sendFollowup = async (target, message, signal, targetDir) => {
-    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir)
-    return dispatcher.send(target, message, signal, targetDir)
+  const sendFollowup = async (target, message, signal, targetDir, taskId) => {
+    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir, taskId)
+    return dispatcher.send(target, message, signal, targetDir, taskId)
   }
   // 任务进入终态才释放可写根；waiting_user/waiting_auth 保留（续派还要用）。
   const releaseTaskSession = task => {
@@ -303,7 +303,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const message = args.message ?? ''
       addMessage(db, task.id, { kind: 'followup', rendered: message })
       try {
-        await sendFollowup(task.target, message, exec?.signal, task.target_dir)
+        await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id)
       } catch (error) {
         const reason = error?.message ?? String(error)
         addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })

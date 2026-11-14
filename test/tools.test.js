@@ -31,8 +31,8 @@ function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity 
       return { id: `s-${counter}`, name: name ?? `w-${counter}`, sessionId: `s-${counter}`, target: `s-${counter}` }
     },
     async send(target, message) { calls.push(['send', target, message]) },
-    async sendReliable(target, message, signal, targetDir) {
-      calls.push(['sendReliable', target, message, signal, targetDir])
+    async sendReliable(target, message, signal, targetDir, taskId) {
+      calls.push(['sendReliable', target, message, signal, targetDir, taskId])
       if (failSend) throw new Error('投递超时')
       return { messageId: 'm-1' }
     },
@@ -357,6 +357,7 @@ test('task_message：续派把 target_dir 传给 sendReliable（续派前补注�
   await call(tools, 'task_message', { task_id: task.id, message: '继续' })
   const call2 = dispatcher.calls.find(item => item[0] === 'sendReliable')
   assert.equal(call2[4], target)
+  assert.equal(call2[5], task.id)
   db.close()
 })
 

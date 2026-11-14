@@ -304,10 +304,14 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       return { id: activation.childId, name: spec.label, sessionId: activation.childId, target: activation.childId }
     },
-    async send(target, message, signal, targetDir) {
+    async send(target, message, signal, targetDir, taskId) {
       const sent = await subagents.sendMessage(requireAgent(), target, [{ type: 'text', text: message }], {
         signal: signal ?? new AbortController().signal,
       })
+      // 投递成功先记事件（代码顺序：投递 → 注册），日志时间序可自证「注册在投递之后」。
+      try {
+        onEvent('task.message.sent', { taskId, sessionId: target, detail: { targetDir: targetDir ?? null } })
+      } catch { /* 审计事件失败不能外溢 */ }
       // 冷恢复/续派时子会话在发送前还取不到，sendMessage 之后才 resolve 出**新的 Session 对象**；
       // 投递成功后再幂等补注册（失败路径不注册；失败只 warn，不影响投递结果）。
       try {
@@ -317,11 +321,11 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       return sent
     },
-    async sendReliable(target, message, signal, targetDir) {
+    async sendReliable(target, message, signal, targetDir, taskId) {
       let lastError
       for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
         try {
-          return await this.send(target, message, signal, targetDir)
+          return await this.send(target, message, signal, targetDir, taskId)
         } catch (error) {
           lastError = error
           if (attempt < retryDelaysMs.length) {

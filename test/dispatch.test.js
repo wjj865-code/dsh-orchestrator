@@ -173,6 +173,7 @@ test('rc.3 可写根：续派的 Session 在 sendMessage 之后才恢复，也�
   // sendMessage 才把会话 resume 成新的 Session 对象；只靠发送前注册会漏，第二轮 write 被拒。
   const order = []
   const registrations = []
+  const events = []
   const sessionsById = new Map()
   const warnings = []
   let resumed
@@ -208,6 +209,7 @@ test('rc.3 可写根：续派的 Session 在 sendMessage 之后才恢复，也�
     agents: () => ({ get: id => sessionsById.has(id) ? { id, session: sessionsById.get(id) } : undefined }),
     sandboxPolicy: () => sandboxPolicy,
     onWarn: message => warnings.push(message),
+    onEvent: (event, fields) => events.push([event, fields]),
     sessionWaitMs: 0,
   })
   const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
@@ -216,14 +218,23 @@ test('rc.3 可写根：续派的 Session 在 sendMessage 之后才恢复，也�
   // 派发阶段子会话没进表会 warn 属正常；续派前的 Expected miss 不告警。
   warnings.length = 0
   resumed = { id: member.id, header: { cwd: 'C:\\work' } }
-  await dispatcher.send(member.id, '续派', undefined, 'C:/target')
+  await dispatcher.send(member.id, '续派', undefined, 'C:/target', 't-1')
   assert.deepEqual(warnings, [])
   assert.deepEqual(order, ['send', 'register'])
   assert.equal(registrations.length, 1)
   assert.strictEqual(registrations[0][0], resumed)
   assert.equal(registrations[0][1], 'C:/target')
+  // 审计事件：投递成功先记 task.message.sent，再记 writable-root，时间序可自证「注册在投递之后」。
+  const sentEvent = events.find(([event]) => event === 'task.message.sent')
+  assert.equal(sentEvent[1].taskId, 't-1')
+  assert.equal(sentEvent[1].sessionId, member.id)
+  assert.equal(sentEvent[1].detail.targetDir, 'C:/target')
+  assert.deepEqual(
+    events.map(([event]) => event).filter(event => event === 'task.message.sent' || event === 'subagent.writable-root'),
+    ['task.message.sent', 'subagent.writable-root'],
+  )
   // 第二次投递（sendReliable 路径同样走发送后补注册）：同一对象+目录不重复注册。
-  await dispatcher.sendReliable(member.id, '再一次', undefined, 'C:/target')
+  await dispatcher.sendReliable(member.id, '再一次', undefined, 'C:/target', 't-1')
   assert.deepEqual(order, ['send', 'register', 'send'])
   assert.equal(registrations.length, 1)
 })
