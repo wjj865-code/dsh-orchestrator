@@ -48,6 +48,30 @@ test('子串多命中：列候选、不猜，按 title 稳定排序', () => {
   assert.deepEqual(result.candidates.map(item => item.path), ['C:/x/项目甲', 'C:/x/项目乙'])
 })
 
+test('包含消歧：被更具体名字包含的泛命中丢掉（orchestrator ⊂ dsh-orchestrator）', () => {
+  const workspaces = [
+    ws('broad', 'orchestrator', 'C:/x/orchestrator'),
+    ws('specific', 'dsh-orchestrator', 'C:/x/dsh-orchestrator'),
+  ]
+  const result = inferWorkspaceTarget({ title: 'dsh-orchestrator 重构', goal: '' }, workspaces)
+  assert.equal(result.ok, true)
+  assert.equal(result.workspace.id, 'specific')
+})
+
+test('包含消歧不能吞掉真正多命中：互不包含仍列候选', () => {
+  const workspaces = [ws('a', 'alpha', 'C:/x/alpha'), ws('b', 'beta', 'C:/x/beta')]
+  const result = inferWorkspaceTarget({ title: 'alpha 和 beta 一起改', goal: '' }, workspaces)
+  assert.equal(result.ok, false)
+  assert.deepEqual(result.candidates.map(item => item.id), ['a', 'b'])
+})
+
+test('包含消歧不能吞掉同名工作区（key 完全相同仍走候选）', () => {
+  const workspaces = [ws('n1', '同名项目', 'C:/a/同名项目'), ws('n2', '同名项目', 'D:/b/同名项目')]
+  const result = inferWorkspaceTarget({ title: '同名项目 排期', goal: '' }, workspaces)
+  assert.equal(result.ok, false)
+  assert.deepEqual(result.candidates.map(item => item.id), ['n1', 'n2'])
+})
+
 test('无命中返回 ok:true 且 workspace 为空（落指挥舱）', () => {
   const result = inferWorkspaceTarget({ title: '无关任务', goal: '随便干点' }, WORKSPACES)
   assert.equal(result.ok, true)

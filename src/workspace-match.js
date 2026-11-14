@@ -45,11 +45,24 @@ export function inferWorkspaceTarget(brief = {}, workspaces = []) {
   const exact = []
   const substring = []
   for (const entry of entries) {
-    if (fields.some(field => entry.keys.has(field))) exact.push(entry)
-    else if (hay !== '' && [...entry.keys].some(key => isMatchable(key) && hay.includes(key))) substring.push(entry)
+    const equal = fields.filter(field => entry.keys.has(field))
+    if (equal.length > 0) {
+      exact.push({ ...entry, hits: new Set(equal) })
+      continue
+    }
+    if (hay === '') continue
+    const hits = new Set([...entry.keys].filter(key => isMatchable(key) && hay.includes(key)))
+    if (hits.size > 0) substring.push({ ...entry, hits })
   }
 
-  const pick = exact.length > 0 ? exact : substring
+  // 包含消歧（只在子串层）：某个命中的**全部**匹配文本都被另一命中的某个文本严格包含 → 它是更泛的那条，丢掉。
+  // 严格包含要求 key 不相等，所以两个同名工作区（key 相同）都保留、仍走候选。
+  const strictlyContainedIn = (entry, other) => [...entry.hits].every(key =>
+    [...other.hits].some(otherKey => otherKey !== key && otherKey.includes(key)))
+  const pick = exact.length > 0
+    ? exact
+    : substring.filter((entry, index) => !substring.some((other, otherIndex) =>
+      otherIndex !== index && strictlyContainedIn(entry, other)))
   if (pick.length === 0) return { ok: true, workspace: undefined }
   if (pick.length === 1) return { ok: true, workspace: pick[0].workspace }
   const candidates = pick
