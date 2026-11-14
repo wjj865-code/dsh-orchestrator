@@ -106,7 +106,7 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
   }
 }
 
-export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, sessionWaitMs = 5000 }) {
+export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000 }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
   const requireAgent = () => {
     const current = currentAgent()
@@ -122,6 +122,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     return current.session?.id ?? current.id
   }
   const live = new Map()
+  // 只读子任务：派发时把 childId 记下来，agent/created 一到就设沙箱（压首回合窗口）。
+  const readOnlyChildren = new Set()
   // 服务按调用时惰性取：插件加载顺序不保证 agents/sessions/sandboxPolicy 已就绪。
   const serviceOf = value => typeof value === 'function' ? value() : value
   // 可写根授权按 targetId → (Session 对象 → (目录 → disposer)) 记：同一会话 resume 前后可能有多个会话对象，
@@ -149,6 +151,35 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     const childAgent = serviceOf(agents)?.get?.(childId)
     if (childAgent?.session !== undefined) return childAgent.session
     return serviceOf(sessions)?.get?.(childId)
+  }
+  // 只读模式：平台唯一写入口就是 session.append('sandbox/mode', { mode:'read-only' })
+  // （导出的 setSandboxMode 只是它的薄包装）。只写目标 child session，不动全局默认与父会话。
+  // 投影已有 read-only 时跳过：续派/重启 replay 都会保留，不需要重复 append。
+  const ensureReadOnly = (childId, sessionHint) => {
+    try {
+      const session = sessionHint ?? childSessionOf(childId)
+      if (session === undefined) return false
+      const policy = serviceOf(sandboxPolicy)
+      if (policy?.overrideOf?.(session) === 'read-only') return false
+      if (typeof session.append !== 'function') return false
+      session.append('sandbox/mode', { mode: 'read-only' })
+      onEvent('subagent.read-only', { sessionId: childId, detail: { sessionId: session.id ?? childId } })
+      return true
+    } catch (error) {
+      onWarn(`dsh-orchestrator: 设置只读沙箱失败：${errorText(error)}`)
+      return false
+    }
+  }
+  // agent/created 早于首个模型请求，能压掉「首回合还没设只读」的窗口。
+  if (typeof onAgentCreated === 'function') {
+    try {
+      onAgentCreated(created => {
+        if (created?.id === undefined || !readOnlyChildren.has(created.id)) return
+        ensureReadOnly(created.id, created.session)
+      })
+    } catch (error) {
+      onWarn(`dsh-orchestrator: 订阅 agent/created 失败：${errorText(error)}`)
+    }
   }
   // activation 返回时子 Session 可能还没进会话表：挂一次 session/created 等同一个 childId；
   // 超时只 warn、不重试，也不阻塞派发。判同只看 id，不看 header.cwd（那正是坏的字段）。
@@ -229,6 +260,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       result => {
         try {
           live.delete(activation.childId)
+          readOnlyChildren.delete(activation.childId)
           onEvent('subagent.settled', {
             sessionId: activation.childId,
             detail: { stopReason: result?.stopReason ?? null },
@@ -238,6 +270,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       error => {
         try {
           live.delete(activation.childId)
+          readOnlyChildren.delete(activation.childId)
           onEvent('subagent.failed', { sessionId: activation.childId, detail: { error: errorText(error) } })
         } catch { /* 结算事件失败不能外溢 */ }
       },
@@ -249,7 +282,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, label, prompt, signal, taskId, cwd }) {
+    async spawn({ name, label, prompt, signal, taskId, cwd, readOnly }) {
       const parent = requireAgent()
       // agent 已创建但 session 还没挂上时，平台 startActivation 会在 parent.session 上取 .id 抛 TypeError；
       // 这里先给可读错误，并由 queue 当成可重试（等会话就绪）。
@@ -258,6 +291,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       if (parent.id === undefined) throw new Error('协调者会话缺少 id，稍后重试')
       const childId = randomUUID()
+      // 只读任务：在开始创建前记下 childId，agent/created 时立刻设沙箱；激活返回后再补一次幂等设置。
+      if (readOnly === true) readOnlyChildren.add(childId)
       // 目标目录优先；没给就沿用父会话 cwd（保持旧行为）。
       const baseCwd = cwd ?? parent.session?.header?.cwd
       const activationPrompt = [{ type: 'text', text: String(prompt ?? '') }]
@@ -296,15 +331,16 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         detail: { childId: activation.childId, messageId: activation.messageId ?? null, provider },
       })
       track(activation)
-      // 目标目录才需要补可写根（没给 cwd 时 cwd 就是父会话目录，平台根本来就能写）。
-      if (typeof cwd === 'string' && cwd !== '') {
+      if (readOnly === true) ensureReadOnly(activation.childId)
+      // 目标目录才需要补可写根；只读任务绝不能注册可写根（否则「只读」有后门）。
+      if (readOnly !== true && typeof cwd === 'string' && cwd !== '') {
         void ensureWritableRoot(activation.childId, cwd, { wait: true }).catch(error => {
           onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
         })
       }
       return { id: activation.childId, name: spec.label, sessionId: activation.childId, target: activation.childId }
     },
-    async send(target, message, signal, targetDir, taskId) {
+    async send(target, message, signal, targetDir, taskId, readOnly) {
       const sent = await subagents.sendMessage(requireAgent(), target, [{ type: 'text', text: message }], {
         signal: signal ?? new AbortController().signal,
       })
@@ -312,20 +348,24 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       try {
         onEvent('task.message.sent', { taskId, sessionId: target, detail: { targetDir: targetDir ?? null } })
       } catch { /* 审计事件失败不能外溢 */ }
+      // 只读任务续派：resume 后按同一会话日志仍应保留 read-only；这里幂等补一次（已有则跳过）。
+      if (readOnly === true) ensureReadOnly(target)
       // 冷恢复/续派时子会话在发送前还取不到，sendMessage 之后才 resolve 出**新的 Session 对象**；
       // 投递成功后再幂等补注册（失败路径不注册；失败只 warn，不影响投递结果）。
-      try {
-        await ensureWritableRoot(target, targetDir)
-      } catch (error) {
-        onWarn(`dsh-orchestrator: 续派后补注册可写根失败：${errorText(error)}`)
+      if (readOnly !== true) {
+        try {
+          await ensureWritableRoot(target, targetDir)
+        } catch (error) {
+          onWarn(`dsh-orchestrator: 续派后补注册可写根失败：${errorText(error)}`)
+        }
       }
       return sent
     },
-    async sendReliable(target, message, signal, targetDir, taskId) {
+    async sendReliable(target, message, signal, targetDir, taskId, readOnly) {
       let lastError
       for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
         try {
-          return await this.send(target, message, signal, targetDir, taskId)
+          return await this.send(target, message, signal, targetDir, taskId, readOnly)
         } catch (error) {
           lastError = error
           if (attempt < retryDelaysMs.length) {

@@ -61,9 +61,120 @@ function fakeSubagents({ failStart = false, failTimes = 0, deferred = false } = 
   }
 }
 
-const agent = { id: 'a1', session: { id: 's1', header: { cwd: 'C:\\work' } } }
+// 只读沙箱环境：session.append 记录事件；overrideOf 读已设模式；可选择性在 startActivation 内触发 agent/created。
+function readOnlyEnv({ callHookOnStart = false, modeOverride } = {}) {
+  const appends = []
+  const registrations = []
+  const modes = new Map()
+  const sessionsById = new Map()
+  const hooks = []
+  const subagents = {
+    async startActivation(spec) {
+      const session = {
+        id: spec.childId,
+        header: { cwd: 'C:\\work' },
+        append(event, payload) {
+          appends.push([spec.childId, event, payload])
+          if (event === 'sandbox/mode') modes.set(spec.childId, payload.mode)
+        },
+      }
+      sessionsById.set(spec.childId, session)
+      if (callHookOnStart) {
+        await tick()
+        for (const hook of hooks) hook({ id: spec.childId, session })
+      }
+      return { childId: spec.childId, messageId: 'm1', result: Promise.resolve({}), dispose: async () => {} }
+    },
+    async sendMessage() { return 'msg' },
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const sandboxPolicy = {
+    overrideOf: session => modeOverride !== undefined ? modeOverride : modes.get(session.id),
+    registerWritableRoot(session, dir) {
+      registrations.push([session, dir])
+      return () => {}
+    },
+  }
+  return {
+    appends,
+    registrations,
+    modes,
+    sessionsById,
+    hooks,
+    subagents,
+    services: {
+      agents: () => ({ get: id => sessionsById.has(id) ? { id, session: sessionsById.get(id) } : undefined }),
+      sessions: () => ({ get: id => sessionsById.get(id) }),
+      sandboxPolicy: () => sandboxPolicy,
+      onAgentCreated: handler => { hooks.push(handler) },
+    },
+  }
+}
+
+test('readOnly：派发时 append sandbox/mode=read-only，且不注册 target 可写根', async () => {
+  const env = readOnlyEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', readOnly: true })
+  await tick()
+  const modeEvents = env.appends.filter(([, event]) => event === 'sandbox/mode')
+  assert.equal(modeEvents.length, 1)
+  assert.deepEqual(modeEvents[0][2], { mode: 'read-only' })
+  assert.equal(modeEvents[0][0], member.id)
+  assert.deepEqual(env.registrations, [])
+})
+
+test('readOnly：agent/created 先设（首回合窗口），激活后幂等不重复', async () => {
+  const env = readOnlyEnv({ callHookOnStart: true })
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  await dispatcher.spawn({ prompt: 'p', readOnly: true })
+  await tick()
+  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 1)
+})
+
+test('readOnly：投影已是 read-only 时跳过 append；非只读任务一次都不设', async () => {
+  const env = readOnlyEnv({ modeOverride: 'read-only' })
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  await dispatcher.spawn({ prompt: 'p', readOnly: true })
+  await tick()
+  assert.equal(env.appends.length, 0)
+
+  const normal = readOnlyEnv()
+  const plain = createSubagentDispatcher({ subagents: normal.subagents, agent, ...normal.services, sessionWaitMs: 0 })
+  await plain.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  assert.deepEqual(normal.appends, [])
+  assert.equal(normal.registrations.length, 1, '非只读任务仍注册可写根')
+})
+
+test('readOnly：续派仍是只读（新 Session 对象按需补设；非只读不设）', async () => {
+  const env = readOnlyEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const member = await dispatcher.spawn({ prompt: 'p', readOnly: true })
+  await tick()
+  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 1)
+  await dispatcher.send(member.id, '继续', undefined, undefined, 't-1', true)
+  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 1, '同一会话已有只读不重复')
+
+  // resume：新 Session 对象且投影暂未读回模式（如冷恢复早期）→ 续派时补设。
+  env.modes.delete(member.id)
+  const resumed = { id: member.id, header: { cwd: 'C:\\work' }, append(event, payload) { env.appends.push([member.id, event, payload]) } }
+  env.sessionsById.set(member.id, resumed)
+  await dispatcher.send(member.id, '再续', undefined, undefined, 't-1', true)
+  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 2)
+})
+
+test('readOnly：缺服务/append 失败不炸，不影响派发', async () => {
+  const env = readOnlyEnv()
+  const bare = createSubagentDispatcher({ subagents: env.subagents, agent, onWarn: () => {} })
+  const member = await bare.spawn({ prompt: 'p', cwd: 'C:/target', readOnly: true })
+  assert.ok(member.id)
+})
+
+
 const team = options => createDispatcher({ backend: 'team', ...options })
 const sub = options => createDispatcher({ backend: 'subagent', ...options })
+const agent = { id: 'a1', session: { id: 's1', header: { cwd: 'C:\\work' } } }
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
 // rc.3 可写根：agents.get(childId).session 返回的对象必须和传给 registerWritableRoot 的是同一引用。

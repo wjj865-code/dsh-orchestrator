@@ -66,6 +66,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
             signal: abort.signal,
             taskId: id,
             cwd: task.target_dir ?? undefined,
+            readOnly: task.read_only === true,
           })
         } catch (error) {
           if (retryable(error)) {

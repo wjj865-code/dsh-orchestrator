@@ -18,8 +18,8 @@ function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity 
     release(count = 1) { spawned = Math.max(0, spawned - count) },
     releaseWritableRoots(target) { grantReleases.push(target) },
     slug(title) { counter += 1; return `task-${counter}` },
-    async spawn({ name, prompt, signal, cwd }) {
-      calls.push(['spawn', name, prompt, signal, cwd])
+    async spawn({ name, prompt, signal, cwd, readOnly }) {
+      calls.push(['spawn', name, prompt, signal, cwd, readOnly])
       if (failSpawn) throw new Error('子会话创建失败')
       if (spawned >= limit) {
         const error = new Error('subagent limit reached (active child limit)')
@@ -376,7 +376,7 @@ test('对外文案：task_create/list/status 带 id，续派/停止/回报回执
 })
 
 test('task_create readOnly：显式 true 落库并进 brief；字符串/默认都不算只读', async () => {
-  const { db, tools } = await setup()
+  const { db, dispatcher, tools } = await setup()
   const normal = await call(tools, 'task_create', sampleBrief({ title: '普通任务' }))
   assert.match(normal, /已派发/)
   const plain = listTasks(db).find(task => task.title === '普通任务')
@@ -388,6 +388,8 @@ test('task_create readOnly：显式 true 落库并进 brief；字符串/默认�
   const ro = listTasks(db).find(task => task.title === '只读任务')
   assert.equal(ro.read_only, true)
   assert.equal(ro.brief.readOnly, true)
+  const spawns = dispatcher.calls.filter(item => item[0] === 'spawn')
+  assert.equal(spawns.filter(item => item[5] === true).length, 1, '只有只读任务派发时 readOnly:true')
 
   const sneaky = await call(tools, 'task_create', { ...sampleBrief({ title: '字符串真值' }), readOnly: 'true' })
   assert.match(sneaky, /已派发/)

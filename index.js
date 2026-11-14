@@ -191,6 +191,8 @@ export async function apply(ctx, rawConfig = {}) {
     sessions: () => ctx.get?.('sessions'),
     sandboxPolicy: () => ctx.get?.('sandboxPolicy'),
     onSessionCreated: handler => ctx.on('session/created', handler),
+    // 只读子任务：agent/created 一到就设沙箱，压掉首回合窗口。
+    onAgentCreated: handler => ctx.on('agent/created', ({ agent } = {}) => handler(agent)),
     onEvent: (event, fields) => {
       logger.log(event, fields)
       // 子会话结算 = 并发槽位释放，唤醒队列补位。
