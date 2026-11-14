@@ -102,7 +102,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 ## 客户端入口与任务面板（阶段 2）
 
-- **槽位**：`sidebar.panellist`（`id:'orchestrator'`、`order:10`，排在「插件」下面）→ `main` 的 `key:'orchestrator'` 任务面板；会话头按钮用 `conversation.header.leading`（单席位，Bot 模式下也可见；不用会被 ds-bot `HeaderPill` 顶掉的 `.header.actions`）。不碰 ds-bot 的 `sidebar.workspaces`/`sidebar.footer.action`/`conversation.session.header`。
+- **槽位**：侧栏入口用 `sidebar.footer.action`（`id:'orchestrator'`、`order:100`，点击 `ctx.layout.selectPanel('orchestrator')` 打开面板）。**不用 `sidebar.panellist`**：ds-bot 的 Bot 模式用 `!important` 藏掉了整个 shell 面板列表（`nav[class*="_panelList"]{display:none!important}`），而 footer action 列表是它保留的席位（它自己的 `bot-account`/`bot-return` 就在这）；`id` 不同不会顶掉账户位。面板页是 `main` 的 `key:'orchestrator'`；会话头按钮用 `conversation.header.leading`（单席位，Bot 模式下也可见）。不碰 ds-bot 的 `sidebar.workspaces`/`conversation.session.header`。
 - **流程**：侧栏「任务」→ 面板（面板内「打开协调者会话」）；会话头按钮打开同一面板；每条任务可「打开子会话」，走 `ctx.uiWorkspace.openSession(id)`（与平台 `ui-subagent.openChild` 同款）。
 - **数据**：`/api/orchestrator` 只读 POST（`{ endpoint: 'snapshot' }`）。鉴权由 connection 服务统一负责（401/403、exact 路由 owner-only），handler 只 import 查询函数、只认白名单端点，**不写台账**。面板打开时拉一次、可见时 5s 轮询，连续失败退避 30s，可按状态筛选；失败显示「台账暂不可用」，不阻塞会话（平台对 handler 异常回 400 空体，客户端会显示 `HTTP 400`）。
 - **产物**：`client.js` 是**经典脚本**（`window.__ModuleLoader__.load({ id:'dsh-orchestrator', factory })`，顶层无 import/export），`package.json` 声明 `dsh.client.platform:'web'`、`exports["./client"]`、`files` 含 `client.js`。MVP 无构建；`npm run check:client` 只做语法检查。
