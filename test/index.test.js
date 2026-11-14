@@ -26,7 +26,7 @@ function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', '
   }
 }
 
-function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, connection, sessionController, workspaces } = {}) {
+function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, connection, sessionController, workspaces } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
   const routes = []
@@ -64,12 +64,16 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       : {}),
     on(event, handler) { listeners.set(event, handler); return () => {} },
     effect(callback) { disposers.push(callback()); return () => {} },
-    agentTeams: {
-      async spawnTeammate() { return spawnResult },
-      async sendMessage(sender, input) { sent.push([sender, input]) },
-      async interrupt() {},
-      listMembers() { return [] },
-    },
+    ...(withAgentTeams
+      ? {
+        agentTeams: {
+          async spawnTeammate() { return spawnResult },
+          async sendMessage(sender, input) { sent.push([sender, input]) },
+          async interrupt() {},
+          listMembers() { return [] },
+        },
+      }
+      : {}),
     subagents: subagentsOverride ?? {
       async startActivation(spec) {
         const childId = spawnResult?.member?.id ?? 'm-1'
@@ -102,10 +106,26 @@ function withHome(fn) {
   }
 }
 
-test('inject 声明包含 tools、agentTeams、agents、systemPrompt、subagents', () => {
+test('inject 不再硬依赖 agentTeams（缺服务也要能激活）', () => {
   assert.equal(name, 'dsh-orchestrator')
-  assert.deepEqual(new Set(inject), new Set(['tools', 'agentTeams', 'agents', 'systemPrompt', 'subagents']))
+  assert.deepEqual(new Set(inject), new Set(['tools', 'agents', 'systemPrompt', 'subagents']))
+  assert.equal(inject.includes('agentTeams'), false)
 })
+
+test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subagent 可用', withHome(async () => {
+  const f = fakeCtx({ withAgentTeams: false })
+  await apply(f.ctx, {})
+  assert.equal(f.registered.length, 6)
+  assert.equal(f.routes.length, 1)
+  assert.equal(f.warnings.some(message => /agentTeams|waiting for service/.test(message)), false)
+}))
+
+test('profile 没有 agentTeams 且 backend=team：apply 不炸，派发返回可读错误', withHome(async () => {
+  const f = fakeCtx({ withAgentTeams: false })
+  await assert.doesNotReject(() => apply(f.ctx, { backend: 'team' }))
+  assert.equal(f.registered.length, 6)
+  assert.ok(f.warnings.some(message => /team 后端不可用/.test(message)), f.warnings.join(' | '))
+}))
 
 test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {
   const { ctx, warnings, guards } = fakeCtx()

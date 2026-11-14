@@ -14,7 +14,7 @@ import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
 
 export const name = 'dsh-orchestrator'
-export const inject = ['tools', 'agentTeams', 'agents', 'systemPrompt', 'subagents']
+export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
 
 const COORDINATOR_INVALID_HINT = '主会话已失效，请从面板「打开主会话」重建。'
 const WAIT_AGENT_DENIAL = '协调者禁止阻塞等待：不要调用 wait_agent；查看进度用 task_list / task_status，本回合没有别的事就立即结束回合。'
@@ -178,7 +178,9 @@ export async function apply(ctx, rawConfig = {}) {
   let queue
   const dispatcher = createDispatcher({
     backend: config.backend,
-    agentTeams: ctx.agentTeams,
+    // agentTeams 是可选的：不放进 inject，缺这个服务的 profile 也能激活。
+    // 只有显式选 backend:'team' 时才需要它，缺了由派发器给可读错误。
+    agentTeams: () => ctx.get?.('agentTeams') ?? ctx.agentTeams,
     subagents: ctx.subagents,
     getAgent: resolveCoordinator,
     provider: config.spawnProvider,

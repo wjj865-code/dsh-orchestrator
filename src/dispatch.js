@@ -395,8 +395,10 @@ function createUnavailableDispatcher(reason) {
 
 export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, sessionWaitMs }) {
   if (backend === 'team') {
+    // agentTeams 用惰性 getter 传进来时在这里解析：缺服务的 profile 只有选 team 后端才会报错。
+    const teams = typeof agentTeams === 'function' ? agentTeams() : agentTeams
     try {
-      return createTeamDispatcher({ agentTeams, agent, getAgent, provider, retryDelaysMs, onWarn })
+      return createTeamDispatcher({ agentTeams: teams, agent, getAgent, provider, retryDelaysMs, onWarn })
     } catch (error) {
       // 平台升级把 team 后端废了：插件照常加载（面板与其他能力可用），
       // 派发时给同一条可读错误，而不是插件加载失败或抛 is not a function。
