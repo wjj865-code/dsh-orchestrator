@@ -58,6 +58,24 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 4. 重新安装/重启该 profile 使其生效。
 
+## 其他地方安装（从 GitHub 装）
+
+适用于另一台电脑或另一个 profile，**不需要本仓库源码**：
+
+1. 打开 DSH → 插件 → **添加插件** → 在输入框粘贴仓库地址，点「安装」：
+
+   ```
+   https://github.com/wjj865-code/dsh-orchestrator
+   ```
+
+   仓库是 Public，直接粘贴地址即可安装（私有仓库才需要先配 SSH key）。
+2. **前置 profile 依赖**：该 profile 的 `dsh.profile.bundles` 里要有 `@deepseek-ai/dsh-experimental-agent-team-profile`（提供 `ctx.agentTeams`）。缺了插件**不会报错**，而是一直停在 `pending (waiting for service: agentTeams)`、整条不激活；web 模板默认没有这个 bundle，团队模板已自带。
+3. **装完必须彻底退出 DSH 再启动**（只关窗口不生效）：宿主进程只在启动时加载插件。
+4. **升级**：先卸载旧版、再安装新版（平台不对非官方插件做原地升级），装完同样彻底重启。
+5. **入口**：纯 dsh 表面左侧栏「插件」下方有「◈ 主会话」，点一下直达主会话对话；Bot 模式下 ds-bot 会隐藏整条侧栏面板列表，此时用会话头「☰ 任务」按钮进任务面板，也可在面板里点「打开主会话」。
+
+装好后按「真机冒烟清单（隔离 profile）」逐条确认。
+
 ## 主会话（预设开启）
 
 解析顺序：`config.coordinatorSession`（显式覆盖，优先级最高，**不写台账**）→ 台账 `settings.main_session_id` → 未打开。
