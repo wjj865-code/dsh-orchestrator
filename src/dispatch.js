@@ -215,8 +215,10 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         live.delete(target)
         return
       }
-      // rc.3：interrupt(targetSessionId, authorityAgent)；rc.1：interruptByParent(childId, parentSessionId, mode)。
-      if (typeof subagents.interrupt === 'function') return subagents.interrupt(target, requireAgent())
+      // rc.3：interrupt(targetSessionId, authority)，authority 只认 { kind: 'ancestor' | 'user' }。
+      // task_stop 是用户动作，按平台 interruptByUser 的写法传 { kind: 'user' }；裸 agent 不在契约里。
+      // rc.1：interruptByParent(childId, parentSessionId, mode)。
+      if (typeof subagents.interrupt === 'function') return subagents.interrupt(target, { kind: 'user' })
       return subagents.interruptByParent(target, parentSessionId(), 'continuable')
     },
     members() {

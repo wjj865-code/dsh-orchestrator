@@ -393,7 +393,7 @@ test('非形状错误不回退：只调用一次并原样抛出', async () => {
 })
 
 
-test('rc.3：stop 无本地 activation 时走 interrupt(target, authority)', async () => {
+test('rc.3：stop 无本地 activation 时走 interrupt(target, { kind: "user" })', async () => {
   const calls = []
   const subagents = {
     async startActivation() {},
@@ -403,7 +403,9 @@ test('rc.3：stop 无本地 activation 时走 interrupt(target, authority)', asy
   }
   const dispatcher = createSubagentDispatcher({ subagents, agent })
   await dispatcher.stop('c-9')
-  assert.deepEqual(calls, [['c-9', agent]])
+  // 平台只认 { kind: 'ancestor' | 'user' }；task_stop 是用户动作，不传裸 agent。
+  assert.deepEqual(calls, [['c-9', { kind: 'user' }]])
+  assert.notStrictEqual(calls[0][1], agent)
 })
 
 test('rc.3：catalog/members 走 listDescendants 而不是 listChildren', async () => {
