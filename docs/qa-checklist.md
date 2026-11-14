@@ -167,7 +167,7 @@
 
 | 验收点 | 怎么验 | 判据 |
 | --- | --- | --- |
-| name/inject | 导入 | `name='dsh-orchestrator'`；inject 含 `tools`/`agentTeams`/`agents`（与真实平台服务名核对，证据见 Task 5 api-notes） |
+| name/inject | 导入 | `name='dsh-orchestrator'`；inject 含 `tools`/`agents`（与真实平台服务名核对，证据见 Task 5 api-notes）。**阶段 4 已由 `d1fcdb8` 把 `agentTeams` 移出 inject（惰性获取，缺服务照常激活）**，旧清单里的 `agentTeams` 断言作废。 |
 | 注册 | 假 ctx 调 apply | 6 个工具全部注册；`tools.register` 返回值被当作 disposer 使用（若使用） |
 | **DSH_HOME 隔离** | 临时 DSH_HOME 调 apply + 建任务 | 只创建 `$DSH_HOME/state/orchestrator/tasks.sqlite`（+wal/shm）；无其他文件；未设置 DSH_HOME 时才落到 `~/.dsh` |
 | 无 coordinatorSession | apply 后调用派活 | 日志有 warn；工具能注册；不抛；通知不投递（send 静默 return） |
@@ -538,7 +538,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - **整队列 `queued_at`**：cap=1 建 12 个后 11 个 pending 全部有 `queued_at`；把 `created_at` 改到 2 小时前模拟重启，`failStalePending` 不再误杀排队任务（v24b B 段）。
 - **对账 liveness 口径**：running 且 `agents.get(session_id)` 不存在 → orphaned（即使 catalog 有记录，幽灵被收掉）；waiting_user 不 live 但 catalog 有 → 保持；waiting 且 catalog 查不到 → orphaned；catalog 读失败仍按 liveness 判 running（v24b C 段、v24 已同步改判据）。
 - `maxActive` 与 `listQuotaTasks` 已从 config/ledger 移除（探针断言）；设计 §6/README 已同步 `waiting_*→orphaned` 与对账口径。
-- **遗留风险（不阻塞）**：`inject` 仍同时声明 `agentTeams` 与 `subagents`，两个后端互相绑死（缺任一服务会加载失败）；开发决定等真机确认缺服务再拆，先记录。
+- **遗留风险（阶段 4 已解除）**：`inject` 曾同时声明 `agentTeams` 与 `subagents`，两个后端互相绑死（缺任一服务会加载失败）；`d1fcdb8` 起 `agentTeams` 移出 inject、改为惰性获取，缺服务也能激活，只有 `backend:'team'` 才需要它（缺了给可读错误）。
 
 ## 26. 阶段 2 客户端薄插件（侧栏入口 + 任务面板 + 跳转）
 
