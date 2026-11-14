@@ -36,7 +36,7 @@ const load = () => {
 test('经典脚本：能被 <script> 解析，无顶层 import/export，id 等于包名', () => {
   assert.doesNotMatch(source, /^\s*(import|export)\s/m)
   const { loaded } = load()
-  assert.equal(loaded.id, '@wjj865-code/dsh-orchestrator')
+  assert.equal(loaded.id, pkg.name)
   assert.equal(typeof loaded.apply, 'function')
   assert.ok(Array.isArray(loaded.inject))
   for (const service of ['slots', 'layout', 'uiWorkspace']) {

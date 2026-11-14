@@ -1,0 +1,48 @@
+name: release
+
+# 打 v* tag 时发布到 npm；日常 push 不发布。
+# 需要在仓库 Settings -> Secrets and variables -> Actions 配置 NPM_TOKEN。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "v${version}" = "${GITHUB_REF_NAME}" || {
+            echo "tag ${GITHUB_REF_NAME} does not match package.json ${version}" >&2
+            exit 1
+          }
+
+      - name: Test
+        run: |
+          npm test
+          npm run check:client
+
+      - name: Publish
+        # prepublishOnly 会再跑一次测试，这里已经显式跑过，跳过重复生命周期。
+        run: npm publish --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
