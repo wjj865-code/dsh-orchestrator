@@ -7,6 +7,8 @@
 - 台账每天生成快照，但**不自动恢复**；损坏时需手工用 `snapshots/tasks-YYYY-MM-DD.sqlite` 替换 `tasks.sqlite`。
 - 快照按天保留，周期内重启不会重复覆盖。
 - 产物只收子任务显式 `task_report.artifacts`；`workspaceChanges` 自动收集改动文件尚未接入（需要 session event seq）。
+- 详情里的产物只能**复制路径**，不能直接打开：面板是网页，浏览器不允许脚本静默打开本地文件。
+- 消息投递状态（待发/已投递/投递失败）写在台账 `messages.meta_json`；A3 之前的旧行没有该字段，只能按紧随的 `delivery_failed` 行推断，失败行落到 50 条消息窗口外的会显示成已投递。
 
 ## 编排
 

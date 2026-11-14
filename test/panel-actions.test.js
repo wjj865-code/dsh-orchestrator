@@ -431,3 +431,111 @@ test('stop 队列/写权限释放失败作为 warning 返回，不阻断取消',
   assert.equal(getTask(db, task.id).status, 'cancelled')
   db.close()
 })
+
+
+test('detail 四区块：brief 原样返回，依赖带上下游与空态', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const dep = createTask(db, { brief: sampleBrief({ title: '前置' }), coordinatorSession: 's-1' })
+  transition(db, dep.id, 'running', { sessionId: 'c-dep', target: 'c-dep' })
+  transition(db, dep.id, 'done')
+  const task = createTask(db, {
+    brief: sampleBrief({
+      title: '中间任务', goal: '中间目标', acceptance: ['甲', '乙'], constraints: ['只读跑'],
+      refs: ['docs/x.md'], user_verbatim: '原话',
+    }),
+    coordinatorSession: 's-1', dependsOn: [dep.id],
+  })
+  transition(db, task.id, 'running', { sessionId: 'c-mid', target: 'c-mid' })
+  const downstream = createTask(db, { brief: sampleBrief({ title: '下游' }), coordinatorSession: 's-1', dependsOn: [task.id] })
+  const detail = actions.detail(task.id)
+  assert.equal(detail.ok, true)
+  // 1) brief 区块的数据来源：台账 tasks.brief_json 原样返回，不裁剪。
+  assert.deepEqual(detail.task.brief.acceptance, ['甲', '乙'])
+  assert.deepEqual(detail.task.brief.constraints, ['只读跑'])
+  assert.deepEqual(detail.task.brief.refs, ['docs/x.md'])
+  assert.equal(detail.task.brief.user_verbatim, '原话')
+  // 2) 消息为空时是空数组，不补假消息。
+  assert.deepEqual(detail.messages, [])
+  // 3) 依赖：上游 + 下游，都带状态。
+  assert.deepEqual(detail.dependencies.map(row => [row.title, row.status]), [['前置', 'done']])
+  assert.deepEqual(detail.dependents.map(row => [row.title, row.status]), [['下游', downstream.status]])
+  assert.equal(detail.task.count.dependencies, 1)
+  assert.equal(detail.task.count.dependents, 1)
+  // 4) 产物为空时是空数组。
+  assert.deepEqual(detail.task.artifacts, [])
+  // 孤立任务：上下游都是空数组（面板显示「没有前置/下游任务」）。
+  const lonely = createTask(db, { brief: sampleBrief({ title: '孤立' }), coordinatorSession: 's-1' })
+  const empty = actions.detail(lonely.id)
+  assert.deepEqual(empty.dependencies, [])
+  assert.deepEqual(empty.dependents, [])
+  assert.deepEqual(empty.messages, [])
+  db.close()
+})
+
+test('detail 上游依赖缺失时标 missing，不伪造标题', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const task = createTask(db, {
+    brief: sampleBrief({ title: '缺前置' }), coordinatorSession: 's-1', dependsOn: ['t-404'],
+  })
+  const detail = actions.detail(task.id)
+  assert.deepEqual(detail.dependencies, [{ id: 't-404', title: 't-404', status: 'missing' }])
+  db.close()
+})
+
+test('detail 消息投递状态：投递中是 pending（待发），成功后 delivered（已投递）', async () => {
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const env = setup({
+    makeDispatcher: () => ({
+      async stop() {},
+      releaseWritableRoots() {},
+      async sendReliable() { await gate; return { messageId: 'm-1' } },
+    }),
+  })
+  const { db, actions } = await env.init()
+  const task = runningTask(db, '待发消息')
+  const sending = actions.message(task.id, '排队中')
+  // 投递尚未完成：followup 已落库但状态是 pending。
+  const during = actions.detail(task.id).messages.find(row => row.kind === 'followup')
+  assert.equal(during.text, '排队中')
+  assert.equal(during.delivery, 'pending')
+  release()
+  const result = await sending
+  assert.equal(result.ok, true)
+  const after = actions.detail(task.id).messages.find(row => row.kind === 'followup')
+  assert.equal(after.delivery, 'delivered')
+  db.close()
+})
+
+test('detail 消息投递失败：followup 标 failed，并保留 delivery_failed 行', async () => {
+  const env = setup({
+    makeDispatcher: () => ({
+      async stop() {},
+      releaseWritableRoots() {},
+      async sendReliable() { throw new Error('offline') },
+    }),
+  })
+  const { db, actions } = await env.init()
+  const task = runningTask(db, '投递失败')
+  const result = await actions.message(task.id, '继续修')
+  assert.equal(result.ok, false)
+  const detail = actions.detail(task.id)
+  assert.equal(detail.messages.find(row => row.kind === 'followup').delivery, 'failed')
+  assert.equal(detail.messages.some(row => row.kind === 'delivery_failed'), true)
+  db.close()
+})
+
+test('detail 旧 followup 无 meta：按失败行推断，只归给最近一条', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const task = runningTask(db, '旧消息')
+  addMessage(db, task.id, { kind: 'followup', rendered: '旧A' })
+  addMessage(db, task.id, { kind: 'followup', rendered: '旧B' })
+  addMessage(db, task.id, { kind: 'delivery_failed', rendered: '[投递失败] boom' })
+  const rows = actions.detail(task.id).messages
+  assert.equal(rows.find(row => row.text === '旧A').delivery, 'delivered')
+  assert.equal(rows.find(row => row.text === '旧B').delivery, 'failed')
+  db.close()
+})

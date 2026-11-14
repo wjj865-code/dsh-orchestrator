@@ -186,3 +186,33 @@ test('package.json 声明 client 产物与 dsh.client 清单', () => {
   assert.equal(inject.includes('@deepseek-ai/dsh-client-ui-renderer'), false)
   assert.equal(inject.includes('@deepseek-ai/dsh-client-ui-session'), false)
 })
+
+test('详情抽屉四区块：brief/消息/依赖/产物、空态与投递状态', () => {
+  // 四区块都在同一详情视图里渲染。
+  assert.match(source, /detailSection\('Brief'/)
+  assert.match(source, /detailSection\('消息'/)
+  assert.match(source, /detailSection\('依赖'/)
+  assert.match(source, /detailSection\('产物'/)
+  // brief 区块读 detail.task.brief，渲染验收/约束/背景/原话。
+  assert.match(source, /const brief = task\.brief/)
+  assert.match(source, /验收标准：/)
+  assert.match(source, /背景资料：/)
+  assert.match(source, /用户原话：/)
+  assert.match(source, /这条任务没有 brief 信息/)
+  // 依赖链上下游都展示状态。
+  assert.match(source, /detail\.dependencies/)
+  assert.match(source, /detail\.dependents/)
+  assert.match(source, /没有前置任务/)
+  assert.match(source, /没有下游任务/)
+  // followup 投递状态三态。
+  assert.match(source, /DELIVERY_LABEL/)
+  assert.match(source, /待发/)
+  assert.match(source, /已投递/)
+  assert.match(source, /投递失败/)
+  // 产物可复制路径（Clipboard API + execCommand 兜底）。
+  assert.match(source, /复制路径/)
+  assert.match(source, /navigator\.clipboard/)
+  assert.match(source, /execCommand/)
+  assert.match(source, /还没有产物/)
+  assert.match(source, /还没有消息/)
+})

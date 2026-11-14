@@ -19,8 +19,18 @@ window.__ModuleLoader__.load({
 
     const STATUS_LABEL = {
       waiting_dep: '等前置', pending: '待派发', running: '进行中', waiting_user: '等你确认', waiting_auth: '要授权',
-      done: '已完成', failed: '失败', cancelled: '已取消', orphaned: '会话丢失',
+      done: '已完成', failed: '失败', cancelled: '已取消', orphaned: '会话丢失', missing: '缺失',
     }
+    const STATUS_TONE = {
+      waiting_dep: 'warn', pending: 'muted', running: 'info', waiting_user: 'warn', waiting_auth: 'warn',
+      done: 'good', failed: 'bad', cancelled: 'muted', orphaned: 'bad', missing: 'bad',
+    }
+    // 消息类型与 followup 的投递状态（与 src/panel-actions.js 的 delivery 字段一一对应）。
+    const MESSAGE_KIND_LABEL = {
+      brief: '任务简报', followup: '追加消息', delivery_failed: '投递失败', report: '回报', progress: '进展',
+    }
+    const DELIVERY_LABEL = { pending: '待发', delivered: '已投递', failed: '投递失败' }
+    const DELIVERY_TONE = { pending: 'warn', delivered: 'good', failed: 'bad' }
     const TONE_COLOR = {
       good: 'var(--dsw-alias-color-success, #2e7d32)',
       bad: 'var(--dsw-alias-color-danger, #c62828)',
@@ -157,6 +167,22 @@ window.__ModuleLoader__.load({
         background: 'var(--dsw-alias-color-bg-secondary, #fafafa)',
       },
       detailLine: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+      // 详情四区块：brief / 消息 / 依赖 / 产物。
+      section: {
+        display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 8,
+        borderTop: '1px solid var(--dsw-alias-color-border, #e0e0e0)',
+      },
+      sectionHead: { display: 'flex', alignItems: 'baseline', gap: 6 },
+      sectionTitle: { fontSize: 12, fontWeight: 600 },
+      empty: { fontSize: 12, opacity: 0.6 },
+      list: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 },
+      messageRow: { display: 'flex', flexDirection: 'column', gap: 2 },
+      messageText: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', paddingLeft: 2 },
+      badge: {
+        display: 'inline-flex', alignItems: 'center', fontSize: 11, lineHeight: '16px',
+        padding: '0 6px', borderRadius: 8, border: '1px solid currentColor',
+      },
+      depLine: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
     }
 
     const HeaderButton = ({ openPanel }) => h('button', {
@@ -205,6 +231,7 @@ window.__ModuleLoader__.load({
       const [filter, setFilter] = React.useState('all')
       const [detail, setDetail] = React.useState(null)
       const [detailError, setDetailError] = React.useState(null)
+      const [copyNotice, setCopyNotice] = React.useState(null)
       const [busy, setBusy] = React.useState(null)
       // 同一 (动作, 任务) 只允许一个请求在途：双击不会发两条 stop/retry/message。
       const inFlight = React.useRef(new Set())
@@ -284,10 +311,46 @@ window.__ModuleLoader__.load({
 
       const openDetail = async id => {
         setDetailError(null)
+        setCopyNotice(null)
         try {
           setDetail(await readDetail(id))
         } catch (failure) {
           setDetailError(`详情加载失败：${String((failure && failure.message) || failure)}`)
+        }
+      }
+
+      const closeDetail = () => {
+        setDetail(null)
+        setCopyNotice(null)
+      }
+
+      // 产物路径复制：优先 Clipboard API，老宿主退回 textarea + execCommand；都不行就报可读错误。
+      const copyPath = async path => {
+        const value = String(path ?? '')
+        if (value === '') return
+        try {
+          if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(value)
+          } else if (typeof document !== 'undefined' && typeof document.execCommand === 'function') {
+            const area = document.createElement('textarea')
+            area.value = value
+            area.setAttribute('readonly', '')
+            area.style.position = 'fixed'
+            area.style.top = '-1000px'
+            area.style.opacity = '0'
+            document.body.appendChild(area)
+            area.select()
+            const copied = document.execCommand('copy')
+            document.body.removeChild(area)
+            if (!copied) throw new Error('浏览器拒绝写入剪贴板')
+          } else {
+            throw new Error('当前环境不支持剪贴板')
+          }
+          setActionError(null)
+          setCopyNotice(`已复制路径：${value}`)
+        } catch (failure) {
+          setCopyNotice(null)
+          setActionError(`复制路径失败：${String((failure && failure.message) || failure)}`)
         }
       }
 
@@ -330,54 +393,146 @@ window.__ModuleLoader__.load({
       const visible = tasks.filter(matchFilter)
       const mainState = mainSession.id === null ? '主会话未创建' : mainSession.live ? '主会话在线' : '主会话已失效'
       const inboxCount = Number(snapshot && snapshot.inboxCount) || 0
-      const detailBlock = detail === null ? null : h('div', { style: styles.detail },
-        h('div', { style: styles.bar },
-          h('span', { style: styles.title }, detail.task.title),
-          h('span', { style: styles.meta }, STATUS_LABEL[detail.task.status] || detail.task.status),
-          h('button', { type: 'button', style: styles.button, onClick: () => setDetail(null) }, '关闭'),
+      const textOf = value => typeof value === 'string' ? value.trim() : ''
+      const listOf = value => (Array.isArray(value) ? value.map(item => textOf(item)).filter(Boolean) : [])
+      const detailSection = (title, hint, body) => h('div', { style: styles.section },
+        h('div', { style: styles.sectionHead },
+          h('span', { style: styles.sectionTitle }, title),
+          hint ? h('span', { style: styles.meta }, hint) : null,
         ),
-        h('div', { style: styles.meta },
-          [
-            detail.task.group ? `组 ${detail.task.group}` : '',
-            detail.task.priority ? `P${detail.task.priority}` : '',
-            detail.task.targetDir ? shortPath(detail.task.targetDir) : '',
-            detail.task.readOnly ? '只读' : '',
-          ].filter(Boolean).join('｜') || '无额外属性'),
-        detail.task.question ? h('div', { style: styles.notice }, `需要你：${detail.task.question}${detail.task.options && detail.task.options.length ? `（${detail.task.options.join(' / ')}）` : ''}`) : null,
-        detail.dependencies.length > 0
-          ? h('div', { style: styles.detailLine }, `前置：${detail.dependencies.map(dep => `${dep.title}（${STATUS_LABEL[dep.status] || dep.status}）`).join('、')}`)
-          : null,
-        h('div', { style: styles.detailLine }, `目标：${detail.task.goal}`),
-        detail.messages.length > 0
-          ? h('div', { style: styles.detailLine }, `消息：\n${detail.messages.slice(-20).map(row => `[${row.kind}] ${row.text}`).join('\n')}`)
-          : h('div', { style: styles.meta }, '还没有消息'),
-        detail.task.artifacts.length > 0
-          ? h('div', { style: styles.detailLine }, `产物：\n${detail.task.artifacts.map(item => `- ${item.path}${item.label ? ` — ${item.label}` : ''}${item.exists === false ? '（未找到）' : ''}`).join('\n')}`)
-          : null,
-        h('div', { style: styles.bar },
-          detail.task.status !== 'done' && detail.task.status !== 'cancelled' && detail.task.status !== 'orphaned'
-            ? h('button', {
-              type: 'button', style: styles.button,
-              disabled: busy === `stop:${detail.task.id}`,
-              onClick: () => runPanel('stop', detail.task.id),
-            }, '停止')
-            : null,
-          detail.task.status === 'failed' || detail.task.status === 'orphaned'
-            ? h('button', {
-              type: 'button', style: styles.button,
-              disabled: busy === `retry:${detail.task.id}`,
-              onClick: () => runPanel('retry', detail.task.id),
-            }, '重派')
-            : null,
-          detail.task.target
-            ? h('button', {
-              type: 'button', style: styles.button,
-              disabled: busy === `message:${detail.task.id}`,
-              onClick: () => sendMessage(detail.task.id),
-            }, '追加消息')
-            : null,
-        ),
+        body,
       )
+      // 依赖行：上游（前置）与下游（依赖本任务）共用；missing 表示前置任务已不在台账里。
+      const depRow = row => h('div', { key: `${row.status}:${row.id}`, style: styles.depLine },
+        h('span', { style: Object.assign({}, styles.dot, { background: TONE_COLOR[STATUS_TONE[row.status]] || TONE_COLOR.muted }) }),
+        h('span', { title: row.error || row.id }, row.title),
+        h('span', { style: styles.meta }, STATUS_LABEL[row.status] || row.status || '未知'),
+        row.error ? h('span', { style: styles.meta, title: row.error }, '（有错误）') : null,
+      )
+      const detailBlock = detail === null ? null : (() => {
+        const task = detail.task || {}
+        // 1) brief：结构化 brief 原样渲染成文字，不再只显示 task.goal。
+        const brief = task.brief !== null && typeof task.brief === 'object' && !Array.isArray(task.brief) ? task.brief : {}
+        const briefGoal = textOf(brief.goal) || textOf(task.goal)
+        const acceptance = listOf(brief.acceptance)
+        const constraints = listOf(brief.constraints)
+        const refs = listOf(brief.refs)
+        const verbatim = textOf(brief.user_verbatim)
+        const briefEmpty = briefGoal === '' && acceptance.length === 0 && constraints.length === 0
+          && refs.length === 0 && verbatim === ''
+        const briefBody = briefEmpty
+          ? h('div', { style: styles.empty }, '这条任务没有 brief 信息。')
+          : h('div', { style: styles.detailLine }, [
+            briefGoal !== '' ? `目标：${briefGoal}` : '',
+            acceptance.length > 0 ? `验收标准：\n${acceptance.map(item => `- ${item}`).join('\n')}` : '',
+            constraints.length > 0 ? `约束：\n${constraints.map(item => `- ${item}`).join('\n')}` : '',
+            refs.length > 0 ? `背景资料：\n${refs.map(item => `- ${item}`).join('\n')}` : '',
+            verbatim !== '' ? `用户原话：\n${verbatim.split(/\r?\n/).map(line => `> ${line}`).join('\n')}` : '',
+          ].filter(Boolean).join('\n\n'))
+
+        // 2) 消息：最近 20 条；followup 带投递状态（待发/已投递/投递失败）。
+        const messages = Array.isArray(detail.messages) ? detail.messages : []
+        const shownMessages = messages.slice(-20)
+        const messageBody = messages.length === 0
+          ? h('div', { style: styles.empty }, '还没有消息。')
+          : h('div', { style: styles.list },
+            shownMessages.map((row, index) => h('div', { key: row.seq === undefined ? index : row.seq, style: styles.messageRow },
+              h('div', { style: styles.bar },
+                h('span', { style: Object.assign({}, styles.badge, { color: TONE_COLOR.muted }) }, MESSAGE_KIND_LABEL[row.kind] || row.kind),
+                row.delivery
+                  ? h('span', {
+                    style: Object.assign({}, styles.badge, { color: TONE_COLOR[DELIVERY_TONE[row.delivery]] || TONE_COLOR.muted }),
+                    title: `投递状态：${DELIVERY_LABEL[row.delivery] || row.delivery}`,
+                  }, DELIVERY_LABEL[row.delivery] || row.delivery)
+                  : null,
+                h('span', { style: styles.meta }, timeLabel(row.at)),
+              ),
+              h('div', { style: styles.messageText }, row.text),
+            )),
+            messages.length > shownMessages.length
+              ? h('div', { style: styles.empty }, `仅显示最近 ${shownMessages.length} 条（共 ${messages.length} 条）。`)
+              : null,
+          )
+
+        // 3) 依赖：上游前置 + 下游依赖本任务，各自带状态和错误提示。
+        const dependencies = Array.isArray(detail.dependencies) ? detail.dependencies : []
+        const dependents = Array.isArray(detail.dependents) ? detail.dependents : []
+        const depBody = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+          h('div', { style: styles.meta }, '上游（前置任务）'),
+          dependencies.length === 0
+            ? h('div', { style: styles.empty }, '没有前置任务。')
+            : h('div', { style: styles.list }, dependencies.map(depRow)),
+          h('div', { style: styles.meta }, '下游（依赖本任务）'),
+          dependents.length === 0
+            ? h('div', { style: styles.empty }, '没有下游任务。')
+            : h('div', { style: styles.list }, dependents.map(depRow)),
+        )
+
+        // 4) 产物：路径/标签/存在性，路径可一键复制（浏览器不允许静默打开本地文件）。
+        const artifacts = Array.isArray(task.artifacts) ? task.artifacts : []
+        const artifactBody = artifacts.length === 0
+          ? h('div', { style: styles.empty }, '还没有产物。')
+          : h('div', { style: styles.list },
+            artifacts.map((item, index) => h('div', { key: `${item.path}:${index}`, style: styles.depLine },
+              h('span', { style: Object.assign({}, styles.dot, { background: item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good }) }),
+              h('span', { style: { overflowWrap: 'anywhere', flex: 1 }, title: item.path }, item.path),
+              item.label ? h('span', { style: styles.meta }, item.label) : null,
+              item.exists === false ? h('span', { style: styles.meta }, '（未找到）') : null,
+              h('button', { type: 'button', style: styles.button, onClick: () => void copyPath(item.path) }, '复制路径'),
+            )),
+          )
+
+        return h('div', { style: styles.detail },
+          h('div', { style: styles.bar },
+            h('span', { style: styles.title }, task.title || task.id || '任务'),
+            h('span', { style: styles.meta }, STATUS_LABEL[task.status] || task.status),
+            task.readOnly === true ? h('span', { style: styles.meta }, '只读') : null,
+            h('button', { type: 'button', style: styles.button, onClick: closeDetail }, '关闭'),
+          ),
+          h('div', { style: styles.meta },
+            [
+              task.group ? `组 ${task.group}` : '',
+              task.priority ? `P${task.priority}` : '',
+              task.targetDir ? shortPath(task.targetDir) : '',
+              task.readOnly ? '只读' : '',
+            ].filter(Boolean).join('｜') || '无额外属性'),
+          task.question ? h('div', { style: styles.notice }, `需要你：${task.question}${Array.isArray(task.options) && task.options.length ? `（${task.options.join(' / ')}）` : ''}`) : null,
+          task.error ? h('div', { style: styles.error }, `错误：${task.error}`) : null,
+          detailSection('Brief', acceptance.length > 0 ? `验收 ${acceptance.length} 条` : '', briefBody),
+          detailSection('消息', messages.length > 0 ? `${messages.length} 条` : '', messageBody),
+          detailSection('依赖', `上游 ${dependencies.length} · 下游 ${dependents.length}`, depBody),
+          detailSection('产物', artifacts.length > 0 ? `${artifacts.length} 个` : '', artifactBody),
+          h('div', { style: styles.bar },
+            task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'orphaned'
+              ? h('button', {
+                type: 'button', style: styles.button,
+                disabled: busy === `stop:${task.id}`,
+                onClick: () => runPanel('stop', task.id),
+              }, '停止')
+              : null,
+            task.status === 'failed' || task.status === 'orphaned'
+              ? h('button', {
+                type: 'button', style: styles.button,
+                disabled: busy === `retry:${task.id}`,
+                onClick: () => runPanel('retry', task.id),
+              }, '重派')
+              : null,
+            task.target
+              ? h('button', {
+                type: 'button', style: styles.button,
+                disabled: busy === `message:${task.id}`,
+                onClick: () => sendMessage(task.id),
+              }, '追加消息')
+              : null,
+            task.target
+              ? h('button', {
+                type: 'button', style: styles.button,
+                onClick: () => open(task.target),
+              }, '打开子会话')
+              : null,
+          ),
+        )
+      })()
       const detailErrorBlock = detailError === null ? null : h('div', { style: styles.error }, detailError)
       const artifactRows = []
       for (const task of tasks) {
@@ -420,6 +575,7 @@ window.__ModuleLoader__.load({
         snapshotError !== null ? h('div', { style: styles.error }, `台账暂不可用：${snapshotError}`) : null,
         actionError !== null ? h('div', { style: styles.error }, actionError) : null,
         actionNotice !== null ? h('div', { style: styles.notice }, actionNotice) : null,
+        copyNotice !== null ? h('div', { style: styles.notice }, copyNotice) : null,
         detailErrorBlock,
         detailBlock,
         inboxCount > 0

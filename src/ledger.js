@@ -298,8 +298,34 @@ export function addMessage(db, taskId, { kind, rendered, meta = null }) {
   return next
 }
 
+const parseMessageMeta = value => {
+  if (value === null || value === undefined) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** 消息投递状态：followup 写入时是 pending（待发），投递成功后 delivered，失败后 failed。
+ *  只改 meta_json，不新增消息行，也不动 seq/at。 */
+const MESSAGE_DELIVERIES = new Set(['pending', 'delivered', 'failed'])
+
+export function setMessageDelivery(db, taskId, seq, delivery, extra = {}) {
+  if (!MESSAGE_DELIVERIES.has(delivery)) throw new Error(`未知投递状态：${delivery}`)
+  const row = db.prepare('SELECT meta_json FROM messages WHERE task_id = ? AND seq = ?').get(taskId, seq)
+  if (row === undefined) return false
+  const meta = { ...(parseMessageMeta(row.meta_json) ?? {}), ...extra, delivery }
+  db.prepare('UPDATE messages SET meta_json = ? WHERE task_id = ? AND seq = ?')
+    .run(JSON.stringify(meta), taskId, seq)
+  return true
+}
+
 export function recentMessages(db, taskId, limit = 3) {
-  return db.prepare('SELECT kind, rendered, at FROM messages WHERE task_id = ? ORDER BY seq DESC LIMIT ?').all(taskId, limit)
+  return db.prepare('SELECT seq, kind, rendered, meta_json, at FROM messages WHERE task_id = ? ORDER BY seq DESC LIMIT ?')
+    .all(taskId, limit)
+    .map(row => ({ seq: row.seq, kind: row.kind, rendered: row.rendered, at: row.at, meta: parseMessageMeta(row.meta_json) }))
 }
 
 /** 窗口内是否存在「已成功投递」的同文 followup（面板 message 幂等去重）。

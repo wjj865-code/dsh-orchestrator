@@ -353,6 +353,8 @@ test('task_message：正常写 followup 并投递，attempts +1', async () => {
   assert.equal(getTask(db, task.id).attempts, 1)
   const kinds = db.prepare('SELECT kind FROM messages WHERE task_id = ? ORDER BY seq').all(task.id).map(row => row.kind)
   assert.deepEqual(kinds, ['brief', 'followup'])
+  const meta = JSON.parse(db.prepare("SELECT meta_json FROM messages WHERE task_id = ? AND kind = 'followup'").get(task.id).meta_json)
+  assert.equal(meta.delivery, 'delivered', '投递成功后 followup 标 delivered（详情抽屉显示已投递）')
   db.close()
 })
 
@@ -476,8 +478,10 @@ test('task_message：重试 3 次仍失败 → waiting_user + error + 失败消�
   const after = getTask(db, task.id)
   assert.equal(after.status, 'waiting_user')
   assert.match(after.error, /投递超时/)
-  const kinds = db.prepare('SELECT kind, rendered FROM messages WHERE task_id = ? ORDER BY seq').all(task.id)
+  const kinds = db.prepare('SELECT kind, rendered, meta_json FROM messages WHERE task_id = ? ORDER BY seq').all(task.id)
   assert.ok(kinds.some(row => row.kind === 'delivery_failed'))
+  const followup = kinds.find(row => row.kind === 'followup')
+  assert.equal(JSON.parse(followup.meta_json).delivery, 'failed', '投递失败后 followup 标 failed（详情抽屉显示投递失败）')
   db.close()
 })
 

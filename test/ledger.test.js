@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts } from '../src/ledger.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -371,5 +371,24 @@ test('artifacts_json 损坏或非数组时读回空数组', async () => {  const
   assert.deepEqual(getTask(db, task.id).artifacts, [])
   db.prepare('UPDATE tasks SET artifacts_json = ? WHERE id = ?').run('{"a":1}', task.id)
   assert.deepEqual(getTask(db, task.id).artifacts, [])
+  db.close()
+})
+
+test('setMessageDelivery 只改 meta_json，不新增消息行', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief(), coordinatorSession: 's-1' })
+  const seq = addMessage(db, task.id, { kind: 'followup', rendered: '继续', meta: { delivery: 'pending' } })
+  const before = db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n
+  assert.equal(setMessageDelivery(db, task.id, seq, 'delivered'), true)
+  const row = db.prepare('SELECT meta_json FROM messages WHERE task_id = ? AND seq = ?').get(task.id, seq)
+  assert.equal(JSON.parse(row.meta_json).delivery, 'delivered')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n, before)
+  // 保留已有 meta 字段：只覆盖 delivery 和传入的补充字段。
+  setMessageDelivery(db, task.id, seq, 'failed', { error: 'boom' })
+  const merged = JSON.parse(db.prepare('SELECT meta_json FROM messages WHERE task_id = ? AND seq = ?').get(task.id, seq).meta_json)
+  assert.deepEqual(merged, { delivery: 'failed', error: 'boom' })
+  // 不存在的 seq / 非法状态：返回 false 或抛错，不静默写坏库。
+  assert.equal(setMessageDelivery(db, task.id, 999, 'delivered'), false)
+  assert.throws(() => setMessageDelivery(db, task.id, seq, 'weird'), /未知投递状态/)
   db.close()
 })

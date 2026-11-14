@@ -3,7 +3,7 @@
 import { renderBrief } from './brief.js'
 import {
   addMessage, clearTaskQuestion, createTask, findRecentDeliveredFollowup, getTask, listTasks,
-  recentMessages, setTaskError, transition, touchTask, incrementAttempts,
+  recentMessages, setMessageDelivery, setTaskError, transition, touchTask, incrementAttempts,
 } from './ledger.js'
 import { dependencyState, validateDepends } from './deps.js'
 import { taskLabel } from './task-label.js'
@@ -16,10 +16,37 @@ const WAITING = new Set(['waiting_user', 'waiting_auth'])
 // message 幂等窗口：同任务、同文本、上一次已成功投递时，窗口内重复提交视为同一次操作。
 // 窗口故意取短（面板双击/重试），代价是「3 秒内故意发两条一模一样的消息」会被吞掉（见 docs/LIMITATIONS.md）。
 const MESSAGE_DEDUPE_MS = 3000
+// 详情一次最多回 50 条消息、50 个下游任务；面板只展示最近 20 条消息（更早的靠台账/日志）。
+const DETAIL_MESSAGE_LIMIT = 50
+const DETAIL_DEPENDENT_LIMIT = 50
 
 const short = (value, max = 100) => {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim()
   return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+/** 消息投递状态：pending 待发 / delivered 已投递 / failed 投递失败。
+ *  新行带 meta.delivery；旧行（A3 之前）没有 meta，按紧随其后的 delivery_failed 行推断，
+ *  没有任何失败行就按已投递算（与幂等查询 findRecentDeliveredFollowup 同口径）。 */
+const messageDeliveries = rows => {
+  const deliveries = rows.map(() => null)
+  rows.forEach((row, index) => {
+    if (row.kind !== 'delivery_failed') return
+    // 失败行只归给最近的、还没定论的那条 followup；已经 delivered/failed 的不再改。
+    for (let back = index - 1; back >= 0; back -= 1) {
+      if (rows[back].kind !== 'followup') continue
+      const stored = rows[back].meta?.delivery
+      if (stored === 'delivered' || stored === 'failed') break
+      deliveries[back] = 'failed'
+      break
+    }
+  })
+  return rows.map((row, index) => {
+    if (row.kind !== 'followup') return null
+    if (deliveries[index] !== null) return deliveries[index]
+    const stored = row.meta?.delivery
+    return stored === 'pending' || stored === 'delivered' || stored === 'failed' ? stored : 'delivered'
+  })
 }
 
 export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger }) {
@@ -31,13 +58,23 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
   const detailOf = taskId => {
     const task = getTask(db, String(taskId ?? ''))
     if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
-    const messages = recentMessages(db, task.id, 50).reverse()
+    // recentMessages 是倒序，翻成时间顺序再按「失败行跟随的 followup」推投递状态。
+    const rows = recentMessages(db, task.id, DETAIL_MESSAGE_LIMIT).reverse()
+    const deliveries = messageDeliveries(rows)
+    const messages = rows.map((row, index) => ({
+      seq: row.seq, kind: row.kind, text: row.rendered, at: row.at, delivery: deliveries[index],
+    }))
     const dependencies = task.depends_on.map(id => {
       const dep = getTask(db, id)
       return dep === undefined
         ? { id, title: id, status: 'missing' }
         : { id, title: dep.title, status: dep.status, error: dep.error ?? null }
     })
+    // 下游 = 依赖链上引用本任务的任务；失败会沿依赖链传播，面板要能看到「谁会被我拖住」。
+    const dependents = listTasks(db, { active: false })
+      .filter(item => item.depends_on.includes(task.id))
+      .slice(0, DETAIL_DEPENDENT_LIMIT)
+      .map(item => ({ id: item.id, title: item.title, status: item.status, error: item.error ?? null }))
     return {
       ok: true,
       task: {
@@ -62,10 +99,13 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         count: {
           messages: messages.length,
           artifacts: task.artifacts.length,
+          dependencies: dependencies.length,
+          dependents: dependents.length,
         },
       },
       dependencies,
-      messages: messages.map(row => ({ kind: row.kind, text: row.rendered, at: row.at })),
+      dependents,
+      messages,
     }
   }
 
@@ -216,7 +256,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         return { ok: true, taskId: task.id, already: true, duplicate: true }
       }
     }
-    addMessage(db, task.id, { kind: 'followup', rendered: content })
+    // followup 先落 pending（待发），投递成功改 delivered，失败改 failed 再补一行 delivery_failed。
+    // 详情抽屉据此显示「待发/已投递/投递失败」，不必猜。
+    const seq = addMessage(db, task.id, { kind: 'followup', rendered: content, meta: { delivery: 'pending' } })
     try {
       if (typeof dispatcher.sendReliable === 'function') {
         await dispatcher.sendReliable(task.target, content, undefined, task.target_dir, task.id, task.read_only === true)
@@ -225,6 +267,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       }
     } catch (error) {
       const reason = error?.message ?? String(error)
+      setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
       addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
       const latest = getTask(db, task.id)
       if (latest !== undefined && WAITING.has(latest.status)) setTaskError(db, task.id, reason)
@@ -234,6 +277,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       log('ui.message.failed', { taskId: task.id, detail: { error: reason } })
       return panelFailure('MESSAGE_DELIVERY_FAILED', { reason })
     }
+    setMessageDelivery(db, task.id, seq, 'delivered')
     touchTask(db, task.id)
     const latest = getTask(db, task.id)
     if (latest !== undefined && WAITING.has(latest.status)) {

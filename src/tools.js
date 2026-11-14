@@ -10,7 +10,7 @@ import {
   GLOBAL_PROJECT, addMemory, buildMemoryBlock, memoryTokens, projectKeyOf, remember, searchMemories,
 } from './memory.js'
 import {
-  addMessage, createTask, getTask, listTasks, recentMessages,
+  addMessage, createTask, getTask, listTasks, recentMessages, setMessageDelivery,
   setTaskArtifacts, setTaskError, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress,
 } from './ledger.js'
@@ -554,11 +554,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
       }
       const message = args.message ?? ''
-      addMessage(db, task.id, { kind: 'followup', rendered: message })
+      // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
+      const seq = addMessage(db, task.id, { kind: 'followup', rendered: message, meta: { delivery: 'pending' } })
       try {
         await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id, task.read_only === true)
       } catch (error) {
         const reason = error?.message ?? String(error)
+        setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
         addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
         const current = getTask(db, task.id)
         if (isUnreachable(error) && canTransition(current.status, 'orphaned')) {
@@ -577,6 +579,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         }
         return toolFailure('MESSAGE_DELIVERY_FAILED', { label: labelFor(task), reason })
       }
+      setMessageDelivery(db, task.id, seq, 'delivered')
       touchTask(db, task.id)
       const current = getTask(db, task.id)
       if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
