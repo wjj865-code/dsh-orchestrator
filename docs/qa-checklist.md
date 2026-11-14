@@ -768,3 +768,20 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **结论**：阶段 2 测试侧通过（L1 54、L2 57、main 62、fixes 22、216/216、api-probe 33/33），四条必须改与一条建议全部独立复跑通过。
 
+
+
+## 29. 与 ds-bot Bot 模式的外部依赖（阶段 3 真机发现）
+
+**现象**：在装了 ds-bot 的 Bot 模式里，「打开主会话」服务端成功（`settings.main_session_id` 写入、`snapshot.mainSession` live、`open-main` 返回同一 `sessionId`），但页面仍停在 Bot（Chief）会话，随后的 `task_create` 被「请从主会话操作任务」拒绝。无 console 错误、无面板报错。
+
+**根因（ds-bot 0.3.6 `client.js`，非本插件）**：
+
+- `41886`：`const plain = isAgentSessionId(main); setPlain(plain); if (plain) dropPanels()`——只有 ds-bot 自己 DSH Agent 名下的会话才 `plain=true`（撤 Bot 皮肤）；外部 root 会话恒为 `false`。
+- `40847`：`isAgentSessionId = id => isAgentSession(roster, agentSessionCache, id) || pendingAdopt.has(id)`。
+- `41894-41897`：adopt 分支要求 `agentId = agentOfSession(before)` 有值；`40848` `agentOfSession = id => roster.agentOf[id] ?? pendingAdopt.get(id)`，Bot 会话在 `roster.agentOf` 里是 `undefined`（host `agents.js:19` 注释：Bot 和 group 会话是 undefined）→ 直接 return，连 `agent-adopt` 都不触发。
+
+**结论**：主视图实际已切到主会话，错位的是 ds-bot 的 Bot 皮肤与输入框；插件侧无法绕过，按外部依赖记录。插件已加静态提示「主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」」。
+
+**以后 ds-bot 修这行时的对表点**：放宽 `plain` 判据，让非 Bot/room 的外部 root 会话也撤皮肤；或给外部插件一个「打开纯 dsh 会话」的 action。修好后复跑本清单 Task 10 ① 的跳转半条即可。
+
+**对照实验（判定是否甩锅）**：Bot 模式下用 ds-bot 自己的会话列表打开任意一个普通 root 会话，若视图同样不切 → 坐实 ds-bot 表面问题；只有我们的主会话不行 → 回查我们的会话特殊性（`agentPreset`/cwd）。
