@@ -48,7 +48,13 @@ export function createHostRoute({ db, coordinatorStatus, openMain, staleMinutes 
     const endpoint = String(body?.endpoint ?? '')
     if (endpoint === 'open-main') {
       if (openMain === undefined) return json({ ok: false, error: 'open-main-unavailable' }, 500)
-      const result = await openMain()
+      let result
+      try {
+        result = await openMain()
+      } catch (error) {
+        // 不让 handler 抛给 host-webserver（那里只会 warn + 400 空体，客户端看不到原因）。
+        return json({ ok: false, error: `打开主会话失败：${error?.message ?? error}` }, 500)
+      }
       return json(result?.ok === true
         ? { ok: true, sessionId: result.sessionId, created: result.created === true }
         : { ok: false, error: result?.error ?? '创建主会话失败' }, result?.ok === true ? 200 : 500)

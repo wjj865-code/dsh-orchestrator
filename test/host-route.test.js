@@ -164,3 +164,24 @@ test('open-main 失败返回 500 与可读原因；无 openMain 时 500', async 
   assert.equal((await missing.json()).error, 'open-main-unavailable')
   db.close()
 })
+
+
+test('open-main 抛异常时返回 500 可读错误，且不产生 unhandledRejection', async () => {
+  const db = await openLedger(tempDir())
+  let unhandled = 0
+  const onUnhandled = () => { unhandled += 1 }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const handler = createHostRoute({ db, openMain: async () => { throw new Error('workspace boom') } })
+    const response = await handler(request({ endpoint: 'open-main' }))
+    const body = await response.json()
+    assert.equal(response.status, 500)
+    assert.equal(body.ok, false)
+    assert.match(body.error, /workspace boom/)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(unhandled, 0)
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled)
+    db.close()
+  }
+})
