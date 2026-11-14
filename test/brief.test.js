@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { validateBrief, renderBrief } from '../src/brief.js'
+import { validateBrief, renderBrief, validateTargetDir } from '../src/brief.js'
 
 const valid = {
   title: '修复空数据文案',
@@ -105,4 +105,19 @@ test('空字符串与空白项不会产生空小节', () => {
   const text = renderBrief({ title: 't', goal: 'g', acceptance: ['a'], constraints: ['  '], refs: [''] })
   assert.equal(text.includes('【约束】'), false)
   assert.equal(text.includes('【背景资料】'), false)
+})
+
+test('validateTargetDir：相对路径/不存在/非目录都拒绝', () => {
+  assert.equal(validateTargetDir('relative/dir', { isDirectory: () => true }), 'target 必须是绝对路径')
+  assert.equal(validateTargetDir('C:/nope', { isDirectory: () => false }), 'target 目录不存在或不是目录')
+  assert.equal(validateTargetDir('C:/work', { isDirectory: () => true }), undefined)
+  assert.equal(validateTargetDir(undefined, { isDirectory: () => true }), undefined)
+  assert.equal(validateTargetDir('  ', { isDirectory: () => true }), undefined)
+})
+
+test('renderBrief：有 target 时渲染【工作目录】，无 target 不渲染', () => {
+  const text = renderBrief({ title: 't', goal: 'g', acceptance: ['a'], target: 'C:/work' })
+  assert.match(text, /【工作目录】C:\/work/)
+  const without = renderBrief({ title: 't', goal: 'g', acceptance: ['a'] })
+  assert.equal(without.includes('【工作目录】'), false)
 })
