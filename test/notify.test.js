@@ -50,6 +50,17 @@ test('合并窗口外再投一条', async () => {
   assert.equal(delivered.length, 2)
 })
 
+test('只读任务通知标「只读」；普通任务不变', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: '分析', status: 'done', summary: '完成', readOnly: true })
+  await wait(25)
+  assert.deepEqual(delivered, ['任务「分析（只读）」完成：完成'])
+  notifier.push({ taskId: 't-2', title: '修复', status: 'done', summary: '完成' })
+  await wait(25)
+  assert.deepEqual(delivered[1], '任务「修复」完成：完成')
+})
+
 test('显示名优先：用 item.displayName，不裸露 t-xxx', async () => {
   const delivered = []
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })

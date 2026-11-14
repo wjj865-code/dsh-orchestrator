@@ -425,6 +425,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         taskId: next.id,
         title: next.title,
         displayName,
+        readOnly: next.read_only === true,
         status: args.status,
         summary: args.summary ?? '',
         artifacts,

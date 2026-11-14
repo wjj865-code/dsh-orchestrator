@@ -267,6 +267,7 @@ window.__ModuleLoader__.load({
                   task.queued ? h('span', { style: styles.meta }, '排队中') : null,
                   task.stale ? h('span', { style: styles.meta }, '⚠') : null,
                   h('span', { style: styles.meta }, STATUS_LABEL[task.status] || task.status),
+                  task.readOnly === true ? h('span', { style: styles.meta, title: '只读任务：写文件/写 shell 会被沙箱拒绝' }, '只读') : null,
                   h('span', { style: styles.meta }, timeLabel(task.lastEventAt)),
                   artifacts.length > 0
                     ? h('button', { type: 'button', style: styles.button, onClick: () => toggleArtifacts(task.id) }, `产物 ${artifacts.length}`)

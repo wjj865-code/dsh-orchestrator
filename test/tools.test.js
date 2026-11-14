@@ -376,7 +376,7 @@ test('对外文案：task_create/list/status 带 id，续派/停止/回报回执
 })
 
 test('task_create readOnly：显式 true 落库并进 brief；字符串/默认都不算只读', async () => {
-  const { db, dispatcher, tools } = await setup()
+  const { db, dispatcher, notifier, tools } = await setup()
   const normal = await call(tools, 'task_create', sampleBrief({ title: '普通任务' }))
   assert.match(normal, /已派发/)
   const plain = listTasks(db).find(task => task.title === '普通任务')
@@ -390,12 +390,15 @@ test('task_create readOnly：显式 true 落库并进 brief；字符串/默认�
   assert.equal(ro.brief.readOnly, true)
   const spawns = dispatcher.calls.filter(item => item[0] === 'spawn')
   assert.equal(spawns.filter(item => item[5] === true).length, 1, '只有只读任务派发时 readOnly:true')
+  // 通知携带 readOnly 标记，渲染层据此加「（只读）」。
+  await call(tools, 'task_report', { task_id: ro.id, status: 'done', summary: '完成' }, { agent: { id: ro.session_id } })
+  assert.equal(notifier.pushed.at(-1).readOnly, true)
 
   const sneaky = await call(tools, 'task_create', { ...sampleBrief({ title: '字符串真值' }), readOnly: 'true' })
   assert.match(sneaky, /已派发/)
   assert.equal(listTasks(db).find(task => task.title === '字符串真值').read_only, false)
 
-  const list = await call(tools, 'task_list', {})
+  const list = await call(tools, 'task_list', { active: false })
   assert.match(list, /只读任务.*只读/)
   assert.doesNotMatch(list, /普通任务.*只读/)
   const status = await call(tools, 'task_status', { task_id: ro.id })

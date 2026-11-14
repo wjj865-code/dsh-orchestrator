@@ -17,7 +17,11 @@ const artifactBlock = item => {
 }
 
 // 显示名由 tools 算好放进 item.displayName（重名短后缀也在那里算）；没有就回落 title。
-const nameOf = item => item.displayName ?? item.title
+// 只读任务在通知标题里明确标「只读」，避免用户误以为它会写文件。
+const nameOf = item => {
+  const base = item.displayName ?? item.title
+  return item.readOnly === true ? `${base}（只读）` : base
+}
 const line = item => `- ${nameOf(item)}：${item.summary}${artifactBlock(item)}`
 
 export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {}, onEvent = () => {} }) {
