@@ -78,6 +78,28 @@ console.log('\n== 2. provider 门控 ==')
   await forkWithCwd.spawn({ prompt: 'hi', cwd: 'C:/target' })
   check('fork provider 仍透传 cwd', calls[calls.length - 1]?.request?.cwd === 'C:/target',
     String(calls[calls.length - 1]?.request?.cwd))
+
+  // fork + 配置覆盖会话：平台会拒「不支持的 provider + agentPreset」，派发必须能过
+  const strictSubagents = {
+    startActivation: (spec) => {
+      if (spec.request?.agentPreset !== undefined) {
+        const error = new Error('provider does not support agentPreset')
+        error.code = 'UNSUPPORTED_CAPABILITY'
+        return Promise.reject(error)
+      }
+      return Promise.resolve({ childId: spec.childId, result: Promise.resolve({}), dispose: async () => {} })
+    },
+    sendMessage: async () => {},
+    interruptByParent: async () => {},
+    listChildren: async () => [],
+  }
+  const forkOverride = createSubagentDispatcher({
+    subagents: strictSubagents,
+    agent: { id: 'override-session', session: { header: { cwd: 'C:/parent' } } },
+    provider: 'fork',
+  })
+  const forkSpawn = await forkOverride.spawn({ prompt: 'hi' })
+  check('fork + 配置覆盖会话派发成功（不撞 UNSUPPORTED_CAPABILITY）', typeof forkSpawn.sessionId === 'string', JSON.stringify(forkSpawn))
 }
 
 // ============ 3. mainSession.open 并发互斥（并发只建一次） ============
@@ -115,6 +137,31 @@ console.log('\n== 3. open-main 并发互斥 ==')
   check('台账只写一次 main_session_id', ledger.getMainSessionId(db) === 'session-main')
   db.close()
   clean(dir)
+
+  // 失败也要清 in-flight：失败后还能再点
+  const dir2 = tmp('qa-fix-retry-')
+  const db2 = await ledger.openLedger(dir2)
+  let attempt = 0
+  const flaky = {
+    agents: { get: () => undefined },
+    sessionController: {
+      create: async () => {
+        attempt += 1
+        if (attempt === 1) throw new Error('boom')
+        return { sessionId: 'session-retry' }
+      },
+      rename: async () => {},
+    },
+    workspaces: { resolveByPath: () => undefined, create: async () => ({ id: 'ws' }) },
+  }
+  const mainRetry = createMainSession({ db: db2, config: {}, agents: flaky.agents, sessionController: flaky.sessionController, workspaces: flaky.workspaces, workspacePath: join(dir2, 'ws') })
+  const failed = await mainRetry.open()
+  const afterFailure = ledger.getMainSessionId(db2)
+  const retried = await mainRetry.open()
+  check('首次失败返回可读错误不写库', failed.ok === false && /创建主会话失败/.test(failed.error) && afterFailure === undefined, JSON.stringify({ failed, afterFailure }))
+  check('失败后 in-flight 已清，再点能成功', retried.ok === true && retried.sessionId === 'session-retry' && attempt === 2, JSON.stringify({ retried, attempt }))
+  db2.close()
+  clean(dir2)
 }
 
 // ============ 4. index 惰性取服务 + client pending ============
@@ -148,6 +195,22 @@ console.log('\n== 4. 惰性取服务 / 防双击 ==')
   check('main-session 支持 getter 形式的 sessionController/workspaces', getterResult.ok === true && getterResult.sessionId === 's-getter', JSON.stringify(getterResult))
   gdb.close()
   clean(gdir)
+
+  // getter 取不到服务时给可读错误，而不是 TypeError
+  const ndir = tmp('qa-fix-noservice-')
+  const ndb = await ledger.openLedger(ndir)
+  const mainNone = createMainSession({
+    db: ndb,
+    config: {},
+    agents: { get: () => undefined },
+    sessionController: () => undefined,
+    workspaces: () => undefined,
+    workspacePath: join(ndir, 'ws'),
+  })
+  const noneResult = await mainNone.open()
+  check('服务未就绪 → 可读错误（非 TypeError）', noneResult.ok === false && /sessionController/.test(String(noneResult.error)) && !/is not a function/.test(String(noneResult.error)), JSON.stringify(noneResult))
+  ndb.close()
+  clean(ndir)
 
   const clientSource = readFileSync(join(root, 'client.js'), 'utf8')
   check('client「打开主会话」有 pending 状态', /opening|openPending|openingMain/.test(clientSource),

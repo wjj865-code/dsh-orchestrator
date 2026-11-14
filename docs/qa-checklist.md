@@ -750,3 +750,21 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **结论**：阶段 2 测试侧通过（L1 54/54、L2 57/57、main-session 62/62、213/213、api-probe 33/33），无必须改项；两条非阻塞观察可随手修。
 
+### 28.2 终审四条必须改的独立复跑（`6d2f6b9`，新探针 `qa-main-session-fixes.mjs` 22 条全过）
+
+在 `895cee1` 上先跑出 **11 红**（证明探针能抓到问题），`6d2f6b9` 上全绿：
+
+| 项 | 独立断言 |
+| --- | --- |
+| ① 预设求值 | `cordis.patch.yml` 无 `createRequire(baseUrl)`；worker 段无 `customSkillDirs`、不再引用 `@deepseek-ai/dsh-agent-preset`；协调者 compaction 组与 `preset-tools` 未回退 |
+| ② provider 门控 | `provider:'fork'` 的 `request` **没有 `agentPreset` 键**（不是 undefined）；cwd 仍透传；`spawn` 仍注入 worker 预设且可被 `workerPreset` 覆盖；**fork + 配置覆盖会话派发成功**（假平台在收到 `agentPreset` 时抛 `UNSUPPORTED_CAPABILITY`，未触发） |
+| ③ open 互斥 | 并发两次 `open()` 只调一次 `sessionController.create`、两次拿同一 `sessionId`、台账只写一次；**失败后 in-flight 已清**（再点成功、create 第 2 次调用）、失败不写库 |
+| ④ 惰性服务 | `index.js` 以 getter 传 `sessionController`/`workspaces`；`main-session` 同时接受对象与 getter（动态验证通过）；服务未就绪返回「缺少 sessionController 服务（平台尚未就绪）」而非 TypeError |
+| 建议：防双击 | `client.js` 有 `openingMain` 状态，按钮 `disabled: openingMain` 且文案「打开中…」 |
+
+**干净克隆 `6d2f6b9` 全量**：`npm test` 216/216、`api-probe` 33/33、L1 54/54、L2 57/57、`qa-main-session` 62/62、`qa-main-session-fixes` 22/22，全部 exit 0。
+
+**撤回一条观察**：之前说「client 读快照相对路径、open-main 绝对路径不一致」是我基于中间版本的误判——核对后两处都走同一个 `ROUTE='api/orchestrator'` 常量，无需改。`task_create` 相对 target 的文案重复已由 `895cee1` 修掉。
+
+**结论**：阶段 2 测试侧通过（L1 54、L2 57、main 62、fixes 22、216/216、api-probe 33/33），四条必须改与一条建议全部独立复跑通过。
+
