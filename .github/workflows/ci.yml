@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt
+          npm run check:client
+
+      - name: Report test failures
+        if: failure()
+        shell: bash
+        run: |
+          grep -E '^(not ok|# tests|# pass|# fail)|AssertionError|Error:' test-output.txt \
+            | head -80 \
+            | while IFS= read -r line; do
+                echo "::error title=test::${line}"
+              done
