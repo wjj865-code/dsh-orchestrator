@@ -268,6 +268,8 @@ if (main[0]?.component) {
     check('主会话状态文案（未创建）', texts.includes('主会话未创建'), texts.filter((t) => t.includes('主会话')).join('|'))
     check('未创建主会话时提示从面板打开（源码，snapshot 未到达时不渲染）', /尚未打开主会话/.test(src), '「尚未打开主会话：点右上角…」')
     check('任务行渲染目标目录（源码含 targetDir + 截断）', /targetDir/.test(src) && /shortPath\(/.test(src), 'shortPath(60)')
+    check('任务行显示产物条数（源码）', /产物 \$\{artifacts\.length\}|产物.*artifacts\.length/.test(src), '产物 N')
+    check('产物列表可展开并显示路径（源码）', /toggleArtifacts/.test(src) && /item\.path/.test(src), 'toggleArtifacts + item.path')
     const openMainButton = []
     walk(tree, (n) => {
       if (n && n.props && typeof n.props.onClick === 'function' && Array.isArray(n.children) && n.children.includes('打开主会话')) openMainButton.push(n)

@@ -42,6 +42,10 @@ const done = mk('已完成任务', 'done', 'child-3')
 const stale = mk('两小时没动静的待派发', 'pending')
 db.prepare('UPDATE tasks SET last_event_at = ? WHERE id = ?').run(NOW - 2 * 60 * 60 * 1000, stale)
 db.prepare('UPDATE tasks SET target_dir = ? WHERE id = ?').run('C:/work/project', done)
+db.prepare('UPDATE tasks SET artifacts_json = ? WHERE id = ?').run(JSON.stringify([
+  { path: 'C:/work/project/out.txt', label: '结果文件', exists: true },
+  { path: 'C:/work/project/missing.txt', exists: false },
+]), done)
 addMessage(db, running, { kind: 'brief', rendered: '派发文本' })
 addNotification(db, { taskId: running, level: 'info' })
 setSetting(db, 'coordinator_session_id', 'session-qa')
@@ -91,6 +95,10 @@ check('不返回 brief/goal 原文', !Object.hasOwn(taskById(done), 'goal') && !
 check('running 任务 childSessionId 正确', taskById(running).childSessionId === 'child-1', String(taskById(running).childSessionId))
 check('没有 target 的任务 targetDir 为 null', taskById(running).targetDir === null, String(taskById(running).targetDir))
 check('带 target 的任务 targetDir 透出', taskById(done).targetDir === 'C:/work/project', String(taskById(done).targetDir))
+check('snapshot.tasks[].artifacts 形状', Array.isArray(taskById(done).artifacts) && taskById(done).artifacts.length === 2
+  && taskById(done).artifacts[0].path === 'C:/work/project/out.txt' && taskById(done).artifacts[0].label === '结果文件'
+  && taskById(done).artifacts[0].exists === true && taskById(done).artifacts[1].exists === false, JSON.stringify(taskById(done).artifacts))
+check('无产物任务 artifacts 按空数组', Array.isArray(taskById(running).artifacts) && taskById(running).artifacts.length === 0)
 check('pending 且无子会话 → queued=true', taskById(queued).queued === true)
 check('running → queued=false', taskById(running).queued === false)
 check('新建未排队的 pending → queued=false（queued_at 精确判定）', taskById(stale).queued === false)
