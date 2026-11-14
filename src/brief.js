@@ -28,7 +28,12 @@ export function validateTargetDir(target, { isDirectory = value => statSync(valu
 export function renderBrief(brief = {}) {
   const lines = [`【任务】${single(brief.title)}`, `【目标】${single(brief.goal)}`]
   const target = text(brief.target)
-  if (target !== '') lines.splice(2, 0, `【工作目录】${single(target)}`)
+  // brief 里最多只出现一个目录：就是 target_dir；不要把指挥舱/父会话目录也写进来，否则模型容易被带偏。
+  if (target !== '') {
+    lines.splice(2, 0, `【工作目录】${single(target)}`)
+    // 正向提示（不是硬约束）：worker 不强制 chdir，danger-full-access 下越界绝对路径写得出去。
+    lines.splice(3, 0, '所有产出只写到该目录内，不要写到父会话目录或其他绝对路径；完成后汇报时把文件路径落到该目录下。')
+  }
   const constraints = list(brief.constraints)
   if (constraints.length > 0) lines.push(`【约束】${constraints.map(item => `- ${single(item)}`).join('；')}`)
   lines.push(`【验收标准】\n${list(brief.acceptance).map(item => `- ${single(item)}`).join('\n')}`)

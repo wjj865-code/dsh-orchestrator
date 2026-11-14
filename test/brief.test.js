@@ -121,3 +121,18 @@ test('renderBrief：有 target 时渲染【工作目录】，无 target 不渲�
   const without = renderBrief({ title: 't', goal: 'g', acceptance: ['a'] })
   assert.equal(without.includes('【工作目录】'), false)
 })
+
+test('renderBrief：只出现一个目录（target），并给出现有目录内的写入提示', () => {
+  const text = renderBrief({ title: 't', goal: 'g', acceptance: ['a'], target: 'C:/work' })
+  // 目录只来自 target；不出现指挥舱/父会话目录这类第二个目录。
+  assert.equal(text.includes('指挥舱'), false)
+  assert.equal(text.match(/C:\/work/g).length, 1)
+  // 提示紧跟在【工作目录】下一行，明确「只写该目录内、汇报时路径落在这里」。
+  const lines = text.split('\n')
+  const hint = '所有产出只写到该目录内，不要写到父会话目录或其他绝对路径；完成后汇报时把文件路径落到该目录下。'
+  assert.equal(lines[lines.indexOf('【工作目录】C:/work') + 1], hint)
+  // 不带 target 时不出现这句（此时 cwd 就是指挥舱，写了也对，语义不动）。
+  const without = renderBrief({ title: 't', goal: 'g', acceptance: ['a'] })
+  assert.equal(without.includes(hint), false)
+  assert.equal(without.includes('【工作目录】'), false)
+})
