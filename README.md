@@ -58,22 +58,23 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 4. 重新安装/重启该 profile 使其生效。
 
-## 协调者绑定
+## 主会话（预设开启）
 
-解析顺序：`config.coordinatorSession`（显式覆盖，优先级最高，**不写台账**）→ 台账 `settings.coordinator_session_id` → 未绑定。
+解析顺序：`config.coordinatorSession`（显式覆盖，优先级最高，**不写台账**）→ 台账 `settings.main_session_id` → 未打开。
 
-- 未绑定时，**root/lead 会话**第一次调用 `task_create`（通过 brief 校验和队列容量检查后）会把**调用方会话**绑定为协调者；首绑用 `INSERT ... ON CONFLICT DO NOTHING` + 回读，先到先得、后到不覆盖，日志一行，并给该会话装白名单。
-- 子会话（`session.header.parentSession` 非空）不能首绑或重绑，避免把子任务绑成协调者。
-- 已绑定且 live 不重绑；绑定会话失效（找不到 live agent）时，只有 root/lead 调用方能重绑（CAS，先到先得），结果带「协调者会话已变更：旧 → 新」，旧协调者失效的通知记 `skipped` + `reason`，工具结果带「协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定」。
-- 未绑定时 `task_message` / `task_stop` 只返回「尚未绑定协调者，请先 task_create」，不写库、不投递、不改状态。
-- `task_list` / `task_status` 这类只读工具不触发绑定。
-- 误绑用配置覆盖修正；覆盖期间始终以配置为准，不写台账。
+- **固定入口**：面板右上角「打开主会话」调用 `POST /api/orchestrator {endpoint:'open-main'}`。插件确保指挥舱工作区（`~/.dsh/state/orchestrator/workspace`，显示名「指挥舱」）存在，用**协调者预设** `dsh-orchestrator-coordinator` 创建会话，`rename` 成「主会话」，写 `settings.main_session_id`，然后跳到该会话。
+- **不再自动绑定**：`task_create` 不再把调用方会话绑成协调者。没有主会话时 `task_*` 返回「尚未打开主会话，请先从面板「打开主会话」」，不建任务、不写库。
+- **只允许主会话**：`task_create` / `task_list` / `task_status` / `task_message` / `task_stop` 拒绝非主会话调用（含子会话）；`task_report` 仍归子会话。
+- **失效重建**：`settings.main_session_id` 指向的会话不 live 时，点「打开主会话」重建；旧任务留在面板。配置覆盖的会话没有预设保证，保留运行期白名单兜底。
+- **工具集在预设层定型**：协调者预设只挂 `persona`、`agent-instructions`、`time-context`、`tool-ask-user`、`compaction` 和 `dsh-orchestrator/preset-tools`；`preset-tools` 用 deny 补集把 allow 名单（5 个 `task_*`）之外的全局工具挡掉，`ask_user_question` 由预设自己的行提供。`show_view`、memory 默认不带（待真机确认）。
+- **任务执行者预设**：子会话由 dispatch 显式带 `dsh-orchestrator-worker`，是一份缩小的工作栈（文件/shell/web/todo/skill/compaction/present，无 delegation/goal/plan/schedule），绕开协调者预设的收窄。
+- `spawnProvider` 必须是 `spawn`（`fork` 不支持 `agentPreset`）；不是 `spawn` 时「打开主会话」返回可读错误，不静默降级、不改配置。
 
 ## 配置
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `coordinatorSession` | `undefined` | 可选显式覆盖；不配则首次 `task_create` 自动绑定调用方 |
+| `coordinatorSession` | `undefined` | 可选显式覆盖主会话；不配则读 `settings.main_session_id`（面板「打开主会话」写入） |
 | `backend` | `subagent` | 派发后端：`subagent`（直连 `ctx.subagents`）或 `team`（旧的 agentTeams 名册，回退用） |
 | `spawnProvider` | `spawn` | subagent provider（本地 fresh 子会话用 `spawn`） |
 | `staleMinutes` | `30` | `task_list` 里超过这么多分钟无动静就标 `⚠` |
@@ -103,8 +104,8 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 ## 客户端入口与任务面板（阶段 2）
 
 - **槽位**：侧栏入口用 `sidebar.footer.action`（`id:'orchestrator'`、`order:100`，点击 `ctx.layout.selectPanel('orchestrator')` 打开面板）。**不用 `sidebar.panellist`**：ds-bot 的 Bot 模式用 `!important` 藏掉了整个 shell 面板列表（`nav[class*="_panelList"]{display:none!important}`），而 footer action 列表是它保留的席位（它自己的 `bot-account`/`bot-return` 就在这）；`id` 不同不会顶掉账户位。侧栏折叠时 footer 入口会被 shell 隐藏，此时用会话头按钮。面板页是 `main` 的 `key:'orchestrator'`；会话头按钮用 `conversation.header.leading`（单席位，Bot 模式下也可见）。不碰 ds-bot 的 `sidebar.workspaces`/`conversation.session.header`。
-- **流程**：侧栏「任务」→ 面板（面板内「打开协调者会话」）；会话头按钮打开同一面板；每条任务可「打开子会话」，走 `ctx.uiWorkspace.openSession(id)`（与平台 `ui-subagent.openChild` 同款）。
-- **数据**：`/api/orchestrator` 只读 POST（`{ endpoint: 'snapshot' }`）。鉴权由 connection 服务统一负责（401/403、exact 路由 owner-only），handler 只 import 查询函数、只认白名单端点，**不写台账**。面板打开时拉一次、可见时 5s 轮询，连续失败退避 30s，可按状态筛选；失败显示「台账暂不可用」，不阻塞会话（平台对 handler 异常回 400 空体，客户端会显示 `HTTP 400`）。
+- **流程**：侧栏「任务」→ 面板（面板右上角「打开主会话」，创建/跳转后直接进入）；会话头按钮打开同一面板；每条任务可「打开子会话」，走 `ctx.uiWorkspace.openSession(id)`（与平台 `ui-subagent.openChild` 同款）。任务行显示目标目录（截断 60 字）。
+- **数据**：`/api/orchestrator` POST。`{ endpoint: 'snapshot' }` 只读；`{ endpoint: 'open-main' }` 是唯一动作端点（创建/打开主会话，返回 `sessionId`）。鉴权由 connection 服务统一负责（401/403、exact 路由 owner-only）；snapshot handler 只 import 查询函数、**不写台账**。面板打开时拉一次、可见时 5s 轮询，连续失败退避 30s，可按状态筛选；失败显示「台账暂不可用」，不阻塞会话（平台对 handler 异常回 400 空体，客户端会显示 `HTTP 400`）。
 - **产物**：`client.js` 是**经典脚本**（`window.__ModuleLoader__.load({ id:'dsh-orchestrator', factory })`，顶层无 import/export），`package.json` 声明 `dsh.client.platform:'web'`、`exports["./client"]`、`files` 含 `client.js`。MVP 无构建；`npm run check:client` 只做语法检查。
 
 ## 真机冒烟清单（隔离 profile）
@@ -118,13 +119,13 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 7. **白名单**：协调者工具列表里没有 `read`/`bash` 等；无安装失败日志。`spawn_teammate`/`send_message`/`list_agents` 阶段 1 仍可见（见已知局限）。
 8. **落盘**：`DSH_HOME` 下只新增 `state/orchestrator/tasks.sqlite`（+`-wal`/`-shm`），不写 profile 和其他会话目录。
 9. **审计口径**：插件通知与 `notifications` 行 1:1；`failed` 带 `reason`，`skipped` 的 `delivered_at` 为空；平台 settlement 通知不写行。
-10. **自动绑定**：无配置 profile 第一次 `task_create` 后 `settings.coordinator_session_id` = 调用方 root 会话；并发首绑先到先得、后到不覆盖；第二次不再重绑；`task_list`/`task_status` 不写 `settings`；子会话首绑被拒。
-11. **配置覆盖**：设置 `coordinatorSession` 时以配置为准、`settings` 为空，白名单只装在配置指定的会话。
-12. **失效降级**：绑定会话找不到 live agent 时，通知记 `skipped` + `reason`、结果带提示；只有 root 调用方能重绑，结果带「协调者会话已变更」；未绑定时 `task_message`/`task_stop` 只提示、不半执行。
+10. **主会话**：面板右上角「打开主会话」→ 指挥舱工作区 + 协调者预设创建会话，`settings.main_session_id` 写入，自动跳到「主会话」；再次点击复用、不重复创建。
+11. **工具集**：主会话工具表只有 `task_create/list/status/message/stop` 与 `ask_user_question`（`read`/`write`/`bash`/`wait_agent` 不可见）；平台日志有 `preset-tools: deny …` 审计行；任务子会话有 `read`/`write`/`bash`/`task_report`，且不叠协调者的 deny。
+12. **失效/覆盖**：删掉主会话后点入口能重建、旧任务还在；配置 `coordinatorSession` 时不写 `main_session_id`、运行期白名单只装该会话；未打开主会话时 `task_*` 返回提示、不建任务。
 13. **并发排队**：连续建 12 个任务，前 8 个跑起来、第 9 个起进队列不报错；完成一个后队列自动补位，且不出现双派。
 14. **排队操作**：`task_stop` 能取消排队中的任务并从队列移除；`task_message` 对排队任务给可读提示、不写消息。
 15. **孤儿对账**：重启前让某个任务的子会话在 catalog 里查不到，重启后该任务标 `orphaned`，不留幽灵 `running`；catalog 服务不可用时只 warn、不改状态。
-16. **卡片数据**：`taskCard` 返回 `childSessionId` / `queued` / `openVia:'subagent-catalog'`，`task_status` 带打开方式。
+16. **卡片数据**：`taskCard` 返回 `childSessionId` / `queued` / `openVia:'subagent-catalog'`，snapshot 每行带 `targetDir`，`task_status` 带打开方式。
 
 
 ## 工具
@@ -219,8 +220,12 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - **台账快照与自动恢复**：阶段 1 只把损坏库转成可读错误，不写快照、不自动恢复。
 - **卡片跳转**：子会话不在普通会话列表，阶段 1 只给数据（`childSessionId` + `openVia`），客户端入口/面板在阶段 2 按父会话的 subagent catalog 打开。
 - **30 分钟打扰升级**：`stallRounds` 只保存不生效，阶段 1 只有 `task_list` 的陈旧标记。
-- **协调者白名单的持久声明**：阶段 1 在协调者 agent 已加载时用 `agent.ctx.tools.restrict({ deny })` 做最小收窄（文件/shell/浏览器/web 类）；收窄挂在**回合边界**（绑定回合若在跑，等 `idle` 再装），所以绑定回合仍是全工具表、下一回合才收窄，避免 mid-turn `unknown tool`。真机确认 `spawn_teammate`/`send_message`/`list_agents`/`wait_agent`/`interrupt_agent`/`team_task_*` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；`wait_agent` 由执行期 guard + 动态提示兜底（见上节），其余工具阶段 2 由 agent preset 的 `composition.toolFilter` 固化，运行期白名单降为兜底。
-- **首绑回合的等待时序**：guard 管得住绑定后的同回合顺序调用；同一条 assistant 消息里并行、且在绑定前开始执行的 `wait_agent` 不承诺拦住。
+- **`run_code`/PTC**：平台禁止 `restrict` 指名 PTC 保留传输 `run_code`；若 profile 配了 PTC executor，协调者可能经它间接调用被 deny 的工具。真机确认 desktop 默认没有 PTC executor；有则记录并禁用该路。
+- **deny 审计日志**：`preset-tools: deny …` 走平台 `ctx.logger.info`，不写插件自己的 `logs/orchestrator-*.jsonl`；真机日志里能查到即可。
+- **`show_view` / memory**：base asar 未证实有这两个全局工具，协调者 allow 默认不带；Task 10 在 ds-bot 环境确认后再决定是否补 allow。
+- **`task_report` 子会话可见性**：靠全局注册，Task 10 真机确认；看不到就改用专用轻量工具模块，不把整个 `dsh-orchestrator` 塞进 worker 预设。
+- **配置覆盖会话的运行期白名单**：`config.coordinatorSession` 指定的会话没有预设保证，仍用 `agent.ctx.tools.restrict({ deny })` 兜底；收窄挂在**回合边界**（会话在跑时等 `idle` 再装），所以当回合仍是全工具表、下一回合才收窄，避免 mid-turn `unknown tool`。`spawn_teammate`/`send_message`/`list_agents`/`wait_agent`/`interrupt_agent`/`team_task_*` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；`wait_agent` 由执行期 guard + 动态提示兜底。
+- **同回合并行等待**：guard 管得住调用的顺序链；同一条 assistant 消息里并行、且在 guard 判定前已开始执行的 `wait_agent` 不承诺拦住。
 - **唤醒时序**：通知走 `agent.steer` 直插协调者会话（等价于 TeamService 给 lead 投递时的 `root.steer`），空闲唤醒、忙时 `next-step` 排队；机制证据见 `docs/api-notes.md`。真机忙时排队由维护者冒烟验证。
 - **平台 settlement 通知**：`subagent-settled` 是平台独立链路，不受本插件控制、不写 `notifications`。
 - **headless 收尾竞态**：一次性进程在 5 秒合并窗口内退出时，`steer` 可能抛 `agent initiator scope is disposed`（进程级 initiator 作用域已 dispose），此时消息可能已进 inbox 但没有回合消费，`notifications` 记 `failed` + reason 是正确审计；长驻 desktop/服务进程不受影响。冒烟要在最后一条回报后保持进程活过 `mergeWindowMs` 才能看到 `delivered`。

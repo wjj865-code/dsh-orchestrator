@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { loadConfig } from '../src/config.js'
 
 test('loadConfig 填默认值', () => {
@@ -67,4 +68,25 @@ test('maxQueue 默认 50，非法回落；autoResumeQueue 默认开', () => {
 test('不泄漏未声明的原始键', () => {
   const config = loadConfig({ foo: 1, coordinatorSession: 's-1' })
   assert.equal('foo' in config, false)
+})
+
+
+test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
+  const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  assert.match(source, /dsh-orchestrator-coordinator/)
+  assert.match(source, /dsh-orchestrator-worker/)
+  assert.match(source, /dsh-orchestrator\/preset-tools/)
+  assert.match(source, /'@deepseek-ai\/dsh-tool-present'/)
+  assert.doesNotMatch(source, /dsh-present/)
+  assert.match(source, /isolate:\s*\n\s+compaction: true/)
+  assert.equal((source.match(/compaction: true/g) ?? []).length, 2)
+  assert.equal((source.match(/id: tool-result-pruner/g) ?? []).length, 2)
+  assert.match(source, /tool-jobs/)
+  assert.match(source, /prefix:/)
+})
+
+test('package.json 导出 preset-tools', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.exports['./preset-tools'], './preset-tools.js')
+  assert.ok(pkg.files.includes('preset-tools.js'))
 })

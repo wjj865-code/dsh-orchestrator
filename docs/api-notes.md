@@ -107,16 +107,19 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 - 状态保持 `failed` + reason 是正确审计：注入发生了，但没有回合消费它。headless 冒烟若要在收尾前看到 `delivered`，需让进程在最后一条回报后活过 `mergeWindowMs`。
 - source 仍用 `{kind:'agent-message', form:'relay', senderSessionId}`，因为 sender scope 不在这条失败路径上；换成 `orchestrator-notification` 不能解决进程收尾。
 
-## 7. 协调者自动绑定（插件内部，不依赖平台新 API）
+## 7. 主会话（固定入口 + 预设开启，替代自动绑定）
 
-- 台账新增 `settings(key, value, updated_at)`；键 `coordinator_session_id`。
-- 解析顺序：`config.coordinatorSession`（显式覆盖，优先，不写台账）→ `settings.coordinator_session_id` → 未绑定。
-- 未绑定时，`task_create` 在 brief 校验/活跃上限通过后把 `exec.agent.id` 写入 `settings`，日志一行，并对该 agent 的 `ctx.tools` 装白名单；首绑用 `INSERT ... ON CONFLICT DO NOTHING` + 回读，先到先得。
-- 只有 root/lead 会话能首绑或重绑：优先看 `agent.session.header.parentSession === undefined`，取不到再查 `ctx.agentTeams.membership(agent).role === 'lead'`；子会话调用 `task_create` 直接给可读拒绝。
-- 已绑定且 live 不重绑。绑定 id 找不到 live agent 时，只有 root/lead 调用方能重绑，走 `UPDATE ... WHERE key = ? AND value = 旧值`（CAS），成功后日志和 `task_create` 结果都带「协调者会话已变更：旧 → 新」。
-- 未绑定时 `task_message` / `task_stop` 只返回「尚未绑定协调者，请先 task_create」，不写库、不投递、不改状态；`task_list` / `task_status` 不触发绑定。
-- 已绑定 id 失效时通知返回 `{skipped:true, reason}`（落 `skipped` 行），`task_create`/`task_report` 结果带失效提示。
-- 白名单在绑定时安装而不是插件启动时：只作用于被绑定的那个 agent 的 `ctx`，`tools.restrict` 返回 disposer 并在卸载时撤销；不会作用于子任务 agent（子 agent 的 scope 不挂在协调者 scope 下）。
+平台契约见 `docs/probes/main-session-probe.md`；这里只记本插件的接法。
+
+- 台账 `settings` 键改为 `main_session_id`；解析顺序 `config.coordinatorSession`（显式覆盖，优先，不写台账）→ `settings.main_session_id` → 未打开。
+- 主会话由 `src/main-session.js` 创建：`workspaceRegistry.resolveByPath`（没有就 `mkdir` + `create(path, '指挥舱')`）→ `sessionController.create({ workspaceId, agentPreset: 'dsh-orchestrator-coordinator' })` → `sessionController.rename({ sessionId, title: '主会话' })` → 写 `settings.main_session_id`。
+- `sessionController.create` 入参没有 `title`，标题必须单独 `rename`；`rename` 依赖 `sessionTitle` 服务，失败只记日志，不影响主会话可用。
+- 子会话 cwd：`startActivation.request.cwd` 直接用目标目录（必须是存在的绝对目录），沙箱边界就是该 cwd；没给 target 时沿用父会话 cwd。
+- `task_create` 不再绑定调用方；`task_*`（除 `task_report`）只允许主会话调用，没有主会话时返回「尚未打开主会话，请先从面板「打开主会话」」。
+- 白名单：主会话由协调者预设的 `preset-tools` 用 deny 补集定型（只留 5 个 `task_*`，`ask_user_question` 由预设自有行提供）；配置覆盖的会话没有预设保证，保留运行期 `restrict` + `wait_agent` guard 兜底。
+- 双预设：子会话由 dispatch 显式带 `dsh-orchestrator-worker`（`startActivation.request.agentPreset`），绕开 `composeFrom` 的父预设工具继承；worker 预设必须自带工具行（空 `plugins` 不会继承 profile 全量工具）。
+- `spawnProvider` 只支持 `spawn`（fork 不满足 `capabilities.agentPreset`）；不是 `spawn` 时打开主会话返回可读错误，不静默降级。
+
 
 
 
