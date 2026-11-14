@@ -115,6 +115,14 @@ check('显式不存在 target 仍拒', /不存在或不是目录/.test(String(mi
 const explicit = await tool('task_create').execute({ title: '显式 target', goal: 'g', acceptance: ['a'], target: workB }, mainExec)
 check('显式合法 target 契约不变', /已派发/.test(String(explicit)) && db.prepare("SELECT target_dir FROM tasks WHERE title = '显式 target'").get().target_dir === workB)
 
+// 空字符串 / 全空白 target 与「不传」等价（12c7f45 终审空串缺陷）
+const emptyTarget = await tool('task_create').execute({ title: '空串 target 无命中', goal: 'g', acceptance: ['a'], target: '' }, mainExec)
+const emptyRow = db.prepare("SELECT target_dir FROM tasks WHERE title = '空串 target 无命中'").get()
+check('target="" 与不传等价（不写空串 target_dir）', /已派发/.test(String(emptyTarget)) && emptyRow?.target_dir === null, `${emptyRow?.target_dir === '' ? 'TARGET_DIR=""' : String(emptyRow?.target_dir)}`)
+const blankTarget = await tool('task_create').execute({ title: '空白 target 命中 Gomoku AI', goal: 'g', acceptance: ['a'], target: '   ' }, mainExec)
+const blankRow = db.prepare("SELECT target_dir FROM tasks WHERE title = '空白 target 命中 Gomoku AI'").get()
+check('target="   " 与不传等价（仍走推断命中）', /已派发/.test(String(blankTarget)) && blankRow?.target_dir === workA, String(blankRow?.target_dir))
+
 // ======================= 3. artifacts 落库 / 通知 / 面板 =======================
 console.log('\n== 3. artifacts ==')
 const tdir = join(home, 'taskdir')
@@ -141,6 +149,27 @@ check('存在性 only stat：存在 true / 缺失 false', stored.artifacts[0]?.e
 check('report 不因缺失产物失败', /已记录/.test(String(report)) && stored.status === 'done', String(report).slice(0, 40))
 const noteDone = pushed[pushed.length - 1]
 check('notifier 收到 artifacts', noteDone?.artifacts?.length === 2 && noteDone.status === 'done')
+
+// 上限 20 条 + 目录产物也算存在 + 截断提示
+mkdirSync(join(tdir, 'subdir'), { recursive: true })
+const capTask = ledger.createTask(db, { brief: { title: '产物上限任务', goal: 'g', acceptance: ['a'] }, coordinatorSession: 'main-1', targetDir: tdir })
+ledger.transition(db, capTask.id, 'running', { sessionId: 'child-2', target: 'child-2' })
+const manyArtifacts = Array.from({ length: 25 }, (_, i) => ({ path: `missing-${i}.txt`, label: `说明-${i}` }))
+manyArtifacts[0] = { path: 'out.txt', label: '根文件' }
+manyArtifacts[1] = { path: 'subdir', label: '目录产物' }
+await tool('task_report').execute({ task_id: capTask.id, status: 'done', summary: '上限', artifacts: manyArtifacts }, { agent: { id: 'child-2' } })
+const capStored = ledger.getTask(db, capTask.id)
+check('artifacts 上限 20 条', Array.isArray(capStored.artifacts) && capStored.artifacts.length <= 20, `stored=${capStored.artifacts?.length}`)
+check('目录产物算存在（isFile || isDirectory）', capStored.artifacts?.find((item) => item.path === join(tdir, 'subdir'))?.exists === true,
+  JSON.stringify(capStored.artifacts?.find((item) => item.path === join(tdir, 'subdir'))))
+const capNote = pushed[pushed.length - 1]
+check('截断数量随通知传递（25 → 20 + omitted 5）', capNote?.artifacts?.length === 20 && capNote?.artifactsTruncated === 5,
+  JSON.stringify({ count: capNote?.artifacts?.length, omitted: capNote?.artifactsTruncated }))
+const truncTexts = []
+const truncNotifier = createNotifier({ send: (text) => truncTexts.push(text), record: () => {}, mergeWindowMs: 1000 })
+truncNotifier.push({ taskId: 't5', title: '截断任务', status: 'done', summary: '截断', artifacts: capStored.artifacts, artifactsTruncated: 5 })
+await truncNotifier.drain()
+check('通知里有「另有 5 条产物未列出」', (truncTexts[truncTexts.length - 1] ?? '').includes('另有 5 条产物未列出'), (truncTexts[truncTexts.length - 1] ?? '').slice(-120))
 
 // 通知文本：单条 + 合并聚合
 const texts = []
