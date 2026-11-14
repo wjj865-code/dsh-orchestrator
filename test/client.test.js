@@ -100,6 +100,8 @@ test('面板提供「打开主会话」并调用 open-main', () => {
   assert.match(source, /task\.targetDir/)
   assert.match(source, /openingMain/)
   assert.match(source, /打开中…/)
+  assert.match(source, /openedMain/)
+  assert.match(source, /主会话已就绪；若仍停在 Bot 会话里/)
 })
 
 test('入口/头部按钮的文案仍是任务', () => {

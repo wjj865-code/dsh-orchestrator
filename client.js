@@ -107,6 +107,7 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState(null)
       const [refreshing, setRefreshing] = React.useState(false)
       const [openingMain, setOpeningMain] = React.useState(false)
+      const [openedMain, setOpenedMain] = React.useState(false)
       const [filter, setFilter] = React.useState('all')
 
       const load = React.useCallback(async (signal) => {
@@ -158,9 +159,12 @@ window.__ModuleLoader__.load({
         // 双击会并发两次 open-main；主会话创建没有互斥，客户端先自己挡一层。
         if (openingMain) return
         setOpeningMain(true)
+        setOpenedMain(false)
         try {
           const body = await openMainSession()
           open(body.sessionId)
+          // 静态提示（不做 mainView 检测）：Bot 模式下主视图其实已切，错位的是 ds-bot 的皮肤/输入框。
+          setOpenedMain(true)
         } catch (failure) {
           setError(String((failure && failure.message) || failure))
         } finally {
@@ -185,6 +189,9 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', style: styles.button, onClick: handleOpenMain, disabled: openingMain }, openingMain ? '打开中…' : '打开主会话'),
         ),
         error !== null ? h('div', { style: styles.error }, `台账暂不可用：${error}`) : null,
+        openedMain
+          ? h('div', { style: styles.notice }, '主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」。')
+          : null,
         snapshot !== null && mainSession.id === null
           ? h('div', { style: styles.notice }, '尚未打开主会话：点右上角「打开主会话」，在指挥舱里创建。')
           : null,
