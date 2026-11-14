@@ -100,6 +100,23 @@ plugins:
     name: '@deepseek-ai/dsh-time-context'
   - id: tool-ask-user
     name: '@deepseek-ai/dsh-tool-ask-user'
+  - id: compaction
+    name: cordis:group
+    group: true
+    isolate:
+      compaction: true
+      toolResultPruner: true
+    config:
+      - id: compaction-basic
+        name: '@deepseek-ai/dsh-compaction-basic'
+      - id: command-compact
+        name: '@deepseek-ai/dsh-command-compact'
+      - id: tool-result-pruner
+        name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+        config:
+          thresholdChars: 8192
+          headChars: 4096
+          tailChars: 1024
   - id: preset-tools
     name: dsh-orchestrator/preset-tools        # 本包 exports['./preset-tools']
     config:
@@ -112,6 +129,7 @@ plugins:
 ```
 
 - `persona.prefix` 是**必填**（`dsh-persona` 的 Config：`prefix: required`），漏了 preset 直接 broken。
+- **协调者也要 `compaction` 组**（长期对话，不挂会撑爆上下文）：与 worker 同一组，带 `isolate: { compaction: true, toolResultPruner: true }` 和三条子行/config。
 - `task_*` 工具来自本插件（host bundle 全局注册），不在 preset 行里；`preset-tools` 用 **deny 补集**（§1.5）：allow 名单之外的全局工具逐个 deny，mount 时 + 每次 `tools/change` 增量补，不硬抛、不因 `task_*` 后注册把协调者削空。
 - `ask_user_question` 由 `tool-ask-user` 行自己注册（名字是 `ask_user_question`，不是 `ask_user`），**不写进 allow**——写进去会抛 `unknown global tool`；预设自有工具本身不受 deny 影响。
 - **`task_report` 不进 allow**（子会话专用，全局注册，会被 deny）；`show_view` 与 memory 在 base asar 未证实，**默认不带**，Task 10 在 ds-bot 环境确认后再决定是否补 allow。

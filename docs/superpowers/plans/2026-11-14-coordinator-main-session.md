@@ -886,6 +886,8 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   assert.match(source, /'@deepseek-ai\/dsh-tool-present'/)   // 标准包名，不是 dsh-present
   assert.doesNotMatch(source, /dsh-present/)
   assert.match(source, /isolate:\s*\n\s+compaction: true/)    // compaction 组必须带 isolate
+  assert.equal((source.match(/compaction: true/g) ?? []).length, 2) // 协调者与 worker 各一组
+  assert.equal((source.match(/id: tool-result-pruner/g) ?? []).length, 2)
   assert.match(source, /tool-jobs/)                            // 后台任务需要
   assert.match(source, /prefix:/)                              // persona.prefix 必填
 })
@@ -992,6 +994,23 @@ test('mount 后动态注册的工具被 deny，协调者工具表不增加', () 
             name: '@deepseek-ai/dsh-time-context'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
           - id: preset-tools
             name: dsh-orchestrator/preset-tools
             config:
