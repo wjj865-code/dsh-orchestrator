@@ -18,6 +18,14 @@
 
 常用工具：`task_create`、`task_inbox`、`task_list`、`task_status`、`task_message`、`task_stop`、`task_retry`、`history_search`、`project_context`、`memory_note`。
 
+## 面板动作与错误码
+
+面板的 stop/retry/message 与工具 `task_stop`/`task_retry`/`task_message` 共用 `src/action-errors.js` 的同一套 code、门控语义和文案：面板失败返回 `{ ok:false, code, error }`，host-route 按 code 映射 HTTP 状态（400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部）；工具层保持可读字符串返回。面板把错误显示成 `动作 失败（CODE）：原因`。
+
+- `stop`：已 cancelled/done/orphaned 再 stop 返回 `{ ok:true, already:true }`，面板提示「已是该状态」；并发双击只迁移一次。收子会话失败不阻断取消，结果带 `warnings[].code=STOP_DISPATCH_FAILED`。
+- `retry`：只允许 failed/orphaned；同一失败任务已有活跃重派时直接返回那条任务（`already:true` + `retryOf`），不会重复创建；同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。
+- `message`：面板每次点击生成 `clientRequestId`，host-route 按 `(taskId, clientRequestId)` 进程内去重；没有 id 的旧客户端退回「同任务 3 秒内相同文本」窗口去重。投递失败返回 `MESSAGE_DELIVERY_FAILED`，失败记录不会被当成已投递，窗口内可立刻重发。
+
 ## 边界
 
 - 依赖只能指向已存在的任务，暂不支持编辑已有任务的依赖。

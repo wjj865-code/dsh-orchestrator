@@ -94,7 +94,7 @@ test('未知端点返回 400，不泄漏内部错误', async () => {
   const response = await handler(request({ endpoint: 'delete-everything' }))
   assert.equal(response.status, 400)
   const body = await response.json()
-  assert.deepEqual(body, { ok: false, error: 'unknown-endpoint' })
+  assert.deepEqual(body, { ok: false, code: 'UNKNOWN_ENDPOINT', error: 'unknown-endpoint' })
   db.close()
 })
 
@@ -264,5 +264,158 @@ test('snapshot 任务行带 artifacts（path/label/exists），旧任务按空�
   ])
   const legacy = body.tasks.find(row => row.title === '旧任务')
   assert.deepEqual(legacy.artifacts, [])
+  db.close()
+})
+
+test('面板失败按 code 映射 HTTP 状态（404/409/502/500）', async () => {
+  const db = await openLedger(tempDir())
+  const panel = {
+    detail: () => ({ ok: false, code: 'TASK_NOT_FOUND', error: '没有任务 t-x' }),
+    artifacts: () => ({ ok: true, items: [] }),
+    stop: async () => ({ ok: false, code: 'STOP_FAILED', error: '停止失败：boom' }),
+    retry: async () => ({ ok: false, code: 'RETRY_NOT_ALLOWED', error: '不能重派' }),
+    message: async () => ({ ok: false, code: 'MESSAGE_DELIVERY_FAILED', error: '续派失败：offline' }),
+  }
+  const handler = createHostRoute({ db, panel })
+  const detail = await handler(request({ endpoint: 'detail', taskId: 't-x' }))
+  assert.equal(detail.status, 404)
+  assert.equal((await detail.json()).code, 'TASK_NOT_FOUND')
+  const stop = await handler(request({ endpoint: 'stop', taskId: 't-x' }))
+  assert.equal(stop.status, 500)
+  const retry = await handler(request({ endpoint: 'retry', taskId: 't-x' }))
+  assert.equal(retry.status, 409)
+  const message = await handler(request({ endpoint: 'message', taskId: 't-x', message: 'x' }))
+  assert.equal(message.status, 502)
+  db.close()
+})
+
+test('面板旧格式失败（无 code）仍 400；抛异常返回 ACTION_FAILED 500', async () => {
+  const db = await openLedger(tempDir())
+  const legacy = createHostRoute({
+    db,
+    panel: { message: async () => ({ ok: false, error: '消息不能为空' }), detail: () => ({ ok: true }), artifacts: () => ({ ok: true, items: [] }) },
+  })
+  const old = await legacy(request({ endpoint: 'message', taskId: 't-1', message: '' }))
+  assert.equal(old.status, 400)
+  assert.equal((await old.json()).code, undefined)
+  const throwing = createHostRoute({
+    db,
+    panel: { stop: async () => { throw new Error('ledger boom') }, detail: () => ({ ok: true }), artifacts: () => ({ ok: true, items: [] }) },
+  })
+  const failed = await throwing(request({ endpoint: 'stop', taskId: 't-1' }))
+  assert.equal(failed.status, 500)
+  const body = await failed.json()
+  assert.equal(body.code, 'ACTION_FAILED')
+  assert.match(body.error, /ledger boom/)
+  db.close()
+})
+
+test('未注入 panel 时返回 PANEL_ACTIONS_UNAVAILABLE', async () => {
+  const db = await openLedger(tempDir())
+  const handler = createHostRoute({ db })
+  const response = await handler(request({ endpoint: 'stop', taskId: 't-1' }))
+  assert.equal(response.status, 500)
+  assert.deepEqual(await response.json(), {
+    ok: false, code: 'PANEL_ACTIONS_UNAVAILABLE', error: 'panel-actions-unavailable',
+  })
+  db.close()
+})
+
+test('open-main 失败路径都带错误码', async () => {
+  const db = await openLedger(tempDir())
+  const unavailable = createHostRoute({ db })
+  const missing = await unavailable(request({ endpoint: 'open-main' }))
+  assert.equal(missing.status, 500)
+  assert.deepEqual(await missing.json(), {
+    ok: false, code: 'OPEN_MAIN_UNAVAILABLE', error: 'open-main-unavailable',
+  })
+  const failed = createHostRoute({ db, openMain: async () => ({ ok: false, error: '指挥舱工作区不可用' }) })
+  const reason = await failed(request({ endpoint: 'open-main' }))
+  assert.equal(reason.status, 500)
+  const body = await reason.json()
+  assert.equal(body.code, 'OPEN_MAIN_FAILED')
+  assert.match(body.error, /指挥舱/)
+  db.close()
+})
+
+test('message 请求级幂等：同 (taskId, clientRequestId) 只投递一次', async () => {
+  const db = await openLedger(tempDir())
+  const calls = []
+  const panel = {
+    detail: () => ({ ok: true }),
+    artifacts: () => ({ ok: true, items: [] }),
+    message: async (taskId, message) => {
+      calls.push([taskId, message])
+      return { ok: true, taskId }
+    },
+  }
+  const handler = createHostRoute({ db, panel })
+  const first = await (await handler(request({
+    endpoint: 'message', taskId: 't-1', message: '继续', clientRequestId: 'req-1',
+  }))).json()
+  const second = await (await handler(request({
+    endpoint: 'message', taskId: 't-1', message: '继续', clientRequestId: 'req-1',
+  }))).json()
+  assert.equal(first.ok, true)
+  assert.equal(first.already, undefined)
+  assert.equal(second.ok, true)
+  assert.equal(second.already, true)
+  assert.equal(second.duplicate, true)
+  assert.deepEqual(calls, [['t-1', '继续']])
+  const other = await (await handler(request({
+    endpoint: 'message', taskId: 't-1', message: '继续', clientRequestId: 'req-2',
+  }))).json()
+  assert.equal(other.ok, true)
+  assert.equal(calls.length, 2)
+  db.close()
+})
+
+test('message 失败结果不缓存：同一个 clientRequestId 允许重试', async () => {
+  const db = await openLedger(tempDir())
+  let calls = 0
+  const panel = {
+    detail: () => ({ ok: true }),
+    artifacts: () => ({ ok: true, items: [] }),
+    message: async () => {
+      calls += 1
+      return { ok: false, code: 'MESSAGE_DELIVERY_FAILED', error: '续派失败：offline' }
+    },
+  }
+  const handler = createHostRoute({ db, panel })
+  const body = { endpoint: 'message', taskId: 't-1', message: '继续', clientRequestId: 'req-fail' }
+  const first = await handler(request(body))
+  const second = await handler(request(body))
+  assert.equal(first.status, 502)
+  assert.equal(second.status, 502)
+  assert.equal(calls, 2)
+  db.close()
+})
+
+test('message 并发同 clientRequestId 合并成一次投递', async () => {
+  const db = await openLedger(tempDir())
+  let calls = 0
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const panel = {
+    detail: () => ({ ok: true }),
+    artifacts: () => ({ ok: true, items: [] }),
+    message: async (taskId) => {
+      calls += 1
+      await gate
+      return { ok: true, taskId }
+    },
+  }
+  const handler = createHostRoute({ db, panel })
+  const body = { endpoint: 'message', taskId: 't-1', message: '继续', clientRequestId: 'req-concurrent' }
+  const first = handler(request(body))
+  const second = handler(request(body))
+  await new Promise(resolve => setImmediate(resolve))
+  release()
+  const [a, b] = await Promise.all([first, second])
+  assert.equal(a.status, 200)
+  assert.equal(b.status, 200)
+  assert.equal(calls, 1)
+  assert.equal((await a.json()).already, undefined)
+  assert.equal((await b.json()).already, true)
   db.close()
 })

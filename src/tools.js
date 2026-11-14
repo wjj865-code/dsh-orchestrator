@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
 import { taskLabel, taskLabelWithId } from './task-label.js'
-import { canTransition } from './state.js'
+import { canTransition, statusLabel } from './state.js'
 import { dependencyState, promoteDependents, validateDepends } from './deps.js'
 import {
   GLOBAL_PROJECT, addMemory, buildMemoryBlock, memoryTokens, projectKeyOf, remember, searchMemories,
@@ -14,6 +14,7 @@ import {
   setTaskArtifacts, setTaskError, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress,
 } from './ledger.js'
+import { toolFailure } from './action-errors.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
 const str = description => ({ type: 'string', description })
@@ -26,17 +27,13 @@ const textOutput = {
 const REPORT_STATUS = ['progress', 'done', 'blocked', 'needs_auth']
 const MAX_ARTIFACTS = 20
 const MAX_ARTIFACT_LABEL = 160
-const STATUS_LABEL = {
-  waiting_dep: '等前置', pending: '待派发', running: '进行中', waiting_user: '等你确认', waiting_auth: '要授权',
-  done: '已完成', failed: '失败', cancelled: '已取消', orphaned: '会话丢失',
-}
 const ACTIVE_STATUS = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
 const WAITING_STATUS = new Set(['waiting_user', 'waiting_auth'])
 const RESUME_STATUS = new Set(['waiting_user', 'waiting_auth', 'failed'])
 const TERMINAL_STATUS = new Set(['done', 'cancelled', 'orphaned'])
 const RETRYABLE_STATUS = new Set(['failed', 'orphaned'])
 
-const labelOf = status => STATUS_LABEL[status] ?? status
+const labelOf = statusLabel
 const short = (value, max = 40) => {
   const text = String(value ?? '').split('\n')[0].trim()
   return text.length > max ? `${text.slice(0, max)}…` : text
@@ -461,7 +458,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const resultTask = outcome.task
       const inferredNote = inferred === undefined ? '' : `（目标目录按工作区推断：${inferred.path}）`
       const notes = [invalidHint(), inferredNote, conflictNote, dependencyNote].filter(Boolean).join('\n')
-      if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? '子会话创建失败')
+      if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       if (resultTask?.status === 'running') {
         return `任务「${taskLabelWithId(task)}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
       }
@@ -492,7 +489,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
       const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return `没有任务 ${args.task_id ?? ''}。用 task_list 查编号。`
+      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id, hint: '用 task_list 查编号。' })
       const messages = recentMessages(db, task.id, 3)
       const recent = messages.map(row => `- [${row.kind}] ${short(row.rendered, 80)}`).join('\n')
       const lines = [
@@ -541,17 +538,21 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (denied !== undefined) return denied
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
-      if (TERMINAL_STATUS.has(task.status)) return `任务「${labelFor(task)}」已结束（${labelOf(task.status)}），不能续派；需要新工作请 task_create。`
+      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+      if (TERMINAL_STATUS.has(task.status)) {
+        return toolFailure('MESSAGE_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
+      }
       if (task.status === 'waiting_dep') {
-        return `任务「${labelFor(task)}」还在等待前置任务（${task.depends_on.join('、')}），依赖完成后会派发，暂不能续派；要取消用 task_stop。`
+        return toolFailure('MESSAGE_WAITING_DEP', { label: labelFor(task), depends: task.depends_on.join('、') })
       }
       if (task.status === 'pending' && (task.target === null || task.target === undefined)) {
         return task.queued_at === null || task.queued_at === undefined
-          ? `任务「${labelFor(task)}」还没有子会话，先停止再重建。`
-          : `任务「${labelFor(task)}」正在排队（前面还有 ${Math.max(queue.position(task.id) - 1, 0)} 个），轮到时自动派发，暂不能续派。`
+          ? toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
+          : toolFailure('MESSAGE_QUEUED', { label: labelFor(task), ahead: Math.max(queue.position(task.id) - 1, 0) })
       }
-      if (task.target === null || task.target === undefined) return `任务「${labelFor(task)}」还没有子会话，先停止再重建。`
+      if (task.target === null || task.target === undefined) {
+        return toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
+      }
       const message = args.message ?? ''
       addMessage(db, task.id, { kind: 'followup', rendered: message })
       try {
@@ -564,7 +565,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           log('task.orphaned', { taskId: task.id, sessionId: task.session_id, detail: { reason } })
           transition(db, task.id, 'orphaned', { error: `子会话不可达：${reason}` })
           releaseTaskSession(task)
-          return `续派失败：任务「${labelFor(task)}」的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`
+          return toolFailure('MESSAGE_UNREACHABLE', { label: labelFor(task), reason })
         }
         if (current.status === 'waiting_user') {
           setTaskError(db, task.id, reason)
@@ -574,7 +575,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           transition(db, task.id, 'failed', { error: reason })
           releaseTaskSession(task)
         }
-        return `续派失败：任务「${labelFor(task)}」已转为「等你确认」（已重试 3 次）。原因：${reason}`
+        return toolFailure('MESSAGE_DELIVERY_FAILED', { label: labelFor(task), reason })
       }
       touchTask(db, task.id)
       const current = getTask(db, task.id)
@@ -589,8 +590,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (denied !== undefined) return denied
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
-      if (TERMINAL_STATUS.has(task.status)) return `任务「${labelFor(task)}」已结束（${labelOf(task.status)}），无需停止。`
+      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+      if (TERMINAL_STATUS.has(task.status)) {
+        return toolFailure('STOP_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
+      }
       if (task.status === 'pending' || task.status === 'waiting_dep') {
         queue.remove(task.id)
         transition(db, task.id, 'cancelled')
@@ -622,18 +625,21 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (denied !== undefined) return denied
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return `没有任务 ${args.task_id ?? ''}。用 task_list 查编号。`
+      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id, hint: '用 task_list 查编号。' })
       if (!RETRYABLE_STATUS.has(task.status)) {
-        return `任务「${labelFor(task)}」当前是${labelOf(task.status)}，只有失败或会话丢失的任务能重派；在跑的任务用 task_message，排队中的用 task_stop 取消后重建。`
+        return toolFailure('RETRY_NOT_ALLOWED', { label: labelFor(task), statusLabel: labelOf(task.status) })
       }
       const duplicate = listTasks(db, { active: true })
         .find(item => item.title.trim() === task.title.trim() && item.goal.trim() === task.goal.trim())
       if (duplicate !== undefined) {
-        return `已存在活跃任务「${taskLabelWithId(duplicate)}」（${labelOf(duplicate.status)}），未重复重派。`
+        return toolFailure('RETRY_DUPLICATE_ACTIVE', {
+          label: taskLabelWithId(duplicate),
+          statusLabel: labelOf(duplicate.status),
+        })
       }
       const current = status()
       const depends = validateDepends(db, task.depends_on)
-      if (depends.ok === false) return `不能重派：${depends.error}。`
+      if (depends.ok === false) return toolFailure('RETRY_DEPENDS_INVALID', { reason: depends.error })
       const depState = dependencyState(db, { depends_on: depends.ids })
       const retried = createTask(db, {
         brief: task.brief,
@@ -654,7 +660,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       })
       addMessage(db, retried.id, { kind: 'brief', rendered: `【任务编号】${retried.id}\n${renderBrief(task.brief)}` })
       if (current.live === false) {
-        const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
+        const message = invalidHint() === '' ? toolFailure('MAIN_SESSION_UNAVAILABLE') : invalidHint()
         log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })
         transition(db, retried.id, 'failed', { error: message })
         throw new Error(message)
@@ -664,7 +670,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       const outcome = await queue.enqueueAndPump(retried.id)
       const resultTask = outcome.task
-      if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? '子会话创建失败')
+      if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       const hint = invalidHint()
       const notes = hint === '' ? '' : `\n${hint}`
       if (resultTask?.status === 'running') {

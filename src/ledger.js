@@ -302,6 +302,18 @@ export function recentMessages(db, taskId, limit = 3) {
   return db.prepare('SELECT kind, rendered, at FROM messages WHERE task_id = ? ORDER BY seq DESC LIMIT ?').all(taskId, limit)
 }
 
+/** 窗口内是否存在「已成功投递」的同文 followup（面板 message 幂等去重）。
+ *  之后的 delivery_failed 行说明这次没送到，不算成功，允许立刻重发。 */
+export function findRecentDeliveredFollowup(db, taskId, rendered, since) {
+  return db.prepare(`SELECT f.seq, f.at FROM messages f
+    WHERE f.task_id = ? AND f.kind = 'followup' AND f.rendered = ? AND f.at >= ?
+      AND NOT EXISTS (
+        SELECT 1 FROM messages d
+        WHERE d.task_id = f.task_id AND d.kind = 'delivery_failed' AND d.seq > f.seq
+      )
+    ORDER BY f.seq DESC LIMIT 1`).get(taskId, String(rendered), since)
+}
+
 export function addNotification(db, { taskId, level, status = 'delivered', deliveredAt = Date.now(), mergedInto = null, reason = null }) {
   const result = db.prepare('INSERT INTO notifications (task_id, level, status, created_at, delivered_at, merged_into, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(String(taskId), String(level), String(status), Date.now(), deliveredAt, mergedInto, reason)

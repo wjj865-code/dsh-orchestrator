@@ -2,15 +2,12 @@
 // 依赖完成后再晋升为 pending 入队；依赖失败/丢失则向下游传播失败。
 import { getTask, listTasks, recentMessages, transition } from './ledger.js'
 import { taskLabelWithId } from './task-label.js'
+import { statusLabel } from './state.js'
 
-const STATUS_LABEL = {
-  waiting_dep: '等前置', pending: '待派发', running: '进行中', waiting_user: '等你确认',
-  waiting_auth: '要授权', done: '已完成', failed: '失败', cancelled: '已取消', orphaned: '会话丢失',
-}
 const FAILED_DEP = new Set(['failed', 'cancelled', 'orphaned'])
 const MAX_DEPENDS = 20
 
-const labelOf = status => STATUS_LABEL[status] ?? status
+const labelOf = statusLabel
 const short = (value, max = 100) => {
   const text = String(value ?? '').split('\n')[0].trim()
   return text.length > max ? `${text.slice(0, max)}…` : text

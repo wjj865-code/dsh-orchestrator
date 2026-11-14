@@ -63,6 +63,23 @@ window.__ModuleLoader__.load({
       throw new Error((body && body.error) || '打开主会话失败')
     }
 
+    // 面板动作统一失败格式是 { ok:false, code, error }；code 稳定可编程，error 是给人看的中文。
+    // Error 上同时挂 code/status，runPanel 才能把错误码显示在面板里。
+    const actionFailure = (body, status) => {
+      const failure = new Error((body && body.error) || `HTTP ${status}`)
+      if (body && typeof body.code === 'string' && body.code !== '') failure.code = body.code
+      failure.status = status
+      return failure
+    }
+
+    // 每次 message 点击生成一个请求 id：host-route 按 (taskId, clientRequestId) 去重，
+    // 网络重发/重复点击不会把同一条消息投递两次。
+    const newRequestId = () => {
+      const source = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined
+      if (source && typeof source.randomUUID === 'function') return source.randomUUID()
+      return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    }
+
     // 面板动作：detail/artifacts 只读，stop/retry/message 是写动作。
     const readDetail = async taskId => {
       const response = await fetch(ROUTE, {
@@ -72,18 +89,22 @@ window.__ModuleLoader__.load({
       })
       const body = await response.json()
       if (body && body.ok === true) return body
-      throw new Error((body && body.error) || `HTTP ${response.status}`)
+      throw actionFailure(body, response.status)
     }
 
     const panelAction = async (endpoint, taskId, extra = {}) => {
+      const payload = { endpoint, taskId, ...extra }
+      if (endpoint === 'message' && (typeof payload.clientRequestId !== 'string' || payload.clientRequestId === '')) {
+        payload.clientRequestId = newRequestId()
+      }
       const response = await fetch(ROUTE, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ endpoint, taskId, ...extra }),
+        body: JSON.stringify(payload),
       })
       const body = await response.json()
       if (body && body.ok === true) return body
-      throw new Error((body && body.error) || `HTTP ${response.status}`)
+      throw actionFailure(body, response.status)
     }
 
     // 面板按钮和侧栏启动器共用同一条 open-main；并发点击合并成一次（平台侧创建没有互斥）。
@@ -176,6 +197,7 @@ window.__ModuleLoader__.load({
       // 快照（轮询/刷新）和动作（打开主会话/打开会话）分开记，避免把动作错误显示成「台账暂不可用」。
       const [snapshotError, setSnapshotError] = React.useState(null)
       const [actionError, setActionError] = React.useState(null)
+      const [actionNotice, setActionNotice] = React.useState(null)
       const [refreshing, setRefreshing] = React.useState(false)
       const [openingMain, setOpeningMain] = React.useState(false)
       const [openedMain, setOpenedMain] = React.useState(false)
@@ -184,6 +206,8 @@ window.__ModuleLoader__.load({
       const [detail, setDetail] = React.useState(null)
       const [detailError, setDetailError] = React.useState(null)
       const [busy, setBusy] = React.useState(null)
+      // 同一 (动作, 任务) 只允许一个请求在途：双击不会发两条 stop/retry/message。
+      const inFlight = React.useRef(new Set())
 
       const load = React.useCallback(async (signal) => {
         try {
@@ -268,15 +292,30 @@ window.__ModuleLoader__.load({
       }
 
       const runPanel = async (endpoint, id, extra = {}) => {
-        setBusy(`${endpoint}:${id}`)
+        const key = `${endpoint}:${id}`
+        if (inFlight.current.has(key)) return
+        inFlight.current.add(key)
+        setBusy(key)
         setActionError(null)
+        setActionNotice(null)
         try {
-          await panelAction(endpoint, id, extra)
+          const result = await panelAction(endpoint, id, extra)
+          // 幂等命中：stop 已结束 / retry 已有活跃重派 / message 重复投递，都按提示处理而不是报错。
+          if (result && result.already === true) {
+            if (endpoint === 'message') setActionNotice('这条消息已发送过，未重复投递')
+            else if (endpoint === 'retry') {
+              setActionNotice(`已有活跃重派任务（${STATUS_LABEL[result.status] || result.status || '处理中'}），未重复创建`)
+            } else {
+              setActionNotice(`任务已是该状态（${STATUS_LABEL[result.status] || result.status || '已结束'}），无需重复停止`)
+            }
+          }
           await load(undefined)
           if (detail && detail.task && detail.task.id === id) await openDetail(id)
         } catch (failure) {
-          setActionError(`${endpoint} 失败：${String((failure && failure.message) || failure)}`)
+          const code = failure && typeof failure.code === 'string' && failure.code !== '' ? `（${failure.code}）` : ''
+          setActionError(`${endpoint} 失败${code}：${String((failure && failure.message) || failure)}`)
         } finally {
+          inFlight.current.delete(key)
           setBusy(null)
         }
       }
@@ -317,13 +356,25 @@ window.__ModuleLoader__.load({
           : null,
         h('div', { style: styles.bar },
           detail.task.status !== 'done' && detail.task.status !== 'cancelled' && detail.task.status !== 'orphaned'
-            ? h('button', { type: 'button', style: styles.button, onClick: () => runPanel('stop', detail.task.id) }, '停止')
+            ? h('button', {
+              type: 'button', style: styles.button,
+              disabled: busy === `stop:${detail.task.id}`,
+              onClick: () => runPanel('stop', detail.task.id),
+            }, '停止')
             : null,
           detail.task.status === 'failed' || detail.task.status === 'orphaned'
-            ? h('button', { type: 'button', style: styles.button, onClick: () => runPanel('retry', detail.task.id) }, '重派')
+            ? h('button', {
+              type: 'button', style: styles.button,
+              disabled: busy === `retry:${detail.task.id}`,
+              onClick: () => runPanel('retry', detail.task.id),
+            }, '重派')
             : null,
           detail.task.target
-            ? h('button', { type: 'button', style: styles.button, onClick: () => sendMessage(detail.task.id) }, '追加消息')
+            ? h('button', {
+              type: 'button', style: styles.button,
+              disabled: busy === `message:${detail.task.id}`,
+              onClick: () => sendMessage(detail.task.id),
+            }, '追加消息')
             : null,
         ),
       )
@@ -368,6 +419,7 @@ window.__ModuleLoader__.load({
         ),
         snapshotError !== null ? h('div', { style: styles.error }, `台账暂不可用：${snapshotError}`) : null,
         actionError !== null ? h('div', { style: styles.error }, actionError) : null,
+        actionNotice !== null ? h('div', { style: styles.notice }, actionNotice) : null,
         detailErrorBlock,
         detailBlock,
         inboxCount > 0
@@ -411,13 +463,25 @@ window.__ModuleLoader__.load({
                     : null,
                   h('button', { type: 'button', style: styles.button, onClick: () => openDetail(task.id) }, '详情'),
                   task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'orphaned'
-                    ? h('button', { type: 'button', style: styles.button, onClick: () => runPanel('stop', task.id) }, '停止')
+                    ? h('button', {
+                      type: 'button', style: styles.button,
+                      disabled: busy === `stop:${task.id}`,
+                      onClick: () => runPanel('stop', task.id),
+                    }, '停止')
                     : null,
                   task.status === 'failed' || task.status === 'orphaned'
-                    ? h('button', { type: 'button', style: styles.button, onClick: () => runPanel('retry', task.id) }, '重派')
+                    ? h('button', {
+                      type: 'button', style: styles.button,
+                      disabled: busy === `retry:${task.id}`,
+                      onClick: () => runPanel('retry', task.id),
+                    }, '重派')
                     : null,
                   task.childSessionId
-                    ? h('button', { type: 'button', style: styles.button, onClick: () => sendMessage(task.id) }, '追加')
+                    ? h('button', {
+                      type: 'button', style: styles.button,
+                      disabled: busy === `message:${task.id}`,
+                      onClick: () => sendMessage(task.id),
+                    }, '追加')
                     : null,
                   h('button', {
                     type: 'button', style: styles.button,

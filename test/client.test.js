@@ -153,6 +153,25 @@ test('面板提供「打开主会话」并调用 open-main', () => {
   assert.match(source, /setActionError/)
 })
 
+test('面板动作：显示错误码、already 提示、message 带幂等请求 id', () => {
+  // 错误对象带 code；面板把 code 拼进动作错误文案。
+  assert.match(source, /const actionFailure = \(body, status\)/)
+  assert.match(source, /failure\.code = body\.code/)
+  assert.match(source, /失败\$\{code\}：/)
+  // 幂等命中按提示显示，不报错。
+  assert.match(source, /result\.already === true/)
+  assert.match(source, /这条消息已发送过，未重复投递/)
+  assert.match(source, /已有活跃重派任务/)
+  assert.match(source, /无需重复停止/)
+  assert.match(source, /actionNotice/)
+  // 同动作同任务的在途请求合并。
+  assert.match(source, /inFlight\.current\.has\(key\)/)
+  // message 请求带 clientRequestId（host-route 按 taskId+id 去重）。
+  assert.match(source, /clientRequestId/)
+  assert.match(source, /newRequestId/)
+  assert.match(source, /randomUUID/)
+})
+
 test('会话头按钮文案仍是任务面板', () => {
   assert.match(source, /任务面板/)
 })

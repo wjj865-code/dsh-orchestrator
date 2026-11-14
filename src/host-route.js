@@ -3,6 +3,8 @@
 // snapshot 只 import 查询函数、不写台账、不 spawn；open-main 是唯一动作端点，只建/打开主会话。
 import { listTasks, listHistoryTasks } from './ledger.js'
 import { taskCard } from './card.js'
+import { panelFailure, panelHttpStatus } from './action-errors.js'
+import { createRequestDedupe } from './request-dedupe.js'
 
 const ENDPOINTS = new Set(['snapshot'])
 const ACTIONS = new Set(['detail', 'artifacts', 'stop', 'retry', 'message'])
@@ -14,6 +16,8 @@ const json = (value, status) => new Response(JSON.stringify(value), {
 })
 
 export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleMinutes = 30, limit = 200, now = Date.now }) {
+  // message 请求级幂等：按 (taskId, clientRequestId) 去重，只在进程内（重启失效，见 request-dedupe.js）。
+  const dedupe = createRequestDedupe({ max: 200 })
   const snapshot = () => {
     const status = coordinatorStatus?.() ?? {}
     const at = now()
@@ -58,33 +62,46 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
     try { body = await request.json() } catch { body = {} }
     const endpoint = String(body?.endpoint ?? '')
     if (endpoint === 'open-main') {
-      if (openMain === undefined) return json({ ok: false, error: 'open-main-unavailable' }, 500)
+      if (openMain === undefined) return json(panelFailure('OPEN_MAIN_UNAVAILABLE'), 500)
       let result
       try {
         result = await openMain()
       } catch (error) {
         // 不让 handler 抛给 host-webserver（那里只会 warn + 400 空体，客户端看不到原因）。
-        return json({ ok: false, error: `打开主会话失败：${error?.message ?? error}` }, 500)
+        return json(panelFailure('OPEN_MAIN_FAILED', { reason: error?.message ?? error }), 500)
       }
-      return json(result?.ok === true
-        ? { ok: true, sessionId: result.sessionId, created: result.created === true }
-        : { ok: false, error: result?.error ?? '创建主会话失败' }, result?.ok === true ? 200 : 500)
+      if (result?.ok === true) return json({ ok: true, sessionId: result.sessionId, created: result.created === true }, 200)
+      return json(panelFailure('OPEN_MAIN_FAILED', { reason: result?.error ?? '创建主会话失败' }), 500)
     }
     if (ACTIONS.has(endpoint)) {
-      if (panel === undefined) return json({ ok: false, error: 'panel-actions-unavailable' }, 500)
+      if (panel === undefined) return json(panelFailure('PANEL_ACTIONS_UNAVAILABLE'), 500)
       try {
         let result
         if (endpoint === 'detail') result = panel.detail(body?.taskId)
         else if (endpoint === 'artifacts') result = panel.artifacts(body?.limit)
         else if (endpoint === 'stop') result = await panel.stop(body?.taskId)
         else if (endpoint === 'retry') result = await panel.retry(body?.taskId)
-        else if (endpoint === 'message') result = await panel.message(body?.taskId, body?.message)
-        return json(result, result?.ok === true ? 200 : 400)
+        else if (endpoint === 'message') {
+          const taskId = body?.taskId
+          const requestId = typeof body?.clientRequestId === 'string'
+            ? body.clientRequestId.trim().slice(0, 128)
+            : ''
+          // 没有 clientRequestId（旧客户端/脚本）时退回 panel 的短窗口同文去重。
+          if (requestId === '' || typeof taskId !== 'string' || taskId === '') {
+            result = await panel.message(taskId, body?.message)
+          } else {
+            const outcome = await dedupe.run(taskId, requestId, () => panel.message(taskId, body?.message))
+            result = outcome.duplicate && outcome.result?.ok === true
+              ? { ...outcome.result, already: true, duplicate: true }
+              : outcome.result
+          }
+        }
+        return json(result, panelHttpStatus(result))
       } catch (error) {
-        return json({ ok: false, error: `动作失败：${error?.message ?? error}` }, 500)
+        return json(panelFailure('ACTION_FAILED', { reason: error?.message ?? error }), 500)
       }
     }
-    if (!ENDPOINTS.has(endpoint)) return json({ ok: false, error: 'unknown-endpoint' }, 400)
+    if (!ENDPOINTS.has(endpoint)) return json(panelFailure('UNKNOWN_ENDPOINT'), 400)
     return json(snapshot(), 200)
   }
 }
