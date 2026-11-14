@@ -12,6 +12,7 @@ import { reconcileOrphans } from './src/reconcile.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
+import { startSnapshotLoop } from './src/snapshot.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
@@ -23,6 +24,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 禁止调用 spawn_teammate / send_message / list_agents / interrupt_agent / team_task_create / team_task_get / team_task_list / team_task_update：派活只能走 task_create，查进度只能 task_list / task_status，不要直接派队友或操作团队任务板。
 - 工具表里可能仍列出这些团队工具（agent-scope 自注册，预设层删不掉），看到也不要调用；执行层会直接拒绝并返回原因。
 - 查看进度只用 task_list / task_status。
+- 派任务前可用 history_search 查跨项目记忆与历史任务，用 project_context 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
 - 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
 - 本回合没有别的事就立即结束回合；通知会开启新回合。
@@ -56,6 +58,12 @@ export async function apply(ctx, rawConfig = {}) {
   if (ctx.systemPrompt === undefined) warnings('dsh-orchestrator: 缺少 systemPrompt 服务，协调者等待禁令只剩执行期 guard')
   const cleanup = failStalePending(db, { staleMinutes: config.staleMinutes })
   if (cleanup.count > 0) logger.log('cleanup.pending', { detail: { count: cleanup.count, taskIds: cleanup.ids } })
+  // 每天一份台账快照（VACUUM INTO），保留 N 天；失败只 warn，不影响插件加载。
+  const stopSnapshots = startSnapshotLoop(db, dir, {
+    retentionDays: config.snapshotRetentionDays,
+    onCreated: result => logger.log('snapshot.created', { detail: { path: result.path } }),
+    onError: error => warnings(`dsh-orchestrator: 台账快照失败：${error?.message ?? error}`),
+  })
   const restrictionDisposers = []
   const restrictedAgents = new WeakSet()
   const pendingRestrictions = new WeakSet()
@@ -253,6 +261,9 @@ export async function apply(ctx, rawConfig = {}) {
   const toolDisposers = createTools({
     db, dispatcher, queue, notifier, config, coordinatorStatus, logger,
     workspaces: () => service('workspaceRegistry'),
+    // 相对产物/项目上下文默认跟主会话目录；主会话重建后 getter 自动取到新目录。
+    defaultCwd: () => resolveCoordinator()?.session?.header?.cwd ?? join(stateDir(), 'workspace'),
+    sessionQuery: () => service('sessionQuery'),
   }).map(tool => ctx.tools.register(tool))
 
   // 客户端只读路由：鉴权由 connection 服务统一负责；handler 只查台账、不写。
@@ -294,6 +305,7 @@ export async function apply(ctx, rawConfig = {}) {
 
   ctx.effect?.(() => async () => {
     queue.stop()
+    try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
     for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, routeDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }

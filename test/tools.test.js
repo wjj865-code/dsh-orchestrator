@@ -59,22 +59,28 @@ async function setup(options = {}) {
     config,
     coordinatorStatus: () => ({ id: 's-1', live: true }),
     workspaces: options.workspaces,
+    defaultCwd: options.defaultCwd,
+    sessionQuery: options.sessionQuery,
     logger: options.logger,
   }).map(tool => [tool.name, tool]))
   return { db, dispatcher, queue, notifier, tools }
 }
 
 // 主会话工具默认以主会话身份调用；task_report 归子会话，保持调用方身份。
-const MAIN_TOOLS = new Set(['task_create', 'task_list', 'task_status', 'task_message', 'task_stop'])
+const MAIN_TOOLS = new Set([
+  'task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_retry',
+  'history_search', 'project_context', 'memory_note',
+])
 const call = (tools, name, args, exec) => {
   const resolved = MAIN_TOOLS.has(name) ? { agent: { id: 's-1' }, ...(exec ?? {}) } : exec
   return tools[name].execute(args, resolved)
 }
 
-test('注册 6 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
+test('注册 10 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
   const { db, tools } = await setup()
   assert.deepEqual(Object.keys(tools).sort(),
-    ['task_create', 'task_list', 'task_message', 'task_report', 'task_status', 'task_stop'])
+    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_list',
+      'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
   const walk = (value, path) => {
     if (value === null || typeof value !== 'object') return
     for (const [key, child] of Object.entries(value)) {
@@ -876,4 +882,123 @@ test('产物是目录时也算存在（只 stat，不读文件）', async () => 
   const saved = getTask(db, task.id).artifacts
   assert.equal(saved[0].path, join(target, 'dist'))
   assert.equal(saved[0].exists, true)
+})
+
+test('无 target 时相对产物按 defaultCwd（主会话目录）解析，而不是进程 cwd', async () => {
+  const base = tempDir()
+  const { db, tools } = await setup({ defaultCwd: base })
+  await call(tools, 'task_create', sampleBrief({ title: '无目标产物' }))
+  const task = listTasks(db)[0]
+  assert.equal(task.target_dir, null)
+  await call(tools, 'task_report', {
+    task_id: task.id, status: 'done', summary: '完成', artifacts: [{ path: 'out/report.md' }],
+  }, { agent: { id: task.session_id } })
+  assert.equal(getTask(db, task.id).artifacts[0].path, join(base, 'out', 'report.md'))
+})
+
+test('多次回报的产物累积合并，不互相覆盖；同路径后报覆盖前报', async () => {
+  const target = tempDir()
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', { ...sampleBrief({ title: '累积产物' }), target })
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', {
+    task_id: task.id, status: 'progress', summary: '第一步', artifacts: [{ path: 'a.md', label: 'A' }],
+  }, { agent: { id: task.session_id } })
+  await call(tools, 'task_report', {
+    task_id: task.id, status: 'done', summary: '完成', artifacts: [{ path: 'b.md', label: 'B' }, { path: 'a.md', label: 'A2' }],
+  }, { agent: { id: task.session_id } })
+  const saved = getTask(db, task.id).artifacts
+  assert.deepEqual(saved.map(item => item.path), [join(target, 'a.md'), join(target, 'b.md')])
+  assert.equal(saved.find(item => item.path === join(target, 'a.md')).label, 'A2')
+})
+
+test('task_retry：failed 任务用原 brief 新建一次尝试，旧任务保留审计', async () => {
+  const { db, tools } = await setup()
+  const old = createTask(db, { brief: sampleBrief({ title: '要重试的任务', goal: '修好' }), coordinatorSession: 's-1' })
+  transition(db, old.id, 'failed', { error: '子会话创建失败' })
+  const text = await call(tools, 'task_retry', { task_id: old.id })
+  assert.match(text, /已重派/)
+  const retried = listTasks(db).find(task => task.retry_of === old.id)
+  assert.ok(retried, '新任务要记录 retry_of')
+  assert.equal(retried.status, 'running')
+  assert.equal(getTask(db, old.id).status, 'failed')
+  const spawned = listTasks(db).find(task => task.id === retried.id)
+  assert.equal(spawned.title, '要重试的任务')
+})
+
+test('task_retry 只接受 failed/orphaned；其他状态不新建', async () => {
+  const { db, tools } = await setup()
+  const running = createTask(db, { brief: sampleBrief({ title: '在跑' }), coordinatorSession: 's-1' })
+  transition(db, running.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  const before = listTasks(db).length
+  const text = await call(tools, 'task_retry', { task_id: running.id })
+  assert.match(text, /不能重派|只有失败/)
+  assert.equal(listTasks(db).length, before)
+})
+
+test('memory_note 写入并可按关键词检索；done 回报自动沉淀', async () => {
+  const { db, tools } = await setup()
+  const noted = await call(tools, 'memory_note', { text: '用户偏好用 pnpm，不要 npm install', kind: 'preference' })
+  assert.match(noted, /已记住/)
+  const found = await call(tools, 'history_search', { query: 'pnpm' })
+  assert.match(found, /用户偏好用 pnpm/)
+  // 重复写入幂等
+  const again = await call(tools, 'memory_note', { text: '用户偏好用 pnpm，不要 npm install', kind: 'preference' })
+  assert.match(again, /已经记过/)
+
+  await call(tools, 'task_create', sampleBrief({ title: '登录修复', goal: '修复登录' }))
+  const task = listTasks(db).find(item => item.title === '登录修复')
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '改用 session cookie' }, { agent: { id: task.session_id } })
+  const done = await call(tools, 'history_search', { query: 'session cookie' })
+  assert.match(done, /登录修复/)
+})
+
+test('task_create 会把相关历史经验注入 brief，不相关的不注入', async () => {
+  const { db, dispatcher, tools } = await setup()
+  await call(tools, 'memory_note', { text: '登录模块统一走 session cookie', kind: 'decision' })
+  await call(tools, 'task_create', sampleBrief({ title: '修复登录模块', goal: '登录异常' }))
+  const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
+  assert.match(prompt, /【历史经验】/)
+  assert.match(prompt, /session cookie/)
+  const unrelated = await call(tools, 'task_create', sampleBrief({ title: '写周报', goal: '整理本周进度' }))
+  assert.match(unrelated, /已派发/)
+  const prompts = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').map(callRow => callRow[2])
+  assert.match(prompts[0], /【历史经验】/)
+  assert.doesNotMatch(prompts[1], /【历史经验】/)
+})
+
+test('history_search 合并 memories、历史任务与 sessionQuery 结果', async () => {
+  const sessionQuery = {
+    async searchSessions(request) {
+      assert.equal(request.query, '登录')
+      return { items: [{ header: { id: 's-old', cwd: undefined }, bestMatch: { snippet: '旧会话里讨论过登录' } }] }
+    },
+  }
+  const { db, tools } = await setup({ sessionQuery })
+  const done = createTask(db, { brief: sampleBrief({ title: '登录旧任务', goal: '修登录' }), coordinatorSession: 's-1' })
+  transition(db, done.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  transition(db, done.id, 'done')
+  await call(tools, 'memory_note', { text: '登录用 cookie' })
+  const text = await call(tools, 'history_search', { query: '登录', limit: 5 })
+  assert.match(text, /【记忆】/)
+  assert.match(text, /【历史任务】/)
+  assert.match(text, /【历史会话】/)
+  assert.match(text, /s-old/)
+})
+
+test('project_context 读取白名单文件与顶层结构，不读 .env，不输出任意文件', async () => {
+  const { writeFileSync, mkdirSync } = await import('node:fs')
+  const project = tempDir()
+  writeFileSync(join(project, 'README.md'), '# 示例项目\n这是说明。', 'utf8')
+  writeFileSync(join(project, 'package.json'), JSON.stringify({ name: 'demo', scripts: { test: 'node --test' }, dependencies: { react: '^19' } }), 'utf8')
+  writeFileSync(join(project, '.env'), 'SECRET=should-not-appear', 'utf8')
+  mkdirSync(join(project, 'src'))
+  const { tools } = await setup()
+  const text = await call(tools, 'project_context', { target: project })
+  assert.match(text, /【项目】/)
+  assert.match(text, /示例项目/)
+  assert.match(text, /demo/)
+  assert.match(text, /src\//)
+  assert.doesNotMatch(text, /should-not-appear/)
+  assert.doesNotMatch(text, /SECRET=/)
 })

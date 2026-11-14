@@ -124,7 +124,7 @@ test('inject 不再硬依赖 agentTeams（缺服务也要能激活）', () => {
 test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subagent 可用', withHome(async () => {
   const f = fakeCtx({ withAgentTeams: false })
   await apply(f.ctx, {})
-  assert.equal(f.registered.length, 6)
+  assert.equal(f.registered.length, 10)
   assert.equal(f.routes.length, 1)
   assert.equal(f.warnings.some(message => /agentTeams|waiting for service/.test(message)), false)
 }))
@@ -132,7 +132,7 @@ test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subag
 test('profile 没有 agentTeams 且 backend=team：apply 不炸，派发返回可读错误', withHome(async () => {
   const f = fakeCtx({ withAgentTeams: false })
   await assert.doesNotReject(() => apply(f.ctx, { backend: 'team' }))
-  assert.equal(f.registered.length, 6)
+  assert.equal(f.registered.length, 10)
   assert.ok(f.warnings.some(message => /team 后端不可用/.test(message)), f.warnings.join(' | '))
 }))
 
@@ -144,19 +144,40 @@ test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {
   assert.equal(guards.length, 1)
 }))
 
-test('apply 注册 6 个工具，只写 $DSH_HOME/state/orchestrator', withHome(async home => {
+test('apply 注册 10 个工具，只写 $DSH_HOME/state/orchestrator', withHome(async home => {
   const { ctx, registered } = fakeCtx()
   await apply(ctx, { coordinatorSession: 's-1' })
   assert.deepEqual(registered.map(tool => tool.name).sort(),
-    ['task_create', 'task_list', 'task_message', 'task_report', 'task_status', 'task_stop'])
+    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_list',
+      'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
   assert.deepEqual(readdirSync(home), ['state'])
-  assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), [])
+  assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), ['logs', 'snapshots'])
+}))
+
+test('apply 给 createTools 传 defaultCwd：无 target 时相对产物按主会话目录（指挥舱）解析', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const { ctx, registered } = fakeCtx({ agents: [s1] })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '默认目录', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
+  const db = new DatabaseSync(dbPath)
+  const task = db.prepare('SELECT id, session_id FROM tasks').get()
+  db.close()
+  await byName.task_report.execute({
+    task_id: task.id, status: 'done', summary: 'ok', artifacts: [{ path: 'out.txt' }],
+  }, { agent: { id: task.session_id } })
+  const after = new DatabaseSync(dbPath)
+  const saved = JSON.parse(after.prepare('SELECT artifacts_json FROM tasks WHERE id = ?').get(task.id).artifacts_json)
+  after.close()
+  assert.equal(saved[0].path, join(home, 'state', 'orchestrator', 'workspace', 'out.txt'))
 }))
 
 test('无 coordinatorSession：warn 但工具注册；派活给「先打开主会话」提示', withHome(async () => {
   const { ctx, registered, warnings } = fakeCtx()
   await apply(ctx, {})
-  assert.equal(registered.length, 6)
+  assert.equal(registered.length, 10)
   assert.ok(warnings.some(message => /尚未打开主会话/.test(message)))
   const create = registered.find(tool => tool.name === 'task_create')
   const text = await create.execute({ title: 't', goal: 'g', acceptance: ['a'] })
@@ -370,12 +391,12 @@ test('绑定发生在回合中时，白名单延到 idle 后才装（当前回�
   assert.equal(other.restrictions.length, 0)
 }))
 
-test('缺 tools.guard 时 warn 不崩，6 工具照常注册', withHome(async () => {
+test('缺 tools.guard 时 warn 不崩，10 工具照常注册', withHome(async () => {
   const { ctx, warnings, registered } = fakeCtx()
   delete ctx.tools.guard
   await apply(ctx, {})
   assert.ok(warnings.some(message => /tools\.guard/.test(message)))
-  assert.equal(registered.length, 6)
+  assert.equal(registered.length, 10)
 }))
 
 test('系统提示只渲染给已绑定协调者，绑定后下一步生效', withHome(async () => {
@@ -707,7 +728,7 @@ test('guard 覆盖整个 COORDINATOR_DENY 名单：主会话全拒、子会话�
     assert.match(denied, toolName === 'wait_agent' ? /禁止阻塞等待/ : /协调者禁止的工具/)
     assert.equal(guard({ name: toolName, agent: sub }), undefined, `${toolName} 不应影响子会话`)
   }
-  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'ask_user_question']) {
+  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_retry', 'history_search', 'project_context', 'memory_note', 'ask_user_question']) {
     assert.equal(guard({ name: allowed, agent: main }), undefined, `${allowed} 应放行`)
   }
 }))

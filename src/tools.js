@@ -1,10 +1,13 @@
 // 工具层：只做参数校验、编排与可读文案；规则都在 brief / ledger / state / notify。
-import { isAbsolute, resolve } from 'node:path'
-import { statSync } from 'node:fs'
+import { basename, isAbsolute, join, resolve } from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
 import { taskLabel, taskLabelWithId } from './task-label.js'
 import { canTransition } from './state.js'
+import {
+  GLOBAL_PROJECT, addMemory, buildMemoryBlock, memoryTokens, projectKeyOf, remember, searchMemories,
+} from './memory.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages,
   setTaskArtifacts, setTaskError, touchTask, transition, incrementAttempts,
@@ -29,6 +32,7 @@ const ACTIVE_STATUS = new Set(['pending', 'running', 'waiting_user', 'waiting_au
 const WAITING_STATUS = new Set(['waiting_user', 'waiting_auth'])
 const RESUME_STATUS = new Set(['waiting_user', 'waiting_auth', 'failed'])
 const TERMINAL_STATUS = new Set(['done', 'cancelled', 'orphaned'])
+const RETRYABLE_STATUS = new Set(['failed', 'orphaned'])
 
 const labelOf = status => STATUS_LABEL[status] ?? status
 const short = (value, max = 40) => {
@@ -53,7 +57,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   const log = (event, fields) => {
@@ -81,13 +85,23 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     return undefined
   }
 
+  // 无 target 时相对产物按主会话目录解析（defaultCwd 可以是 getter，主会话重建后跟新目录）。
+  const baseDirOf = task => {
+    if (typeof task?.target_dir === 'string' && task.target_dir !== '') return task.target_dir
+    let fallback
+    try {
+      fallback = typeof defaultCwd === 'function' ? defaultCwd(task) : defaultCwd
+    } catch { fallback = undefined }
+    return typeof fallback === 'string' && fallback !== '' ? fallback : process.cwd()
+  }
+
   // 产物路径：相对路径按任务目录解析；非法条目静默丢弃；只 stat 存在性，不读文件、不让 report 失败。
   const normalizeArtifacts = (task, input) => {
     if (!Array.isArray(input)) return { artifacts: [], omitted: 0 }
     // 入口先截断，避免为几百条无关键做 resolve/stat。
     const entries = input.slice(0, MAX_ARTIFACTS)
     const omitted = input.length - entries.length
-    const base = task.target_dir ?? defaultCwd
+    const base = baseDirOf(task)
     const out = []
     for (const entry of entries) {
       if (entry === null || typeof entry !== 'object') continue
@@ -119,6 +133,97 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     } catch {
       return []
     }
+  }
+
+  const defaultDir = () => {
+    try {
+      const value = typeof defaultCwd === 'function' ? defaultCwd() : defaultCwd
+      return typeof value === 'string' && value.trim() !== '' ? value : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const workspaceForPath = path => {
+    if (typeof path !== 'string' || path === '') return undefined
+    const key = projectKeyOf(path)
+    return workspaceList().find(item => typeof item?.path === 'string' && projectKeyOf(item.path) === key)
+  }
+  // project 参数可以是绝对目录，也可以是工作区显示名；工作区名走现有推断，不猜。
+  const resolveProjectHint = hint => {
+    const text = typeof hint === 'string' ? hint.trim() : ''
+    if (text === '') return { key: GLOBAL_PROJECT, path: undefined, title: undefined }
+    if (isAbsolute(text)) {
+      let exists = false
+      try { exists = statSync(text).isDirectory() } catch { exists = false }
+      const path = resolve(text)
+      return { key: projectKeyOf(path), path: exists ? path : undefined, title: exists ? (workspaceForPath(path)?.title ?? basename(path)) : basename(path), exists }
+    }
+    const match = inferWorkspaceTarget({ title: text, goal: text }, workspaceList())
+    if (match.ok !== false && match.workspace !== undefined) {
+      return {
+        key: projectKeyOf(match.workspace.path),
+        path: match.workspace.path,
+        title: match.workspace.title,
+        exists: true,
+      }
+    }
+    return { key: GLOBAL_PROJECT, path: undefined, title: text }
+  }
+  const readProjectText = (path, max = 2000) => {
+    try {
+      const stats = statSync(path)
+      if (!stats.isFile()) return ''
+      return readFileSync(path, 'utf8').slice(0, max)
+    } catch {
+      return ''
+    }
+  }
+  const projectContextFor = (dir, query = '') => {
+    const projectKey = projectKeyOf(dir)
+    const title = workspaceForPath(dir)?.title ?? basename(dir)
+    const lines = [`【项目】${title}`, `【路径】${dir}`]
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true })
+        .filter(entry => entry.name !== 'node_modules' && entry.name !== '.git' && !/^\.env/.test(entry.name))
+        .slice(0, 30)
+        .map(entry => entry.isDirectory() ? `${entry.name}/` : entry.name)
+      if (entries.length > 0) lines.push(`【顶层】${entries.join('  ')}`)
+    } catch { /* 目录读不到就只给路径 */ }
+
+    const pkg = readProjectText(join(dir, 'package.json'), 20_000)
+    if (pkg !== '') {
+      try {
+        const parsed = JSON.parse(pkg)
+        const deps = Object.keys(parsed?.dependencies ?? {}).slice(0, 15)
+        const scripts = Object.keys(parsed?.scripts ?? {}).slice(0, 10)
+        lines.push(`【技术栈】Node${parsed?.name === undefined ? '' : ` · ${parsed.name}`}${deps.length > 0 ? `；依赖：${deps.join(', ')}` : ''}`)
+        if (scripts.length > 0) lines.push(`【脚本】${scripts.join(', ')}`)
+      } catch { /* package.json 不合法就不当技术栈 */ }
+    }
+    for (const file of ['pyproject.toml', 'go.mod', 'Cargo.toml']) {
+      const body = readProjectText(join(dir, file), 600)
+      if (body !== '') {
+        lines.push(`【${file}】\n${body.trim()}`)
+        break
+      }
+    }
+    const readme = readProjectText(join(dir, 'README.md'), 1800)
+      || readProjectText(join(dir, 'README.zh-CN.md'), 1800)
+    if (readme !== '') lines.push(`【README】\n${readme.trim()}`)
+    const agents = readProjectText(join(dir, 'AGENTS.md'), 1800)
+    if (agents !== '') lines.push(`【AGENTS】\n${agents.trim()}`)
+
+    const recent = listTasks(db, { active: false })
+      .filter(task => projectKeyOf(task.target_dir) === projectKey)
+      .slice(0, 5)
+    if (recent.length > 0) {
+      lines.push(`【最近任务】\n${recent.map(task => `- ${taskLabelWithId(task)}｜${labelOf(task.status)}｜${short(task.goal, 60)}`).join('\n')}`)
+    }
+    const memoryBlock = buildMemoryBlock(db, { projectKey, query, limit: 3 })
+    if (memoryBlock !== '') lines.push(memoryBlock)
+    let text = lines.join('\n')
+    if (text.length > 6000) text = `${text.slice(0, 5999)}…`
+    return text
   }
 
   // targetDir 用于续派前幂等补注册 target 可写根（resume 后 session 对象会换，旧授权不生效）。
@@ -236,7 +341,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       const task = createTask(db, { brief, coordinatorSession: current.id ?? coordinatorSession, targetDir: effectiveTarget, readOnly })
       log('task.create.created', { taskId: task.id, agentId, sessionId: current.id, detail: { title, callId, targetDir: effectiveTarget ?? null, readOnly } })
-      const rendered = `【任务编号】${task.id}\n${renderBrief(brief)}`
+      let memoryBlock = ''
+      if (config?.memoryInject !== false) {
+        try {
+          memoryBlock = buildMemoryBlock(db, {
+            projectKey: projectKeyOf(effectiveTarget),
+            query: `${title} ${goal}`,
+            limit: config?.memoryLimit ?? 3,
+          })
+        } catch { /* 记忆检索失败不能阻止派任务 */ }
+      }
+      const rendered = `【任务编号】${task.id}\n${renderBrief(brief)}${memoryBlock === '' ? '' : `\n${memoryBlock}`}`
       addMessage(db, task.id, { kind: 'brief', rendered })
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
       if (current.live === false) {
@@ -284,6 +399,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           : []),
         `目标：${task.goal}`,
       ]
+      if (task.retry_of) lines.push(`重派自：${task.retry_of}`)
       if (task.error !== null && task.error !== undefined) lines.push(`原因：${task.error}`)
       if (config?.backend !== 'team' && task.session_id !== null && task.session_id !== undefined) {
         lines.push('打开方式：协调者会话的子代理目录（subagent catalog），按上面的子会话 id 打开；它不在普通会话列表里。')
@@ -367,6 +483,143 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return `任务「${labelFor(task)}」已停止。`
     }),
 
+    wrap('task_retry', '重派一个失败或会话丢失的任务：用原 brief 新建一次尝试（新任务编号），旧任务保留审计；只有 failed/orphaned 能重派。', objectSchema({
+      task_id: str('要重派的任务编号'),
+    }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
+      if (unbound()) return UNBOUND_HINT
+      const task = getTask(db, args.task_id ?? '')
+      if (task === undefined) return `没有任务 ${args.task_id ?? ''}。用 task_list 查编号。`
+      if (!RETRYABLE_STATUS.has(task.status)) {
+        return `任务「${labelFor(task)}」当前是${labelOf(task.status)}，只有失败或会话丢失的任务能重派；在跑的任务用 task_message，排队中的用 task_stop 取消后重建。`
+      }
+      const duplicate = listTasks(db, { active: true })
+        .find(item => item.title.trim() === task.title.trim() && item.goal.trim() === task.goal.trim())
+      if (duplicate !== undefined) {
+        return `已存在活跃任务「${taskLabelWithId(duplicate)}」（${labelOf(duplicate.status)}），未重复重派。`
+      }
+      const current = status()
+      const retried = createTask(db, {
+        brief: task.brief,
+        coordinatorSession: current.id ?? coordinatorSession,
+        targetDir: task.target_dir,
+        readOnly: task.read_only === true,
+        retryOf: task.id,
+      })
+      log('task.retry', { taskId: retried.id, sessionId: current.id, detail: { retryOf: task.id, callId: exec?.callId } })
+      addMessage(db, retried.id, { kind: 'brief', rendered: `【任务编号】${retried.id}\n${renderBrief(task.brief)}` })
+      if (current.live === false) {
+        const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
+        log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })
+        transition(db, retried.id, 'failed', { error: message })
+        throw new Error(message)
+      }
+      const outcome = await queue.enqueueAndPump(retried.id)
+      const resultTask = outcome.task
+      if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? '子会话创建失败')
+      const hint = invalidHint()
+      const notes = hint === '' ? '' : `\n${hint}`
+      if (resultTask?.status === 'running') {
+        return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，子会话 ${resultTask.target}。${notes}`
+      }
+      const ahead = Math.max(outcome.position - 1, 0)
+      return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，前面还有 ${ahead} 个任务在排队。${notes}`
+    }),
+
+    wrap('history_search', '查跨项目历史：本插件记忆、历史任务、平台历史会话。新任务开始前用它补上下文；结果只作参考，不作状态断言。', objectSchema({
+      query: str('关键词（任务名/目标/决策/文件名）'),
+      project: str('可选：项目绝对路径或工作区名；不传则查全局+当前项目'),
+      limit: { type: 'number', description: '最多几条，默认 5，最大 10' },
+    }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
+      const query = String(args.query ?? '').trim()
+      if (query === '') return '给一个关键词再查历史（任务名、目标、决策或文件名）。'
+      const limit = Number.isFinite(args.limit) ? Math.min(10, Math.max(1, Math.floor(args.limit))) : 5
+      const hint = resolveProjectHint(args.project)
+      const tokens = memoryTokens(query)
+      const memories = searchMemories(db, { projectKey: hint.key, query, limit })
+      const tasks = listTasks(db, { active: false })
+        .map(task => {
+          const latest = recentMessages(db, task.id, 1)[0]?.rendered ?? ''
+          const haystack = `${task.title} ${task.goal} ${latest}`.toLowerCase()
+          const score = tokens.reduce((sum, token) => sum + haystack.split(token).length - 1, 0)
+          return { task, score }
+        })
+        .filter(item => item.score > 0)
+        .sort((left, right) => right.score - left.score || right.task.updated_at - left.task.updated_at)
+        .slice(0, limit)
+      const sessions = []
+      const service = typeof sessionQuery === 'function' ? sessionQuery() : sessionQuery
+      if (service?.searchSessions !== undefined) {
+        try {
+          const page = await service.searchSessions({ query, limit: 5 })
+          for (const hit of Array.isArray(page?.items) ? page.items : []) {
+            const id = hit?.header?.id ?? hit?.sessionId
+            if (typeof id !== 'string' || id === '') continue
+            const cwd = hit?.header?.cwd
+            if (hint.path !== undefined && typeof cwd === 'string' && projectKeyOf(cwd) !== hint.key) continue
+            sessions.push({ id, snippet: short(hit?.bestMatch?.snippet ?? hit?.snippet ?? '', 160) })
+            if (sessions.length >= 3) break
+          }
+        } catch { /* sessionQuery 不可用就只查插件自己的数据 */ }
+      }
+      const blocks = []
+      if (memories.length > 0) blocks.push(`【记忆】\n${memories.map(row => `- ${row.text}`).join('\n')}`)
+      if (tasks.length > 0) {
+        blocks.push(`【历史任务】\n${tasks.map(({ task }) => `- ${taskLabelWithId(task)}｜${labelOf(task.status)}｜${short(task.goal, 80)}${task.artifacts?.length > 0 ? `｜产物 ${task.artifacts.length}` : ''}`).join('\n')}`)
+      }
+      if (sessions.length > 0) {
+        blocks.push(`【历史会话】\n${sessions.map(item => `- ${item.id}${item.snippet === '' ? '' : `：${item.snippet}`}`).join('\n')}`)
+      }
+      return blocks.length > 0 ? blocks.join('\n') : '没有找到相关历史。'
+    }),
+
+    wrap('project_context', '读项目背景（README/AGENTS/package 等白名单文件、顶层结构、最近任务、相关记忆）；只读，不开放任意文件读取。', objectSchema({
+      target: str('项目绝对目录；不传则按 query 推断或使用主会话目录'),
+      query: str('可选关键词，用于推断项目和匹配记忆'),
+    }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
+      let dir
+      if (typeof args.target === 'string' && args.target.trim() !== '') {
+        const error = validateTargetDir(args.target)
+        if (error !== undefined) return `${error}。`
+        dir = resolve(args.target.trim())
+      } else {
+        const hint = resolveProjectHint(args.query)
+        dir = hint.path ?? defaultDir()
+      }
+      if (dir === undefined) return '没有可用项目目录：请给 target 绝对路径，或先打开主会话。'
+      let isDir = false
+      try { isDir = statSync(dir).isDirectory() } catch { isDir = false }
+      if (!isDir) return `项目目录不存在或不是目录：${dir}`
+      return projectContextFor(dir, String(args.query ?? ''))
+    }),
+
+    wrap('memory_note', '记住一条跨任务有效的决策/偏好/约束（写进 memories，供之后 history_search 与 brief 自动注入）。', objectSchema({
+      text: str('要记住的内容，一两句话'),
+      project: str('可选：项目绝对路径或工作区名；不传记为全局'),
+      kind: { type: 'string', enum: ['note', 'decision', 'preference'], description: '类型，默认 note' },
+    }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
+      const text = String(args.text ?? '').trim()
+      if (text === '') return '要记的内容不能为空。'
+      const hint = resolveProjectHint(args.project)
+      const kind = ['note', 'decision', 'preference'].includes(args.kind) ? args.kind : 'note'
+      const saved = remember(db, {
+        text,
+        projectKey: hint.key,
+        kind,
+        sourceSessionId: exec?.agent?.id,
+      })
+      if (saved === undefined) return '这条已经记过，未重复写入。'
+      log('memory.note', { agentId: exec?.agent?.id, detail: { projectKey: hint.key, kind, callId: exec?.callId } })
+      return `已记住（${hint.title ?? '全局'}）。`
+    }),
+
     wrap('task_report', '子任务每轮结束必须调用：progress（有进展未完成）、done（完成）、blocked（卡住等人决定）、needs_auth（需要授权）。协调者据此决定是否打扰用户。', objectSchema({
       task_id: str('任务编号，创建时给过'),
       status: { type: 'string', enum: REPORT_STATUS, description: 'progress / done / blocked / needs_auth' },
@@ -419,6 +672,20 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       else if (args.status === 'needs_auth') next = transition(db, task.id, 'waiting_auth')
       else if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
       else next = touchTask(db, task.id)
+      if (args.status === 'done') {
+        try {
+          const artifactNote = artifacts.length > 0
+            ? `；产物：${artifacts.slice(0, 5).map(item => item.path).join('、')}`
+            : ''
+          addMemory(db, {
+            projectKey: projectKeyOf(next.target_dir),
+            kind: 'task-done',
+            text: `任务「${next.title}」完成：${args.summary ?? ''}${artifactNote}`,
+            sourceTaskId: next.id,
+            sourceSessionId: next.session_id,
+          })
+        } catch { /* 记忆沉淀失败不能影响回报 */ }
+      }
       const displayName = labelFor(next)
       notifier.push({
         taskId: next.id,

@@ -13,9 +13,10 @@
 ```
 tasks.sqlite                      （+ -wal / -shm）
 logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文件超 5MB 换新）
+snapshots/tasks-YYYY-MM-DD.sqlite （每天一份 VACUUM INTO 快照，保留 7 天）
 ```
 
-`DSH_HOME` 未设置时用 `~/.dsh`。不写 profile、不写其他会话目录、不建快照（阶段 3 再做）。
+`DSH_HOME` 未设置时用 `~/.dsh`。不写 profile、不写其他会话目录。快照在插件启动时生成，之后每 6 小时检查一次跨日；同一日不覆盖，`retentionDays` 可配。
 
 ## 日志与排障
 
@@ -81,11 +82,19 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 - **固定入口**：面板右上角「打开主会话」调用 `POST /api/orchestrator {endpoint:'open-main'}`。插件确保指挥舱工作区（`~/.dsh/state/orchestrator/workspace`，显示名「指挥舱」）存在，用**协调者预设** `dsh-orchestrator-coordinator` 创建会话，`rename` 成「主会话」，写 `settings.main_session_id`，然后跳到该会话。
 - **不再自动绑定**：`task_create` 不再把调用方会话绑成协调者。没有主会话时 `task_*` 返回「尚未打开主会话，请先从面板「打开主会话」」，不建任务、不写库。
-- **只允许主会话**：`task_create` / `task_list` / `task_status` / `task_message` / `task_stop` 拒绝非主会话调用（含子会话）；`task_report` 仍归子会话。
+- **只允许主会话**：`task_create` / `task_list` / `task_status` / `task_message` / `task_stop` / `task_retry` / `history_search` / `project_context` / `memory_note` 拒绝非主会话调用（含子会话）；`task_report` 仍归子会话。
 - **复用与预设守护**：创建/重建时把预设记进台账 `settings.main_session_preset`；之后只要「`settings.main_session_id` 指向的会话 live + 台账标记是 `dsh-orchestrator-coordinator`」就复用，**不因平台读回漂移而重建**（重建会换 id、通知目标漂移）。旧版本没有台账标记的主会话，只有能明确读到协调者预设时才认领复用，否则重建一次。UI 打开空白会话可能把它 rebind 成默认（`standard`）；主会话在 `agent/created` 和每次复用前会调 `agentPresets.select(agent, 'dsh-orchestrator-coordinator')` 拉回，非空白会话抛 `agent-preset/locked` 只记日志、由 guard 全名单兜底；读回不一致记 `main.session.preset-mismatch`，`open-main` 返回 `presetMismatch` 供面板提示。旧任务留在面板。
-- **工具集在预设层定型**：协调者预设只挂 `persona`、`agent-instructions`、`time-context`、`tool-ask-user`、`compaction` 和 `dsh-orchestrator/preset-tools`；`preset-tools` 用 deny 补集把 allow 名单（5 个 `task_*`）之外的全局工具挡掉，`ask_user_question` 由预设自己的行提供。`show_view`、memory 默认不带（待真机确认）。
+- **工具集在预设层定型**：协调者预设只挂 `persona`、`agent-instructions`、`time-context`、`tool-ask-user`、`compaction` 和 `dsh-orchestrator/preset-tools`；`preset-tools` 用 deny 补集把 allow 名单（5 个 `task_*` + `task_retry`、`history_search`、`project_context`、`memory_note`）之外的全局工具挡掉，`ask_user_question` 由预设自己的行提供。`show_view` 默认不带（待真机确认）。
 - **任务执行者预设**：子会话由 dispatch 显式带 `dsh-orchestrator-worker`，是一份缩小的工作栈（文件/shell/web/todo/skill/compaction/present，无 delegation/goal/plan/schedule），绕开协调者预设的收窄。
 - `spawnProvider` 必须是 `spawn`（`fork` 不支持 `agentPreset`）；不是 `spawn` 时「打开主会话」返回可读错误，不静默降级、不改配置。
+
+## 跨项目记忆与项目背景
+
+- `memories` 表与任务台账同库。`task_report` 的 `done` 自动沉淀一条「任务完成 + 摘要 + 产物」；`memory_note` 显式记录用户决策、偏好、约束。
+- `task_create` 默认按目标项目 + 标题/目标关键词召回 top N 条，追加到 brief 的 `【历史经验】`；上限 1.2k 字，`memoryInject` / `memoryLimit` 可调，检索失败不阻塞派发。
+- `history_search` 聚合三路：插件 memories、台账历史任务、平台 `sessionQuery.searchSessions`；按项目过滤，关键词走 CJK 二元组 + ASCII 词，按命中数和时间排序。**不是向量语义检索**，召回是近似的。
+- `project_context` 只读项目白名单：`README.md` / `AGENTS.md` / `package.json` / `pyproject.toml` / `go.mod` 等 + 顶层目录 + 最近任务 + 相关记忆；不读 `.env`，不开放任意文件读取。
+- 快照损坏时错误信息指向 `snapshots/`；当前**不自动恢复**，需要手工用快照替换 `tasks.sqlite`。
 
 ## 配置
 
@@ -100,6 +109,9 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 | `autoResumeQueue` | `true` | 重启后把排队中的任务自动重新入队并派发；关掉则只恢复队列不自动跑 |
 | `maxActive` | — | **已移除**：并发上限改由平台 `ACTIVATION_LIMIT_REACHED` + 插件队列自适应，旧配置里写了也会被忽略 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
+| `memoryInject` | `true` | 新建任务时把相关历史经验注入 brief；显式 `false` 关闭 |
+| `memoryLimit` | `3` | brief 注入的记忆条数，1–10 |
+| `snapshotRetentionDays` | `7` | 台账快照保留天数，1–30 |
 
 ## 派发与排队
 
@@ -144,7 +156,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 - 可选 `artifacts: [{ path, label? }]`；`path` 可相对，按任务目录（`target_dir`，没有则指挥舱）解析成绝对路径。
 - 非法条目（非数组、缺 path、非字符串）静默丢弃；存在性只做 `stat`，不存在标 `exists:false`、展示「未找到」，**任务照常 done**。
-- 落台账 `tasks.artifacts_json`（旧库自动 ALTER），`task.artifacts` 读出数组。
+- 落台账 `tasks.artifacts_json`（旧库自动 ALTER），`task.artifacts` 读出数组。**同一任务多次回报按 `path` 累积合并**：不同路径保留，同路径后报覆盖；最多 50 条，避免覆盖掉前一步的产物。
 - `done`/`blocked`/`needs_auth` 通知在摘要后追加：
 
   ```
@@ -175,27 +187,30 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 ## 真机冒烟清单（隔离 profile）
 
-1. **加载**：6 个 `task_*` 工具出现；日志无「未找到协调者会话」「白名单安装失败」「缺 `agentTeams`」。
+1. **加载**：10 个工具出现（5 个 task_* + `task_retry`、`history_search`、`project_context`、`memory_note` + `task_report`）；日志无「未找到协调者会话」「白名单安装失败」「缺 `agentTeams`」。
 2. **建任务**：`task_create` 返回「已派发」；子会话真的被创建；台账 `running` 且 `session_id`/`target` 已写。
 3. **输入**：子会话收到的是渲染文字，不是 JSON。
 4. **回报**：`progress` 不打扰；`done` 是插件 5 秒合并后 `agent.steer` 注入协调者会话，`notifications` 一行 `delivered`；平台自己还会发一条 `subagent-settled`，不写行、不算插件通知。
 5. **等待态闭环**：`blocked`/`needs_auth` → `task_message` 续派 → `running` → `done` 能走通。
 6. **R8 忙时排队**：协调者正在跑一轮时再回报，插件注入在下一步边界被接纳、不丢。
 7. **白名单**：协调者工具列表里没有 `read`/`bash` 等；无安装失败日志。`spawn_teammate`/`send_message`/`list_agents` 阶段 1 仍可见（见已知局限）。
-8. **落盘**：`DSH_HOME` 下只新增 `state/orchestrator/tasks.sqlite`（+`-wal`/`-shm`），不写 profile 和其他会话目录。
+8. **落盘**：`DSH_HOME` 下新增 `state/orchestrator/tasks.sqlite`（+`-wal`/`-shm`）、当天 `snapshots/tasks-YYYY-MM-DD.sqlite`，不写 profile 和其他会话目录。
 9. **审计口径**：插件通知与 `notifications` 行 1:1；`failed` 带 `reason`，`skipped` 的 `delivered_at` 为空；平台 settlement 通知不写行。
 10. **主会话**：面板右上角「打开主会话」→ 指挥舱工作区 + 协调者预设创建会话，`settings.main_session_id` 写入，自动跳到「主会话」；再次点击复用、不重复创建。
-11. **工具集**：主会话工具表只有 `task_create/list/status/message/stop` 与 `ask_user_question`（`read`/`write`/`bash`/`wait_agent` 不可见）；平台日志有 `preset-tools: deny …` 审计行；任务子会话有 `read`/`write`/`bash`/`task_report`，且不叠协调者的 deny。
+11. **工具集**：主会话工具表只有 `task_create/list/status/message/stop/retry`、`history_search`、`project_context`、`memory_note` 与 `ask_user_question`（`read`/`write`/`bash`/`wait_agent` 不可见）；平台日志有 `preset-tools: deny …` 审计行；任务子会话有 `read`/`write`/`bash`/`task_report`，且不叠协调者的 deny。
 12. **失效/覆盖**：删掉主会话后点入口能重建、旧任务还在；配置 `coordinatorSession` 时不写 `main_session_id`、运行期白名单只装该会话；未打开主会话时 `task_*` 返回提示、不建任务。
 13. **并发排队**：连续建 12 个任务，前 8 个跑起来、第 9 个起进队列不报错；完成一个后队列自动补位，且不出现双派。
 14. **排队操作**：`task_stop` 能取消排队中的任务并从队列移除；`task_message` 对排队任务给可读提示、不写消息。
 15. **孤儿对账**：重启前让某个任务的子会话在 catalog 里查不到，重启后该任务标 `orphaned`，不留幽灵 `running`；catalog 服务不可用时只 warn、不改状态。
 16. **卡片数据**：`taskCard` 返回 `childSessionId` / `queued` / `openVia:'subagent-catalog'`，snapshot 每行带 `targetDir`，`task_status` 带打开方式。
+17. **记忆闭环**：`memory_note` 写一条 → `history_search` 能查到 → 新建相关任务时 brief 带 `【历史经验】`；`task_report done` 后再 `history_search` 能查到该任务摘要。
+18. **项目上下文**：`project_context` 对项目目录返回 README/package/顶层结构/最近任务；不出现 `.env` 内容；不存在的 target 给可读错误。
+19. **重派与快照**：人为让任务 `failed` 后 `task_retry` 生成新任务、旧任务保留；`snapshots/tasks-YYYY-MM-DD.sqlite` 可打开且含任务；重启同一天不重复覆盖。
 
 
 ## 工具
 
-协调者（5 个）：
+协调者（9 个）：
 
 | 工具 | 作用 |
 | --- | --- |
@@ -204,6 +219,10 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 | `task_status` | 单任务详情 + 最近 3 条消息 + 子会话打开方式 |
 | `task_message` | 续派消息（不新建任务），失败重试 3 次后转 `waiting_user`；排队中的任务返回提示 |
 | `task_stop` | 中断当前一轮并标 `cancelled`；排队中的任务直接取消并移出队列 |
+| `task_retry` | 重派 `failed`/`orphaned` 任务：用原 brief 新建一次尝试（新任务号，`retry_of` 留审计）；旧任务保留 |
+| `history_search` | 查跨项目记忆、历史任务、平台历史会话；给新任务补上下文 |
+| `project_context` | 读项目背景白名单文件、顶层结构、最近任务与相关记忆；只读 |
+| `memory_note` | 记一条跨任务有效的决策/偏好/约束，供之后检索与 brief 注入 |
 
 子任务（1 个）：
 
@@ -211,7 +230,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 | --- | --- |
 | `task_report` | 每轮结束调用：`progress` / `done` / `blocked` / `needs_auth` |
 
-6 个工具是**全局注册**，子任务会话也能看到协调者工具；阶段 1 靠协调者侧白名单收窄，子任务侧不做限制（设计允许），阶段 3 再用 agent preset 收口。
+10 个工具是**全局注册**，子任务会话也能看到协调者工具；`history_search` / `project_context` / `memory_note` / `task_retry` 带 `requireMain`，子会话调用会被拒绝。协调者侧由预设 allow 名单收窄，子任务侧不做限制（设计允许）。
 
 `task_report` 的四档通知：`progress` 静默只写台账；`done` 在 5 秒窗口内合并后汇报；`blocked` / `needs_auth` 立即打扰。插件通知**不经过 Team 的 `sendMessage`**（延迟后发送方已离队，会 `TEAM_NOT_MEMBER`），而是 5 秒合并后直接 `agent.steer` 注入协调者会话，所以合并窗口保得住。每次插件投递尝试都写 `notifications` 表：成功 `delivered`、失败 `failed`（带 `reason`）、跳过 `skipped`；后两者 `delivered_at` 为空。合并的后续行 `merged_into` 指向首条。
 
@@ -280,14 +299,14 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - 续派投递失败：重试 3 次（1s/2s/4s），仍失败标 `waiting_user`，记失败消息行；不可达则标 `orphaned`。
 - 通知投递失败/跳过：写 `notifications` 行（`failed` 带原因，`skipped` 只有状态），不产生未处理 rejection。
 
-## 已知局限（阶段 3 再做）
+## 已知局限（持续更新）
 
-- **台账快照与自动恢复**：阶段 1 只把损坏库转成可读错误，不写快照、不自动恢复。
+- **台账快照与恢复**：已每天生成 `snapshots/tasks-YYYY-MM-DD.sqlite`（保留 7 天）；损坏时给快照目录提示，但**不自动恢复**，需要手工替换台账文件。
 - **卡片跳转**：子会话不在普通会话列表，阶段 1 只给数据（`childSessionId` + `openVia`），客户端入口/面板在阶段 2 按父会话的 subagent catalog 打开。
 - **30 分钟打扰升级**：`stallRounds` 只保存不生效，阶段 1 只有 `task_list` 的陈旧标记。
 - **`run_code`/PTC**：平台禁止 `restrict` 指名 PTC 保留传输 `run_code`；若 profile 配了 PTC executor，协调者可能经它间接调用被 deny 的工具。真机确认 desktop 默认没有 PTC executor；有则记录并禁用该路。
 - **deny 审计日志**：`preset-tools` 同时写平台 `ctx.logger.info`（`preset-tools: deny …`）和插件自己的 `$DSH_HOME/state/orchestrator/logs/orchestrator-*.jsonl`（事件 `preset.deny`，`detail.tools` 是被 deny 的名单），真机用后者对表即可。
-- **`show_view` / memory**：base asar 未证实有这两个全局工具，协调者 allow 默认不带；Task 10 在 ds-bot 环境确认后再决定是否补 allow。
+- **`show_view`**：base asar 未证实有这个全局工具，协调者 allow 默认不带；memory 已由插件自己的 `memories` 表实现，不依赖平台 memory 服务。
 - **`task_report` 子会话可见性**：靠全局注册，Task 10 真机确认；看不到就改用专用轻量工具模块，不把整个 `dsh-orchestrator` 塞进 worker 预设。
 - **配置覆盖会话的运行期白名单**：`config.coordinatorSession` 指定的会话没有预设保证，仍用 `agent.ctx.tools.restrict({ deny })` 兜底；收窄挂在**回合边界**（会话在跑时等 `idle` 再装），所以当回合仍是全工具表、下一回合才收窄，避免 mid-turn `unknown tool`。`spawn_teammate`/`send_message`/`list_agents`/`wait_agent`/`interrupt_agent`/`team_task_*` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；`wait_agent` 由执行期 guard + 动态提示兜底。**guard 对主会话同样生效**：判定源是 `config.coordinatorSession ?? settings.main_session_id`，所以预设只收窄全局工具、`wait_agent` 仍留在工具表时，主会话调用它也会拿到可读拒绝、不会阻塞回合（用例：`settings.main_session_id 的主会话调用 wait_agent 也被 guard 拒绝`）。
 - **同回合并行等待**：guard 管得住调用的顺序链；同一条 assistant 消息里并行、且在 guard 判定前已开始执行的 `wait_agent` 不承诺拦住。

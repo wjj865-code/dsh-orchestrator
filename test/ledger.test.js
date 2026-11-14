@@ -10,11 +10,11 @@ test('建表、WAL 与幂等打开', async () => {
   const dir = tempDir()
   const db = await openLedger(dir)
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name)
-  assert.deepEqual(tables, ['messages', 'notifications', 'settings', 'tasks'])
+  assert.deepEqual(tables, ['memories', 'messages', 'notifications', 'settings', 'tasks'])
   assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'wal')
   db.close()
   const again = await openLedger(dir)
-  assert.equal(again.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table'").get().n, 4)
+  assert.equal(again.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table'").get().n, 5)
   again.close()
 })
 
@@ -326,6 +326,20 @@ test('setTaskArtifacts 落库并可读回，不改状态', async () => {
   assert.deepEqual(updated.artifacts, artifacts)
   assert.equal(updated.status, task.status)
   assert.deepEqual(getTask(db, task.id).artifacts, artifacts)
+  db.close()
+})
+
+test('setTaskArtifacts 累积合并：不同路径保留，同路径后报覆盖，总数有上限', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief({ title: '累积' }), coordinatorSession: 's-1' })
+  setTaskArtifacts(db, task.id, [{ path: 'C:/a.md', label: 'A', exists: true }])
+  setTaskArtifacts(db, task.id, [{ path: 'C:/b.md', label: 'B', exists: true }, { path: 'C:/a.md', label: 'A2', exists: true }])
+  const saved = getTask(db, task.id).artifacts
+  assert.deepEqual(saved.map(item => item.path), ['C:/a.md', 'C:/b.md'])
+  assert.equal(saved[0].label, 'A2')
+  const many = Array.from({ length: 60 }, (_, index) => ({ path: `C:/x-${index}.txt`, label: '', exists: true }))
+  setTaskArtifacts(db, task.id, many)
+  assert.equal(getTask(db, task.id).artifacts.length, 50)
   db.close()
 })
 

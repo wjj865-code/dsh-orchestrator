@@ -11,6 +11,21 @@ test('loadConfig 填默认值', () => {
   assert.equal(config.mergeWindowMs, 5000)
   assert.equal(config.spawnProvider, 'spawn')
   assert.equal(config.coordinatorSession, undefined)
+  assert.equal(config.memoryInject, true)
+  assert.equal(config.memoryLimit, 3)
+  assert.equal(config.snapshotRetentionDays, 7)
+})
+
+test('记忆/快照配置合法覆盖，非法值回落', () => {
+  const config = loadConfig({ memoryInject: false, memoryLimit: 7, snapshotRetentionDays: 3 })
+  assert.equal(config.memoryInject, false)
+  assert.equal(config.memoryLimit, 7)
+  assert.equal(config.snapshotRetentionDays, 3)
+  const bad = loadConfig({ memoryLimit: 0, snapshotRetentionDays: Number.NaN })
+  assert.equal(bad.memoryLimit, 3)
+  assert.equal(bad.snapshotRetentionDays, 7)
+  assert.equal(loadConfig({ memoryInject: 'no' }).memoryInject, true)
+  assert.equal(loadConfig({ memoryInject: true }).memoryInject, true)
 })
 
 test('loadConfig 覆盖合法值、忽略非法值', () => {
@@ -76,6 +91,9 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   assert.match(source, /dsh-orchestrator-coordinator/)
   assert.match(source, /dsh-orchestrator-worker/)
   assert.match(source, /dsh-orchestrator\/preset-tools/)
+  for (const tool of ['task_retry', 'history_search', 'project_context', 'memory_note']) {
+    assert.match(source, new RegExp(`- ${tool}`), `协调者 allow 名单应包含 ${tool}`)
+  }
   assert.match(source, /'@deepseek-ai\/dsh-tool-present'/)
   assert.doesNotMatch(source, /dsh-present/)
   assert.match(source, /isolate:\s*\n\s+compaction: true/)

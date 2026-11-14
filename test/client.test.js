@@ -103,6 +103,8 @@ test('面板提供「打开主会话」并调用 open-main', () => {
   assert.match(source, /打开主会话/)
   assert.match(source, /open-main/)
   assert.match(source, /snapshot\.mainSession/)
+  assert.match(source, /inboxCount/)
+  assert.match(source, /待你决定/)
   assert.doesNotMatch(source, /snapshot\.coordinator/)
   assert.match(source, /task\.targetDir/)
   assert.match(source, /task\.readOnly/)

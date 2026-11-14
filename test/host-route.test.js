@@ -56,6 +56,20 @@ test('snapshot 返回任务安全字段与协调者状态', async () => {
   db.close()
 })
 
+test('snapshot 返回待决计数（waiting_user / waiting_auth）', async () => {
+  const { db, handler } = await setup()
+  const waiting = createTask(db, { brief: sampleBrief({ title: '等你' }), coordinatorSession: 's-1' })
+  transition(db, waiting.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  transition(db, waiting.id, 'waiting_user')
+  const auth = createTask(db, { brief: sampleBrief({ title: '要授权' }), coordinatorSession: 's-1' })
+  transition(db, auth.id, 'running', { sessionId: 'c-2', target: 'c-2' })
+  transition(db, auth.id, 'waiting_auth')
+  createTask(db, { brief: sampleBrief({ title: '在跑' }), coordinatorSession: 's-1' })
+  const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  assert.equal(body.inboxCount, 2)
+  db.close()
+})
+
 test('未知端点返回 400，不泄漏内部错误', async () => {
   const { db, handler } = await setup()
   const response = await handler(request({ endpoint: 'delete-everything' }))

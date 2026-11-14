@@ -47,6 +47,10 @@
                 - task_status
                 - task_message
                 - task_stop
+                - task_retry
+                - history_search
+                - project_context
+                - memory_note
     - id: orchestrator-worker-preset
       name: '@deepseek-ai/dsh-agent-preset'
       config:

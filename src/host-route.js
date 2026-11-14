@@ -22,6 +22,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, staleMinutes 
       ok: true,
       at,
       mainSession: { id: status.id ?? null, live: status.live === true },
+      inboxCount: tasks.filter(task => task.status === 'waiting_user' || task.status === 'waiting_auth').length,
       tasks: tasks.map(task => {
         const card = taskCard(task)
         return {
@@ -33,6 +34,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, staleMinutes 
           childSessionId: task.session_id ?? null,
           targetDir: task.target_dir ?? null,
           readOnly: task.read_only === true,
+          retryOf: task.retry_of ?? null,
           artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
           queued: task.status === 'pending' && task.queued_at !== null && task.queued_at !== undefined,
           stale: ACTIVE.has(task.status) && at - task.last_event_at > staleMinutes * 60_000,

@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     const POLL_MS = 5000
     const POLL_BACKOFF_MS = 30000
     const FILTERS = [
-      ['all', '全部'], ['active', '进行中'], ['waiting', '等待'],
+      ['all', '全部'], ['active', '进行中'], ['waiting', '待你决定'],
       ['done', '已完成'], ['failed', '失败'], ['closed', '已取消/丢失'],
     ]
 
@@ -228,10 +228,11 @@ window.__ModuleLoader__.load({
       const tasks = Array.isArray(snapshot && snapshot.tasks) ? snapshot.tasks : []
       const visible = tasks.filter(matchFilter)
       const mainState = mainSession.id === null ? '主会话未创建' : mainSession.live ? '主会话在线' : '主会话已失效'
+      const inboxCount = Number(snapshot && snapshot.inboxCount) || 0
 
       return h('div', { style: styles.panel },
         h('div', { style: styles.bar },
-          h('span', { style: styles.title }, '任务'),
+          h('span', { style: styles.title }, inboxCount > 0 ? `任务 · 待你决定 ${inboxCount}` : '任务'),
           h('span', { style: styles.meta }, mainState),
           h('select', {
             value: filter, onChange: event => setFilter(event.target.value),
@@ -242,6 +243,9 @@ window.__ModuleLoader__.load({
         ),
         snapshotError !== null ? h('div', { style: styles.error }, `台账暂不可用：${snapshotError}`) : null,
         actionError !== null ? h('div', { style: styles.error }, actionError) : null,
+        inboxCount > 0
+          ? h('div', { style: styles.notice }, `有 ${inboxCount} 个任务等你决定，切到「待你决定」查看。`)
+          : null,
         openedMain
           ? h('div', { style: styles.notice }, '主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」。')
           : null,

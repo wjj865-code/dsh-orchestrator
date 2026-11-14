@@ -1,8 +1,8 @@
 {
   "name": "dsh-orchestrator",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
-  "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, brief rendering, progress reports, interrupt-controlled notifications, and a browser task panel.",
+  "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, cross-project memory, project context, progress reports, interrupt-controlled notifications, snapshots, and a browser task panel.",
   "type": "module",
   "main": "index.js",
   "exports": { ".": "./index.js", "./client": "./client.js", "./preset-tools": "./preset-tools.js" },

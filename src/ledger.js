@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
   status TEXT NOT NULL, session_id TEXT, target TEXT, target_dir TEXT, artifacts_json TEXT, coordinator_session TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0
+  last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0,
+  retry_of TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -22,7 +23,13 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL
-);`
+);
+CREATE TABLE IF NOT EXISTS memories (
+  id TEXT PRIMARY KEY, project_key TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
+  source_task_id TEXT, source_session_id TEXT, hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL, last_used_at INTEGER, use_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_key, created_at DESC);`
 
 export async function openLedger(stateDir) {
   const dbPath = join(stateDir, 'tasks.sqlite')
@@ -41,6 +48,7 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('target_dir')) db.exec('ALTER TABLE tasks ADD COLUMN target_dir TEXT')
     if (!taskColumns.includes('artifacts_json')) db.exec('ALTER TABLE tasks ADD COLUMN artifacts_json TEXT')
     if (!taskColumns.includes('read_only')) db.exec('ALTER TABLE tasks ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0')
+    if (!taskColumns.includes('retry_of')) db.exec('ALTER TABLE tasks ADD COLUMN retry_of TEXT')
     return db
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
@@ -73,12 +81,12 @@ const taskOf = row => row === undefined ? undefined : ({
   artifacts: parseArtifacts(row.artifacts_json),
 })
 
-export function createTask(db, { brief, coordinatorSession, targetDir, readOnly = false }) {
+export function createTask(db, { brief, coordinatorSession, targetDir, readOnly = false, retryOf = null }) {
   const now = Date.now()
   const id = `t-${randomUUID().slice(0, 8)}`
-  db.prepare(`INSERT INTO tasks (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, created_at, updated_at, last_event_at)
-    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`)
-    .run(id, String(brief.title), String(brief.goal), JSON.stringify(brief), String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, now, now, now)
+  db.prepare(`INSERT INTO tasks (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of, created_at, updated_at, last_event_at)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, String(brief.title), String(brief.goal), JSON.stringify(brief), String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null, now, now, now)
   return getTask(db, id)
 }
 
@@ -143,11 +151,32 @@ export function transition(db, id, to, patch = {}) {
   return getTask(db, id)
 }
 
-/** 记录子会话显式上报的交付产物（数组，元素 {path,label,exists}）；不改任务状态。 */
+/** 记录子会话显式上报的交付产物（数组，元素 {path,label,exists}）；不改任务状态。
+ *  同一任务多次回报按 path 合并：不同路径保留，同路径后报覆盖；总数上限 50，避免无限增长。 */
+export const MAX_TASK_ARTIFACTS = 50
+
+export function mergeArtifacts(current, incoming, max = MAX_TASK_ARTIFACTS) {
+  const order = []
+  const byPath = new Map()
+  for (const item of Array.isArray(current) ? current : []) {
+    if (item === null || typeof item !== 'object' || typeof item.path !== 'string' || item.path === '') continue
+    if (!byPath.has(item.path)) order.push(item.path)
+    byPath.set(item.path, item)
+  }
+  for (const item of Array.isArray(incoming) ? incoming : []) {
+    if (item === null || typeof item !== 'object' || typeof item.path !== 'string' || item.path === '') continue
+    if (!byPath.has(item.path)) order.push(item.path)
+    byPath.set(item.path, item)
+  }
+  return order.slice(0, Math.max(0, Math.floor(max))).map(path => byPath.get(path))
+}
+
 export function setTaskArtifacts(db, id, artifacts) {
   const now = Date.now()
+  const current = getTask(db, id)?.artifacts ?? []
+  const merged = mergeArtifacts(current, artifacts)
   db.prepare('UPDATE tasks SET artifacts_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
-    .run(JSON.stringify(Array.isArray(artifacts) ? artifacts : []), now, now, id)
+    .run(JSON.stringify(merged), now, now, id)
   return getTask(db, id)
 }
 
