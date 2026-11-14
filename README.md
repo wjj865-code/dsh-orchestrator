@@ -99,7 +99,7 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
    @wjj865-code/dsh-orchestrator
    ```
 
-   也可以安装指定版本：`@wjj865-code/dsh-orchestrator@0.3.2`。
+   也可以安装指定版本：`@wjj865-code/dsh-orchestrator@0.3.3`。
 2. 装完彻底退出 DSH 再启动。
 3. 以后升级：`npm version patch` → `npm publish` → 在 DSH 插件页用 registry 包的更新入口升级（DSH 的 plugin manager 对 registry 包支持 `listVersions` / `updateBundle`），不再需要卸了重装 GitHub 版。
 

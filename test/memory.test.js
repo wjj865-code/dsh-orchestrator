@@ -9,9 +9,11 @@ import { tempDir } from './helpers.js'
 test('projectKeyOf：绝对路径规范化，空值归 global，Windows 大小写归一', () => {
   assert.equal(projectKeyOf(undefined), GLOBAL_PROJECT)
   assert.equal(projectKeyOf('  '), GLOBAL_PROJECT)
-  const key = projectKeyOf('C:/Work/Project')
-  assert.equal(key, projectKeyOf('C:\\Work\\Project'))
-  if (process.platform === 'win32') assert.equal(key, key.toLowerCase())
+  const key = projectKeyOf(process.platform === 'win32' ? 'C:/Work/Project' : '/Work/Project')
+  if (process.platform === 'win32') {
+    assert.equal(key, projectKeyOf('C:\\Work\\Project'))
+    assert.equal(key, key.toLowerCase())
+  }
 })
 
 test('memoryTokens：中文二元组 + ASCII 词，去掉停用词', () => {

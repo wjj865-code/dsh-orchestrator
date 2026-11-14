@@ -109,8 +109,10 @@ test('空字符串与空白项不会产生空小节', () => {
 
 test('validateTargetDir：相对路径/不存在/非目录都拒绝', () => {
   assert.equal(validateTargetDir('relative/dir', { isDirectory: () => true }), 'target 必须是绝对路径')
-  assert.equal(validateTargetDir('C:/nope', { isDirectory: () => false }), 'target 目录不存在或不是目录')
-  assert.equal(validateTargetDir('C:/work', { isDirectory: () => true }), undefined)
+  const absolute = process.platform === 'win32' ? 'C:/work' : '/work'
+  const missing = process.platform === 'win32' ? 'C:/nope' : '/nope'
+  assert.equal(validateTargetDir(missing, { isDirectory: () => false }), 'target 目录不存在或不是目录')
+  assert.equal(validateTargetDir(absolute, { isDirectory: () => true }), undefined)
   assert.equal(validateTargetDir(undefined, { isDirectory: () => true }), undefined)
   assert.equal(validateTargetDir('  ', { isDirectory: () => true }), undefined)
 })
