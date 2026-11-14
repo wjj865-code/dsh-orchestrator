@@ -609,7 +609,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - 会话头按钮 **`conversation.header.leading`**（Bot 模式 ds-bot 的 `HeaderPill` 会顶掉 `conversation.session.header` 且不渲染 `.actions`）；该槽位无 `sessionId`，按钮只开面板；当前会话 `ctx.uiSession.current` / `retainedBy.mainView` 兜底。
 - 跳转 `ctx.uiWorkspace.openSession(id)`（协调者/子会话同路径；`ui-subagent.openChild` 同款），无 URL。
 - 未绑定协调者：面板显示「未绑定」+ 提示，客户端不建会话不写绑定。
-- 刷新：主时间 `last_event_at`（与 stale 同源）、`updated_at` 供排序；打开拉一次、可见 5s 轮询、关闭即停、连续失败退避 30s。
+- 刷新：主时间 `last_event_at`（与 stale 同源）、`updated_at` 供排序；打开拉一次、可见 2s 轮询（`POLL_MS`）、关闭即停、连续失败退避 30s（`POLL_BACKOFF_MS`）。
 - 路由鉴权：跨站 403 / 无凭证 401 / 非 owner 403 / 重复注册抛；**只读靠 handler 白名单**，不靠平台。
 - bundle：经典脚本手写 `__ModuleLoader__.load`，顶层禁止 ESM；`files` 必含 `client.js`。
 

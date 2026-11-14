@@ -201,7 +201,7 @@ window.__ModuleLoader__.load({
         const controller = new AbortController()
         let stopped = false
         let timer
-        // 正常 5s 轮询；连续失败退避到 30s，成功一次就恢复。
+        // 正常 2s 轮询（POLL_MS）；连续失败退避到 30s（POLL_BACKOFF_MS），成功一次就恢复。
         const tick = async () => {
           const ok = await load(controller.signal)
           if (stopped || controller.signal.aborted) return
