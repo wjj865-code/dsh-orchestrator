@@ -40,6 +40,18 @@ window.__ModuleLoader__.load({
       return body
     }
 
+    // 固定入口：由插件创建/打开唯一主会话，创建后直接跳过去。
+    const openMainSession = async () => {
+      const response = await fetch(ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: 'open-main' }),
+      })
+      const body = await response.json()
+      if (body && body.ok === true && typeof body.sessionId === 'string') return body
+      throw new Error((body && body.error) || '打开主会话失败')
+    }
+
     const timeLabel = ms => {
       if (typeof ms !== 'number' || !Number.isFinite(ms)) return '-'
       const minutes = Math.max(0, Math.floor((Date.now() - ms) / 60000))
@@ -48,6 +60,11 @@ window.__ModuleLoader__.load({
       const hours = Math.floor(minutes / 60)
       if (hours < 24) return `${hours} 小时前`
       return `${Math.floor(hours / 24)} 天前`
+    }
+
+    const shortPath = value => {
+      const text = typeof value === 'string' ? value : ''
+      return text.length > 60 ? `${text.slice(0, 59)}…` : text
     }
 
     const styles = {
@@ -136,28 +153,34 @@ window.__ModuleLoader__.load({
         try { openSession(id) } catch (failure) { setError(String((failure && failure.message) || failure)) }
       }
 
-      const coordinator = (snapshot && snapshot.coordinator) || { id: null, live: false }
+      const handleOpenMain = async () => {
+        try {
+          const body = await openMainSession()
+          open(body.sessionId)
+        } catch (failure) {
+          setError(String((failure && failure.message) || failure))
+        }
+      }
+
+      const mainSession = (snapshot && snapshot.mainSession) || { id: null, live: false }
       const tasks = Array.isArray(snapshot && snapshot.tasks) ? snapshot.tasks : []
       const visible = tasks.filter(matchFilter)
+      const mainState = mainSession.id === null ? '主会话未创建' : mainSession.live ? '主会话在线' : '主会话已失效'
 
       return h('div', { style: styles.panel },
         h('div', { style: styles.bar },
           h('span', { style: styles.title }, '任务'),
-          h('span', { style: styles.meta }, coordinator.id === null ? '未绑定协调者' : coordinator.live ? '协调者在线' : '协调者未加载'),
+          h('span', { style: styles.meta }, mainState),
           h('select', {
             value: filter, onChange: event => setFilter(event.target.value),
             style: Object.assign({}, styles.button, { padding: '2px 4px' }),
           }, FILTERS.map(([value, label]) => h('option', { key: value, value }, label))),
           h('button', { type: 'button', style: styles.button, onClick: refresh, disabled: refreshing }, refreshing ? '刷新中…' : '刷新'),
-          h('button', {
-            type: 'button', style: styles.button,
-            disabled: coordinator.id === null,
-            onClick: () => open(coordinator.id),
-          }, '打开协调者会话'),
+          h('button', { type: 'button', style: styles.button, onClick: handleOpenMain }, '打开主会话'),
         ),
         error !== null ? h('div', { style: styles.error }, `台账暂不可用：${error}`) : null,
-        snapshot !== null && coordinator.id === null
-          ? h('div', { style: styles.notice }, '尚未绑定协调者：先从任意会话派一个任务，会自动绑定。')
+        snapshot !== null && mainSession.id === null
+          ? h('div', { style: styles.notice }, '尚未打开主会话：点右上角「打开主会话」，在指挥舱里创建。')
           : null,
         visible.length === 0
           ? (snapshot === null
@@ -167,6 +190,9 @@ window.__ModuleLoader__.load({
             visible.map(task => h('li', { key: task.id, style: styles.row },
               h('span', { style: Object.assign({}, styles.dot, { background: TONE_COLOR[task.tone] || TONE_COLOR.muted }) }),
               h('span', { style: styles.taskTitle, title: task.title }, task.title),
+              task.targetDir !== null && task.targetDir !== undefined
+                ? h('span', { style: styles.meta, title: task.targetDir }, shortPath(task.targetDir))
+                : null,
               task.queued ? h('span', { style: styles.meta }, '排队中') : null,
               task.stale ? h('span', { style: styles.meta }, '⚠') : null,
               h('span', { style: styles.meta }, STATUS_LABEL[task.status] || task.status),

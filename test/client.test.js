@@ -92,6 +92,18 @@ test('侧栏入口：wide 展开显示图标+文字，折叠只图标，带 aria
   assert.equal(narrow.children.some(child => child && child.type === 'span' && child.children[0] === '任务'), false)
 })
 
+test('面板提供「打开主会话」并调用 open-main', () => {
+  assert.match(source, /打开主会话/)
+  assert.match(source, /open-main/)
+  assert.match(source, /snapshot\.mainSession/)
+  assert.doesNotMatch(source, /snapshot\.coordinator/)
+  assert.match(source, /task\.targetDir/)
+})
+
+test('入口/头部按钮的文案仍是任务', () => {
+  assert.match(source, /任务面板/)
+})
+
 test('package.json 声明 client 产物与 dsh.client 清单', () => {
   assert.equal(pkg.exports['./client'], './client.js')
   assert.ok(pkg.files.includes('client.js'))
