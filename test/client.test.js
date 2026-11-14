@@ -44,20 +44,17 @@ test('经典脚本：能被 <script> 解析，无顶层 import/export，id 等�
   }
 })
 
-test('apply 注册三个槽位：侧栏底部入口、主面板、会话头按钮', () => {
+test('apply 不再注册侧栏底部入口；保留主面板与会话头按钮', () => {
   const { loaded, ctx, registrations } = load()
   loaded.apply(ctx)
   const names = registrations.map(row => row.spec.name)
-  assert.deepEqual(names, ['sidebar.footer.action', 'main', 'conversation.header.leading'])
-  assert.equal(names.includes('sidebar.panellist'), false)
+  assert.deepEqual(names, ['main', 'conversation.header.leading'])
+  assert.equal(names.includes('sidebar.footer.action'), false)
 })
 
-test('槽位选项：入口有 id/order，主面板带 key，leading 单席位不带 id', () => {
+test('槽位选项：主面板带 key，leading 单席位不带 id', () => {
   const { loaded, ctx, registrations } = load()
   loaded.apply(ctx)
-  const entry = registrations.find(row => row.spec.name === 'sidebar.footer.action').spec
-  assert.equal(entry.id, 'orchestrator')
-  assert.equal(entry.order, 100)
   const panel = registrations.find(row => row.spec.name === 'main').spec
   assert.equal(panel.key, 'orchestrator')
   const leading = registrations.find(row => row.spec.name === 'conversation.header.leading').spec
@@ -65,31 +62,15 @@ test('槽位选项：入口有 id/order，主面板带 key，leading 单席位�
   assert.equal('locale' in leading, false)
 })
 
-test('按钮与面板的 inject 回调调用正确的客户端 API', () => {
+test('头部按钮的 inject 回调调用 selectPanel，面板调用 openSession', () => {
   const { loaded, ctx, registrations, selected, opened } = load()
   loaded.apply(ctx)
-  const entry = registrations.find(row => row.spec.name === 'sidebar.footer.action').spec
   const leading = registrations.find(row => row.spec.name === 'conversation.header.leading').spec
   const panel = registrations.find(row => row.spec.name === 'main').spec
-  entry.inject().openPanel()
   leading.inject().openPanel()
   panel.inject().openSession('c-1')
-  assert.deepEqual(selected, ['orchestrator', 'orchestrator'])
+  assert.deepEqual(selected, ['orchestrator'])
   assert.deepEqual(opened, ['c-1'])
-})
-
-test('侧栏入口：wide 展开显示图标+文字，折叠只图标，带 aria-label/title', () => {
-  const { loaded, ctx, registrations } = load()
-  loaded.apply(ctx)
-  const row = registrations.find(item => item.spec.name === 'sidebar.footer.action')
-  const wide = row.component({ openPanel: () => {}, wide: true })
-  assert.equal(wide.type, 'button')
-  assert.equal(wide.props['aria-label'], '任务')
-  assert.equal(wide.props.title, '任务面板')
-  assert.ok(wide.children.some(child => child && child.type === 'span' && child.children[0] === '任务'))
-
-  const narrow = row.component({ openPanel: () => {}, wide: false })
-  assert.equal(narrow.children.some(child => child && child.type === 'span' && child.children[0] === '任务'), false)
 })
 
 test('面板提供「打开主会话」并调用 open-main', () => {
@@ -114,7 +95,7 @@ test('面板提供「打开主会话」并调用 open-main', () => {
   assert.doesNotMatch(source, /setError\(/)
 })
 
-test('入口/头部按钮的文案仍是任务', () => {
+test('会话头按钮文案仍是任务面板', () => {
   assert.match(source, /任务面板/)
 })
 

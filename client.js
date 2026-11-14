@@ -96,17 +96,6 @@ window.__ModuleLoader__.load({
       error: { padding: '8px 10px', borderRadius: 8, background: 'var(--dsw-alias-color-danger-bg, #fdecea)', fontSize: 12 },
     }
 
-    const SidebarEntry = ({ openPanel, wide }) => h('button', {
-      type: 'button', title: '任务面板', 'aria-label': '任务', onClick: openPanel,
-      style: {
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-        height: 34, padding: wide ? '0 10px' : 0, minWidth: 34,
-        border: 'none', background: 'transparent', color: 'inherit',
-        cursor: 'pointer', borderRadius: 8, fontSize: 13,
-      },
-    }, h('span', { 'aria-hidden': true, style: { fontSize: 16 } }, '\u2630'),
-    wide ? h('span', null, '任务') : null)
-
     const HeaderButton = ({ openPanel }) => h('button', {
       type: 'button', title: '任务面板', onClick: openPanel, style: styles.button,
     }, '\u2630 任务')
@@ -259,13 +248,7 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      // ds-bot 的 Bot 模式用 !important 藏掉了整个 shell 面板列表（sidebar.panellist 的 nav），
-      // 但保留了侧栏底部的 action 列表；用 footer.action，id 与 ds-bot 的 bot-account/bot-return 不冲突。
-      ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-        name: 'sidebar.footer.action', id: PANEL_ID, order: 100,
-        inject: () => ({ openPanel: () => ctx.layout.selectPanel(PANEL_ID) }),
-      }, SidebarEntry))
-
+      // 侧栏底部不再注册入口（用户要求删掉）；任务面板从会话头按钮进入。
       ctx.slots.inject('main', () => ctx.slots.register({
         name: 'main', key: PANEL_ID,
         inject: () => ({ openSession: id => ctx.uiWorkspace.openSession(id) }),
