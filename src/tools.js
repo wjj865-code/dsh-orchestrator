@@ -1,10 +1,12 @@
 // 工具层：只做参数校验、编排与可读文案；规则都在 brief / ledger / state / notify。
+import { isAbsolute, resolve } from 'node:path'
+import { statSync } from 'node:fs'
 import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
 import { canTransition } from './state.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages,
-  setTaskError, touchTask, transition, incrementAttempts,
+  setTaskArtifacts, setTaskError, touchTask, transition, incrementAttempts,
 } from './ledger.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
@@ -72,6 +74,28 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     if (current.id === undefined) return UNBOUND_HINT
     if (exec?.agent?.id !== current.id) return MAIN_ONLY_HINT
     return undefined
+  }
+
+  // 产物路径：相对路径按任务目录解析；非法条目静默丢弃；只 stat 存在性，不读文件、不让 report 失败。
+  const normalizeArtifacts = (task, input) => {
+    if (!Array.isArray(input)) return []
+    const base = task.target_dir ?? defaultCwd
+    const out = []
+    for (const entry of input) {
+      if (entry === null || typeof entry !== 'object') continue
+      const raw = typeof entry.path === 'string' ? entry.path.trim() : ''
+      if (raw === '') continue
+      let absolute
+      try {
+        absolute = isAbsolute(raw) ? resolve(raw) : (base === undefined ? resolve(raw) : resolve(base, raw))
+      } catch {
+        continue
+      }
+      let exists = false
+      try { exists = statSync(absolute).isFile() } catch { exists = false }
+      out.push({ path: absolute, label: typeof entry.label === 'string' ? entry.label.trim() : '', exists })
+    }
+    return out
   }
 
   // 工作区服务用惰性 getter（index 传入），取不到就按「无工作区」降级，不影响派发。
@@ -314,6 +338,18 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       task_id: str('任务编号，创建时给过'),
       status: { type: 'string', enum: REPORT_STATUS, description: 'progress / done / blocked / needs_auth' },
       summary: str('一句话说明这轮做了什么'),
+      artifacts: {
+        type: 'array',
+        description: '可选：交付产物列表；path 可相对（按任务目录解析），label 是一句说明',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            path: { type: 'string', required: true, description: '文件路径，可相对任务目录' },
+            label: { type: 'string', description: '一句说明，可空' },
+          },
+        },
+      },
     }), async (args, exec) => {
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}，确认 task_id 是否抄错。`
@@ -323,6 +359,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (reporter !== undefined && task.session_id !== null && task.session_id !== undefined
         && String(reporterId) !== String(task.session_id)) {
         return `回报被拒绝：任务 ${task.id} 属于子会话 ${task.target ?? task.session_id}，当前回报方不是它。`
+      }
+      const artifacts = normalizeArtifacts(task, args.artifacts)
+      if (artifacts.length > 0) {
+        setTaskArtifacts(db, task.id, artifacts)
+        log('task.report.artifacts', {
+          taskId: task.id,
+          detail: { count: artifacts.length, missing: artifacts.filter(item => item.exists === false).length },
+        })
       }
       addMessage(db, task.id, { kind: 'report', rendered: `[${args.status}] ${args.summary ?? ''}` })
       let next = task
@@ -339,6 +383,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         title: next.title,
         status: args.status,
         summary: args.summary ?? '',
+        artifacts,
         sender: exec?.agent,
         signal: exec?.signal,
       })

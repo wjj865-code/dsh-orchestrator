@@ -5,7 +5,15 @@ export function levelOf(status) {
   return LEVEL[status] ?? 'silent'
 }
 
-const line = item => `- ${item.title}：${item.summary}`
+const artifactBlock = item => {
+  const artifacts = Array.isArray(item.artifacts) ? item.artifacts : []
+  if (artifacts.length === 0) return ''
+  const rows = artifacts.map(entry =>
+    `  - ${entry.path}${entry.label ? ` — ${entry.label}` : ''}${entry.exists === false ? '（未找到）' : ''}`)
+  return `\n  产物：\n${rows.join('\n')}`
+}
+
+const line = item => `- ${item.title}：${item.summary}${artifactBlock(item)}`
 
 export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {}, onEvent = () => {} }) {
   let buffer = []
@@ -94,7 +102,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     buffer = []
     if (batch.length === 0) return undefined
     const text = batch.length === 1
-      ? `任务「${batch[0].title}」完成：${batch[0].summary}`
+      ? `任务「${batch[0].title}」完成：${batch[0].summary}${artifactBlock(batch[0])}`
       : `${batch.length} 个任务完成：\n${batch.map(line).join('\n')}`
     return deliver(text, batch)
   }
@@ -104,7 +112,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
       const level = levelOf(item.status)
       if (level === 'silent') return
       if (level === 'interrupt') {
-        void deliver(`任务「${item.title}」需要你：${item.summary}`, [item])
+        void deliver(`任务「${item.title}」需要你：${item.summary}${artifactBlock(item)}`, [item])
         return
       }
       buffer.push(item)

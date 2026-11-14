@@ -117,6 +117,7 @@ export async function apply(ctx, rawConfig = {}) {
     agents: () => service('agents'),
     sessionController: () => service('sessionController'),
     workspaces: () => service('workspaceRegistry'),
+    defaultCwd: join(stateDir(), 'workspace'),
     presetFor: agent => service('agentPresets')?.presetForSession?.(agent?.session),
     workspacePath: join(stateDir(), 'workspace'),
     workspaceName: '指挥舱',

@@ -644,3 +644,34 @@ test('workspaces 服务缺失时按无工作区降级，不崩', async () => {
   assert.equal(listTasks(db)[0].target_dir, null)
   db.close()
 })
+
+
+test('task_report artifacts：相对路径按任务 target_dir 解析、存在性标注、通知带产物', async () => {
+  const { writeFileSync: write } = await import('node:fs')
+  const target = tempDir()
+  const file = join(target, 'report.md')
+  write(file, '# ok', 'utf8')
+  const { db, notifier, tools } = await setup()
+  await call(tools, 'task_create', { ...sampleBrief({ title: '产物任务' }), target })
+  const task = listTasks(db)[0]
+  const text = await call(tools, 'task_report', {
+    task_id: task.id, status: 'done', summary: '完成',
+    artifacts: [{ path: 'report.md', label: '报告' }, { path: 'missing.txt' }, { path: '' }, { bad: 1 }],
+  }, { agent: { id: task.session_id } })
+  assert.match(text, /已记录/)
+  const saved = getTask(db, task.id).artifacts
+  assert.deepEqual(saved.map(item => item.path), [file, join(target, 'missing.txt')])
+  assert.deepEqual(saved.map(item => item.exists), [true, false])
+  assert.equal(saved[0].label, '报告')
+  const pushed = notifier.pushed.at(-1)
+  assert.equal(pushed.artifacts[0].path, file)
+})
+
+test('task_report 不传 artifacts：完全兼容旧行为，任务照常 done', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '旧调用' }))
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id } })
+  assert.equal(getTask(db, task.id).status, 'done')
+  assert.deepEqual(getTask(db, task.id).artifacts, [])
+})

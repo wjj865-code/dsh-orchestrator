@@ -153,3 +153,32 @@ test('投递失败落一条 failed 记录，delivered_at 为空', async () => {
   assert.match(row.reason, /投递失败/)
   db.close()
 })
+
+
+test('产物随 done 通知列出绝对路径、说明与未找到', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
+  notifier.push({
+    taskId: 't-1', title: 'A', status: 'done', summary: '完成',
+    artifacts: [
+      { path: 'C:/work/report.md', label: '报告', exists: true },
+      { path: 'C:/work/missing.txt', label: '', exists: false },
+    ],
+  })
+  await wait(25)
+  assert.equal(delivered.length, 1)
+  assert.match(delivered[0], /产物：/)
+  assert.match(delivered[0], /C:\/work\/report\.md — 报告/)
+  assert.match(delivered[0], /C:\/work\/missing\.txt（未找到）/)
+})
+
+test('合并窗口内多条 report 的产物各自保留，不互相覆盖', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成', artifacts: [{ path: 'C:/a.txt', label: '甲', exists: true }] })
+  notifier.push({ taskId: 't-2', title: 'B', status: 'done', summary: '完成', artifacts: [{ path: 'C:/b.txt', label: '乙', exists: true }] })
+  await wait(25)
+  assert.equal(delivered.length, 1)
+  assert.match(delivered[0], /C:\/a\.txt — 甲/)
+  assert.match(delivered[0], /C:\/b\.txt — 乙/)
+})
