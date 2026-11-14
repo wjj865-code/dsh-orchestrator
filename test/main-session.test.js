@@ -170,3 +170,39 @@ test('创建失败后 in-flight 清掉，可以再点一次成功', async () => 
   assert.equal(attempts, 2)
   db.close()
 })
+
+
+test('resolveByPath 异步 reject（指挥舱目录还不存在）时先 mkdir 再创建，不产生未处理拒绝', async () => {
+  const db = await ledger()
+  const f = fake()
+  let unhandled = 0
+  const onUnhandled = () => { unhandled += 1 }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    // 平台 resolveByPath 是 async，目录不存在时 realpath reject ENOENT；同步 try/catch 接不住。
+    f.workspaces.resolveByPath = () => Promise.reject(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    const workspacePath = join(mkdtempSync(join(tmpdir(), 'orch-ws-')), 'workspace')
+    const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, workspacePath, workspaceName: '指挥舱' })
+    const result = await main.open()
+    assert.equal(result.ok, true)
+    assert.deepEqual(f.workspacesCreated, [[workspacePath, '指挥舱']])
+    assert.equal(f.created[0].workspaceId, 'ws-new')
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(unhandled, 0, '不应产生 unhandledRejection（会打挂宿主）')
+  } finally {
+    process.removeListener('unhandledRejection', onUnhandled)
+    db.close()
+  }
+})
+
+test('resolveByPath 返回 Promise 但目录已存在时直接复用工作区', async () => {
+  const db = await ledger()
+  const f = fake()
+  f.workspaces.resolveByPath = async () => ({ id: 'ws-1', path: 'C:/ws' })
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, workspacePath: 'C:/ws' })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.equal(f.created[0].workspaceId, 'ws-1')
+  assert.deepEqual(f.workspacesCreated, [])
+  db.close()
+})

@@ -20,8 +20,9 @@ export function createMainSession({ db, config, agents, sessionController, works
     const services = resolveWorkspaces()
     if (services === undefined) return undefined
     // 工作区 API 是位置参数：create(path, title?)；目录必须先存在。
+    // 注意 resolveByPath 是 async（内部 realpath，目录不存在会 reject ENOENT），必须 await 才能接住。
     let found
-    try { found = services.resolveByPath?.(workspacePath) } catch { found = undefined }
+    try { found = await services.resolveByPath?.(workspacePath) } catch { found = undefined }
     if (found !== undefined) return found.id
     await mkdir(workspacePath, { recursive: true })
     const created = await services.create?.(workspacePath, workspaceName)
