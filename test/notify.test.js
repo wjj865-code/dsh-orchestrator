@@ -50,6 +50,26 @@ test('合并窗口外再投一条', async () => {
   assert.equal(delivered.length, 2)
 })
 
+test('显示名优先：用 item.displayName，不裸露 t-xxx', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-aaaa1111', title: '同名', displayName: '同名（aaaa）', status: 'done', summary: '完成' })
+  await wait(25)
+  assert.deepEqual(delivered, ['任务「同名（aaaa）」完成：完成'])
+  assert.doesNotMatch(delivered[0], /t-[0-9a-f]{8}/)
+})
+
+test('多任务合并行也用 displayName', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: '甲', displayName: '甲（0001）', status: 'done', summary: '一' })
+  notifier.push({ taskId: 't-2', title: '乙', displayName: '乙', status: 'done', summary: '二' })
+  await wait(25)
+  assert.equal(delivered.length, 1)
+  assert.match(delivered[0], /- 甲（0001）：一/)
+  assert.match(delivered[0], /- 乙：二/)
+})
+
 test('blocked 立即投递且不影响已排队的 done 合并', async () => {
   const delivered = []
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 30 })

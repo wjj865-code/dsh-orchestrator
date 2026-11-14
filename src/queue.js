@@ -1,8 +1,9 @@
 // 派发队列：平台不排队（满了抛 ACTIVATION_LIMIT_REACHED），插件自己排。
 // 单锁串行：同一时刻只有一个 pump 在跑；spawn 成功 / 子会话结算 / 任务终态都会唤醒。
 import {
-  briefText, clearQueued, countPending, getTask, listPendingQueue, markQueued, transition,
+  briefText, clearQueued, countPending, getTask, listPendingQueue, listTasks, markQueued, transition,
 } from './ledger.js'
+import { taskLabel } from './task-label.js'
 
 export function createQueue({ db, dispatcher, config = {}, logger, notifier, retryDelaysMs = [2000, 5000, 10000, 30000] }) {
   const log = (event, fields) => {
@@ -103,6 +104,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
           notifier?.push({
             taskId: id,
             title: task.title,
+            displayName: taskLabel(task, { all: listTasks(db) }),
             status: 'failed',
             summary: message,
             system: true,

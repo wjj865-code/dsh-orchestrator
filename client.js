@@ -26,6 +26,15 @@ window.__ModuleLoader__.load({
       info: 'var(--dsw-alias-color-info, #1565c0)',
       muted: 'var(--dsw-alias-color-text-tertiary, #777)',
     }
+    // 面板对外只用显示名：重名才附短 id 后缀（与工具层同口径，取 t-xxx 后 4 位）。
+    const shortId = id => String(id || '').replace(/^t-/, '').slice(0, 4)
+    const displayNameOf = (task, all) => {
+      const title = String((task && task.title) || '').trim()
+      if (title === '') return task && task.id ? `任务 ${task.id}` : '任务'
+      const duplicate = all.some(other => other !== task && other.id !== task.id
+        && String((other && other.title) || '').trim() === title)
+      return duplicate ? `${title}（${shortId(task.id)}）` : title
+    }
 
     const readSnapshot = async signal => {
       const response = await fetch(ROUTE, {
@@ -217,10 +226,11 @@ window.__ModuleLoader__.load({
             visible.map(task => {
               const artifacts = Array.isArray(task.artifacts) ? task.artifacts : []
               const isExpanded = expanded.includes(task.id)
+              const displayName = displayNameOf(task, tasks)
               return h('li', { key: task.id, style: { listStyle: 'none' } },
                 h('div', { style: styles.row },
                   h('span', { style: Object.assign({}, styles.dot, { background: TONE_COLOR[task.tone] || TONE_COLOR.muted }) }),
-                  h('span', { style: styles.taskTitle, title: task.title }, task.title),
+                  h('span', { style: styles.taskTitle, title: displayName }, displayName),
                   task.targetDir !== null && task.targetDir !== undefined
                     ? h('span', { style: styles.meta, title: task.targetDir }, shortPath(task.targetDir))
                     : null,

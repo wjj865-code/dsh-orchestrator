@@ -404,7 +404,7 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
   assert.match(created, /已派发/)
   const signal = new AbortController().signal
   await byName.task_report.execute(
-    { task_id: created.match(/任务 (t-[0-9a-f]+)/)[1], status: 'done', summary: '完成' },
+    { task_id: created.match(/（(t-[0-9a-f]+)）/)[1], status: 'done', summary: '完成' },
     { agent: teammate, signal },
   )
   await wait(30)
@@ -439,7 +439,7 @@ test('回报缺少 sender：不投递，通知行记 skipped', withHome(async ho
   await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
   const create = registered.find(tool => tool.name === 'task_create')
   const created = await create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: { id: 's-1' } })
-  const taskId = created.match(/任务 (t-[0-9a-f]+)/)[1]
+  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
   const report = registered.find(tool => tool.name === 'task_report')
   await report.execute({ task_id: taskId, status: 'done', summary: '完成' })
   await wait(30)
@@ -459,7 +459,7 @@ test('卸载时窗口内的 done 通知不丢行', withHome(async home => {
   await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 600000 })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
-  const taskId = created.match(/任务 (t-[0-9a-f]+)/)[1]
+  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
   await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: teammate })
   assert.equal(coordinator.injected.length, 0)
   await disposers[0]()
@@ -480,7 +480,7 @@ test('注入失败记 failed + reason，不是 skipped', withHome(async home => 
   await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
-  const taskId = created.match(/任务 (t-[0-9a-f]+)/)[1]
+  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
   await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: teammate })
   await wait(30)
   const { DatabaseSync } = await import('node:sqlite')

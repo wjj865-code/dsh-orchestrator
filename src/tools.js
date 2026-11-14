@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from 'node:path'
 import { statSync } from 'node:fs'
 import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
+import { taskLabel, taskLabelWithId } from './task-label.js'
 import { canTransition } from './state.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages,
@@ -37,7 +38,7 @@ const short = (value, max = 40) => {
 
 function taskLine(db, task, { staleMinutes = 30 } = {}) {
   const parts = [
-    `- ${task.id}`, task.title, labelOf(task.status), `子会话 ${task.target ?? '-'}`,
+    `- ${taskLabelWithId(task)}`, labelOf(task.status), `子会话 ${task.target ?? '-'}`,
     `目标：${short(task.goal)}`,
   ]
   const latest = recentMessages(db, task.id, 1)[0]
@@ -58,6 +59,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志绝不能打断主流程 */ }
   }
+  // 对外显示名：重名短后缀要全量任务，统一用台账现查；通知的 displayName 也在这里算好。
+  const labelFor = task => taskLabel(task, { all: listTasks(db) })
   const status = typeof coordinatorStatus === 'function'
     ? coordinatorStatus
     : () => ({ id: config?.coordinatorSession, live: true })
@@ -216,7 +219,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           agentId,
           detail: { reason: 'duplicate', existingTaskId: duplicate.id, existingStatus: duplicate.status, callId },
         })
-        return `已存在任务 ${duplicate.id}「${duplicate.title}」（${labelOf(duplicate.status)}），未重复创建。`
+        return `已存在任务「${taskLabelWithId(duplicate)}」（${labelOf(duplicate.status)}），未重复创建。`
       }
       const maxQueue = config?.maxQueue ?? 50
       const queuedCount = queue?.pendingCount?.() ?? 0
@@ -244,10 +247,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const notes = [invalidHint(), inferredNote].filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? '子会话创建失败')
       if (resultTask?.status === 'running') {
-        return `任务 ${task.id}「${task.title}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
+        return `任务「${taskLabelWithId(task)}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
       }
       const ahead = Math.max(outcome.position - 1, 0)
-      return `任务 ${task.id}「${task.title}」已创建，前面还有 ${ahead} 个任务在排队，轮到时自动派发。${notes === '' ? '' : `\n${notes}`}`
+      return `任务「${taskLabelWithId(task)}」已创建，前面还有 ${ahead} 个任务在排队，轮到时自动派发。${notes === '' ? '' : `\n${notes}`}`
     }),
 
     wrap('task_list', '列出任务。默认只列活跃任务（pending/running/waiting），active=false 时连同历史一起列出。', objectSchema({
@@ -268,7 +271,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const messages = recentMessages(db, task.id, 3)
       const recent = messages.map(row => `- [${row.kind}] ${short(row.rendered, 80)}`).join('\n')
       const lines = [
-        `任务 ${task.id}「${task.title}」`,
+        `任务「${taskLabelWithId(task)}」`,
         `状态：${labelOf(task.status)}`,
         `子会话：${task.target ?? '-'}`,
         ...(task.status === 'pending'
@@ -293,13 +296,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
-      if (TERMINAL_STATUS.has(task.status)) return `任务 ${task.id} 已结束（${labelOf(task.status)}），不能续派；需要新工作请 task_create。`
+      if (TERMINAL_STATUS.has(task.status)) return `任务「${labelFor(task)}」已结束（${labelOf(task.status)}），不能续派；需要新工作请 task_create。`
       if (task.status === 'pending' && (task.target === null || task.target === undefined)) {
         return task.queued_at === null || task.queued_at === undefined
-          ? `任务 ${task.id} 还没有子会话，先停止再重建。`
-          : `任务 ${task.id} 正在排队（前面还有 ${Math.max(queue.position(task.id) - 1, 0)} 个），轮到时自动派发，暂不能续派。`
+          ? `任务「${labelFor(task)}」还没有子会话，先停止再重建。`
+          : `任务「${labelFor(task)}」正在排队（前面还有 ${Math.max(queue.position(task.id) - 1, 0)} 个），轮到时自动派发，暂不能续派。`
       }
-      if (task.target === null || task.target === undefined) return `任务 ${task.id} 还没有子会话，先停止再重建。`
+      if (task.target === null || task.target === undefined) return `任务「${labelFor(task)}」还没有子会话，先停止再重建。`
       const message = args.message ?? ''
       addMessage(db, task.id, { kind: 'followup', rendered: message })
       try {
@@ -312,7 +315,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           log('task.orphaned', { taskId: task.id, sessionId: task.session_id, detail: { reason } })
           transition(db, task.id, 'orphaned', { error: `子会话不可达：${reason}` })
           releaseTaskSession(task)
-          return `续派失败：任务 ${task.id} 的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`
+          return `续派失败：任务「${labelFor(task)}」的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`
         }
         if (current.status === 'waiting_user') {
           setTaskError(db, task.id, reason)
@@ -322,13 +325,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           transition(db, task.id, 'failed', { error: reason })
           releaseTaskSession(task)
         }
-        return `续派失败：任务 ${task.id} 已转为「等你确认」（已重试 3 次）。原因：${reason}`
+        return `续派失败：任务「${labelFor(task)}」已转为「等你确认」（已重试 3 次）。原因：${reason}`
       }
       touchTask(db, task.id)
       const current = getTask(db, task.id)
       if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
       incrementAttempts(db, task.id)
-      return `已把消息追加给任务 ${task.id}（子会话 ${task.target}）。`
+      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。`
     }),
 
     wrap('task_stop', '停止一个子任务（会中断它的当前一轮）。', objectSchema({ task_id: str('任务编号') }), async (args, exec) => {
@@ -337,12 +340,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
-      if (TERMINAL_STATUS.has(task.status)) return `任务 ${task.id} 已结束（${labelOf(task.status)}），无需停止。`
+      if (TERMINAL_STATUS.has(task.status)) return `任务「${labelFor(task)}」已结束（${labelOf(task.status)}），无需停止。`
       if (task.status === 'pending') {
         queue.remove(task.id)
         transition(db, task.id, 'cancelled')
         releaseTaskSession(task)
-        return `任务 ${task.id} 已取消（还在排队，没有派发出去）。`
+        return `任务「${labelFor(task)}」已取消（还在排队，没有派发出去）。`
       }
       if (task.target !== null && task.target !== undefined) {
         // 停止失败也要把任务标掉：用户要的是「停」，不是让 stop 抛错卡住。
@@ -356,7 +359,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       transition(db, task.id, 'cancelled')
       releaseTaskSession(task)
       queue.pump()
-      return `任务 ${task.id} 已停止。`
+      return `任务「${labelFor(task)}」已停止。`
     }),
 
     wrap('task_report', '子任务每轮结束必须调用：progress（有进展未完成）、done（完成）、blocked（卡住等人决定）、needs_auth（需要授权）。协调者据此决定是否打扰用户。', objectSchema({
@@ -386,7 +389,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const reporterId = reporter?.id ?? reporter?.session?.id
       if (reporter !== undefined && task.session_id !== null && task.session_id !== undefined
         && String(reporterId) !== String(task.session_id)) {
-        return `回报被拒绝：任务 ${task.id} 属于子会话 ${task.target ?? task.session_id}，当前回报方不是它。`
+        return `回报被拒绝：任务「${labelFor(task)}」属于子会话 ${task.target ?? task.session_id}，当前回报方不是它。`
       }
       const normalized = normalizeArtifacts(task, args.artifacts)
       const artifacts = normalized.artifacts
@@ -411,9 +414,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       else if (args.status === 'needs_auth') next = transition(db, task.id, 'waiting_auth')
       else if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
       else next = touchTask(db, task.id)
+      const displayName = labelFor(next)
       notifier.push({
         taskId: next.id,
         title: next.title,
+        displayName,
         status: args.status,
         summary: args.summary ?? '',
         artifacts,
@@ -431,7 +436,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (next.status === 'done') releaseTaskSession(task)
       if (next.status === 'done' || next.status === 'failed' || next.status === 'cancelled') queue.pump()
       const hint = invalidHint()
-      return `已记录任务 ${next.id} 的 ${args.status} 回报。${hint === '' ? '' : `\n${hint}`}`
+      return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${hint === '' ? '' : `\n${hint}`}`
     }),
   ]
 }

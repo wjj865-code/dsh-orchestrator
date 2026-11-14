@@ -224,7 +224,7 @@ test('task_create：同 title+goal 的活跃任务视为重复，返回已有任
   const { db, dispatcher, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '同一个活' }))
   const text = await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '同一个活' }))
-  assert.match(text, /已存在任务 t-/)
+  assert.match(text, /已存在任务「.*（t-[0-9a-f]+）/)
   assert.match(text, /未重复创建/)
   assert.equal(listTasks(db).length, 1)
   assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 1)
@@ -326,7 +326,7 @@ test('task_status：详情、最近 3 条、不存在提示', async () => {
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   const task = listTasks(db)[0]
   const text = await call(tools, 'task_status', { task_id: task.id })
-  assert.match(text, /任务 t-/)
+  assert.match(text, /任务「.*（t-[0-9a-f]+）/)
   assert.match(text, /进行中/)
   assert.match(text, /最近消息/)
   assert.match(text, /\[brief\]/)
@@ -346,6 +346,32 @@ test('task_message：正常写 followup 并投递，attempts +1', async () => {
   assert.equal(getTask(db, task.id).attempts, 1)
   const kinds = db.prepare('SELECT kind FROM messages WHERE task_id = ? ORDER BY seq').all(task.id).map(row => row.kind)
   assert.deepEqual(kinds, ['brief', 'followup'])
+  db.close()
+})
+
+test('对外文案：task_create/list/status 带 id，续派/停止/回报回执零 id；重名通知带短后缀', async () => {
+  const { db, dispatcher, notifier, tools } = await setup()
+  const created = await call(tools, 'task_create', sampleBrief({ title: '同名', goal: '第一个' }))
+  const idA = created.match(/（(t-[0-9a-f]+)）/)[1]
+  // 创建回执保留 id（模型要马上续派/停止）
+  assert.match(created, /任务「同名（t-[0-9a-f]+）」已派发/)
+  // 同名不同 goal：允许再建，通知显示名要带短后缀
+  await call(tools, 'task_create', sampleBrief({ title: '同名', goal: '第二个' }))
+  assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 2)
+  const list = await call(tools, 'task_list', {})
+  assert.match(list, /同名（t-[0-9a-f]+）/)
+  const status = await call(tools, 'task_status', { task_id: idA })
+  assert.match(status, /任务「同名（t-[0-9a-f]+）」/)
+  const sent = await call(tools, 'task_message', { task_id: idA, message: '继续' })
+  assert.doesNotMatch(sent, /t-[0-9a-f]{8}/, '续派回执不裸露 id')
+  const stoppedTask = listTasks(db).find(task => task.id !== idA)
+  const stopped = await call(tools, 'task_stop', { task_id: stoppedTask.id })
+  assert.doesNotMatch(stopped, /t-[0-9a-f]{8}/, '停止回执不裸露 id')
+  // 回报通知：displayName 由 tools 用全量任务算好，带短后缀
+  const report = await call(tools, 'task_report', { task_id: idA, status: 'done', summary: '完成' }, { agent: { id: (listTasks(db).find(task => task.id === idA)).session_id } })
+  assert.doesNotMatch(report, /t-[0-9a-f]{8}/, '回报回执不裸露 id')
+  const shown = notifier.pushed.at(-1)
+  assert.match(shown.displayName, /^同名（[0-9a-f]{4}）$/)
   db.close()
 })
 

@@ -16,7 +16,9 @@ const artifactBlock = item => {
   return `\n  产物：\n${rows.join('\n')}${truncated}`
 }
 
-const line = item => `- ${item.title}：${item.summary}${artifactBlock(item)}`
+// 显示名由 tools 算好放进 item.displayName（重名短后缀也在那里算）；没有就回落 title。
+const nameOf = item => item.displayName ?? item.title
+const line = item => `- ${nameOf(item)}：${item.summary}${artifactBlock(item)}`
 
 export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {}, onEvent = () => {} }) {
   let buffer = []
@@ -105,7 +107,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     buffer = []
     if (batch.length === 0) return undefined
     const text = batch.length === 1
-      ? `${batch[0].status === 'failed' ? `任务「${batch[0].title}」失败：` : `任务「${batch[0].title}」完成：`}${batch[0].summary}${artifactBlock(batch[0])}`
+      ? `${batch[0].status === 'failed' ? `任务「${nameOf(batch[0])}」失败：` : `任务「${nameOf(batch[0])}」完成：`}${batch[0].summary}${artifactBlock(batch[0])}`
       : `${batch.length} 个任务${batch.every(item => item.status === 'done') ? '完成' : '状态更新'}：\n${batch.map(line).join('\n')}`
     return deliver(text, batch)
   }
@@ -115,7 +117,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
       const level = levelOf(item.status)
       if (level === 'silent') return
       if (level === 'interrupt') {
-        void deliver(`任务「${item.title}」需要你：${item.summary}${artifactBlock(item)}`, [item])
+        void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${artifactBlock(item)}`, [item])
         return
       }
       buffer.push(item)

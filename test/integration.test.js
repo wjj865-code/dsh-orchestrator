@@ -63,7 +63,7 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
       acceptance: ['空窗口输出明确说明', 'npm test 全绿'],
       user_verbatim: '返回 {"a":1} 不是数组',
     }, { agent: coordinator })
-    const taskId = created.match(/任务 (t-[0-9a-f]+)/)[1]
+    const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
     assert.equal(spawned.length, 1)
     assert.equal(spawned[0].team, undefined)
     assert.equal(spawned[0].provider, 'spawn')
