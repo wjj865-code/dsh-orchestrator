@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, transition, touchTask, addMessage, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, transition, touchTask, addMessage, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts } from '../src/ledger.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -256,5 +256,58 @@ test('main_session_id 读写', async () => {
   assert.equal(getMainSessionId(db), undefined)
   setMainSessionId(db, 'session-main')
   assert.equal(getMainSessionId(db), 'session-main')
+  db.close()
+})
+
+
+test('tasks 表有 artifacts_json，旧库自动补列，旧行按空数组', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orch-ledger-art-'))
+  const db = await openLedger(dir)
+  const cols = db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+  assert.ok(cols.includes('artifacts_json'))
+  const task = createTask(db, { brief: { title: '任务', goal: '目标', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  assert.deepEqual(task.artifacts, [])
+  db.close()
+
+  const { DatabaseSync } = await import('node:sqlite')
+  const legacyDir = mkdtempSync(join(tmpdir(), 'orch-ledger-art-legacy-'))
+  const legacy = new DatabaseSync(join(legacyDir, 'tasks.sqlite'))
+  legacy.exec(`CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
+    status TEXT NOT NULL, session_id TEXT, target TEXT, target_dir TEXT, coordinator_session TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER)`)
+  legacy.prepare('INSERT INTO tasks (id,title,goal,brief_json,status,coordinator_session,created_at,updated_at,last_event_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('t-old', 'old', 'g', '{}', 'done', 's-1', 1, 1, 1)
+  legacy.close()
+  const reopened = await openLedger(legacyDir)
+  const old = getTask(reopened, 't-old')
+  assert.deepEqual(old.artifacts, [])
+  const legacyCols = reopened.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+  assert.ok(legacyCols.includes('artifacts_json'))
+  reopened.close()
+})
+
+test('setTaskArtifacts 落库并可读回，不改状态', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief({ title: '带产物' }), coordinatorSession: 's-1' })
+  const artifacts = [
+    { path: 'C:/work/report.md', label: '报告', exists: true },
+    { path: 'C:/work/missing.txt', label: '', exists: false },
+  ]
+  const updated = setTaskArtifacts(db, task.id, artifacts)
+  assert.deepEqual(updated.artifacts, artifacts)
+  assert.equal(updated.status, task.status)
+  assert.deepEqual(getTask(db, task.id).artifacts, artifacts)
+  db.close()
+})
+
+test('artifacts_json 损坏或非数组时读回空数组', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief({ title: '坏数据' }), coordinatorSession: 's-1' })
+  db.prepare('UPDATE tasks SET artifacts_json = ? WHERE id = ?').run('not-json', task.id)
+  assert.deepEqual(getTask(db, task.id).artifacts, [])
+  db.prepare('UPDATE tasks SET artifacts_json = ? WHERE id = ?').run('{"a":1}', task.id)
+  assert.deepEqual(getTask(db, task.id).artifacts, [])
   db.close()
 })

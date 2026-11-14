@@ -8,7 +8,7 @@ import { nextStatus } from './state.js'
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
-  status TEXT NOT NULL, session_id TEXT, target TEXT, target_dir TEXT, coordinator_session TEXT NOT NULL,
+  status TEXT NOT NULL, session_id TEXT, target TEXT, target_dir TEXT, artifacts_json TEXT, coordinator_session TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER
 );
@@ -39,6 +39,7 @@ export async function openLedger(stateDir) {
     const taskColumns = db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
     if (!taskColumns.includes('queued_at')) db.exec('ALTER TABLE tasks ADD COLUMN queued_at INTEGER')
     if (!taskColumns.includes('target_dir')) db.exec('ALTER TABLE tasks ADD COLUMN target_dir TEXT')
+    if (!taskColumns.includes('artifacts_json')) db.exec('ALTER TABLE tasks ADD COLUMN artifacts_json TEXT')
     return db
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
@@ -54,9 +55,20 @@ export async function openLedger(stateDir) {
   }
 }
 
+const parseArtifacts = value => {
+  if (value === null || value === undefined) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
 const taskOf = row => row === undefined ? undefined : ({
   ...row,
   brief: JSON.parse(row.brief_json),
+  artifacts: parseArtifacts(row.artifacts_json),
 })
 
 export function createTask(db, { brief, coordinatorSession, targetDir }) {
@@ -126,6 +138,14 @@ export function transition(db, id, to, patch = {}) {
   if (Object.hasOwn(patch, 'error')) { sets.push('error = ?'); values.push(patch.error) }
   values.push(id)
   db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+  return getTask(db, id)
+}
+
+/** 记录子会话显式上报的交付产物（数组，元素 {path,label,exists}）；不改任务状态。 */
+export function setTaskArtifacts(db, id, artifacts) {
+  const now = Date.now()
+  db.prepare('UPDATE tasks SET artifacts_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
+    .run(JSON.stringify(Array.isArray(artifacts) ? artifacts : []), now, now, id)
   return getTask(db, id)
 }
 
