@@ -1,6 +1,6 @@
 # dsh-orchestrator
 
-协调者会话 + 子任务工作台的服务端核心（阶段 1，无客户端）。
+协调者会话 + 子任务工作台（服务端核心 + 阶段 2 客户端入口/任务面板）。
 
 协调者只做协调：把需求拆成结构化任务、派给子会话、看回报、决定是否打扰用户；子任务就是一个独立子会话（直连 `ctx.subagents.startActivation`，不占 Team 名册），能力不受限，只多一个 `task_report` 回报工具。
 
@@ -102,7 +102,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 ## 客户端入口与任务面板（阶段 2）
 
-- **槽位**：侧栏入口用 `sidebar.footer.action`（`id:'orchestrator'`、`order:100`，点击 `ctx.layout.selectPanel('orchestrator')` 打开面板）。**不用 `sidebar.panellist`**：ds-bot 的 Bot 模式用 `!important` 藏掉了整个 shell 面板列表（`nav[class*="_panelList"]{display:none!important}`），而 footer action 列表是它保留的席位（它自己的 `bot-account`/`bot-return` 就在这）；`id` 不同不会顶掉账户位。面板页是 `main` 的 `key:'orchestrator'`；会话头按钮用 `conversation.header.leading`（单席位，Bot 模式下也可见）。不碰 ds-bot 的 `sidebar.workspaces`/`conversation.session.header`。
+- **槽位**：侧栏入口用 `sidebar.footer.action`（`id:'orchestrator'`、`order:100`，点击 `ctx.layout.selectPanel('orchestrator')` 打开面板）。**不用 `sidebar.panellist`**：ds-bot 的 Bot 模式用 `!important` 藏掉了整个 shell 面板列表（`nav[class*="_panelList"]{display:none!important}`），而 footer action 列表是它保留的席位（它自己的 `bot-account`/`bot-return` 就在这）；`id` 不同不会顶掉账户位。侧栏折叠时 footer 入口会被 shell 隐藏，此时用会话头按钮。面板页是 `main` 的 `key:'orchestrator'`；会话头按钮用 `conversation.header.leading`（单席位，Bot 模式下也可见）。不碰 ds-bot 的 `sidebar.workspaces`/`conversation.session.header`。
 - **流程**：侧栏「任务」→ 面板（面板内「打开协调者会话」）；会话头按钮打开同一面板；每条任务可「打开子会话」，走 `ctx.uiWorkspace.openSession(id)`（与平台 `ui-subagent.openChild` 同款）。
 - **数据**：`/api/orchestrator` 只读 POST（`{ endpoint: 'snapshot' }`）。鉴权由 connection 服务统一负责（401/403、exact 路由 owner-only），handler 只 import 查询函数、只认白名单端点，**不写台账**。面板打开时拉一次、可见时 5s 轮询，连续失败退避 30s，可按状态筛选；失败显示「台账暂不可用」，不阻塞会话（平台对 handler 异常回 400 空体，客户端会显示 `HTTP 400`）。
 - **产物**：`client.js` 是**经典脚本**（`window.__ModuleLoader__.load({ id:'dsh-orchestrator', factory })`，顶层无 import/export），`package.json` 声明 `dsh.client.platform:'web'`、`exports["./client"]`、`files` 含 `client.js`。MVP 无构建；`npm run check:client` 只做语法检查。
@@ -226,7 +226,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - **headless 收尾竞态**：一次性进程在 5 秒合并窗口内退出时，`steer` 可能抛 `agent initiator scope is disposed`（进程级 initiator 作用域已 dispose），此时消息可能已进 inbox 但没有回合消费，`notifications` 记 `failed` + reason 是正确审计；长驻 desktop/服务进程不受影响。冒烟要在最后一条回报后保持进程活过 `mergeWindowMs` 才能看到 `delivered`。
 - **`inject` 同时要求 `agentTeams` + `subagents`**：两套后端都挂在 `inject` 里，subagent 模式在没有 agent-team 的环境会因缺 `agentTeams` 加载失败（反之亦然）。对外发布给没装 agent-team 的用户前必须按 `ctx.get` 惰性判后端、缺哪个给可读错误；内部 profile 两套都自带，暂不阻塞。
 - **重启窗口**：子会话已完成但 `task_report` 还没被协调者消费时恰好重启，对账会按「running 不 live」标 `orphaned`；这个窗口里报告本来也会丢，重建即可。
-- 阶段 1 没有客户端入口/历史面板；卡片只提供数据，不渲染 UI。
+- 会话内卡片仍只提供数据（`taskCard`），不渲染 UI；可见的入口/面板在阶段 2 的侧栏与面板里，卡片渲染 UI 留阶段 3。
 
 ## 开发
 

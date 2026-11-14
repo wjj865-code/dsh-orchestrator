@@ -199,6 +199,6 @@ window.__ModuleLoader__.load({
 
 - `client.js`：根目录经典脚本产物（`sidebar.footer.action` 侧栏入口 / `main` 面板 / `conversation.header.leading` 按钮；面板 5s 轮询 + 失败退避 30s + 状态筛选 + 打开协调者/子会话）。
 - `src/host-route.js`：`/api/orchestrator` 只读 handler（端点白名单 `snapshot`；只 import 查询函数）。
-- `index.js`：`ctx.get('connection').fetch.register` 注册路由，卸载时 dispose；缺服务只 warn。
+- `index.js`：`ctx.inject(['connection'], scope => scope.connection.fetch.register(...))` 等 connection 就绪再注册（不用一次性 `ctx.get`）；`scope.effect` 清理，卸载时 dispose；缺服务只 warn。
 - `package.json`：`exports["./client"]`、`files` 含 `client.js`、`dsh.client.platform/inject`。
 - 验收：`test/client.test.js`（注册捕获 + 经典脚本解析 + 清单）、`test/host-route.test.js`（白名单/零写入/降级）、`node docs/probes/qa-stage2-slots.mjs client.js`（测试维护的 L1 探针）。
