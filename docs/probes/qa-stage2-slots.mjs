@@ -89,11 +89,12 @@ const reactMock = {
   createElement: el,
   Fragment: Symbol('Fragment'),
   useState: (v) => [v, () => {}],
-  useEffect: () => {},
+  useEffect: (fn) => { pendingEffects.push(fn) },
   useMemo: (fn) => fn(),
   useCallback: (fn) => fn,
   useRef: (v) => ({ current: v }),
 }
+const pendingEffects = []
 let clientExports
 try {
   clientExports = mod.factory((id) => {
@@ -169,12 +170,49 @@ const footer = byName('sidebar.footer.action')
 check('不再注册 sidebar.footer.action（底部「任务」入口已删）', footer.length === 0, `实际 ${footer.length}`)
 
 const main = byName('main')
-check('main 恰 1 次', main.length === 1, `实际 ${main.length}`)
-if (main[0]) {
-  const s = main[0].spec
-  check("面板 key === 'orchestrator'", s.key === 'orchestrator', String(s.key))
-  if (s.locale) warn("main 带 locale，需同时注册字典（否则去掉）", String(s.locale))
-  check('面板经 slots.inject 包装', main[0].via === 'main', String(main[0].via))
+check('main 恰 2 次（任务面板 + 侧栏启动器）', main.length === 2, `实际 ${main.length}`)
+const panelReg = main.find((r) => r.spec?.key === 'orchestrator')
+const launcherReg = main.find((r) => r.spec?.key === 'orchestrator-launcher')
+check("任务面板 key === 'orchestrator'", panelReg !== undefined, JSON.stringify(main.map((r) => r.spec?.key)))
+check("启动器 key === 'orchestrator-launcher'", launcherReg !== undefined, JSON.stringify(main.map((r) => r.spec?.key)))
+for (const row of main) {
+  if (row.spec?.locale) warn('main 带 locale，需同时注册字典（否则去掉）', String(row.spec.locale))
+  check(`main(${row.spec?.key}) 经 slots.inject 包装`, row.via === 'main', String(row.via))
+}
+
+// 侧栏「插件」下方入口：panellist 条目 id 对应启动器 main 面板，order 5（plugins 0 / schedules 10）。
+const panellist = byName('sidebar.panellist')
+check('sidebar.panellist 恰 1 条', panellist.length === 1, `实际 ${panellist.length}`)
+if (panellist[0]) {
+  const s = panellist[0].spec
+  check("启动器条目 id === 'orchestrator-launcher'", s.id === 'orchestrator-launcher', String(s.id))
+  check('启动器条目 order === 5（插件 0 / 自动化任务 10 之间）', s.order === 5, String(s.order))
+  check('启动器条目不设 priority', !('priority' in s))
+  check('启动器条目 label() === 主会话', typeof s.label === 'function' && s.label() === '主会话', String(s.label?.()))
+  check('启动器条目经 slots.inject 包装', panellist[0].via === 'sidebar.panellist', String(panellist[0].via))
+}
+
+// 启动器挂载即打开主会话，再清面板回到对话。
+if (launcherReg) {
+  let props = {}
+  try { props = typeof launcherReg.spec?.inject === 'function' ? launcherReg.spec.inject() ?? {} : {} } catch (e) { warn('启动器 inject 异常', e.message) }
+  fetchCalls.length = 0
+  openedSessions.length = 0
+  selectPanelCalls.length = 0
+  pendingEffects.length = 0
+  let tree
+  try { tree = launcherReg.component(props) } catch (e) { check('启动器组件可渲染', false, e.message) }
+  check('启动器组件渲染「正在打开主会话…」', JSON.stringify(tree ?? {}).includes('正在打开主会话'))
+  for (const fn of pendingEffects.splice(0)) {
+    try { fn() } catch (e) { check('启动器 effect 不抛异常', false, e.message) }
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const sent = fetchCalls.find((call) => typeof call.init?.body === 'string')
+  let payload
+  try { payload = sent ? JSON.parse(sent.init.body) : undefined } catch { payload = undefined }
+  check('启动器挂载即 POST open-main', payload?.endpoint === 'open-main', JSON.stringify(payload))
+  check('启动器打开后跳到返回的 sessionId', openedSessions.includes('session-main'), JSON.stringify(openedSessions))
+  check('启动器打开后清空面板（selectPanel(null)）', selectPanelCalls.includes(null), JSON.stringify(selectPanelCalls))
 }
 
 const leading = byName('conversation.header.leading')
@@ -211,13 +249,13 @@ if (leading[0]?.component) {
 }
 
 // ---------- 面板渲染（假 React，状态筛选/空态/打开协调者） ----------
-if (main[0]?.component) {
+if (panelReg?.component) {
   let panelProps = {}
-  if (typeof main[0].spec?.inject === 'function') {
-    try { panelProps = main[0].spec.inject({}) ?? {} } catch (e) { warn('面板 inject 调用异常', e.message) }
+  if (typeof panelReg.spec?.inject === 'function') {
+    try { panelProps = panelReg.spec.inject({}) ?? {} } catch (e) { warn('面板 inject 调用异常', e.message) }
   }
   let tree
-  try { tree = main[0].component(panelProps) } catch (e) { warn('面板无法直接调用（可能用了 hooks），跳过渲染验证', e.message) }
+  try { tree = panelReg.component(panelProps) } catch (e) { warn('面板无法直接调用（可能用了 hooks），跳过渲染验证', e.message) }
   if (tree) {
     const selects = []
     const options = []

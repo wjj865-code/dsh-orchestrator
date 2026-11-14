@@ -1,5 +1,5 @@
 // dsh-orchestrator 客户端薄插件（经典脚本，模块加载器用 <script> 加载，顶层不能有 import/export）。
-// 槽位：sidebar.panellist 入口、main 任务面板、conversation.header.leading 会话头按钮。
+// 槽位：sidebar.panellist 启动器入口（插件下方）、main 任务面板 + 启动器面板、conversation.header.leading 会话头按钮。
 window.__ModuleLoader__.load({
   id: 'dsh-orchestrator',
   factory: (require) => {
@@ -7,6 +7,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement
     const inject = ['slots', 'layout', 'uiWorkspace']
     const PANEL_ID = 'orchestrator'
+    const LAUNCHER_ID = 'orchestrator-launcher'
     const ROUTE = 'api/orchestrator'
     const POLL_MS = 5000
     const POLL_BACKOFF_MS = 30000
@@ -61,6 +62,17 @@ window.__ModuleLoader__.load({
       throw new Error((body && body.error) || '打开主会话失败')
     }
 
+    // 面板按钮和侧栏启动器共用同一条 open-main；并发点击合并成一次（平台侧创建没有互斥）。
+    let openMainInFlight = null
+    const openMainOnce = () => {
+      if (openMainInFlight !== null) return openMainInFlight
+      const run = openMainSession()
+      openMainInFlight = run
+      const clear = () => { if (openMainInFlight === run) openMainInFlight = null }
+      run.then(clear, clear)
+      return run
+    }
+
     const timeLabel = ms => {
       if (typeof ms !== 'number' || !Number.isFinite(ms)) return '-'
       const minutes = Math.max(0, Math.floor((Date.now() - ms) / 60000))
@@ -99,6 +111,35 @@ window.__ModuleLoader__.load({
     const HeaderButton = ({ openPanel }) => h('button', {
       type: 'button', title: '任务面板', onClick: openPanel, style: styles.button,
     }, '\u2630 任务')
+
+    // 侧栏「插件」下方的入口图标（面板行渲染的是这个组件）。
+    const LauncherIcon = () => h('span', { 'aria-hidden': true, style: { fontSize: 16, lineHeight: 1 } }, '\u25C8')
+
+    // 启动器面板：侧栏条目点击 → 选到这个面板 → 挂载即跑现有 open-main → 跳到主会话 → 清空面板回对话。
+    const LauncherPanel = ({ openMain, openSession, clearPanel }) => {
+      const [error, setError] = React.useState(null)
+      const started = React.useRef(false)
+      const run = React.useCallback(async () => {
+        setError(null)
+        try {
+          const body = await openMain()
+          openSession(body.sessionId)
+          clearPanel()
+        } catch (failure) {
+          setError(`打开主会话失败：${String((failure && failure.message) || failure)}`)
+        }
+      }, [openMain, openSession, clearPanel])
+      React.useEffect(() => {
+        if (started.current) return
+        started.current = true
+        void run()
+      }, [run])
+      return h('div', { style: styles.panel },
+        h('div', { style: styles.meta }, '正在打开主会话…'),
+        error === null ? null : h('div', { style: styles.error }, error),
+        error === null ? null : h('button', { type: 'button', style: styles.button, onClick: run }, '重试'),
+      )
+    }
 
     const TasksPanel = ({ openSession }) => {
       const [snapshot, setSnapshot] = React.useState(null)
@@ -167,7 +208,7 @@ window.__ModuleLoader__.load({
         setOpeningMain(true)
         setOpenedMain(false)
         try {
-          const body = await openMainSession()
+          const body = await openMainOnce()
           setActionError(null)
           open(body.sessionId)
           // 静态提示（不做 mainView 检测）：Bot 模式下主视图其实已切，错位的是 ds-bot 的皮肤/输入框。
@@ -253,6 +294,20 @@ window.__ModuleLoader__.load({
         name: 'main', key: PANEL_ID,
         inject: () => ({ openSession: id => ctx.uiWorkspace.openSession(id) }),
       }, TasksPanel))
+
+      // 侧栏「插件」下方（plugins order 0 / schedules order 10）的启动器入口；main 面板与条目同 id。
+      ctx.slots.inject('main', () => ctx.slots.register({
+        name: 'main', key: LAUNCHER_ID,
+        inject: () => ({
+          openMain: openMainOnce,
+          openSession: id => ctx.uiWorkspace.openSession(id),
+          clearPanel: () => ctx.layout.selectPanel(null),
+        }),
+      }, LauncherPanel))
+
+      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+        name: 'sidebar.panellist', id: LAUNCHER_ID, order: 5, label: () => '主会话',
+      }, LauncherIcon))
 
       ctx.slots.inject('conversation.header.leading', () => ctx.slots.register({
         name: 'conversation.header.leading',

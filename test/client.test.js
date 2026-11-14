@@ -44,12 +44,38 @@ test('经典脚本：能被 <script> 解析，无顶层 import/export，id 等�
   }
 })
 
-test('apply 不再注册侧栏底部入口；保留主面板与会话头按钮', () => {
+test('apply 不再注册侧栏底部入口；注册任务面板、启动器面板与侧栏入口', () => {
   const { loaded, ctx, registrations } = load()
   loaded.apply(ctx)
   const names = registrations.map(row => row.spec.name)
-  assert.deepEqual(names, ['main', 'conversation.header.leading'])
+  assert.deepEqual(names, ['main', 'main', 'sidebar.panellist', 'conversation.header.leading'])
   assert.equal(names.includes('sidebar.footer.action'), false)
+})
+
+test('启动器：side bar 条目 id/order/label 与 main 面板同 id，位于插件(0)与自动化任务(10)之间', () => {
+  const { loaded, ctx, registrations } = load()
+  loaded.apply(ctx)
+  const panels = registrations.filter(row => row.spec.name === 'main').map(row => row.spec)
+  assert.deepEqual(panels.map(spec => spec.key).sort(), ['orchestrator', 'orchestrator-launcher'])
+  const entry = registrations.find(row => row.spec.name === 'sidebar.panellist').spec
+  assert.equal(entry.id, 'orchestrator-launcher')
+  assert.equal(entry.order, 5)
+  assert.equal(entry.label(), '主会话')
+})
+
+test('启动器点击路径：复用 open-main → openSession → selectPanel(null)（源码 + inject）', () => {
+  assert.match(source, /正在打开主会话…/)
+  assert.match(source, /openMainOnce/)
+  assert.match(source, /endpoint: 'open-main'/)
+  const { loaded, ctx, registrations, selected, opened } = load()
+  loaded.apply(ctx)
+  const launcher = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator-launcher')
+  const props = launcher.spec.inject()
+  assert.equal(typeof props.openMain, 'function')
+  props.openSession('s-main')
+  props.clearPanel()
+  assert.deepEqual(opened, ['s-main'])
+  assert.deepEqual(selected, [null])
 })
 
 test('槽位选项：主面板带 key，leading 单席位不带 id', () => {
@@ -92,7 +118,9 @@ test('面板提供「打开主会话」并调用 open-main', () => {
   assert.match(source, /actionError/)
   assert.match(source, /打开主会话失败：/)
   assert.match(source, /台账暂不可用：\$\{snapshotError\}/)
-  assert.doesNotMatch(source, /setError\(/)
+  // 任务面板不用通用 setError：快照/动作分开记（启动器面板有自己的 setError，这里只约束面板路径）。
+  assert.match(source, /setSnapshotError/)
+  assert.match(source, /setActionError/)
 })
 
 test('会话头按钮文案仍是任务面板', () => {
