@@ -24,10 +24,12 @@ function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', '
   }
 }
 
-function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride } = {}) {
+function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, connection } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
   const routes = []
+  const injections = []
+  const routeService = connection ?? { fetch: { register(spec) { routes.push(spec); return () => {} } } }
   const warnings = []
   const infos = []
   const listeners = new Map()
@@ -50,9 +52,12 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
     },
     get(name) {
       if (name === 'agents') return { get: id => live.get(id) }
-      if (name === 'connection') return { fetch: { register(spec) { routes.push(spec); return () => {} } } }
+      if (name === 'connection') return routeService
       return undefined
     },
+    ...(withInject
+      ? { inject(services, callback) { injections.push({ services, callback }); return () => {} } }
+      : {}),
     on(event, handler) { listeners.set(event, handler); return () => {} },
     effect(callback) { disposers.push(callback()); return () => {} },
     agentTeams: {
@@ -76,7 +81,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       async listChildren() { return [{ id: spawnResult?.member?.id ?? 'm-1', mode: 'continuable', label: 'x', activity: 'inactive' }] },
     },
   }
-  return { ctx, registered, routes, warnings, infos, listeners, sent, disposers, agent, live, guards, promptContexts }
+  return { ctx, registered, routes, injections, warnings, infos, listeners, sent, disposers, agent, live, guards, promptContexts }
 }
 
 function withHome(fn) {
@@ -650,6 +655,22 @@ test('注册 /api/orchestrator 只读路由：POST + buffered + snapshot', withH
   const body = await response.json()
   assert.equal(body.ok, true)
   assert.deepEqual(body.coordinator, { id: 's-1', live: true })
+}))
+
+test('connection 晚于插件加载：ctx.inject 就绪后仍注册只读路由', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const { ctx, routes, injections } = fakeCtx({ agents: [s1], withInject: true })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  assert.equal(routes.length, 0, 'apply 时不应假装注册成功')
+  assert.equal(injections.length, 1)
+  assert.deepEqual(injections[0].services, ['connection'])
+
+  // 模拟 cordis：connection 服务就绪后回调 scope
+  const connection = { fetch: { register(spec) { routes.push(spec); return () => {} } } }
+  injections[0].callback({ connection, effect: fn => { fn(); return () => {} } })
+  assert.equal(routes.length, 1)
+  assert.equal(routes[0].path, '/api/orchestrator')
+  assert.deepEqual(routes[0].methods, ['POST'])
 }))
 
 test('cordis.patch.yml 指向 dsh-orchestrator', () => {

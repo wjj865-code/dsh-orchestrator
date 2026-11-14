@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { openLedger, createTask, transition } from '../src/ledger.js'
+import { openLedger, createTask, transition, markQueued } from '../src/ledger.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from '../src/host-route.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
@@ -92,7 +92,7 @@ test('未绑定协调者：coordinator.id 为 null (JSON null)', async () => {
   db.close()
 })
 
-test('queued / stale 标记', async () => {
+test('queued 按 queued_at 精确标记：新建未排队不算排队', async () => {
   const db = await openLedger(tempDir())
   const handler = createHostRoute({
     db,
@@ -100,10 +100,31 @@ test('queued / stale 标记', async () => {
     staleMinutes: 30,
     now: () => Date.now() + 60 * 60_000,
   })
-  const task = createTask(db, { brief: sampleBrief({ title: '排队' }), coordinatorSession: 's-1' })
+  const fresh = createTask(db, { brief: sampleBrief({ title: '新建' }), coordinatorSession: 's-1' })
+  const queued = createTask(db, { brief: sampleBrief({ title: '排队' }), coordinatorSession: 's-1' })
+  markQueued(db, queued.id)
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  const row = body.tasks.find(item => item.id === task.id)
-  assert.equal(row.queued, true)
-  assert.equal(row.stale, true)
+  const byId = Object.fromEntries(body.tasks.map(row => [row.id, row]))
+  assert.equal(byId[fresh.id].queued, false)
+  assert.equal(byId[queued.id].queued, true)
+  assert.equal(byId[queued.id].stale, true)
+  db.close()
+})
+
+test('快照：活跃任务全量 + 历史最多 limit 条（老 running 不被截掉）', async () => {
+  const db = await openLedger(tempDir())
+  const running = createTask(db, { brief: sampleBrief({ title: '老的运行中' }), coordinatorSession: 's-1' })
+  transition(db, running.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  for (let i = 0; i < 3; i += 1) {
+    const done = createTask(db, { brief: sampleBrief({ title: `新完成${i}` }), coordinatorSession: 's-1' })
+    transition(db, done.id, 'running', { sessionId: `c-${i}`, target: `c-${i}` })
+    transition(db, done.id, 'done')
+  }
+  const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-1', live: true }), limit: 2 })
+  const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  const ids = body.tasks.map(row => row.id)
+  assert.ok(ids.includes(running.id), '老 running 必须在快照里')
+  assert.equal(body.tasks.filter(row => row.status === 'done').length, 2)
+  assert.equal(body.tasks.length, 3)
   db.close()
 })

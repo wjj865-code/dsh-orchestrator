@@ -1,7 +1,7 @@
 // /api/orchestrator 只读路由的 handler。
 // 平台只保证 401/403 + owner-only（connection.admit），不保证只读：
 // 这里只 import 查询函数、只认白名单端点，不写台账、不触发绑定、不 spawn。
-import { listTasks } from './ledger.js'
+import { listTasks, listHistoryTasks } from './ledger.js'
 import { taskCard } from './card.js'
 
 const ENDPOINTS = new Set(['snapshot'])
@@ -12,15 +12,17 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, staleMinutes = 30, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, staleMinutes = 30, limit = 200, now = Date.now }) {
   const snapshot = () => {
     const status = coordinatorStatus?.() ?? {}
     const at = now()
+    // 活跃任务始终全量；历史只取最近 limit 条。不能先全量再 slice，否则老 running 会被截掉。
+    const tasks = [...listTasks(db, { active: true }), ...listHistoryTasks(db, limit)]
     return {
       ok: true,
       at,
       coordinator: { id: status.id ?? null, live: status.live === true },
-      tasks: listTasks(db).map(task => {
+      tasks: tasks.map(task => {
         const card = taskCard(task)
         return {
           id: task.id,
@@ -29,7 +31,7 @@ export function createHostRoute({ db, coordinatorStatus, staleMinutes = 30, now 
           label: card.label,
           tone: card.tone,
           childSessionId: task.session_id ?? null,
-          queued: task.status === 'pending',
+          queued: task.status === 'pending' && task.queued_at !== null && task.queued_at !== undefined,
           stale: ACTIVE.has(task.status) && at - task.last_event_at > staleMinutes * 60_000,
           updatedAt: task.updated_at,
           lastEventAt: task.last_event_at,
