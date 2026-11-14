@@ -113,6 +113,7 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 
 - 台账 `settings` 键改为 `main_session_id`；解析顺序 `config.coordinatorSession`（显式覆盖，优先，不写台账）→ `settings.main_session_id` → 未打开。
 - 主会话由 `src/main-session.js` 创建：`workspaceRegistry.resolveByPath`（没有就 `mkdir` + `create(path, '指挥舱')`）→ `sessionController.create({ workspaceId, agentPreset: 'dsh-orchestrator-coordinator' })` → `sessionController.rename({ sessionId, title: '主会话' })` → 写 `settings.main_session_id`。
+- 复用条件：`main_session_id` 指向的会话必须 live **且**实际预设是 `dsh-orchestrator-coordinator`（`agentPresets.presetForSession`，兜底 `session.header.agentPreset`）；预设未知或不是协调者就重建一次并记 `main.session.recreate`（旧版主会话没有预设，不迁移）。`create` 返回值里的 `agentPreset` 会回传并写进 `main.session.created` 日志，真机可对表。
 - `sessionController.create` 入参没有 `title`，标题必须单独 `rename`；`rename` 依赖 `sessionTitle` 服务，失败只记日志，不影响主会话可用。
 - 子会话 cwd：`startActivation.request.cwd` 直接用目标目录（必须是存在的绝对目录），沙箱边界就是该 cwd；没给 target 时沿用父会话 cwd。
 - `task_create` 不再绑定调用方；`task_*`（除 `task_report`）只允许主会话调用，没有主会话时返回「尚未打开主会话，请先从面板「打开主会话」」。

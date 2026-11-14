@@ -16,6 +16,7 @@ const fake = ({ live = new Set() } = {}) => {
     renamed,
     workspacesCreated,
     agents: { get: id => set.has(id) ? { id, session: { id } } : undefined },
+    presetFor: () => PRESET_ID,
     sessionController: {
       create: async request => { created.push(request); return { sessionId: 'session-main-new' } },
       rename: async request => { renamed.push(request) },
@@ -38,7 +39,7 @@ test('无主会话时创建（工作区 + 预设）并写台账', async () => {
     workspaces: f.workspaces, workspacePath: 'C:/ws', workspaceName: '指挥舱',
   })
   const result = await main.open()
-  assert.deepEqual(result, { ok: true, sessionId: 'session-main-new', created: true })
+  assert.deepEqual(result, { ok: true, sessionId: 'session-main-new', created: true, agentPreset: undefined })
   assert.equal(getMainSessionId(db), 'session-main-new')
   assert.equal(f.created[0].agentPreset, PRESET_ID)
   assert.equal('title' in f.created[0], false)
@@ -76,7 +77,7 @@ test('主会话 live 时直接返回，不重复创建', async () => {
   const f = fake({ live: new Set(['session-main-old']) })
   f.agents.get = id => id === 'session-main-old' ? { id } : undefined
   setMainSessionId(db, 'session-main-old')
-  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspacePath: 'C:/ws' })
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, presetFor: f.presetFor, workspacePath: 'C:/ws' })
   const result = await main.open()
   assert.equal(result.created, false)
   assert.equal(result.sessionId, 'session-main-old')
@@ -230,4 +231,69 @@ test('open() 对调用方永不 reject：台账写主会话失败时返回可读
   } finally {
     process.removeListener('unhandledRejection', onUnhandled)
   }
+})
+
+
+test('live 主会话预设不是协调者时重建一次，不迁移旧会话', async () => {
+  const db = await ledger()
+  const f = fake({ live: new Set(['session-old']) })
+  f.presetFor = () => 'standard'
+  setMainSessionId(db, 'session-old')
+  const logs = []
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, presetFor: f.presetFor, workspacePath: 'C:/ws', log: (event, detail) => logs.push([event, detail]) })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.equal(result.created, true)
+  assert.equal(result.sessionId, 'session-main-new')
+  assert.equal(getMainSessionId(db), 'session-main-new')
+  assert.ok(logs.some(([event, detail]) => event === 'main.session.recreate' && detail.reason === 'preset-mismatch' && detail.preset === 'standard'))
+  db.close()
+})
+
+test('live 主会话没有记录预设时也重建', async () => {
+  const db = await ledger()
+  const f = fake({ live: new Set(['session-old']) })
+  f.presetFor = () => undefined
+  setMainSessionId(db, 'session-old')
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, presetFor: f.presetFor, workspacePath: 'C:/ws' })
+  const result = await main.open()
+  assert.equal(result.created, true)
+  db.close()
+})
+
+test('live 主会话预设就是协调者时复用，不重建', async () => {
+  const db = await ledger()
+  const f = fake({ live: new Set(['session-old']) })
+  setMainSessionId(db, 'session-old')
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, presetFor: f.presetFor, workspacePath: 'C:/ws' })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.equal(result.created, false)
+  assert.equal(result.sessionId, 'session-old')
+  assert.equal(result.agentPreset, PRESET_ID)
+  assert.equal(f.created.length, 0)
+  db.close()
+})
+
+test('open() 回传平台返回的 agentPreset 并写进创建日志', async () => {
+  const db = await ledger()
+  const f = fake()
+  const logs = []
+  f.sessionController.create = async request => { f.created.push(request); return { sessionId: 'session-main-new', agentPreset: PRESET_ID } }
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, presetFor: f.presetFor, workspacePath: 'C:/ws', log: (event, detail) => logs.push([event, detail]) })
+  const result = await main.open()
+  assert.equal(result.agentPreset, PRESET_ID)
+  assert.ok(logs.some(([event, detail]) => event === 'main.session.created' && detail.agentPreset === PRESET_ID))
+  db.close()
+})
+
+test('presetFor 用 session.header.agentPreset 兜底', async () => {
+  const db = await ledger()
+  const f = fake({ live: new Set(['session-old']) })
+  f.agents.get = id => id === 'session-old' ? { id, session: { id, header: { agentPreset: PRESET_ID } } } : undefined
+  setMainSessionId(db, 'session-old')
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, workspacePath: 'C:/ws' })
+  const result = await main.open()
+  assert.equal(result.created, false)
+  db.close()
 })

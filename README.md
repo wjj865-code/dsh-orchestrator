@@ -65,7 +65,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - **固定入口**：面板右上角「打开主会话」调用 `POST /api/orchestrator {endpoint:'open-main'}`。插件确保指挥舱工作区（`~/.dsh/state/orchestrator/workspace`，显示名「指挥舱」）存在，用**协调者预设** `dsh-orchestrator-coordinator` 创建会话，`rename` 成「主会话」，写 `settings.main_session_id`，然后跳到该会话。
 - **不再自动绑定**：`task_create` 不再把调用方会话绑成协调者。没有主会话时 `task_*` 返回「尚未打开主会话，请先从面板「打开主会话」」，不建任务、不写库。
 - **只允许主会话**：`task_create` / `task_list` / `task_status` / `task_message` / `task_stop` 拒绝非主会话调用（含子会话）；`task_report` 仍归子会话。
-- **失效重建**：`settings.main_session_id` 指向的会话不 live 时，点「打开主会话」重建；旧任务留在面板。配置覆盖的会话没有预设保证，保留运行期白名单兜底。
+- **失效重建**：只有「`settings.main_session_id` 指向的会话 live、且实际预设是 `dsh-orchestrator-coordinator`」才复用；会话不 live、预设是 `standard`、或旧版本建的主会话没有预设记录，都会重建一次（单协调者不迁移旧会话，日志记 `main.session.recreate` 和原因）。点「打开主会话」每次都会核对预设，旧任务留在面板。
 - **工具集在预设层定型**：协调者预设只挂 `persona`、`agent-instructions`、`time-context`、`tool-ask-user`、`compaction` 和 `dsh-orchestrator/preset-tools`；`preset-tools` 用 deny 补集把 allow 名单（5 个 `task_*`）之外的全局工具挡掉，`ask_user_question` 由预设自己的行提供。`show_view`、memory 默认不带（待真机确认）。
 - **任务执行者预设**：子会话由 dispatch 显式带 `dsh-orchestrator-worker`，是一份缩小的工作栈（文件/shell/web/todo/skill/compaction/present，无 delegation/goal/plan/schedule），绕开协调者预设的收窄。
 - `spawnProvider` 必须是 `spawn`（`fork` 不支持 `agentPreset`）；不是 `spawn` 时「打开主会话」返回可读错误，不静默降级、不改配置。

@@ -6,7 +6,7 @@ export const PRESET_ID = 'dsh-orchestrator-coordinator'
 export const WORKER_PRESET_ID = 'dsh-orchestrator-worker'
 export const MAIN_SESSION_HINT = '尚未打开主会话，请先从面板「打开主会话」。'
 
-export function createMainSession({ db, config, agents, sessionController, workspaces, workspacePath, workspaceName = '指挥舱', log = () => {} }) {
+export function createMainSession({ db, config, agents, sessionController, workspaces, presetFor, workspacePath, workspaceName = '指挥舱', log = () => {} }) {
   // 服务既可以直接传对象（测试/同步场景），也可以传 getter（index 惰性取，等 cordis 服务就绪）。
   const resolveAgents = () => typeof agents === 'function' ? agents() : agents
   const resolveSessionController = () => typeof sessionController === 'function' ? sessionController() : sessionController
@@ -15,6 +15,17 @@ export function createMainSession({ db, config, agents, sessionController, works
   const currentId = () => config?.coordinatorSession ?? getMainSessionId(db)
   // worker 预设只认 spawn provider（fork 不满足 capabilities.agentPreset）；不静默降级、不改用户配置。
   const spawnProvider = config?.spawnProvider ?? 'spawn'
+
+  // 读 live agent 实际跑的预设：优先 agentPresets.presetForSession，退到 session.header.agentPreset。
+  // 读不到一律视为「不是协调者预设」——旧版建的主会话没有预设，必须重建而不是一直复用。
+  const sessionPreset = agent => {
+    try {
+      const value = typeof presetFor === 'function' ? presetFor(agent) : undefined
+      if (typeof value === 'string' && value !== '') return value
+    } catch { /* 读不到就当未知 */ }
+    const header = agent?.session?.header
+    return typeof header?.agentPreset === 'string' && header.agentPreset !== '' ? header.agentPreset : undefined
+  }
 
   const ensureWorkspace = async () => {
     const services = resolveWorkspaces()
@@ -39,7 +50,17 @@ export function createMainSession({ db, config, agents, sessionController, works
       return { ok: false, error: `主会话的子任务需要 spawn provider（当前 spawnProvider=${spawnProvider}）：请把 spawnProvider 改回 spawn，或改用配置覆盖的会话` }
     }
     const id = getMainSessionId(db)
-    if (id !== undefined && liveAgent(id) !== undefined) return { ok: true, sessionId: id, created: false }
+    const live = id === undefined ? undefined : liveAgent(id)
+    if (live !== undefined) {
+      const preset = sessionPreset(live)
+      if (preset === PRESET_ID) return { ok: true, sessionId: id, created: false, agentPreset: preset }
+      // 旧版主会话没有预设、或预设不是协调者：单协调者不迁移旧会话，直接重建一次。
+      log('main.session.recreate', {
+        sessionId: id,
+        reason: preset === undefined ? 'preset-unknown' : 'preset-mismatch',
+        preset: preset ?? null,
+      })
+    }
     const sessions = resolveSessionController()
     if (sessions?.create === undefined) return { ok: false, error: '创建主会话失败：缺少 sessionController 服务（平台尚未就绪）' }
     let workspaceId
@@ -61,8 +82,8 @@ export function createMainSession({ db, config, agents, sessionController, works
       log('main.session.rename.failed', { sessionId, error: `${error?.message ?? error}` })
     }
     setMainSessionId(db, sessionId)
-    log('main.session.created', { sessionId })
-    return { ok: true, sessionId, created: true }
+    log('main.session.created', { sessionId, agentPreset: created?.agentPreset ?? null })
+    return { ok: true, sessionId, created: true, agentPreset: created?.agentPreset }
   }
 
   // 并发点击/路由重复调用只建一次：后来者 await 同一个 in-flight Promise。
