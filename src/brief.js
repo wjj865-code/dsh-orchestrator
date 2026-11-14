@@ -28,11 +28,21 @@ export function validateTargetDir(target, { isDirectory = value => statSync(valu
 export function renderBrief(brief = {}) {
   const lines = [`【任务】${single(brief.title)}`, `【目标】${single(brief.goal)}`]
   const target = text(brief.target)
+  const readOnly = brief.readOnly === true
   // brief 里最多只出现一个目录：就是 target_dir；不要把指挥舱/父会话目录也写进来，否则模型容易被带偏。
   if (target !== '') {
     lines.splice(2, 0, `【工作目录】${single(target)}`)
-    // 正向提示（不是硬约束）：worker 不强制 chdir，danger-full-access 下越界绝对路径写得出去。
-    lines.splice(3, 0, '所有产出只写到该目录内，不要写到父会话目录或其他绝对路径；完成后汇报时把文件路径落到该目录下。')
+    if (readOnly) {
+      // 只读任务：写提示换成禁令，避免和沙箱行为冲突。
+      lines.splice(3, 0, '【权限】只读')
+      lines.splice(4, 0, '只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。')
+    } else {
+      // 正向提示（不是硬约束）：worker 不强制 chdir，danger-full-access 下越界绝对路径写得出去。
+      lines.splice(3, 0, '所有产出只写到该目录内，不要写到父会话目录或其他绝对路径；完成后汇报时把文件路径落到该目录下。')
+    }
+  } else if (readOnly) {
+    lines.splice(2, 0, '【权限】只读')
+    lines.splice(3, 0, '只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。')
   }
   const constraints = list(brief.constraints)
   if (constraints.length > 0) lines.push(`【约束】${constraints.map(item => `- ${single(item)}`).join('；')}`)

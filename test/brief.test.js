@@ -122,6 +122,21 @@ test('renderBrief：有 target 时渲染【工作目录】，无 target 不渲�
   assert.equal(without.includes('【工作目录】'), false)
 })
 
+test('renderBrief：只读任务加【权限】只读与禁写提示；非只读逐字不变', () => {
+  const readOnly = renderBrief({ title: 't', goal: 'g', acceptance: ['a'], readOnly: true })
+  assert.match(readOnly, /【权限】只读/)
+  assert.match(readOnly, /不要写文件、不要执行写操作的 shell/)
+  assert.doesNotMatch(readOnly, /所有产出只写到该目录内/)
+  // 带 target 时也只有一个目录，权限行跟在【工作目录】后。
+  const withTarget = renderBrief({ title: 't', goal: 'g', acceptance: ['a'], target: 'C:/work', readOnly: true })
+  const lines = withTarget.split('\n')
+  assert.equal(lines[lines.indexOf('【工作目录】C:/work') + 1], '【权限】只读')
+  assert.match(withTarget, /只读任务/)
+  // 非只读不出现权限小节与禁写句。
+  const normal = renderBrief({ title: 't', goal: 'g', acceptance: ['a'], target: 'C:/work' })
+  assert.doesNotMatch(normal, /【权限】|只读任务|不要写文件/)
+})
+
 test('renderBrief：只出现一个目录（target），并给出现有目录内的写入提示', () => {
   const text = renderBrief({ title: 't', goal: 'g', acceptance: ['a'], target: 'C:/work' })
   // 目录只来自 target；不出现指挥舱/父会话目录这类第二个目录。
