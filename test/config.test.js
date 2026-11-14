@@ -90,7 +90,7 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(source, /dsh-orchestrator-coordinator/)
   assert.match(source, /dsh-orchestrator-worker/)
-  assert.match(source, /dsh-orchestrator\/preset-tools/)
+  assert.match(source, /dsh-orchestrator-wjj865\/preset-tools/)
   for (const tool of ['task_retry', 'history_search', 'project_context', 'memory_note']) {
     assert.match(source, new RegExp(`- ${tool}`), `协调者 allow 名单应包含 ${tool}`)
   }
@@ -106,6 +106,9 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
 
 test('package.json 导出 preset-tools', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.name, 'dsh-orchestrator-wjj865')
+  assert.equal(pkg.private, undefined)
+  assert.equal(pkg.publishConfig.access, 'public')
   assert.equal(pkg.exports['./preset-tools'], './preset-tools.js')
   assert.ok(pkg.files.includes('preset-tools.js'))
 })

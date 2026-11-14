@@ -1,4 +1,4 @@
-# dsh-orchestrator
+# dsh-orchestrator（npm 包名：dsh-orchestrator-wjj865）
 
 协调者会话 + 子任务工作台（服务端核心 + 阶段 2 客户端入口/任务面板）。
 
@@ -31,16 +31,16 @@ snapshots/tasks-YYYY-MM-DD.sqlite （每天一份 VACUUM INTO 快照，保留 7 
 1. `package.json` 的 `dependencies` 加本地链接：
 
    ```json
-   "dsh-orchestrator": "link:C:/Users/72489/Documents/dsh-orchestrator"
+   "dsh-orchestrator-wjj865": "link:C:/Users/72489/Documents/dsh-orchestrator"
    ```
 
-2. `dsh.profile.bundles` 里加 `dsh-orchestrator`：
+2. `dsh.profile.bundles` 里加 `dsh-orchestrator-wjj865`：
 
    ```json
    [
      "@deepseek-ai/dsh-base",
      "@deepseek-ai/dsh-headless",
-     "dsh-orchestrator"
+     "dsh-orchestrator-wjj865"
    ]
    ```
 
@@ -51,7 +51,7 @@ snapshots/tasks-YYYY-MM-DD.sqlite （每天一份 VACUUM INTO 快照，保留 7 
 
    ```yaml
    - id: orchestrator
-     name: dsh-orchestrator
+     name: dsh-orchestrator-wjj865
      config:
        coordinatorSession: session-c0531830-f695-42d3-879c-6d5b8e9a8799
    ```
@@ -76,6 +76,31 @@ snapshots/tasks-YYYY-MM-DD.sqlite （每天一份 VACUUM INTO 快照，保留 7 
 
 装好后按「真机冒烟清单（隔离 profile）」逐条确认。
 
+## 从 npm 安装（推荐，更新更简单）
+
+仓库包名是 `dsh-orchestrator-wjj865`（npm 上的 `dsh-orchestrator` 已被另一个项目占用，不能重名）。
+
+维护者发布：
+
+```bash
+npm login
+npm publish --access public
+```
+
+用户安装：
+
+1. DSH → 插件 → **添加插件** → 粘贴包名（或带版本）：
+
+   ```
+   dsh-orchestrator-wjj865
+   ```
+
+   也可以安装指定版本：`dsh-orchestrator-wjj865@0.3.0`。
+2. 装完彻底退出 DSH 再启动。
+3. 以后升级：`npm version patch` → `npm publish` → 在 DSH 插件页用 registry 包的更新入口升级（DSH 的 plugin manager 对 registry 包支持 `listVersions` / `updateBundle`），不再需要卸了重装 GitHub 版。
+
+> 从旧包名 `dsh-orchestrator` 迁过来时，先卸载旧包；本地 link 安装的 profile 要把依赖键和 `dsh.profile.bundles` 一起改成 `dsh-orchestrator-wjj865`。
+
 ## 主会话（预设开启）
 
 解析顺序：`config.coordinatorSession`（显式覆盖，优先级最高，**不写台账**）→ 台账 `settings.main_session_id` → 未打开。
@@ -84,7 +109,7 @@ snapshots/tasks-YYYY-MM-DD.sqlite （每天一份 VACUUM INTO 快照，保留 7 
 - **不再自动绑定**：`task_create` 不再把调用方会话绑成协调者。没有主会话时 `task_*` 返回「尚未打开主会话，请先从面板「打开主会话」」，不建任务、不写库。
 - **只允许主会话**：`task_create` / `task_list` / `task_status` / `task_message` / `task_stop` / `task_retry` / `history_search` / `project_context` / `memory_note` 拒绝非主会话调用（含子会话）；`task_report` 仍归子会话。
 - **复用与预设守护**：创建/重建时把预设记进台账 `settings.main_session_preset`；之后只要「`settings.main_session_id` 指向的会话 live + 台账标记是 `dsh-orchestrator-coordinator`」就复用，**不因平台读回漂移而重建**（重建会换 id、通知目标漂移）。旧版本没有台账标记的主会话，只有能明确读到协调者预设时才认领复用，否则重建一次。UI 打开空白会话可能把它 rebind 成默认（`standard`）；主会话在 `agent/created` 和每次复用前会调 `agentPresets.select(agent, 'dsh-orchestrator-coordinator')` 拉回，非空白会话抛 `agent-preset/locked` 只记日志、由 guard 全名单兜底；读回不一致记 `main.session.preset-mismatch`，`open-main` 返回 `presetMismatch` 供面板提示。旧任务留在面板。
-- **工具集在预设层定型**：协调者预设只挂 `persona`、`agent-instructions`、`time-context`、`tool-ask-user`、`compaction` 和 `dsh-orchestrator/preset-tools`；`preset-tools` 用 deny 补集把 allow 名单（5 个 `task_*` + `task_retry`、`history_search`、`project_context`、`memory_note`）之外的全局工具挡掉，`ask_user_question` 由预设自己的行提供。`show_view` 默认不带（待真机确认）。
+- **工具集在预设层定型**：协调者预设只挂 `persona`、`agent-instructions`、`time-context`、`tool-ask-user`、`compaction` 和 `dsh-orchestrator-wjj865/preset-tools`；`preset-tools` 用 deny 补集把 allow 名单（5 个 `task_*` + `task_retry`、`history_search`、`project_context`、`memory_note`）之外的全局工具挡掉，`ask_user_question` 由预设自己的行提供。`show_view` 默认不带（待真机确认）。
 - **任务执行者预设**：子会话由 dispatch 显式带 `dsh-orchestrator-worker`，是一份缩小的工作栈（文件/shell/web/todo/skill/compaction/present，无 delegation/goal/plan/schedule），绕开协调者预设的收窄。
 - `spawnProvider` 必须是 `spawn`（`fork` 不支持 `agentPreset`）；不是 `spawn` 时「打开主会话」返回可读错误，不静默降级、不改配置。
 

@@ -1,6 +1,6 @@
 - insert:
     - id: orchestrator
-      name: dsh-orchestrator
+      name: dsh-orchestrator-wjj865
     - id: orchestrator-coordinator-preset
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -39,7 +39,7 @@
                   headChars: 4096
                   tailChars: 1024
           - id: preset-tools
-            name: dsh-orchestrator/preset-tools
+            name: dsh-orchestrator-wjj865/preset-tools
             config:
               allow:
                 - task_create
