@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, transition, touchTask, addMessage, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, transition, touchTask, addMessage, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId } from '../src/ledger.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -219,4 +219,42 @@ test('落盘范围仅限传入目录', async () => {
   assert.ok(names.length > 0)
   assert.ok(names.every(name => name.startsWith('tasks.sqlite')), names.join(','))
   assert.deepEqual(names.filter(name => !name.startsWith('tasks.sqlite')), [])
+})
+
+test('tasks 表有 target_dir，旧库自动补列', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orch-ledger-'))
+  const db = await openLedger(dir)
+  const cols = db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+  assert.ok(cols.includes('target_dir'))
+  const task = createTask(db, {
+    brief: { title: '任务', goal: '目标', acceptance: ['a'] },
+    coordinatorSession: 's-1',
+    targetDir: 'C:/work/project',
+  })
+  assert.equal(task.target_dir, 'C:/work/project')
+  db.close()
+})
+
+test('旧库缺 target_dir 时自动 ALTER 补列', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orch-ledger-old-'))
+  const { DatabaseSync } = await import('node:sqlite')
+  const legacy = new DatabaseSync(join(dir, 'tasks.sqlite'))
+  legacy.exec(`CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
+    status TEXT NOT NULL, session_id TEXT, target TEXT, coordinator_session TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER)`)
+  legacy.close()
+  const db = await openLedger(dir)
+  const cols = db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+  assert.ok(cols.includes('target_dir'))
+  db.close()
+})
+
+test('main_session_id 读写', async () => {
+  const db = await openLedger(tempDir())
+  assert.equal(getMainSessionId(db), undefined)
+  setMainSessionId(db, 'session-main')
+  assert.equal(getMainSessionId(db), 'session-main')
+  db.close()
 })
