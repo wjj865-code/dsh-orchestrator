@@ -124,15 +124,24 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   const live = new Map()
   // 服务按调用时惰性取：插件加载顺序不保证 agents/sessions/sandboxPolicy 已就绪。
   const serviceOf = value => typeof value === 'function' ? value() : value
-  // 可写根授权按「Session 对象 + 目录」记：sandboxPolicy 内部是 WeakMap 按对象身份查表，
-  // 传 sessions.get() 的另一个实例或 sessionId 字符串都会静默无效（平台调用点也都用 exec.agent.session）。
-  // resume/fork 后 session 对象会换，旧 key 自然失效，续派前按新对象补注册。
+  // 可写根授权按 targetId → (Session 对象 → (目录 → disposer)) 记：同一会话 resume 前后可能有多个会话对象，
+  // 注册只追加不替换；终态/stop 按 targetId 全量释放，旧对象不残留、新对象也不会没人管。
+  // 幂等 key 仍是 (Session 对象, 目录)：sandboxPolicy 内部按对象身份查 WeakMap，换对象就得重新注册。
   const writableRootGrants = new Map()
-  const grantStore = session => {
-    let dirs = writableRootGrants.get(session)
+  const grantSessions = targetId => {
+    let sessions = writableRootGrants.get(targetId)
+    if (sessions === undefined) {
+      sessions = new Map()
+      writableRootGrants.set(targetId, sessions)
+    }
+    return sessions
+  }
+  const grantDirs = (targetId, session) => {
+    const sessions = grantSessions(targetId)
+    let dirs = sessions.get(session)
     if (dirs === undefined) {
       dirs = new Map()
-      writableRootGrants.set(session, dirs)
+      sessions.set(session, dirs)
     }
     return dirs
   }
@@ -169,10 +178,12 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
     })
   }
-  /** 释放某个会话 id 名下的全部可写根（含 resume 前后的多个 Session 对象）。 */
-  const releaseWritableRoot = target => {
-    for (const [session, dirs] of [...writableRootGrants]) {
-      if (session !== target && session?.id !== target) continue
+  /** 释放某个 targetId 名下**所有** Session 对象的全部可写根（含 resume 前后的多个对象）。 */
+  const releaseWritableRoot = targetId => {
+    const sessions = writableRootGrants.get(targetId)
+    if (sessions === undefined) return
+    writableRootGrants.delete(targetId)
+    for (const dirs of sessions.values()) {
       for (const disposer of dirs.values()) {
         try {
           disposer()
@@ -180,29 +191,30 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
           onWarn(`dsh-orchestrator: 释放 target 可写根失败：${errorText(error)}`)
         }
       }
-      writableRootGrants.delete(session)
     }
   }
   // rc.3 平台缺陷：子会话 header.cwd 取父会话目录（childSessionMeta），spec.cwd 只记一条 working-directory 事件，
   // 而 sandboxPolicy 的 workspaceRoot 只读 session.header.cwd → workspace-write 下子会话写不进 target。
   // 兜法：给子会话登记 target 为可写根（幂等）。注意 Windows 上只对 harness 文件工具生效，pwsh 进程写仍会被拒。
-  const ensureWritableRoot = async (childId, target) => {
+  // wait=true 只用于派发（子 Session 可能晚几毫秒进表）；续派走非等待解析，避免冷恢复时干等超时。
+  const ensureWritableRoot = async (childId, target, { wait = false, warnOnMiss = true } = {}) => {
     if (typeof target !== 'string' || target === '') return
     const policy = serviceOf(sandboxPolicy)
     if (policy === undefined || typeof policy.registerWritableRoot !== 'function') return
-    const session = await resolveChildSession(childId)
+    const session = wait ? await resolveChildSession(childId) : childSessionOf(childId)
     if (session === undefined) {
-      onWarn(`dsh-orchestrator: 未拿到子会话 ${childId}，未登记 target 可写根`)
+      if (warnOnMiss) onWarn(`dsh-orchestrator: 未拿到子会话 ${childId}，未登记 target 可写根`)
       return
     }
     // 平台根已经是 target 时不用授权；同一个 (session 对象, 目录) 只注册一次。
     if (sameDirectory(target, session.header?.cwd)) return
-    const dirs = grantStore(session)
+    const dirs = grantDirs(childId, session)
     if (dirs.has(target)) return
     try {
       const disposer = policy.registerWritableRoot(session, target)
       if (typeof disposer === 'function') dirs.set(target, disposer)
-      onEvent('subagent.writable-root', { sessionId: childId, detail: { target } })
+      // 审计/对表用：sessionId + directory 都带上，能直接和 task_message 投递时间对齐。
+      onEvent('subagent.writable-root', { sessionId: childId, detail: { directory: target } })
     } catch (error) {
       onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
     }
@@ -286,22 +298,24 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       track(activation)
       // 目标目录才需要补可写根（没给 cwd 时 cwd 就是父会话目录，平台根本来就能写）。
       if (typeof cwd === 'string' && cwd !== '') {
-        void ensureWritableRoot(activation.childId, cwd).catch(error => {
+        void ensureWritableRoot(activation.childId, cwd, { wait: true }).catch(error => {
           onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
         })
       }
       return { id: activation.childId, name: spec.label, sessionId: activation.childId, target: activation.childId }
     },
     async send(target, message, signal, targetDir) {
-      // 续派前按目标会话重新解析并幂等补注册：resume/fork 后 session 对象换了，旧授权不再生效。
+      const sent = await subagents.sendMessage(requireAgent(), target, [{ type: 'text', text: message }], {
+        signal: signal ?? new AbortController().signal,
+      })
+      // 冷恢复/续派时子会话在发送前还取不到，sendMessage 之后才 resolve 出**新的 Session 对象**；
+      // 投递成功后再幂等补注册（失败路径不注册；失败只 warn，不影响投递结果）。
       try {
         await ensureWritableRoot(target, targetDir)
       } catch (error) {
-        onWarn(`dsh-orchestrator: 续派前补注册可写根失败：${errorText(error)}`)
+        onWarn(`dsh-orchestrator: 续派后补注册可写根失败：${errorText(error)}`)
       }
-      return subagents.sendMessage(requireAgent(), target, [{ type: 'text', text: message }], {
-        signal: signal ?? new AbortController().signal,
-      })
+      return sent
     },
     async sendReliable(target, message, signal, targetDir) {
       let lastError

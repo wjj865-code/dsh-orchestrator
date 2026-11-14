@@ -111,13 +111,24 @@ function grantEnv() {
 
 test('rc.3 可写根：注册传 agent.session 同一对象，settle 后不释放', async () => {
   const env = grantEnv()
-  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const events = []
+  const dispatcher = createSubagentDispatcher({
+    subagents: env.subagents,
+    agent,
+    ...env.services,
+    onEvent: (event, fields) => events.push([event, fields]),
+    sessionWaitMs: 0,
+  })
   const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
   await tick()
   assert.equal(env.registrations.length, 1)
   const [session, dir] = env.registrations[0]
   assert.strictEqual(session, env.sessionsById.get(member.id))
   assert.equal(dir, 'C:/target')
+  // 审计事件带 sessionId + directory，便于和投递时间对齐。
+  const grantEvent = events.find(([event]) => event === 'subagent.writable-root')
+  assert.equal(grantEvent[1].sessionId, member.id)
+  assert.equal(grantEvent[1].detail.directory, 'C:/target')
   // settle 只是这一轮结束（continuable 会话会续派），不能释放。
   await tick()
   assert.deepEqual(env.releases, [])
@@ -155,6 +166,115 @@ test('rc.3 可写根：stop 与终态清理释放同一会话的全部授权', a
   // 终态清理可以重复调用，不炸也不重复释放。
   dispatcher.releaseWritableRoots(member.id)
   assert.equal(env.releases.length, 1)
+})
+
+test('rc.3 可写根：续派的 Session 在 sendMessage 之后才恢复，也要按新对象注册', async () => {
+  // 真机形态：send 前 agents.get/sessions.get 都取不到子会话（settle/冷恢复），
+  // sendMessage 才把会话 resume 成新的 Session 对象；只靠发送前注册会漏，第二轮 write 被拒。
+  const order = []
+  const registrations = []
+  const sessionsById = new Map()
+  const warnings = []
+  let resumed
+  let childId
+  const subagents = {
+    async startActivation(spec) {
+      childId = spec.childId
+      return {
+        childId: spec.childId,
+        messageId: 'm1',
+        result: Promise.resolve({ stopReason: 'completed' }),
+        dispose: async () => {},
+      }
+    },
+    async sendMessage() {
+      order.push('send')
+      if (resumed !== undefined) sessionsById.set(childId, resumed)
+      return 'msg'
+    },
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const sandboxPolicy = {
+    registerWritableRoot(session, dir) {
+      order.push('register')
+      registrations.push([session, dir])
+      return () => {}
+    },
+  }
+  const dispatcher = createSubagentDispatcher({
+    subagents,
+    agent,
+    agents: () => ({ get: id => sessionsById.has(id) ? { id, session: sessionsById.get(id) } : undefined }),
+    sandboxPolicy: () => sandboxPolicy,
+    onWarn: message => warnings.push(message),
+    sessionWaitMs: 0,
+  })
+  const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  assert.equal(registrations.length, 0)
+  // 派发阶段子会话没进表会 warn 属正常；续派前的 Expected miss 不告警。
+  warnings.length = 0
+  resumed = { id: member.id, header: { cwd: 'C:\\work' } }
+  await dispatcher.send(member.id, '续派', undefined, 'C:/target')
+  assert.deepEqual(warnings, [])
+  assert.deepEqual(order, ['send', 'register'])
+  assert.equal(registrations.length, 1)
+  assert.strictEqual(registrations[0][0], resumed)
+  assert.equal(registrations[0][1], 'C:/target')
+  // 第二次投递（sendReliable 路径同样走发送后补注册）：同一对象+目录不重复注册。
+  await dispatcher.sendReliable(member.id, '再一次', undefined, 'C:/target')
+  assert.deepEqual(order, ['send', 'register', 'send'])
+  assert.equal(registrations.length, 1)
+})
+
+test('rc.3 可写根：投递失败不补注册（不给没收到消息的会话留授权）', async () => {
+  const registrations = []
+  const sessionsById = new Map()
+  let childId
+  const subagents = {
+    async startActivation(spec) {
+      childId = spec.childId
+      return { childId: spec.childId, result: Promise.resolve({}), dispose: async () => {} }
+    },
+    async sendMessage() { throw new Error('投递超时') },
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const sandboxPolicy = { registerWritableRoot: (session, dir) => { registrations.push([session, dir]); return () => {} } }
+  const dispatcher = createSubagentDispatcher({
+    subagents,
+    agent,
+    agents: () => ({ get: id => sessionsById.has(id) ? { id, session: sessionsById.get(id) } : undefined }),
+    sandboxPolicy: () => sandboxPolicy,
+    onWarn: () => {},
+    retryDelaysMs: [0],
+  })
+  const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  assert.equal(registrations.length, 0)
+  sessionsById.set(childId, { id: member.id, header: { cwd: 'C:\\work' } })
+  await assert.rejects(() => dispatcher.sendReliable(member.id, 'x', undefined, 'C:/target'), /投递超时/)
+  assert.equal(registrations.length, 0)
+})
+
+test('rc.3 可写根：终态释放新旧两个 Session 对象的 disposer', async () => {
+  const env = grantEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  assert.equal(env.registrations.length, 1)
+  // resume 出新对象 → 续派后按新对象再注册一份（只追加，不替换旧条目）。
+  const resumed = { id: member.id, header: { cwd: 'C:\\work' } }
+  env.sessionsById.set(member.id, resumed)
+  await dispatcher.send(member.id, '续派', undefined, 'C:/target')
+  assert.equal(env.registrations.length, 2)
+  assert.strictEqual(env.registrations[1][0], resumed)
+  // 终态按 targetId 全量释放：新旧两个 disposer 都要调掉。
+  dispatcher.releaseWritableRoots(member.id)
+  assert.equal(env.releases.length, 2)
+  assert.strictEqual(env.releases[0][0], env.registrations[0][0])
+  assert.strictEqual(env.releases[1][0], resumed)
 })
 
 test('rc.3 可写根：服务缺失 / 没给 target 都只跳过，不影响派发与投递', async () => {

@@ -817,8 +817,8 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - `dsh-sandbox-policy/lib/index.js`：`sessionWorkspaceRoot(session) = session.header.cwd`；额外根走 `registerWritableRoot(session, dir)`（WeakMap 按 Session 对象身份）。
 
 **本版处理**：
-- `dispatch.spawn` 成功后、每次 `send`/`sendReliable` 续派前，按 `agents.get(childId).session` 幂等注册 target 可写根；settle 不释放，`task_stop` 与终态（done/cancelled/orphaned/failed）释放；resume 换 Session 对象后补注册。
-- 已知边界：Windows 上只对 harness 文件工具生效，`pwsh`/`bash` 写 target 仍拒；`target` 不要用符号链接；冷恢复首回合可能被拒一次（下一回合 policy 行带 `Additional writable directories` 可重试）。
-- 用例：`test/dispatch.test.js` 的 `rc.3 可写根：*`（对象引用同一性、settle 不释放、重复投递幂等、resume 补注册、stop/终态释放、服务或 target 缺失不炸）；`test/tools.test.js` 的 `可写根生命周期：*` 与续派透传 target_dir。
+- `dispatch.spawn` 成功后、`sendMessage` **成功后**（续派时发送前通常解析不到子会话，恢复后才出现新 Session 对象），按 `agents.get(childId).session` 幂等注册 target 可写根；按 targetId 追加记录（同一会话 resume 前后可能有多个 Session 对象，只追加不替换），settle 不释放，`task_stop` 与终态（done/cancelled/orphaned/failed）把该 targetId 下新旧对象的 disposer 全量释放。
+- 已知边界：Windows 上只对 harness 文件工具生效，`pwsh`/`bash` 写 target 仍拒；`target` 不要用符号链接；派发首回合与冷恢复/续派首回合都有极小窗口可能先写后注册、被拒一次（下一回合可重试）。
+- 用例：`test/dispatch.test.js` 的 `rc.3 可写根：*`（对象引用同一性、settle 不释放、删除后sendMessage才恢复的补注册、投递失败不注册、终态释放新旧两个 disposer、服务或 target 缺失不炸）；`test/tools.test.js` 的 `可写根生命周期：*`、`waiting_user 续派：*`。
 
-**真机验收（非临时目录）**：不传 target 推断到 `default-workspace` → `write` 写出 `qa-write.txt`；`blocked` 后 `task_message` 续派再写 `qa-write2.txt` 仍成功；policy 行出现 `Additional writable directories: [...target]`；`pwsh` 写 target 被拒按平台限制留证、不算缺陷。
+**真机验收（非临时目录）**：不传 target 推断到 `default-workspace` → `write` 写出 `qa-write.txt`，首轮 system-reminder 出现 `Additional writable directories: [...target]`；`blocked` 后 `task_message` 续派再写 `qa-write2.txt` 成功（**续派轮不会再有新的 policy 行**——平台只在会话开始注入一次，续派沿用同一上下文；续派以「无 `file access denied` + 文件存在 + artifacts `exists:true`」为证据）；`pwsh` 写 target 被拒按平台限制留证、不算缺陷。
