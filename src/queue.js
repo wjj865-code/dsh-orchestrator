@@ -64,6 +64,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, retryDelaysMs
             prompt: rendered,
             signal: abort.signal,
             taskId: id,
+            cwd: task.target_dir ?? undefined,
           })
         } catch (error) {
           if (retryable(error)) {

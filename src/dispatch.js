@@ -76,7 +76,7 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
   }
 }
 
-export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop }) {
+export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
   const requireAgent = () => {
     const current = currentAgent()
@@ -112,10 +112,11 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, label, prompt, signal, taskId }) {
+    async spawn({ name, label, prompt, signal, taskId, cwd }) {
       const parent = requireAgent()
       const childId = randomUUID()
-      const cwd = parent.session?.header?.cwd
+      // 目标目录优先；没给就沿用父会话 cwd（保持旧行为）。
+      const baseCwd = cwd ?? parent.session?.header?.cwd
       const spec = {
         provider,
         label: label ?? name ?? slugify(String(prompt ?? '').slice(0, 20)),
@@ -125,7 +126,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         request: {
           parent,
           prompt: [{ type: 'text', text: String(prompt ?? '') }],
-          ...(cwd === undefined ? {} : { cwd }),
+          // 子会话显式用 worker 预设，绕开 composeFrom 继承协调者的 preset restrict（探针 §1）。
+          agentPreset: workerPreset ?? 'dsh-orchestrator-worker',
+          ...(baseCwd === undefined ? {} : { cwd: baseCwd }),
         },
       }
       let activation
@@ -188,9 +191,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   }
 }
 
-export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', retryDelaysMs, onWarn = noop, onEvent = noop }) {
+export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop }) {
   if (backend === 'team') {
     return createTeamDispatcher({ agentTeams, agent, getAgent, provider, retryDelaysMs, onWarn })
   }
-  return createSubagentDispatcher({ subagents, agent, getAgent, provider, retryDelaysMs, onWarn, onEvent })
+  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent })
 }

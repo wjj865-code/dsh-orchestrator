@@ -11,8 +11,8 @@ function fakeDispatcher({ limit = Infinity, fail = false, failTimes = 0 } = {}) 
   return {
     calls,
     slug: title => `slug-${title}`,
-    spawn({ name, label, prompt, signal, taskId }) {
-      calls.push({ name, label, prompt, signal, taskId })
+    spawn({ name, label, prompt, signal, taskId, cwd }) {
+      calls.push({ name, label, prompt, signal, taskId, cwd })
       if (fail || failures < failTimes) {
         failures += 1
         throw new Error('spawn 挂了')
@@ -51,8 +51,18 @@ test('load 后按创建顺序派发 pending', async () => {
   db.close()
 })
 
-test('容量满：任务留 pending + queued_at；释放后补位并清标记', async () => {
-  const { db, dispatcher, queue } = await setup({ limit: 1 })
+test('派发时把 task.target_dir 作为 cwd 传给 dispatcher', async () => {
+  const { db, dispatcher, queue } = await setup()
+  createTask(db, { brief: sampleBrief({ title: '带目录' }), coordinatorSession: 's-1', targetDir: 'C:/work/project' })
+  createTask(db, { brief: sampleBrief({ title: '无目录' }), coordinatorSession: 's-1' })
+  queue.load()
+  await queue.pump()
+  assert.equal(dispatcher.calls[0].cwd, 'C:/work/project')
+  assert.equal(dispatcher.calls[1].cwd, undefined)
+  db.close()
+})
+
+test('容量满：任务留 pending + queued_at；释放后补位并清标记', async () => {  const { db, dispatcher, queue } = await setup({ limit: 1 })
   const first = createTask(db, { brief: sampleBrief({ title: '甲' }), coordinatorSession: 's-1' })
   const second = createTask(db, { brief: sampleBrief({ title: '乙' }), coordinatorSession: 's-1' })
   await queue.enqueueAndPump(first.id)

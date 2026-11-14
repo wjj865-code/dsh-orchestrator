@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createDispatcher } from '../src/dispatch.js'
+import { createDispatcher, createSubagentDispatcher } from '../src/dispatch.js'
 
 function fakeTeams({ failTimes = 0 } = {}) {
   const calls = []
@@ -239,4 +239,32 @@ test('默认 backend 是 subagent', async () => {
   const dispatcher = createDispatcher({ subagents: service, agent })
   await dispatcher.spawn({ label: 'x', prompt: 'p' })
   assert.equal(service.calls[0][0], 'start')
+})
+
+test('spawn 透传 cwd；默认用父会话 cwd；显式带 worker preset', async () => {
+  const calls = []
+  const subagents = {
+    startActivation: spec => {
+      calls.push(spec)
+      return Promise.resolve({ childId: spec.childId, result: Promise.resolve({}), dispose: async () => {} })
+    },
+    sendMessage: async () => {},
+    interruptByParent: async () => {},
+    listChildren: async () => [],
+  }
+  const parent = { id: 's-1', session: { header: { cwd: 'C:/parent' } } }
+  const dispatcher = createSubagentDispatcher({ subagents, agent: parent, workerPreset: 'dsh-orchestrator-worker' })
+  await dispatcher.spawn({ prompt: 'hi', cwd: 'C:/target' })
+  assert.equal(calls[0].request.cwd, 'C:/target')
+  assert.equal(calls[0].request.agentPreset, 'dsh-orchestrator-worker')
+  await dispatcher.spawn({ prompt: 'hi' })
+  assert.equal(calls[1].request.cwd, 'C:/parent')
+  assert.equal(calls[1].request.agentPreset, 'dsh-orchestrator-worker')
+})
+
+test('未传 workerPreset 时默认仍用 dsh-orchestrator-worker', async () => {
+  const service = fakeSubagents()
+  const dispatcher = createSubagentDispatcher({ subagents: service, agent })
+  await dispatcher.spawn({ prompt: 'p' })
+  assert.equal(service.calls[0][1].request.agentPreset, 'dsh-orchestrator-worker')
 })
