@@ -90,6 +90,27 @@ test('注册 6 个工具，schema 对象根、无 minimum/maximum、有 output.s
   db.close()
 })
 
+test('模型 JSON Schema 不出现 required: true（provider 只认数组，布尔值会 400）', async () => {
+  const { db, tools } = await setup()
+  const bad = []
+  const walk = (value, path) => {
+    if (value === null || typeof value !== 'object') return
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'required' && typeof child === 'boolean') bad.push(`${path}.${key}=${child}`)
+      walk(child, `${path}.${key}`)
+    }
+  }
+  for (const tool of Object.values(tools)) {
+    walk(tool.parameters, tool.name)
+    // 序列化后同样不能出现 "required":true（数组形式 "required":["path"] 允许）
+    assert.doesNotMatch(JSON.stringify(tool.parameters), /"required":\s*true/, `${tool.name} 的模型 schema 含布尔 required`)
+  }
+  assert.deepEqual(bad, [])
+  // artifacts 的必填由运行时 normalizeArtifacts 兜底，schema 层不带 required。
+  assert.equal('required' in tools.task_report.parameters.properties.artifacts.items.properties.path, false)
+  db.close()
+})
+
 test('task_create：正常创建、子会话 spawn、台账 running，prompt 是渲染文本', async () => {
   const { db, dispatcher, tools } = await setup()
   const signal = new AbortController().signal

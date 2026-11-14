@@ -357,7 +357,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           type: 'object',
           additionalProperties: false,
           properties: {
-            path: { type: 'string', required: true, description: '文件路径，可相对任务目录' },
+            // 不能写 required: true：DSH 作者态 schema 会原样进模型 JSON Schema，
+            // provider 要求 required 是数组，布尔值直接 400（真机 rc.3 上每个子会话首回合都炸）。
+            // path 的必填由 normalizeArtifacts 运行时校验（空 path 丢弃）。
+            path: { type: 'string', description: '文件路径，可相对任务目录' },
             label: { type: 'string', description: '一句说明，可空' },
           },
         },
