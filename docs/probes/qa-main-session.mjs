@@ -230,9 +230,20 @@ console.log('\n== Task 5: 主会话生命周期 ==')
     const db = await ledger.openLedger(tmp('qa-ms-main-db-'))
     ledger.setMainSessionId(db, 'session-main-old')
     const f = makeFake({ live: ['session-main-old'] })
-    const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, workspacePath })
+    const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, presetFor: () => 'dsh-orchestrator-coordinator', workspacePath })
     const result = await main.open()
-    check('主会话 live → 直接复用不重建', result.ok === true && result.created === false && result.sessionId === 'session-main-old' && f.state.created.length === 0, JSON.stringify(result))
+    check('主会话 live 且预设是协调者 → 直接复用不重建', result.ok === true && result.created === false && result.sessionId === 'session-main-old' && f.state.created.length === 0, JSON.stringify(result))
+    db.close()
+  }
+  {
+    // 旧版主会话没有预设 / 预设是 standard：必须重建一次（单协调者不迁移旧会话）。
+    const db = await ledger.openLedger(tmp('qa-ms-main-db-'))
+    ledger.setMainSessionId(db, 'session-main-old')
+    const f = makeFake({ live: ['session-main-old'] })
+    const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, presetFor: () => 'standard', workspacePath })
+    const result = await main.open()
+    check('主会话 live 但预设是 standard → 重建一次', result.ok === true && result.created === true && result.sessionId === 'session-main-new' && f.state.created.length === 1, JSON.stringify(result))
+    check('重建后 main_session_id 指向新会话', ledger.getMainSessionId(db) === 'session-main-new', String(ledger.getMainSessionId(db)))
     db.close()
   }
   {
