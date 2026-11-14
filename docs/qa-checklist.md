@@ -806,3 +806,19 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - 用例：`guard 覆盖整个 COORDINATOR_DENY 名单：主会话全拒、子会话同名放行、同步返回不阻塞`；`settings.main_session_id 的主会话调用 wait_agent 也被 guard 拒绝（不依赖预设）`。
 
 **真机证据（隔离 home，不带 ds-bot）**：主会话工具表残留如上；模型层面 `wait_agent` 两次拒绝调用（系统禁令优先），回合 1–3 秒结束；guard 层用注入单测覆盖（模型不会违反系统禁令去触发）。①③④⑤ 通过，② 按本降级口径记录，⑥ 探针全绿。
+
+## 31. rc.3 子会话沙箱根 = 父会话目录（平台缺陷 + 可写根兜底）
+
+**现象**：子会话 projection `workingDirectory` 是 target，但 `Current DSH file policy` 的 `workspaceRoot` 仍是主会话目录（指挥舱），`workspace-write` 下 `write`/`pwsh` 写 target 被拒。
+
+**平台取证**：
+- `dsh-subagent/lib/index.js` `childSessionMeta`：子会话 `meta.cwd = parentHeader.cwd`。
+- 同文件 `startLocal`：`workingDirectory.set(child, create.cwd)` 只追加事件。
+- `dsh-sandbox-policy/lib/index.js`：`sessionWorkspaceRoot(session) = session.header.cwd`；额外根走 `registerWritableRoot(session, dir)`（WeakMap 按 Session 对象身份）。
+
+**本版处理**：
+- `dispatch.spawn` 成功后、每次 `send`/`sendReliable` 续派前，按 `agents.get(childId).session` 幂等注册 target 可写根；settle 不释放，`task_stop` 与终态（done/cancelled/orphaned/failed）释放；resume 换 Session 对象后补注册。
+- 已知边界：Windows 上只对 harness 文件工具生效，`pwsh`/`bash` 写 target 仍拒；`target` 不要用符号链接；冷恢复首回合可能被拒一次（下一回合 policy 行带 `Additional writable directories` 可重试）。
+- 用例：`test/dispatch.test.js` 的 `rc.3 可写根：*`（对象引用同一性、settle 不释放、重复投递幂等、resume 补注册、stop/终态释放、服务或 target 缺失不炸）；`test/tools.test.js` 的 `可写根生命周期：*` 与续派透传 target_dir。
+
+**真机验收（非临时目录）**：不传 target 推断到 `default-workspace` → `write` 写出 `qa-write.txt`；`blocked` 后 `task_message` 续派再写 `qa-write2.txt` 仍成功；policy 行出现 `Additional writable directories: [...target]`；`pwsh` 写 target 被拒按平台限制留证、不算缺陷。

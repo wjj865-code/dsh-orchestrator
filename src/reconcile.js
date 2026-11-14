@@ -39,6 +39,10 @@ export async function reconcileOrphans({ db, dispatcher, coordinatorSessionId, i
   for (const { task, reason } of orphaned) {
     try {
       transition(db, task.id, 'orphaned', { error: reason })
+      // orphaned 是终态：释放该会话的 target 可写根。
+      try {
+        dispatcher.releaseWritableRoots?.(task.session_id ?? task.target)
+      } catch { /* 释放失败不影响对账 */ }
     } catch (error) {
       onWarn(`dsh-orchestrator: 任务 ${task.id} 标 orphaned 失败：${error?.message ?? error}`)
     }

@@ -95,6 +95,10 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
               detail: { error: failure?.message ?? String(failure) },
             })
           }
+          // 终态释放 target 可写根（异常路径也不能留授权）。
+          try {
+            dispatcher.releaseWritableRoots?.(task.session_id ?? task.target)
+          } catch { /* 释放失败不影响失败通知 */ }
           // 失败必须让主会话看见（不能静默 failed）；sender 缺失时由 index 用主会话自身投递。
           notifier?.push({
             taskId: id,

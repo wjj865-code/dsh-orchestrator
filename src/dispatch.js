@@ -1,6 +1,7 @@
 // 派发层：把「建子会话 / 投递 / 停止」收成一个窄接口。
 // 后端二选一：subagent（默认，直连 ctx.subagents）或 team（旧的 agentTeams 名册）。
 import { randomUUID } from 'node:crypto'
+import { resolve as resolvePath } from 'node:path'
 
 let counter = 0
 
@@ -17,6 +18,18 @@ const sleep = ms => ms <= 0 ? Promise.resolve() : new Promise(resolve => setTime
 const noop = () => {}
 
 const errorText = error => `${error?.code === undefined ? '' : `[${error.code}] `}${error?.message ?? error}`
+
+/** 两个目录是否同一个：Windows 大小写不敏感；解析失败就按原串比较。 */
+export function sameDirectory(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false
+  try {
+    const a = resolvePath(left)
+    const b = resolvePath(right)
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+  } catch {
+    return left === right
+  }
+}
 
 // team 后端用到的 agentTeams 成员 API。rc.3 起平台把这组方法整体移除（只剩 state/transact
 // 与团队任务板），调用会报 is not a function；这里按服务方法探测，给出可读错误。
@@ -93,7 +106,7 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
   }
 }
 
-export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop }) {
+export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, sessionWaitMs = 5000 }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
   const requireAgent = () => {
     const current = currentAgent()
@@ -109,9 +122,95 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     return current.session?.id ?? current.id
   }
   const live = new Map()
+  // 服务按调用时惰性取：插件加载顺序不保证 agents/sessions/sandboxPolicy 已就绪。
+  const serviceOf = value => typeof value === 'function' ? value() : value
+  // 可写根授权按「Session 对象 + 目录」记：sandboxPolicy 内部是 WeakMap 按对象身份查表，
+  // 传 sessions.get() 的另一个实例或 sessionId 字符串都会静默无效（平台调用点也都用 exec.agent.session）。
+  // resume/fork 后 session 对象会换，旧 key 自然失效，续派前按新对象补注册。
+  const writableRootGrants = new Map()
+  const grantStore = session => {
+    let dirs = writableRootGrants.get(session)
+    if (dirs === undefined) {
+      dirs = new Map()
+      writableRootGrants.set(session, dirs)
+    }
+    return dirs
+  }
+  const childSessionOf = childId => {
+    const childAgent = serviceOf(agents)?.get?.(childId)
+    if (childAgent?.session !== undefined) return childAgent.session
+    return serviceOf(sessions)?.get?.(childId)
+  }
+  // activation 返回时子 Session 可能还没进会话表：挂一次 session/created 等同一个 childId；
+  // 超时只 warn、不重试，也不阻塞派发。判同只看 id，不看 header.cwd（那正是坏的字段）。
+  const resolveChildSession = childId => {
+    const found = childSessionOf(childId)
+    if (found !== undefined) return Promise.resolve(found)
+    if (typeof onSessionCreated !== 'function') return Promise.resolve(undefined)
+    return new Promise(resolveChild => {
+      let done = false
+      let unsubscribe
+      let timer
+      const finish = session => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        try { unsubscribe?.() } catch { /* 取消订阅失败不影响结果 */ }
+        resolveChild(session)
+      }
+      timer = setTimeout(() => finish(undefined), sessionWaitMs)
+      try {
+        unsubscribe = onSessionCreated(event => {
+          if (event?.id !== childId) return
+          finish(childSessionOf(childId) ?? event)
+        })
+      } catch {
+        finish(undefined)
+      }
+    })
+  }
+  /** 释放某个会话 id 名下的全部可写根（含 resume 前后的多个 Session 对象）。 */
+  const releaseWritableRoot = target => {
+    for (const [session, dirs] of [...writableRootGrants]) {
+      if (session !== target && session?.id !== target) continue
+      for (const disposer of dirs.values()) {
+        try {
+          disposer()
+        } catch (error) {
+          onWarn(`dsh-orchestrator: 释放 target 可写根失败：${errorText(error)}`)
+        }
+      }
+      writableRootGrants.delete(session)
+    }
+  }
+  // rc.3 平台缺陷：子会话 header.cwd 取父会话目录（childSessionMeta），spec.cwd 只记一条 working-directory 事件，
+  // 而 sandboxPolicy 的 workspaceRoot 只读 session.header.cwd → workspace-write 下子会话写不进 target。
+  // 兜法：给子会话登记 target 为可写根（幂等）。注意 Windows 上只对 harness 文件工具生效，pwsh 进程写仍会被拒。
+  const ensureWritableRoot = async (childId, target) => {
+    if (typeof target !== 'string' || target === '') return
+    const policy = serviceOf(sandboxPolicy)
+    if (policy === undefined || typeof policy.registerWritableRoot !== 'function') return
+    const session = await resolveChildSession(childId)
+    if (session === undefined) {
+      onWarn(`dsh-orchestrator: 未拿到子会话 ${childId}，未登记 target 可写根`)
+      return
+    }
+    // 平台根已经是 target 时不用授权；同一个 (session 对象, 目录) 只注册一次。
+    if (sameDirectory(target, session.header?.cwd)) return
+    const dirs = grantStore(session)
+    if (dirs.has(target)) return
+    try {
+      const disposer = policy.registerWritableRoot(session, target)
+      if (typeof disposer === 'function') dirs.set(target, disposer)
+      onEvent('subagent.writable-root', { sessionId: childId, detail: { target } })
+    } catch (error) {
+      onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
+    }
+  }
 
   // delivery: 'caller' 时没人 await 会变成未处理拒绝，这里必须挂上；同时把 settle 抛给上层驱动队列。
   // 回调里的异常（日志/事件消费方抛错）也不能变成宿主层面的未处理拒绝。
+  // 注意：settle 只是这一轮结束（continuable 会话还会续派），**不释放**可写根；释放留给 stop/终态清理。
   const track = activation => {
     live.set(activation.childId, activation)
     activation.result.then(
@@ -185,18 +284,30 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         detail: { childId: activation.childId, messageId: activation.messageId ?? null, provider },
       })
       track(activation)
+      // 目标目录才需要补可写根（没给 cwd 时 cwd 就是父会话目录，平台根本来就能写）。
+      if (typeof cwd === 'string' && cwd !== '') {
+        void ensureWritableRoot(activation.childId, cwd).catch(error => {
+          onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
+        })
+      }
       return { id: activation.childId, name: spec.label, sessionId: activation.childId, target: activation.childId }
     },
-    async send(target, message, signal) {
+    async send(target, message, signal, targetDir) {
+      // 续派前按目标会话重新解析并幂等补注册：resume/fork 后 session 对象换了，旧授权不再生效。
+      try {
+        await ensureWritableRoot(target, targetDir)
+      } catch (error) {
+        onWarn(`dsh-orchestrator: 续派前补注册可写根失败：${errorText(error)}`)
+      }
       return subagents.sendMessage(requireAgent(), target, [{ type: 'text', text: message }], {
         signal: signal ?? new AbortController().signal,
       })
     },
-    async sendReliable(target, message, signal) {
+    async sendReliable(target, message, signal, targetDir) {
       let lastError
       for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
         try {
-          return await this.send(target, message, signal)
+          return await this.send(target, message, signal, targetDir)
         } catch (error) {
           lastError = error
           if (attempt < retryDelaysMs.length) {
@@ -207,19 +318,27 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       throw new Error(`投递失败：${lastError?.message ?? lastError}`)
     },
-    /** 有本地 activation 直接 dispose（提前取消）；没有（重启后）走 interrupt。 */
+    /** 有本地 activation 直接 dispose（提前取消）；没有（重启后）走 interrupt。两种都释放可写根。 */
     async stop(target) {
-      const activation = live.get(target)
-      if (activation !== undefined) {
-        await activation.dispose()
-        live.delete(target)
-        return
+      try {
+        const activation = live.get(target)
+        if (activation !== undefined) {
+          await activation.dispose()
+          live.delete(target)
+          return
+        }
+        // rc.3：interrupt(targetSessionId, authority)，authority 只认 { kind: 'ancestor' | 'user' }。
+        // task_stop 是用户动作，按平台 interruptByUser 的写法传 { kind: 'user' }；裸 agent 不在契约里。
+        // rc.1：interruptByParent(childId, parentSessionId, mode)。
+        if (typeof subagents.interrupt === 'function') return subagents.interrupt(target, { kind: 'user' })
+        return subagents.interruptByParent(target, parentSessionId(), 'continuable')
+      } finally {
+        releaseWritableRoot(target)
       }
-      // rc.3：interrupt(targetSessionId, authority)，authority 只认 { kind: 'ancestor' | 'user' }。
-      // task_stop 是用户动作，按平台 interruptByUser 的写法传 { kind: 'user' }；裸 agent 不在契约里。
-      // rc.1：interruptByParent(childId, parentSessionId, mode)。
-      if (typeof subagents.interrupt === 'function') return subagents.interrupt(target, { kind: 'user' })
-      return subagents.interruptByParent(target, parentSessionId(), 'continuable')
+    },
+    /** 任务进入终态（done/cancelled/orphaned/failed）时由上层调用，释放该会话的可写根。 */
+    releaseWritableRoots(target) {
+      releaseWritableRoot(target)
     },
     members() {
       return listChildren(parentSessionId()).catch(error => {
@@ -252,10 +371,11 @@ function createUnavailableDispatcher(reason) {
     // 返回 [] 会被当成「目录为空」，把所有 running/waiting 任务误标 orphaned。
     async catalog() { fail() },
     has() { return false },
+    releaseWritableRoots() {},
   }
 }
 
-export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop }) {
+export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, sessionWaitMs }) {
   if (backend === 'team') {
     try {
       return createTeamDispatcher({ agentTeams, agent, getAgent, provider, retryDelaysMs, onWarn })
@@ -267,5 +387,5 @@ export function createDispatcher({ backend = 'subagent', agentTeams, subagents, 
       return createUnavailableDispatcher(reason)
     }
   }
-  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent })
+  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, sessionWaitMs })
 }

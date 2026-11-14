@@ -10,10 +10,13 @@ function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity 
   let counter = 0
   let spawned = 0
   const calls = []
+  const grantReleases = []
   return {
     calls,
+    grantReleases,
     get spawned() { return spawned },
     release(count = 1) { spawned = Math.max(0, spawned - count) },
+    releaseWritableRoots(target) { grantReleases.push(target) },
     slug(title) { counter += 1; return `task-${counter}` },
     async spawn({ name, prompt, signal, cwd }) {
       calls.push(['spawn', name, prompt, signal, cwd])
@@ -28,8 +31,8 @@ function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity 
       return { id: `s-${counter}`, name: name ?? `w-${counter}`, sessionId: `s-${counter}`, target: `s-${counter}` }
     },
     async send(target, message) { calls.push(['send', target, message]) },
-    async sendReliable(target, message, signal) {
-      calls.push(['sendReliable', target, message, signal])
+    async sendReliable(target, message, signal, targetDir) {
+      calls.push(['sendReliable', target, message, signal, targetDir])
       if (failSend) throw new Error('投递超时')
       return { messageId: 'm-1' }
     },
@@ -346,6 +349,17 @@ test('task_message：正常写 followup 并投递，attempts +1', async () => {
   db.close()
 })
 
+test('task_message：续派把 target_dir 传给 sendReliable（续派前补注册可写根用）', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const target = tempDir()
+  await call(tools, 'task_create', sampleBrief({ title: '带目录', target }))
+  const task = listTasks(db)[0]
+  await call(tools, 'task_message', { task_id: task.id, message: '继续' })
+  const call2 = dispatcher.calls.find(item => item[0] === 'sendReliable')
+  assert.equal(call2[4], target)
+  db.close()
+})
+
 test('task_message：无子会话与不存在 id 给可读提示', async () => {
   const { db, dispatcher, tools } = await setup()
   const missing = await call(tools, 'task_message', { task_id: 't-nope', message: 'x' })
@@ -421,6 +435,32 @@ test('task_stop：cancelled + interrupt；已结束不再 interrupt', async () =
   assert.match(again, /已结束/)
   assert.equal(dispatcher.calls.filter(call => call[0] === 'stop').length, 1)
   db.close()
+})
+
+test('可写根生命周期：done 与 cancelled 释放；blocked（waiting_user）保留以便续派', async () => {
+  // done：终态释放
+  const done = await setup()
+  await call(done.tools, 'task_create', sampleBrief({ title: '甲' }))
+  const doneTask = listTasks(done.db)[0]
+  await call(done.tools, 'task_report', { task_id: doneTask.id, status: 'done', summary: '完成' }, { agent: { id: doneTask.session_id } })
+  assert.deepEqual(done.dispatcher.grantReleases, [doneTask.session_id])
+  done.db.close()
+
+  // blocked → waiting_user：不释放（续派还要写 target）
+  const blocked = await setup()
+  await call(blocked.tools, 'task_create', sampleBrief({ title: '乙' }))
+  const blockedTask = listTasks(blocked.db)[0]
+  await call(blocked.tools, 'task_report', { task_id: blockedTask.id, status: 'blocked', summary: '等用户' }, { agent: { id: blockedTask.session_id } })
+  assert.deepEqual(blocked.dispatcher.grantReleases, [])
+  blocked.db.close()
+
+  // task_stop → cancelled：释放
+  const stopped = await setup()
+  await call(stopped.tools, 'task_create', sampleBrief({ title: '丙' }))
+  const stoppedTask = listTasks(stopped.db)[0]
+  await call(stopped.tools, 'task_stop', { task_id: stoppedTask.id })
+  assert.deepEqual(stopped.dispatcher.grantReleases, [stoppedTask.session_id])
+  stopped.db.close()
 })
 
 test('task_report：progress 只 touch 不改状态', async () => {

@@ -183,6 +183,12 @@ export async function apply(ctx, rawConfig = {}) {
     getAgent: resolveCoordinator,
     provider: config.spawnProvider,
     onWarn: warnings,
+    // rc.3 子会话沙箱根取父会话 header.cwd：派发后给子会话补注册 target 可写根。
+    // 服务惰性取，加载顺序不保证；agents 在 inject 里，sessions/sandboxPolicy 用 ctx.get。
+    agents: () => ctx.agents ?? ctx.get?.('agents'),
+    sessions: () => ctx.get?.('sessions'),
+    sandboxPolicy: () => ctx.get?.('sandboxPolicy'),
+    onSessionCreated: handler => ctx.on('session/created', handler),
     onEvent: (event, fields) => {
       logger.log(event, fields)
       // 子会话结算 = 并发槽位释放，唤醒队列补位。

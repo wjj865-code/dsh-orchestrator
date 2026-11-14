@@ -64,6 +64,126 @@ function fakeSubagents({ failStart = false, failTimes = 0, deferred = false } = 
 const agent = { id: 'a1', session: { id: 's1', header: { cwd: 'C:\\work' } } }
 const team = options => createDispatcher({ backend: 'team', ...options })
 const sub = options => createDispatcher({ backend: 'subagent', ...options })
+const tick = () => new Promise(resolve => setImmediate(resolve))
+
+// rc.3 可写根：agents.get(childId).session 返回的对象必须和传给 registerWritableRoot 的是同一引用。
+function grantEnv() {
+  const registrations = []
+  const releases = []
+  const sessionsById = new Map()
+  const calls = []
+  const subagents = {
+    async startActivation(spec) {
+      calls.push(['start', spec])
+      const session = { id: spec.childId, header: { cwd: 'C:\\work' } }
+      sessionsById.set(spec.childId, session)
+      return {
+        childId: spec.childId,
+        messageId: 'm1',
+        result: Promise.resolve({ stopReason: 'completed' }),
+        dispose: async () => { calls.push(['dispose', spec.childId]) },
+      }
+    },
+    async sendMessage() { return 'msg' },
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const agentsService = { get: id => sessionsById.has(id) ? { id, session: sessionsById.get(id) } : undefined }
+  const sandboxPolicy = {
+    registerWritableRoot(session, dir) {
+      registrations.push([session, dir])
+      return () => releases.push([session, dir])
+    },
+  }
+  return {
+    registrations,
+    releases,
+    sessionsById,
+    calls,
+    subagents,
+    services: {
+      agents: () => agentsService,
+      sessions: () => ({ get: id => sessionsById.get(id) }),
+      sandboxPolicy: () => sandboxPolicy,
+    },
+  }
+}
+
+test('rc.3 可写根：注册传 agent.session 同一对象，settle 后不释放', async () => {
+  const env = grantEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  assert.equal(env.registrations.length, 1)
+  const [session, dir] = env.registrations[0]
+  assert.strictEqual(session, env.sessionsById.get(member.id))
+  assert.equal(dir, 'C:/target')
+  // settle 只是这一轮结束（continuable 会话会续派），不能释放。
+  await tick()
+  assert.deepEqual(env.releases, [])
+})
+
+test('rc.3 可写根：同 session+目录重复投递只注册一次', async () => {
+  const env = grantEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  await dispatcher.send(member.id, '继续', undefined, 'C:/target')
+  await dispatcher.sendReliable(member.id, '再继续', undefined, 'C:/target')
+  assert.equal(env.registrations.length, 1)
+})
+
+test('rc.3 可写根：resume 后 session 对象换了，续派前按新对象重新注册', async () => {
+  const env = grantEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  const resumed = { id: member.id, header: { cwd: 'C:\\work' } }
+  env.sessionsById.set(member.id, resumed)
+  await dispatcher.send(member.id, '续派', undefined, 'C:/target')
+  assert.equal(env.registrations.length, 2)
+  assert.strictEqual(env.registrations[1][0], resumed)
+})
+
+test('rc.3 可写根：stop 与终态清理释放同一会话的全部授权', async () => {
+  const env = grantEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  await dispatcher.stop(member.id)
+  assert.equal(env.releases.length, 1)
+  // 终态清理可以重复调用，不炸也不重复释放。
+  dispatcher.releaseWritableRoots(member.id)
+  assert.equal(env.releases.length, 1)
+})
+
+test('rc.3 可写根：服务缺失 / 没给 target 都只跳过，不影响派发与投递', async () => {
+  const env = grantEnv()
+  const bare = createSubagentDispatcher({ subagents: env.subagents, agent, sessionWaitMs: 0 })
+  const member = await bare.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  await bare.send(member.id, 'x', undefined, 'C:/target')
+  assert.deepEqual(env.registrations, [])
+  // 没有 cwd（沿用父会话目录）时一次都不注册。
+  const env2 = grantEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env2.subagents, agent, ...env2.services, sessionWaitMs: 0 })
+  await dispatcher.spawn({ prompt: 'p' })
+  await tick()
+  assert.deepEqual(env2.registrations, [])
+})
+
+test('rc.3 可写根：服务缺失/register 不存在也不报错', async () => {
+  const env = grantEnv()
+  const dispatcher = createSubagentDispatcher({
+    subagents: env.subagents,
+    agent,
+    agents: () => ({ get: () => undefined }),
+    sessions: () => ({ get: () => undefined }),
+    sandboxPolicy: () => ({}),
+    sessionWaitMs: 0,
+  })
+  await assert.doesNotReject(() => dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' }))
+})
 
 test('team：spawn 透传合法名字、渲染文本 prompt、fresh provider 与 signal', async () => {
   const teams = fakeTeams()

@@ -118,9 +118,18 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }
   }
 
-  const sendFollowup = async (target, message, signal) => {
-    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal)
-    return dispatcher.send(target, message, signal)
+  // targetDir 用于续派前幂等补注册 target 可写根（resume 后 session 对象会换，旧授权不生效）。
+  const sendFollowup = async (target, message, signal, targetDir) => {
+    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir)
+    return dispatcher.send(target, message, signal, targetDir)
+  }
+  // 任务进入终态才释放可写根；waiting_user/waiting_auth 保留（续派还要用）。
+  const releaseTaskSession = task => {
+    const id = task?.session_id ?? task?.target
+    if (id === null || id === undefined) return
+    try {
+      dispatcher.releaseWritableRoots?.(id)
+    } catch { /* 释放失败不影响任务状态 */ }
   }
 
   // 子会话彻底不可达（被删/不是直接子级）才标 orphaned；协调者未加载不是孤儿。
@@ -294,7 +303,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const message = args.message ?? ''
       addMessage(db, task.id, { kind: 'followup', rendered: message })
       try {
-        await sendFollowup(task.target, message, exec?.signal)
+        await sendFollowup(task.target, message, exec?.signal, task.target_dir)
       } catch (error) {
         const reason = error?.message ?? String(error)
         addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
@@ -302,6 +311,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         if (isUnreachable(error) && canTransition(current.status, 'orphaned')) {
           log('task.orphaned', { taskId: task.id, sessionId: task.session_id, detail: { reason } })
           transition(db, task.id, 'orphaned', { error: `子会话不可达：${reason}` })
+          releaseTaskSession(task)
           return `续派失败：任务 ${task.id} 的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`
         }
         if (current.status === 'waiting_user') {
@@ -310,6 +320,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           transition(db, task.id, 'waiting_user', { error: reason })
         } else {
           transition(db, task.id, 'failed', { error: reason })
+          releaseTaskSession(task)
         }
         return `续派失败：任务 ${task.id} 已转为「等你确认」（已重试 3 次）。原因：${reason}`
       }
@@ -330,6 +341,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (task.status === 'pending') {
         queue.remove(task.id)
         transition(db, task.id, 'cancelled')
+        releaseTaskSession(task)
         return `任务 ${task.id} 已取消（还在排队，没有派发出去）。`
       }
       if (task.target !== null && task.target !== undefined) {
@@ -342,6 +354,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       queue.remove(task.id)
       transition(db, task.id, 'cancelled')
+      releaseTaskSession(task)
       queue.pump()
       return `任务 ${task.id} 已停止。`
     }),
@@ -414,7 +427,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         agentId: exec?.agent?.id,
         detail: { status: args.status, summary: args.summary ?? '', callId: exec?.callId },
       })
-      // 任务到终态意味着并发槽位空出来了，唤醒队列补位。
+      // 任务到终态意味着并发槽位空出来了，唤醒队列补位；done 同时释放该会话的 target 可写根。
+      if (next.status === 'done') releaseTaskSession(task)
       if (next.status === 'done' || next.status === 'failed' || next.status === 'cancelled') queue.pump()
       const hint = invalidHint()
       return `已记录任务 ${next.id} 的 ${args.status} 回报。${hint === '' ? '' : `\n${hint}`}`
