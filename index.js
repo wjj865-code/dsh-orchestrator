@@ -14,6 +14,7 @@ import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
 import { startSnapshotLoop } from './src/snapshot.js'
 import { ensureDigest } from './src/digest.js'
+import { createPanelActions } from './src/panel-actions.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
@@ -286,14 +287,23 @@ export async function apply(ctx, rawConfig = {}) {
     sessionQuery: () => service('sessionQuery'),
   }).map(tool => ctx.tools.register(tool))
 
-  // 客户端只读路由：鉴权由 connection 服务统一负责；handler 只查台账、不写。
-  // connection 的 apply 是 await 后才注册服务，cordis 并发创建条目，谁先跑没保证；
-  // 所以用 ctx.inject 等它出现再注册，不能一次性 ctx.get 拿不到就放弃。
+  const panel = createPanelActions({
+    db,
+    dispatcher,
+    queue,
+    config,
+    coordinatorStatus,
+    logger,
+  })
+
+  // 客户端面板路由：鉴权由 connection 服务统一负责；snapshot 只查台账；
+  // detail/artifacts 只读，stop/retry/message 是面板动作（owner-only）。
   const routeOptions = {
     ...HOST_ROUTE_OPTIONS,
     fetch: createHostRoute({
       db,
       coordinatorStatus,
+      panel,
       openMain: async () => {
         const result = await mainSession.open()
         if (result?.ok === true && typeof result.sessionId === 'string') {
@@ -311,10 +321,10 @@ export async function apply(ctx, rawConfig = {}) {
     if (typeof connection?.fetch?.register !== 'function') return undefined
     try {
       const dispose = connection.fetch.register(routeOptions)
-      ctx.logger?.info?.(`dsh-orchestrator: 只读路由已注册 ${HOST_ROUTE}`)
+      ctx.logger?.info?.(`dsh-orchestrator: 面板路由已注册 ${HOST_ROUTE}`)
       return dispose
     } catch (error) {
-      warnings(`dsh-orchestrator: 只读路由注册失败：${error?.message ?? error}`)
+      warnings(`dsh-orchestrator: 面板路由注册失败：${error?.message ?? error}`)
       return undefined
     }
   }
@@ -327,7 +337,7 @@ export async function apply(ctx, rawConfig = {}) {
   } else {
     routeDisposer = installRoute(ctx.get?.('connection') ?? ctx.connection)
     if (routeDisposer === undefined) {
-      warnings('dsh-orchestrator: 缺少 connection 服务，/api/orchestrator 只读路由不可用')
+      warnings('dsh-orchestrator: 缺少 connection 服务，/api/orchestrator 面板路由不可用')
     }
   }
 

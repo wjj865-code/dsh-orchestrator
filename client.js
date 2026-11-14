@@ -10,11 +10,11 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'orchestrator'
     const LAUNCHER_ID = 'orchestrator-launcher'
     const ROUTE = 'api/orchestrator'
-    const POLL_MS = 5000
+    const POLL_MS = 2000
     const POLL_BACKOFF_MS = 30000
     const FILTERS = [
       ['all', '全部'], ['active', '进行中'], ['waiting', '待你决定'],
-      ['done', '已完成'], ['failed', '失败'], ['closed', '已取消/丢失'],
+      ['done', '已完成'], ['failed', '失败'], ['closed', '已取消/丢失'], ['artifacts', '产物'],
     ]
 
     const STATUS_LABEL = {
@@ -63,6 +63,29 @@ window.__ModuleLoader__.load({
       throw new Error((body && body.error) || '打开主会话失败')
     }
 
+    // 面板动作：detail/artifacts 只读，stop/retry/message 是写动作。
+    const readDetail = async taskId => {
+      const response = await fetch(ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: 'detail', taskId }),
+      })
+      const body = await response.json()
+      if (body && body.ok === true) return body
+      throw new Error((body && body.error) || `HTTP ${response.status}`)
+    }
+
+    const panelAction = async (endpoint, taskId, extra = {}) => {
+      const response = await fetch(ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint, taskId, ...extra }),
+      })
+      const body = await response.json()
+      if (body && body.ok === true) return body
+      throw new Error((body && body.error) || `HTTP ${response.status}`)
+    }
+
     // 面板按钮和侧栏启动器共用同一条 open-main；并发点击合并成一次（平台侧创建没有互斥）。
     let openMainInFlight = null
     const openMainOnce = () => {
@@ -107,6 +130,12 @@ window.__ModuleLoader__.load({
       meta: { fontSize: 12, opacity: 0.7, flex: '0 0 auto' },
       notice: { padding: '8px 10px', borderRadius: 8, background: 'var(--dsw-alias-color-warning-bg, #fff4e5)', fontSize: 12 },
       error: { padding: '8px 10px', borderRadius: 8, background: 'var(--dsw-alias-color-danger-bg, #fdecea)', fontSize: 12 },
+      detail: {
+        border: '1px solid var(--dsw-alias-color-border, #d0d0d0)', borderRadius: 8,
+        padding: 10, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12,
+        background: 'var(--dsw-alias-color-bg-secondary, #fafafa)',
+      },
+      detailLine: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
     }
 
     const HeaderButton = ({ openPanel }) => h('button', {
@@ -152,6 +181,9 @@ window.__ModuleLoader__.load({
       const [openedMain, setOpenedMain] = React.useState(false)
       const [expanded, setExpanded] = React.useState([])
       const [filter, setFilter] = React.useState('all')
+      const [detail, setDetail] = React.useState(null)
+      const [detailError, setDetailError] = React.useState(null)
+      const [busy, setBusy] = React.useState(null)
 
       const load = React.useCallback(async (signal) => {
         try {
@@ -191,7 +223,8 @@ window.__ModuleLoader__.load({
             : filter === 'done' ? task.status === 'done'
               : filter === 'failed' ? task.status === 'failed'
                 : filter === 'closed' ? (task.status === 'cancelled' || task.status === 'orphaned')
-                  : true
+                  : filter === 'artifacts' ? (Array.isArray(task.artifacts) && task.artifacts.length > 0)
+                    : true
 
       const open = id => {
         if (typeof id !== 'string' || id === '') return
@@ -225,11 +258,102 @@ window.__ModuleLoader__.load({
         setExpanded(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
       }
 
+      const openDetail = async id => {
+        setDetailError(null)
+        try {
+          setDetail(await readDetail(id))
+        } catch (failure) {
+          setDetailError(`详情加载失败：${String((failure && failure.message) || failure)}`)
+        }
+      }
+
+      const runPanel = async (endpoint, id, extra = {}) => {
+        setBusy(`${endpoint}:${id}`)
+        setActionError(null)
+        try {
+          await panelAction(endpoint, id, extra)
+          await load(undefined)
+          if (detail && detail.task && detail.task.id === id) await openDetail(id)
+        } catch (failure) {
+          setActionError(`${endpoint} 失败：${String((failure && failure.message) || failure)}`)
+        } finally {
+          setBusy(null)
+        }
+      }
+
+      const sendMessage = id => {
+        const text = typeof window.prompt === 'function' ? window.prompt('追加一条消息给子会话：') : ''
+        if (typeof text === 'string' && text.trim() !== '') void runPanel('message', id, { message: text.trim() })
+      }
+
       const mainSession = (snapshot && snapshot.mainSession) || { id: null, live: false }
       const tasks = Array.isArray(snapshot && snapshot.tasks) ? snapshot.tasks : []
       const visible = tasks.filter(matchFilter)
       const mainState = mainSession.id === null ? '主会话未创建' : mainSession.live ? '主会话在线' : '主会话已失效'
       const inboxCount = Number(snapshot && snapshot.inboxCount) || 0
+      const detailBlock = detail === null ? null : h('div', { style: styles.detail },
+        h('div', { style: styles.bar },
+          h('span', { style: styles.title }, detail.task.title),
+          h('span', { style: styles.meta }, STATUS_LABEL[detail.task.status] || detail.task.status),
+          h('button', { type: 'button', style: styles.button, onClick: () => setDetail(null) }, '关闭'),
+        ),
+        h('div', { style: styles.meta },
+          [
+            detail.task.group ? `组 ${detail.task.group}` : '',
+            detail.task.priority ? `P${detail.task.priority}` : '',
+            detail.task.targetDir ? shortPath(detail.task.targetDir) : '',
+            detail.task.readOnly ? '只读' : '',
+          ].filter(Boolean).join('｜') || '无额外属性'),
+        detail.task.question ? h('div', { style: styles.notice }, `需要你：${detail.task.question}${detail.task.options && detail.task.options.length ? `（${detail.task.options.join(' / ')}）` : ''}`) : null,
+        detail.dependencies.length > 0
+          ? h('div', { style: styles.detailLine }, `前置：${detail.dependencies.map(dep => `${dep.title}（${STATUS_LABEL[dep.status] || dep.status}）`).join('、')}`)
+          : null,
+        h('div', { style: styles.detailLine }, `目标：${detail.task.goal}`),
+        detail.messages.length > 0
+          ? h('div', { style: styles.detailLine }, `消息：\n${detail.messages.slice(-20).map(row => `[${row.kind}] ${row.text}`).join('\n')}`)
+          : h('div', { style: styles.meta }, '还没有消息'),
+        detail.task.artifacts.length > 0
+          ? h('div', { style: styles.detailLine }, `产物：\n${detail.task.artifacts.map(item => `- ${item.path}${item.label ? ` — ${item.label}` : ''}${item.exists === false ? '（未找到）' : ''}`).join('\n')}`)
+          : null,
+        h('div', { style: styles.bar },
+          detail.task.status !== 'done' && detail.task.status !== 'cancelled' && detail.task.status !== 'orphaned'
+            ? h('button', { type: 'button', style: styles.button, onClick: () => runPanel('stop', detail.task.id) }, '停止')
+            : null,
+          detail.task.status === 'failed' || detail.task.status === 'orphaned'
+            ? h('button', { type: 'button', style: styles.button, onClick: () => runPanel('retry', detail.task.id) }, '重派')
+            : null,
+          detail.task.target
+            ? h('button', { type: 'button', style: styles.button, onClick: () => sendMessage(detail.task.id) }, '追加消息')
+            : null,
+        ),
+      )
+      const detailErrorBlock = detailError === null ? null : h('div', { style: styles.error }, detailError)
+      const artifactRows = []
+      for (const task of tasks) {
+        for (const artifact of Array.isArray(task.artifacts) ? task.artifacts : []) {
+          artifactRows.push({ task, artifact })
+          if (artifactRows.length >= 200) break
+        }
+        if (artifactRows.length >= 200) break
+      }
+      const artifactView = artifactRows.length === 0
+        ? h('div', { style: styles.meta }, '还没有产物。')
+        : h('ul', { style: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 } },
+          artifactRows.map(({ task, artifact }) => h('li', { key: `${task.id}:${artifact.path}`, style: { listStyle: 'none' } },
+            h('div', { style: styles.row },
+              h('span', { style: Object.assign({}, styles.dot, { background: artifact.exists === false ? TONE_COLOR.bad : TONE_COLOR.good }) }),
+              h('span', { style: styles.taskTitle, title: artifact.path }, artifact.path),
+              artifact.label ? h('span', { style: styles.meta }, artifact.label) : null,
+              h('span', { style: styles.meta }, task.title),
+              h('span', { style: styles.meta }, timeLabel(task.lastEventAt)),
+              h('button', {
+                type: 'button', style: styles.button,
+                disabled: task.childSessionId === null || task.childSessionId === undefined,
+                onClick: () => open(task.childSessionId),
+              }, '打开子会话'),
+            ),
+          )),
+        )
 
       return h('div', { style: styles.panel },
         h('div', { style: styles.bar },
@@ -244,6 +368,8 @@ window.__ModuleLoader__.load({
         ),
         snapshotError !== null ? h('div', { style: styles.error }, `台账暂不可用：${snapshotError}`) : null,
         actionError !== null ? h('div', { style: styles.error }, actionError) : null,
+        detailErrorBlock,
+        detailBlock,
         inboxCount > 0
           ? h('div', { style: styles.notice }, `有 ${inboxCount} 个任务等你决定，切到「待你决定」查看。`)
           : null,
@@ -253,7 +379,9 @@ window.__ModuleLoader__.load({
         snapshot !== null && mainSession.id === null
           ? h('div', { style: styles.notice }, '尚未打开主会话：点右上角「打开主会话」，在指挥舱里创建。')
           : null,
-        visible.length === 0
+        filter === 'artifacts'
+          ? artifactView
+          : visible.length === 0
           ? (snapshot === null
             ? (snapshotError === null ? h('div', { style: styles.meta }, '加载中…') : null)
             : h('div', { style: styles.meta }, tasks.length === 0 ? '还没有任务。' : '没有匹配的任务。'))
@@ -280,6 +408,16 @@ window.__ModuleLoader__.load({
                   h('span', { style: styles.meta }, timeLabel(task.lastEventAt)),
                   artifacts.length > 0
                     ? h('button', { type: 'button', style: styles.button, onClick: () => toggleArtifacts(task.id) }, `产物 ${artifacts.length}`)
+                    : null,
+                  h('button', { type: 'button', style: styles.button, onClick: () => openDetail(task.id) }, '详情'),
+                  task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'orphaned'
+                    ? h('button', { type: 'button', style: styles.button, onClick: () => runPanel('stop', task.id) }, '停止')
+                    : null,
+                  task.status === 'failed' || task.status === 'orphaned'
+                    ? h('button', { type: 'button', style: styles.button, onClick: () => runPanel('retry', task.id) }, '重派')
+                    : null,
+                  task.childSessionId
+                    ? h('button', { type: 'button', style: styles.button, onClick: () => sendMessage(task.id) }, '追加')
                     : null,
                   h('button', {
                     type: 'button', style: styles.button,

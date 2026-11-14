@@ -99,7 +99,7 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
    @wjj865-code/dsh-orchestrator
    ```
 
-   也可以安装指定版本：`@wjj865-code/dsh-orchestrator@0.5.1`。
+   也可以安装指定版本：`@wjj865-code/dsh-orchestrator@0.6.0`。
 2. 装完彻底退出 DSH 再启动。
 3. 以后升级：`npm version patch` → `npm publish` → 在 DSH 插件页用 registry 包的更新入口升级（DSH 的 plugin manager 对 registry 包支持 `listVersions` / `updateBundle`），不再需要卸了重装 GitHub 版。
 
@@ -173,6 +173,18 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
 - `task_report` 的 `blocked` / `needs_auth` 支持可选 `question` + `options`；问题随通知、`task_status`、面板和 `task_inbox` 一起展示。`progress`/`done`/`task_message` 会清掉旧问题。
 - `stallRounds` 生效：连续 progress 达到阈值且距上次提醒超过 `staleMinutes`，推一条「可能卡住」通知（`stalled` 级，5 秒合并窗口）。
 - `digestAt` 配置后，主会话上自动创建/复用每日 `schedule`，提示协调者调用 `task_inbox` + `task_list` 汇总；主会话重建或时区变化会重建 schedule，配置为空会删除。默认关闭，避免每天打扰。
+
+## 产物库与面板操作（P3）
+
+- 面板筛选新增「产物」，按任务汇总产物路径、标签、存在性和所属任务；点击可打开对应子会话。
+- 任务行新增「详情」「停止」「重派」「追加」：
+  - `详情`：读取 `/api/orchestrator {endpoint:'detail'}`，展示 brief、消息、依赖、分组、问题/选项、产物。
+  - `停止`：调 `stop`，中断子会话并标 `cancelled`。
+  - `重派`：对 `failed`/`orphaned` 调 `retry`，保留依赖/分组/写域/优先级。
+  - `追加`：对运行中的任务发一条续派消息。
+- 面板轮询从 5s 降到 2s；连续失败退避到 30s。
+- 路由现在包含 `snapshot/open-main/detail/artifacts/stop/retry/message`；鉴权仍由 connection owner-only 负责。
+- 产物目前来自子任务显式 `task_report.artifacts`；`workspaceChanges` 自动收集改动文件留到后续。
 
 ## 只读子任务（显式 `readOnly`）
 
@@ -260,6 +272,7 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
 19. **重派与快照**：人为让任务 `failed` 后 `task_retry` 生成新任务、旧任务保留；`snapshots/tasks-YYYY-MM-DD.sqlite` 可打开且含任务；重启同一天不重复覆盖。
 20. **收件箱与升级**：`task_report blocked` 带 `question/options` 后，`task_inbox`/`task_status`/面板都能看到；连续 3 次 progress 会收到一条「可能卡住」通知，且不会连续刷。
 21. **日报**：配置 `digestAt: "09:00"` 后打开主会话，schedule 自动创建；到点收到日报提示，协调者能调用 `task_inbox`/`task_list` 汇总；不配置时不会创建。
+22. **面板操作**：任务行「详情」能看到 brief/消息/依赖/产物；「停止」能取消运行中任务；「重派」能重建 failed 任务并保留依赖；「追加」能续派；「产物」筛选能看到所有任务的产物。
 20. **依赖/分组/优先级**：A 运行中建 `dependsOn:[A]` 的 B → B 是 `waiting_dep` 不派发；A `done` 后 B 自动派发且 brief 带 `【前置任务】`；A 失败时 B 自动失败。高 `priority` 任务先派发；同 `group` 可在 `task_list({group})` 看进度；`writeScopes` 重叠只提示不阻断。
 
 
@@ -360,6 +373,7 @@ scoped 包默认是私有，**必须带 `--access public`** 才会公开；开�
 - **台账快照与恢复**：已每天生成 `snapshots/tasks-YYYY-MM-DD.sqlite`（保留 7 天）；损坏时给快照目录提示，但**不自动恢复**，需要手工替换台账文件。
 - **卡片跳转**：子会话不在普通会话列表，阶段 1 只给数据（`childSessionId` + `openVia`），客户端入口/面板在阶段 2 按父会话的 subagent catalog 打开。
 - **stallRounds**：连续 progress 达到阈值后只提醒一次；要达到「提醒后仍无进展就升级」的完整策略，后续可再加“提醒后计时 + 二次升级”。
+- **产物自动收集**：目前只收子任务显式上报的 artifacts；`workspaceChanges` 自动收集改动文件尚未接入（需要 session event seq，后续做）。
 - **`run_code`/PTC**：平台禁止 `restrict` 指名 PTC 保留传输 `run_code`；若 profile 配了 PTC executor，协调者可能经它间接调用被 deny 的工具。真机确认 desktop 默认没有 PTC executor；有则记录并禁用该路。
 - **deny 审计日志**：`preset-tools` 同时写平台 `ctx.logger.info`（`preset-tools: deny …`）和插件自己的 `$DSH_HOME/state/orchestrator/logs/orchestrator-*.jsonl`（事件 `preset.deny`，`detail.tools` 是被 deny 的名单），真机用后者对表即可。
 - **`show_view`**：base asar 未证实有这个全局工具，协调者 allow 默认不带；memory 已由插件自己的 `memories` 表实现，不依赖平台 memory 服务。

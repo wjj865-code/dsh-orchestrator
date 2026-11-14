@@ -98,6 +98,32 @@ test('未知端点返回 400，不泄漏内部错误', async () => {
   db.close()
 })
 
+test('面板动作端点：detail/artifacts/stop/retry/message 走 panel，失败返回 400', async () => {
+  const db = await openLedger(tempDir())
+  const calls = []
+  const panel = {
+    detail: taskId => ({ ok: true, taskId }),
+    artifacts: limit => ({ ok: true, limit }),
+    stop: async taskId => { calls.push(['stop', taskId]); return { ok: true, taskId } },
+    retry: async taskId => { calls.push(['retry', taskId]); return { ok: true, taskId } },
+    message: async (taskId, message) => {
+      calls.push(['message', taskId, message])
+      return message === '' ? { ok: false, error: '消息不能为空' } : { ok: true, taskId }
+    },
+  }
+  const handler = createHostRoute({ db, panel, coordinatorStatus: () => ({ id: 's-1', live: true }) })
+  const detail = await (await handler(request({ endpoint: 'detail', taskId: 't-1' }))).json()
+  assert.equal(detail.taskId, 't-1')
+  const artifacts = await (await handler(request({ endpoint: 'artifacts', limit: 5 }))).json()
+  assert.equal(artifacts.limit, 5)
+  await handler(request({ endpoint: 'stop', taskId: 't-1' }))
+  await handler(request({ endpoint: 'retry', taskId: 't-1' }))
+  const bad = await handler(request({ endpoint: 'message', taskId: 't-1', message: '' }))
+  assert.equal(bad.status, 400)
+  assert.deepEqual(calls, [['stop', 't-1'], ['retry', 't-1'], ['message', 't-1', '']])
+  db.close()
+})
+
 test('坏 body / 空 body 也不会写台账', async () => {
   const { db, handler } = await setup()
   const before = counts(db)

@@ -5,6 +5,7 @@ import { listTasks, listHistoryTasks } from './ledger.js'
 import { taskCard } from './card.js'
 
 const ENDPOINTS = new Set(['snapshot'])
+const ACTIONS = new Set(['detail', 'artifacts', 'stop', 'retry', 'message'])
 const ACTIVE = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
 
 const json = (value, status) => new Response(JSON.stringify(value), {
@@ -12,7 +13,7 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, openMain, staleMinutes = 30, limit = 200, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleMinutes = 30, limit = 200, now = Date.now }) {
   const snapshot = () => {
     const status = coordinatorStatus?.() ?? {}
     const at = now()
@@ -68,6 +69,20 @@ export function createHostRoute({ db, coordinatorStatus, openMain, staleMinutes 
       return json(result?.ok === true
         ? { ok: true, sessionId: result.sessionId, created: result.created === true }
         : { ok: false, error: result?.error ?? '创建主会话失败' }, result?.ok === true ? 200 : 500)
+    }
+    if (ACTIONS.has(endpoint)) {
+      if (panel === undefined) return json({ ok: false, error: 'panel-actions-unavailable' }, 500)
+      try {
+        let result
+        if (endpoint === 'detail') result = panel.detail(body?.taskId)
+        else if (endpoint === 'artifacts') result = panel.artifacts(body?.limit)
+        else if (endpoint === 'stop') result = await panel.stop(body?.taskId)
+        else if (endpoint === 'retry') result = await panel.retry(body?.taskId)
+        else if (endpoint === 'message') result = await panel.message(body?.taskId, body?.message)
+        return json(result, result?.ok === true ? 200 : 400)
+      } catch (error) {
+        return json({ ok: false, error: `动作失败：${error?.message ?? error}` }, 500)
+      }
     }
     if (!ENDPOINTS.has(endpoint)) return json({ ok: false, error: 'unknown-endpoint' }, 400)
     return json(snapshot(), 200)
