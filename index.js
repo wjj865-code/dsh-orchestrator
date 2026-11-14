@@ -13,6 +13,7 @@ import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-rout
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
 import { startSnapshotLoop } from './src/snapshot.js'
+import { ensureDigest } from './src/digest.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
@@ -26,6 +27,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 查看进度只用 task_list / task_status。
 - 派任务前可用 history_search 查跨项目记忆与历史任务，用 project_context 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
 - 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域；紧急任务用 priority（-10..10）。
+- 需要看“待你决定/失败/长时间没动静”时用 task_inbox。
 - 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
 - 本回合没有别的事就立即结束回合；通知会开启新回合。
@@ -135,12 +137,27 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   const current = resolveCoordinator()
+  const ensureDigestFor = async sessionId => {
+    const schedule = service('schedule')
+    const result = await ensureDigest({
+      schedule,
+      db,
+      mainSessionId: sessionId,
+      config,
+      log: (event, detail) => logger.log(event, { detail }),
+    })
+    if (result.ok === false && result.reason !== 'disabled' && result.reason !== 'no-schedule-service') {
+      warnings(`dsh-orchestrator: 日报 schedule 不可用：${result.reason}`)
+    }
+    return result
+  }
   if (current === undefined) {
     warnings(config.coordinatorSession !== undefined
       ? `dsh-orchestrator: 配置的 coordinatorSession ${config.coordinatorSession} 当前未加载`
       : 'dsh-orchestrator: 尚未打开主会话，首次 task_create 会提示先从面板打开')
   } else {
     scheduleRestriction(current)
+    void ensureDigestFor(current.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
   }
   ctx.on?.('agent/created', ({ agent }) => {
     const id = resolvedCoordinatorId()
@@ -149,6 +166,7 @@ export async function apply(ctx, rawConfig = {}) {
       // UI 打开空白主会话可能把预设 rebind 成 default；agent 创建时拉回协调者预设。
       void mainSession.guardPreset?.(agent).catch(error => warnings(`dsh-orchestrator: 主会话预设守护失败：${error?.message ?? error}`))
       // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑，并对一次子会话目录。
+      void ensureDigestFor(agent.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
       queue?.pump()
       reconcileOrphans({ db, dispatcher, coordinatorSessionId: id, isLive: isChildLive, logger, onWarn: warnings })
         .then(() => queue?.pump())
@@ -276,7 +294,15 @@ export async function apply(ctx, rawConfig = {}) {
     fetch: createHostRoute({
       db,
       coordinatorStatus,
-      openMain: () => mainSession.open(),
+      openMain: async () => {
+        const result = await mainSession.open()
+        if (result?.ok === true && typeof result.sessionId === 'string') {
+          try { await ensureDigestFor(result.sessionId) } catch (error) {
+            warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`)
+          }
+        }
+        return result
+      },
       staleMinutes: config.staleMinutes,
     }),
   }

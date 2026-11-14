@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL, session_id TEXT, target TEXT, target_dir TEXT, artifacts_json TEXT, coordinator_session TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0,
-  retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0
+  retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0,
+  question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -53,6 +54,10 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('group_id')) db.exec('ALTER TABLE tasks ADD COLUMN group_id TEXT')
     if (!taskColumns.includes('write_scopes_json')) db.exec('ALTER TABLE tasks ADD COLUMN write_scopes_json TEXT')
     if (!taskColumns.includes('priority')) db.exec('ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
+    if (!taskColumns.includes('question')) db.exec('ALTER TABLE tasks ADD COLUMN question TEXT')
+    if (!taskColumns.includes('question_options_json')) db.exec('ALTER TABLE tasks ADD COLUMN question_options_json TEXT')
+    if (!taskColumns.includes('progress_count')) db.exec('ALTER TABLE tasks ADD COLUMN progress_count INTEGER NOT NULL DEFAULT 0')
+    if (!taskColumns.includes('stall_notified_at')) db.exec('ALTER TABLE tasks ADD COLUMN stall_notified_at INTEGER')
     return db
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
@@ -96,6 +101,9 @@ const taskOf = row => row === undefined ? undefined : ({
   depends_on: parseStringArray(row.depends_json),
   write_scopes: parseStringArray(row.write_scopes_json),
   priority: Number.isFinite(row.priority) ? row.priority : 0,
+  question: row.question ?? null,
+  options: parseStringArray(row.question_options_json),
+  progress_count: Number.isFinite(row.progress_count) ? row.progress_count : 0,
 })
 
 export function createTask(db, {
@@ -181,7 +189,7 @@ export function transition(db, id, to, patch = {}) {
   if (task === undefined) throw new Error(`任务不存在：${id}`)
   nextStatus(task.status, to)
   const now = Date.now()
-  const sets = ['status = ?', 'updated_at = ?', 'last_event_at = ?']
+  const sets = ['status = ?', 'updated_at = ?', 'last_event_at = ?', 'progress_count = 0', 'stall_notified_at = NULL']
   const values = [to, now, now]
   if (Object.hasOwn(patch, 'sessionId')) { sets.push('session_id = ?'); values.push(patch.sessionId) }
   if (Object.hasOwn(patch, 'target')) { sets.push('target = ?'); values.push(patch.target) }
@@ -232,6 +240,39 @@ export function setTaskError(db, id, error) {
   db.prepare('UPDATE tasks SET error = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
     .run(error, now, now, id)
   return getTask(db, id)
+}
+
+/** 子任务 blocked/needs_auth 时记录问题与选项；完成/继续后清空。 */
+export function setTaskQuestion(db, id, { question = null, options = [] } = {}) {
+  const now = Date.now()
+  const text = typeof question === 'string' && question.trim() !== '' ? question.trim().slice(0, 500) : null
+  const list = Array.isArray(options)
+    ? options.filter(item => typeof item === 'string' && item.trim() !== '').map(item => item.trim().slice(0, 120)).slice(0, 10)
+    : []
+  db.prepare('UPDATE tasks SET question = ?, question_options_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
+    .run(text, JSON.stringify(list), now, now, id)
+  return getTask(db, id)
+}
+
+export function clearTaskQuestion(db, id) {
+  const now = Date.now()
+  db.prepare('UPDATE tasks SET question = NULL, question_options_json = NULL, updated_at = ?, last_event_at = ? WHERE id = ?')
+    .run(now, now, id)
+  return getTask(db, id)
+}
+
+/** progress 回报计数；达到阈值且距上次提醒超过 staleMinutes 才返回 shouldNotify。 */
+export function recordProgress(db, id, { stallRounds = 3, staleMinutes = 30, now = Date.now() } = {}) {
+  const task = getTask(db, id)
+  if (task === undefined) return undefined
+  const count = (task.progress_count ?? 0) + 1
+  const threshold = Number.isFinite(stallRounds) && stallRounds > 0 ? Math.floor(stallRounds) : 3
+  const gap = (Number.isFinite(staleMinutes) ? staleMinutes : 30) * 60_000
+  const shouldNotify = count >= threshold
+    && (task.stall_notified_at === null || task.stall_notified_at === undefined || now - task.stall_notified_at >= gap)
+  db.prepare(`UPDATE tasks SET progress_count = ?, stall_notified_at = ?, updated_at = ?, last_event_at = ? WHERE id = ?`)
+    .run(count, shouldNotify ? now : (task.stall_notified_at ?? null), now, now, id)
+  return { task: getTask(db, id), count, shouldNotify }
 }
 
 /** 启动清理：把超时仍未派发出子会话的 pending 标成 failed；排队中的（queued_at 非空）和 running 不动。 */

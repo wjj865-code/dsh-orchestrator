@@ -12,6 +12,7 @@ import {
 import {
   addMessage, createTask, getTask, listTasks, recentMessages,
   setTaskArtifacts, setTaskError, touchTask, transition, incrementAttempts,
+  setTaskQuestion, clearTaskQuestion, recordProgress,
 } from './ledger.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
@@ -519,6 +520,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         }).join('、')}`)
       }
       if (task.write_scopes.length > 0) lines.push(`写域：${task.write_scopes.join('、')}`)
+      if (task.question) {
+        lines.push(`问题：${task.question}`)
+        if (task.options.length > 0) lines.push(`选项：${task.options.join(' / ')}`)
+      }
       if (task.retry_of) lines.push(`重派自：${task.retry_of}`)
       if (task.error !== null && task.error !== undefined) lines.push(`原因：${task.error}`)
       if (config?.backend !== 'team' && task.session_id !== null && task.session_id !== undefined) {
@@ -574,6 +579,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       touchTask(db, task.id)
       const current = getTask(db, task.id)
       if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
+      clearTaskQuestion(db, task.id)
       incrementAttempts(db, task.id)
       return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。`
     }),
@@ -761,10 +767,42 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return `已记住（${hint.title ?? '全局'}）。`
     }),
 
+    wrap('task_inbox', '收件箱：集中看待你决定、失败/丢失、长时间没动静的任务；默认只读，不写台账。', objectSchema({
+      limit: { type: 'number', description: '每类最多几条，默认 10，最大 20' },
+    }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
+      const limit = Number.isFinite(args.limit) ? Math.min(20, Math.max(1, Math.floor(args.limit))) : 10
+      const active = listTasks(db, { active: true })
+      const waiting = active
+        .filter(task => task.status === 'waiting_user' || task.status === 'waiting_auth')
+        .slice(0, limit)
+      const failed = listTasks(db, { active: false })
+        .filter(task => task.status === 'failed' || task.status === 'orphaned')
+        .slice(0, limit)
+      const stale = active
+        .filter(task => task.status === 'running' || task.status === 'pending' || task.status === 'waiting_dep')
+        .filter(task => Date.now() - task.last_event_at > staleMinutes * 60_000)
+        .slice(0, limit)
+      if (waiting.length === 0 && failed.length === 0 && stale.length === 0) return '收件箱是空的，没有待你决定或需要关注的任务。'
+      const blocks = []
+      const lineOf = task => {
+        const question = task.question ? `｜问题：${short(task.question, 80)}` : ''
+        const options = task.options?.length > 0 ? `｜选项：${task.options.join(' / ')}` : ''
+        return `- ${taskLabelWithId(task)}｜${labelOf(task.status)}${question}${options}`
+      }
+      if (waiting.length > 0) blocks.push(`【待你决定】${waiting.length}\n${waiting.map(lineOf).join('\n')}`)
+      if (failed.length > 0) blocks.push(`【失败/丢失】${failed.length}\n${failed.map(lineOf).join('\n')}`)
+      if (stale.length > 0) blocks.push(`【长时间没动静】${stale.length}\n${stale.map(lineOf).join('\n')}`)
+      return blocks.join('\n')
+    }),
+
     wrap('task_report', '子任务每轮结束必须调用：progress（有进展未完成）、done（完成）、blocked（卡住等人决定）、needs_auth（需要授权）。协调者据此决定是否打扰用户。', objectSchema({
       task_id: str('任务编号，创建时给过'),
       status: { type: 'string', enum: REPORT_STATUS, description: 'progress / done / blocked / needs_auth' },
       summary: str('一句话说明这轮做了什么'),
+      question: str('blocked / needs_auth 时可选：要用户拍板的问题'),
+      options: strList('blocked / needs_auth 时可选：给用户的选项，如 ["方案A", "方案B"]'),
       artifacts: {
         type: 'array',
         description: '可选：交付产物列表；path 可相对（按任务目录解析），label 是一句说明',
@@ -792,6 +830,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       const normalized = normalizeArtifacts(task, args.artifacts)
       const artifacts = normalized.artifacts
+      const question = typeof args.question === 'string' ? args.question.trim().slice(0, 500) : ''
+      const options = Array.isArray(args.options)
+        ? args.options.filter(item => typeof item === 'string' && item.trim() !== '').map(item => item.trim().slice(0, 120)).slice(0, 10)
+        : []
       if (artifacts.length > 0) {
         setTaskArtifacts(db, task.id, artifacts)
         log('task.report.artifacts', {
@@ -813,6 +855,19 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       else if (args.status === 'needs_auth') next = transition(db, task.id, 'waiting_auth')
       else if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
       else next = touchTask(db, task.id)
+      if (args.status === 'blocked' || args.status === 'needs_auth') {
+        next = setTaskQuestion(db, task.id, { question, options })
+      } else if (args.status === 'progress' || args.status === 'done') {
+        next = clearTaskQuestion(db, task.id)
+      }
+      let progressInfo
+      if (args.status === 'progress') {
+        progressInfo = recordProgress(db, next.id, {
+          stallRounds: config?.stallRounds ?? 3,
+          staleMinutes: config?.staleMinutes ?? 30,
+        })
+        if (progressInfo !== undefined) next = progressInfo.task
+      }
       if (args.status === 'done') {
         try {
           const artifactNote = artifacts.length > 0
@@ -835,11 +890,25 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         readOnly: next.read_only === true,
         status: args.status,
         summary: args.summary ?? '',
+        question: args.status === 'blocked' || args.status === 'needs_auth' ? question : null,
+        options: args.status === 'blocked' || args.status === 'needs_auth' ? options : [],
         artifacts,
         artifactsTruncated: normalized.omitted,
         sender: exec?.agent,
         signal: exec?.signal,
       })
+      if (progressInfo?.shouldNotify === true) {
+        notifier.push({
+          taskId: next.id,
+          title: next.title,
+          displayName,
+          readOnly: next.read_only === true,
+          status: 'stalled',
+          summary: `连续 ${progressInfo.count} 次 progress 无状态变化，可能卡住；用 task_status 查看`,
+          system: true,
+        })
+        log('task.stalled', { taskId: next.id, detail: { count: progressInfo.count } })
+      }
       log('task.report', {
         taskId: next.id,
         sessionId: task.session_id,

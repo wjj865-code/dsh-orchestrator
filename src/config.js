@@ -31,5 +31,10 @@ export function loadConfig(raw = {}) {
   config.snapshotRetentionDays = Number.isFinite(raw?.snapshotRetentionDays) && raw.snapshotRetentionDays >= 1
     ? Math.min(30, Math.floor(raw.snapshotRetentionDays))
     : DEFAULTS.snapshotRetentionDays
+  // 每日日报默认关闭；配置 HH:MM 才启用（例如 "09:00"）。
+  config.digestAt = typeof raw?.digestAt === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(raw.digestAt.trim())
+    ? raw.digestAt.trim()
+    : ''
+  config.digestTimeZone = nonEmpty(raw?.digestTimeZone, '')
   return config
 }

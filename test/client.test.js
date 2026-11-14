@@ -129,6 +129,7 @@ test('面板提供「打开主会话」并调用 open-main', () => {
   assert.match(source, /waiting_dep/)
   assert.match(source, /task\.groupId/)
   assert.match(source, /task\.dependsOn/)
+  assert.match(source, /task\.question/)
   assert.match(source, /只读/)
   assert.match(source, /task\.artifacts/)
   assert.match(source, /toggleArtifacts/)

@@ -14,6 +14,8 @@ test('loadConfig 填默认值', () => {
   assert.equal(config.memoryInject, true)
   assert.equal(config.memoryLimit, 3)
   assert.equal(config.snapshotRetentionDays, 7)
+  assert.equal(config.digestAt, '')
+  assert.equal(config.digestTimeZone, '')
 })
 
 test('记忆/快照配置合法覆盖，非法值回落', () => {
@@ -26,6 +28,14 @@ test('记忆/快照配置合法覆盖，非法值回落', () => {
   assert.equal(bad.snapshotRetentionDays, 7)
   assert.equal(loadConfig({ memoryInject: 'no' }).memoryInject, true)
   assert.equal(loadConfig({ memoryInject: true }).memoryInject, true)
+})
+
+test('digestAt 只接受 HH:MM，非法值关闭；时区可空', () => {
+  assert.equal(loadConfig({ digestAt: '09:30' }).digestAt, '09:30')
+  assert.equal(loadConfig({ digestAt: '24:00' }).digestAt, '')
+  assert.equal(loadConfig({ digestAt: '9:30' }).digestAt, '')
+  assert.equal(loadConfig({ digestAt: 930 }).digestAt, '')
+  assert.equal(loadConfig({ digestAt: '09:30', digestTimeZone: 'Asia/Shanghai' }).digestTimeZone, 'Asia/Shanghai')
 })
 
 test('loadConfig 覆盖合法值、忽略非法值', () => {
@@ -91,7 +101,7 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   assert.match(source, /dsh-orchestrator-coordinator/)
   assert.match(source, /dsh-orchestrator-worker/)
   assert.match(source, /@wjj865-code\/dsh-orchestrator\/preset-tools/)
-  for (const tool of ['task_retry', 'history_search', 'project_context', 'memory_note']) {
+  for (const tool of ['task_retry', 'task_inbox', 'history_search', 'project_context', 'memory_note']) {
     assert.match(source, new RegExp(`- ${tool}`), `协调者 allow 名单应包含 ${tool}`)
   }
   assert.match(source, /'@deepseek-ai\/dsh-tool-present'/)

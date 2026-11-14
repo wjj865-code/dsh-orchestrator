@@ -1,5 +1,8 @@
 // 通知分级：progress 静默，done 批量合并，blocked/needs_auth 立即打断。
-const LEVEL = { progress: 'silent', done: 'notify', blocked: 'interrupt', needs_auth: 'interrupt', failed: 'notify' }
+const LEVEL = {
+  progress: 'silent', done: 'notify', blocked: 'interrupt', needs_auth: 'interrupt',
+  failed: 'notify', stalled: 'notify',
+}
 
 export function levelOf(status) {
   return LEVEL[status] ?? 'silent'
@@ -16,13 +19,23 @@ const artifactBlock = item => {
   return `\n  产物：\n${rows.join('\n')}${truncated}`
 }
 
+const questionBlock = item => {
+  const question = typeof item.question === 'string' && item.question.trim() !== '' ? item.question.trim() : ''
+  const options = Array.isArray(item.options) ? item.options.filter(Boolean) : []
+  if (question === '' && options.length === 0) return ''
+  const parts = []
+  if (question !== '') parts.push(`\n  问题：${question}`)
+  if (options.length > 0) parts.push(`\n  选项：${options.join(' / ')}`)
+  return parts.join('')
+}
+
 // 显示名由 tools 算好放进 item.displayName（重名短后缀也在那里算）；没有就回落 title。
 // 只读任务在通知标题里明确标「只读」，避免用户误以为它会写文件。
 const nameOf = item => {
   const base = item.displayName ?? item.title
   return item.readOnly === true ? `${base}（只读）` : base
 }
-const line = item => `- ${nameOf(item)}：${item.summary}${artifactBlock(item)}`
+const line = item => `- ${nameOf(item)}：${item.summary}${questionBlock(item)}${artifactBlock(item)}`
 
 export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {}, onEvent = () => {} }) {
   let buffer = []
@@ -110,8 +123,9 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     const batch = buffer
     buffer = []
     if (batch.length === 0) return undefined
+    const label = status => status === 'failed' ? '失败' : status === 'stalled' ? '可能卡住' : '完成'
     const text = batch.length === 1
-      ? `${batch[0].status === 'failed' ? `任务「${nameOf(batch[0])}」失败：` : `任务「${nameOf(batch[0])}」完成：`}${batch[0].summary}${artifactBlock(batch[0])}`
+      ? `任务「${nameOf(batch[0])}」${label(batch[0].status)}：${batch[0].summary}${questionBlock(batch[0])}${artifactBlock(batch[0])}`
       : `${batch.length} 个任务${batch.every(item => item.status === 'done') ? '完成' : '状态更新'}：\n${batch.map(line).join('\n')}`
     return deliver(text, batch)
   }
@@ -121,7 +135,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
       const level = levelOf(item.status)
       if (level === 'silent') return
       if (level === 'interrupt') {
-        void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${artifactBlock(item)}`, [item])
+        void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${questionBlock(item)}${artifactBlock(item)}`, [item])
         return
       }
       buffer.push(item)

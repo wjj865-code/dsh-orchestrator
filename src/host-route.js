@@ -39,6 +39,8 @@ export function createHostRoute({ db, coordinatorStatus, openMain, staleMinutes 
           dependsOn: Array.isArray(task.depends_on) ? task.depends_on : [],
           writeScopes: Array.isArray(task.write_scopes) ? task.write_scopes : [],
           priority: task.priority ?? 0,
+          question: task.question ?? null,
+          options: Array.isArray(task.options) ? task.options : [],
           artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
           queued: task.status === 'pending' && task.queued_at !== null && task.queued_at !== undefined,
           stale: ACTIVE.has(task.status) && at - task.last_event_at > staleMinutes * 60_000,

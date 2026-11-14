@@ -77,12 +77,15 @@ test('snapshot 带 P1 字段：依赖/分组/写域/优先级', async () => {
     dependsOn: ['t-upstream'], groupId: '发布', writeScopes: ['src/api'], priority: 7,
     status: 'waiting_dep',
   })
+  db.prepare('UPDATE tasks SET question = ?, question_options_json = ? WHERE id = ?').run('选哪个？', JSON.stringify(['A', 'B']), task.id)
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
   const row = body.tasks.find(item => item.id === task.id)
   assert.deepEqual(row.dependsOn, ['t-upstream'])
   assert.equal(row.groupId, '发布')
   assert.deepEqual(row.writeScopes, ['src/api'])
   assert.equal(row.priority, 7)
+  assert.equal(row.question, '选哪个？')
+  assert.deepEqual(row.options, ['A', 'B'])
   db.close()
 })
 

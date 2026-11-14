@@ -292,6 +292,10 @@ window.__ModuleLoader__.load({
                     artifacts.map((item, index) => h('div', { key: index, title: item.path },
                       `${item.exists === false ? '⚠ ' : '• '}${item.path}${item.label ? ` — ${item.label}` : ''}${item.exists === false ? '（未找到）' : ''}`)))
                   : null,
+                task.question
+                  ? h('div', { style: Object.assign({}, styles.notice, { marginTop: 4 }) },
+                    `需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(' / ')}）` : ''}`)
+                  : null,
               )
             }),
           ),

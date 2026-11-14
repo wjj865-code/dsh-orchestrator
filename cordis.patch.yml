@@ -48,6 +48,7 @@
                 - task_message
                 - task_stop
                 - task_retry
+                - task_inbox
                 - history_search
                 - project_context
                 - memory_note

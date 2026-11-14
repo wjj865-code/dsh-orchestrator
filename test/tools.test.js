@@ -68,7 +68,7 @@ async function setup(options = {}) {
 
 // 主会话工具默认以主会话身份调用；task_report 归子会话，保持调用方身份。
 const MAIN_TOOLS = new Set([
-  'task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_retry',
+  'task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_retry', 'task_inbox',
   'history_search', 'project_context', 'memory_note',
 ])
 const call = (tools, name, args, exec) => {
@@ -76,10 +76,10 @@ const call = (tools, name, args, exec) => {
   return tools[name].execute(args, resolved)
 }
 
-test('注册 10 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
+test('注册 11 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
   const { db, tools } = await setup()
   assert.deepEqual(Object.keys(tools).sort(),
-    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_list',
+    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_inbox', 'task_list',
       'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
   const walk = (value, path) => {
     if (value === null || typeof value !== 'object') return
@@ -1112,4 +1112,36 @@ test('task_retry 保留依赖/分组/写域/优先级', async () => {
   assert.equal(retried.group_id, 'G')
   assert.deepEqual(retried.write_scopes, ['src'])
   assert.equal(retried.priority, 3)
+})
+
+test('task_inbox 汇总待你决定，并带出 blocked 的问题/选项', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '要拍板' }))
+  const task = listTasks(db).find(item => item.title === '要拍板')
+  await call(tools, 'task_report', {
+    task_id: task.id, status: 'blocked', summary: '两个方案都行',
+    question: '选哪个方案？', options: ['方案A', '方案B'],
+  }, { agent: { id: task.session_id } })
+  const saved = getTask(db, task.id)
+  assert.equal(saved.question, '选哪个方案？')
+  assert.deepEqual(saved.options, ['方案A', '方案B'])
+  const inbox = await call(tools, 'task_inbox', {})
+  assert.match(inbox, /【待你决定】1/)
+  assert.match(inbox, /选哪个方案/)
+  assert.match(inbox, /方案A \/ 方案B/)
+  const status = await call(tools, 'task_status', { task_id: task.id })
+  assert.match(status, /问题：选哪个方案/)
+})
+
+test('连续 progress 达到 stallRounds 时推一条「可能卡住」通知，不重复刷', async () => {
+  const { db, notifier, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '卡住任务' }))
+  const task = listTasks(db).find(item => item.title === '卡住任务')
+  for (let index = 0; index < 4; index += 1) {
+    await call(tools, 'task_report', { task_id: task.id, status: 'progress', summary: `第 ${index + 1} 次` }, { agent: { id: task.session_id } })
+  }
+  const stalled = notifier.pushed.filter(item => item.status === 'stalled')
+  assert.equal(stalled.length, 1)
+  assert.match(stalled[0].summary, /连续 3 次/)
+  assert.equal(getTask(db, task.id).progress_count, 4)
 })
