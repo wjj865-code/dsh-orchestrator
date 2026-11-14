@@ -92,6 +92,34 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - 子会话创建的非容量错误（真正的失败）才标 `failed` 并写可读原因，不留 `pending` 幽灵。
 - 排队中的任务被 `task_stop` 会直接取消并移出队列；`task_message` 对排队任务返回可读提示（还没有子会话可续派）。
 
+## 目标目录推断与交付产物
+
+**目标目录**（`task_create`）：
+
+- 显式传 `target`：必须是已存在的绝对目录，行为不变（相对/不存在/非目录都拒绝）。
+- 不传 `target`：用 `title` + `goal` 匹配 `workspaceRegistry.list()` 的工作区**显示名（`title`）与路径末段**，大小写不敏感；纯 ASCII 键至少 3 个字母数字、CJK 键至少 2 字，避免 `ai`/`main` 误命中。
+- 精确名（与 title 或 goal 全等）优先，且只在精确命中集合里取结果；否则看子串层。
+- **唯一命中**：直接用该工作区 `path`，同时写入 `tasks.target_dir`（面板显示、artifacts 相对路径都靠它）。
+- **多命中**：不建任务、不猜测，返回「匹配到多个工作区」+ 候选 `title → path`，请协调者让用户用 `target` 指定绝对路径。
+- **无命中**：不写 `target_dir`，子会话跑在主会话 cwd（指挥舱），与旧行为一致。
+- `workspaceRegistry` 不可用时按无工作区降级，不影响派发。
+
+**交付产物**（`task_report`）：
+
+- 可选 `artifacts: [{ path, label? }]`；`path` 可相对，按任务目录（`target_dir`，没有则指挥舱）解析成绝对路径。
+- 非法条目（非数组、缺 path、非字符串）静默丢弃；存在性只做 `stat`，不存在标 `exists:false`、展示「未找到」，**任务照常 done**。
+- 落台账 `tasks.artifacts_json`（旧库自动 ALTER），`task.artifacts` 读出数组。
+- `done`/`blocked`/`needs_auth` 通知在摘要后追加：
+
+  ```
+    产物：
+    - <绝对路径> — <说明>（未找到）
+  ```
+
+  合并窗口内多条 report 的产物各自保留，不互相覆盖；不传 `artifacts` 时通知文本与旧版逐字一致。
+- 面板任务行显示「产物 N」徽标，点击展开绝对路径列表；旧任务无字段按空数组处理。
+- 只认子会话**显式上报**，不扫描目标目录。
+
 ## 子会话与孤儿
 
 - 子会话是 `origin:'subagent'` 的会话，**不在普通会话列表里**；卡片/`task_status` 带子会话 id，客户端要按协调者会话的子代理目录（subagent catalog）打开。

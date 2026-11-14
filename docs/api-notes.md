@@ -121,6 +121,13 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 - 双预设：子会话由 dispatch 显式带 `dsh-orchestrator-worker`（`startActivation.request.agentPreset`），绕开 `composeFrom` 的父预设工具继承；worker 预设必须自带工具行（空 `plugins` 不会继承 profile 全量工具）。
 - `spawnProvider` 只支持 `spawn`（fork 不满足 `capabilities.agentPreset`）；不是 `spawn` 时打开主会话返回可读错误，不静默降级。
 
+## 8. 工作区推断与 artifacts（阶段 3 增量）
+
+- 工作区实体：`workspaceRegistry.list()` 返回 `{id, path(realpath 规范化), title}`；`title` 默认是路径末段，允许不同路径同名。
+- 推断纯函数在 `src/workspace-match.js`：显示名 + 路径末段双键；精确优先、只在最高层取结果；ASCII 键 ≥3、CJK 键 ≥2；按 id 去重；唯一命中用 `path` 并写 `target_dir`，多命中返回候选不建任务，无命中不写。
+- `task_report` 的 `artifacts`：相对路径按 `target_dir ?? 指挥舱` 解析；只 `stat` 不读文件；非法条目丢弃；`exists:false` 标「未找到」但不失败。
+- 台账 `tasks.artifacts_json`（旧库 ALTER + 旧行按 `[]`）；通知在 done/blocked/needs_auth 文本里追加产物块；快照 `tasks[].artifacts` 与 `taskCard.artifactCount` 供面板展示。
+
 
 
 
