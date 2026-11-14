@@ -636,3 +636,24 @@ test('cordis.patch.yml 指向 dsh-orchestrator', () => {
   assert.match(yaml, /id: orchestrator/)
   assert.match(yaml, /name: dsh-orchestrator/)
 })
+
+
+test('settings.main_session_id 的主会话调用 wait_agent 也被 guard 拒绝（不依赖预设）', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const other = makeAgent('s-2')
+  const sessionController = { async create() { return { sessionId: 's-1' } }, async rename() {} }
+  const { ctx, guards, routes } = fakeCtx({ agents: [s1, other], sessionController })
+  await apply(ctx, {})
+  const route = routes.find(spec => spec.path === '/api/orchestrator')
+  const opened = await route.fetch(new Request('http://x/api/orchestrator', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ endpoint: 'open-main' }),
+  }))
+  assert.equal((await opened.json()).ok, true)
+  assert.equal(guards.length, 1)
+  const guard = guards[0]
+  assert.match(guard({ name: 'wait_agent', agent: s1 }), /禁止阻塞等待/)
+  assert.match(guard({ name: 'wait_agent', agent: s1 }), /task_list \/ task_status/)
+  assert.equal(guard({ name: 'wait_agent', agent: other }), undefined)
+  assert.equal(guard({ name: 'task_list', agent: s1 }), undefined)
+}))

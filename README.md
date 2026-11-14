@@ -224,7 +224,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - **deny 审计日志**：`preset-tools: deny …` 走平台 `ctx.logger.info`，不写插件自己的 `logs/orchestrator-*.jsonl`；真机日志里能查到即可。
 - **`show_view` / memory**：base asar 未证实有这两个全局工具，协调者 allow 默认不带；Task 10 在 ds-bot 环境确认后再决定是否补 allow。
 - **`task_report` 子会话可见性**：靠全局注册，Task 10 真机确认；看不到就改用专用轻量工具模块，不把整个 `dsh-orchestrator` 塞进 worker 预设。
-- **配置覆盖会话的运行期白名单**：`config.coordinatorSession` 指定的会话没有预设保证，仍用 `agent.ctx.tools.restrict({ deny })` 兜底；收窄挂在**回合边界**（会话在跑时等 `idle` 再装），所以当回合仍是全工具表、下一回合才收窄，避免 mid-turn `unknown tool`。`spawn_teammate`/`send_message`/`list_agents`/`wait_agent`/`interrupt_agent`/`team_task_*` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；`wait_agent` 由执行期 guard + 动态提示兜底。
+- **配置覆盖会话的运行期白名单**：`config.coordinatorSession` 指定的会话没有预设保证，仍用 `agent.ctx.tools.restrict({ deny })` 兜底；收窄挂在**回合边界**（会话在跑时等 `idle` 再装），所以当回合仍是全工具表、下一回合才收窄，避免 mid-turn `unknown tool`。`spawn_teammate`/`send_message`/`list_agents`/`wait_agent`/`interrupt_agent`/`team_task_*` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；`wait_agent` 由执行期 guard + 动态提示兜底。**guard 对主会话同样生效**：判定源是 `config.coordinatorSession ?? settings.main_session_id`，所以预设只收窄全局工具、`wait_agent` 仍留在工具表时，主会话调用它也会拿到可读拒绝、不会阻塞回合（用例：`settings.main_session_id 的主会话调用 wait_agent 也被 guard 拒绝`）。
 - **同回合并行等待**：guard 管得住调用的顺序链；同一条 assistant 消息里并行、且在 guard 判定前已开始执行的 `wait_agent` 不承诺拦住。
 - **唤醒时序**：通知走 `agent.steer` 直插协调者会话（等价于 TeamService 给 lead 投递时的 `root.steer`），空闲唤醒、忙时 `next-step` 排队；机制证据见 `docs/api-notes.md`。真机忙时排队由维护者冒烟验证。
 - **平台 settlement 通知**：`subagent-settled` 是平台独立链路，不受本插件控制、不写 `notifications`。
