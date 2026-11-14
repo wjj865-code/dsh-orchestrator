@@ -2,6 +2,8 @@
 // 规则（增量计划）：精确名优先；只在最高命中层里取结果；唯一命中才用，多命中列候选，绝不猜。
 const normalize = value => typeof value === 'string' ? value.trim().toLowerCase() : ''
 const compact = value => value.replace(/[^a-z0-9]+/g, '')
+// 显式用中文排序，避免 Linux runner 的默认 locale（en-US）把「项目甲/项目乙」排反。
+const titleCollator = new Intl.Collator('zh-CN', { sensitivity: 'base' })
 
 /** 纯 ASCII 键要求至少 3 个字母数字，CJK 等键至少 2 个字，避免 `ai`/`main` 这类短词误命中。 */
 const isMatchable = key => {
@@ -75,6 +77,6 @@ export function inferWorkspaceTarget(brief = {}, workspaces = []) {
       title: typeof workspace.title === 'string' ? workspace.title : pathTail(workspace.path),
       path: workspace.path,
     }))
-    .sort((a, b) => String(a.title).localeCompare(String(b.title)))
+    .sort((a, b) => titleCollator.compare(String(a.title), String(b.title)))
   return { ok: false, candidates }
 }
