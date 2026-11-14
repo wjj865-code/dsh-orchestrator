@@ -24,7 +24,7 @@ function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', '
   }
 }
 
-function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, connection } = {}) {
+function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, connection, sessionController, workspaces } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
   const routes = []
@@ -53,6 +53,8 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
     get(name) {
       if (name === 'agents') return { get: id => live.get(id) }
       if (name === 'connection') return routeService
+      if (name === 'sessionController') return sessionController
+      if (name === 'workspaceRegistry') return workspaces
       return undefined
     },
     ...(withInject
@@ -120,67 +122,22 @@ test('apply 注册 6 个工具，只写 $DSH_HOME/state/orchestrator', withHome(
   assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), [])
 }))
 
-test('无 coordinatorSession：warn 但工具注册；无调用方 agent 时派活给可读错误', withHome(async () => {
+test('无 coordinatorSession：warn 但工具注册；派活给「先打开主会话」提示', withHome(async () => {
   const { ctx, registered, warnings } = fakeCtx()
   await apply(ctx, {})
   assert.equal(registered.length, 6)
-  assert.ok(warnings.some(message => /coordinatorSession/.test(message)))
+  assert.ok(warnings.some(message => /尚未打开主会话/.test(message)))
   const create = registered.find(tool => tool.name === 'task_create')
   const text = await create.execute({ title: 't', goal: 'g', acceptance: ['a'] })
-  assert.match(text, /任务协调失败：无法绑定协调者会话/)
+  assert.match(text, /尚未打开主会话/)
 }))
 
-test('无配置首次 task_create 自动绑定调用方，已绑定不重绑', withHome(async home => {
-  const s1 = makeAgent('s-1')
-  const s2 = makeAgent('s-2')
-  const { ctx, registered, infos } = fakeCtx({ agents: [s1, s2] })
+test('无主会话时 task_create 提示先从面板打开，且不写 settings', withHome(async home => {
+  const { ctx, registered } = fakeCtx()
   await apply(ctx, {})
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
-  assert.match(created, /已派发/)
-  const { DatabaseSync } = await import('node:sqlite')
-  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('coordinator_session_id').value, 's-1')
-  assert.equal(db.prepare('SELECT coordinator_session FROM tasks').get().coordinator_session, 's-1')
-  assert.equal(s1.restrictions.length, 1)
-  assert.equal(s2.restrictions.length, 0)
-  assert.ok(infos.some(message => /已绑定/.test(message)))
-
-  await byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'] }, { agent: s2 })
-  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('coordinator_session_id').value, 's-1')
-  assert.equal(db.prepare('SELECT count(*) AS n FROM tasks').get().n, 2)
-  assert.equal(s2.restrictions.length, 0)
-  db.close()
-}))
-
-test('并发首次绑定先到先得，后到不覆盖', withHome(async home => {
-  const s1 = makeAgent('s-1')
-  const s2 = makeAgent('s-2')
-  const { ctx, registered } = fakeCtx({ agents: [s1, s2] })
-  await apply(ctx, {})
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await Promise.all([
-    byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 }),
-    byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'] }, { agent: s2 }),
-  ])
-  const { DatabaseSync } = await import('node:sqlite')
-  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('coordinator_session_id').value, 's-1')
-  assert.equal(db.prepare('SELECT count(*) AS n FROM tasks').get().n, 2)
-  db.close()
-  assert.equal(s1.restrictions.length, 1)
-  assert.equal(s2.restrictions.length, 0)
-}))
-
-test('子会话不能首次绑定自己', withHome(async home => {
-  const root = makeAgent('root-1')
-  const sub = makeAgent('sub-1')
-  sub.session = { header: { parentSession: 'root-1' } }
-  const { ctx, registered } = fakeCtx({ agents: [root, sub] })
-  await apply(ctx, {})
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  const result = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: sub })
-  assert.match(result, /只有协调者会话（Team Lead）/)
+  const create = registered.find(tool => tool.name === 'task_create')
+  const result = await create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: { id: 's-1' } })
+  assert.match(result, /尚未打开主会话/)
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   assert.equal(db.prepare('SELECT count(*) AS n FROM settings').get().n, 0)
@@ -188,62 +145,77 @@ test('子会话不能首次绑定自己', withHome(async home => {
   db.close()
 }))
 
-test('失效重绑只允许 root/lead 调用方', withHome(async home => {
-  const root = makeAgent('root-1')
-  const sub = makeAgent('sub-1')
-  sub.session = { header: { parentSession: 'root-1' } }
-  const root2 = makeAgent('root-2')
-  const { ctx, registered, live, infos } = fakeCtx({ agents: [root, sub, root2] })
+test('open-main 动作端点创建主会话并写 settings', withHome(async home => {
+  const created = []
+  const sessionController = {
+    async create(request) { created.push(request); return { sessionId: 'session-main' } },
+    async rename() {},
+  }
+  const workspaces = {
+    resolveByPath: () => undefined,
+    async create(path, title) { return { id: 'ws-1', path, title } },
+  }
+  const { ctx, routes } = fakeCtx({ sessionController, workspaces })
   await apply(ctx, {})
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: root })
-  live.delete('root-1')
-
-  const denied = await byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'] }, { agent: sub })
-  assert.match(denied, /只有协调者会话（Team Lead）能重新绑定/)
+  const route = routes[0].fetch
+  const response = await route(new Request('http://x/api/orchestrator', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ endpoint: 'open-main' }),
+  }))
+  const body = await response.json()
+  assert.equal(response.status, 200)
+  assert.equal(body.ok, true)
+  assert.equal(body.sessionId, 'session-main')
+  assert.equal(created[0].agentPreset, 'dsh-orchestrator-coordinator')
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('coordinator_session_id').value, 'root-1')
-
-  const rebound = await byName.task_create.execute({ title: '丙', goal: 'g', acceptance: ['a'] }, { agent: root2 })
-  assert.match(rebound, /已派发/)
-  assert.match(rebound, /协调者会话已变更：root-1 → root-2/)
-  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('coordinator_session_id').value, 'root-2')
-  db.close()
-  assert.ok(infos.some(message => /协调者会话已变更/.test(message)))
-}))
-
-test('绑定后 agent/created 给恢复的协调者补装白名单', withHome(async () => {
-  const root = makeAgent('root-1')
-  const { ctx, registered, listeners } = fakeCtx({ agents: [root] })
-  await apply(ctx, {})
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: root })
-  const resumed = makeAgent('root-1')
-  listeners.get('agent/created')({ agent: resumed })
-  assert.equal(resumed.restrictions.length, 1)
-}))
-
-test('只读工具不触发绑定', withHome(async home => {
-  const s1 = makeAgent('s-1')
-  const { ctx, registered } = fakeCtx({ agents: [s1] })
-  await apply(ctx, {})
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await byName.task_list.execute({}, { agent: s1 })
-  await byName.task_status.execute({ task_id: 't-nope' }, { agent: s1 })
-  const { DatabaseSync } = await import('node:sqlite')
-  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-  assert.equal(db.prepare('SELECT count(*) AS n FROM settings').get().n, 0)
+  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('main_session_id').value, 'session-main')
   db.close()
 }))
 
-test('配置覆盖优先、不写台账、白名单只装配置的会话', withHome(async home => {
+test('open-main 创建失败返回 500 与可读原因', withHome(async () => {
+  const sessionController = { async create() { throw new Error('boom') }, async rename() {} }
+  const { ctx, routes } = fakeCtx({ sessionController })
+  await apply(ctx, {})
+  const response = await routes[0].fetch(new Request('http://x/api/orchestrator', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ endpoint: 'open-main' }),
+  }))
+  const body = await response.json()
+  assert.equal(response.status, 500)
+  assert.equal(body.ok, false)
+  assert.match(body.error, /boom/)
+}))
+
+test('主会话 live 时 task_create 正常派发，只给主会话装白名单', withHome(async () => {
   const s1 = makeAgent('s-1')
   const s2 = makeAgent('s-2')
   const { ctx, registered } = fakeCtx({ agents: [s1, s2] })
   await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s2 })
+  const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.match(created, /已派发/)
+  assert.equal(s1.restrictions.length, 1)
+  assert.equal(s2.restrictions.length, 0)
+}))
+
+test('非主会话（子会话）调用 task_create 被拒，不建任务', withHome(async () => {
+  const sub = makeAgent('sub-1')
+  const { ctx, registered } = fakeCtx({ agent: sub })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const create = registered.find(tool => tool.name === 'task_create')
+  const result = await create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: sub })
+  assert.match(result, /主会话/)
+}))
+
+
+test('配置覆盖：白名单只装配置的会话，不写 settings', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const s2 = makeAgent('s-2')
+  const { ctx, registered } = fakeCtx({ agents: [s1, s2] })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   assert.equal(db.prepare('SELECT count(*) AS n FROM settings').get().n, 0)
@@ -253,10 +225,27 @@ test('配置覆盖优先、不写台账、白名单只装配置的会话', withH
   assert.equal(s2.restrictions.length, 0)
 }))
 
-test('协调者失效：通知记 skipped 并在结果里提示', withHome(async home => {
+test('配置的协调者失效：task_create 结果带失效提示，任务标 failed', withHome(async home => {
+  const s2 = makeAgent('s-2')
+  const { ctx, registered } = fakeCtx({ agents: [s2] })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  // 调用方声明自己是配置的主会话，但该会话当前未加载：应给出失效提示并拒绝。
+  const result = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: { id: 's-1' } })
+  assert.match(result, /任务协调失败/)
+  assert.match(result, /主会话已失效/)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const task = db.prepare('SELECT status, error FROM tasks').get()
+  assert.equal(task.status, 'failed')
+  assert.match(task.error, /主会话已失效/)
+  db.close()
+}))
+
+test('主会话失效：通知记 skipped 并在结果里提示', withHome(async home => {
   const s1 = makeAgent('s-1')
   const { ctx, registered, live } = fakeCtx({ agents: [s1] })
-  await apply(ctx, { mergeWindowMs: 5 })
+  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   const { DatabaseSync } = await import('node:sqlite')
@@ -265,39 +254,29 @@ test('协调者失效：通知记 skipped 并在结果里提示', withHome(async
   db.close()
   live.delete('s-1')
   const reported = await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: { id: 'm-1' } })
-  assert.match(reported, /协调者会话已失效/)
+  assert.match(reported, /主会话已失效/)
   await wait(30)
   const check = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   const row = check.prepare('SELECT status, delivered_at, reason FROM notifications').get()
   assert.equal(row.status, 'skipped')
   assert.equal(row.delivered_at, null)
-  assert.match(row.reason, /协调者会话已失效/)
+  assert.match(row.reason, /主会话已失效/)
   check.close()
 }))
 
-test('配置的协调者失效：task_create 结果带失效提示', withHome(async home => {
-  const s2 = makeAgent('s-2')
-  const { ctx, registered } = fakeCtx({ agents: [s2] })
-  await apply(ctx, { coordinatorSession: 's-1' })
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  const result = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s2 })
-  assert.match(result, /任务协调失败/)
-  assert.match(result, /协调者会话已失效/)
-  const { DatabaseSync } = await import('node:sqlite')
-  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-  assert.equal(db.prepare('SELECT count(*) AS n FROM settings').get().n, 0)
-  const task = db.prepare('SELECT status, error FROM tasks').get()
-  assert.equal(task.status, 'failed')
-  assert.match(task.error, /协调者会话已失效/)
-  db.close()
-}))
-
-test('重启后从 settings 恢复绑定并补装白名单', withHome(async () => {
+test('重启后从 settings.main_session_id 恢复主会话并补装白名单', withHome(async () => {
   const s1 = makeAgent('s-1')
-  const first = fakeCtx({ agents: [s1] })
+  const sessionController = {
+    async create() { return { sessionId: 's-1' } },
+    async rename() {},
+  }
+  const first = fakeCtx({ agents: [s1], sessionController })
   await apply(first.ctx, {})
-  const firstTools = Object.fromEntries(first.registered.map(tool => [tool.name, tool]))
-  await firstTools.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const open = await first.routes[0].fetch(new Request('http://x/api/orchestrator', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ endpoint: 'open-main' }),
+  }))
+  assert.equal((await open.json()).sessionId, 's-1')
   await first.disposers[0]()
 
   const s1b = makeAgent('s-1')
@@ -305,22 +284,6 @@ test('重启后从 settings 恢复绑定并补装白名单', withHome(async () =
   await apply(second.ctx, {})
   assert.equal(s1b.restrictions.length, 1)
   await second.disposers[0]()
-}))
-
-test('已绑定的协调者失效后，新会话 task_create 可重绑', withHome(async home => {
-  const s1 = makeAgent('s-1')
-  const s2 = makeAgent('s-2')
-  const { ctx, registered, live } = fakeCtx({ agents: [s1, s2] })
-  await apply(ctx, {})
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
-  live.delete('s-1')
-  await byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'] }, { agent: s2 })
-  const { DatabaseSync } = await import('node:sqlite')
-  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('coordinator_session_id').value, 's-2')
-  db.close()
-  assert.equal(s2.restrictions.length, 1)
 }))
 
 test('协调者白名单：只 deny 已知的危险工具，保留 ask_user/show_view', withHome(async () => {
@@ -365,10 +328,8 @@ test('绑定发生在回合中时，白名单延到 idle 后才装（当前回�
   const s1 = makeAgent('s-1')
   s1.status = 'running'
   const other = makeAgent('s-2')
-  const { ctx, registered, listeners } = fakeCtx({ agents: [s1, other] })
-  await apply(ctx, {})
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const { ctx, listeners } = fakeCtx({ agents: [s1, other] })
+  await apply(ctx, { coordinatorSession: 's-1' })
   assert.equal(s1.restrictions.length, 0)
   listeners.get('agent/status')({ agent: s1, status: 'idle' })
   assert.equal(s1.restrictions.length, 1)
@@ -389,15 +350,13 @@ test('缺 tools.guard 时 warn 不崩，6 工具照常注册', withHome(async ()
 test('系统提示只渲染给已绑定协调者，绑定后下一步生效', withHome(async () => {
   const s1 = makeAgent('s-1')
   const other = makeAgent('s-2')
-  const { ctx, registered, promptContexts } = fakeCtx({ agents: [s1, other] })
-  await apply(ctx, {})
+  const { ctx, promptContexts } = fakeCtx({ agents: [s1, other] })
+  await apply(ctx, { coordinatorSession: 's-1' })
   assert.equal(promptContexts.length, 1)
   const entry = promptContexts[0]
   assert.equal(entry.order, 130)
   assert.equal(entry.interpolate, false)
-  assert.equal(entry.text({ agent: s1 }), '')
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.equal(entry.text({ agent: other }), '')
   assert.match(entry.text({ agent: s1 }), /禁止使用 wait_agent/)
   assert.match(entry.text({ agent: s1 }), /task_list \/ task_status/)
   assert.match(entry.text({ agent: s1 }), /优先于平台默认的 Team Lead 等待要求/)
@@ -408,10 +367,8 @@ test('系统提示只渲染给已绑定协调者，绑定后下一步生效', wi
 test('guard 拒绝协调者的 wait_agent，子任务不受影响', withHome(async () => {
   const s1 = makeAgent('s-1')
   const other = makeAgent('s-2')
-  const { ctx, registered, guards } = fakeCtx({ agents: [s1, other] })
-  await apply(ctx, {})
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const { ctx, guards } = fakeCtx({ agents: [s1, other] })
+  await apply(ctx, { coordinatorSession: 's-1' })
   assert.equal(guards.length, 1)
   const guard = guards[0]
   assert.match(guard({ name: 'wait_agent', agent: s1 }), /禁止阻塞等待/)
@@ -476,7 +433,7 @@ test('回报缺少 sender：不投递，通知行记 skipped', withHome(async ho
   const { ctx, registered, sent } = fakeCtx()
   await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
   const create = registered.find(tool => tool.name === 'task_create')
-  const created = await create.execute({ title: '甲', goal: 'g', acceptance: ['a'] })
+  const created = await create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: { id: 's-1' } })
   const taskId = created.match(/任务 (t-[0-9a-f]+)/)[1]
   const report = registered.find(tool => tool.name === 'task_report')
   await report.execute({ task_id: taskId, status: 'done', summary: '完成' })
@@ -654,7 +611,7 @@ test('注册 /api/orchestrator 只读路由：POST + buffered + snapshot', withH
   assert.equal(response.status, 200)
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.deepEqual(body.coordinator, { id: 's-1', live: true })
+  assert.deepEqual(body.mainSession, { id: 's-1', live: true })
 }))
 
 test('connection 晚于插件加载：ctx.inject 就绪后仍注册只读路由', withHome(async () => {

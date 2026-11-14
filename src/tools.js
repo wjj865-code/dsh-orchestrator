@@ -53,16 +53,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志绝不能打断主流程 */ }
   }
-  const bind = typeof bindCoordinator === 'function'
-    ? bindCoordinator
-    : async () => ({ id: config?.coordinatorSession, live: true })
   const status = typeof coordinatorStatus === 'function'
     ? coordinatorStatus
     : () => ({ id: config?.coordinatorSession, live: true })
   const invalidHint = () => {
     const value = status()
     return value?.id !== undefined && value.live === false
-      ? '协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定。'
+      ? '主会话已失效，请从面板「打开主会话」重建。'
       : ''
   }
   const unbound = () => status().id === undefined
@@ -131,7 +128,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
         log('task.create.rejected', { agentId, detail: { reason: 'target', message: targetError, callId } })
         return `${targetError}。目标目录必须是已存在的绝对路径。`
       }
-      const binding = await bind(exec?.agent)
+      const current = status()
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
       const title = String(args.title).trim()
       const goal = String(args.goal).trim()
@@ -153,27 +150,23 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
         })
         return `待派发队列已满（${maxQueue} 个），先 task_stop 或等队列消化后再派。`
       }
-      const task = createTask(db, { brief: args, coordinatorSession: binding?.id ?? coordinatorSession, targetDir: args.target })
-      log('task.create.created', { taskId: task.id, agentId, sessionId: binding?.id, detail: { title, callId } })
+      const task = createTask(db, { brief: args, coordinatorSession: current.id ?? coordinatorSession, targetDir: args.target })
+      log('task.create.created', { taskId: task.id, agentId, sessionId: current.id, detail: { title, callId } })
       const rendered = `【任务编号】${task.id}\n${renderBrief(args)}`
       addMessage(db, task.id, { kind: 'brief', rendered })
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
-      if (binding?.live === false) {
+      if (current.live === false) {
         const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
         log('task.spawn.failed', { taskId: task.id, agentId, detail: { error: message, callId } })
         transition(db, task.id, 'failed', { error: message })
         throw new Error(message)
       }
       const outcome = await queue.enqueueAndPump(task.id)
-      const current = outcome.task
-      const hint = invalidHint()
-      const changed = binding?.changed === true
-        ? `协调者会话已变更：${binding.previous} → ${binding.id}。`
-        : ''
-      const notes = [changed, hint].filter(Boolean).join('\n')
-      if (current?.status === 'failed') throw new Error(current.error ?? '子会话创建失败')
-      if (current?.status === 'running') {
-        return `任务 ${task.id}「${task.title}」已派发，子会话 ${current.target}。${notes === '' ? '' : `\n${notes}`}`
+      const resultTask = outcome.task
+      const notes = invalidHint()
+      if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? '子会话创建失败')
+      if (resultTask?.status === 'running') {
+        return `任务 ${task.id}「${task.title}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
       }
       const ahead = Math.max(outcome.position - 1, 0)
       return `任务 ${task.id}「${task.title}」已创建，前面还有 ${ahead} 个任务在排队，轮到时自动派发。${notes === '' ? '' : `\n${notes}`}`

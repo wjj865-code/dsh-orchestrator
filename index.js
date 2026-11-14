@@ -2,7 +2,8 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from './src/config.js'
-import { openLedger, addNotification, getSetting, bindSettingOnce, rebindSetting, failStalePending } from './src/ledger.js'
+import { openLedger, addNotification, getMainSessionId, failStalePending } from './src/ledger.js'
+import { createMainSession } from './src/main-session.js'
 import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
@@ -15,8 +16,7 @@ import { createLogger } from './src/log.js'
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agentTeams', 'agents', 'systemPrompt', 'subagents']
 
-const COORDINATOR_KEY = 'coordinator_session_id'
-const COORDINATOR_INVALID_HINT = '协调者会话已失效，可用配置覆盖或在新会话里派任务重新绑定。'
+const COORDINATOR_INVALID_HINT = '主会话已失效，请从面板「打开主会话」重建。'
 const WAIT_AGENT_DENIAL = '协调者禁止阻塞等待：不要调用 wait_agent；查看进度用 task_list / task_status，本回合没有别的事就立即结束回合。'
 const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则（优先于平台默认的 Team Lead 等待要求）：
 - 禁止使用 wait_agent 或任何阻塞等待、轮询；不要 sleep，不要反复查询来等子任务。
@@ -58,7 +58,7 @@ export async function apply(ctx, rawConfig = {}) {
   const restrictedAgents = new WeakSet()
   const pendingRestrictions = new WeakSet()
 
-  const resolvedCoordinatorId = () => config.coordinatorSession ?? getSetting(db, COORDINATOR_KEY)
+  const resolvedCoordinatorId = () => config.coordinatorSession ?? getMainSessionId(db)
   const isChildLive = sessionId => ctx.get?.('agents')?.get?.(sessionId) !== undefined
   const resolveCoordinator = () => {
     const id = resolvedCoordinatorId()
@@ -95,55 +95,6 @@ export async function apply(ctx, rawConfig = {}) {
     }
   }
 
-  // 只有 root/lead 会话能绑定或重绑；子会话调用 task_create 不能把自己绑成协调者。
-  const isRootOrLead = agent => {
-    if (agent === undefined) return false
-    const header = agent?.session?.header
-    if (header !== undefined) return header.parentSession === undefined
-    try {
-      const role = ctx.agentTeams?.membership?.(agent)?.role
-      if (role !== undefined) return role === 'lead'
-    } catch {
-      return false
-    }
-    return true
-  }
-
-  // 配置覆盖优先且不写台账；否则惰性绑定调用方会话。首绑走原子 upsert，失效重绑走 CAS。
-  const bindCoordinator = agent => {
-    if (config.coordinatorSession !== undefined) {
-      const configured = resolveCoordinator()
-      if (configured !== undefined) scheduleRestriction(configured)
-      return { id: config.coordinatorSession, live: configured !== undefined }
-    }
-    if (agent === undefined) throw new Error('无法绑定协调者会话：task_create 需要调用方 agent')
-    const boundId = getSetting(db, COORDINATOR_KEY)
-    if (boundId !== undefined) {
-      const bound = ctx.get?.('agents')?.get?.(boundId)
-      if (bound !== undefined) return { id: boundId, live: true }
-      if (!isRootOrLead(agent)) {
-        throw new Error(`已绑定的协调者会话 ${boundId} 已失效，只有协调者会话（Team Lead）能重新绑定`)
-      }
-      const won = rebindSetting(db, COORDINATOR_KEY, boundId, agent.id)
-      const finalId = won ? agent.id : getSetting(db, COORDINATOR_KEY)
-      if (won) {
-        ctx.logger?.info?.(`dsh-orchestrator: 协调者会话已变更：${boundId} → ${agent.id}`)
-        logger.log('bind.coordinator', { sessionId: agent.id, agentId: agent.id, detail: { previous: boundId, reason: 'rebind' } })
-        scheduleRestriction(agent)
-        return { id: agent.id, live: true, changed: true, previous: boundId }
-      }
-      return { id: finalId, live: ctx.get?.('agents')?.get?.(finalId) !== undefined }
-    }
-    if (!isRootOrLead(agent)) throw new Error('无法绑定协调者会话：只有协调者会话（Team Lead）能首次派任务')
-    const assigned = bindSettingOnce(db, COORDINATOR_KEY, agent.id)
-    if (assigned === agent.id) {
-      ctx.logger?.info?.(`dsh-orchestrator: 协调者会话已绑定：${agent.id}`)
-      logger.log('bind.coordinator', { sessionId: agent.id, agentId: agent.id, detail: { previous: null, reason: 'first' } })
-      scheduleRestriction(agent)
-    }
-    return { id: assigned, live: ctx.get?.('agents')?.get?.(assigned) !== undefined }
-  }
-
   // 运行期收窄只在回合边界生效：回合中改工具集会跟当前请求的工具表错位，
   // 模型会调用已被遮罩的工具（Unknown tool）。所以 running 时挂起，idle 后装。
   const scheduleRestriction = agent => {
@@ -155,14 +106,23 @@ export async function apply(ctx, rawConfig = {}) {
     return restrictCoordinator(agent)
   }
 
+  // 主会话：固定入口创建/打开唯一协调者会话；不再由 task_create 自动绑定。
+  const mainSession = createMainSession({
+    db,
+    config,
+    agents: ctx.get?.('agents'),
+    sessionController: ctx.get?.('sessionController'),
+    workspaces: ctx.get?.('workspaceRegistry'),
+    workspacePath: join(stateDir(), 'workspace'),
+    workspaceName: '指挥舱',
+    log: (event, detail) => logger.log(event, { detail }),
+  })
+
   const current = resolveCoordinator()
   if (current === undefined) {
-    const boundId = getSetting(db, COORDINATOR_KEY)
     warnings(config.coordinatorSession !== undefined
       ? `dsh-orchestrator: 配置的 coordinatorSession ${config.coordinatorSession} 当前未加载`
-      : boundId !== undefined
-        ? `dsh-orchestrator: 已绑定的协调者会话 ${boundId} 当前未加载，首次 task_create 会重新绑定`
-        : 'dsh-orchestrator: 尚未绑定 coordinatorSession，首次 task_create 会自动绑定协调者会话')
+      : 'dsh-orchestrator: 尚未打开主会话，首次 task_create 会提示先从面板打开')
   } else {
     scheduleRestriction(current)
   }
@@ -243,8 +203,8 @@ export async function apply(ctx, rawConfig = {}) {
     send: (text, items) => {
       const id = resolvedCoordinatorId()
       if (id === undefined) {
-        warnings('dsh-orchestrator: 尚未绑定协调者会话，通知已跳过')
-        return { skipped: true, reason: '尚未绑定协调者会话，无法投递通知。' }
+        warnings('dsh-orchestrator: 尚未打开主会话，通知已跳过')
+        return { skipped: true, reason: '尚未打开主会话，无法投递通知。' }
       }
       const sender = items.map(item => item.sender).find(value => value !== undefined)
       if (sender === undefined) {
@@ -265,7 +225,7 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   const toolDisposers = createTools({
-    db, dispatcher, queue, notifier, config, bindCoordinator, coordinatorStatus, logger,
+    db, dispatcher, queue, notifier, config, coordinatorStatus, logger,
   }).map(tool => ctx.tools.register(tool))
 
   // 客户端只读路由：鉴权由 connection 服务统一负责；handler 只查台账、不写。
@@ -273,7 +233,12 @@ export async function apply(ctx, rawConfig = {}) {
   // 所以用 ctx.inject 等它出现再注册，不能一次性 ctx.get 拿不到就放弃。
   const routeOptions = {
     ...HOST_ROUTE_OPTIONS,
-    fetch: createHostRoute({ db, coordinatorStatus, staleMinutes: config.staleMinutes }),
+    fetch: createHostRoute({
+      db,
+      coordinatorStatus,
+      openMain: () => mainSession.open(),
+      staleMinutes: config.staleMinutes,
+    }),
   }
   const installRoute = scope => {
     const connection = scope?.connection ?? scope

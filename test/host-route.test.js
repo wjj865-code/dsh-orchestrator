@@ -36,7 +36,7 @@ test('snapshot 返回任务安全字段与协调者状态', async () => {
   assert.equal(response.status, 200)
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.deepEqual(body.coordinator, { id: 's-1', live: true })
+  assert.deepEqual(body.mainSession, { id: 's-1', live: true })
   assert.equal(body.tasks.length, 1)
   const row = body.tasks[0]
   assert.equal(row.id, task.id)
@@ -83,12 +83,12 @@ test('调用所有端点后台账零写入', async () => {
   db.close()
 })
 
-test('未绑定协调者：coordinator.id 为 null (JSON null)', async () => {
+test('未打开主会话：mainSession.id 为 null (JSON null)', async () => {
   const db = await openLedger(tempDir())
   const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: undefined, live: false }) })
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  assert.equal(body.coordinator.id, null)
-  assert.equal(body.coordinator.live, false)
+  assert.equal(body.mainSession.id, null)
+  assert.equal(body.mainSession.live, false)
   db.close()
 })
 
