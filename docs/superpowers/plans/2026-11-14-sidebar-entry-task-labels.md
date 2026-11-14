@@ -11,10 +11,11 @@
   - `taskLabel(task, { all })`：默认返回 `title`；当 `all` 里存在同名（trim 后相同）任务时返回 `title（t-xxxx）`；空 title 回落 `任务 t-xxxx`。
   - `decorateTaskLines(tasks)`：一次性给列表做重名标注（避免逐行 O(n²)）。
 - 应用面：
-  - `src/notify.js`：完成/失败/等待通知里用 `taskLabel`，**不出现 t-xxx**（重名才带短后缀）。
-  - `src/tools.js`：`task_create` 回执、`task_status` 标题行、`task_message/task_stop/task_report` 文案用显示名；仅 `task_list` 行首保留 `标题（t-xxxx）`——模型要靠它取 `task_id` 去续派/停止（与审查口径一致；若 Chief 要求工具返回也零 id，再改成「按标题模糊匹配」的新契约，不在本任务做）。
-  - `client.js` 任务卡片：主标签用 `title`，行尾 id 只在日志/工具视图可见；同名时带短后缀。
-- 用例：`test/task-label.test.js`（唯一/重名/空标题/短 id）；`test/notify.test.js`、`test/tools.test.js` 断言通知与工具返回里无裸 `t-`（`task_list` 除外）；`test/client.test.js` 同步。
+  - `src/notify.js`：**只渲染** `item.displayName ?? item.title`，不查台账、不算重名（notifier 只拿到 item，算不了）。
+  - `src/tools.js`：重名后缀在这里算——用全量任务集合（活跃+历史）算出 `displayName`，放进 `notifier.push({ ..., displayName })`；通知、面板、`task_report` 回执、停止/续派成功文案里**零 id**。
+  - **`task_create` 回执与 `task_list`/`task_status` 同款，保留「标题（t-xxxx）」**：模型创建后马上要用 id 去 `task_message`/`task_stop`/`task_status`，不能为此多调一次 `task_list`。
+  - `client.js` 任务卡片：主标签用 `title`，同名时带短后缀（客户端有 `snapshot.tasks` 全量，就地算）；行尾 id 只在日志/工具视图可见。
+- 用例：`test/task-label.test.js`（唯一/重名/空标题/短 id）；`test/notify.test.js`、`test/tools.test.js` 断言通知与其余回执无裸 `t-`，而 `task_create`/`task_list`/`task_status` 三处统一「标题（t-xxxx）」；`test/client.test.js` 同步。
 
 ## Task 2 删除底部入口（单独提交）
 
@@ -32,6 +33,7 @@
 - 单测（`test/client.test.js` + `qa-stage2-slots.mjs`）：
   - panellist 条目 id/order/label；`main` 面板 key；启动器点击路径 = `open-main` → `openSession(sessionId)` → `selectPanel(null)`（mock fetch/slots/layout）；
   - 双击只发一次 open-main；失败留在面板、可读错误、不调 `selectPanel(null)`。
+- 免费兜底（审查核对）：侧栏「更多」会列出除 `plugins` 外的所有 panellist 条目，启动器自动也在「更多」里；用户把侧栏条目「取消固定」也会落到「更多」，两条入口都走同一套 open-main，无需额外代码。
 - Bot 模式：panellist 被 ds-bot 隐藏（外部依赖，记文档）；任务面板仍可从会话头按钮进入。
 
 ## Task 4 文档与收尾（单独提交）
