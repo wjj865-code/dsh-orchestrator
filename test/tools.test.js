@@ -375,6 +375,34 @@ test('对外文案：task_create/list/status 带 id，续派/停止/回报回执
   db.close()
 })
 
+test('task_create readOnly：显式 true 落库并进 brief；字符串/默认都不算只读', async () => {
+  const { db, tools } = await setup()
+  const normal = await call(tools, 'task_create', sampleBrief({ title: '普通任务' }))
+  assert.match(normal, /已派发/)
+  const plain = listTasks(db).find(task => task.title === '普通任务')
+  assert.equal(plain.read_only, false)
+  assert.equal(plain.brief.readOnly, undefined)
+
+  const readOnly = await call(tools, 'task_create', { ...sampleBrief({ title: '只读任务' }), readOnly: true })
+  assert.match(readOnly, /已派发/)
+  const ro = listTasks(db).find(task => task.title === '只读任务')
+  assert.equal(ro.read_only, true)
+  assert.equal(ro.brief.readOnly, true)
+
+  const sneaky = await call(tools, 'task_create', { ...sampleBrief({ title: '字符串真值' }), readOnly: 'true' })
+  assert.match(sneaky, /已派发/)
+  assert.equal(listTasks(db).find(task => task.title === '字符串真值').read_only, false)
+
+  const list = await call(tools, 'task_list', {})
+  assert.match(list, /只读任务.*只读/)
+  assert.doesNotMatch(list, /普通任务.*只读/)
+  const status = await call(tools, 'task_status', { task_id: ro.id })
+  assert.match(status, /权限：只读/)
+  const plainStatus = await call(tools, 'task_status', { task_id: plain.id })
+  assert.doesNotMatch(plainStatus, /只读/)
+  db.close()
+})
+
 test('task_message：续派把 target_dir 传给 sendReliable（续派前补注册可写根用）', async () => {
   const { db, dispatcher, tools } = await setup()
   const target = tempDir()

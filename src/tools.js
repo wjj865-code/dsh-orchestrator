@@ -38,7 +38,7 @@ const short = (value, max = 40) => {
 
 function taskLine(db, task, { staleMinutes = 30 } = {}) {
   const parts = [
-    `- ${taskLabelWithId(task)}`, labelOf(task.status), `子会话 ${task.target ?? '-'}`,
+    `- ${taskLabelWithId(task)}`, task.read_only ? `${labelOf(task.status)}·只读` : labelOf(task.status), `子会话 ${task.target ?? '-'}`,
     `目标：${short(task.goal)}`,
   ]
   const latest = recentMessages(db, task.id, 1)[0]
@@ -169,12 +169,15 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       refs: strList('背景资料，如文件路径，可空'),
       user_verbatim: str('用户原话，可空'),
       target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
+      readOnly: { type: 'boolean', description: '只读任务：子会话沙箱 read-only（读正常，写文件/写 shell 被拒）；默认 false，只在明确需要时传 true' },
     }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
       const callId = exec?.callId
       const agentId = exec?.agent?.id
-      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, callId } })
+      // 只认显式 true：字符串/偏真值都不算，避免模型顺手传 'true' 把普通任务变只读。
+      const readOnly = args.readOnly === true
+      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, readOnly, callId } })
       const errors = validateBrief(args)
       if (errors.length > 0) {
         log('task.create.rejected', { agentId, detail: { reason: 'validation', message: errors.join('；'), callId } })
@@ -206,8 +209,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           })
         }
       }
-      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致。
-      const brief = { ...args, target: effectiveTarget }
+      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读才写入标记。
+      const brief = { ...args, target: effectiveTarget, ...(readOnly ? { readOnly: true } : {}) }
       const current = status()
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
       const title = String(args.title).trim()
@@ -230,7 +233,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         })
         return `待派发队列已满（${maxQueue} 个），先 task_stop 或等队列消化后再派。`
       }
-      const task = createTask(db, { brief, coordinatorSession: current.id ?? coordinatorSession, targetDir: effectiveTarget })
+      const task = createTask(db, { brief, coordinatorSession: current.id ?? coordinatorSession, targetDir: effectiveTarget, readOnly })
+      log('task.create.created', { taskId: task.id, agentId, sessionId: current.id, detail: { title, callId, targetDir: effectiveTarget ?? null, readOnly } })
       log('task.create.created', { taskId: task.id, agentId, sessionId: current.id, detail: { title, callId, targetDir: effectiveTarget ?? null } })
       const rendered = `【任务编号】${task.id}\n${renderBrief(brief)}`
       addMessage(db, task.id, { kind: 'brief', rendered })
@@ -273,6 +277,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const lines = [
         `任务「${taskLabelWithId(task)}」`,
         `状态：${labelOf(task.status)}`,
+        ...(task.read_only ? ['权限：只读（读正常，写文件/写 shell 被拒绝）'] : []),
         `子会话：${task.target ?? '-'}`,
         ...(task.status === 'pending'
           ? [`排队：${task.queued_at === null || task.queued_at === undefined ? '待派发（刚创建）' : '排队中（等待并发槽位）'}`]

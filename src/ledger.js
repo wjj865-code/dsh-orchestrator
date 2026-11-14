@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
   status TEXT NOT NULL, session_id TEXT, target TEXT, target_dir TEXT, artifacts_json TEXT, coordinator_session TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER
+  last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -40,6 +40,7 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('queued_at')) db.exec('ALTER TABLE tasks ADD COLUMN queued_at INTEGER')
     if (!taskColumns.includes('target_dir')) db.exec('ALTER TABLE tasks ADD COLUMN target_dir TEXT')
     if (!taskColumns.includes('artifacts_json')) db.exec('ALTER TABLE tasks ADD COLUMN artifacts_json TEXT')
+    if (!taskColumns.includes('read_only')) db.exec('ALTER TABLE tasks ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0')
     return db
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
@@ -67,16 +68,17 @@ const parseArtifacts = value => {
 
 const taskOf = row => row === undefined ? undefined : ({
   ...row,
+  read_only: row.read_only === 1 || row.read_only === true,
   brief: JSON.parse(row.brief_json),
   artifacts: parseArtifacts(row.artifacts_json),
 })
 
-export function createTask(db, { brief, coordinatorSession, targetDir }) {
+export function createTask(db, { brief, coordinatorSession, targetDir, readOnly = false }) {
   const now = Date.now()
   const id = `t-${randomUUID().slice(0, 8)}`
-  db.prepare(`INSERT INTO tasks (id, title, goal, brief_json, status, coordinator_session, target_dir, created_at, updated_at, last_event_at)
-    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`)
-    .run(id, String(brief.title), String(brief.goal), JSON.stringify(brief), String(coordinatorSession ?? ''), targetDir ?? null, now, now, now)
+  db.prepare(`INSERT INTO tasks (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, created_at, updated_at, last_event_at)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`)
+    .run(id, String(brief.title), String(brief.goal), JSON.stringify(brief), String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, now, now, now)
   return getTask(db, id)
 }
 

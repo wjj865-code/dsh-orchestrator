@@ -251,6 +251,33 @@ test('旧库缺 target_dir 时自动 ALTER 补列', async () => {
   db.close()
 })
 
+test('read_only：默认 false、显式 true 落库、旧库自动补列', async () => {
+  const db = await openLedger(tempDir())
+  const normal = createTask(db, { brief: { title: '普通', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  assert.equal(normal.read_only, false)
+  const readOnly = createTask(db, { brief: { title: '只读', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1', readOnly: true })
+  assert.equal(readOnly.read_only, true)
+  assert.equal(getTask(db, readOnly.id).read_only, true)
+  db.close()
+
+  const { DatabaseSync } = await import('node:sqlite')
+  const legacyDir = mkdtempSync(join(tmpdir(), 'orch-ledger-ro-legacy-'))
+  const legacy = new DatabaseSync(join(legacyDir, 'tasks.sqlite'))
+  legacy.exec(`CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
+    status TEXT NOT NULL, session_id TEXT, target TEXT, coordinator_session TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER)`)
+  legacy.prepare(`INSERT INTO tasks (id, title, goal, brief_json, status, coordinator_session, created_at, updated_at, last_event_at)
+    VALUES ('t-old', '旧任务', 'g', '{}', 'done', 's-1', 1, 1, 1)`).run()
+  legacy.close()
+  const migrated = await openLedger(legacyDir)
+  const cols = migrated.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+  assert.ok(cols.includes('read_only'))
+  assert.equal(getTask(migrated, 't-old').read_only, false)
+  migrated.close()
+})
+
 test('main_session_id 读写', async () => {
   const db = await openLedger(tempDir())
   assert.equal(getMainSessionId(db), undefined)
