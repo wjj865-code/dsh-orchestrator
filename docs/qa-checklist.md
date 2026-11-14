@@ -785,3 +785,24 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 **以后 ds-bot 修这行时的对表点**：放宽 `plain` 判据，让非 Bot/room 的外部 root 会话也撤皮肤；或给外部插件一个「打开纯 dsh 会话」的 action。修好后复跑本清单 Task 10 ① 的跳转半条即可。
 
 **对照实验（判定是否甩锅）**：Bot 模式下用 ds-bot 自己的会话列表打开任意一个普通 root 会话，若视图同样不切 → 坐实 ds-bot 表面问题；只有我们的主会话不行 → 回查我们的会话特殊性（`agentPreset`/cwd）。
+
+
+## 30. 主会话工具表残留团队工具（② 降级口径，平台无干净解）
+
+**现象**：主会话 projection 预设已是 `dsh-orchestrator-coordinator`，但工具表仍列出 `wait_agent`/`spawn_teammate`/`send_message`/`list_agents`/`interrupt_agent`/`team_task_*`（agent-scope 自注册），预设层删不掉。
+
+**平台取证（四条，审查在 asar 核过）**：
+
+1. 注册方 `@deepseek-ai/dsh-experimental-tool-agent-team` 的 `Config` 只有 `{ interrupt, freshProvider, forkProvider }`；`interrupt` 是 profile 全局开关，关掉会连子会话的 `interrupt_agent` 一起关，不能用于协调者。
+2. `ToolsService` 只有 `register/restrict/view/get/executable/definitions/schemas/setExecutor/selectExecutor/guard/checkGuards`，**没有移除 API**；`restrict` 只遮继承工具（`view()` 中 `own.tools` 无条件进 `visible`，`restrictableNames` 不含 own）。
+3. `session.create` 的 typert schema 只有 `{ workspaceId?, cwd?, sessionId?, agentPreset? }`，没有 `composition`/`toolFilter`/`title`。
+4. 唯一硬拦截点是 `guard`（dispatch 前跑 global + agent 链上的 guard，返回原因即拒）。
+
+**本版处理（双保险）**：
+
+- `preset-tools` 收窄全局工具（deny 补集，`ask_user_question` 由预设自有行提供）。
+- `COORDINATOR_POLICY` 明确禁止 `wait_agent`/`spawn_teammate`/`send_message`/`list_agents`/`interrupt_agent`/`team_task_*`。
+- `guard` 对主会话硬拦整个 `COORDINATOR_DENY` 名单（逐条可读拒绝），子会话同名工具放行；`task_list` 等正常工具不受影响。service 调用（如 `backend:'team'` 的 `spawnTeammate`）不经过工具 guard，team 后端派发不受影响。
+- 用例：`guard 覆盖整个 COORDINATOR_DENY 名单：主会话全拒、子会话同名放行、同步返回不阻塞`；`settings.main_session_id 的主会话调用 wait_agent 也被 guard 拒绝（不依赖预设）`。
+
+**真机证据（隔离 home，不带 ds-bot）**：主会话工具表残留如上；模型层面 `wait_agent` 两次拒绝调用（系统禁令优先），回合 1–3 秒结束；guard 层用注入单测覆盖（模型不会违反系统禁令去触发）。①③④⑤ 通过，② 按本降级口径记录，⑥ 探针全绿。
