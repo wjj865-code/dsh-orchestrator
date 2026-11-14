@@ -23,7 +23,9 @@
 | `src/host-route.js` | `snapshot` 增加 `mainSession` 与 `targetDir`；`open-main` 动作端点 |
 | `index.js` | 移除自动绑定；装配 main-session、`open-main`、prompt/guard 按主会话 |
 | `client.js` | 「打开主会话」按钮与状态、目标目录展示、`open-main` 调用 |
-| `cordis.patch.yml` | 插入协调者预设行 |
+| `cordis.patch.yml` | 插入协调者预设行（`plugins` 组合 + 我们的 `preset-tools` 行） |
+| `preset-tools.js`（新建） | 预设内的 agent-scoped 工具收窄插件（`ctx.tools.restrict({ allow })`） |
+| `test/preset-tools.test.js`（新建） | 预设收窄插件单测 |
 | `docs/probes/main-session-probe.md`（新建） | 平台契约探测结论（预设/创建/工作区/事件/cwd 沙箱） |
 | `README.md` / `docs/api-notes.md` | 主会话、目标目录、预设、迁移与已知局限 |
 
@@ -40,24 +42,51 @@
 
 ```js
 // docs/probes/main-session-probe.mjs
-// 读已安装的 app.asar，核对主会话需要的主机契约；只读源码，不启动 app。
+// 解析 app.asar 的文件表，按包路径取源码再核对，避免全文件子串假命中。
 import { readFileSync } from 'node:fs'
 
 const ASAR = process.argv[2] ?? 'C:/Users/72489/AppData/Local/Programs/DeepSeek Harness/resources/app.asar'
-const source = readFileSync(ASAR, 'utf8')
-const checks = []
-const check = (name, pattern) => {
-  const hit = typeof pattern === 'string' ? source.includes(pattern) : pattern.test(source)
-  const at = typeof pattern === 'string' ? source.indexOf(pattern) : source.search(pattern)
-  checks.push({ name, hit, at })
+const buffer = readFileSync(ASAR)
+const headerSize = buffer.readUInt32LE(4)
+const header = JSON.parse(buffer.subarray(16, 16 + headerSize).toString('utf8'))
+
+const files = new Map()
+const walk = (node, prefix) => {
+  for (const [name, child] of Object.entries(node.files ?? {})) {
+    const path = prefix === '' ? name : `${prefix}/${name}`
+    if (child.files === undefined) files.set(path, child)
+    else walk(child, path)
+  }
 }
-check('agent-preset 配置含 toolFilter', /toolFilter/)
-check('sessionController.create 接受 workspaceId', /create\(request\)/)
-check('workspaceRegistry 注册工作区', /workspaceRegistry/)
-check('session/created 事件', /session\/created/)
-check('agent/created 事件', /agent\/created/)
-check('subagent request 支持 cwd', /maxDepth/)
-for (const item of checks) console.log(`${item.hit ? 'PASS' : 'FAIL'} ${item.name} @${item.at}`)
+walk(header, '')
+
+const sourceOf = fragment => {
+  const hit = [...files.entries()].find(([path]) => path.includes(fragment))
+  if (hit === undefined) return undefined
+  const [, entry] = hit
+  const offset = Number(entry.offset)
+  return buffer.subarray(16 + headerSize + offset, 16 + headerSize + offset + Number(entry.size)).toString('utf8')
+}
+
+const checks = []
+const check = (name, fragment, pattern) => {
+  const source = sourceOf(fragment)
+  const hit = source !== undefined && pattern.test(source)
+  const at = hit ? source.search(pattern) : -1
+  checks.push({ name, hit, at, source })
+}
+
+check('agent-preset Config 无 toolFilter、plugins 必填', 'dsh-agent-preset/lib/index.js', /plugins/)
+check('session-controller create 入参', 'dsh-api-session-controller/lib/index.js', /create\(request\)/)
+check('session-controller rename', 'dsh-api-session-controller/lib/index.js', /rename/)
+check('workspaceRegistry create/resolveByPath', 'dsh-workspace/lib/index.js', /resolveByPath/)
+check('session/created 载荷', 'dsh-session/lib/index.js', /session\/created/)
+check('subagent request.cwd', 'dsh-subagent/lib/index.js', /cwd/)
+
+for (const item of checks) {
+  console.log(`${item.hit ? 'PASS' : 'FAIL'} ${item.name} @${item.at}`)
+  if (item.hit) console.log(item.source.slice(Math.max(0, item.at - 200), item.at + 400))
+}
 process.exit(checks.every(item => item.hit) ? 0 : 1)
 ```
 
@@ -414,12 +443,15 @@ import { createMainSession, PRESET_ID } from '../src/main-session.js'
 
 const fake = ({ live = new Set() } = {}) => {
   const created = []
+  const renamed = []
   const set = new Set(live)
   return {
     created,
+    renamed,
     agents: { get: id => set.has(id) ? { id, session: { id } } : undefined },
     sessionController: {
       create: async request => { created.push(request); return { sessionId: 'session-main-new' } },
+      rename: async request => { renamed.push(request) },
     },
     workspaces: {
       list: () => [{ id: 'ws-1', name: '指挥舱', path: 'C:/ws' }],
@@ -439,7 +471,8 @@ test('无主会话时创建（工作区 + 预设）并写台账', async () => {
   assert.deepEqual(result, { ok: true, sessionId: 'session-main-new', created: true })
   assert.equal(getMainSessionId(db), 'session-main-new')
   assert.equal(f.created[0].agentPreset, PRESET_ID)
-  assert.equal(f.created[0].title, '主会话')
+  assert.equal('title' in f.created[0], false)
+  assert.deepEqual(f.renamed, [{ sessionId: 'session-main-new', title: '主会话' }])
   db.close()
 })
 
@@ -522,12 +555,18 @@ export function createMainSession({ db, config, agents, sessionController, works
     }
     let created
     try {
-      created = await sessionController.create({ workspaceId, agentPreset: PRESET_ID, title: '主会话' })
+      created = await sessionController.create({ workspaceId, agentPreset: PRESET_ID })
     } catch (error) {
       return { ok: false, error: `创建主会话失败：${error?.message ?? error}` }
     }
     const sessionId = created?.sessionId
     if (typeof sessionId !== 'string' || sessionId === '') return { ok: false, error: '创建主会话失败：没有返回 sessionId' }
+    // create 不接受 title；标题单独 rename，失败只记日志，不影响主会话可用。
+    try {
+      await sessionController.rename?.({ sessionId, title: '主会话' })
+    } catch (error) {
+      log('main.session.rename.failed', { sessionId, error: `${error?.message ?? error}` })
+    }
     setMainSessionId(db, sessionId)
     log('main.session.created', { sessionId })
     return { ok: true, sessionId, created: true }
@@ -786,26 +825,86 @@ git commit -m "feat: 客户端打开主会话与目标目录"
 
 **Files:**
 - Modify: `cordis.patch.yml`
+- Modify: `package.json`（`exports['./preset-tools']`、`files` 含 `preset-tools.js`）
+- Create: `preset-tools.js`
+- Create: `test/preset-tools.test.js`
 - Modify: `README.md`
 - Modify: `docs/api-notes.md`
 - Test: `test/config.test.js`
 
 - [ ] **Step 1: 写失败测试**
 
-在 `test/config.test.js` 加：
+在 `test/config.test.js` 加（需要 `readFileSync`；文件已有则复用）：
 
 ```js
 test('cordis.patch.yml 注册协调者预设行', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(source, /dsh-orchestrator-coordinator/)
-  assert.match(source, /toolFilter/)
-  assert.match(source, /task_create/)
+  assert.match(source, /dsh-orchestrator\/preset-tools/)
+  assert.match(source, /plugins:/)
+})
+
+test('package.json 导出 preset-tools', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.exports['./preset-tools'], './preset-tools.js')
+  assert.ok(pkg.files.includes('preset-tools.js'))
 })
 ```
 
 - [ ] **Step 2: 实现**
 
-按 `docs/probes/main-session-probe.md` §3 的准确字段，在 `cordis.patch.yml` 加预设行（以下为结构示意，字段以探针为准）：
+`preset-tools.js`（包根，供协调者预设的 `plugins` 行使用；agent-scoped）：
+
+```js
+// 协调者预设内的工具收窄：在 agent 作用域里只保留协调需要的工具。
+// 预设 Config 不支持 toolFilter，所以用这个插件行实现「预设层固化」。
+export const name = 'dsh-orchestrator-preset-tools'
+export const inject = ['tools']
+
+const ALLOW = [
+  'task_create', 'task_list', 'task_status', 'task_message', 'task_stop',
+  'ask_user', 'show_view',
+]
+
+export function apply(ctx) {
+  const tools = ctx.tools
+  if (tools === undefined || typeof tools.restrict !== 'function') return
+  let allow = [...ALLOW]
+  try {
+    const view = typeof tools.view === 'function' ? tools.view() : undefined
+    const known = view?.restrictableNames ?? view?.knownNames
+    if (known instanceof Set) allow = allow.filter(item => known.has(item))
+  } catch { /* 取不到已知集合时按原列表交给 restrict 校验 */ }
+  if (allow.length === 0) return
+  try {
+    ctx.effect?.(() => tools.restrict({ allow }))
+  } catch { /* 平台不认 allow 时保持工具表原样，由运行期 guard 兜底 */ }
+}
+```
+
+`test/preset-tools.test.js`：
+
+```js
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { apply, name } from '../preset-tools.js'
+
+test('preset-tools 在 agent 作用域 restrict allow', () => {
+  const calls = []
+  const ctx = {
+    tools: {
+      view: () => ({ restrictableNames: new Set(['task_create', 'read', 'ask_user']) }),
+      restrict: filter => { calls.push(filter); return () => {} },
+    },
+    effect: disposer => { const d = disposer(); assert.equal(typeof d, 'function') },
+  }
+  apply(ctx)
+  assert.equal(name, 'dsh-orchestrator-preset-tools')
+  assert.deepEqual(calls[0], { allow: ['task_create', 'ask_user'] })
+})
+```
+
+`cordis.patch.yml`：按 `docs/probes/main-session-probe.md` §3 的准确字段，插入协调者预设行。preset 的 `plugins` 必须是完整可运行的组合（以探针确认的最小清单为准；示意）：
 
 ```yaml
 - insert:
@@ -818,8 +917,10 @@ test('cordis.patch.yml 注册协调者预设行', () => {
         name: 协调者
         description: 只做协调：拆任务、派子会话、看回报；不读写文件、不执行命令。
         order: 80
-        toolFilter:
-          allow: [task_create, task_list, task_status, task_message, task_stop, ask_user, show_view]
+        plugins:
+          - id: preset-tools
+            name: dsh-orchestrator/preset-tools
+          # …以及探针确认的最小运行栈（persona/instructions/工具执行器），见探针文档 §3
 ```
 
 README 增加「主会话」一节（入口、创建/重建、指挥舱、目标目录、预设工具集、迁移、配置覆盖），api-notes 补预设与 `create` 的探测结论。
