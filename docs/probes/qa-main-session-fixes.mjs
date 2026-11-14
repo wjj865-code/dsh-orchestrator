@@ -62,27 +62,27 @@ console.log('\n== 2. provider 门控 ==')
   check('fork provider 不再注入 agentPreset', await (async () => {
     await fork.spawn({ prompt: 'hi' })
     const spec = calls[calls.length - 1]
-    return !Object.hasOwn(spec?.request ?? {}, 'agentPreset')
-  })(), JSON.stringify(Object.keys(calls[calls.length - 1]?.request ?? {})))
+    return !Object.hasOwn(spec?.request ?? spec ?? {}, 'agentPreset')
+  })(), JSON.stringify(Object.keys(calls[calls.length - 1]?.request ?? calls[calls.length - 1] ?? {})))
 
   const spawn = createSubagentDispatcher({ subagents, agent: parent, provider: 'spawn' })
   await spawn.spawn({ prompt: 'hi' })
-  check('spawn provider 仍注入 worker 预设', calls[calls.length - 1]?.request?.agentPreset === 'dsh-orchestrator-worker',
-    String(calls[calls.length - 1]?.request?.agentPreset))
+  check('spawn provider 仍注入 worker 预设', (calls[calls.length - 1]?.request ?? calls[calls.length - 1])?.agentPreset === 'dsh-orchestrator-worker',
+    String((calls[calls.length - 1]?.request ?? calls[calls.length - 1])?.agentPreset))
   const custom = createSubagentDispatcher({ subagents, agent: parent, provider: 'spawn', workerPreset: 'custom-worker' })
   await custom.spawn({ prompt: 'hi' })
-  check('spawn provider 可用 workerPreset 覆盖', calls[calls.length - 1]?.request?.agentPreset === 'custom-worker',
-    String(calls[calls.length - 1]?.request?.agentPreset))
+  check('spawn provider 可用 workerPreset 覆盖', (calls[calls.length - 1]?.request ?? calls[calls.length - 1])?.agentPreset === 'custom-worker',
+    String((calls[calls.length - 1]?.request ?? calls[calls.length - 1])?.agentPreset))
   // fork 下 cwd 仍透传（阶段 1/2 能力不回退）
   const forkWithCwd = createSubagentDispatcher({ subagents, agent: parent, provider: 'fork' })
   await forkWithCwd.spawn({ prompt: 'hi', cwd: 'C:/target' })
-  check('fork provider 仍透传 cwd', calls[calls.length - 1]?.request?.cwd === 'C:/target',
-    String(calls[calls.length - 1]?.request?.cwd))
+  check('fork provider 仍透传 cwd', (calls[calls.length - 1]?.request ?? calls[calls.length - 1])?.cwd === 'C:/target',
+    String((calls[calls.length - 1]?.request ?? calls[calls.length - 1])?.cwd))
 
   // fork + 配置覆盖会话：平台会拒「不支持的 provider + agentPreset」，派发必须能过
   const strictSubagents = {
     startActivation: (spec) => {
-      if (spec.request?.agentPreset !== undefined) {
+      if (((spec.request ?? spec)?.agentPreset) !== undefined) {
         const error = new Error('provider does not support agentPreset')
         error.code = 'UNSUPPORTED_CAPABILITY'
         return Promise.reject(error)

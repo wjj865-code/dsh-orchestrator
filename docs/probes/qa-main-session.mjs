@@ -105,17 +105,17 @@ console.log('\n== Task 3: cwd/preset ==')
   const parent = { id: 's-1', session: { header: { cwd: 'C:/parent' } } }
   const dispatcher = createSubagentDispatcher({ subagents, agent: parent })
   await dispatcher.spawn({ prompt: 'hi', cwd: 'C:/target' })
-  check('cwd 优先 target', calls[0]?.request?.cwd === 'C:/target', String(calls[0]?.request?.cwd))
-  check('默认 worker 预设', calls[0]?.request?.agentPreset === 'dsh-orchestrator-worker', String(calls[0]?.request?.agentPreset))
+  check('cwd 优先 target', (calls[0]?.request ?? calls[0])?.cwd === 'C:/target', String((calls[0]?.request ?? calls[0])?.cwd))
+  check('默认 worker 预设', (calls[0]?.request ?? calls[0])?.agentPreset === 'dsh-orchestrator-worker', String((calls[0]?.request ?? calls[0])?.agentPreset))
   await dispatcher.spawn({ prompt: 'hi' })
-  check('缺省用父会话 cwd', calls[1]?.request?.cwd === 'C:/parent', String(calls[1]?.request?.cwd))
+  check('缺省用父会话 cwd', (calls[1]?.request ?? calls[1])?.cwd === 'C:/parent', String((calls[1]?.request ?? calls[1])?.cwd))
   const noCwdParent = { id: 's-2', session: { header: {} } }
   const dispatcher2 = createSubagentDispatcher({ subagents, agent: noCwdParent })
   await dispatcher2.spawn({ prompt: 'hi' })
-  check('父子都无 cwd → 不带 cwd 键', !Object.hasOwn(calls[2]?.request ?? {}, 'cwd'), JSON.stringify(Object.keys(calls[2]?.request ?? {})))
+  check('父子都无 cwd → 不带 cwd 键', !Object.hasOwn(calls[2]?.request ?? calls[2] ?? {}, 'cwd'), JSON.stringify(Object.keys(calls[2]?.request ?? {})))
   const custom = createSubagentDispatcher({ subagents, agent: parent, workerPreset: 'custom-worker' })
   await custom.spawn({ prompt: 'hi' })
-  check('workerPreset 可覆盖', calls[3]?.request?.agentPreset === 'custom-worker', String(calls[3]?.request?.agentPreset))
+  check('workerPreset 可覆盖', (calls[3]?.request ?? calls[3])?.agentPreset === 'custom-worker', String((calls[3]?.request ?? calls[3])?.agentPreset))
 
   // queue 把 task.target_dir 透传成 cwd
   const dir = tmp('qa-ms-queue-')
