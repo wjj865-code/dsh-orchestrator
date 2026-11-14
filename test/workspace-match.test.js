@@ -67,6 +67,13 @@ test('短 ASCII 键不参与匹配（ai 这类不误伤）', () => {
   assert.equal(inferWorkspaceTarget({ title: 'ai 辅助流程', goal: '随便看看' }, workspaces).workspace, undefined)
 })
 
+test('精确全等不受短键过滤影响（2 字 title 全等命中）', () => {
+  const workspaces = [ws('w-ai', 'AI', 'C:/tmp/ai')]
+  const result = inferWorkspaceTarget({ title: 'AI', goal: '' }, workspaces)
+  assert.equal(result.ok, true)
+  assert.equal(result.workspace.id, 'w-ai')
+})
+
 test('CJK 两字键可以匹配', () => {
   const workspaces = [ws('w-gz', '公号', 'C:/x/公号')]
   const result = inferWorkspaceTarget({ title: '公号排版', goal: '' }, workspaces)

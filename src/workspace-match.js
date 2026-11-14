@@ -16,11 +16,12 @@ export function pathTail(path) {
   return parts.length === 0 ? '' : parts[parts.length - 1]
 }
 
+// 全等匹配用全部非空键（2 字 title 全等也应命中）；子串匹配才用长度过滤防误伤。
 const keysOf = workspace => {
   const keys = new Set()
   for (const value of [workspace?.title, pathTail(workspace?.path)]) {
     const key = normalize(value)
-    if (isMatchable(key)) keys.add(key)
+    if (key !== '') keys.add(key)
   }
   return keys
 }
@@ -45,7 +46,7 @@ export function inferWorkspaceTarget(brief = {}, workspaces = []) {
   const substring = []
   for (const entry of entries) {
     if (fields.some(field => entry.keys.has(field))) exact.push(entry)
-    else if (hay !== '' && [...entry.keys].some(key => hay.includes(key))) substring.push(entry)
+    else if (hay !== '' && [...entry.keys].some(key => isMatchable(key) && hay.includes(key))) substring.push(entry)
   }
 
   const pick = exact.length > 0 ? exact : substring
