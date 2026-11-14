@@ -12,7 +12,8 @@ const OUT = join(tmpdir(), 'dsh-preset-scope-restrict')
 const bytes = readFileSync(ASAR)
 
 const headerSize = bytes.readUInt32LE(12)
-const dataStart = 16 + headerSize
+// 数据区起点按 4 字节对齐：rc.3 的 headerSize 让 16+hs ≡ 1 mod 4，不补齐会整体错位 3 字节。
+const dataStart = Math.ceil((16 + headerSize) / 4) * 4
 const header = JSON.parse(bytes.slice(16, 16 + headerSize).toString('utf8'))
 const entries = new Map()
 const collect = (node, prefix) => {

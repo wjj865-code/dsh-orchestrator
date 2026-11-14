@@ -7,8 +7,9 @@ const ASAR = process.argv[2] ?? 'C:/Users/72489/AppData/Local/Programs/DeepSeek 
 const bytes = readFileSync(ASAR)
 
 // asar：0..16 是 pickle 头，JSON 头从 16 开始，长度在 u32@12；文件 offset 相对 dataStart。
+// 数据区起点按 4 字节对齐（rc.3 的 headerSize 会落成 16+hs ≡ 1 mod 4，少加 3 字节会读到前一个文件的尾巴）。
 const headerSize = bytes.readUInt32LE(12)
-const dataStart = 16 + headerSize
+const dataStart = Math.ceil((16 + headerSize) / 4) * 4
 const header = JSON.parse(bytes.slice(16, 16 + headerSize).toString('utf8'))
 const files = []
 const collect = (node, prefix) => {
