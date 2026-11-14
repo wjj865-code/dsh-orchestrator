@@ -1,5 +1,5 @@
 // 工具层：只做参数校验、编排与可读文案；规则都在 brief / ledger / state / notify。
-import { validateBrief, renderBrief } from './brief.js'
+import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
 import { canTransition } from './state.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages,
@@ -66,7 +66,15 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
       : ''
   }
   const unbound = () => status().id === undefined
-  const UNBOUND_HINT = '尚未绑定协调者，请先 task_create。'
+  const UNBOUND_HINT = '尚未打开主会话，请先从面板「打开主会话」。'
+  const MAIN_ONLY_HINT = '请从主会话操作任务（面板「打开主会话」）。'
+  // task_* 只允许主会话；task_report 属于子会话，不在这里拦。
+  const requireMain = exec => {
+    const current = status()
+    if (current.id === undefined) return UNBOUND_HINT
+    if (exec?.agent?.id !== current.id) return MAIN_ONLY_HINT
+    return undefined
+  }
 
   const sendFollowup = async (target, message, signal) => {
     if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal)
@@ -106,7 +114,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
       acceptance: strList('验收标准，至少一条'),
       refs: strList('背景资料，如文件路径，可空'),
       user_verbatim: str('用户原话，可空'),
+      target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
     }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
       const callId = exec?.callId
       const agentId = exec?.agent?.id
       log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, callId } })
@@ -114,6 +125,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
       if (errors.length > 0) {
         log('task.create.rejected', { agentId, detail: { reason: 'validation', message: errors.join('；'), callId } })
         return `任务描述不完整：${errors.join('；')}。补齐后再派。`
+      }
+      const targetError = validateTargetDir(args.target)
+      if (targetError !== undefined) {
+        log('task.create.rejected', { agentId, detail: { reason: 'target', message: targetError, callId } })
+        return `${targetError}。目标目录必须是已存在的绝对路径。`
       }
       const binding = await bind(exec?.agent)
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
@@ -137,7 +153,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
         })
         return `待派发队列已满（${maxQueue} 个），先 task_stop 或等队列消化后再派。`
       }
-      const task = createTask(db, { brief: args, coordinatorSession: binding?.id ?? coordinatorSession })
+      const task = createTask(db, { brief: args, coordinatorSession: binding?.id ?? coordinatorSession, targetDir: args.target })
       log('task.create.created', { taskId: task.id, agentId, sessionId: binding?.id, detail: { title, callId } })
       const rendered = `【任务编号】${task.id}\n${renderBrief(args)}`
       addMessage(db, task.id, { kind: 'brief', rendered })
@@ -165,13 +181,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
 
     wrap('task_list', '列出任务。默认只列活跃任务（pending/running/waiting），active=false 时连同历史一起列出。', objectSchema({
       active: { type: 'boolean', description: '是否只看活跃任务，默认 true' },
-    }), async args => {
+    }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
       const tasks = listTasks(db, { active: args.active !== false })
       if (tasks.length === 0) return args.active === false ? '台账里还没有任何任务。' : '没有活跃任务。'
       return tasks.map(task => taskLine(db, task, { staleMinutes })).join('\n')
     }),
 
-    wrap('task_status', '查看一个任务的详情与最近消息。', objectSchema({ task_id: str('任务编号，如 t-1a2b3c4d') }), async args => {
+    wrap('task_status', '查看一个任务的详情与最近消息。', objectSchema({ task_id: str('任务编号，如 t-1a2b3c4d') }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。用 task_list 查编号。`
       const messages = recentMessages(db, task.id, 3)
@@ -197,6 +217,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
       task_id: str('任务编号'),
       message: str('要追加的内容'),
     }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`
@@ -237,6 +259,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, bindCoord
     }),
 
     wrap('task_stop', '停止一个子任务（会中断它的当前一轮）。', objectSchema({ task_id: str('任务编号') }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return `没有任务 ${args.task_id ?? ''}。`

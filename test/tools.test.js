@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import{ join } from 'node:path'
 import { openLedger, createTask, getTask, listTasks, transition } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
@@ -53,11 +54,17 @@ async function setup(options = {}) {
     queue,
     notifier,
     config,
+    coordinatorStatus: () => ({ id: 's-1', live: true }),
   }).map(tool => [tool.name, tool]))
   return { db, dispatcher, queue, notifier, tools }
 }
 
-const call = (tools, name, args, exec) => tools[name].execute(args, exec)
+// 主会话工具默认以主会话身份调用；task_report 归子会话，保持调用方身份。
+const MAIN_TOOLS = new Set(['task_create', 'task_list', 'task_status', 'task_message', 'task_stop'])
+const call = (tools, name, args, exec) => {
+  const resolved = MAIN_TOOLS.has(name) ? { agent: { id: 's-1' }, ...(exec ?? {}) } : exec
+  return tools[name].execute(args, resolved)
+}
 
 test('注册 6 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
   const { db, tools } = await setup()
@@ -356,7 +363,7 @@ test('task_message：重试 3 次仍失败 → waiting_user + error + 失败消�
   db.close()
 })
 
-test('未绑定时 task_message/task_stop 给提示且不半执行', async () => {
+test('未打开主会话时 task_message/task_stop 给提示且不半执行', async () => {
   const db = await openLedger(tempDir())
   const dispatcher = fakeDispatcher()
   const tools = Object.fromEntries(createTools({
@@ -370,11 +377,11 @@ test('未绑定时 task_message/task_stop 给提示且不半执行', async () =>
   transition(db, task.id, 'running', { sessionId: 'm-1', target: 'w-1' })
 
   const message = await call(tools, 'task_message', { task_id: task.id, message: '继续' })
-  assert.match(message, /尚未绑定协调者，请先 task_create/)
+  assert.match(message, /尚未打开主会话/)
   assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n, 0)
 
   const stop = await call(tools, 'task_stop', { task_id: task.id })
-  assert.match(stop, /尚未绑定协调者，请先 task_create/)
+  assert.match(stop, /尚未打开主会话/)
   assert.equal(getTask(db, task.id).status, 'running')
   assert.equal(dispatcher.calls.length, 0)
   db.close()
@@ -521,7 +528,7 @@ test('waiting_user 直接收到 done 回报也能闭环', async () => {
 
 test('并发 8 个子任务：target/status 各归各，通知不丢', async () => {
   const { db, notifier, tools } = await setup()
-  const exec = { agent: { id: 'worker' } }
+  const exec = { agent: { id: 's-1' } }
   await Promise.all(Array.from({ length: 8 }, (_, i) =>
     call(tools, 'task_create', sampleBrief({ title: `T${i}` }), exec)))
   const tasks = listTasks(db, { active: true })
@@ -533,5 +540,42 @@ test('并发 8 个子任务：target/status 各归各，通知不丢', async () 
   assert.equal(listTasks(db, { active: true }).length, 0)
   assert.equal(notifier.pushed.length, 8)
   assert.deepEqual(new Set(notifier.pushed.map(item => item.taskId)), new Set(tasks.map(task => task.id)))
+  db.close()
+})
+
+test('非主会话调用 task_* 被拒，且不产生副作用', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const other = { agent: { id: 'other-1' } }
+  const create = await call(tools, 'task_create', sampleBrief({ title: '甲' }), other)
+  assert.match(create, /主会话/)
+  const list = await call(tools, 'task_list', {}, other)
+  assert.match(list, /主会话/)
+  const status = await call(tools, 'task_status', { task_id: 't-x' }, other)
+  assert.match(status, /主会话/)
+  assert.equal(listTasks(db).length, 0)
+  assert.equal(dispatcher.calls.length, 0)
+  db.close()
+})
+
+test('task_create 校验 target 并落 target_dir，brief 带【工作目录】', async () => {
+  const { db, tools } = await setup()
+  const bad = await call(tools, 'task_create', { ...sampleBrief({ title: 'b' }), target: 'relative/dir' })
+  assert.match(bad, /绝对路径/)
+  const target = tempDir()
+  const ok = await call(tools, 'task_create', { ...sampleBrief({ title: '带目录' }), target })
+  assert.match(ok, /已派发/)
+  const row = db.prepare("SELECT target_dir FROM tasks WHERE title = '带目录'").get()
+  assert.equal(row.target_dir, target)
+  const brief = db.prepare("SELECT rendered FROM messages WHERE kind = 'brief' ORDER BY rowid DESC LIMIT 1").get()
+  assert.match(brief.rendered, /【工作目录】/)
+  db.close()
+})
+
+test('task_create 拒绝不存在的绝对目录', async () => {
+  const { db, tools } = await setup()
+  const missing = join(tempDir(), 'nope')
+  const result = await call(tools, 'task_create', { ...sampleBrief({ title: 'x' }), target: missing })
+  assert.match(result, /不存在或不是目录/)
+  assert.equal(listTasks(db).length, 0)
   db.close()
 })
