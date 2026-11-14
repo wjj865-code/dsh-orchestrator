@@ -111,11 +111,20 @@ test('queued 按 queued_at 精确标记：新建未排队不算排队', async ()
   db.close()
 })
 
-test('快照按 limit 截断，避免台账长了每次全量', async () => {
+test('快照：活跃任务全量 + 历史最多 limit 条（老 running 不被截掉）', async () => {
   const db = await openLedger(tempDir())
-  for (let i = 0; i < 5; i += 1) createTask(db, { brief: sampleBrief({ title: `任务${i}` }), coordinatorSession: 's-1' })
+  const running = createTask(db, { brief: sampleBrief({ title: '老的运行中' }), coordinatorSession: 's-1' })
+  transition(db, running.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  for (let i = 0; i < 3; i += 1) {
+    const done = createTask(db, { brief: sampleBrief({ title: `新完成${i}` }), coordinatorSession: 's-1' })
+    transition(db, done.id, 'running', { sessionId: `c-${i}`, target: `c-${i}` })
+    transition(db, done.id, 'done')
+  }
   const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-1', live: true }), limit: 2 })
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  assert.equal(body.tasks.length, 2)
+  const ids = body.tasks.map(row => row.id)
+  assert.ok(ids.includes(running.id), '老 running 必须在快照里')
+  assert.equal(body.tasks.filter(row => row.status === 'done').length, 2)
+  assert.equal(body.tasks.length, 3)
   db.close()
 })

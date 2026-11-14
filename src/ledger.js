@@ -78,6 +78,14 @@ export function listTasks(db, { active = false } = {}) {
   return db.prepare(sql).all().map(taskOf)
 }
 
+/** 终态历史：按创建时间倒序取最多 limit 条（面板快照用，避免把活跃任务挤掉）。 */
+export function listHistoryTasks(db, limit = 200) {
+  return db.prepare(`SELECT * FROM tasks
+    WHERE status NOT IN ('pending','running','waiting_user','waiting_auth')
+    ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+    .all(Math.max(0, Math.floor(limit))).map(taskOf)
+}
+
 /** 标记「在排队」：pending + queued_at 非空，与「创建后没派出去」区分。 */
 export function markQueued(db, id, at = Date.now()) {
   db.prepare('UPDATE tasks SET queued_at = ?, updated_at = ? WHERE id = ?').run(at, at, id)
