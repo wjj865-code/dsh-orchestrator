@@ -101,7 +101,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - 精确名（与 title 或 goal 全等）优先，且只在精确命中集合里取结果；否则看子串层。
 - **唯一命中**：直接用该工作区 `path`，同时写入 `tasks.target_dir`（面板显示、artifacts 相对路径都靠它）。
 - **多命中**：不建任务、不猜测，返回「匹配到多个工作区」+ 候选 `title → path`，请协调者让用户用 `target` 指定绝对路径。
-- **无命中**：不写 `target_dir`，子会话跑在主会话 cwd（指挥舱），与旧行为一致。
+- **无命中**：不写 `target_dir`，**沿用主会话所在目录**（通常是指挥舱；用 `coordinatorSession` 显式覆盖时跟随该会话目录），与旧行为一致。
 - `workspaceRegistry` 不可用时按无工作区降级，不影响派发。
 
 **交付产物**（`task_report`）：

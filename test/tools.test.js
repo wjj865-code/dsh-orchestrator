@@ -15,8 +15,8 @@ function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity 
     get spawned() { return spawned },
     release(count = 1) { spawned = Math.max(0, spawned - count) },
     slug(title) { counter += 1; return `task-${counter}` },
-    async spawn({ name, prompt, signal }) {
-      calls.push(['spawn', name, prompt, signal])
+    async spawn({ name, prompt, signal, cwd }) {
+      calls.push(['spawn', name, prompt, signal, cwd])
       if (failSpawn) throw new Error('子会话创建失败')
       if (spawned >= limit) {
         const error = new Error('subagent limit reached (active child limit)')
@@ -618,11 +618,26 @@ test('不传 target：多命中工作区 → 列候选、不建任务、不派�
 
 test('不传 target：无命中 → 不写 target_dir，行为与旧版一致', async () => {
   const workspaces = { list: () => [{ id: 'w1', title: '公众号文章', path: tempDir() }] }
-  const { db, tools } = await setup({ workspaces })
+  const { db, dispatcher, tools } = await setup({ workspaces })
   const result = await call(tools, 'task_create', { title: '评审 Rust 文章', goal: '找错', acceptance: ['a'] })
   assert.match(result, /已派发/)
   assert.doesNotMatch(result, /按工作区推断/)
   assert.equal(listTasks(db)[0].target_dir, null)
+  assert.equal(dispatcher.calls[0][4], undefined)
+  db.close()
+})
+
+test('target 为空串/全空白与不传等价：走推断、不写空串', async () => {
+  const inferredDir = tempDir()
+  const workspaces = { list: () => [{ id: 'w1', title: '公众号文章', path: inferredDir }] }
+  const { db, tools } = await setup({ workspaces })
+  const first = await call(tools, 'task_create', { title: '公众号文章选题', goal: 'g', acceptance: ['a'], target: '' })
+  assert.match(first, /已派发/)
+  assert.equal(listTasks(db)[0].target_dir, inferredDir)
+  const second = await call(tools, 'task_create', { title: '无关任务', goal: 'g', acceptance: ['a'], target: '   ' })
+  assert.match(second, /已派发/)
+  const other = listTasks(db).find(task => task.title === '无关任务')
+  assert.equal(other.target_dir, null)
   db.close()
 })
 
@@ -674,4 +689,31 @@ test('task_report 不传 artifacts：完全兼容旧行为，任务照常 done',
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id } })
   assert.equal(getTask(db, task.id).status, 'done')
   assert.deepEqual(getTask(db, task.id).artifacts, [])
+})
+
+
+test('artifacts 最多保留 20 条，说明超长截断', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '多产物' }))
+  const task = listTasks(db)[0]
+  const artifacts = Array.from({ length: 25 }, (_, index) => ({ path: `file-${index}.txt`, label: '说'.repeat(200) }))
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成', artifacts }, { agent: { id: task.session_id } })
+  const saved = getTask(db, task.id).artifacts
+  assert.equal(saved.length, 20)
+  assert.equal(saved[0].path.endsWith('file-0.txt'), true)
+  assert.equal(saved[0].label.length, 161)
+  assert.equal(saved[0].label.endsWith('…'), true)
+})
+
+test('产物是目录时也算存在（只 stat，不读文件）', async () => {
+  const { mkdirSync } = await import('node:fs')
+  const target = tempDir()
+  mkdirSync(join(target, 'dist'))
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', { ...sampleBrief({ title: '目录产物' }), target })
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成', artifacts: [{ path: 'dist' }] }, { agent: { id: task.session_id } })
+  const saved = getTask(db, task.id).artifacts
+  assert.equal(saved[0].path, join(target, 'dist'))
+  assert.equal(saved[0].exists, true)
 })

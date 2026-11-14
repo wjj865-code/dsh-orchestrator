@@ -18,6 +18,8 @@ const textOutput = {
 }
 
 const REPORT_STATUS = ['progress', 'done', 'blocked', 'needs_auth']
+const MAX_ARTIFACTS = 20
+const MAX_ARTIFACT_LABEL = 160
 const STATUS_LABEL = {
   pending: '待派发', running: '进行中', waiting_user: '等你确认', waiting_auth: '要授权',
   done: '已完成', failed: '失败', cancelled: '已取消', orphaned: '会话丢失',
@@ -92,8 +94,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         continue
       }
       let exists = false
-      try { exists = statSync(absolute).isFile() } catch { exists = false }
-      out.push({ path: absolute, label: typeof entry.label === 'string' ? entry.label.trim() : '', exists })
+      try {
+        const stats = statSync(absolute)
+        exists = stats.isFile() || stats.isDirectory()
+      } catch { exists = false }
+      const label = typeof entry.label === 'string' ? entry.label.trim() : ''
+      out.push({ path: absolute, label: label.length > MAX_ARTIFACT_LABEL ? `${label.slice(0, MAX_ARTIFACT_LABEL)}…` : label, exists })
+      if (out.length >= MAX_ARTIFACTS) break
     }
     return out
   }
@@ -159,15 +166,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         log('task.create.rejected', { agentId, detail: { reason: 'validation', message: errors.join('；'), callId } })
         return `任务描述不完整：${errors.join('；')}。补齐后再派。`
       }
-      const targetError = validateTargetDir(args.target)
+      // 显式 target 先归一：空串/全空白等价于没传（模型常用 "" 表示没有），不能把空串当目录写库。
+      const targetText = typeof args.target === 'string' ? args.target.trim() : ''
+      const targetError = validateTargetDir(targetText)
       if (targetError !== undefined) {
         log('task.create.rejected', { agentId, detail: { reason: 'target', message: targetError, callId } })
         return `${targetError}。`
       }
       // 没传 target 时才推断：唯一命中用它的 path 并落 target_dir；多命中列候选、不建任务；无命中仍回指挥舱。
-      let effectiveTarget = args.target
+      let effectiveTarget = targetText === '' ? undefined : targetText
       let inferred
-      if (String(args.target ?? '').trim() === '') {
+      if (effectiveTarget === undefined) {
         const match = inferWorkspaceTarget({ title: args.title, goal: args.goal }, workspaceList())
         if (match.ok === false) {
           const lines = match.candidates.map(item => `- ${item.title ?? item.path} → ${item.path}`).join('\n')
@@ -183,7 +192,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           })
         }
       }
-      const brief = effectiveTarget === undefined ? args : { ...args, target: effectiveTarget }
+      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致。
+      const brief = { ...args, target: effectiveTarget }
       const current = status()
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
       const title = String(args.title).trim()
