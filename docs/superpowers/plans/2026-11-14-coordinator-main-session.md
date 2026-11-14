@@ -24,7 +24,7 @@
 | `index.js` | 移除自动绑定；装配 main-session、`open-main`、prompt/guard 按主会话 |
 | `client.js` | 「打开主会话」按钮与状态、目标目录展示、`open-main` 调用 |
 | `cordis.patch.yml` | 插入协调者预设行（`plugins` 组合 + 我们的 `preset-tools` 行） |
-| `preset-tools.js`（新建） | 预设内的 agent-scoped 工具收窄插件（`ctx.tools.restrict({ allow })`） |
+| `preset-tools.js`（新建） | 预设内的工具收窄插件（deny 补集：保留 allow 名单，deny 其余全局工具） |
 | `test/preset-tools.test.js`（新建） | 预设收窄插件单测 |
 | `docs/probes/main-session-probe.md`（新建） | 平台契约探测结论（预设/创建/工作区/事件/cwd 沙箱） |
 | `README.md` / `docs/api-notes.md` | 主会话、目标目录、预设、迁移与已知局限 |
@@ -448,18 +448,21 @@ import { createMainSession, PRESET_ID } from '../src/main-session.js'
 const fake = ({ live = new Set() } = {}) => {
   const created = []
   const renamed = []
+  const workspacesCreated = []
   const set = new Set(live)
   return {
     created,
     renamed,
+    workspacesCreated,
     agents: { get: id => set.has(id) ? { id, session: { id } } : undefined },
     sessionController: {
       create: async request => { created.push(request); return { sessionId: 'session-main-new' } },
       rename: async request => { renamed.push(request) },
     },
+    // 工作区 API 是 location 式：resolveByPath(path) 查、create(path, title?) 建。
     workspaces: {
-      list: () => [{ id: 'ws-1', name: '指挥舱', path: 'C:/ws' }],
-      create: async () => ({ id: 'ws-new' }),
+      resolveByPath: () => undefined,
+      create: async (path, title) => { workspacesCreated.push([path, title]); return { id: 'ws-new' } },
     },
   }
 }
@@ -476,7 +479,32 @@ test('无主会话时创建（工作区 + 预设）并写台账', async () => {
   assert.equal(getMainSessionId(db), 'session-main-new')
   assert.equal(f.created[0].agentPreset, PRESET_ID)
   assert.equal('title' in f.created[0], false)
+  assert.deepEqual(f.workspacesCreated, [['C:/ws', '指挥舱']])
   assert.deepEqual(f.renamed, [{ sessionId: 'session-main-new', title: '主会话' }])
+  db.close()
+})
+
+test('已有指挥舱工作区时复用，不重复建', async () => {
+  const db = await openLedger(mkdtempSync(join(tmpdir(), 'orch-main-')))
+  const f = fake()
+  f.workspaces.resolveByPath = path => path === 'C:/ws' ? { id: 'ws-1', path } : undefined
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, workspacePath: 'C:/ws' })
+  const result = await main.open()
+  assert.equal(result.created, true)
+  assert.equal(f.created[0].workspaceId, 'ws-1')
+  assert.deepEqual(f.workspacesCreated, [])
+  db.close()
+})
+
+test('spawnProvider 不是 spawn 时拒绝创建并给可读原因', async () => {
+  const db = await openLedger(mkdtempSync(join(tmpdir(), 'orch-main-')))
+  const f = fake()
+  const main = createMainSession({ db, config: { spawnProvider: 'fork' }, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, workspacePath: 'C:/ws' })
+  const result = await main.open()
+  assert.equal(result.ok, false)
+  assert.match(result.error, /spawn/)
+  assert.equal(f.created.length, 0)
+  assert.equal(getMainSessionId(db), undefined)
   db.close()
 })
 
@@ -528,20 +556,26 @@ Expected: FAIL（模块不存在）
 
 ```js
 // 主会话：唯一协调者。创建/打开/重建都从这里走；不再由 task_create 自动绑定。
+import { mkdir } from 'node:fs/promises'
 import { getMainSessionId, setMainSessionId } from './ledger.js'
 
 export const PRESET_ID = 'dsh-orchestrator-coordinator'
+export const WORKER_PRESET_ID = 'dsh-orchestrator-worker'
 export const MAIN_SESSION_HINT = '尚未打开主会话，请先从面板「打开主会话」。'
 
 export function createMainSession({ db, config, agents, sessionController, workspaces, workspacePath, workspaceName = '指挥舱', log = () => {} }) {
   const liveAgent = id => agents?.get?.(id)
   const currentId = () => config?.coordinatorSession ?? getMainSessionId(db)
+  // worker 预设只认 spawn provider（fork 不满足 capabilities.agentPreset）；不静默降级、不改用户配置。
+  const spawnProvider = config?.spawnProvider ?? 'spawn'
 
   const ensureWorkspace = async () => {
     if (workspaces === undefined) return undefined
-    const found = workspaces.list?.().find(row => row.path === workspacePath || row.name === workspaceName)
+    // 工作区 API 是位置参数：create(path, title?)；目录必须先存在。
+    const found = workspaces.resolveByPath?.(workspacePath)
     if (found !== undefined) return found.id
-    const created = await workspaces.create?.({ name: workspaceName, path: workspacePath })
+    await mkdir(workspacePath, { recursive: true })
+    const created = await workspaces.create?.(workspacePath, workspaceName)
     return created?.id
   }
 
@@ -550,6 +584,9 @@ export function createMainSession({ db, config, agents, sessionController, works
     if (override !== undefined) {
       if (liveAgent(override) === undefined) return { ok: false, error: `配置的协调者会话 ${override} 当前未加载` }
       return { ok: true, sessionId: override, created: false }
+    }
+    if (spawnProvider !== 'spawn') {
+      return { ok: false, error: `主会话的子任务需要 spawn provider（当前 spawnProvider=${spawnProvider}）：请把 spawnProvider 改回 spawn，或改用配置覆盖的会话` }
     }
     const id = getMainSessionId(db)
     if (id !== undefined && liveAgent(id) !== undefined) return { ok: true, sessionId: id, created: false }
@@ -841,11 +878,16 @@ git commit -m "feat: 客户端打开主会话与目标目录"
 在 `test/config.test.js` 加（需要 `readFileSync`；文件已有则复用）：
 
 ```js
-test('cordis.patch.yml 注册协调者预设行', () => {
+test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(source, /dsh-orchestrator-coordinator/)
+  assert.match(source, /dsh-orchestrator-worker/)
   assert.match(source, /dsh-orchestrator\/preset-tools/)
-  assert.match(source, /plugins:/)
+  assert.match(source, /'@deepseek-ai\/dsh-tool-present'/)   // 标准包名，不是 dsh-present
+  assert.doesNotMatch(source, /dsh-present/)
+  assert.match(source, /isolate:\s*\n\s+compaction: true/)    // compaction 组必须带 isolate
+  assert.match(source, /tool-jobs/)                            // 后台任务需要
+  assert.match(source, /prefix:/)                              // persona.prefix 必填
 })
 
 test('package.json 导出 preset-tools', () => {
@@ -857,58 +899,63 @@ test('package.json 导出 preset-tools', () => {
 
 - [ ] **Step 2: 实现**
 
-`preset-tools.js`（包根，供协调者预设的 `plugins` 行使用；agent-scoped）：
+`preset-tools.js`（包根，供协调者预设的 `plugins` 行使用）。**不能用 `restrict({allow})`**：实验（`docs/probes/preset-scope-restrict.mjs`，7/7 PASS）证明预设 scope 的 allow 会把预设自己挂的 `ask_user_question` 一起遮掉，且 allow 里写它抛 `unknown global tool`。改用 **deny 补集**：
 
 ```js
-// 协调者预设内的工具收窄：在 agent 作用域里只保留协调需要的工具。
-// 预设 Config 不支持 toolFilter，所以用这个插件行实现「预设层固化」。
+// 协调者预设内的工具收窄：allow 名单 = 显式保留；其余已注册全局工具逐个 deny。
+// 预设自有工具（ask_user_question）不受 deny 影响，也不允许写进 allow。
 export const name = 'dsh-orchestrator-preset-tools'
 export const inject = ['tools']
 
-const ALLOW = [
-  'task_create', 'task_list', 'task_status', 'task_message', 'task_stop',
-  'ask_user', 'show_view',
-]
+const RUN_CODE = 'run_code'
 
-export function apply(ctx) {
-  const tools = ctx.tools
-  if (tools === undefined || typeof tools.restrict !== 'function') return
-  let allow = [...ALLOW]
-  try {
-    const view = typeof tools.view === 'function' ? tools.view() : undefined
-    const known = view?.restrictableNames ?? view?.knownNames
-    if (known instanceof Set) allow = allow.filter(item => known.has(item))
-  } catch { /* 取不到已知集合时按原列表交给 restrict 校验 */ }
-  if (allow.length === 0) return
-  try {
-    ctx.effect?.(() => tools.restrict({ allow }))
-  } catch { /* 平台不认 allow 时保持工具表原样，由运行期 guard 兜底 */ }
+export function apply(ctx, config = {}) {
+  const allow = new Set(config.allow ?? [])
+  if (allow.size === 0) throw new Error('preset-tools: config.allow 必须列出要保留的工具名（空名单会让协调者失去全部工具）')
+  const denied = new Set()
+  const lifts = []
+  const sync = () => {
+    const known = ctx.tools.view().restrictableNames
+    const fresh = [...known].filter(item => !allow.has(item) && !denied.has(item) && item !== RUN_CODE)
+    if (fresh.length === 0) return
+    for (const item of fresh) denied.add(item)
+    lifts.push(ctx.tools.restrict({ deny: fresh }))
+  }
+  const off = ctx.on('tools/change', sync)
+  ctx.effect(() => () => {
+    off()
+    for (const lift of lifts.splice(0)) lift()
+  })
+  sync()
 }
 ```
 
-`test/preset-tools.test.js`：
+`test/preset-tools.test.js`（假 ctx 驱动，重点覆盖时序与幂等）：
 
 ```js
-import test from 'node:test'
-import assert from 'node:assert/strict'
-import { apply, name } from '../preset-tools.js'
+test('preset-tools 用 deny 补集保留 allow，不把 allow 交给 restrict', () => {
+  const ctx = makeCtx(['task_create', 'read', 'bash'])
+  apply(ctx, { allow: ['task_create'] })
+  assert.deepEqual(ctx.calls, [{ deny: ['read', 'bash'] }])
+})
 
-test('preset-tools 在 agent 作用域 restrict allow', () => {
-  const calls = []
-  const ctx = {
-    tools: {
-      view: () => ({ restrictableNames: new Set(['task_create', 'read', 'ask_user']) }),
-      restrict: filter => { calls.push(filter); return () => {} },
-    },
-    effect: disposer => { const d = disposer(); assert.equal(typeof d, 'function') },
-  }
-  apply(ctx)
-  assert.equal(name, 'dsh-orchestrator-preset-tools')
-  assert.deepEqual(calls[0], { allow: ['task_create', 'ask_user'] })
+test('后注册的全局工具在 tools/change 后补 deny，且不重复', () => {
+  const ctx = makeCtx(['task_create', 'task_list'])
+  apply(ctx, { allow: ['task_create', 'task_list'] })
+  assert.equal(ctx.calls.length, 0)
+  ctx.setGlobals(['task_create', 'task_list', 'show_view'])
+  ctx.fire()
+  assert.deepEqual(ctx.calls, [{ deny: ['show_view'] }])
+  ctx.fire()
+  assert.equal(ctx.calls.length, 1)
+})
+
+test('空 allow 直接报错', () => {
+  assert.throws(() => apply(makeCtx(['read']), {}), /allow/)
 })
 ```
 
-`cordis.patch.yml`：按 `docs/probes/main-session-probe.md` §6 的清单注册**两个**预设——协调者只带协调工具，worker 带完整工作栈（子会话显式用它，绕开 preset restrict 继承）：
+`cordis.patch.yml`：按 `docs/probes/main-session-probe.md` §6 的清单注册**两个**预设——协调者只带协调工具（`preset-tools` 用 deny 补集），worker 带完整工作栈（子会话显式用它，绕开 `composeFrom` 继承）：
 
 ```yaml
 - insert:
@@ -928,12 +975,21 @@ test('preset-tools 在 agent 作用域 restrict allow', () => {
               prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
           - id: preset-tools
             name: dsh-orchestrator/preset-tools
+            config:
+              allow:
+                - task_create
+                - task_list
+                - task_status
+                - task_message
+                - task_stop
     - id: orchestrator-worker-preset
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -942,23 +998,72 @@ test('preset-tools 在 agent 作用域 restrict allow', () => {
         description: 子会话的完整工作栈；显式指定它，避免继承协调者预设的工具收窄。
         order: 81
         plugins:
-          - { id: persona, name: '@deepseek-ai/dsh-persona' }
-          - { id: agent-instructions, name: '@deepseek-ai/dsh-agent-instructions' }
-          - { id: time-context, name: '@deepseek-ai/dsh-time-context' }
-          - { id: tool-bash, name: '@deepseek-ai/dsh-tool-bash', disabled: !!js process.platform === 'win32' }
-          - { id: tool-pwsh, name: '@deepseek-ai/dsh-tool-pwsh', disabled: !!js process.platform !== 'win32' }
-          - { id: tool-fs, name: '@deepseek-ai/dsh-tool-fs', config: { applyPatch: false } }
-          - { id: tool-fs-search, name: '@deepseek-ai/dsh-tool-fs-search' }
-          - { id: tool-web, name: '@deepseek-ai/dsh-tool-web' }
-          - { id: tool-todo, name: '@deepseek-ai/dsh-tool-todo' }
-          - { id: tool-ask-user, name: '@deepseek-ai/dsh-tool-ask-user' }
-          - { id: compaction, name: cordis:group, group: true, config: [ { id: compaction-basic, name: '@deepseek-ai/dsh-compaction-basic' }, { id: command-compact, name: '@deepseek-ai/dsh-command-compact' }, { id: tool-result-pruner, name: '@deepseek-ai/dsh-compaction-tool-result-pruner' } ] }
-          - { id: skill-filesystem, name: '@deepseek-ai/dsh-skill-filesystem' }
-          - { id: tool-skill, name: '@deepseek-ai/dsh-tool-skill' }
-          - { id: present, name: '@deepseek-ai/dsh-present' }
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: 你是 dsh-orchestrator 的任务执行者，在目标目录里把活干完，并用 task_report 回报。
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              customSkillDirs:
+                - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
 ```
 
-> `task_report` 不在 worker 行里（本插件全局注册）；若 Task 10 发现子会话看不到它，再把 `dsh-orchestrator` 行加进 worker。`preset-tools` 的 allow 用 `knownNames` 过滤，未知名字（如没有 deep-view 时的 `show_view`）会被跳过而不是抛错。
+> `task_report` / `ask_user_question` 的可见性、`show_view`/memory 是否补 allow、`spawnProvider` 校验（`main-session.js` 已加，非 spawn 拒绝打开）都进 Task 10。`preset-tools` 只 deny 已注册的全局工具，`run_code` 平台禁止 deny（跳过）；`ask_user_question` 由 `tool-ask-user` 行自己注册，不写进 allow。
 
 README 增加「主会话」一节（入口、创建/重建、指挥舱、目标目录、预设工具集、迁移、配置覆盖），api-notes 补预设与 `create` 的探测结论。
 
@@ -970,7 +1075,7 @@ Expected: 全绿
 - [ ] **Step 4: 提交**
 
 ```bash
-git add cordis.patch.yml README.md docs/api-notes.md test/config.test.js
+git add cordis.patch.yml preset-tools.js test/preset-tools.test.js package.json README.md docs/api-notes.md test/config.test.js
 git commit -m "feat: 协调者预设与主会话文档"
 ```
 

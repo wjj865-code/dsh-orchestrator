@@ -5,8 +5,8 @@
   "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, brief rendering, progress reports, interrupt-controlled notifications, and a browser task panel.",
   "type": "module",
   "main": "index.js",
-  "exports": { ".": "./index.js", "./client": "./client.js" },
-  "files": ["index.js", "client.js", "src/", "cordis.patch.yml", "README.md"],
+  "exports": { ".": "./index.js", "./client": "./client.js", "./preset-tools": "./preset-tools.js" },
+  "files": ["index.js", "client.js", "preset-tools.js", "src/", "cordis.patch.yml", "README.md"],
   "engines": { "node": ">=22.15" },
   "scripts": {
     "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"",
