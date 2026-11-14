@@ -167,9 +167,9 @@ test('subagent：spawn 用自有 childId、caller delivery、cwd，返回 childI
   assert.equal(spec.label, '任务甲')
   assert.equal(spec.signal, signal)
   assert.match(spec.childId, /^[0-9a-f-]{36}$/)
-  assert.equal(spec.request.parent, agent)
-  assert.equal(spec.request.cwd, 'C:\\work')
-  assert.deepEqual(spec.request.prompt, [{ type: 'text', text: '【任务】x' }])
+  assert.equal(spec.parent, agent)
+  assert.equal(spec.cwd, 'C:\\work')
+  assert.deepEqual(spec.prompt, [{ type: 'text', text: '【任务】x' }])
   assert.equal(member.sessionId, member.id)
   assert.equal(member.target, member.id)
 })
@@ -255,25 +255,25 @@ test('spawn 透传 cwd；默认用父会话 cwd；显式带 worker preset', asyn
   const parent = { id: 's-1', session: { header: { cwd: 'C:/parent' } } }
   const dispatcher = createSubagentDispatcher({ subagents, agent: parent, workerPreset: 'dsh-orchestrator-worker' })
   await dispatcher.spawn({ prompt: 'hi', cwd: 'C:/target' })
-  assert.equal(calls[0].request.cwd, 'C:/target')
-  assert.equal(calls[0].request.agentPreset, 'dsh-orchestrator-worker')
+  assert.equal(calls[0].cwd, 'C:/target')
+  assert.equal(calls[0].agentPreset, 'dsh-orchestrator-worker')
   await dispatcher.spawn({ prompt: 'hi' })
-  assert.equal(calls[1].request.cwd, 'C:/parent')
-  assert.equal(calls[1].request.agentPreset, 'dsh-orchestrator-worker')
+  assert.equal(calls[1].cwd, 'C:/parent')
+  assert.equal(calls[1].agentPreset, 'dsh-orchestrator-worker')
 })
 
 test('未传 workerPreset 时默认仍用 dsh-orchestrator-worker', async () => {
   const service = fakeSubagents()
   const dispatcher = createSubagentDispatcher({ subagents: service, agent })
   await dispatcher.spawn({ prompt: 'p' })
-  assert.equal(service.calls[0][1].request.agentPreset, 'dsh-orchestrator-worker')
+  assert.equal(service.calls[0][1].agentPreset, 'dsh-orchestrator-worker')
 })
 
 test('fork provider 不注入 agentPreset（平台不支持，避免 UNSUPPORTED_CAPABILITY）', async () => {
   const service = fakeSubagents()
   const dispatcher = createSubagentDispatcher({ subagents: service, agent, provider: 'fork' })
   await dispatcher.spawn({ prompt: 'p' })
-  const request = service.calls[0][1].request
+  const request = service.calls[0][1]
   assert.equal('agentPreset' in request, false)
   assert.equal(service.calls[0][1].provider, 'fork')
 })
@@ -287,4 +287,99 @@ test('协调者 agent.session 尚未就绪：spawn 给可读错误（可重试�
 test('协调者 agent 缺 id：spawn 给可读错误', async () => {
   const dispatcher = createSubagentDispatcher({ subagents: { async startActivation() { throw new Error('不该走到这里') } }, agent: { session: { id: 's-1' } } })
   await assert.rejects(() => dispatcher.spawn({ prompt: 'hi' }), /缺少 id/)
+})
+
+
+test('rc.3 扁平 spec：spawn 提供 spec.parent/prompt/agentPreset，同时保留 rc.1 request 包装', async () => {
+  const calls = []
+  const subagents = {
+    startActivation: spec => {
+      calls.push(spec)
+      return Promise.resolve({ childId: spec.childId, result: Promise.resolve({}), dispose: async () => {} })
+    },
+    sendMessage: async () => {},
+    interruptByParent: async () => {},
+    listChildren: async () => [],
+  }
+  const agent = { id: 's-1', session: { id: 's-1', header: { cwd: 'C:/parent' } } }
+  const dispatcher = createSubagentDispatcher({ subagents, agent })
+  await dispatcher.spawn({ prompt: 'hi', cwd: 'C:/target' })
+  const spec = calls[0]
+  // 当前桌面（rc.3）读扁平字段
+  assert.equal(spec.parent, agent)
+  assert.deepEqual(spec.prompt, [{ type: 'text', text: 'hi' }])
+  assert.equal(spec.agentPreset, 'dsh-orchestrator-worker')
+  assert.equal(spec.cwd, 'C:/target')
+  // rc.3 只发扁平形状；旧包装只在形状错误时回退。
+  assert.equal('request' in spec, false)
+})
+
+test('rc.3 扁平 spec 下 fork provider 不出现 agentPreset', async () => {
+  const service = fakeSubagents()
+  const dispatcher = createSubagentDispatcher({ subagents: service, agent, provider: 'fork' })
+  await dispatcher.spawn({ prompt: 'p' })
+  const spec = service.calls[0][1]
+  assert.equal('agentPreset' in spec, false)
+  assert.equal('request' in spec, false)
+})
+
+test('rc.1 旧形状：扁平调用形状错误时回退 request 包装', async () => {
+  const calls = []
+  const subagents = {
+    async startActivation(spec) {
+      calls.push(spec)
+      if (spec.request === undefined) throw new TypeError("Cannot read properties of undefined (reading 'parent')")
+      return { childId: spec.childId, result: Promise.resolve({}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const dispatcher = createSubagentDispatcher({ subagents, agent })
+  await dispatcher.spawn({ prompt: 'hi', cwd: 'C:/target' })
+  assert.equal(calls.length, 2)
+  assert.equal('request' in calls[0], false)
+  assert.equal(calls[1].request.parent, agent)
+  assert.equal(calls[1].request.cwd, 'C:/target')
+  assert.equal(calls[1].request.agentPreset, 'dsh-orchestrator-worker')
+})
+
+test('非形状错误不回退：只调用一次并原样抛出', async () => {
+  const calls = []
+  const subagents = {
+    async startActivation(spec) { calls.push(spec); throw new Error('spawn boom') },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const dispatcher = createSubagentDispatcher({ subagents, agent })
+  await assert.rejects(() => dispatcher.spawn({ prompt: 'hi' }), /spawn boom/)
+  assert.equal(calls.length, 1)
+})
+
+
+test('rc.3：stop 无本地 activation 时走 interrupt(target, authority)', async () => {
+  const calls = []
+  const subagents = {
+    async startActivation() {},
+    async sendMessage() {},
+    async interrupt(target, authority) { calls.push([target, authority]) },
+    async listDescendants() { return [] },
+  }
+  const dispatcher = createSubagentDispatcher({ subagents, agent })
+  await dispatcher.stop('c-9')
+  assert.deepEqual(calls, [['c-9', agent]])
+})
+
+test('rc.3：catalog/members 走 listDescendants 而不是 listChildren', async () => {
+  const calls = []
+  const subagents = {
+    async startActivation() {},
+    async sendMessage() {},
+    async interrupt() {},
+    async listDescendants(parentId) { calls.push(['listDescendants', parentId]); return [{ id: 'c1', mode: 'continuable' }] },
+  }
+  const dispatcher = createSubagentDispatcher({ subagents, agent })
+  assert.deepEqual(await dispatcher.catalog(), [{ id: 'c1', mode: 'continuable' }])
+  assert.deepEqual(calls, [['listDescendants', 's1']])
 })

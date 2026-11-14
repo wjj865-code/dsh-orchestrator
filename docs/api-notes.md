@@ -116,6 +116,7 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 - 复用条件以台账为准：`main_session_id` 指向的会话 live **且** `settings.main_session_preset === 协调者预设` 才复用；平台读回（`agentPresets.presetForSession` 是事件投影，空白会话被 UI resume 时会 append `agent-preset/selected: standard` 翻转）只作诊断，不一致记 `main.session.preset-mismatch`，不重建。旧版主会话没有台账标记时，能明确读到协调者预设才认领，否则重建一次（`main.session.recreate`）。
 - 预设守护：复用前/`agent/created` 时若读回不是协调者且会话仍 blank，调 `agentPresets.select(agent, 协调者预设)` 拉回；非 blank 抛 `agent-preset/locked` 只记日志，由 guard 兜底。`create` 返回值里的 `agentPreset` 会回传并写进 `main.session.created` 日志。
 - 派发可重试：`dispatch.spawn` 在 `parent.session` 为空或 `parent.id` 缺失时抛「协调者会话尚未就绪…」，队列按可重试留在 pending；真失败标 failed 并给主会话推 system 通知（无 sender 时用主会话 id 投递），日志带 `error.stack` 前三行。
+- rc.1→rc.3 兼容：`startActivation` 先发扁平 spec（rc.3），报 `spec.parent/request.parent` 形状错误时回退旧 `request` 包装；`stop` 优先 `interrupt(target, authority)`、否则 `interruptByParent`；catalog 优先 `listDescendants`、否则 `listChildren`。升级后重跑全部契约探针。
 - `sessionController.create` 入参没有 `title`，标题必须单独 `rename`；`rename` 依赖 `sessionTitle` 服务，失败只记日志，不影响主会话可用。
 - 子会话 cwd：`startActivation.request.cwd` 直接用目标目录（必须是存在的绝对目录），沙箱边界就是该 cwd；没给 target 时沿用父会话 cwd。
 - `task_create` 不再绑定调用方；`task_*`（除 `task_report`）只允许主会话调用，没有主会话时返回「尚未打开主会话，请先从面板「打开主会话」」。

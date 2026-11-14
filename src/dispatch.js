@@ -83,6 +83,10 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     if (current === undefined) throw new Error('未找到协调者会话：请配置 coordinatorSession（协调者会话 id），并确保该会话已加载')
     return current
   }
+  // rc.3 改名 listDescendants ; rc.1 是 listChildren。按服务方法探测，不按版本号猜。
+  const listChildren = (parentId, signal) => typeof subagents.listDescendants === 'function'
+    ? subagents.listDescendants(parentId, signal)
+    : subagents.listChildren(parentId, signal)
   const parentSessionId = () => {
     const current = requireAgent()
     return current.session?.id ?? current.id
@@ -128,27 +132,35 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       const childId = randomUUID()
       // 目标目录优先；没给就沿用父会话 cwd（保持旧行为）。
       const baseCwd = cwd ?? parent.session?.header?.cwd
-      const spec = {
+      const activationPrompt = [{ type: 'text', text: String(prompt ?? '') }]
+      // 子会话显式用 worker 预设，绕开 composeFrom 继承协调者的 preset restrict（探针 §1）。
+      // 只有 spawn provider 支持 agentPreset；fork 没有该能力，带上去会被平台拒绝（UNSUPPORTED_CAPABILITY）。
+      const agentPreset = provider === 'spawn' ? { agentPreset: workerPreset ?? 'dsh-orchestrator-worker' } : {}
+      const location = baseCwd === undefined ? {} : { cwd: baseCwd }
+      const base = {
         provider,
         label: label ?? name ?? slugify(String(prompt ?? '').slice(0, 20)),
         delivery: 'caller',
         signal: signal ?? new AbortController().signal,
         childId,
-        request: {
-          parent,
-          prompt: [{ type: 'text', text: String(prompt ?? '') }],
-          // 子会话显式用 worker 预设，绕开 composeFrom 继承协调者的 preset restrict（探针 §1）。
-          // 只有 spawn provider 支持 agentPreset；fork 没有该能力，带上去会被平台拒绝（UNSUPPORTED_CAPABILITY）。
-          ...(provider === 'spawn' ? { agentPreset: workerPreset ?? 'dsh-orchestrator-worker' } : {}),
-          ...(baseCwd === undefined ? {} : { cwd: baseCwd }),
-        },
       }
+      // DSH 0.2.2-rc.3（当前桌面）的 startActivation 是扁平 spec：spec.parent/spec.prompt/…
+      const spec = { ...base, parent, prompt: activationPrompt, ...agentPreset, ...location }
+      // rc.1 及更早：旧平台读 spec.request.*，扁平字段会被忽略。
+      const legacySpec = {
+        ...base,
+        request: { parent, prompt: activationPrompt, ...agentPreset, ...location },
+      }
+      const shapeError = error => /reading '(parent|request)'|spec\.(parent|request)|request\.parent/.test(error?.message ?? '')
       let activation
       onEvent('subagent.spawn.requested', { taskId, detail: { childId, label: spec.label, provider } })
       try {
         activation = await subagents.startActivation(spec)
       } catch (error) {
-        throw error
+        if (!shapeError(error)) throw error
+        // 升级前的旧安装：扁平 spec 读不到 request.parent，回退一次旧包装。
+        onEvent('subagent.spawn.legacy-spec', { taskId, detail: { childId, error: error?.message ?? String(error) } })
+        activation = await subagents.startActivation(legacySpec)
       }
       onEvent('subagent.spawn.accepted', {
         taskId,
@@ -178,7 +190,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       throw new Error(`投递失败：${lastError?.message ?? lastError}`)
     },
-    /** 有本地 activation 直接 dispose（提前取消）；没有（重启后）走 interruptByParent，mode 唯一合法值。 */
+    /** 有本地 activation 直接 dispose（提前取消）；没有（重启后）走 interrupt。 */
     async stop(target) {
       const activation = live.get(target)
       if (activation !== undefined) {
@@ -186,16 +198,18 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         live.delete(target)
         return
       }
+      // rc.3：interrupt(targetSessionId, authorityAgent)；rc.1：interruptByParent(childId, parentSessionId, mode)。
+      if (typeof subagents.interrupt === 'function') return subagents.interrupt(target, requireAgent())
       return subagents.interruptByParent(target, parentSessionId(), 'continuable')
     },
     members() {
-      return subagents.listChildren(parentSessionId()).catch(error => {
+      return listChildren(parentSessionId()).catch(error => {
         onWarn(`子会话目录读取失败：${errorText(error)}`)
         return []
       })
     },
     catalog() {
-      return subagents.listChildren(parentSessionId())
+      return listChildren(parentSessionId())
     },
     has(target) {
       return live.has(target)
