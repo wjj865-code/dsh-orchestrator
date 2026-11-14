@@ -221,7 +221,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - **卡片跳转**：子会话不在普通会话列表，阶段 1 只给数据（`childSessionId` + `openVia`），客户端入口/面板在阶段 2 按父会话的 subagent catalog 打开。
 - **30 分钟打扰升级**：`stallRounds` 只保存不生效，阶段 1 只有 `task_list` 的陈旧标记。
 - **`run_code`/PTC**：平台禁止 `restrict` 指名 PTC 保留传输 `run_code`；若 profile 配了 PTC executor，协调者可能经它间接调用被 deny 的工具。真机确认 desktop 默认没有 PTC executor；有则记录并禁用该路。
-- **deny 审计日志**：`preset-tools: deny …` 走平台 `ctx.logger.info`，不写插件自己的 `logs/orchestrator-*.jsonl`；真机日志里能查到即可。
+- **deny 审计日志**：`preset-tools` 同时写平台 `ctx.logger.info`（`preset-tools: deny …`）和插件自己的 `$DSH_HOME/state/orchestrator/logs/orchestrator-*.jsonl`（事件 `preset.deny`，`detail.tools` 是被 deny 的名单），真机用后者对表即可。
 - **`show_view` / memory**：base asar 未证实有这两个全局工具，协调者 allow 默认不带；Task 10 在 ds-bot 环境确认后再决定是否补 allow。
 - **`task_report` 子会话可见性**：靠全局注册，Task 10 真机确认；看不到就改用专用轻量工具模块，不把整个 `dsh-orchestrator` 塞进 worker 预设。
 - **配置覆盖会话的运行期白名单**：`config.coordinatorSession` 指定的会话没有预设保证，仍用 `agent.ctx.tools.restrict({ deny })` 兜底；收窄挂在**回合边界**（会话在跑时等 `idle` 再装），所以当回合仍是全工具表、下一回合才收窄，避免 mid-turn `unknown tool`。`spawn_teammate`/`send_message`/`list_agents`/`wait_agent`/`interrupt_agent`/`team_task_*` 是 agent scope 注册，不在 `restrictableNames` 里，`restrict` 去不掉；`wait_agent` 由执行期 guard + 动态提示兜底。**guard 对主会话同样生效**：判定源是 `config.coordinatorSession ?? settings.main_session_id`，所以预设只收窄全局工具、`wait_agent` 仍留在工具表时，主会话调用它也会拿到可读拒绝、不会阻塞回合（用例：`settings.main_session_id 的主会话调用 wait_agent 也被 guard 拒绝`）。

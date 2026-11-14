@@ -1,6 +1,19 @@
-import test from 'node:test'
+import test, { after, before } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { apply, name } from '../preset-tools.js'
+
+// 审计日志会写 $DSH_HOME/state/orchestrator/logs；测试必须隔离到临时 home，不能碰用户目录。
+const logHome = mkdtempSync(join(tmpdir(), 'orch-preset-log-'))
+const previousHome = process.env.DSH_HOME
+before(() => { process.env.DSH_HOME = logHome })
+after(() => {
+  if (previousHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = previousHome
+  rmSync(logHome, { recursive: true, force: true })
+})
 
 // 假 ctx：模拟预设 scope 的 tools/change 事件、restrict 返回值与 effect 清理。
 const makeCtx = (globals = []) => {
@@ -116,4 +129,18 @@ test('dispose 时移除 tools/change 监听并解除 deny', () => {
   ctx.cleanup()
   assert.equal(ctx.listenerCount(), 0)
   assert.equal(ctx.lifts[0].called, true)
+})
+
+
+test('deny 审计同时写插件自己的 JSONL', () => {
+  const ctx = makeCtx(['read', 'bash'])
+  apply(ctx, { allow: ['task_create'] })
+  const dir = join(logHome, 'state', 'orchestrator', 'logs')
+  const files = readdirSync(dir).filter(file => file.endsWith('.jsonl'))
+  assert.ok(files.length > 0, '没有写日志文件')
+  const text = files.map(file => readFileSync(join(dir, file), 'utf8')).join('')
+  assert.match(text, /"event":"preset\.deny"/)
+  assert.match(text, /read/)
+  assert.match(text, /bash/)
+  assert.deepEqual(ctx.logLines, ['preset-tools: deny read, bash'])
 })
