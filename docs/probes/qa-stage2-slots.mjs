@@ -145,26 +145,52 @@ check('apply 执行不抛异常', true)
 
 // ---------- 槽位断言 ----------
 const byName = (name) => regs.filter((r) => r.spec?.name === name)
-const ALLOWED = new Set(['sidebar.panellist', 'main', 'conversation.header.leading', 'shell.overlay'])
-const FORBIDDEN = ['sidebar.workspaces', 'sidebar.footer.action', 'sidebar.brand.mark', 'sidebar.brand.name',
-  'conversation.session.header', 'conversation.session.header.actions', 'conversation.session.header.views.actions']
+// 阶段 3 修正：ds-bot 在 Bot 模式用 `nav[class*="_panelList"]{display:none!important}` 藏了整条侧栏面板列表，
+// 所以入口从 sidebar.panellist 改到 sidebar.footer.action（shell 底部 action 列表，ds-bot 只用了 bot-return/bot-account 两个 id）。
+const ALLOWED = new Set(['sidebar.footer.action', 'main', 'conversation.header.leading', 'shell.overlay'])
+const FORBIDDEN = ['sidebar.workspaces', 'sidebar.brand.mark', 'sidebar.brand.name',
+  'conversation.session.header', 'conversation.session.header.actions',
+  'conversation.session.header.views.actions']
 for (const name of FORBIDDEN) check(`不注册 ds-bot 的 ${name}`, byName(name).length === 0)
+check('不再注册 sidebar.panellist（Bot 模式被 ds-bot display:none 藏掉，避免双入口）', byName('sidebar.panellist').length === 0)
 for (const r of regs) {
   const name = r.spec?.name
   if (!ALLOWED.has(name)) check(`未登记的槽位 ${name}`, false)
   else if (name === 'shell.overlay') warn('注册了 shell.overlay（阶段 2 范围外，需另立条目）', String(r.spec?.id))
 }
 
-const panellist = byName('sidebar.panellist')
-check('sidebar.panellist 恰 1 次', panellist.length === 1, `实际 ${panellist.length}`)
-if (panellist[0]) {
-  const s = panellist[0].spec
+const footer = byName('sidebar.footer.action')
+check('sidebar.footer.action 恰 1 次', footer.length === 1, `实际 ${footer.length}`)
+if (footer[0]) {
+  const s = footer[0].spec
   check("入口 id === 'orchestrator'", s.id === 'orchestrator', String(s.id))
-  check('入口 order === 10', s.order === 10, String(s.order))
+  check('入口 id 不与 ds-bot 冲突（bot-account/bot-return）', !['bot-account', 'bot-return'].includes(s.id), String(s.id))
+  check('入口 order === 100（ds-bot 是 -300/-200）', s.order === 100, String(s.order))
   check('入口不设 priority', !('priority' in s), s.priority === undefined ? '无' : `priority=${s.priority}`)
-  const label = typeof s.label === 'function' ? s.label() : s.label
-  check('入口 label 非空', typeof label === 'string' && label.trim().length > 0, JSON.stringify(label))
-  check('入口经 slots.inject 包装（可撤销）', panellist[0].via === 'sidebar.panellist', String(panellist[0].via))
+  check('入口经 slots.inject 包装（可撤销）', footer[0].via === 'sidebar.footer.action', String(footer[0].via))
+  // shell 给 sidebar.footer.action 的 props 是 { wide }；两种形态都要可渲染、有可读标签、点击开面板。
+  let base = {}
+  try { base = (typeof s.inject === 'function' ? s.inject({}) : {}) ?? {} } catch (e) { warn('footer inject 异常', e.message) }
+  for (const wide of [true, false]) {
+    let tree
+    try { tree = footer[0].component({ ...base, wide }) } catch (e) { warn(`footer 组件 wide=${wide} 渲染异常`, e.message); continue }
+    check(`footer 组件（wide=${wide}）可渲染`, tree !== null && tree !== undefined)
+    const buttons = []
+    walk(tree, (n) => { if (n.type === 'button') buttons.push(n) })
+    check(`footer 组件（wide=${wide}）渲染出按钮`, buttons.length > 0, `buttons=${buttons.length}`)
+    if (buttons[0]) {
+      const props = buttons[0].props ?? {}
+      const label = String(props['aria-label'] ?? props.title ?? '')
+      check(`footer 组件（wide=${wide}）有 aria-label/title 且含「任务」`, label.includes('任务'), label || '（无）')
+      if (typeof props.onClick === 'function') {
+        selectPanelCalls.length = 0
+        props.onClick({ preventDefault() {}, stopPropagation() {} })
+        check(`footer 组件（wide=${wide}）点击打开面板`, selectPanelCalls.includes('orchestrator'), JSON.stringify(selectPanelCalls))
+      } else {
+        check(`footer 组件（wide=${wide}）有 onClick`, false)
+      }
+    }
+  }
 }
 
 const main = byName('main')

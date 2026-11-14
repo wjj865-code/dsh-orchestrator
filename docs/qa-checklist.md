@@ -638,7 +638,9 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **`f515a4a` + `6a8f07e` delta 复验（connection 晚到 / 快照截断）**：`index.js` 改为 `ctx.inject(['connection'], …)` + `scope.effect` 清理，保留 `ctx.get` 兜底（读 `index.js:272-299`；该路径由 181 测试里的「connection 晚到」用例覆盖，我未单独复跑）。L2 探针同步更新：静态断言改成「ledger 只取 `listTasks`/`listHistoryTasks` 两个查询函数 + `listHistoryTasks` 用 SQL `LIMIT`/`NOT IN` 活跃态」；新增动态用例「1 个早创建 running + 3 个新 done、limit=2」→ 返回 3 条、running 在、done 只 2 条、活跃排前、历史倒序；`limit=0` 只返回活跃。结果：L2 **57 条全过**、L1 47/47、`npm test` 181/181、api-probe 33/33、`node --check client.js` exit 0。
 
-**结论**：阶段 2 代码侧通过（L1 47/47、L2 57/57、181/181、api-probe 33/33）；L3 真机（Bot 模式头部按钮、面板数据/跳转、ds-bot 侧栏不受影响、401/403 真实表现）留阶段 3 装 desktop 时做。
+**`e4bb07e` 复验（侧栏入口迁到 `sidebar.footer.action`）**：真机 L3 发现 `sidebar.panellist` 在 Bot 模式被 ds-bot `nav[class*="_panelList"]{display:none!important}` 整条藏掉（按钮在 DOM 但 0×0），改注册 `sidebar.footer.action`（`id:'orchestrator'`、`order:100`、无 priority）。平台契约核对：`dsh-client-ui-sidebar/lib/client.js` @765 `{kind:'list', scope:'root'}`、渲染在 `.footArea > .footerActions` 并传 `{ wide }`；ds-bot 同槽占 `bot-return`(-300)/`bot-account`(-200)，CSS 让每个 action 占整行（`grid-column:1/-1`），我们的按钮单独一行不挤压账户位。L1 探针改断言后 **54 条全过**：不再注册 panellist、footer.action 恰 1 次、id/order/无 priority、id 不等于 bot-account/bot-return、`wide=true/false` 都能渲染出按钮、两态都有 `title/aria-label` 含「任务」、两态点击都 `selectPanel('orchestrator')`；L2 `RESULT: PASS`；`npm test` 182/182；api-probe 33/33；`npm pack --dry-run` 含 `client.js`(10.0kB)。
+
+**结论**：阶段 2 代码侧通过（L1 54/54、L2 57/57、182/182、api-probe 33/33）；L3 真机按 §27 表在装 desktop 后逐条勾（Bot 模式 header 按钮已验证渲染，侧栏入口改 footer 后待重跑）。
 
 ## 27. 阶段 3 L3 真机核对表（装 profile + 重启后逐条勾）
 
@@ -648,9 +650,9 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 | # | 步骤 | 期望 | 结果 |
 | --- | --- | --- | --- |
-| 1 | 重启后看左侧图标列表 | 「任务」入口在「插件」下方（插件 `order:0`、我们 `order:10`）；ds-bot 账户位仍在最下方 | [ ] |
-| 2 | 点侧栏「任务」 | 主区域切到任务面板：标题「任务」、状态筛选下拉、刷新、打开协调者会话、任务行 | [ ] |
-| 3 | 切到「插件」页再切回「任务」 | 来回切换正常，面板不叠加、控制台无报错 | [ ] |
+| 1 | 重启后看左侧栏底部（`sidebar.footer.action`） | 出现「☰ 任务」按钮（展开态带文字、折叠态只有图标），与 ds-bot 的「返回」「账户位」并列不重叠、不遮挡账户位 | [ ] |
+| 2 | 点 footer「任务」 | 主区域切到任务面板：标题「任务」、状态筛选下拉、刷新、打开协调者会话、任务行 | [ ] |
+| 3 | 折叠侧栏再展开 | 折叠时 footer 入口随 shell 隐藏（已知降级，头部按钮可用），展开后入口回来；无报错 | [ ] |
 
 ### B. 会话头按钮（Bot 模式）
 
