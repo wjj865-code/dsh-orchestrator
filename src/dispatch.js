@@ -18,7 +18,24 @@ const noop = () => {}
 
 const errorText = error => `${error?.code === undefined ? '' : `[${error.code}] `}${error?.message ?? error}`
 
+// team 后端用到的 agentTeams 成员 API。rc.3 起平台把这组方法整体移除（只剩 state/transact
+// 与团队任务板），调用会报 is not a function；这里按服务方法探测，给出可读错误。
+const TEAM_METHODS = ['spawnTeammate', 'sendMessage', 'interrupt', 'listMembers']
+
+export function missingTeamMethods(agentTeams) {
+  const source = agentTeams ?? {}
+  return TEAM_METHODS.filter(name => typeof source[name] !== 'function')
+}
+
+export function teamUnavailableMessage(missing) {
+  return `team 后端不可用：当前平台缺少 agentTeams.${missing.join('/')}`
+    + '（rc.3 起平台移除了 agentTeams 成员 API），请把 backend 改回 subagent'
+}
+
 export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = 'spawn', retryDelaysMs = [1000, 2000, 4000], onWarn = noop }) {
+  // 能力探测在构造时做一次：缺方法立即给可读错误，不留到每次派发时报 is not a function。
+  const missing = missingTeamMethods(agentTeams)
+  if (missing.length > 0) throw new Error(teamUnavailableMessage(missing))
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
   const requireAgent = () => {
     const current = currentAgent()
@@ -217,9 +234,34 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   }
 }
 
+// 后端不可用时的占位派发器：派发类调用返回可读错误，目录类查询降级为空（不打断面板/孤儿巡检）。
+function createUnavailableDispatcher(reason) {
+  const fail = () => { throw new Error(reason) }
+  return {
+    slug(title) {
+      return slugify(title)
+    },
+    async spawn() { fail() },
+    async send() { fail() },
+    async sendReliable() { fail() },
+    async stop() { fail() },
+    async members() { return [] },
+    async catalog() { return [] },
+    has() { return false },
+  }
+}
+
 export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop }) {
   if (backend === 'team') {
-    return createTeamDispatcher({ agentTeams, agent, getAgent, provider, retryDelaysMs, onWarn })
+    try {
+      return createTeamDispatcher({ agentTeams, agent, getAgent, provider, retryDelaysMs, onWarn })
+    } catch (error) {
+      // 平台升级把 team 后端废了：插件照常加载（面板与其他能力可用），
+      // 派发时给同一条可读错误，而不是插件加载失败或抛 is not a function。
+      const reason = error?.message ?? String(error)
+      onWarn(`dsh-orchestrator: ${reason}`)
+      return createUnavailableDispatcher(reason)
+    }
   }
   return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent })
 }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createDispatcher, createSubagentDispatcher } from '../src/dispatch.js'
+import { createDispatcher, createSubagentDispatcher, createTeamDispatcher } from '../src/dispatch.js'
 
 function fakeTeams({ failTimes = 0 } = {}) {
   const calls = []
@@ -186,6 +186,41 @@ test('subagent：settle 后发出事件，dispose 走 activation', async () => {
   assert.ok(events.some(([event]) => event === 'subagent.settled'))
 })
 
+test('team：rc.3 缺成员 API 时构造即抛可读错误，文案不含 is not a function', () => {
+  // rc.3 的 agentTeams 只剩 state/transact 与团队任务板，成员 API 整体移除。
+  const rc3Teams = { state() {}, transact() {} }
+  let message = ''
+  try {
+    createTeamDispatcher({ agentTeams: rc3Teams, agent })
+  } catch (error) {
+    message = error.message
+  }
+  assert.match(message, /backend 改回 subagent/)
+  assert.match(message, /agentTeams\.spawnTeammate/)
+  assert.doesNotMatch(message, /is not a function/)
+})
+
+test('team：backend:team 且平台缺能力时插件不炸，派发返回同一条可读错误', async () => {
+  const warnings = []
+  const dispatcher = createDispatcher({
+    backend: 'team',
+    agentTeams: { state() {}, transact() {} },
+    agent,
+    onWarn: message => warnings.push(message),
+  })
+  await assert.rejects(() => dispatcher.spawn({ prompt: 'p' }), /backend 改回 subagent/)
+  await assert.rejects(() => dispatcher.send('m1', 'x'), /backend 改回 subagent/)
+  // 目录类查询降级为空，孤儿巡检/面板不被拖死。
+  assert.deepEqual(await dispatcher.members(), [])
+  assert.deepEqual(await dispatcher.catalog(), [])
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /backend 改回 subagent/)
+})
+
+test('team：agentTeams 整个缺失时也是可读错误（不是读 property 崩）', async () => {
+  const dispatcher = createDispatcher({ backend: 'team', agentTeams: undefined, agent })
+  await assert.rejects(() => dispatcher.spawn({ prompt: 'p' }), /agentTeams\.spawnTeammate/)
+})
 test('subagent：spawn 失败把错误原样抛出并记 requested 事件', async () => {
   const service = fakeSubagents({ failStart: true })
   const events = []
