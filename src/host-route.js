@@ -12,7 +12,7 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, staleMinutes = 30, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, staleMinutes = 30, limit = 200, now = Date.now }) {
   const snapshot = () => {
     const status = coordinatorStatus?.() ?? {}
     const at = now()
@@ -20,7 +20,8 @@ export function createHostRoute({ db, coordinatorStatus, staleMinutes = 30, now 
       ok: true,
       at,
       coordinator: { id: status.id ?? null, live: status.live === true },
-      tasks: listTasks(db).map(task => {
+      // 台账可能很长，面板只要活跃 + 最近的历史；按 listTasks 的倒序截断。
+      tasks: listTasks(db).slice(0, limit).map(task => {
         const card = taskCard(task)
         return {
           id: task.id,
@@ -29,7 +30,7 @@ export function createHostRoute({ db, coordinatorStatus, staleMinutes = 30, now 
           label: card.label,
           tone: card.tone,
           childSessionId: task.session_id ?? null,
-          queued: task.status === 'pending',
+          queued: task.status === 'pending' && task.queued_at !== null && task.queued_at !== undefined,
           stale: ACTIVE.has(task.status) && at - task.last_event_at > staleMinutes * 60_000,
           updatedAt: task.updated_at,
           lastEventAt: task.last_event_at,

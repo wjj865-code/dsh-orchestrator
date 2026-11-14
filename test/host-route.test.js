@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { openLedger, createTask, transition } from '../src/ledger.js'
+import { openLedger, createTask, transition, markQueued } from '../src/ledger.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from '../src/host-route.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
@@ -92,7 +92,7 @@ test('未绑定协调者：coordinator.id 为 null (JSON null)', async () => {
   db.close()
 })
 
-test('queued / stale 标记', async () => {
+test('queued 按 queued_at 精确标记：新建未排队不算排队', async () => {
   const db = await openLedger(tempDir())
   const handler = createHostRoute({
     db,
@@ -100,10 +100,22 @@ test('queued / stale 标记', async () => {
     staleMinutes: 30,
     now: () => Date.now() + 60 * 60_000,
   })
-  const task = createTask(db, { brief: sampleBrief({ title: '排队' }), coordinatorSession: 's-1' })
+  const fresh = createTask(db, { brief: sampleBrief({ title: '新建' }), coordinatorSession: 's-1' })
+  const queued = createTask(db, { brief: sampleBrief({ title: '排队' }), coordinatorSession: 's-1' })
+  markQueued(db, queued.id)
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  const row = body.tasks.find(item => item.id === task.id)
-  assert.equal(row.queued, true)
-  assert.equal(row.stale, true)
+  const byId = Object.fromEntries(body.tasks.map(row => [row.id, row]))
+  assert.equal(byId[fresh.id].queued, false)
+  assert.equal(byId[queued.id].queued, true)
+  assert.equal(byId[queued.id].stale, true)
+  db.close()
+})
+
+test('快照按 limit 截断，避免台账长了每次全量', async () => {
+  const db = await openLedger(tempDir())
+  for (let i = 0; i < 5; i += 1) createTask(db, { brief: sampleBrief({ title: `任务${i}` }), coordinatorSession: 's-1' })
+  const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-1', live: true }), limit: 2 })
+  const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  assert.equal(body.tasks.length, 2)
   db.close()
 })

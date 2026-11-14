@@ -151,7 +151,9 @@ window.__ModuleLoader__.load({
           ? h('div', { style: styles.notice }, '尚未绑定协调者：先从任意会话派一个任务，会自动绑定。')
           : null,
         visible.length === 0
-          ? h('div', { style: styles.meta }, snapshot === null ? '加载中…' : tasks.length === 0 ? '还没有任务。' : '没有匹配的任务。')
+          ? (snapshot === null
+            ? (error === null ? h('div', { style: styles.meta }, '加载中…') : null)
+            : h('div', { style: styles.meta }, tasks.length === 0 ? '还没有任务。' : '没有匹配的任务。'))
           : h('ul', { style: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 } },
             visible.map(task => h('li', { key: task.id, style: styles.row },
               h('span', { style: Object.assign({}, styles.dot, { background: TONE_COLOR[task.tone] || TONE_COLOR.muted }) }),

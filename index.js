@@ -269,20 +269,35 @@ export async function apply(ctx, rawConfig = {}) {
   }).map(tool => ctx.tools.register(tool))
 
   // 客户端只读路由：鉴权由 connection 服务统一负责；handler 只查台账、不写。
-  const connection = ctx.get?.('connection') ?? ctx.connection
-  let routeDisposer = () => {}
-  if (typeof connection?.fetch?.register === 'function') {
+  // connection 的 apply 是 await 后才注册服务，cordis 并发创建条目，谁先跑没保证；
+  // 所以用 ctx.inject 等它出现再注册，不能一次性 ctx.get 拿不到就放弃。
+  const routeOptions = {
+    ...HOST_ROUTE_OPTIONS,
+    fetch: createHostRoute({ db, coordinatorStatus, staleMinutes: config.staleMinutes }),
+  }
+  const installRoute = scope => {
+    const connection = scope?.connection ?? scope
+    if (typeof connection?.fetch?.register !== 'function') return undefined
     try {
-      routeDisposer = connection.fetch.register({
-        ...HOST_ROUTE_OPTIONS,
-        fetch: createHostRoute({ db, coordinatorStatus, staleMinutes: config.staleMinutes }),
-      })
+      const dispose = connection.fetch.register(routeOptions)
       ctx.logger?.info?.(`dsh-orchestrator: 只读路由已注册 ${HOST_ROUTE}`)
+      return dispose
     } catch (error) {
       warnings(`dsh-orchestrator: 只读路由注册失败：${error?.message ?? error}`)
+      return undefined
     }
+  }
+  let routeDisposer
+  if (typeof ctx.inject === 'function') {
+    routeDisposer = ctx.inject(['connection'], scope => {
+      const dispose = installRoute(scope)
+      scope.effect?.(() => () => { try { dispose?.() } catch { /* 卸载期失败不阻断 */ } })
+    })
   } else {
-    warnings('dsh-orchestrator: 缺少 connection 服务，/api/orchestrator 只读路由不可用')
+    routeDisposer = installRoute(ctx.get?.('connection') ?? ctx.connection)
+    if (routeDisposer === undefined) {
+      warnings('dsh-orchestrator: 缺少 connection 服务，/api/orchestrator 只读路由不可用')
+    }
   }
 
   ctx.effect?.(() => async () => {
