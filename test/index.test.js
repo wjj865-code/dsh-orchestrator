@@ -35,6 +35,15 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
   const warnings = []
   const infos = []
   const listeners = new Map()
+  const handlerMap = new Map()
+  const on = (event, handler) => {
+    if (!handlerMap.has(event)) {
+      handlerMap.set(event, [])
+      listeners.set(event, payload => { for (const item of handlerMap.get(event)) item(payload) })
+    }
+    handlerMap.get(event).push(handler)
+    return () => {}
+  }
   const sent = []
   const disposers = []
   const guards = []
@@ -62,7 +71,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
     ...(withInject
       ? { inject(services, callback) { injections.push({ services, callback }); return () => {} } }
       : {}),
-    on(event, handler) { listeners.set(event, handler); return () => {} },
+    on(event, handler) { return on(event, handler) },
     effect(callback) { disposers.push(callback()); return () => {} },
     ...(withAgentTeams
       ? {

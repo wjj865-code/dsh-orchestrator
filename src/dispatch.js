@@ -60,7 +60,9 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, description, prompt, signal }) {
+    async spawn({ name, description, prompt, signal, readOnly }) {
+      // team 后端没有按会话设只读的通道：明确拒绝，避免台账标只读、实际可写。
+      if (readOnly === true) throw new Error('team 后端不支持只读任务：只读需要 subagent 后端，请把 backend 改回 subagent')
       // 真实 spawnTeammate 要求 provider（fresh 用 'spawn'）和 AbortSignal，缺一个都会被拒。
       const input = {
         name: name ?? slugify(String(prompt ?? '').slice(0, 20)),
@@ -180,6 +182,20 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     } catch (error) {
       onWarn(`dsh-orchestrator: 订阅 agent/created 失败：${errorText(error)}`)
     }
+  }
+  // 激活返回时子 Session 可能还没进表：等一次 session/created 再设只读，不阻塞派发。
+  const ensureReadOnlyReady = childId => {
+    if (childSessionOf(childId) !== undefined || typeof onSessionCreated !== 'function') {
+      ensureReadOnly(childId)
+      return
+    }
+    void resolveChildSession(childId).then(session => {
+      if (session === undefined) {
+        onWarn(`dsh-orchestrator: 未拿到子会话 ${childId}，只读沙箱未设置`)
+        return
+      }
+      ensureReadOnly(childId, session)
+    }).catch(error => onWarn(`dsh-orchestrator: 设置只读沙箱失败：${errorText(error)}`))
   }
   // activation 返回时子 Session 可能还没进会话表：挂一次 session/created 等同一个 childId；
   // 超时只 warn、不重试，也不阻塞派发。判同只看 id，不看 header.cwd（那正是坏的字段）。
@@ -318,12 +334,18 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       let activation
       onEvent('subagent.spawn.requested', { taskId, detail: { childId, label: spec.label, provider } })
       try {
-        activation = await subagents.startActivation(spec)
+        try {
+          activation = await subagents.startActivation(spec)
+        } catch (error) {
+          if (!shapeError(error)) throw error
+          // 升级前的旧安装：扁平 spec 读不到 request.parent，回退一次旧包装。
+          onEvent('subagent.spawn.legacy-spec', { taskId, detail: { childId, error: error?.message ?? String(error) } })
+          activation = await subagents.startActivation(legacySpec)
+        }
       } catch (error) {
-        if (!shapeError(error)) throw error
-        // 升级前的旧安装：扁平 spec 读不到 request.parent，回退一次旧包装。
-        onEvent('subagent.spawn.legacy-spec', { taskId, detail: { childId, error: error?.message ?? String(error) } })
-        activation = await subagents.startActivation(legacySpec)
+        // 两次都失败：清掉只读登记，别攒废弃 UUID。
+        readOnlyChildren.delete(childId)
+        throw error
       }
       onEvent('subagent.spawn.accepted', {
         taskId,
@@ -331,7 +353,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         detail: { childId: activation.childId, messageId: activation.messageId ?? null, provider },
       })
       track(activation)
-      if (readOnly === true) ensureReadOnly(activation.childId)
+      if (readOnly === true) ensureReadOnlyReady(activation.childId)
       // 目标目录才需要补可写根；只读任务绝不能注册可写根（否则「只读」有后门）。
       if (readOnly !== true && typeof cwd === 'string' && cwd !== '') {
         void ensureWritableRoot(activation.childId, cwd, { wait: true }).catch(error => {
@@ -433,7 +455,7 @@ function createUnavailableDispatcher(reason) {
   }
 }
 
-export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, sessionWaitMs }) {
+export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs }) {
   if (backend === 'team') {
     // agentTeams 用惰性 getter 传进来时在这里解析：缺服务的 profile 只有选 team 后端才会报错。
     const teams = typeof agentTeams === 'function' ? agentTeams() : agentTeams
@@ -447,5 +469,5 @@ export function createDispatcher({ backend = 'subagent', agentTeams, subagents, 
       return createUnavailableDispatcher(reason)
     }
   }
-  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, sessionWaitMs })
+  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs })
 }

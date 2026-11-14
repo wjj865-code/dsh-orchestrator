@@ -11,8 +11,8 @@ function fakeDispatcher({ limit = Infinity, fail = false, failTimes = 0 } = {}) 
   return {
     calls,
     slug: title => `slug-${title}`,
-    spawn({ name, label, prompt, signal, taskId, cwd }) {
-      calls.push({ name, label, prompt, signal, taskId, cwd })
+    spawn({ name, label, prompt, signal, taskId, cwd, readOnly }) {
+      calls.push({ name, label, prompt, signal, taskId, cwd, readOnly })
       if (fail || failures < failTimes) {
         failures += 1
         throw new Error('spawn 挂了')
@@ -79,6 +79,33 @@ test('容量满：任务留 pending + queued_at；释放后补位并清标记', 
   assert.equal(resumed.queued_at, null)
   db.close()
 })
+
+test('readOnly：spawn 收到 readOnly；派发失败通知也带 readOnly', async () => {
+  const db = await openLedger(tempDir())
+  const dispatcher = fakeDispatcher()
+  const queue = createQueue({ db, dispatcher, retryDelaysMs: [0] })
+  const task = createTask(db, { brief: sampleBrief({ title: '只读任务' }), coordinatorSession: 's-1', readOnly: true })
+  queue.enqueue(task.id)
+  await queue.pump()
+  assert.equal(dispatcher.calls[0].readOnly, true)
+  db.close()
+
+  const pushed = []
+  const db2 = await openLedger(tempDir())
+  const failing = createQueue({
+    db: db2,
+    dispatcher: fakeDispatcher({ fail: true }),
+    retryDelaysMs: [0],
+    notifier: { push: item => pushed.push(item) },
+  })
+  const ro = createTask(db2, { brief: sampleBrief({ title: '只读失败' }), coordinatorSession: 's-1', readOnly: true })
+  failing.enqueue(ro.id)
+  await failing.pump()
+  const failed = pushed.find(item => item.status === 'failed')
+  assert.equal(failed.readOnly, true)
+  db2.close()
+})
+
 
 test('非容量错误：标 failed 并继续下一个', async () => {
   const { db } = await setup()

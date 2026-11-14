@@ -117,6 +117,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - 效果：读、`task_report`、artifacts 照常；写文件/写 shell 被沙箱拒绝并给可读错误；**只读任务不会注册 target 可写根**（否则「只读」有后门）。不改用户的 `permissionPreset` 与全局沙箱默认；只 append 到我们派出的 child session，不碰协调者（协调者被设只读会污染后续所有子任务）。
 - 文案：brief 加 `【权限】只读` 与「不要写文件/写 shell，产物写进回报正文」；台账 `read_only`、`task_list`/`task_status` 标记「只读」；通知标题与面板任务行也标「只读」。
 - **已知时序窗口（如实记录）**：`agent/created` 理论上早于首个模型请求，但派发顺序由平台决定；若某次首回合的写调用抢在设置之前，会拿到一次沙箱拒写，下一回合就已生效。真机判据是子会话首个请求的 runtime-context 出现 `Current DSH file policy: read-only`。
+- **仅 `subagent` 后端支持**：`backend:'team'` 没有会话级只读通道，`readOnly:true` 会得到可读错误「team 后端不支持只读任务…」，不会出现「台账标只读、实际可写」。
 
 ## 目标目录推断与交付产物
 

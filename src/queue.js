@@ -106,6 +106,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
             taskId: id,
             title: task.title,
             displayName: taskLabel(task, { all: listTasks(db) }),
+            readOnly: task.read_only === true,
             status: 'failed',
             summary: message,
             system: true,

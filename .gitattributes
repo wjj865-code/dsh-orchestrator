@@ -1,0 +1,7 @@
+# 统一行尾，避免整文件 CRLF/LF 噪声（历史文件不做一次性规范化，见阶段 5 审查建议）。
+* text=auto
+*.js text eol=lf
+*.mjs text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf

@@ -172,6 +172,32 @@ test('readOnly：缺服务/append 失败不炸，不影响派发', async () => {
 })
 
 
+test('createDispatcher 接线：onAgentCreated 被转发，只读任务经生产入口也能设沙箱', async () => {
+  const env = readOnlyEnv()
+  let seen = false
+  const dispatcher = createDispatcher({
+    backend: 'subagent',
+    subagents: env.subagents,
+    agent,
+    agents: env.services.agents,
+    sessions: env.services.sessions,
+    sandboxPolicy: env.services.sandboxPolicy,
+    onAgentCreated: handler => { seen = true; env.hooks.push(handler) },
+    sessionWaitMs: 0,
+  })
+  assert.equal(seen, true, 'createDispatcher 必须把 onAgentCreated 传给 subagent 派发器')
+  await dispatcher.spawn({ prompt: 'p', readOnly: true })
+  await tick()
+  const modes = env.appends.filter(([, event]) => event === 'sandbox/mode')
+  assert.equal(modes.length, 1)
+  assert.deepEqual(modes[0][2], { mode: 'read-only' })
+})
+
+test('team：readOnly 任务给可读错误（team 后端没有会话级只读通道）', async () => {
+  const dispatcher = team({ agentTeams: fakeTeams(), agent })
+  await assert.rejects(() => dispatcher.spawn({ prompt: 'p', readOnly: true }), /team 后端不支持只读任务/)
+})
+
 const team = options => createDispatcher({ backend: 'team', ...options })
 const sub = options => createDispatcher({ backend: 'subagent', ...options })
 const agent = { id: 'a1', session: { id: 's1', header: { cwd: 'C:\\work' } } }

@@ -31,8 +31,8 @@ function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity 
       return { id: `s-${counter}`, name: name ?? `w-${counter}`, sessionId: `s-${counter}`, target: `s-${counter}` }
     },
     async send(target, message) { calls.push(['send', target, message]) },
-    async sendReliable(target, message, signal, targetDir, taskId) {
-      calls.push(['sendReliable', target, message, signal, targetDir, taskId])
+    async sendReliable(target, message, signal, targetDir, taskId, readOnly) {
+      calls.push(['sendReliable', target, message, signal, targetDir, taskId, readOnly])
       if (failSend) throw new Error('投递超时')
       return { messageId: 'm-1' }
     },
@@ -59,6 +59,7 @@ async function setup(options = {}) {
     config,
     coordinatorStatus: () => ({ id: 's-1', live: true }),
     workspaces: options.workspaces,
+    logger: options.logger,
   }).map(tool => [tool.name, tool]))
   return { db, dispatcher, queue, notifier, tools }
 }
@@ -375,6 +376,17 @@ test('对外文案：task_create/list/status 带 id，续派/停止/回报回执
   db.close()
 })
 
+test('task_create 只产生一条 task.create.created 事件（带 readOnly）', async () => {
+  const events = []
+  const logger = { log: (event, fields) => events.push([event, fields]) }
+  const { db, tools } = await setup({ logger })
+  await call(tools, 'task_create', sampleBrief({ title: '单条事件' }))
+  const created = events.filter(([event]) => event === 'task.create.created')
+  assert.equal(created.length, 1)
+  assert.equal(created[0][1].detail.readOnly, false)
+  db.close()
+})
+
 test('task_create readOnly：显式 true 落库并进 brief；字符串/默认都不算只读', async () => {
   const { db, dispatcher, notifier, tools } = await setup()
   const normal = await call(tools, 'task_create', sampleBrief({ title: '普通任务' }))
@@ -390,6 +402,10 @@ test('task_create readOnly：显式 true 落库并进 brief；字符串/默认�
   assert.equal(ro.brief.readOnly, true)
   const spawns = dispatcher.calls.filter(item => item[0] === 'spawn')
   assert.equal(spawns.filter(item => item[5] === true).length, 1, '只有只读任务派发时 readOnly:true')
+  // 续派：readOnly 也要透传给 sendReliable（让 dispatch 补设只读、不注册可写根）。
+  await call(tools, 'task_message', { task_id: ro.id, message: '继续' })
+  const sent = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
+  assert.equal(sent[6], true, '续派把 readOnly 传给 sendReliable')
   // 通知携带 readOnly 标记，渲染层据此加「（只读）」。
   await call(tools, 'task_report', { task_id: ro.id, status: 'done', summary: '完成' }, { agent: { id: ro.session_id } })
   assert.equal(notifier.pushed.at(-1).readOnly, true)

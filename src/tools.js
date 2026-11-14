@@ -236,7 +236,6 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       const task = createTask(db, { brief, coordinatorSession: current.id ?? coordinatorSession, targetDir: effectiveTarget, readOnly })
       log('task.create.created', { taskId: task.id, agentId, sessionId: current.id, detail: { title, callId, targetDir: effectiveTarget ?? null, readOnly } })
-      log('task.create.created', { taskId: task.id, agentId, sessionId: current.id, detail: { title, callId, targetDir: effectiveTarget ?? null } })
       const rendered = `【任务编号】${task.id}\n${renderBrief(brief)}`
       addMessage(db, task.id, { kind: 'brief', rendered })
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
