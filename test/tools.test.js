@@ -463,6 +463,24 @@ test('可写根生命周期：done 与 cancelled 释放；blocked（waiting_user
   stopped.db.close()
 })
 
+test('waiting_user 续派：target_dir 透传、可写根不释放（第二轮仍能写）', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const target = tempDir()
+  await call(tools, 'task_create', sampleBrief({ title: '续派', target }))
+  const task = listTasks(db)[0]
+  // 首轮 blocked → waiting_user：settle 之后可写根必须保留。
+  await call(tools, 'task_report', { task_id: task.id, status: 'blocked', summary: '等用户' }, { agent: { id: task.session_id } })
+  assert.equal(getTask(db, task.id).status, 'waiting_user')
+  assert.deepEqual(dispatcher.grantReleases, [])
+  // 续派：把 target_dir 传给 sendReliable，让 dispatch 投递前补注册；仍不释放。
+  await call(tools, 'task_message', { task_id: task.id, message: '再写一个' })
+  const sent = dispatcher.calls.find(item => item[0] === 'sendReliable')
+  assert.equal(sent[4], target)
+  assert.deepEqual(dispatcher.grantReleases, [])
+  assert.equal(getTask(db, task.id).status, 'running')
+  db.close()
+})
+
 test('task_report：progress 只 touch 不改状态', async () => {
   const { db, notifier, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
