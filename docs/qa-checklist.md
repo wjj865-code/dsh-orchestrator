@@ -822,3 +822,30 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - 用例：`test/dispatch.test.js` 的 `rc.3 可写根：*`（对象引用同一性、settle 不释放、删除后sendMessage才恢复的补注册、投递失败不注册、终态释放新旧两个 disposer、服务或 target 缺失不炸）；`test/tools.test.js` 的 `可写根生命周期：*`、`waiting_user 续派：*`。
 
 **真机验收（非临时目录）**：不传 target 推断到 `default-workspace` → `write` 写出 `qa-write.txt`，首轮 system-reminder 出现 `Additional writable directories: [...target]`；`blocked` 后 `task_message` 续派再写 `qa-write2.txt` 成功（**续派轮不会再有新的 policy 行**——平台只在会话开始注入一次，续派沿用同一上下文；续派以「无 `file access denied` + 文件存在 + artifacts `exists:true`」为证据）；`pwsh` 写 target 被拒按平台限制留证、不算缺陷。
+
+## 32. 阶段 4：侧栏启动器入口与显示名（L1/L3 复核矩阵）
+
+**槽位依据**：`docs/probes/sidebar-nav-entry-probe.md`；`node docs/probes/sidebar-nav-probe.mjs` → 16/16 PASS。
+
+**L1（`qa-stage2-slots.mjs client.js`）断言**：
+| 项 | 期望 |
+| --- | --- |
+| footer action | **不注册**（`sidebar.footer.action` 0 条） |
+| main 面板 | 恰 2 条：`orchestrator`（任务面板）+ `orchestrator-launcher`（启动器） |
+| 侧栏条目 | `sidebar.panellist` 恰 1 条：`id:'orchestrator-launcher'`、`order:5`（插件 0 / 自动化任务 10 之间）、`label()='主会话'`、无 priority |
+| 启动器挂载 | 渲染「正在打开主会话…」→ POST `open-main` → `openSession(返回 sessionId)` → `selectPanel(null)` |
+| 头部按钮 | `conversation.header.leading` 仍在，点击 `selectPanel('orchestrator')` |
+| 面板 | 仍读 `snapshot`、筛选、产物展开、「打开主会话」；快照/动作错误分开显示 |
+
+**L3（真机勾选，纯 dsh 表面）**：
+| # | 操作 | 期望 | 勾 |
+| --- | --- | --- | --- |
+| 1 | 点侧栏「插件」下方「主会话」 | 一帧占位后进入主会话对话（新建或复用），侧栏无残留高亮 | [ ] |
+| 2 | 已在主会话时再点一次 | 不重复创建、不报错，仍在对话 | [ ] |
+| 3 | 侧栏底部 | 无「任务」入口（footer action 已删） | [ ] |
+| 4 | 会话头「☰ 任务」 | 打开任务面板 | [ ] |
+| 5 | 把侧栏条目取消固定 | 出现在「更多」菜单里，点击同样直达对话 | [ ] |
+| 6 | Bot 模式 | 侧栏启动器不可见（ds-bot 隐藏面板列表），头部按钮仍能开任务面板 | [ ] |
+| 7 | 面板/通知/任务流 | 任务显示名；重名带短 id 后缀；通知与面板不出现 `t-xxx` | [ ] |
+
+**已知边界**：启动器点击有一帧「正在打开主会话…」占位（`selectPanel(null)` 在 openSession 后立即执行）；Bot 模式入口不可见（与 §29 同源外部依赖）；`task_create`/`task_list`/`task_status` 仍保留「标题（t-xxxx）」供模型操作，其余对外文案零 id。
