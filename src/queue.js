@@ -4,7 +4,7 @@ import {
   briefText, clearQueued, countPending, getTask, listPendingQueue, markQueued, transition,
 } from './ledger.js'
 
-export function createQueue({ db, dispatcher, config = {}, logger, retryDelaysMs = [2000, 5000, 10000, 30000] }) {
+export function createQueue({ db, dispatcher, config = {}, logger, notifier, retryDelaysMs = [2000, 5000, 10000, 30000] }) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志不能打断派发 */ }
   }
@@ -35,7 +35,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, retryDelaysMs
   }
   // 容量满了 / 协调者还没加载：都算可重试，任务留在队列里，别标 failed。
   const retryable = error => error?.code === 'ACTIVATION_LIMIT_REACHED'
-    || /未找到协调者会话/.test(error?.message ?? '')
+    || /未找到协调者会话|尚未就绪/.test(error?.message ?? '')
 
   async function pump() {
     if (stopped) return
@@ -84,8 +84,9 @@ export function createQueue({ db, dispatcher, config = {}, logger, retryDelaysMs
           }
           remove(id)
           const reason = error?.message ?? String(error)
-          const message = /^未找到协调者会话/.test(reason) ? reason : `子会话创建失败：${reason}`
-          log('task.spawn.failed', { taskId: id, detail: { error: reason } })
+          const message = /^未找到协调者会话|^协调者会话尚未就绪/.test(reason) ? reason : `子会话创建失败：${reason}`
+          const stack = typeof error?.stack === 'string' ? error.stack.split('\n').slice(0, 3).join(' | ') : null
+          log('task.spawn.failed', { taskId: id, detail: { error: reason, ...(stack === null ? {} : { stack }) } })
           try {
             transition(db, id, 'failed', { error: message })
           } catch (failure) {
@@ -94,6 +95,14 @@ export function createQueue({ db, dispatcher, config = {}, logger, retryDelaysMs
               detail: { error: failure?.message ?? String(failure) },
             })
           }
+          // 失败必须让主会话看见（不能静默 failed）；sender 缺失时由 index 用主会话自身投递。
+          notifier?.push({
+            taskId: id,
+            title: task.title,
+            status: 'failed',
+            summary: message,
+            system: true,
+          })
           continue
         }
 

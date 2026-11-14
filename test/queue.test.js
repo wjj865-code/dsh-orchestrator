@@ -30,10 +30,10 @@ function fakeDispatcher({ limit = Infinity, fail = false, failTimes = 0 } = {}) 
   }
 }
 
-const setup = async ({ limit = Infinity, retryDelaysMs = [0] } = {}) => {
+const setup = async ({ limit = Infinity, retryDelaysMs = [0], dispatcher: custom, notifier } = {}) => {
   const db = await openLedger(tempDir())
-  const dispatcher = fakeDispatcher({ limit })
-  const queue = createQueue({ db, dispatcher, retryDelaysMs })
+  const dispatcher = custom ?? fakeDispatcher({ limit })
+  const queue = createQueue({ db, dispatcher, retryDelaysMs, notifier })
   return { db, dispatcher, queue }
 }
 
@@ -173,5 +173,32 @@ test('已非 pending 的队首会被丢弃，不重复派发', async () => {
   await queue.pump()
   assert.equal(dispatcher.calls.length, 0)
   assert.equal(queue.size(), 0)
+  db.close()
+})
+
+
+test('协调者会话未就绪：按可重试处理，任务留 pending、不发失败通知', async () => {
+  const pushes = []
+  const dispatcher = { slug: title => title, async spawn() { throw new Error('协调者会话尚未就绪（agent.session 为空），稍后重试') } }
+  const { db, queue } = await setup({ dispatcher, notifier: { push: item => pushes.push(item) } })
+  const task = createTask(db, { brief: sampleBrief({ title: '未就绪' }), coordinatorSession: 's-1' })
+  await queue.enqueueAndPump(task.id)
+  assert.equal(getTask(db, task.id).status, 'pending')
+  assert.equal(pushes.length, 0)
+  db.close()
+})
+
+test('派发真失败：任务 failed 并给主会话推一条 system 通知', async () => {
+  const pushes = []
+  const dispatcher = { slug: title => title, async spawn() { throw new Error('boom') } }
+  const { db, queue } = await setup({ dispatcher, notifier: { push: item => pushes.push(item) } })
+  const task = createTask(db, { brief: sampleBrief({ title: '真失败' }), coordinatorSession: 's-1' })
+  await queue.enqueueAndPump(task.id)
+  assert.equal(getTask(db, task.id).status, 'failed')
+  assert.match(getTask(db, task.id).error, /boom/)
+  assert.equal(pushes.length, 1)
+  assert.equal(pushes[0].status, 'failed')
+  assert.equal(pushes[0].system, true)
+  assert.match(pushes[0].summary, /boom/)
   db.close()
 })

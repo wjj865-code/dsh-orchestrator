@@ -14,6 +14,7 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
   process.env.DSH_HOME = home
   const coordinator = {
     id: 's-1',
+    session: { id: 's-1', header: {} },
     injected: [],
     steer(message) { this.injected.push(message) },
     ctx: { tools: { view: () => ({ knownNames: new Set() }), restrict: () => () => {} } },

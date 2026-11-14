@@ -119,6 +119,12 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     },
     async spawn({ name, label, prompt, signal, taskId, cwd }) {
       const parent = requireAgent()
+      // agent 已创建但 session 还没挂上时，平台 startActivation 会在 parent.session 上取 .id 抛 TypeError；
+      // 这里先给可读错误，并由 queue 当成可重试（等会话就绪）。
+      if (parent?.session === undefined || parent.session === null) {
+        throw new Error('协调者会话尚未就绪（agent.session 为空），稍后重试')
+      }
+      if (parent.id === undefined) throw new Error('协调者会话缺少 id，稍后重试')
       const childId = randomUUID()
       // 目标目录优先；没给就沿用父会话 cwd（保持旧行为）。
       const baseCwd = cwd ?? parent.session?.header?.cwd

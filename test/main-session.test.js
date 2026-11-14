@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, getMainSessionId, setMainSessionId } from '../src/ledger.js'
+import { openLedger, getMainSessionId, setMainSessionId, getMainSessionPreset, setMainSessionPreset } from '../src/ledger.js'
 import { createMainSession, PRESET_ID } from '../src/main-session.js'
 
 const fake = ({ live = new Set() } = {}) => {
@@ -15,6 +15,7 @@ const fake = ({ live = new Set() } = {}) => {
     created,
     renamed,
     workspacesCreated,
+    live: set,
     agents: { get: id => set.has(id) ? { id, session: { id } } : undefined },
     presetFor: () => PRESET_ID,
     sessionController: {
@@ -261,7 +262,7 @@ test('live 主会话没有记录预设时也重建', async () => {
   db.close()
 })
 
-test('live 主会话预设就是协调者时复用，不重建', async () => {
+test('live 主会话预设就是协调者时复用，不重建，并记台账标记', async () => {
   const db = await ledger()
   const f = fake({ live: new Set(['session-old']) })
   setMainSessionId(db, 'session-old')
@@ -271,7 +272,71 @@ test('live 主会话预设就是协调者时复用，不重建', async () => {
   assert.equal(result.created, false)
   assert.equal(result.sessionId, 'session-old')
   assert.equal(result.agentPreset, PRESET_ID)
+  assert.equal(getMainSessionPreset(db), PRESET_ID)
   assert.equal(f.created.length, 0)
+  db.close()
+})
+
+test('台账标记是协调者时：读回 standard 也不重建，并 select 拉回预设', async () => {
+  const db = await ledger()
+  const f = fake({ live: new Set(['session-old']) })
+  f.presetFor = () => 'standard'
+  const selected = []
+  f.agents.get = id => id === 'session-old' ? { id, session: { id } } : undefined
+  setMainSessionId(db, 'session-old')
+  setMainSessionPreset(db, PRESET_ID)
+  const main = createMainSession({
+    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
+    presetFor: f.presetFor,
+    selectPreset: (agent, presetId) => { selected.push([agent.id, presetId]); return Promise.resolve(presetId) },
+    workspacePath: 'C:/ws',
+  })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.equal(result.created, false)
+  assert.equal(result.sessionId, 'session-old')
+  assert.equal(result.presetMismatch, true)
+  assert.deepEqual(selected, [['session-old', PRESET_ID]])
+  assert.equal(f.created.length, 0)
+  db.close()
+})
+
+test('非空白会话 select 抛 locked：吞掉并复用，不重建', async () => {
+  const db = await ledger()
+  const f = fake({ live: new Set(['session-old']) })
+  f.presetFor = () => 'standard'
+  const logs = []
+  setMainSessionId(db, 'session-old')
+  setMainSessionPreset(db, PRESET_ID)
+  const main = createMainSession({
+    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
+    presetFor: f.presetFor,
+    selectPreset: () => Promise.reject(new Error('agent-preset/locked: this session has already started')),
+    workspacePath: 'C:/ws',
+    log: (event, detail) => logs.push([event, detail]),
+  })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.equal(result.created, false)
+  assert.equal(result.sessionId, 'session-old')
+  assert.ok(logs.some(([event]) => event === 'main.session.preset-locked'))
+  db.close()
+})
+
+test('连续两次 open：第二次复用同一 id，不再 create', async () => {
+  const db = await ledger()
+  const f = fake()
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, presetFor: f.presetFor, workspacePath: 'C:/ws' })
+  const first = await main.open()
+  assert.equal(first.created, true)
+  const newId = first.sessionId
+  f.live.add(newId)
+  const second = await main.open()
+  assert.equal(second.ok, true)
+  assert.equal(second.created, false)
+  assert.equal(second.sessionId, newId)
+  assert.equal(f.created.length, 1)
+  assert.equal(getMainSessionPreset(db), PRESET_ID)
   db.close()
 })
 

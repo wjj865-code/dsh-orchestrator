@@ -11,6 +11,7 @@ test('状态到级别映射', () => {
   assert.equal(levelOf('done'), 'notify')
   assert.equal(levelOf('blocked'), 'interrupt')
   assert.equal(levelOf('needs_auth'), 'interrupt')
+  assert.equal(levelOf('failed'), 'notify')
   assert.equal(levelOf('weird'), 'silent')
 })
 
@@ -190,4 +191,14 @@ test('产物被截断时通知追加「另有 N 条产物未列出」', async ()
   notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成', artifacts: [{ path: 'C:/a.txt', label: '甲', exists: true }], artifactsTruncated: 5 })
   await wait(25)
   assert.match(delivered[0], /另有 5 条产物未列出/)
+})
+
+
+test('失败任务的通知文案是「失败」而不是「完成」', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'failed', summary: '子会话创建失败：boom' })
+  await wait(25)
+  assert.equal(delivered.length, 1)
+  assert.equal(delivered[0], '任务「A」失败：子会话创建失败：boom')
 })

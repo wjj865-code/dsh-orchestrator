@@ -277,3 +277,14 @@ test('fork provider 不注入 agentPreset（平台不支持，避免 UNSUPPORTED
   assert.equal('agentPreset' in request, false)
   assert.equal(service.calls[0][1].provider, 'fork')
 })
+
+
+test('协调者 agent.session 尚未就绪：spawn 给可读错误（可重试）', async () => {
+  const dispatcher = createSubagentDispatcher({ subagents: { async startActivation() { throw new Error('不该走到这里') } }, agent: { id: 's-1' } })
+  await assert.rejects(() => dispatcher.spawn({ prompt: 'hi' }), /尚未就绪/)
+})
+
+test('协调者 agent 缺 id：spawn 给可读错误', async () => {
+  const dispatcher = createSubagentDispatcher({ subagents: { async startActivation() { throw new Error('不该走到这里') } }, agent: { session: { id: 's-1' } } })
+  await assert.rejects(() => dispatcher.spawn({ prompt: 'hi' }), /缺少 id/)
+})

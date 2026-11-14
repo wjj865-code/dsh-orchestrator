@@ -1,5 +1,5 @@
 // 通知分级：progress 静默，done 批量合并，blocked/needs_auth 立即打断。
-const LEVEL = { progress: 'silent', done: 'notify', blocked: 'interrupt', needs_auth: 'interrupt' }
+const LEVEL = { progress: 'silent', done: 'notify', blocked: 'interrupt', needs_auth: 'interrupt', failed: 'notify' }
 
 export function levelOf(status) {
   return LEVEL[status] ?? 'silent'
@@ -105,8 +105,8 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     buffer = []
     if (batch.length === 0) return undefined
     const text = batch.length === 1
-      ? `任务「${batch[0].title}」完成：${batch[0].summary}${artifactBlock(batch[0])}`
-      : `${batch.length} 个任务完成：\n${batch.map(line).join('\n')}`
+      ? `${batch[0].status === 'failed' ? `任务「${batch[0].title}」失败：` : `任务「${batch[0].title}」完成：`}${batch[0].summary}${artifactBlock(batch[0])}`
+      : `${batch.length} 个任务${batch.every(item => item.status === 'done') ? '完成' : '状态更新'}：\n${batch.map(line).join('\n')}`
     return deliver(text, batch)
   }
 

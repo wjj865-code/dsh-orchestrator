@@ -1,12 +1,12 @@
 // 主会话：唯一协调者。创建/打开/重建都从这里走；不再由 task_create 自动绑定。
 import { mkdir } from 'node:fs/promises'
-import { getMainSessionId, setMainSessionId } from './ledger.js'
+import { getMainSessionId, getMainSessionPreset, setMainSessionId, setMainSessionPreset } from './ledger.js'
 
 export const PRESET_ID = 'dsh-orchestrator-coordinator'
 export const WORKER_PRESET_ID = 'dsh-orchestrator-worker'
 export const MAIN_SESSION_HINT = '尚未打开主会话，请先从面板「打开主会话」。'
 
-export function createMainSession({ db, config, agents, sessionController, workspaces, presetFor, workspacePath, workspaceName = '指挥舱', log = () => {} }) {
+export function createMainSession({ db, config, agents, sessionController, workspaces, presetFor, selectPreset, workspacePath, workspaceName = '指挥舱', log = () => {} }) {
   // 服务既可以直接传对象（测试/同步场景），也可以传 getter（index 惰性取，等 cordis 服务就绪）。
   const resolveAgents = () => typeof agents === 'function' ? agents() : agents
   const resolveSessionController = () => typeof sessionController === 'function' ? sessionController() : sessionController
@@ -25,6 +25,28 @@ export function createMainSession({ db, config, agents, sessionController, works
     } catch { /* 读不到就当未知 */ }
     const header = agent?.session?.header
     return typeof header?.agentPreset === 'string' && header.agentPreset !== '' ? header.agentPreset : undefined
+  }
+
+  // UI 打开空白会话时可能把预设 rebind 成 default（standard）；平台允许空白会话重绑，
+  // 这里在复用前/agent 创建时拉回协调者预设，非空白会话会抛 locked，交给 guard 兜底。
+  const guardPreset = async agent => {
+    if (agent === undefined) return false
+    const current = sessionPreset(agent)
+    if (current === PRESET_ID) return true
+    const select = typeof selectPreset === 'function' ? selectPreset(agent, PRESET_ID) : undefined
+    try {
+      await select
+      log('main.session.preset-restored', { sessionId: agent.id, from: current ?? null })
+      return true
+    } catch (error) {
+      const reason = error?.message ?? String(error)
+      if (/locked|already started/i.test(reason)) {
+        log('main.session.preset-locked', { sessionId: agent.id, from: current ?? null })
+        return false
+      }
+      log('main.session.preset-restore-failed', { sessionId: agent.id, from: current ?? null, error: reason })
+      return false
+    }
   }
 
   const ensureWorkspace = async () => {
@@ -52,12 +74,32 @@ export function createMainSession({ db, config, agents, sessionController, works
     const id = getMainSessionId(db)
     const live = id === undefined ? undefined : liveAgent(id)
     if (live !== undefined) {
+      const marker = getMainSessionPreset(db)
       const preset = sessionPreset(live)
-      if (preset === PRESET_ID) return { ok: true, sessionId: id, created: false, agentPreset: preset }
-      // 旧版主会话没有预设、或预设不是协调者：单协调者不迁移旧会话，直接重建一次。
+      // 台账为准：我们创建时记过协调者预设就复用，不再因读回漂移而重建（重建会换 id、通知漂移）。
+      if (marker === PRESET_ID) {
+        const mismatch = preset !== undefined && preset !== PRESET_ID
+        if (mismatch) {
+          log('main.session.preset-mismatch', {
+            sessionId: id,
+            marker,
+            preset,
+            header: live.session?.header?.agentPreset ?? null,
+          })
+          await guardPreset(live)
+        }
+        return { ok: true, sessionId: id, created: false, agentPreset: PRESET_ID, presetMismatch: mismatch }
+      }
+      // 旧版主会话没有台账标记：能明确读到协调者预设就认领复用，否则重建一次。
+      if (marker === undefined && preset === PRESET_ID) {
+        setMainSessionPreset(db, PRESET_ID)
+        log('main.session.preset-adopted', { sessionId: id, preset })
+        return { ok: true, sessionId: id, created: false, agentPreset: PRESET_ID, presetMismatch: false }
+      }
       log('main.session.recreate', {
         sessionId: id,
-        reason: preset === undefined ? 'preset-unknown' : 'preset-mismatch',
+        reason: marker === undefined ? (preset === undefined ? 'preset-unknown' : 'preset-mismatch') : 'marker-mismatch',
+        marker: marker ?? null,
         preset: preset ?? null,
       })
     }
@@ -82,6 +124,7 @@ export function createMainSession({ db, config, agents, sessionController, works
       log('main.session.rename.failed', { sessionId, error: `${error?.message ?? error}` })
     }
     setMainSessionId(db, sessionId)
+    setMainSessionPreset(db, typeof created?.agentPreset === 'string' && created.agentPreset !== '' ? created.agentPreset : PRESET_ID)
     log('main.session.created', { sessionId, agentPreset: created?.agentPreset ?? null })
     return { ok: true, sessionId, created: true, agentPreset: created?.agentPreset }
   }
@@ -99,5 +142,5 @@ export function createMainSession({ db, config, agents, sessionController, works
     return opening
   }
 
-  return { open, currentId }
+  return { open, currentId, guardPreset }
 }

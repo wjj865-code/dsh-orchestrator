@@ -12,6 +12,8 @@ function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', '
   const injected = []
   return {
     id,
+    // 真实 agent 一定带 session；dispatch 的就绪检查依赖它。
+    session: { id, header: {} },
     restrictions,
     injected,
     steer(message) { injected.push(message) },
@@ -680,3 +682,29 @@ test('guard 覆盖整个 COORDINATOR_DENY 名单：主会话全拒、子会话�
     assert.equal(guard({ name: allowed, agent: main }), undefined, `${allowed} 应放行`)
   }
 }))
+
+
+test('派发失败给主会话发一条带原因的通知（无 sender 也能投递）', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const subagents = {
+    async startActivation() { throw new Error('spawn boom') },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const { ctx, registered } = fakeCtx({ agents: [s1], subagents })
+  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
+  const create = registered.find(tool => tool.name === 'task_create')
+  const result = await create.execute({ title: '失败任务', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.match(result, /任务协调失败/)
+  await wait(30)
+  assert.equal(s1.injected.length, 1)
+  assert.match(s1.injected[0].content[0].text, /失败/)
+  assert.match(s1.injected[0].content[0].text, /spawn boom/)
+}))
+
+test('index 装配主会话预设守护（selectPreset/guardPreset）', () => {
+  const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
+  assert.match(source, /selectPreset:/)
+  assert.match(source, /guardPreset/)
+})

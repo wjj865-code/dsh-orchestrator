@@ -231,3 +231,14 @@ export function getMainSessionId(db) {
 export function setMainSessionId(db, sessionId) {
   return setSetting(db, MAIN_SESSION_KEY, sessionId)
 }
+
+/** 主会话创建时用的预设：复用判断以台账为准，不依赖平台读回（真机会漂移）。 */
+export const MAIN_SESSION_PRESET_KEY = 'main_session_preset'
+
+export function getMainSessionPreset(db) {
+  return getSetting(db, MAIN_SESSION_PRESET_KEY)
+}
+
+export function setMainSessionPreset(db, presetId) {
+  return setSetting(db, MAIN_SESSION_PRESET_KEY, presetId)
+}
