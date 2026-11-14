@@ -44,6 +44,8 @@ check('client.js 的 fetch 目标只有 /api/orchestrator',
 for (const bad of ['task_create', 'task_stop', 'bindCoordinator', 'rebindSetting']) {
   check(`client.js 不调写接口 ${bad}`, !src.includes(bad))
 }
+check('轮询不用 setInterval（退避需要可重排的 setTimeout）', !/setInterval\s*\(/.test(src))
+check('含 30s 失败退避常量', /30\s*000|30_000/.test(src), (src.match(/POLL_BACKOFF_MS\s*=\s*[^\n]+/) ?? ['无'])[0])
 const endpoints = [...src.matchAll(/endpoint\s*:\s*['"]([^'"]+)['"]/g)].map((m) => m[1])
 if (endpoints.length) warn('客户端用到的 endpoint（人工核对是否只读）', [...new Set(endpoints)].join(', '))
 
@@ -204,6 +206,33 @@ if (leading[0]?.component) {
       try { fn({ preventDefault() {}, stopPropagation() {}, currentTarget: null }) } catch (e) { check('onClick 不抛异常', false, e.message) }
     }
     check("点击触发 ctx.layout.selectPanel('orchestrator')", selectPanelCalls.includes('orchestrator'), JSON.stringify(selectPanelCalls))
+  }
+}
+
+// ---------- 面板渲染（假 React，状态筛选/空态/打开协调者） ----------
+if (main[0]?.component) {
+  let panelProps = {}
+  if (typeof main[0].spec?.inject === 'function') {
+    try { panelProps = main[0].spec.inject({}) ?? {} } catch (e) { warn('面板 inject 调用异常', e.message) }
+  }
+  let tree
+  try { tree = main[0].component(panelProps) } catch (e) { warn('面板无法直接调用（可能用了 hooks），跳过渲染验证', e.message) }
+  if (tree) {
+    const selects = []
+    const options = []
+    const texts = []
+    walk(tree, (n) => {
+      for (const child of n.children ?? []) if (typeof child === 'string') texts.push(child)
+      if (n.type === 'select') selects.push(n)
+      if (n.type === 'option') options.push(String(n.children?.[0]))
+    })
+    const optionLabels = options
+    check('面板有状态筛选下拉', selects.length === 1, `select=${selects.length}`)
+    check('筛选 6 档且含全部/已完成/已取消丢失', optionLabels.length === 6 && ['全部', '进行中', '等待', '已完成', '失败', '已取消/丢失'].every((l) => optionLabels.includes(l)), optionLabels.join(','))
+    check('下拉受控（value + onChange）', selects.length === 1 && selects[0].props.value !== undefined && typeof selects[0].props.onChange === 'function')
+    check('面板有「打开协调者会话」按钮', texts.includes('打开协调者会话'), texts.join('|'))
+    check('面板有「刷新」按钮', texts.includes('刷新'))
+    check('未绑定协调者时有「未绑定」提示', texts.some((t) => t.includes('未绑定')), texts.filter((t) => t.includes('未绑定')).join('|'))
   }
 }
 
