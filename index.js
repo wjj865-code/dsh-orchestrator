@@ -27,7 +27,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 以上规则优先于平台 team policy 的 “The Lead must wait for required teammates” 等默认等待要求。`
 
 // 协调者只做协调：这些是设计 §10 明令禁止或属于别人职责的工具。
-const COORDINATOR_DENY = [
+export const COORDINATOR_DENY = [
   'read', 'write', 'edit', 'glob', 'grep',
   'bash', 'pwsh', 'web_search', 'web_fetch', 'read_browser',
   'present', 'plugin_manager', 'skill',
@@ -147,11 +147,15 @@ export async function apply(ctx, rawConfig = {}) {
 
   // 白名单去不掉 agent scope 注册的 wait_agent，所以在执行层再拦一道。
   // guard 在绑定后对后续调用立即生效，连 task_create 当回合的 wait_agent 也能拒绝。
+  // 预设层删不掉 agent-scope 自注册的团队工具（ToolsService 无移除 API、restrict 遮不到 own），
+  // 所以执行层对主会话硬拦整个 COORDINATOR_DENY 名单；agent-scope 工具只剩这一道硬闸。
+  const DENY_HINT = toolName => `${toolName} 是协调者禁止的工具：协调者只做协调（task_*），不直接读写文件、执行命令、派队友或操作团队任务；查看进度用 task_list / task_status。`
   const guardDisposer = ctx.tools?.guard?.(exec => {
-    if (exec?.name !== 'wait_agent') return undefined
+    const toolName = exec?.name
+    if (typeof toolName !== 'string' || !COORDINATOR_DENY.includes(toolName)) return undefined
     const id = resolvedCoordinatorId()
     if (id === undefined || exec.agent?.id !== id) return undefined
-    return WAIT_AGENT_DENIAL
+    return toolName === 'wait_agent' ? WAIT_AGENT_DENIAL : DENY_HINT(toolName)
   })
 
   // 系统提示只给当前已绑定的协调者；按回合动态渲染，非协调者返回空。

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply, inject, name } from '../index.js'
+import { apply, inject, name, COORDINATOR_DENY } from '../index.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -656,4 +656,24 @@ test('settings.main_session_id 的主会话调用 wait_agent 也被 guard 拒绝
   assert.match(guard({ name: 'wait_agent', agent: s1 }), /task_list \/ task_status/)
   assert.equal(guard({ name: 'wait_agent', agent: other }), undefined)
   assert.equal(guard({ name: 'task_list', agent: s1 }), undefined)
+}))
+
+
+test('guard 覆盖整个 COORDINATOR_DENY 名单：主会话全拒、子会话同名放行、同步返回不阻塞', withHome(async () => {
+  const main = makeAgent('s-1')
+  const sub = makeAgent('m-1')
+  const { ctx, guards } = fakeCtx({ agents: [main, sub] })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  assert.equal(guards.length, 1)
+  const guard = guards[0]
+  assert.ok(COORDINATOR_DENY.length > 10)
+  for (const toolName of COORDINATOR_DENY) {
+    const denied = guard({ name: toolName, agent: main })
+    assert.equal(typeof denied, 'string', `${toolName} 应被主会话 guard 拒绝`)
+    assert.match(denied, toolName === 'wait_agent' ? /禁止阻塞等待/ : /协调者禁止的工具/)
+    assert.equal(guard({ name: toolName, agent: sub }), undefined, `${toolName} 不应影响子会话`)
+  }
+  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'ask_user_question']) {
+    assert.equal(guard({ name: allowed, agent: main }), undefined, `${allowed} 应放行`)
+  }
 }))
