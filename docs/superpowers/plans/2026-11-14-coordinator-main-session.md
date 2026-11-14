@@ -286,11 +286,13 @@ test('spawn 透传 cwd；默认用父会话 cwd', async () => {
     listChildren: async () => [],
   }
   const parent = { id: 's-1', session: { header: { cwd: 'C:/parent' } } }
-  const dispatcher = createSubagentDispatcher({ subagents, agent: parent })
+  const dispatcher = createSubagentDispatcher({ subagents, agent: parent, workerPreset: 'dsh-orchestrator-worker' })
   await dispatcher.spawn({ prompt: 'hi', cwd: 'C:/target' })
   assert.equal(calls[0].request.cwd, 'C:/target')
+  assert.equal(calls[0].request.agentPreset, 'dsh-orchestrator-worker')
   await dispatcher.spawn({ prompt: 'hi' })
   assert.equal(calls[1].request.cwd, 'C:/parent')
+  assert.equal(calls[1].request.agentPreset, 'dsh-orchestrator-worker')
 })
 ```
 
@@ -313,6 +315,8 @@ Expected: FAIL（`request.cwd` 仍是父目录）
         request: {
           parent,
           prompt: [{ type: 'text', text: String(prompt ?? '') }],
+          // 子会话显式用 worker 预设，绕开 composeFrom 继承协调者的 preset restrict（探针 §1）。
+          agentPreset: workerPreset ?? 'dsh-orchestrator-worker',
           ...(baseCwd === undefined ? {} : { cwd: baseCwd }),
         },
       }
@@ -904,7 +908,7 @@ test('preset-tools 在 agent 作用域 restrict allow', () => {
 })
 ```
 
-`cordis.patch.yml`：按 `docs/probes/main-session-probe.md` §3 的准确字段，插入协调者预设行。preset 的 `plugins` 必须是完整可运行的组合（以探针确认的最小清单为准；示意）：
+`cordis.patch.yml`：按 `docs/probes/main-session-probe.md` §6 的清单注册**两个**预设——协调者只带协调工具，worker 带完整工作栈（子会话显式用它，绕开 preset restrict 继承）：
 
 ```yaml
 - insert:
@@ -918,10 +922,43 @@ test('preset-tools 在 agent 作用域 restrict allow', () => {
         description: 只做协调：拆任务、派子会话、看回报；不读写文件、不执行命令。
         order: 80
         plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报。
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
           - id: preset-tools
             name: dsh-orchestrator/preset-tools
-          # …以及探针确认的最小运行栈（persona/instructions/工具执行器），见探针文档 §3
+    - id: orchestrator-worker-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: dsh-orchestrator-worker
+        name: 任务执行者
+        description: 子会话的完整工作栈；显式指定它，避免继承协调者预设的工具收窄。
+        order: 81
+        plugins:
+          - { id: persona, name: '@deepseek-ai/dsh-persona' }
+          - { id: agent-instructions, name: '@deepseek-ai/dsh-agent-instructions' }
+          - { id: time-context, name: '@deepseek-ai/dsh-time-context' }
+          - { id: tool-bash, name: '@deepseek-ai/dsh-tool-bash', disabled: !!js process.platform === 'win32' }
+          - { id: tool-pwsh, name: '@deepseek-ai/dsh-tool-pwsh', disabled: !!js process.platform !== 'win32' }
+          - { id: tool-fs, name: '@deepseek-ai/dsh-tool-fs', config: { applyPatch: false } }
+          - { id: tool-fs-search, name: '@deepseek-ai/dsh-tool-fs-search' }
+          - { id: tool-web, name: '@deepseek-ai/dsh-tool-web' }
+          - { id: tool-todo, name: '@deepseek-ai/dsh-tool-todo' }
+          - { id: tool-ask-user, name: '@deepseek-ai/dsh-tool-ask-user' }
+          - { id: compaction, name: cordis:group, group: true, config: [ { id: compaction-basic, name: '@deepseek-ai/dsh-compaction-basic' }, { id: command-compact, name: '@deepseek-ai/dsh-command-compact' }, { id: tool-result-pruner, name: '@deepseek-ai/dsh-compaction-tool-result-pruner' } ] }
+          - { id: skill-filesystem, name: '@deepseek-ai/dsh-skill-filesystem' }
+          - { id: tool-skill, name: '@deepseek-ai/dsh-tool-skill' }
+          - { id: present, name: '@deepseek-ai/dsh-present' }
 ```
+
+> `task_report` 不在 worker 行里（本插件全局注册）；若 Task 10 发现子会话看不到它，再把 `dsh-orchestrator` 行加进 worker。`preset-tools` 的 allow 用 `knownNames` 过滤，未知名字（如没有 deep-view 时的 `show_view`）会被跳过而不是抛错。
 
 README 增加「主会话」一节（入口、创建/重建、指挥舱、目标目录、预设工具集、迁移、配置覆盖），api-notes 补预设与 `create` 的探测结论。
 
