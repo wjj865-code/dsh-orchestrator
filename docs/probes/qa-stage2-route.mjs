@@ -30,8 +30,8 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const dir = mkdtempSync(join(tmpdir(), 'qa-orch-route-'))
 const db = await openLedger(dir)
 const NOW = Date.now()
-const mk = (title, status, sessionId = null) => {
-  const task = createTask(db, { brief: { title, goal: `goal of ${title}` }, coordinatorSession: 'session-qa' })
+const mk = (title, status, sessionId = null, { readOnly = false } = {}) => {
+  const task = createTask(db, { brief: { title, goal: `goal of ${title}` }, coordinatorSession: 'session-qa', readOnly })
   db.prepare('UPDATE tasks SET status = ?, session_id = ?, updated_at = ? WHERE id = ?').run(status, sessionId, NOW, task.id)
   return task.id
 }
@@ -39,6 +39,7 @@ const running = mk('进行中的任务', 'running', 'child-1')
 const queued = mk('排队中的任务', 'pending')
 markQueued(db, queued)
 const done = mk('已完成任务', 'done', 'child-3')
+const readOnlyTask = mk('只读任务', 'running', 'child-ro', { readOnly: true })
 const stale = mk('两小时没动静的待派发', 'pending')
 db.prepare('UPDATE tasks SET last_event_at = ? WHERE id = ?').run(NOW - 2 * 60 * 60 * 1000, stale)
 db.prepare('UPDATE tasks SET target_dir = ? WHERE id = ?').run('C:/work/project', done)
@@ -87,13 +88,14 @@ check('snapshot 返回 200', ok.status === 200, String(ok.status))
 check('content-type 是 application/json', /application\/json/.test(ok.headers.get('content-type') ?? ''), ok.headers.get('content-type'))
 check('body.ok === true', ok.body?.ok === true, JSON.stringify(ok.body?.ok))
 check('mainSession 带 id/live', eq(ok.body?.mainSession, { id: 'session-qa', live: true }), JSON.stringify(ok.body?.mainSession))
-check('tasks 是数组且含全部 4 个', Array.isArray(ok.body?.tasks) && ok.body.tasks.length === 4, `len=${ok.body?.tasks?.length}`)
+check('tasks 是数组且含全部 5 个', Array.isArray(ok.body?.tasks) && ok.body.tasks.length === 5, `len=${ok.body?.tasks?.length}`)
 const taskById = (id) => ok.body.tasks.find((t) => t.id === id)
-check('任务字段齐全', ['id', 'title', 'status', 'label', 'tone', 'childSessionId', 'targetDir', 'queued', 'stale', 'updatedAt', 'lastEventAt', 'error']
+check('任务字段齐全', ['id', 'title', 'status', 'label', 'tone', 'childSessionId', 'targetDir', 'readOnly', 'queued', 'stale', 'updatedAt', 'lastEventAt', 'error']
   .every((k) => Object.hasOwn(taskById(done), k)), JSON.stringify(Object.keys(taskById(done))))
 check('不返回 brief/goal 原文', !Object.hasOwn(taskById(done), 'goal') && !Object.hasOwn(taskById(done), 'brief'))
 check('running 任务 childSessionId 正确', taskById(running).childSessionId === 'child-1', String(taskById(running).childSessionId))
 check('没有 target 的任务 targetDir 为 null', taskById(running).targetDir === null, String(taskById(running).targetDir))
+check('readOnly 透出：只读任务 true、普通任务 false', taskById(readOnlyTask).readOnly === true && taskById(running).readOnly === false, JSON.stringify([taskById(readOnlyTask).readOnly, taskById(running).readOnly]))
 check('带 target 的任务 targetDir 透出', taskById(done).targetDir === 'C:/work/project', String(taskById(done).targetDir))
 check('snapshot.tasks[].artifacts 形状', Array.isArray(taskById(done).artifacts) && taskById(done).artifacts.length === 2
   && taskById(done).artifacts[0].path === 'C:/work/project/out.txt' && taskById(done).artifacts[0].label === '结果文件'
@@ -125,7 +127,7 @@ for (const [name, body] of [
 
 // ---------- 3. payload 被忽略、不改状态 ----------
 const withPayload = await call({ endpoint: 'snapshot', payload: { status: 'cancelled', taskId: running, tasks: [] } })
-check('带 payload 的 snapshot 仍 200 且按台账返回', withPayload.status === 200 && withPayload.body.tasks.length === 4)
+check('带 payload 的 snapshot 仍 200 且按台账返回', withPayload.status === 200 && withPayload.body.tasks.length === 5)
 check('payload 里的 tasks 未覆盖真实数据', withPayload.body.tasks.some((t) => t.id === running))
 
 // ---------- 3b. open-main 动作端点（写主会话是设计行为，不是只读端点） ----------

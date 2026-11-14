@@ -110,6 +110,14 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 - 「协调者会话尚未就绪（`agent.session` 为空）」按可重试处理：任务留在队列，等主会话就绪后重试，不标 failed。
 - 排队中的任务被 `task_stop` 会直接取消并移出队列；`task_message` 对排队任务返回可读提示（还没有子会话可续派）。
 
+## 只读子任务（显式 `readOnly`）
+
+- `task_create` 可选 `readOnly: true`（默认 false）；**只认显式 true**，字符串/偏真值不算，不按标题关键词猜。协调者自己判断任务性质（分析/审查/评估）后显式传。
+- 派发时给该子会话 append 一条 `sandbox/mode { mode:'read-only' }`（平台唯一写入口；等价于导出的 `setSandboxMode`，插件不 import 平台包，单测锁定事件形状/名称）：`agent/created` 一到就设一次，激活返回后再幂等补一次；`sandboxPolicy.overrideOf(session)` 已是 `read-only` 就跳过。事件按会话持久化，续派/重启 replay 后仍生效；resume 出新的 Session 对象且投影尚未读回时，续派会再补一次。
+- 效果：读、`task_report`、artifacts 照常；写文件/写 shell 被沙箱拒绝并给可读错误；**只读任务不会注册 target 可写根**（否则「只读」有后门）。不改用户的 `permissionPreset` 与全局沙箱默认；只 append 到我们派出的 child session，不碰协调者（协调者被设只读会污染后续所有子任务）。
+- 文案：brief 加 `【权限】只读` 与「不要写文件/写 shell，产物写进回报正文」；台账 `read_only`、`task_list`/`task_status` 标记「只读」；通知标题与面板任务行也标「只读」。
+- **已知时序窗口（如实记录）**：`agent/created` 理论上早于首个模型请求，但派发顺序由平台决定；若某次首回合的写调用抢在设置之前，会拿到一次沙箱拒写，下一回合就已生效。真机判据是子会话首个请求的 runtime-context 出现 `Current DSH file policy: read-only`。
+
 ## 目标目录推断与交付产物
 
 **目标目录**（`task_create`）：
@@ -184,7 +192,7 @@ logs/YYYY-MM-DD.jsonl             （按天一个文件，保留 7 天，单文�
 
 | 工具 | 作用 |
 | --- | --- |
-| `task_create` | 建台账 + 渲染 brief + 入队派发子会话；缺验收标准/队列满（`maxQueue`）会拒绝；并发满自动排队，不报错 |
+| `task_create` | 建台账 + 渲染 brief + 入队派发子会话；缺验收标准/队列满（`maxQueue`）会拒绝；并发满自动排队，不报错；`readOnly:true` 时子会话沙箱只读 |
 | `task_list` | 默认只列活跃任务；带标题、目标摘要、最近一条消息、排队/陈旧标记；`active:false` 看全量 |
 | `task_status` | 单任务详情 + 最近 3 条消息 + 子会话打开方式 |
 | `task_message` | 续派消息（不新建任务），失败重试 3 次后转 `waiting_user`；排队中的任务返回提示 |

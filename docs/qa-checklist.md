@@ -636,6 +636,34 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 **`d59da8f` delta 复验（筛选 + 退避）**：L1 探针扩到 **47 条全过**（新增：无 `setInterval`、`POLL_BACKOFF_MS=30000`、面板下拉 6 档且文案正确、下拉受控 `value+onChange`、有「打开协调者会话」/「刷新」按钮、未绑定提示）；L2 重跑 `RESULT: PASS`（`host-route.js` 未改动，零写入结论不变）；`npm test` 179/179。
 
+## 33. 只读子任务（阶段 5）
+
+**契约**：`task_create` 可选 `readOnly: true`（默认 false，只认显式 true）；只读子会话沙箱 `read-only`；台账 `read_only`、brief `【权限】只读`、面板/通知标「只读」；写文件/写 shell 被拒且可读；不改全局沙箱与协调者。
+
+**平台取证**（`@deepseek-ai/dsh-sandbox-policy`）：唯一写入口 `setSandboxMode(session, mode)` → `session.append('sandbox/mode', { mode })`；按会话持久化、重启 replay 保留；`overrideOf(session)` 读当前覆盖；子会话继承父会话**显式** `sandbox/mode`，所以只写目标 child session；委托子会话 approval 固定 `never`，写被拒不会弹审批。
+
+**L1/单测**：
+| 项 | 期望 |
+| --- | --- |
+| 台账 | `read_only` 默认 0、显式 true 落库、旧库 ALTER 补列、旧行 false |
+| 派发 | 只读：append `sandbox/mode {mode:'read-only'}`（目标 childId）；`agent/created` 先设 + 激活后幂等；投影已只读跳过 |
+| 可写根 | **只读任务不注册 target 可写根**；非只读任务行为不变（仍注册） |
+| 续派 | 只读任务续派仍只读（同会话已有则跳过；resume 新对象且投影未读回时补设）；非只读不设 |
+| 文案 | brief 有 `【权限】只读` + 禁写提示；`task_list`/`task_status` 标「只读」；通知标题「（只读）」；snapshot `readOnly`、面板行徽标 |
+| 非只读 | 以上标记一律不出现，行为逐字不变 |
+
+**L3 真机（纯 dsh 表面）**：
+| # | 操作 | 期望 | 勾 |
+| --- | --- | --- | --- |
+| 1 | `task_create readOnly:true` | 子会话首个请求 runtime-context 出现 `Current DSH file policy: read-only` | [ ] |
+| 2 | 让子会话写文件/写 shell | 被拒且可读；读与 `task_report` 正常 | [ ] |
+| 3 | `task_report done` | 通知标题带「（只读）」，面板行有「只读」徽标 | [ ] |
+| 4 | `task_message` 续派 | 第二轮仍只读；写仍被拒 | [ ] |
+| 5 | 普通任务 | 不出现任何「只读」标记，写/派发行为不变 | [ ] |
+| 6 | 带 target 的只读任务 | 仍可推断/指定 target，但**不注册可写根** | [ ] |
+
+**已知时序窗口**：`agent/created` 早于首个模型请求是平台顺序；若首回合写调用抢跑，会拿到一次拒写，下一回合已生效。不夸大、不作为必现缺陷。
+
 **`f515a4a` + `6a8f07e` delta 复验（connection 晚到 / 快照截断）**：`index.js` 改为 `ctx.inject(['connection'], …)` + `scope.effect` 清理，保留 `ctx.get` 兜底（读 `index.js:272-299`；该路径由 181 测试里的「connection 晚到」用例覆盖，我未单独复跑）。L2 探针同步更新：静态断言改成「ledger 只取 `listTasks`/`listHistoryTasks` 两个查询函数 + `listHistoryTasks` 用 SQL `LIMIT`/`NOT IN` 活跃态」；新增动态用例「1 个早创建 running + 3 个新 done、limit=2」→ 返回 3 条、running 在、done 只 2 条、活跃排前、历史倒序；`limit=0` 只返回活跃。结果：L2 **57 条全过**、L1 47/47、`npm test` 181/181、api-probe 33/33、`node --check client.js` exit 0。
 
 **`e4bb07e` 复验（侧栏入口迁到 `sidebar.footer.action`）**：真机 L3 发现 `sidebar.panellist` 在 Bot 模式被 ds-bot `nav[class*="_panelList"]{display:none!important}` 整条藏掉（按钮在 DOM 但 0×0），改注册 `sidebar.footer.action`（`id:'orchestrator'`、`order:100`、无 priority）。平台契约核对：`dsh-client-ui-sidebar/lib/client.js` @765 `{kind:'list', scope:'root'}`、渲染在 `.footArea > .footerActions` 并传 `{ wide }`；ds-bot 同槽占 `bot-return`(-300)/`bot-account`(-200)，CSS 让每个 action 占整行（`grid-column:1/-1`），我们的按钮单独一行不挤压账户位。L1 探针改断言后 **54 条全过**：不再注册 panellist、footer.action 恰 1 次、id/order/无 priority、id 不等于 bot-account/bot-return、`wide=true/false` 都能渲染出按钮、两态都有 `title/aria-label` 含「任务」、两态点击都 `selectPanel('orchestrator')`；L2 `RESULT: PASS`；`npm test` 182/182；api-probe 33/33；`npm pack --dry-run` 含 `client.js`(10.0kB)。
