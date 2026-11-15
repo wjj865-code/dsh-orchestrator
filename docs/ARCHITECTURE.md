@@ -83,6 +83,16 @@
 - `stallRounds`：连续 progress 达到阈值且距上次提醒超过 `staleMinutes`，推一次「可能卡住」。
 - `digestAt`（HH:MM）开启后，主会话上维护一条每日 `schedule`；到点提示协调者调用 `task_inbox` + `task_list` 汇总。主会话重建/时区变化会重建，配置为空会删除。
 
+## 启动对账（S2）
+
+进程重启/崩溃后，子会话的结算事件可能没人消费，台账会留下「running 但实际没人在跑」的幽灵。`src/reconcile.js` 在插件 `apply()` 启动时和协调者 `agent/created` 晚加载时各对一次账：
+
+- **活跃性对账只认 `running`**：`agents.get(session_id)` 不存在 → `orphaned`（死因「进程重启后子会话没有在运行的回合」）；
+- `catalog` 里查不到 `session_id` → `orphaned`（可能已被删除）；查 `running` / `waiting_*`，`waiting_dep` 完全没有子会话、不参与也不误标；
+- `waiting_user` / `waiting_auth` 不 live 但 catalog 有 → 保持原状态（故意停下，靠 `task_message` 冷恢复）；
+- catalog 读失败只 warn，`running` 的 liveness 判定照做；标记前重读状态，已落终态的不覆盖，重复启动幂等；
+- 标记完发**一条汇总通知**（任务名 + id，超过 10 条折叠「另有 N 个」）。启动时协调者还没加载导致投递 `skipped` 时保留待发，`agent/created` 后补发一次，不重复打扰。
+
 ## 产物
 
 - `task_report.artifacts: [{path,label?}]`，相对路径按 `target_dir`（无则主会话目录）解析。

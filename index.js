@@ -11,7 +11,7 @@ import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
 import { createQueue } from './src/queue.js'
-import { reconcileOrphans } from './src/reconcile.js'
+import { createStartupReconciler } from './src/reconcile.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
@@ -172,7 +172,8 @@ export async function apply(ctx, rawConfig = {}) {
       // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑，并对一次子会话目录。
       void ensureDigestFor(agent.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
       queue?.pump()
-      reconcileOrphans({ db, dispatcher, coordinatorSessionId: id, isLive: isChildLive, logger, onWarn: warnings })
+      // 协调者晚加载：再对一次账，并补发启动时没送出去的孤儿汇总。
+      reconciler?.reconcile({ coordinatorSessionId: id })
         .then(() => queue?.pump())
         .catch(error => warnings(`dsh-orchestrator: 重启对账失败：${error?.message ?? error}`))
     }
@@ -208,6 +209,9 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   let queue
+  // 启动对账器（S2）：标记「台账在跑、实际没人在跑」的孤儿并汇总上报。
+  // 在 notifier 之后创建；agent/created 可能先于赋值触发，所以按可选调用。
+  let reconciler
   // 结算上报器：子会话结束/中断时把台账从 running 推到终态（S1）。
   // 队列/派发器后面才创建，这里用惰性引用；事件可能早于赋值，所以都走可选调用。
   let settlement
@@ -284,6 +288,16 @@ export async function apply(ctx, rawConfig = {}) {
 
   queue = createQueue({ db, dispatcher, config, logger, notifier })
 
+  reconciler = createStartupReconciler({
+    db,
+    dispatcher,
+    isLive: isChildLive,
+    logger,
+    onWarn: warnings,
+    notifier,
+    labelFor: task => taskLabel(task, { all: listTasks(db) }),
+  })
+
   settlement = createSettlementReporter({
     db,
     notifier,
@@ -340,15 +354,9 @@ export async function apply(ctx, rawConfig = {}) {
     })
     : undefined
 
-  // 启动对账：catalog 里查不到的活跃任务标 orphaned；catalog 读不到只 warn。
-  await reconcileOrphans({
-    db,
-    dispatcher,
-    coordinatorSessionId: resolvedCoordinatorId(),
-    isLive: isChildLive,
-    logger,
-    onWarn: warnings,
-  })
+  // 启动对账（S2）：running 无活跃子会话 / catalog 查不到 → orphaned，并汇总上报一次；
+  // 此时协调者可能还没加载，汇总会保留到 agent/created 再补发。
+  await reconciler.reconcile({ coordinatorSessionId: resolvedCoordinatorId() })
 
   // 启动恢复：pending 且没有子会话的任务重新入队；超时的（非排队）已在上面标 failed。
   queue.load()

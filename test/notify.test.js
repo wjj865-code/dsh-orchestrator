@@ -247,3 +247,57 @@ test('失败任务的通知文案是「失败」而不是「完成」', async ()
   assert.equal(delivered.length, 1)
   assert.equal(delivered[0], '任务「A」失败：子会话创建失败：boom')
 })
+
+test('summary：多条任务共用一条文案，notifications 按任务逐条落库', async () => {
+  const db = await openLedger(tempDir())
+  const delivered = []
+  const notifier = createNotifier({
+    send: async text => delivered.push(text),
+    mergeWindowMs: 1000,
+    record: entry => addNotification(db, entry),
+  })
+  const outcome = await notifier.summary([
+    { taskId: 't-1', title: 'A', status: 'orphaned', summary: '启动对账', system: true },
+    { taskId: 't-2', title: 'B', status: 'orphaned', summary: '启动对账', system: true },
+  ], '启动对账：2 个任务在跑，但子会话已不活跃')
+  assert.equal(outcome.delivered, true)
+  assert.deepEqual(delivered, ['启动对账：2 个任务在跑，但子会话已不活跃'])
+  const rows = db.prepare('SELECT task_id, level, status FROM notifications ORDER BY rowid').all()
+  assert.deepEqual(rows.map(row => row.task_id), ['t-1', 't-2'])
+  assert.ok(rows.every(row => row.level === 'notify' && row.status === 'delivered'))
+  db.close()
+})
+
+test('summary：跳过/失败返回 delivered:false，并落 skipped/failed', async () => {
+  const db = await openLedger(tempDir())
+  const notifier = createNotifier({
+    send: () => ({ skipped: true, reason: '主会话未加载' }),
+    record: entry => addNotification(db, entry),
+  })
+  const outcome = notifier.summary([{ taskId: 't-1', status: 'orphaned' }], '启动对账：1 个任务')
+  assert.equal(outcome.delivered, false)
+  assert.equal(outcome.reason, '主会话未加载')
+  const row = db.prepare('SELECT status, reason FROM notifications').get()
+  assert.equal(row.status, 'skipped')
+  assert.match(row.reason, /主会话未加载/)
+
+  const throwing = createNotifier({
+    send: () => { throw new Error('steer 失败') },
+    record: entry => addNotification(db, entry),
+    onWarn: () => {},
+  })
+  assert.equal(throwing.summary([{ taskId: 't-2', status: 'orphaned' }], 'x').delivered, false)
+  const failed = db.prepare('SELECT status, reason FROM notifications ORDER BY rowid DESC LIMIT 1').get()
+  assert.equal(failed.status, 'failed')
+  assert.match(failed.reason, /steer 失败/)
+  db.close()
+})
+
+test('summary：空列表或空文案不投递', () => {
+  const delivered = []
+  const notifier = createNotifier({ send: text => delivered.push(text), mergeWindowMs: 10 })
+  assert.deepEqual(notifier.summary([], 'x'), { delivered: false, reason: 'empty' })
+  assert.deepEqual(notifier.summary([{ taskId: 't-1' }], '  '), { delivered: false, reason: 'empty' })
+  assert.deepEqual(delivered, [])
+})
+

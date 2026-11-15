@@ -96,31 +96,44 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
   }
 
   // send 可以是同步注入（index.js 直接 steer 协调者），也可以是异步通道（测试/其他实现）。
+  // 返回投递结果（同步 send 同步返回，异步 send 返回 Promise），汇总上报靠它决定要不要保留待发。
   const deliver = (text, items) => {
     let result
     try {
       result = send(text, items)
     } catch (error) {
+      const reason = error?.message ?? String(error)
       recordFailed(items, error)
-      return undefined
+      return { delivered: false, reason }
     }
     if (result !== null && typeof result?.then === 'function') {
       // 回调里的落库/告警也可能抛错；这里兜底，避免 `void deliver(...)` 变成未处理拒绝。
       return result.then(
         value => {
-          if (value === false) recordSkipped(items)
-          else if (value?.skipped === true) recordSkipped(items, value.reason ?? null)
-          else recordDelivered(items)
+          if (value === false) { recordSkipped(items); return { delivered: false, reason: null } }
+          if (value?.skipped === true) {
+            recordSkipped(items, value.reason ?? null)
+            return { delivered: false, reason: value.reason ?? null }
+          }
+          recordDelivered(items)
+          return { delivered: true }
         },
-        error => recordFailed(items, error),
+        error => {
+          recordFailed(items, error)
+          return { delivered: false, reason: error?.message ?? String(error) }
+        },
       ).catch(error => {
         try { onWarn(`通知收尾失败：${error?.message ?? error}`) } catch { /* 告警失败也不能外溢 */ }
+        return { delivered: false, reason: error?.message ?? String(error) }
       })
     }
-    if (result === false) { recordSkipped(items); return undefined }
-    if (result?.skipped === true) { recordSkipped(items, result.reason ?? null); return undefined }
+    if (result === false) { recordSkipped(items); return { delivered: false, reason: null } }
+    if (result?.skipped === true) {
+      recordSkipped(items, result.reason ?? null)
+      return { delivered: false, reason: result.reason ?? null }
+    }
     recordDelivered(items)
-    return undefined
+    return { delivered: true }
   }
 
   const flush = () => {
@@ -145,6 +158,16 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
       }
       buffer.push(item)
       if (timer === null) timer = setTimeout(() => { void flush() }, mergeWindowMs)
+    },
+    /**
+     * 汇总通知（启动对账等）：多条任务共用一条文案、只投递一次，notifications 仍按任务逐条落库。
+     * 返回 { delivered, reason }（异步通道返回 Promise）；调用方据此决定是否保留待发。
+     */
+    summary(items, text) {
+      const list = (Array.isArray(items) ? items : []).filter(item => item !== null && typeof item === 'object')
+      const body = typeof text === 'string' ? text : ''
+      if (list.length === 0 || body.trim() === '') return { delivered: false, reason: 'empty' }
+      return deliver(body, list)
     },
     async drain() {
       if (timer !== null) clearTimeout(timer)

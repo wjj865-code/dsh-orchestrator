@@ -652,6 +652,115 @@ test('重启对账：running 子会话不 live 标 orphaned；waiting 不 live �
   await disposers[0]()
 }))
 
+test('S2 启动对账：running 无活跃子会话 → orphaned + 一条汇总通知；重复启动幂等', withHome(async home => {
+  const { openLedger, createTask, transition } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const ghost = createTask(ledger, { brief: { title: '幽灵任务', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  transition(ledger, ghost.id, 'running', { sessionId: 'c-run', target: 'c-run' })
+  const waiting = createTask(ledger, { brief: { title: '等授权', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  transition(ledger, waiting.id, 'running', { sessionId: 'c-wait', target: 'c-wait' })
+  transition(ledger, waiting.id, 'waiting_auth')
+  const dep = createTask(ledger, {
+    brief: { title: '等前置', goal: 'g', acceptance: ['a'] },
+    coordinatorSession: 's-1',
+    dependsOn: [waiting.id],
+    status: 'waiting_dep',
+  })
+  ledger.close()
+
+  const subagents = {
+    async startActivation() { throw new Error('不应派发') },
+    async sendMessage() {},
+    async interruptByParent() {},
+    // catalog 里只有 waiting 会话；running 的那条已经没了。
+    async listChildren() { return [{ id: 'c-wait', mode: 'continuable', label: 'x', activity: 'inactive' }] },
+  }
+  const s1 = makeAgent('s-1')
+  const first = fakeCtx({ agents: [s1], subagents })
+  await apply(first.ctx, { coordinatorSession: 's-1' })
+  await wait(30)
+
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
+  const db = new DatabaseSync(dbPath)
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(ghost.id).status, 'orphaned')
+  assert.match(db.prepare('SELECT error FROM tasks WHERE id = ?').get(ghost.id).error, /没有在运行的回合/)
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(waiting.id).status, 'waiting_auth')
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(dep.id).status, 'waiting_dep')
+  const notification = db.prepare('SELECT task_id, level, status FROM notifications').all()
+  assert.equal(notification.length, 1)
+  assert.equal(notification[0].task_id, ghost.id)
+  assert.equal(notification[0].level, 'notify')
+  assert.equal(notification[0].status, 'delivered')
+  db.close()
+
+  // 一条汇总消息（不是每个任务一条），列出任务名与重派提示。
+  assert.equal(s1.injected.length, 1)
+  const text = s1.injected[0].content[0].text
+  assert.match(text, /启动对账：1 个任务/)
+  assert.match(text, /幽灵任务/)
+  assert.match(text, /task_retry/)
+  await first.disposers.at(-1)?.()
+
+  // 模拟再次启动：已 orphaned 的任务不再重复标记，也不再发汇总。
+  const s1b = makeAgent('s-1')
+  const second = fakeCtx({ agents: [s1b], subagents })
+  await apply(second.ctx, { coordinatorSession: 's-1' })
+  await wait(30)
+  assert.equal(s1b.injected.length, 0)
+  const after = new DatabaseSync(dbPath)
+  assert.equal(after.prepare('SELECT status FROM tasks WHERE id = ?').get(ghost.id).status, 'orphaned')
+  assert.equal(after.prepare('SELECT count(*) AS n FROM notifications').get().n, 1)
+  after.close()
+  await second.disposers.at(-1)?.()
+}))
+
+test('S2 启动时协调者未加载：汇总保留待发，agent/created 后补发一次', withHome(async home => {
+  const { openLedger, createTask, transition } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const ghost = createTask(ledger, { brief: { title: '幽灵任务', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  transition(ledger, ghost.id, 'running', { sessionId: 'c-run', target: 'c-run' })
+  ledger.close()
+
+  const s1 = makeAgent('s-1')
+  const subagents = {
+    async startActivation() { throw new Error('不应派发') },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  // 启动时协调者会话还没加载：catalog 读不到，但 running 的 liveness 判死照做。
+  const { ctx, live, listeners, disposers } = fakeCtx({ agents: [], subagents })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  await wait(30)
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
+  const db = new DatabaseSync(dbPath)
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(ghost.id).status, 'orphaned')
+  assert.equal(db.prepare('SELECT status FROM notifications').get().status, 'skipped')
+  db.close()
+  assert.equal(s1.injected.length, 0)
+
+  // 协调者加载：补对账 + 补发启动时没送出去的汇总。
+  live.set('s-1', s1)
+  listeners.get('agent/created')({ agent: s1 })
+  await wait(30)
+  assert.equal(s1.injected.length, 1)
+  assert.match(s1.injected[0].content[0].text, /启动对账：1 个任务/)
+  assert.match(s1.injected[0].content[0].text, /幽灵任务/)
+
+  // 再触发一次 agent/created：已汇总过，不重复打扰。
+  listeners.get('agent/created')({ agent: s1 })
+  await wait(30)
+  assert.equal(s1.injected.length, 1)
+
+  const sent = new DatabaseSync(dbPath)
+  const statuses = sent.prepare('SELECT status FROM notifications ORDER BY rowid').all().map(row => row.status)
+  assert.deepEqual(statuses, ['skipped', 'delivered'])
+  sent.close()
+  await disposers.at(-1)?.()
+}))
+
 test('S1：派发侧 settle completed 自动把台账 running→done，并写结算消息 + 通知', withHome(async home => {
   const s1 = makeAgent('s-1')
   let settle
