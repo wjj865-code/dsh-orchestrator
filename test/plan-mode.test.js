@@ -244,6 +244,31 @@ test('P8 task_message：等批准的任务续派成功 = 批准（切沙箱 + pl
   db.close()
 })
 
+// 用户现场（t-2aa984e5）：计划子会话 task_report blocked 后，批准要回到 running 并在**原子会话**里继续，
+// 不能新建 activation/新会话。这条同时锁住「谁负责状态迁移」（task_message 投递成功 → transition）与
+// 「续派复用 sessionId」（dispatcher.sendReliable(target=task.target)，不是 spawn）。
+test('P8 生命周期：blocked → 批准续派 → 回 running 且复用原会话（不新建）', async () => {
+  const { db, dispatcher, tools } = await setupTools()
+  const task = planTaskRow(db)
+  await tools.task_report.execute(
+    { task_id: task.id, status: 'blocked', summary: '计划已就绪', question: '批准执行？', options: ['批准执行', '调整计划'] },
+    { agent: { id: task.session_id } },
+  )
+  const blocked = getTask(db, task.id)
+  assert.equal(blocked.status, 'waiting_user')
+  assert.equal(blocked.question, '批准执行？')
+  const text = await mainCall(tools, 'task_message', { task_id: task.id, message: '批准执行' })
+  assert.match(text, /计划已批准/)
+  const resumed = getTask(db, task.id)
+  assert.equal(resumed.status, 'running')
+  assert.equal(resumed.question, null)
+  assert.equal(resumed.target, task.target)
+  const send = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
+  assert.equal(send[1], task.target)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'spawn'), false)
+  db.close()
+})
+
 test('P8 task_message：投递失败不改计划状态（仍在等你确认）', async () => {
   const { db, dispatcher, tools } = await setupTools({ failSend: true })
   const task = planTaskRow(db, { status: 'waiting_user' })
@@ -312,7 +337,7 @@ test('P8 task_detail 纯渲染：计划任务权限显示只读、批准后显�
 
 const coordinator = { id: 's-1', session: { id: 's-1', header: { cwd: 'C:/parent' } } }
 
-function planEnv({ service = true, hookOnStart = false } = {}) {
+function planEnv({ service = true, hookOnStart = false, ctxStyle = 'plain', presetService = false } = {}) {
   const sandboxEvents = []
   const modes = new Map()
   const planEvents = []
@@ -329,22 +354,40 @@ function planEnv({ service = true, hookOnStart = false } = {}) {
       get() { return { active: false } },
     }
     : undefined
+  // 宿主 cordis 的 ctx 是 Proxy：读「fiber 链上拿不到、又没声明 inject」的服务属性会直接抛
+  // `cannot get property "x" without inject`（cordis src/reflect.ts 的 get trap）。
+  // 真机 planFirst 创建失败就是踩到这条；测试替身必须能复现同样的语义，否则会漏掉回归。
+  const cordisLikeCtx = services => new Proxy({ get: name => services[name], ...services }, {
+    get(target, prop) {
+      if (Reflect.has(target, prop)) return Reflect.get(target, prop)
+      const error = new Error(`cannot get property "${String(prop)}" without inject`)
+      throw error
+    },
+  })
   const registerAgent = id => {
+    const toolService = {
+      guard(fn) {
+        guards.push(fn)
+        const record = { fn, disposed: false }
+        guardRecords.push(record)
+        return () => { record.disposed = true }
+      },
+    }
+    const services = { tools: toolService }
+    if (planMode !== undefined) services.planMode = planMode
+    if (presetService) {
+      // 宿主公开 API：读 agent 预设 isolate 组里的服务（plan-mode 实际装在 preset 的隔离域）。
+      services.agentPresets = {
+        serviceFor(agent, name) { return name === 'planMode' ? planMode : undefined },
+      }
+    }
+    const ctx = ctxStyle === 'cordis'
+      ? cordisLikeCtx(services)
+      : { get: name => (name === 'planMode' ? services.planMode : undefined), planMode: services.planMode, tools: toolService }
     const agent = {
       id,
       session: sessionsById.get(id),
-      ctx: {
-        get: name => name === 'planMode' ? planMode : undefined,
-        planMode,
-        tools: {
-          guard(fn) {
-            guards.push(fn)
-            const record = { fn, disposed: false }
-            guardRecords.push(record)
-            return () => { record.disposed = true }
-          },
-        },
-      },
+      ctx,
     }
     agentsById.set(id, agent)
     return agent
@@ -442,6 +485,57 @@ test('P8 派发：planMode 服务缺失只 warn 降级，只读沙箱仍生效',
   // agent 作用域 guard 仍装上（不依赖 planMode 服务）。
   assert.equal(env.guards.length, 1)
   assert.ok(member.id)
+})
+
+// 回归（真机 t-e36f85f3）：planFirst 创建时报 `cannot get property "planMode" without inject`。
+// 原因是宿主 cordis 代理在服务不可见时读属性会抛，插件把「读不到 = 降级」写成了裸属性访问。
+test('P8 派发：cordis 代理读 ctx.planMode 会抛 —— 服务不可见时必须降级而不是让创建失败', async () => {
+  const env = planEnv({ service: false, ctxStyle: 'cordis' })
+  const member = await env.dispatcher.spawn({ prompt: 'p', planFirst: true })
+  assert.ok(member.id)
+  assert.equal(sandboxModeEvents(env).length, 1)
+  assert.deepEqual(sandboxModeEvents(env)[0].payload, { mode: 'read-only' })
+  assert.equal(env.planEvents.length, 0)
+  assert.match(env.warnings.join('\n'), /planMode 服务不可用/)
+  // exit guard 仍装上（读 ctx.tools 是已有服务，不触发代理抛错）。
+  assert.equal(env.guards.length, 1)
+})
+
+test('P8 派发：planMode 装在预设隔离域时走 agentPresets.serviceFor，不碰会抛的属性读', async () => {
+  const env = planEnv({ ctxStyle: 'cordis', presetService: true })
+  const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
+  assert.deepEqual(env.planEvents, [[member.id, true]])
+  assert.equal(env.warnings.length, 0)
+})
+
+test('P8 生命周期：只读任务 blocked 续派 → 回 running 但明说仍是只读（不伪装可写）', async () => {
+  const { db, dispatcher, tools } = await setupTools()
+  const task = createTask(db, { brief: sampleBrief({ title: '只读核查' }), coordinatorSession: 's-1', readOnly: true })
+  transition(db, task.id, 'running', { sessionId: 'c-2', target: 'c-2' })
+  transition(db, task.id, 'waiting_user')
+  const text = await mainCall(tools, 'task_message', { task_id: task.id, message: '按这个计划做' })
+  // 真机 t-2aa984e5：协调者以为「续派 = 可以继续落地」，实际仍是只读，最后新开任务/新会话。
+  assert.match(text, /只读任务/)
+  assert.match(text, /仍是 read-only 沙箱/)
+  assert.match(text, /新派一个可写任务/)
+  assert.equal(getTask(db, task.id).status, 'running')
+  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  const send = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
+  assert.equal(send[1], 'c-2')
+  assert.equal(send[3], true)
+  db.close()
+})
+
+test('P8 批准：planMode 服务缺失时仍把沙箱切回可写（阻塞→批准→原会话继续）', async () => {
+  const env = planEnv({ service: false, ctxStyle: 'cordis' })
+  const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
+  const result = await env.dispatcher.approvePlan(member.id, 'C:/target')
+  assert.equal(result.ok, true)
+  assert.equal(result.sandbox, 'workspace-write')
+  assert.deepEqual(sandboxModeEvents(env).map(item => item.payload.mode), ['read-only', 'workspace-write'])
+  // 服务缺失不产生 plan off 调用，但批准本身不能失败。
+  assert.deepEqual(env.planEvents, [])
+  assert.equal(env.guardRecords[0].disposed, true)
 })
 
 test('P8 批准后恢复执行：沙箱切 workspace-write、plan off、释放 guard 并补可写根', async () => {

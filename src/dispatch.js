@@ -233,27 +233,68 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     }
   }
 
-  // P8：取子 agent。planMode 装在 worker 预设作用域，只能从 `agent.ctx.get('planMode')` 拿
-  // （插件根作用域的 ctx.get 看不到预设作用域的服务）。
+  // P8：取子 agent。
   const childAgentOf = (childId, hint) => hint ?? serviceOf(agents)?.get?.(childId)
 
+  /**
+   * P8：读子会话的 planMode 服务。
+   *
+   * 平台现状（DSH 0.2.2-rc.3 桌面 profile）：
+   * - 宿主 base bundle 的 `plan-mode` 行被 web-app 的 patch `disabled: true` 关掉了；
+   * - plan-mode 由各 agent 预设自己在 `isolate: { planMode: true }` 的组里提供
+   *   （见 @deepseek-ai/dsh-web-app/presets/standard.patch.yml），即**预设隔离域**服务；
+   * - 宿主为这种服务提供的读法是 `agentPresets.serviceFor(agent, name)`
+   *   （见 @deepseek-ai/dsh-agent-preset-registry 的 serviceFor 文档），
+   *   `agent.ctx.get('planMode')` 只在服务落在外层非隔离作用域时才看得到。
+   *
+   * 关键约束：cordis 的 ctx 是 Proxy，读一个「当前 fiber 链上拿不到、又没声明 inject」的服务属性会
+   * **直接抛** `cannot get property "x" without inject`（cordis src/reflect.ts 的 get trap），
+   * 所以这里绝不能让属性读成为裸调用：每条更易抛的读法都包 try，全部失败按「服务缺失」降级。
+   */
   const planModeServiceOf = childAgent => {
     const ctx = childAgent?.ctx
-    if (ctx === undefined) return undefined
-    try {
-      const service = typeof ctx.get === 'function' ? ctx.get('planMode') : ctx.planMode
-      return service ?? ctx.planMode
-    } catch {
-      return ctx.planMode
+    if (ctx === undefined || ctx === null) return undefined
+    const lookups = [
+      // 首选：宿主公开 API —— 读 agent 预设隔离域里的服务（plan-mode 通常装在这里）。
+      () => {
+        const presets = typeof ctx.get === 'function' ? ctx.get('agentPresets') : undefined
+        return typeof presets?.serviceFor === 'function' ? presets.serviceFor(childAgent, 'planMode') : undefined
+      },
+      // 次选：服务落在 agent ctx 可达的非隔离作用域（自定义预设直接挂 plan-mode 的旧形态）。
+      () => typeof ctx.get === 'function' ? ctx.get('planMode') : undefined,
+      // 兜底：旧平台/测试替身把服务直接挂成 ctx 属性；cordis 代理可能抛，靠上面的 try 兜住。
+      () => ctx.planMode,
+    ]
+    for (const lookup of lookups) {
+      let service
+      try {
+        service = lookup()
+      } catch {
+        continue
+      }
+      if (service !== undefined && service !== null) return service
     }
+    return undefined
   }
 
   /** 置/关 plan mode；服务缺失、agent 还没出现、调用失败都只降级（只读沙箱仍在）。 */
   const applyPlanMode = (childId, active, agentHint) => {
     if (active === true && planApplied.has(childId)) return { ok: true, outcome: 'noop', skipped: true }
-    const childAgent = childAgentOf(childId, agentHint)
-    if (childAgent === undefined) return { ok: false, reason: 'agent-missing' }
-    const service = planModeServiceOf(childAgent)
+    let childAgent
+    let service
+    try {
+      childAgent = childAgentOf(childId, agentHint)
+      if (childAgent === undefined) return { ok: false, reason: 'agent-missing' }
+      service = planModeServiceOf(childAgent)
+    } catch (error) {
+      // 读取服务本身失败（宿主代理抛错等）同样按降级处理：只读沙箱是硬拦，plan mode 只是软引导，
+      // 绝不能因为读不到软引导而把整次派发/批准弄失败。
+      if (!planModeWarned.has(childId)) {
+        planModeWarned.add(childId)
+        onWarn(`dsh-orchestrator: 读取 planMode 服务失败，已降级为只有只读沙箱：${errorText(error)}`)
+      }
+      return { ok: false, reason: 'service-lookup-failed' }
+    }
     if (service === undefined || typeof service.set !== 'function') {
       if (!planModeWarned.has(childId)) {
         planModeWarned.add(childId)
@@ -278,8 +319,14 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
    */
   const installExitPlanGuard = (childId, agentHint) => {
     if (planGuards.has(childId)) return true
-    const childAgent = childAgentOf(childId, agentHint)
-    const tools = childAgent?.ctx?.tools
+    let tools
+    try {
+      // 同上：ctx 是 cordis 代理，读不到的服务属性会抛；guard 装不上只降级（task_report 出口仍在文案里）。
+      tools = childAgentOf(childId, agentHint)?.ctx?.tools
+    } catch (error) {
+      onWarn(`dsh-orchestrator: 读取子会话 tools 服务失败，未安装 exit_plan_mode guard：${errorText(error)}`)
+      return false
+    }
     if (tools === undefined || typeof tools.guard !== 'function') return false
     try {
       const dispose = tools.guard(exec => {

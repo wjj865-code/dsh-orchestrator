@@ -847,7 +847,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         const approved = await approvePlan({ db, dispatcher, task, log })
         planNote = `\n${approvalNote(approved)}`
       }
-      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}`
+      // 只读任务的「等你确认」续派：沙箱仍是 read-only（契约如此，见 docs/LIMITATIONS.md）。
+      // 真机踩过：协调者拿不准这条，最后新开可写任务/新会话，原会话永远停在「等你确认」。
+      // 这里如实说清代价并给出两条出口，别让「投递成功」被误解成「已切可写」。
+      const readOnlyNote = wasWaiting && task.read_only === true && isPlanTask(task) !== true
+        ? '\n注意：该任务是只读任务（readOnly），续派后子会话仍是 read-only 沙箱、写操作会被拒。'
+          + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，批准后同一会话会自动切回可写。'
+        : ''
+      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${readOnlyNote}`
     }),
 
     wrap('task_stop', '停止一个子任务（会中断它的当前一轮）。', objectSchema({ task_id: str('任务编号') }), async (args, exec) => {
