@@ -1,18 +1,21 @@
 // 结算上报（S1）：子会话结束/中断时自动把台账从 running 推到终态。
+// 两段式终态：自然结束先落 delivered（已交付待确认），由协调者 task_close 或超时 sweeper 收成 done；
+// 中断/异常仍直接落 cancelled/failed/orphaned。
 // 事件源有两个，都只做同一件事（重复到达由状态机天然幂等）：
 //   1) dispatch.js 的 subagent.settled / subagent.failed（本次派发的那次 activation）；
 //   2) 平台 subagent/end 生命周期事件（含续派/冷恢复起的新 activation，见 docs/probes/stop-reason-probe.md）。
 // stopReason 取值域来自平台类型：completed / aborted / error / max-tokens / refusal。
 // B1：结算同时把子会话最后一条 assistant 消息落进台账（短内联 / 长写 reports 文件），
-//     主会话用 task_status 就能读到全文，不必再打开子会话历史。
+//     主会话用 task_status 就能读到全文，不必再打开子会话历史；delivered/done 上只补消息、不改状态。
 import { addMessage, findTaskBySession, getTask, setTaskLastMessage, transition } from './ledger.js'
 import { captureLastMessage, messageText, summarizeText } from './last-message.js'
 import { statusLabel } from './state.js'
 import { notifyWorktreeOf } from './worktree-request.js'
 
-/** stopReason → 台账终态与死因。completed 只在「没有只报 progress」时算完成。 */
+/** stopReason → 台账状态与死因。completed 只在「没有只报 progress」时算交付。 */
 export const SETTLE_MAP = {
-  completed: { status: 'done', reason: null },
+  // 两段式终态：子会话自然结束先落「已交付待确认」，由协调者 task_close（或超时）收成 done。
+  completed: { status: 'delivered', reason: null },
   aborted: { status: 'cancelled', reason: '子会话被中断（stopReason=aborted）' },
   error: { status: 'failed', reason: '子会话异常结束（stopReason=error）' },
   'max-tokens': { status: 'failed', reason: '子会话输出达到长度上限被截断（stopReason=max-tokens），可重派' },
@@ -29,13 +32,16 @@ export function mapSettle(stopReason, { progressCount = 0 } = {}) {
   if (known === undefined) {
     return { status: 'orphaned', reason: unknownReason(stopReason), stopReason: stopReason ?? null }
   }
-  if (known.status === 'done' && progressCount > 0) {
+  if (known.status === 'delivered' && progressCount > 0) {
     return { status: 'orphaned', reason: PAUSED_REASON, stopReason }
   }
   return { ...known, stopReason }
 }
 
 const MAX_SUMMARY = 240
+
+/** 结算里「真终态」：只有这些状态才释放可写根、收敛平台 goal。delivered 保留会话与 goal，等确认/追问。 */
+const TERMINAL_SETTLE_STATUSES = new Set(['done', 'cancelled', 'failed', 'orphaned'])
 
 /** 从 ContentBlock[] 取可读摘要（平台 SubagentResult.output / lastAssistantMessage 都是这个形状）。 */
 export function outputSummary(output, max = MAX_SUMMARY) {
@@ -44,8 +50,9 @@ export function outputSummary(output, max = MAX_SUMMARY) {
 
 /**
  * 结算上报器。所有副作用（台账、消息、通知、可写根释放、队列补位）都在这里，调用方只喂事件。
- * 只认 running：waiting_user/waiting_auth 是故意停下的（子任务自己报了 blocked/needs_auth），
- * 终态任务也可能在 done 回报后再次 settle，这些都不改状态。
+ * 只改 running 的状态：waiting_user/waiting_auth 是故意停下的（子任务自己报了 blocked/needs_auth）。
+ * 但 delivered / done 上仍要补写「最后一条消息」——子任务自己 task_report done 会先把状态推到
+ * delivered，本回合的 settle 到这里时已经不在 running，不补写就永远拿不到它最后说了什么（B1 时序修复）。
  */
 export function createSettlementReporter({
   db,
@@ -73,6 +80,7 @@ export function createSettlementReporter({
         title: task.title,
         displayName: typeof labelFor === 'function' ? labelFor(task) : task.title,
         readOnly: task.read_only === true,
+        access: task.access === 'full' ? 'full' : null,
         status,
         summary,
         // D5：结算是最常见的收场路径（子会话自然结束 → 自动判 done），通知不带产物
@@ -84,6 +92,25 @@ export function createSettlementReporter({
       })
     } catch (error) {
       log('task.settle.notify-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } })
+    }
+  }
+
+  /**
+   * 落盘「子会话最后一条消息」（B1）：短消息内联、超 64KB 写 reports 文件只留路径 + 摘要。
+   * 失败只记日志——结算落库比「看得见最后一段话」优先，不能因此回滚状态。
+   * @returns {{record: object, task: object} | null}
+   */
+  const persistLastMessage = (task, { text, stopReason, source }) => {
+    try {
+      const record = captureLastMessage({ text, taskId: task.id, reportsDir, stopReason, source })
+      if (record === null) return null
+      const prior = task.last_message
+      const updated = setTaskLastMessage(db, task.id, record)
+      // 同正文重复落库是幂等的（setTaskLastMessage 按 digest 判重）：changed 只给调用方/测试看。
+      return { record, task: updated ?? task, changed: prior?.digest !== record.digest }
+    } catch (failure) {
+      log('task.settle.last-message-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
+      return null
     }
   }
 
@@ -112,6 +139,42 @@ export function createSettlementReporter({
     }
     const from = task.status
     if (from !== 'running') {
+      // B1 时序修复：结算只改 running 的状态，但「最后一条消息」与状态无关。
+      // task_report done 会先把任务落到 done（tools.js），本回合结束时到达的 settle 一直被
+      // 这里的闸门挡掉，导致 last_message 永远为空（真实台账 104 条 done 全缺）。
+      // delivered / done 上只补写消息：不动状态、不发通知、不写 settle 行、不释放会话。
+      if (from === 'delivered' || from === 'done') {
+        const lateText = typeof lastMessage === 'string' && lastMessage !== ''
+          ? messageText(lastMessage)
+          : messageText(output)
+        const captured = lateText === '' ? null : persistLastMessage(task, { text: lateText, stopReason: stopReason ?? null, source })
+        if (captured !== null) {
+          log('task.settle.late-message', {
+            taskId: task.id,
+            sessionId: task.session_id ?? sessionId,
+            detail: {
+              status: from,
+              stopReason: stopReason ?? null,
+              source,
+              lastMessage: { stored: captured.record.stored, bytes: captured.record.bytes, chars: captured.record.chars },
+            },
+          })
+          return {
+            action: 'captured',
+            taskId: task.id,
+            from,
+            changed: captured.changed,
+            lastMessage: {
+              stored: captured.record.stored,
+              bytes: captured.record.bytes,
+              chars: captured.record.chars,
+              path: captured.record.path ?? null,
+              summary: captured.record.summary,
+              digest: captured.record.digest,
+            },
+          }
+        }
+      }
       log('task.settle.ignored', { taskId: task.id, sessionId: task.session_id ?? sessionId, detail: { status: from, stopReason: stopReason ?? null, source } })
       return { action: 'skipped', reason: 'not-running', taskId: task.id, from }
     }
@@ -124,7 +187,9 @@ export function createSettlementReporter({
     const errorText = [detail, summary, extra].filter(part => part !== '').join('：').slice(0, 500) || null
     let next
     try {
-      next = transition(db, task.id, mapped.status, { error: mapped.status === 'done' ? null : errorText })
+      // delivered 不是失败：清掉 error；只有真正异常收场才写死因。
+      const clearsError = mapped.status === 'delivered' || mapped.status === 'done'
+      next = transition(db, task.id, mapped.status, { error: clearsError ? null : errorText })
     } catch (failure) {
       log('task.settle.transition-failed', {
         taskId: task.id,
@@ -134,24 +199,9 @@ export function createSettlementReporter({
       return { action: 'failed', reason: 'transition-failed', taskId: task.id, from }
     }
     // B1：把完整返回消息落进台账（短消息内联，超 64KB 写 reports 文件只留路径 + 摘要）。
-    // 失败只记日志：结算落库比「看得见最后一段话」优先，不能因此回滚终态。
-    let lastMessageRecord = null
-    try {
-      lastMessageRecord = captureLastMessage({
-        text: fullText,
-        taskId: task.id,
-        reportsDir,
-        stopReason: mapped.stopReason,
-        source,
-      })
-      if (lastMessageRecord !== null) {
-        const updated = setTaskLastMessage(db, task.id, lastMessageRecord)
-        if (updated !== undefined) next = updated
-      }
-    } catch (failure) {
-      lastMessageRecord = null
-      log('task.settle.last-message-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
-    }
+    const captured = persistLastMessage(task, { text: fullText, stopReason: mapped.stopReason, source })
+    const lastMessageRecord = captured === null ? null : captured.record
+    if (captured !== null) next = captured.task
     const note = detail !== '' ? detail : (summary !== '' ? summary : '子会话已结束')
     try {
       addMessage(db, task.id, {
@@ -172,10 +222,14 @@ export function createSettlementReporter({
       log('task.settle.before-notify-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
     }
     notify(final, mapped.status, summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`))
-    try { releaseSession(task.session_id ?? task.target) } catch { /* 释放失败不影响已落库的终态 */ }
-    // G1：终态收敛平台 goal（done → complete；cancelled/failed/orphaned → clear）。
-    // 回调内部吞错，不能因为 goal 服务缺席/失败回滚已完成的状态迁移。
-    try { onTerminal(next, mapped.status) } catch { /* goal 收口失败不影响结算 */ }
+    // 只有真终态才释放可写根 + 收口 goal：delivered 还要留着会话给追问用（写操作不能半途被收回），
+    // goal 也留到 done 再 complete（见 docs/ARCHITECTURE.md「两段式终态」）。
+    if (TERMINAL_SETTLE_STATUSES.has(mapped.status)) {
+      try { releaseSession(task.session_id ?? task.target) } catch { /* 释放失败不影响已落库的终态 */ }
+      // G1：终态收敛平台 goal（done → complete；cancelled/failed/orphaned → clear）。
+      // 回调内部吞错，不能因为 goal 服务缺席/失败回滚已完成的状态迁移。
+      try { onTerminal(next, mapped.status) } catch { /* goal 收口失败不影响结算 */ }
+    }
     try { pump() } catch { /* 队列补位失败不影响结算 */ }
     log('task.settle', {
       taskId: task.id,

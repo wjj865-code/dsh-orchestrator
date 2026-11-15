@@ -88,6 +88,17 @@ export const ACTION_ERRORS = Object.freeze({
     http: 502,
     tool: ({ label, reason }) => `续派失败：任务「${label}」的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`,
   }),
+  // close（两段式终态的确认）：只有 delivered（已交付待确认）能收成 done。
+  CLOSE_TASK_ENDED: define({
+    http: 409,
+    panel: ({ label, statusLabel }) => `任务「${label}」已结束（${statusLabel}），无需确认。`,
+    tool: ({ label, statusLabel }) => `任务「${label}」已结束（${statusLabel}），无需确认。`,
+  }),
+  CLOSE_NOT_DELIVERED: define({
+    http: 409,
+    panel: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有「待确认」的任务能确认完成；在跑的先等它交付，卡住的用「追加」续派或「停止」取消。`,
+    tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有「待确认」的任务能确认完成；在跑的先等它交付，卡住的用 task_message 续派或 task_stop 取消。`,
+  }),
   // delete：只允许删终态任务；活跃的还有子会话/队列占位，先停止。
   DELETE_TASK_ACTIVE: define({
     http: 409,

@@ -8,7 +8,7 @@ import { taskCard } from '../src/card.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通知', async () => {
+test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通知 → 确认完成', async () => {
   const home = mkdtempSync(join(tmpdir(), 'orch-smoke-'))
   const previous = process.env.DSH_HOME
   process.env.DSH_HOME = home
@@ -88,13 +88,25 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
     await wait(30)
     assert.equal(sent.length, 0)
     assert.equal(coordinator.injected.length, 1)
-    assert.match(coordinator.injected[0].content[0].text, /任务「修复空数据文案」完成/)
+    assert.match(coordinator.injected[0].content[0].text, /任务「修复空数据文案」已交付待确认/)
 
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-    const stored = db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(taskId)
+    const delivered = db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(taskId)
     db.close()
+    // 两段式终态：回报 done = 交付待确认；协调者确认后才 done。
+    assert.equal(delivered.status, 'delivered')
+    const deliveredCard = taskCard({ id: taskId, title: delivered.title, status: delivered.status, session_id: teammate.id }, { summary: '改完，测试全绿' })
+    assert.equal(deliveredCard.label, '待确认')
+    assert.equal(deliveredCard.tone, 'warn')
+
+    const closed = await byName.task_close.execute({ task_id: taskId }, { agent: coordinator })
+    assert.match(closed, /已确认完成/)
+    const confirmed = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+    const stored = confirmed.prepare('SELECT status, title, close_reason FROM tasks WHERE id = ?').get(taskId)
+    confirmed.close()
     assert.equal(stored.status, 'done')
+    assert.equal(stored.close_reason, 'coordinator')
     const card = taskCard({ id: taskId, title: stored.title, status: stored.status, session_id: teammate.id }, { summary: '改完，测试全绿' })
     assert.deepEqual(card, {
       taskId,

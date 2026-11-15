@@ -35,15 +35,18 @@ export function validateTargetDir(target, { isDirectory = value => statSync(valu
 /**
  * 渲染派发给子会话的 brief（T1：纯指引）。
  *
- * 只输出【任务编号】+【任务详情】两行：brief 正文不再携带任何创建详情（目标/验收/经验/兜底都不进），
+ * 只输出【任务编号】+【访问级别】（仅完整访问任务）+【任务详情】：
+ * brief 正文不再携带任何创建详情（目标/验收/经验/兜底都不进），
  * 子会话拿到任务编号后调 task_detail 读台账里的完整快照。
  *
- * @param {{ taskId?: string }} [options] taskId 是台账任务编号（如 t-1a2b3c4d），也是 task_detail 的参数。
+ * @param {{ taskId?: string, access?: string }} [options] taskId 是台账任务编号（如 t-1a2b3c4d），也是 task_detail 的参数；
+ *   access='full' 时多一行访问级别，子会话一开始就知道自己不在沙箱里跑（不必试探写权限）。
  */
-export function renderBrief({ taskId } = {}) {
+export function renderBrief({ taskId, access } = {}) {
   const id = single(taskId)
   const lines = []
   if (id !== '') lines.push(`【任务编号】${id}`)
+  if (access === 'full') lines.push(`【访问级别】完整（danger-full-access：文件沙箱不限制写入，bash/pwsh 也不再被沙箱拦；只对本任务生效）`)
   lines.push(`【任务详情】${DETAIL_POINTER_TEXT}`)
   return lines.join('\n')
 }

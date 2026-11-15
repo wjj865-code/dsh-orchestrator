@@ -56,7 +56,7 @@ test('snapshot 返回任务安全字段与协调者状态', async () => {
   db.close()
 })
 
-test('snapshot 返回待决计数（waiting_user / waiting_auth）', async () => {
+test('snapshot 返回待决计数（waiting_user / waiting_auth / delivered）', async () => {
   const { db, handler } = await setup()
   const waiting = createTask(db, { brief: sampleBrief({ title: '等你' }), coordinatorSession: 's-1' })
   transition(db, waiting.id, 'running', { sessionId: 'c-1', target: 'c-1' })
@@ -64,9 +64,21 @@ test('snapshot 返回待决计数（waiting_user / waiting_auth）', async () =>
   const auth = createTask(db, { brief: sampleBrief({ title: '要授权' }), coordinatorSession: 's-1' })
   transition(db, auth.id, 'running', { sessionId: 'c-2', target: 'c-2' })
   transition(db, auth.id, 'waiting_auth')
+  const delivered = createTask(db, { brief: sampleBrief({ title: '待确认' }), coordinatorSession: 's-1' })
+  transition(db, delivered.id, 'running', { sessionId: 'c-3', target: 'c-3' })
+  transition(db, delivered.id, 'delivered')
   createTask(db, { brief: sampleBrief({ title: '在跑' }), coordinatorSession: 's-1' })
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  assert.equal(body.inboxCount, 2)
+  assert.equal(body.inboxCount, 3)
+  const row = body.tasks.find(item => item.id === delivered.id)
+  assert.equal(row.status, 'delivered')
+  assert.equal(row.label, '待确认')
+  assert.equal(row.tone, 'warn')
+  assert.equal(row.canClose, true)
+  assert.equal(row.canFollowup, true)
+  assert.equal(row.canDelete, false)
+  assert.ok(Number.isFinite(row.deliveredAt))
+  assert.equal(row.closeReason, null)
   db.close()
 })
 
@@ -98,7 +110,7 @@ test('未知端点返回 400，不泄漏内部错误', async () => {
   db.close()
 })
 
-test('面板动作端点：detail/artifacts/stop/retry/message 走 panel，失败返回 400', async () => {
+test('面板动作端点：detail/artifacts/stop/retry/message/close 走 panel，失败返回 400', async () => {
   const db = await openLedger(tempDir())
   const calls = []
   const panel = {
@@ -106,6 +118,7 @@ test('面板动作端点：detail/artifacts/stop/retry/message 走 panel，失�
     artifacts: limit => ({ ok: true, limit }),
     stop: async taskId => { calls.push(['stop', taskId]); return { ok: true, taskId } },
     retry: async taskId => { calls.push(['retry', taskId]); return { ok: true, taskId } },
+    close: async taskId => { calls.push(['close', taskId]); return { ok: true, taskId, status: 'done' } },
     message: async (taskId, message) => {
       calls.push(['message', taskId, message])
       return message === '' ? { ok: false, error: '消息不能为空' } : { ok: true, taskId }
@@ -118,9 +131,10 @@ test('面板动作端点：detail/artifacts/stop/retry/message 走 panel，失�
   assert.equal(artifacts.limit, 5)
   await handler(request({ endpoint: 'stop', taskId: 't-1' }))
   await handler(request({ endpoint: 'retry', taskId: 't-1' }))
+  await handler(request({ endpoint: 'close', taskId: 't-1' }))
   const bad = await handler(request({ endpoint: 'message', taskId: 't-1', message: '' }))
   assert.equal(bad.status, 400)
-  assert.deepEqual(calls, [['stop', 't-1'], ['retry', 't-1'], ['message', 't-1', '']])
+  assert.deepEqual(calls, [['stop', 't-1'], ['retry', 't-1'], ['close', 't-1'], ['message', 't-1', '']])
   db.close()
 })
 

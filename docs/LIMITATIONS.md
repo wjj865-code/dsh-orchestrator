@@ -66,6 +66,18 @@
 - worker 不强制 chdir：`danger-full-access` 下模型给目标目录外的绝对路径仍可能写成功；硬约束只能调回 `workspace-write`。
 - 升级 DSH 后必须重跑 `docs/probes/*` 契约探针；平台入参形状变过（rc.1 → rc.3）。
 
+- **per-task 完整访问（`access:'full'`）的边界**：
+  - 它就是「本会话 `sandbox/mode = danger-full-access`」，平台侧 `fs`/`pwsh`/`bash` 全部解封（`fs-sandbox` 直接返回原
+    目标、`pwsh-sandbox` 走 `super.start/run` 不做 confinement）——**写权限等于模型能改的一切**，没有额外护栏。
+  - 与只读同一机制，所以**首回合窗口**同样存在（`agent/created` 之后才补 append，极短窗口内仍是继承来的模式）。
+  - 平台在派发时会把**父会话自己的沙箱覆盖**按 `source:'delegation'` 种进子会话（`dsh-subagent` 的
+    `appendDelegatedPolicyOverrides`）：父会话是 `workspace-write` 时普通子任务照旧受限，但父会话本身是
+    `danger-full-access` 时，**所有**子任务默认就是完整访问——这不是插件给的，插件也不改写它（`access` 只能往上设，
+    不会替子任务降级）。
+  - **不继承到孙任务**：插件只对直接子会话 append，`access` 也不写进任何默认值/配置；但平台层面「子会话再派孙会话」
+    仍会继承子会话自己的覆盖（平台行为），要严格管控就别让完整访问的子会话再派生任务。
+  - Windows 下 `danger-full-access` 只解除沙箱，**不解除平台审批/权限预设**（审批被禁时会直接拒绝），也不改 `chdir`。
+
 ## 计划阶段（P8）
 
 - **plan mode 是软引导**：平台只注入一段系统提示，不拦工具、不写沙箱状态。真正挡住写入的是只读沙箱；
@@ -73,7 +85,13 @@
 - **服务可见性**：`planMode` 挂在子会话预设作用域，插件必须走 `agent.ctx.get('planMode')`；
   平台版本没挂 / profile 没 isolate 时静默降级为「只有只读沙箱」并 warn 一行，派发不受影响。
 - **`exit_plan_mode` 被拒**：插件在子会话 agent 作用域拒绝它——子会话没有直接人类，批准会悬空。
-  计划出口固定是 `task_report blocked`；协调者与其它会话不受该 guard 影响。
+  计划出口固定是「`plan_save` 落盘 + `task_report blocked` 上报摘要」；协调者与其它会话不受该 guard 影响。
+- **计划文档只有一版**：同一任务重复 `plan_save` **覆盖**同一份 `<主会话工作区>/reports/plans/<taskId>.md`，
+  没有版本对比、没有审批流 UI（本版明确不做）；旧内容不保留，要留历史请让子会话在自己的目标目录里另存。
+- **计划路径绑主会话工作区**：换主会话/换工作区目录后新计划落在新目录，旧文件留在原处（路径以任务产物与
+  日志 `task.plan.saved` 为准）；插件不搬家、不清理。
+- **`plan_save` 是插件的写，不是沙箱写**：它由宿主进程按固定路径写文件，所以计划阶段「只读」的边界仍是
+  「沙箱拦子会话自己的文件工具」——`plan_save` 只能写这一个路径，不能当通用写入用（普通任务会被拒）。
 - **切回可写的范围**：`workspace-write` 的根 = 子会话 `header.cwd`（rc.3 是**指挥舱**）+ 插件登记的 target 可写根，
   子会话理论上也能写插件的 state 目录。可接受但不理想，如实记录。
 - **首回合窗口**：`ensureReadOnly` 在 `agent/created` 之后补，首回合有极短可写窗口（与 `readOnly` 任务同一风险）。

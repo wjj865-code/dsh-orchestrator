@@ -5,6 +5,7 @@ import { loadConfig, DEFAULT_WORKER_PRESET } from './src/config.js'
 import { openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts, listTasks } from './src/ledger.js'
 import { collectWorkspaceArtifacts, appendMissingArtifacts, MAX_AUTO_ARTIFACTS } from './src/artifact-collect.js'
 import { createSettlementReporter } from './src/settlement.js'
+import { createDeliveredSweeper } from './src/delivered.js'
 import { taskLabel } from './src/task-label.js'
 import { createMainSession } from './src/main-session.js'
 import { createDispatcher } from './src/dispatch.js'
@@ -36,7 +37,10 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 派任务前可用 history_search 查跨项目记忆与历史任务，用 project_context 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
 - 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域；紧急任务用 priority（-10..10）。
 - 子任务回报产物路径后，默认用 present 展示 1-4 个最关键的产物（最多 4 个；只列真实存在的文件、写绝对路径），不必等用户点名；没有产物就不提 present；不要自行 stat/read 校验存在性（协调者的 read/glob 已被 deny，插件与子任务负责确认），present 只声明交付、不读文件内容。
-- 需要先看方案再动手（大改、跨文件、范围不确定）时用 task_create({ planFirst: true })：子会话只读探索后用 task_report blocked 上报计划，你转交用户；用户批准后用 task_message 续派（插件自动把沙箱切回可写）。planFirst 与 readOnly 互斥。
+- 需要先看方案再动手（大改、跨文件、范围不确定）时用 task_create({ planFirst: true })：子会话只读探索后先 plan_save 把计划落盘到主会话工作区的 reports/plans/<taskId>.md，再用 task_report blocked 只上报摘要 + 计划文档绝对路径 + 待拍板问题，你连路径一起转交用户；用户批准后用 task_message 续派（插件自动把沙箱切回可写）。planFirst 与 readOnly 互斥。
+- 只有构建/发版这类**确实需要越过文件沙箱**（写仓库外、跑不受沙箱限制的 bash/pwsh）的任务才传 task_create({ access: 'full' })：该子会话单独跑在 danger-full-access，**默认策略与其他任务一律不动**；access 只接受 'full'，且与 readOnly / planFirst 互斥；没有这种需求就不要传，也别因为用户说「不限制 bash」就顺手给所有任务加上。access 属于单个任务，插件不往孙任务传，也不写进任何默认配置。
+- 向用户汇报任务时用**任务名**（可附任务编号，如「计划落盘工具（t-4e573e01）」），不要只甩 t-xxxx 编号：编号是给你调工具用的，用户只认任务名。
+- 子任务回报 done 后任务状态是「待确认」（delivered，已交付待确认），不是终态：默认立刻 task_close 确认完成；用户要改/补充就用 task_message 追问（复用同一个子会话，不要新建任务）；超过超时未确认会自动完成（task_status 会写超时阈值）。
 - 需要看“待你决定/失败/长时间没动静”时用 task_inbox。
 - 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
@@ -92,8 +96,9 @@ export const COORDINATOR_DENY = [
   'create_bot', 'create_group', 'delete_group', 'update_group', 'update_bot',
   'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
   'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',
-  // 子会话专属工具：task_report 回报、task_detail 只读自己的创建详情（T1）；协调者看任务用 task_status。
-  'task_report', 'task_detail',
+  // 子会话专属工具：task_report 回报、task_detail 只读自己的创建详情（T1）、plan_save 计划落盘（计划阶段
+  // 唯一写入口）；协调者看任务用 task_status，写文件一律不允许。
+  'task_report', 'task_detail', 'plan_save',
 ]
 
 const stateDir = () => join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'state', 'orchestrator')
@@ -379,7 +384,8 @@ export async function apply(ctx, rawConfig = {}) {
   // 这条最常见收场路径的通知里永远没有产物，也就没有 present 交付指令（reports/t6.1-present.md §5）。
   // 返回补齐后的台账行给通知渲染；收集失败只告警，不影响已落库的终态。
   function collectArtifactsBeforeSettleNotify(task, status) {
-    if (status !== 'done') return task
+    // delivered 也会发通知（且同样带 present 指令），产物补齐对它一样有意义。
+    if (status !== 'done' && status !== 'delivered') return task
     const sessionId = task?.session_id
     if (sessionId === undefined || sessionId === null) return task
     const session = service('agents')?.get?.(sessionId)?.session ?? service('sessions')?.get?.(sessionId)
@@ -438,6 +444,19 @@ export async function apply(ctx, rawConfig = {}) {
   // 订阅必须早于任何子会话回合结束；放在 settlement 之后、watchdog 之前（不依赖队列/看门狗）。
   const keepAliveDisposer = keepAlive.start(ctx)
 
+  // 两段式终态（D1）的确认兜底：delivered 超过 deliveredTimeoutMinutes 自动收成 done。
+  // 与工具 task_close / 面板「确认交付」共用 closeDelivered，副作用顺序完全一致。
+  const deliveredSweeper = createDeliveredSweeper({
+    db,
+    config,
+    logger,
+    releaseSession: target => dispatcher.releaseWritableRoots?.(target),
+    completeGoal: task => { void goalBridge.complete(task.id, task.session_id) },
+    cleanupWorktree,
+    pump: () => queue?.pump(),
+    onWarn: warnings,
+  })
+
   // 空闲看门狗（W1）：running 却长时间没有心跳/消息/状态变化时告警一次。
   // 只告警：不改状态、不 kill、不重派；去重按任务（同一段空闲只报一次，活动后重置）。
   const watchdog = createIdleWatchdog({
@@ -478,6 +497,8 @@ export async function apply(ctx, rawConfig = {}) {
   // 看门狗放在启动对账之后：先让 S2 把「进程重启后没人在跑」的 running 标 orphaned，
   // 剩下的 running 才交给看门狗判断是否空闲（避免同一任务既报丢失又报卡住）。
   watchdog.start()
+  // 交付确认超时巡检：启动即扫一次，覆盖进程重启期间已经过期的 delivered。
+  deliveredSweeper.start()
 
   // 启动恢复：pending 且没有子会话的任务重新入队；超时的（非排队）已在上面标 failed。
   queue.load()
@@ -501,10 +522,12 @@ export async function apply(ctx, rawConfig = {}) {
 
   // task_report done 所在回合的 workspace/changes 事件在 turn stopping 时才追加：
   // 监听提交后的事件（摘要服务在 append 返回后才登记，所以推迟到微任务再读），把当前回合的改动补进已结束任务。
+  // 两段式终态：子会话报 done 会先把任务落到 delivered，确认后才 done，所以两个状态都要兜。
   const collectArtifactsAfterTurn = session => {
     queueMicrotask(() => {
       try {
-        const task = findTaskBySession(db, session?.id, { status: 'done' })
+        const task = findTaskBySession(db, session?.id, { status: 'delivered' })
+          ?? findTaskBySession(db, session?.id, { status: 'done' })
         if (task === undefined) return
         const result = collectWorkspaceArtifacts({
           session,
@@ -587,6 +610,7 @@ export async function apply(ctx, rawConfig = {}) {
   ctx.effect?.(() => async () => {
     // 看门狗先停：定时器巡检会在 db.close() 之后继续读台账（卸载期不允许）。
     try { watchdog.stop() } catch { /* 看门狗清理失败不阻断卸载 */ }
+    try { deliveredSweeper.stop() } catch { /* 超时巡检清理失败不阻断卸载 */ }
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
     for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, keepAliveDisposer, routeDisposer].reverse()) {

@@ -1,4 +1,4 @@
-import test from 'node:test'
+﻿import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import{ join } from 'node:path'
@@ -74,7 +74,7 @@ async function setup(options = {}) {
 
 // 主会话工具默认以主会话身份调用；task_report 归子会话，保持调用方身份。
 const MAIN_TOOLS = new Set([
-  'task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_retry', 'task_inbox',
+  'task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_close', 'task_retry', 'task_inbox',
   'history_search', 'project_context', 'memory_note',
 ])
 const call = (tools, name, args, exec) => {
@@ -82,10 +82,10 @@ const call = (tools, name, args, exec) => {
   return tools[name].execute(args, resolved)
 }
 
-test('注册 12 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
+test('注册 14 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
   const { db, tools } = await setup()
   assert.deepEqual(Object.keys(tools).sort(),
-    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_detail', 'task_inbox', 'task_list',
+    ['history_search', 'memory_note', 'plan_save', 'project_context', 'task_close', 'task_create', 'task_detail', 'task_inbox', 'task_list',
       'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
   const walk = (value, path) => {
     if (value === null || typeof value !== 'object') return
@@ -659,12 +659,17 @@ test('task_stop：cancelled + interrupt；已结束不再 interrupt', async () =
   db.close()
 })
 
-test('可写根生命周期：done 与 cancelled 释放；blocked（waiting_user）保留以便续派', async () => {
-  // done：终态释放
+test('可写根生命周期：done（确认后）与 cancelled 释放；delivered / blocked 保留以便续派', async () => {
+  // done：交付回报先落 delivered（不释放），task_close 确认后才释放。
   const done = await setup()
   await call(done.tools, 'task_create', sampleBrief({ title: '甲' }))
   const doneTask = listTasks(done.db)[0]
   await call(done.tools, 'task_report', { task_id: doneTask.id, status: 'done', summary: '完成' }, { agent: { id: doneTask.session_id } })
+  assert.equal(getTask(done.db, doneTask.id).status, 'delivered')
+  assert.deepEqual(done.dispatcher.grantReleases, [])
+  const closed = await call(done.tools, 'task_close', { task_id: doneTask.id })
+  assert.match(closed, /已确认完成/)
+  assert.equal(getTask(done.db, doneTask.id).status, 'done')
   assert.deepEqual(done.dispatcher.grantReleases, [doneTask.session_id])
   done.db.close()
 
@@ -717,8 +722,8 @@ test('task_report：progress 只 touch 不改状态', async () => {
   db.close()
 })
 
-test('task_report：done/blocked/needs_auth 迁移并通知，sender 透传', async () => {
-  for (const [status, expected] of [['done', 'done'], ['blocked', 'waiting_user'], ['needs_auth', 'waiting_auth']]) {
+test('task_report：done→待确认/blocked/needs_auth 迁移并通知，sender 透传', async () => {
+  for (const [status, expected, pushed] of [['done', 'delivered', 'delivered'], ['blocked', 'waiting_user', 'blocked'], ['needs_auth', 'waiting_auth', 'needs_auth']]) {
     const { db, notifier, tools } = await setup()
     await call(tools, 'task_create', sampleBrief({ title: '甲' }))
     const task = listTasks(db)[0]
@@ -727,7 +732,7 @@ test('task_report：done/blocked/needs_auth 迁移并通知，sender 透传', as
     await call(tools, 'task_report', { task_id: task.id, status, summary: '说明' }, { agent: sender, signal })
     assert.equal(getTask(db, task.id).status, expected)
     assert.equal(notifier.pushed.length, 1)
-    assert.equal(notifier.pushed[0].status, status)
+    assert.equal(notifier.pushed[0].status, pushed)
     assert.equal(notifier.pushed[0].sender, sender)
     assert.equal(notifier.pushed[0].signal, signal)
     db.close()
@@ -770,14 +775,15 @@ test('task_report：不存在 id 提示且不写消息', async () => {
   db.close()
 })
 
-test('task_report：重复 done 返回可读错误，不产生第二条通知', async () => {
+test('task_report：重复 done 幂等，不迁移、不产生第二条通知', async () => {
   const { db, notifier, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   const task = listTasks(db)[0]
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' })
+  assert.equal(getTask(db, task.id).status, 'delivered')
   const text = await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '再次完成' })
-  assert.match(text, /任务协调失败/)
-  assert.match(text, /不允许/)
+  assert.match(text, /重复 done 回报/)
+  assert.equal(getTask(db, task.id).status, 'delivered')
   assert.equal(notifier.pushed.length, 1)
   db.close()
 })
@@ -791,7 +797,7 @@ test('task_report：缺 summary 不崩', async () => {
   db.close()
 })
 
-test('blocked → 续派 → done 闭环', async () => {
+test('blocked → 续派 → 交付 → 确认闭环', async () => {
   const { db, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   const task = listTasks(db)[0]
@@ -801,11 +807,13 @@ test('blocked → 续派 → done 闭环', async () => {
   assert.match(resumed, /已把消息追加/)
   assert.equal(getTask(db, task.id).status, 'running')
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '做完了' })
+  assert.equal(getTask(db, task.id).status, 'delivered')
+  await call(tools, 'task_close', { task_id: task.id })
   assert.equal(getTask(db, task.id).status, 'done')
   db.close()
 })
 
-test('needs_auth → 续派 → done 闭环', async () => {
+test('needs_auth → 续派 → 交付 → 确认闭环', async () => {
   const { db, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   const task = listTasks(db)[0]
@@ -814,16 +822,20 @@ test('needs_auth → 续派 → done 闭环', async () => {
   await call(tools, 'task_message', { task_id: task.id, message: '授权已给' })
   assert.equal(getTask(db, task.id).status, 'running')
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' })
+  assert.equal(getTask(db, task.id).status, 'delivered')
+  await call(tools, 'task_close', { task_id: task.id })
   assert.equal(getTask(db, task.id).status, 'done')
   db.close()
 })
 
-test('waiting_user 直接收到 done 回报也能闭环', async () => {
+test('waiting_user 直接收到 done 回报：先回 running 再落待确认', async () => {
   const { db, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   const task = listTasks(db)[0]
   await call(tools, 'task_report', { task_id: task.id, status: 'blocked', summary: '卡住' })
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '已自行完成' })
+  assert.equal(getTask(db, task.id).status, 'delivered')
+  await call(tools, 'task_close', { task_id: task.id })
   assert.equal(getTask(db, task.id).status, 'done')
   db.close()
 })
@@ -839,9 +851,12 @@ test('并发 8 个子任务：target/status 各归各，通知不丢', async () 
   assert.ok(tasks.every(task => task.status === 'running'))
   await Promise.all(tasks.map(task =>
     call(tools, 'task_report', { task_id: task.id, status: 'done', summary: task.title }, { agent: { id: task.session_id } })))
-  assert.equal(listTasks(db, { active: true }).length, 0)
+  // 交付后仍算活跃（待确认），确认后才退出活跃集。
+  assert.ok(listTasks(db, { active: true }).every(task => task.status === 'delivered'))
   assert.equal(notifier.pushed.length, 8)
   assert.deepEqual(new Set(notifier.pushed.map(item => item.taskId)), new Set(tasks.map(task => task.id)))
+  await Promise.all(tasks.map(task => call(tools, 'task_close', { task_id: task.id })))
+  assert.equal(listTasks(db, { active: true }).length, 0)
   db.close()
 })
 
@@ -994,12 +1009,12 @@ test('task_report artifacts：相对路径按任务 target_dir 解析、存在�
   assert.equal(pushed.artifacts[0].path, file)
 })
 
-test('task_report 不传 artifacts：完全兼容旧行为，任务照常 done', async () => {
+test('task_report 不传 artifacts：完全兼容旧行为，任务照常交付待确认', async () => {
   const { db, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '旧调用' }))
   const task = listTasks(db)[0]
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id } })
-  assert.equal(getTask(db, task.id).status, 'done')
+  assert.equal(getTask(db, task.id).status, 'delivered')
   assert.deepEqual(getTask(db, task.id).artifacts, [])
 })
 
@@ -1035,7 +1050,7 @@ test('task_report done 自动收集：没有改动事件时保持空产物，不
   const session = { id: 'c-empty', ownEvents: () => [] }
   const text = await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id, session } })
   assert.match(text, /已记录/)
-  assert.equal(getTask(db, task.id).status, 'done')
+  assert.equal(getTask(db, task.id).status, 'delivered')
   assert.deepEqual(getTask(db, task.id).artifacts, [])
 })
 
@@ -1295,6 +1310,8 @@ test('依赖：前置未完成时建 waiting_dep、不派发；前置 done 后�
   await call(tools, 'task_report', {
     task_id: depTask.id, status: 'done', summary: '前置已完成', artifacts: [{ path: 'dep.md', label: '前置产物' }],
   }, { agent: { id: depTask.session_id } })
+  // 两段式终态：交付≠done，依赖就绪只认 done，所以这里要先确认。
+  await call(tools, 'task_close', { task_id: depTask.id })
 
   const second = await call(tools, 'task_create', {
     ...sampleBrief({ title: '下游' }), target, dependsOn: [depTask.id], group: '发布', priority: 5,
@@ -1314,7 +1331,7 @@ test('依赖：前置未完成时建 waiting_dep、不派发；前置 done 后�
   assert.match(detail, /dep\.md/)
 })
 
-test('依赖：前置运行中时下游 waiting_dep，前置完成后晋升；前置失败时下游自动失败', async () => {
+test('依赖：前置运行中时下游 waiting_dep，前置交付并确认后晋升；前置失败时下游自动失败', async () => {
   const { db, dispatcher, tools } = await setup()
   const first = await call(tools, 'task_create', sampleBrief({ title: '前置A' }))
   assert.match(first, /已派发/)
@@ -1326,6 +1343,10 @@ test('依赖：前置运行中时下游 waiting_dep，前置完成后晋升；�
   assert.equal(dispatcher.calls.filter(callRow => callRow[0] === 'spawn').length, 1)
 
   await call(tools, 'task_report', { task_id: dep.id, status: 'done', summary: 'A 完成' }, { agent: { id: dep.session_id } })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  // 交付但未确认：下游仍在等（依赖就绪只认 done）。
+  assert.equal(listTasks(db).find(task => task.title === '下游B').status, 'waiting_dep')
+  await call(tools, 'task_close', { task_id: dep.id })
   await new Promise(resolve => setTimeout(resolve, 10))
   const promoted = listTasks(db).find(task => task.title === '下游B')
   assert.equal(promoted.status, 'running')

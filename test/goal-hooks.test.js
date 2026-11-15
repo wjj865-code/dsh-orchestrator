@@ -98,10 +98,13 @@ test('G1 工具挂钩：task_message 投递时把「原目标 + 最新指示」�
   db.close()
 })
 
-test('G1 工具挂钩：task_report done → complete（用任务的子会话 id）', async () => {
+test('G1 工具挂钩：task_report done 只落待确认（不收口 goal），task_close 才 complete', async () => {
   const { db, bridge, tools } = await setup()
   const task = runningTask(db)
   await tools.task_report.execute({ task_id: task.id, status: 'done', summary: '完成了' }, { agent: { id: 'c-1' } })
+  // 两段式终态：交付 ≠ 确认，goal 留到 done 再收口（追问还要 update 同一个 goal）。
+  assert.deepEqual(bridge.calls, [])
+  await tools.task_close.execute({ task_id: task.id }, { agent: { id: 's-1' } })
   assert.deepEqual(bridge.calls, [['complete', task.id, 'c-1']])
   db.close()
 })
@@ -181,7 +184,7 @@ test('G1 工具只读展示：task_status 带目标生命周期', async () => {
   db.close()
 })
 
-test('G1 结算挂钩：settlement.onTerminal 收到 done→complete、cancelled→clear', async () => {
+test('G1 结算挂钩：completed 落待确认不收口 goal；cancelled 收口 clear', async () => {
   const { createSettlementReporter } = await import('../src/settlement.js')
   const db = await openLedger(tempDir())
   const seen = []
@@ -190,10 +193,12 @@ test('G1 结算挂钩：settlement.onTerminal 收到 done→complete、cancelled
     notifier: { push() {} },
     onTerminal: (task, status) => seen.push([task.id, status]),
   })
-  const doneTask = runningTask(db, { brief: sampleBrief({ title: '完成', goal: 'g' }) })
-  reporter.report({ taskId: doneTask.id, stopReason: 'completed' })
+  const deliveredTask = runningTask(db, { brief: sampleBrief({ title: '交付', goal: 'g' }) })
+  reporter.report({ taskId: deliveredTask.id, stopReason: 'completed' })
+  assert.equal(getTask(db, deliveredTask.id).status, 'delivered')
+  assert.deepEqual(seen, [])
   const cancelTask = runningTask(db, { brief: sampleBrief({ title: '取消', goal: 'g' }) })
   reporter.report({ taskId: cancelTask.id, stopReason: 'aborted' })
-  assert.deepEqual(seen, [[doneTask.id, 'done'], [cancelTask.id, 'cancelled']])
+  assert.deepEqual(seen, [[cancelTask.id, 'cancelled']])
   db.close()
 })

@@ -6,7 +6,7 @@ import { getSetting, setSetting } from './ledger.js'
 export const DIGEST_SCHEDULE_KEY = 'digest_schedule_id'
 export const DIGEST_SPEC_KEY = 'digest_schedule_spec'
 
-const DIGEST_PROMPT = '请调用 task_inbox 和 task_list(active:false)，汇总当前任务：今日完成、在跑、待你决定、失败与产物，用简洁中文发给我。'
+const DIGEST_PROMPT = '请调用 task_inbox 和 task_list(active:false)，汇总当前任务：今日完成、待确认、在跑、待你决定、失败与产物，用简洁中文发给我。'
 
 const specOf = (mainSessionId, config) => {
   const zone = config?.digestTimeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'

@@ -115,10 +115,11 @@ export function upstreamBrief(db, dependsOn) {
       continue
     }
     const report = recentMessages(db, id, 5).find(row => row.kind === 'report')
+    const settledText = dep.status === 'done' ? '已完成' : (dep.status === 'delivered' ? '已交付待确认' : `当前${labelOf(dep.status)}`)
     const summary = report === undefined
-      ? (dep.status === 'done' ? dep.goal : `（当前${labelOf(dep.status)}）`)
+      ? (dep.status === 'done' || dep.status === 'delivered' ? dep.goal : `（当前${labelOf(dep.status)}）`)
       : String(report.rendered).replace(/^\[[^\]]+\]\s*/, '')
-    lines.push(`- 任务「${dep.title}」${dep.status === 'done' ? '已完成' : `当前${labelOf(dep.status)}`}：${short(summary)}`)
+    lines.push(`- 任务「${dep.title}」${settledText}：${short(summary)}`)
     const artifacts = Array.isArray(dep.artifacts) ? dep.artifacts : []
     if (artifacts.length > 0) {
       lines.push(`  产物：${artifacts.slice(0, 8).map(item => item.path).join('、')}`)

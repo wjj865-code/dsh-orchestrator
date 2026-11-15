@@ -126,6 +126,7 @@ export function createIdleWatchdog({
     title: task.title,
     displayName: typeof labelFor === 'function' ? labelFor(task) : task.title,
     readOnly: task.read_only === true,
+    access: task.access === 'full' ? 'full' : null,
     status: 'stalled',
     summary: `running 已 ${minutesOf(idleMs)} 分钟没有心跳/消息/状态变化，可能卡住（看门狗只告警，不改状态）`,
     // system:true 让 index 的 send 接受「没有子会话 sender」的系统通知（与启动对账一致）。

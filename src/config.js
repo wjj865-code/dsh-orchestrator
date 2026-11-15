@@ -1,6 +1,7 @@
 // 配置归一化：非法值一律回落默认，不让坏配置把插件带崩。
 import { DEFAULT_WATCHDOG_IDLE_MINUTES, DEFAULT_WATCHDOG_INTERVAL_MINUTES } from './watchdog.js'
 import { DEFAULT_BRANCH_PREFIX, WORKTREE_POLICIES } from './worktree-request.js'
+import { DELIVERED_TIMEOUT_MINUTES } from './delivered.js'
 
 const DEFAULTS = {
   staleMinutes: 30,
@@ -59,10 +60,12 @@ export function loadConfig(raw = {}) {
   config.idleWatchdog = raw?.idleWatchdog !== false
   config.watchdogIntervalMinutes = minutes(raw?.watchdogIntervalMinutes, DEFAULTS.watchdogIntervalMinutes)
   config.watchdogIdleMinutes = minutes(raw?.watchdogIdleMinutes, DEFAULTS.watchdogIdleMinutes)
+  // 两段式终态（D1）：交付后等确认的超时（分钟，1–1440）；超时自动收成 done。
+  // 设成 1 分钟约等于退回「交付即完成」的旧行为，作为现场降级旋钮。
+  config.deliveredTimeoutMinutes = minutes(raw?.deliveredTimeoutMinutes, DELIVERED_TIMEOUT_MINUTES)
   // 回合间 keep-alive（K2）：默认关闭——升级后行为不能突变，也不能替用户决定「自动续跑」。
   // 开启后只对「running + 平台 goal 未完成」的子任务在 turn-stopping 时注入下一轮，轮数上限 1–50。
-  config.keepAlive = raw?.keepAlive === true
-  // 默认 steer（同 turn 再走一步，平台 turn-stopping 文档契约）；followup 是「新一轮」，会写 turn/end。
+  config.keepAlive = raw?.keepAlive === true  // 默认 steer（同 turn 再走一步，平台 turn-stopping 文档契约）；followup 是「新一轮」，会写 turn/end。
   config.keepAliveMode = raw?.keepAliveMode === 'followup' ? 'followup' : 'steer'
   config.keepAliveMaxRounds = Number.isFinite(raw?.keepAliveMaxRounds)
     ? Math.min(50, Math.max(1, Math.floor(raw.keepAliveMaxRounds)))

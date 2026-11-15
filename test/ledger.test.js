@@ -251,6 +251,40 @@ test('旧库缺 target_dir 时自动 ALTER 补列', async () => {
   db.close()
 })
 
+test('access：默认 null（沿用会话策略）、显式 full 落库、坏值归一成 null', async () => {
+  const db = await openLedger(tempDir())
+  const normal = createTask(db, { brief: { title: '普通', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  assert.equal(normal.access, null)
+  const full = createTask(db, {
+    brief: { title: '完整访问', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1', access: 'full',
+  })
+  assert.equal(full.access, 'full')
+  assert.equal(getTask(db, full.id).access, 'full')
+  // 手改/旧版写入的其它值一律按默认处理（读取侧不信任库里的自由文本）。
+  db.prepare("UPDATE tasks SET access = 'workspace-write' WHERE id = ?").run(full.id)
+  assert.equal(getTask(db, full.id).access, null)
+  db.close()
+})
+
+test('access：旧库自动补列，历史行按默认（null）', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const legacyDir = mkdtempSync(join(tmpdir(), 'orch-ledger-access-legacy-'))
+  const legacy = new DatabaseSync(join(legacyDir, 'tasks.sqlite'))
+  legacy.exec(`CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
+    status TEXT NOT NULL, session_id TEXT, target TEXT, coordinator_session TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER)`)
+  legacy.prepare(`INSERT INTO tasks (id, title, goal, brief_json, status, coordinator_session, created_at, updated_at, last_event_at)
+    VALUES ('t-old', '旧任务', 'g', '{}', 'done', 's-1', 1, 1, 1)`).run()
+  legacy.close()
+  const migrated = await openLedger(legacyDir)
+  const cols = migrated.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+  assert.ok(cols.includes('access'))
+  assert.equal(getTask(migrated, 't-old').access, null)
+  migrated.close()
+})
+
 test('read_only：默认 false、显式 true 落库、旧库自动补列', async () => {
   const db = await openLedger(tempDir())
   const normal = createTask(db, { brief: { title: '普通', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })

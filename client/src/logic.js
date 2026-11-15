@@ -32,7 +32,8 @@ export const countTasks = tasks => {
 export const matchesFilter = (task, filter) => {
   const status = task === null || task === undefined ? undefined : task.status
   if (filter === 'active') return status === 'waiting_dep' || status === 'pending' || status === 'running'
-  if (filter === 'waiting') return status === 'waiting_user' || status === 'waiting_auth'
+  // 「待你决定」含已交付待确认（delivered）：两者都需要人（或协调者）拍板，UI 不再多一个筛选项。
+  if (filter === 'waiting') return status === 'waiting_user' || status === 'waiting_auth' || status === 'delivered'
   if (filter === 'done') return status === 'done'
   if (filter === 'failed') return status === 'failed'
   if (filter === 'closed') return status === 'cancelled' || status === 'orphaned'

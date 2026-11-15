@@ -19,10 +19,12 @@ import {
 import { collectWorkspaceArtifacts } from './artifact-collect.js'
 import { formatBytes, PREVIEW_CHARS, readLastMessage } from './last-message.js'
 import { artifactLines } from './notify.js'
+import { CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered, closeReasonLabel } from './delivered.js'
 import { toolFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
 import { followupGate } from './panel-gates.js'
 import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, planStatusLine } from './plan-mode.js'
+import { MAX_PLAN_CHARS, isSafePlanTaskId, planSavedNote, writePlanDocument } from './plan-doc.js'
 import {
   branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, findReusableCheckout,
   notifyWorktreeOf, parseWorktreeRequest, worktreeListMarker, worktreeNoteLines, worktreeStatusLine,
@@ -40,9 +42,10 @@ const textOutput = {
 const REPORT_STATUS = ['progress', 'done', 'blocked', 'needs_auth']
 const MAX_ARTIFACTS = 20
 const MAX_ARTIFACT_LABEL = 160
-const ACTIVE_STATUS = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
+const ACTIVE_STATUS = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered'])
 const WAITING_STATUS = new Set(['waiting_user', 'waiting_auth'])
-const RESUME_STATUS = new Set(['waiting_user', 'waiting_auth', 'failed'])
+// 可续派（追问）的状态：必须有活着的子会话可投递。delivered 是「已交付待确认」的追问窗口。
+const RESUME_STATUS = new Set(['waiting_user', 'waiting_auth', 'failed', 'delivered'])
 const TERMINAL_STATUS = new Set(['done', 'cancelled', 'orphaned'])
 const RETRYABLE_STATUS = new Set(['failed', 'orphaned'])
 
@@ -70,9 +73,13 @@ function lastMessageLines(record, { full = false } = {}) {
 
 function taskLine(db, task, { staleMinutes = 30 } = {}) {
   const planMarker = `${worktreeListMarker(task)}${planListMarker(task)}`
+  // 权限标记：只读优先（互斥保证两者不会同时出现），完整访问在状态词后缀「·完整访问」。
+  const stateLabel = task.read_only
+    ? `${labelOf(task.status)}·只读`
+    : `${labelOf(task.status)}${task.access === 'full' ? '·完整访问' : ''}`
   const parts = [
     `- ${taskLabelWithId(task)}`,
-    `${task.read_only ? `${labelOf(task.status)}·只读` : labelOf(task.status)}${planMarker}`,
+    `${stateLabel}${planMarker}`,
     `子会话 ${task.target ?? '-'}`,
     `目标：${short(task.goal)}`,
   ]
@@ -338,15 +345,16 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   }
 
   // targetDir 用于续派前幂等补注册 target 可写根（resume 后 session 对象会换，旧授权不生效）。
-  // readOnly 用于只读任务续派时幂等补设沙箱（只读任务不注册可写根）。
-  const sendFollowup = async (target, message, signal, targetDir, taskId, readOnly, objective) => {
-    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir, taskId, readOnly, objective)
-    return dispatcher.send(target, message, signal, targetDir, taskId, readOnly, objective)
+  // readOnly 用于只读任务续派时幂等补设沙箱（只读任务不注册可写根）；access='full' 同理补设 danger-full-access。
+  const sendFollowup = async (target, message, signal, targetDir, taskId, readOnly, objective, access) => {
+    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access)
+    return dispatcher.send(target, message, signal, targetDir, taskId, readOnly, objective, access)
   }
-  // 任务进入终态才释放可写根；waiting_user/waiting_auth 保留（续派还要用）。
+  // 任务进入终态才释放可写根；waiting_user/waiting_auth/delivered 保留（续派/追问还要用）。
+  // 参数可以是任务行，也可以直接是子会话 id（closeDelivered 回调给的是 id）。
   const releaseTaskSession = task => {
-    const id = task?.session_id ?? task?.target
-    if (id === null || id === undefined) return
+    const id = typeof task === 'string' ? task : (task?.session_id ?? task?.target)
+    if (id === null || id === undefined || id === '') return
     try {
       dispatcher.releaseWritableRoots?.(id)
     } catch { /* 释放失败不影响任务状态 */ }
@@ -388,6 +396,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
       readOnly: { type: 'boolean', description: '只读任务：子会话沙箱 read-only（读正常，写文件/写 shell 被拒）；默认 false，只在明确需要时传 true' },
       planFirst: { type: 'boolean', description: '计划模式：子会话先只读探索并上报计划，批准后再执行；与 readOnly 互斥；默认 false' },
+      access: {
+        type: 'string',
+        enum: ['full'],
+        description: 'per-task 访问级别：只接受 "full"（子会话沙箱 danger-full-access：构建/发版类任务要写仓库外或跑不受沙箱限制的 bash 时用）；不传=沿用当前会话策略、完全不动沙箱（默认）；与 readOnly/planFirst 互斥',
+      },
       dependsOn: strList('前置任务编号数组；依赖全部完成后才派发；任一前置失败则本任务失败'),
       group: str('可选分组名，如“登录改造”；面板按组汇总进度'),
       writeScopes: strList('可选写域（目录/文件路径）；与活跃任务重叠时给冲突提示（advisory）'),
@@ -410,7 +423,28 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         log('task.create.rejected', { agentId, detail: { reason: 'plan-readonly-conflict', callId } })
         return '计划模式（planFirst）与只读（readOnly）互斥：只读任务永远不切回可写，而计划批准后要执行。请二选一（要计划就只传 planFirst:true）。'
       }
-      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, readOnly, planFirst, callId } })
+      // per-task 访问级别：只接受显式 'full'，空值等价于没传（沿用会话策略）。
+      // 其余值（'workspace-write' / 'read-only' / 'true' / 数字…）一律拒绝，不静默降级成默认——
+      // 用户以为放开了写权限、实际没放开，比报错危险得多。
+      const rawAccess = args.access
+      const accessText = typeof rawAccess === 'string' ? rawAccess.trim() : String(rawAccess ?? '').trim()
+      const accessProvided = rawAccess !== undefined && rawAccess !== null && accessText !== ''
+      if (accessProvided && accessText !== 'full') {
+        log('task.create.rejected', { agentId, detail: { reason: 'access-invalid', access: accessText, callId } })
+        return `access 只接受 "full"（完整访问：该子会话沙箱 danger-full-access，构建/发版类任务用）；`
+          + `不传就沿用当前会话策略、不动沙箱。收到的是 ${JSON.stringify(rawAccess)}。`
+      }
+      const fullAccess = accessText === 'full'
+      // 互斥：只读是硬拦写、计划阶段靠只读沙箱兜底，都不可能同时要完整访问。
+      if (fullAccess && readOnly) {
+        log('task.create.rejected', { agentId, detail: { reason: 'access-readonly-conflict', callId } })
+        return '完整访问（access:"full"）与只读（readOnly）互斥：只读任务永远不写文件，完整访问恰是为了放开写。请二选一。'
+      }
+      if (fullAccess && planFirst) {
+        log('task.create.rejected', { agentId, detail: { reason: 'access-plan-conflict', callId } })
+        return '完整访问（access:"full"）与计划模式（planFirst）互斥：计划阶段靠只读沙箱硬拦写操作，批准后才切回可写。请先 planFirst 探索，批准后再决定要不要派完整访问任务。'
+      }
+      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, readOnly, planFirst, access: fullAccess ? 'full' : null, callId } })
       const errors = validateBrief(args)
       if (errors.length > 0) {
         log('task.create.rejected', { agentId, detail: { reason: 'validation', message: errors.join('；'), callId } })
@@ -567,12 +601,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           }
         } catch { /* 记忆检索失败不能阻止派任务 */ }
       }
-      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读/计划/经验才写入标记。
+      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读/计划/完整访问/经验才写入标记。
       const brief = {
         ...args,
         target: effectiveTarget,
         ...(readOnly ? { readOnly: true } : {}),
         ...(planFirst ? { planFirst: true } : {}),
+        ...(fullAccess ? { access: 'full' } : {}),
         ...(experience === undefined ? {} : { experience }),
       }
       const task = createTask(db, {
@@ -581,6 +616,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         targetDir: effectiveTarget,
         readOnly,
         planFirst,
+        access: fullAccess ? 'full' : null,
         worktree: worktreeRecord,
         dependsOn: depends.ids,
         groupId,
@@ -605,6 +641,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           targetDir: effectiveTarget ?? null,
           readOnly,
           planFirst,
+          access: fullAccess ? 'full' : null,
           dependsOn: depends.ids,
           group: groupId,
           writeScopes,
@@ -614,7 +651,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           worktreeSource: worktreeRecord?.source ?? null,
         },
       })
-      const rendered = renderBrief({ taskId: task.id })
+      const rendered = renderBrief({ taskId: task.id, access: fullAccess ? 'full' : undefined })
       addMessage(db, task.id, { kind: 'brief', rendered })
       const conflictNote = conflictsText(conflicts)
       const depNames = depends.ids.map(id => {
@@ -622,6 +659,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return dep === undefined ? id : `「${dep.title}」（${labelOf(dep.status)}）`
       }).join('、')
       const dependencyNote = depends.ids.length === 0 ? '' : `前置任务：${depNames}`
+      // 完整访问在返回里明说：用户/协调者要能一眼看出这次子会话不在沙箱里跑。
+      const accessNote = fullAccess
+        ? '访问级别：完整（danger-full-access）——该子会话的文件沙箱不限制写入、bash/pwsh 也不再被沙箱拦；'
+          + '只对本任务生效，其他任务与默认策略都没动（构建/发版类任务用完照常走终态/清理）。'
+        : ''
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
       if (current.live === false) {
         const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
@@ -637,7 +679,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           base: worktreeRecord?.base,
           hint: worktreeHint,
         })
-        const notes = [dependencyNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
+        const notes = [dependencyNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
         log('task.dep.waiting', { taskId: task.id, detail: { dependsOn: depends.ids, callId } })
         return `任务「${taskLabelWithId(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
       }
@@ -645,7 +687,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const resultTask = outcome.task
       const inferredNote = inferred === undefined ? '' : `（目标目录按工作区推断：${inferred.path}）`
       const planNote = planFirst
-        ? '计划模式：子会话只读探索，探索完用 task_report blocked 上报计划；你转交用户，批准后用 task_message 续派（插件自动切回可写）。'
+        ? `计划模式：子会话只读探索，探索完先 plan_save 把计划写入主会话工作区 reports/plans/${task.id}.md（自动登记为产物），`
+          + '再用 task_report blocked 只上报 3–8 行摘要 + 计划文档绝对路径 + 待拍板问题清单；你转交用户，批准后用 task_message 续派（插件自动切回可写）。'
         : ''
       // 派发后以台账实际状态为准（created / reused / degraded / failed），不要凭创建期的计划糊弄用户。
       const worktreeLines = worktreeNoteLines({
@@ -656,7 +699,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         error: resultTask?.status === 'failed' ? resultTask.error : undefined,
         hint: worktreeHint,
       })
-      const notes = [invalidHint(), inferredNote, planNote, ...worktreeLines, conflictNote, dependencyNote]
+      const notes = [invalidHint(), inferredNote, planNote, accessNote, ...worktreeLines, conflictNote, dependencyNote]
         .filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       if (resultTask?.status === 'running') {
@@ -666,7 +709,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return `任务「${taskLabelWithId(task)}」已创建，前面还有 ${ahead} 个任务在排队，轮到时自动派发。${notes === '' ? '' : `\n${notes}`}`
     }),
 
-    wrap('task_list', '列出任务。默认只列活跃任务（waiting_dep/pending/running/waiting），active=false 时连同历史一起列出；可按 group 过滤并看组进度。', objectSchema({
+    wrap('task_list', '列出任务。默认只列活跃任务（waiting_dep/pending/running/waiting/待确认），active=false 时连同历史一起列出；可按 group 过滤并看组进度。', objectSchema({
       active: { type: 'boolean', description: '是否只看活跃任务，默认 true' },
       group: str('可选：只看这个分组的任务'),
     }), async (args, exec) => {
@@ -679,9 +722,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         if (group !== '') return `组「${group}」里没有任务。`
         return args.active === false ? '台账里还没有任何任务。' : '没有活跃任务。'
       }
+      const delivered = tasks.filter(task => task.status === 'delivered').length
       const header = group === ''
         ? ''
-        : `组「${group}」：${tasks.filter(task => task.status === 'done').length}/${tasks.length} 完成\n`
+        : `组「${group}」：${tasks.filter(task => task.status === 'done').length}/${tasks.length} 完成`
+          + `${delivered > 0 ? `｜待确认 ${delivered}` : ''}\n`
       return header + tasks.map(task => taskLine(db, task, { staleMinutes })).join('\n')
     }),
 
@@ -701,6 +746,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         `任务「${taskLabelWithId(task)}」`,
         `状态：${labelOf(task.status)}`,
         ...(task.read_only ? ['权限：只读（读正常，写文件/写 shell 被拒绝）'] : []),
+        ...(task.access === 'full' ? ['访问级别：完整（danger-full-access：文件沙箱不限制写入，bash/pwsh 也不再被沙箱拦）'] : []),
         ...(planLine === undefined ? [] : [planLine]),
         ...(worktreeLine === undefined ? [] : [worktreeLine]),
         ...(task.group_id ? [`分组：${task.group_id}`] : []),
@@ -717,6 +763,16 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           : []),
         `目标：${task.goal}`,
       ]
+      // 两段式终态：交付时间 + 确认动作 + 超时阈值；关闭原因是审计信息（协调者确认 / 超时）。
+      if (task.status === 'delivered') {
+        const timeout = Number.isFinite(config?.deliveredTimeoutMinutes)
+          ? Math.max(1, Math.min(1440, Math.floor(config.deliveredTimeoutMinutes)))
+          : DELIVERED_TIMEOUT_MINUTES
+        lines.push(`交付：已交付待确认（task_close 确认完成；task_message 追问原会话；超过 ${timeout} 分钟自动完成）`)
+      }
+      if (task.close_reason !== null && task.close_reason !== undefined) {
+        lines.push(`关闭：${closeReasonLabel(task.close_reason)}`)
+      }
       // 平台 goal 只读状态（G1）：让协调者不用打开面板也能确认目标生命周期。
       if (task.goal_state !== null && task.goal_state !== undefined) {
         const phase = { active: '进行中', paused: '已暂停', blocked: '受阻', complete: '已完成', cleared: '已清除' }[task.goal_state.phase] ?? task.goal_state.phase ?? '未知'
@@ -781,7 +837,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       })
     }),
 
-    wrap('task_message', '给已有子任务追加一条消息（续派），不新建任务。投递失败会重试 3 次，仍失败则任务转「等你确认」。', objectSchema({
+    wrap('task_message', '给已有子任务追加一条消息（续派），不新建任务。进行中/等你确认/要授权/待确认都能续派（「待确认」= 已交付待确认，追问复用原会话）。投递失败会重试 3 次，仍失败则任务转「等你确认」或保留「待确认」。', objectSchema({
       task_id: str('任务编号'),
       message: str('要追加的内容'),
     }), async (args, exec) => {
@@ -811,7 +867,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
       const seq = addMessage(db, task.id, { kind: 'followup', rendered: message, meta: { delivery: 'pending' } })
       try {
-        await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, message))
+        await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, message), task.access === 'full' ? 'full' : undefined)
       } catch (error) {
         const reason = error?.message ?? String(error)
         setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
@@ -824,6 +880,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           return toolFailure('MESSAGE_UNREACHABLE', { label: labelFor(task), reason })
         }
         if (current.status === 'waiting_user') {
+          setTaskError(db, task.id, reason)
+        } else if (current.status === 'delivered') {
+          // 待确认任务追问失败：交付结果还在，保持 delivered 只记原因，别把它降级成等待/失败。
           setTaskError(db, task.id, reason)
         } else if (canTransition(current.status, 'waiting_user')) {
           transition(db, task.id, 'waiting_user', { error: reason })
@@ -838,6 +897,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const current = getTask(db, task.id)
       // 「等批准」状态收到续派 = 用户批准计划；先记住，投递成功回到 running 之后才切可写。
       const wasWaiting = WAITING_STATUS.has(current.status)
+      // 「已交付待确认」上的追问：投递成功即回到 running，复用同一个子会话（可写根没释放，仍能写）。
+      const wasDelivered = current.status === 'delivered'
       if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
       clearTaskQuestion(db, task.id)
       incrementAttempts(db, task.id)
@@ -847,14 +908,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         const approved = await approvePlan({ db, dispatcher, task, log })
         planNote = `\n${approvalNote(approved)}`
       }
-      // 只读任务的「等你确认」续派：沙箱仍是 read-only（契约如此，见 docs/LIMITATIONS.md）。
+      // 只读任务的「等你确认」/「待确认」续派：沙箱仍是 read-only（契约如此，见 docs/LIMITATIONS.md）。
       // 真机踩过：协调者拿不准这条，最后新开可写任务/新会话，原会话永远停在「等你确认」。
       // 这里如实说清代价并给出两条出口，别让「投递成功」被误解成「已切可写」。
-      const readOnlyNote = wasWaiting && task.read_only === true && isPlanTask(task) !== true
+      const readOnlyNote = (wasWaiting || wasDelivered) && task.read_only === true && isPlanTask(task) !== true
         ? '\n注意：该任务是只读任务（readOnly），续派后子会话仍是 read-only 沙箱、写操作会被拒。'
           + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，批准后同一会话会自动切回可写。'
         : ''
-      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${readOnlyNote}`
+      const deliveredNote = wasDelivered
+        ? '\n该任务此前是「已交付待确认」，已回到进行中并在同一子会话继续；完成后仍要 task_close 确认。'
+        : ''
+      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}`
     }),
 
     wrap('task_stop', '停止一个子任务（会中断它的当前一轮）。', objectSchema({ task_id: str('任务编号') }), async (args, exec) => {
@@ -929,6 +993,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         // P8：计划任务重派后重新走一次计划阶段（新会话要重新探索/批准）。
         planFirst: task.plan_first === true,
         planState: task.plan_first === true ? 'planning' : 'none',
+        // per-task 访问级别跟着原任务走（重派是同一次尝试的延续，不该静默降级成默认策略）。
+        access: task.access === 'full' ? 'full' : null,
         worktree: retryWorktree,
         retryOf: task.id,
         dependsOn: depends.ids,
@@ -940,9 +1006,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       log('task.retry', {
         taskId: retried.id,
         sessionId: current.id,
-        detail: { retryOf: task.id, dependsOn: depends.ids, status: retried.status, callId: exec?.callId },
+        detail: { retryOf: task.id, dependsOn: depends.ids, status: retried.status, access: retried.access ?? null, callId: exec?.callId },
       })
-      addMessage(db, retried.id, { kind: 'brief', rendered: renderBrief({ taskId: retried.id }) })
+      addMessage(db, retried.id, { kind: 'brief', rendered: renderBrief({ taskId: retried.id, access: retried.access === 'full' ? 'full' : undefined }) })
       if (current.live === false) {
         const message = invalidHint() === '' ? toolFailure('MAIN_SESSION_UNAVAILABLE') : invalidHint()
         log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })
@@ -1071,6 +1137,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const waiting = active
         .filter(task => task.status === 'waiting_user' || task.status === 'waiting_auth')
         .slice(0, limit)
+      // 两段式终态：已交付待确认的任务要协调者/用户拍板（确认或追问），单独一栏。
+      const confirm = active
+        .filter(task => task.status === 'delivered')
+        .slice(0, limit)
       const failed = listTasks(db, { active: false })
         .filter(task => task.status === 'failed' || task.status === 'orphaned')
         .slice(0, limit)
@@ -1078,7 +1148,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         .filter(task => task.status === 'running' || task.status === 'pending' || task.status === 'waiting_dep')
         .filter(task => Date.now() - task.last_event_at > staleMinutes * 60_000)
         .slice(0, limit)
-      if (waiting.length === 0 && failed.length === 0 && stale.length === 0) return '收件箱是空的，没有待你决定或需要关注的任务。'
+      if (waiting.length === 0 && confirm.length === 0 && failed.length === 0 && stale.length === 0) {
+        return '收件箱是空的，没有待你决定或需要关注的任务。'
+      }
       const blocks = []
       const lineOf = task => {
         const question = task.question ? `｜问题：${short(task.question, 80)}` : ''
@@ -1086,6 +1158,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return `- ${taskLabelWithId(task)}｜${labelOf(task.status)}${question}${options}`
       }
       if (waiting.length > 0) blocks.push(`【待你决定】${waiting.length}\n${waiting.map(lineOf).join('\n')}`)
+      if (confirm.length > 0) {
+        blocks.push(`【待确认】${confirm.length}（已交付待确认：task_close 确认完成，task_message 追问原会话）\n${confirm.map(lineOf).join('\n')}`)
+      }
       if (failed.length > 0) blocks.push(`【失败/丢失】${failed.length}\n${failed.map(lineOf).join('\n')}`)
       if (stale.length > 0) blocks.push(`【长时间没动静】${stale.length}\n${stale.map(lineOf).join('\n')}`)
       return blocks.join('\n')
@@ -1155,16 +1230,33 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       addMessage(db, task.id, { kind: 'report', rendered: `[${args.status}] ${args.summary ?? ''}` })
       let next = task
+      // 两段式终态：子会话报 done 先落 delivered（已交付待确认），协调者 task_close / 超时才收成 done。
+      // 已经在 delivered/done 上的回报是重复/迟到事件：只记消息，不迁移、不重复通知。
+      const settled = task.status === 'delivered' || task.status === 'done'
+      const deliveredNow = args.status === 'done' && !settled
       if (args.status === 'done') {
-        // blocked/needs_auth 之后子任务直接完成：先回到 running，再走合法迁移到 done。
-        if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
-        next = transition(db, task.id, 'done')
+        if (deliveredNow) {
+          // blocked/needs_auth 之后子任务直接交付：先回到 running，再走合法迁移到 delivered。
+          if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
+          next = transition(db, task.id, 'delivered')
+        } else {
+          next = touchTask(db, task.id)
+        }
+      } else if (settled) {
+        // 已交付/已完成上的迟到 blocked/progress：不改状态，只留痕（重复回报不该把任务拉回等待态）。
+        next = touchTask(db, task.id)
+        if (args.status === 'blocked' || args.status === 'needs_auth') {
+          log('task.report.inconsistent', {
+            taskId: task.id,
+            detail: { reported: args.status, status: task.status, callId: exec?.callId },
+          })
+        }
       } else if (args.status === 'blocked') next = transition(db, task.id, 'waiting_user')
       else if (args.status === 'needs_auth') next = transition(db, task.id, 'waiting_auth')
       else if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
       else next = touchTask(db, task.id)
       if (args.status === 'blocked' || args.status === 'needs_auth') {
-        next = setTaskQuestion(db, task.id, { question, options })
+        if (!settled) next = setTaskQuestion(db, task.id, { question, options })
       } else if (args.status === 'progress' || args.status === 'done') {
         next = clearTaskQuestion(db, task.id)
       }
@@ -1176,10 +1268,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         })
         if (progressInfo !== undefined) next = progressInfo.task
       }
-      if (args.status === 'done') {
+      if (deliveredNow) {
         try {
           // M1 记忆分层：done 摘要只进日志层 task-log（一行、无产物清单、不进 brief）；
           // 写入即蒸馏——摘要里带经验/教训标记的分句抽成 lesson 原子事实，才允许注入后续 brief。
+          // 只在真正交付的这一次沉淀（重复 done 回报不重复写）。
           const projectKey = projectKeyOf(next.target_dir)
           const summary = String(args.summary ?? '')
           addMemory(db, {
@@ -1201,27 +1294,33 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         } catch { /* 记忆沉淀失败不能影响回报 */ }
       }
       const displayName = labelFor(next)
-      notifier.push({
-        taskId: next.id,
-        title: next.title,
-        displayName,
-        readOnly: next.read_only === true,
-        status: args.status,
-        summary: args.summary ?? '',
-        question: args.status === 'blocked' || args.status === 'needs_auth' ? question : null,
-        options: args.status === 'blocked' || args.status === 'needs_auth' ? options : [],
-        artifacts,
-        artifactsTruncated: artifactsOmitted,
-        worktree: notifyWorktreeOf(next),
-        sender: exec?.agent,
-        signal: exec?.signal,
-      })
+      // 交付回报用 delivered 通知（带「确认/追问」动作指令），重复回报不再发第二条。
+      const notifyStatus = args.status === 'done' ? 'delivered' : args.status
+      if (deliveredNow || args.status !== 'done') {
+        notifier.push({
+          taskId: next.id,
+          title: next.title,
+          displayName,
+          readOnly: next.read_only === true,
+          access: next.access === 'full' ? 'full' : null,
+          status: notifyStatus,
+          summary: args.summary ?? '',
+          question: args.status === 'blocked' || args.status === 'needs_auth' ? question : null,
+          options: args.status === 'blocked' || args.status === 'needs_auth' ? options : [],
+          artifacts,
+          artifactsTruncated: artifactsOmitted,
+          worktree: notifyWorktreeOf(next),
+          sender: exec?.agent,
+          signal: exec?.signal,
+        })
+      }
       if (progressInfo?.shouldNotify === true) {
         notifier.push({
           taskId: next.id,
           title: next.title,
           displayName,
           readOnly: next.read_only === true,
+          access: next.access === 'full' ? 'full' : null,
           status: 'stalled',
           summary: `连续 ${progressInfo.count} 次 progress 无状态变化，可能卡住；用 task_status 查看`,
           system: true,
@@ -1232,17 +1331,97 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         taskId: next.id,
         sessionId: task.session_id,
         agentId: exec?.agent?.id,
-        detail: { status: args.status, summary: args.summary ?? '', callId: exec?.callId },
+        detail: { status: args.status, summary: args.summary ?? '', delivered: deliveredNow, access: next.access ?? null, callId: exec?.callId },
       })
-      // 任务到终态意味着并发槽位空出来了，唤醒队列补位；done 同时释放该会话的 target 可写根。
-      if (next.status === 'done') {
-        // G1：子会话自己报 done = 目标达成，complete 并 disarm；已 complete 时桥内部幂等。
-        void goalBridge?.complete?.(task.id, task.session_id)
-        releaseTaskSession(task)
-      }
-      if (next.status === 'done' || next.status === 'failed' || next.status === 'cancelled') queue.pump()
+      // 交付/终态都让出一个并发位，唤醒队列补位。可写根与 goal 要留到 done（确认/超时）再收：
+      // delivered 还要复用同一个子会话追问。
+      if (deliveredNow || next.status === 'failed' || next.status === 'cancelled') queue.pump()
       const hint = invalidHint()
-      return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${hint === '' ? '' : `\n${hint}`}`
+      if (args.status === 'done' && !deliveredNow) {
+        return `已记录任务「${labelFor(next)}」的重复 done 回报（当前${labelOf(next.status)}，未重复迁移）。${hint === '' ? '' : `\n${hint}`}`
+      }
+      const deliveredNote = deliveredNow
+        ? `\n任务已交付待确认：确认完成用 task_close；要改直接用 task_message 追问原会话（不用新建任务）。`
+        : ''
+      return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${deliveredNote}${hint === '' ? '' : `\n${hint}`}`
+    }),
+
+    // 计划落盘（P8 计划交付）：计划阶段是只读沙箱，这是子会话**唯一**被允许的写入口。
+    // 路径不开放参数：只认任务编号，由插件拼成「主会话工作区/reports/plans/<taskId>.md」，
+    // 编号形状白名单 + relative() 包含性校验两道闸拒绝逃逸（见 src/plan-doc.js）。
+    wrap('plan_save', '计划模式专用：把计划正文写入主会话工作区 reports/plans/<taskId>.md 并登记为任务产物（计划阶段唯一允许的写入口，路径固定、禁止逃逸）。', objectSchema({
+      task_id: str('任务编号，创建时给过'),
+      content: str('计划正文（Markdown）：目标、步骤、要改的文件、验证方式、风险与待拍板问题'),
+    }), async (args, exec) => {
+      const taskId = typeof args.task_id === 'string' ? args.task_id.trim() : ''
+      // 先校验编号形状：路径由编号拼出，形状不合法连查台账都不必，直接拒绝。
+      if (!isSafePlanTaskId(taskId)) {
+        return `计划未落盘：任务编号不合法（只允许 t-<小写字母/数字> 形式）：${taskId === '' ? '(空)' : taskId}。`
+      }
+      const task = getTask(db, taskId)
+      if (task === undefined) return `没有任务 ${taskId}，确认 task_id 是否抄错。`
+      if (!isPlanTask(task)) {
+        return `计划未落盘：只有计划模式（planFirst）的任务需要落盘计划；任务「${labelFor(task)}」是普通任务，直接写到自己的工作目录即可。`
+      }
+      // 越权：只有任务自己的子会话能落盘（与 task_report 同口径）。
+      const reporter = exec?.agent
+      const reporterId = reporter?.id ?? reporter?.session?.id
+      if (reporter !== undefined && task.session_id !== null && task.session_id !== undefined
+        && String(reporterId) !== String(task.session_id)) {
+        return `计划被拒绝：任务「${labelFor(task)}」属于子会话 ${task.target ?? task.session_id}，当前调用方不是它。`
+      }
+      const content = typeof args.content === 'string' ? args.content.trim() : ''
+      if (content === '') return '计划正文不能为空：把目标、步骤、要改的文件、验证方式写进 content。'
+      if (content.length > MAX_PLAN_CHARS) {
+        return `计划正文太长（${content.length} 字，上限 ${MAX_PLAN_CHARS} 字）：请精简（步骤级即可）或拆成更小的计划。`
+      }
+      const mainDir = defaultDir()
+      if (mainDir === undefined) return '计划未落盘：找不到主会话工作区（主会话尚未打开），请让协调者先从面板「打开主会话」。'
+      const written = await writePlanDocument({ mainDir, task, content, savedAt: Date.now() })
+      if (written.ok !== true) return `计划未落盘：${written.error}${written.path === undefined ? '' : `（目标路径 ${written.path}）`}`
+      // 登记产物：通知、task_status、面板抽屉都从台账产物里读，不需要另开一套视图。
+      setTaskArtifacts(db, task.id, [{ path: written.path, label: `计划文档（${written.chars} 字）`, exists: true }])
+      log('task.plan.saved', {
+        taskId: task.id,
+        sessionId: task.session_id,
+        agentId: reporterId,
+        detail: { path: written.path, chars: written.chars, bytes: written.bytes, callId: exec?.callId },
+      })
+      return planSavedNote(written)
+    }),
+
+    // 两段式终态的确认入口：只有 delivered（已交付待确认）能收成 done。
+    wrap('task_close', '确认一条「已交付待确认」（delivered）任务为已完成（done，终态）。要改就用 task_message 追问原会话；要取消用 task_stop。', objectSchema({
+      task_id: str('任务编号'),
+    }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
+      if (unbound()) return UNBOUND_HINT
+      const task = getTask(db, args.task_id ?? '')
+      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+      const outcome = closeDelivered({
+        db,
+        taskId: task.id,
+        reason: CLOSE_REASONS.coordinator,
+        releaseSession: releaseTaskSession,
+        // G1：确认完成 = 目标达成，complete 并 disarm（桥内部幂等）。
+        completeGoal: closed => { void goalBridge?.complete?.(closed.id, closed.session_id) },
+        cleanupWorktree,
+        pump: () => queue.pump(),
+        logger,
+      })
+      if (outcome.ok !== true) {
+        const latest = outcome.task ?? task
+        if (outcome.reason === 'not-found') return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+        if (TERMINAL_STATUS.has(latest.status)) {
+          return toolFailure('CLOSE_TASK_ENDED', { label: labelFor(latest), statusLabel: labelOf(latest.status) })
+        }
+        return toolFailure('CLOSE_NOT_DELIVERED', { label: labelFor(latest), statusLabel: labelOf(latest.status) })
+      }
+      log('task.close', { taskId: task.id, detail: { already: outcome.already === true } })
+      return outcome.already === true
+        ? `任务「${labelFor(outcome.task)}」已完成（无需重复确认）。`
+        : `任务「${labelFor(outcome.task)}」已确认完成。`
     }),
   ]
 }

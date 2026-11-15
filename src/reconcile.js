@@ -13,6 +13,8 @@
 import { getTask, listTasks, transition } from './ledger.js'
 
 // 活跃性对账只认 running：其余状态不是「正在跑却没人」。
+// delivered（已交付待确认）刻意不在扫描范围：它的成果已经落库，只等确认/超时，
+// 子会话即使重启后不 live 也不该被标 orphaned（超时 sweeper 会把它收成 done）。
 const LIVENESS_STATUSES = new Set(['running'])
 // catalog 可达性沿用设计口径：running + 故意停下的 waiting_*；waiting_dep 不参与。
 const CATALOG_STATUSES = new Set(['running', 'waiting_user', 'waiting_auth'])
@@ -133,6 +135,7 @@ export function createStartupReconciler({
     title: task.title,
     displayName: typeof labelFor === 'function' ? labelFor(task) : task.title,
     readOnly: task.read_only === true,
+    access: task.access === 'full' ? 'full' : null,
     status: 'orphaned',
     summary: '启动对账发现子会话已不活跃，已标记会话丢失',
     system: true,

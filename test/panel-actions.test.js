@@ -700,7 +700,7 @@ test('delete：终态任务级联清理消息与通知，其他任务不受影�
 test('delete 门控：活跃任务返回 DELETE_TASK_ACTIVE，且一行都不删', async () => {
   const env = setup()
   const { db, actions } = await env.init()
-  for (const status of ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth']) {
+  for (const status of ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered']) {
     const task = createTask(db, { brief: sampleBrief({ title: `活跃-${status}` }), coordinatorSession: 's-1', status })
     addMessage(db, task.id, { kind: 'brief', rendered: '简报' })
     const result = await actions.delete(task.id)
@@ -760,5 +760,90 @@ test('detail 旧 followup 无 meta：按失败行推断，只归给最近一条'
   const rows = actions.detail(task.id).messages
   assert.equal(rows.find(row => row.text === '旧A').delivery, 'delivered')
   assert.equal(rows.find(row => row.text === '旧B').delivery, 'failed')
+  db.close()
+})
+
+// ---------------------------------------------------------------------------
+// 两段式终态（delivered）：待确认 → 确认交付（close）/ 追问（message）。
+// 门控与按钮同源：detail 下发 canClose / canFollowup，前端只渲染。
+// ---------------------------------------------------------------------------
+const deliveredTask = (db, title = '待确认') => {
+  const task = runningTask(db, title)
+  transition(db, task.id, 'delivered')
+  return getTask(db, task.id)
+}
+
+test('delivered：detail 下发交付时间与 canClose；追问复用原会话回 running', async () => {
+  const env = setup()
+  const { db, actions, calls } = await env.init()
+  const task = deliveredTask(db, '待确认')
+  const detail = actions.detail(task.id).task
+  assert.equal(detail.status, 'delivered')
+  assert.equal(detail.canClose, true)
+  assert.equal(detail.canFollowup, true)
+  assert.equal(detail.canDelete, false)
+  assert.ok(Number.isFinite(detail.deliveredAt))
+  assert.equal(detail.closeReason, null)
+
+  const resumed = await actions.message(task.id, '再补一份说明')
+  assert.equal(resumed.ok, true)
+  assert.equal(calls.send.length, 1)
+  assert.equal(calls.send[0].target, task.target)
+  assert.equal(getTask(db, task.id).status, 'running')
+  db.close()
+})
+
+test('close：delivered → done（写关闭原因、释放可写根、唤醒队列）；非待确认拒绝', async () => {
+  const env = setup()
+  const { db, actions, calls, queue } = await env.init()
+  const task = deliveredTask(db, '可确认')
+  const result = await actions.close(task.id)
+  assert.equal(result.ok, true)
+  assert.equal(result.status, 'done')
+  const closed = getTask(db, task.id)
+  assert.equal(closed.status, 'done')
+  assert.equal(closed.close_reason, 'coordinator')
+  assert.deepEqual(calls.release, [task.session_id])
+  assert.equal(queue.pumped, 1)
+  assert.equal(actions.detail(task.id).task.closeReasonLabel, '协调者确认')
+
+  // 已 done 再确认：幂等成功，不重复释放/补位。
+  const again = await actions.close(task.id)
+  assert.equal(again.ok, true)
+  assert.equal(again.already, true)
+  assert.equal(calls.release.length, 1)
+
+  // 进行中的任务不能确认：按钮不显示 + 动作 409，并给出可执行提示。
+  const running = runningTask(db, '在跑')
+  assert.equal(actions.detail(running.id).task.canClose, false)
+  const denied = await actions.close(running.id)
+  assert.equal(denied.ok, false)
+  assert.equal(denied.code, 'CLOSE_NOT_DELIVERED')
+  assert.match(denied.error, /待确认/)
+  // 已取消的任务：CLOSE_TASK_ENDED（不是「还没交付」）。
+  const cancelled = runningTask(db, '已取消')
+  transition(db, cancelled.id, 'cancelled')
+  const ended = await actions.close(cancelled.id)
+  assert.equal(ended.code, 'CLOSE_TASK_ENDED')
+  assert.equal(await actions.close('t-nope').then(row => row.code), 'TASK_NOT_FOUND')
+  db.close()
+})
+
+test('delivered 追问失败：保持 delivered 只记原因，不降级', async () => {
+  const env = setup({
+    makeDispatcher: () => ({
+      async sendReliable() { throw new Error('投递超时') },
+      releaseWritableRoots() {},
+      async stop() {},
+    }),
+  })
+  const { db, actions } = await env.init()
+  const task = deliveredTask(db, '投递失败')
+  const result = await actions.message(task.id, '再改一下')
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'MESSAGE_DELIVERY_FAILED')
+  const after = getTask(db, task.id)
+  assert.equal(after.status, 'delivered')
+  assert.match(after.error, /投递超时/)
   db.close()
 })

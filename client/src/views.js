@@ -83,6 +83,8 @@ export function createViews({
     const [collapsedSections, setCollapsedSections] = React.useState([])
     // 破坏性动作二次确认：null 或待确认的任务 id（不再用 window.confirm，样式与宿主一致）。
     const [confirmStop, setConfirmStop] = React.useState(null)
+    // 确认交付（delivered → done，done 不可逆）同样要二次确认。
+    const [confirmClose, setConfirmClose] = React.useState(null)
     // 删除同样要二次确认：停止还能救回来，删除是台账级联清理（不可恢复）。
     const [confirmDelete, setConfirmDelete] = React.useState(null)
     const [artifactData, setArtifactData] = React.useState(null)
@@ -193,6 +195,7 @@ export function createViews({
       setDetailLoading(true)
       setCopyNotice(null)
       setConfirmStop(null)
+      setConfirmClose(null)
       setConfirmDelete(null)
       try {
         const body = await readDetail(id)
@@ -214,6 +217,7 @@ export function createViews({
       setDetailTaskId(null)
       setCopyNotice(null)
       setConfirmStop(null)
+      setConfirmClose(null)
       setConfirmDelete(null)
     }
 
@@ -286,17 +290,23 @@ export function createViews({
       setActionError(null)
       setActionNotice(null)
       setConfirmStop(null)
+      setConfirmClose(null)
       setConfirmDelete(null)
       try {
         const result = await panelAction(endpoint, id, extra)
-        // 幂等命中：stop 已结束 / retry 已有活跃重派 / message 重复投递，都按提示处理而不是报错。
+        // 幂等命中：stop 已结束 / retry 已有活跃重派 / message 重复投递 / close 已完成，都按提示处理而不是报错。
         if (result && result.already === true) {
           if (endpoint === 'message') setActionNotice('这条消息已发送过，未重复投递')
           else if (endpoint === 'retry') {
             setActionNotice(`已有活跃重派任务（${STATUS_LABEL[result.status] || result.status || '处理中'}），未重复创建`)
+          } else if (endpoint === 'close') {
+            setActionNotice('任务已完成，无需重复确认')
           } else {
             setActionNotice(`任务已是该状态（${STATUS_LABEL[result.status] || result.status || '已结束'}），无需重复停止`)
           }
+        }
+        if (endpoint === 'close' && result && result.ok === true && result.already !== true) {
+          setActionNotice('已确认交付，任务完成')
         }
         if (endpoint === 'delete' && result && result.ok === true) {
           // 删除成功：台账记录没了，抽屉里的详情也失效，直接收起。
@@ -381,7 +391,7 @@ export function createViews({
       busy === `retry:${task.id}` ? '重派中…' : '重派')
       : null
 
-    // 追加消息：只给「支持续派」的任务（进行中/等你确认/要授权，且已有子会话）。
+    // 追加消息：只给「支持续派」的任务（进行中/等你确认/要授权/待确认，且已有子会话）。
     // 判定在服务端 panel-gates.js，快照/detail 下发 canFollowup；前端只读，不抄状态表。
     const messageControl = (task, label = '追加') => (task !== null && task !== undefined && task.canFollowup === true)
       ? h('button', {
@@ -391,6 +401,33 @@ export function createViews({
         onClick: act(() => sendMessage(task.id)),
       }, h(Icon, { name: 'message' }), label)
       : null
+
+    // 确认交付（delivered → done）：与工具 task_close 同源，服务端 closeGate 下发 canClose。
+    // done 不可逆，所以与停止/删除同一套两步确认。
+    const closeControl = task => {
+      if (task === null || task === undefined || task.canClose !== true) return null
+      if (task.status === 'done') return null
+      if (confirmClose === task.id) {
+        return h('span', { key: 'close-confirm', className: 'orch-confirm' },
+          h('span', null, '确认交付完成？'),
+          h('button', {
+            type: 'button', className: 'orch-btn orch-btn--sm',
+            disabled: busy === `close:${task.id}`,
+            onClick: act(() => void runPanel('close', task.id)),
+          }, busy === `close:${task.id}` ? '确认中…' : '确认'),
+          h('button', {
+            type: 'button', className: 'orch-btn orch-btn--sm',
+            onClick: act(() => setConfirmClose(null)),
+          }, '取消'),
+        )
+      }
+      return h('button', {
+        key: 'close', type: 'button', className: 'orch-btn orch-btn--sm',
+        title: '确认这条已交付任务完成（done，不可逆）',
+        disabled: busy === `close:${task.id}`,
+        onClick: act(() => setConfirmClose(task.id)),
+      }, h(Icon, { name: 'check' }), '确认交付')
+    }
 
     // 删除任务（连同 messages/notifications 级联清理）：只有终态任务显示（canDelete 由服务端判定）。
     // 两步：先点「删除」→ 内联「确认删除？/ 取消」，与停止同一套确认条，避免误删。
@@ -597,6 +634,7 @@ export function createViews({
             onClick: act(() => void openDetail(task.id)),
           }, h(Icon, { name: 'chevron' }), '详情'),
           stopControl(task),
+          closeControl(task),
           retryControl(task),
           messageControl(task),
           openControl(task.childSessionId),
@@ -819,6 +857,9 @@ export function createViews({
       const overviewBody = h('div', { className: 'orch-kv' }, [
         ['编号', task.id],
         ['状态', STATUS_LABEL[task.status] || task.status || '未知'],
+        // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）。
+        ...(task.deliveredAt ? [['交付', `${timeLabel(task.deliveredAt)}（待确认：确认交付收成已完成，追加消息即追问原会话）`]] : []),
+        ...(task.closeReason ? [['关闭', task.closeReasonLabel || task.closeReason]] : []),
         ['目标目录', task.targetDir || '（未设置）'],
         ['分组', task.group || '（未分组）'],
         ['优先级', `P${task.priority === undefined || task.priority === null ? 0 : task.priority}`],
@@ -984,6 +1025,7 @@ export function createViews({
     const drawerFoot = () => {
       const buttons = [
         stopControl(detailTask),
+        closeControl(detailTask),
         retryControl(detailTask),
         messageControl(detailTask, '追加消息'),
         detailTask.target ? openControl(detailTask.target, '打开子会话') : null,

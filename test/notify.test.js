@@ -11,6 +11,7 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 test('状态到级别映射', () => {
   assert.equal(levelOf('progress'), 'silent')
   assert.equal(levelOf('done'), 'notify')
+  assert.equal(levelOf('delivered'), 'notify')
   assert.equal(levelOf('blocked'), 'interrupt')
   assert.equal(levelOf('needs_auth'), 'interrupt')
   assert.equal(levelOf('failed'), 'notify')
@@ -18,6 +19,23 @@ test('状态到级别映射', () => {
   assert.equal(levelOf('cancelled'), 'notify')
   assert.equal(levelOf('orphaned'), 'notify')
   assert.equal(levelOf('weird'), 'silent')
+})
+
+test('交付通知：写「已交付待确认」并带 task_close / task_message 动作指令', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 5 })
+  notifier.push({ taskId: 't-close', title: '交付任务', status: 'delivered', summary: '改完了' })
+  await wait(20)
+  assert.match(delivered[0], /任务「交付任务」已交付待确认：改完了/)
+  assert.match(delivered[0], /task_close t-close/)
+  assert.match(delivered[0], /task_message 追问原会话/)
+  assert.match(delivered[0], /超时自动完成/)
+  // 多条合并：动作指令只在整条消息末尾写一次（这里只断言不重复刷）。
+  notifier.push({ taskId: 't-a', title: 'A', status: 'delivered', summary: '一' })
+  notifier.push({ taskId: 't-b', title: 'B', status: 'delivered', summary: '二' })
+  await wait(20)
+  assert.match(delivered[1], /2 个任务已交付待确认/)
+  assert.equal(delivered[1].match(/task_close/g).length, 1)
 })
 
 test('结算异常状态的通知文案：已取消 / 会话已结束但没有终态回报', async () => {
@@ -75,6 +93,21 @@ test('只读任务通知标「只读」；普通任务不变', async () => {
   notifier.push({ taskId: 't-2', title: '修复', status: 'done', summary: '完成' })
   await wait(25)
   assert.deepEqual(delivered[1], '任务「修复」完成：完成')
+})
+
+test('完整访问任务通知标「完整访问」；只读优先、普通任务不变', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: '构建', status: 'done', summary: '打好了', access: 'full' })
+  await wait(25)
+  assert.deepEqual(delivered, ['任务「构建（完整访问）」完成：打好了'])
+  // 只读标记压过 access（互斥兜底：正常运行期不会同时出现）。
+  notifier.push({ taskId: 't-2', title: '分析', status: 'done', summary: '完成', readOnly: true, access: 'full' })
+  await wait(25)
+  assert.deepEqual(delivered[1], '任务「分析（只读）」完成：完成')
+  notifier.push({ taskId: 't-3', title: '修复', status: 'done', summary: '完成', access: null })
+  await wait(25)
+  assert.deepEqual(delivered[2], '任务「修复」完成：完成')
 })
 
 test('显示名优先：用 item.displayName，不裸露 t-xxx', async () => {

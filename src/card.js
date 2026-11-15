@@ -3,7 +3,7 @@ import { statusLabel } from './state.js'
 
 const STATUS_TONE = {
   waiting_dep: 'muted', pending: 'muted', running: 'info', waiting_user: 'warn', waiting_auth: 'warn',
-  done: 'good', failed: 'bad', cancelled: 'muted', orphaned: 'bad',
+  delivered: 'warn', done: 'good', failed: 'bad', cancelled: 'muted', orphaned: 'bad',
 }
 
 export function taskCard(task, { summary = '', maxLength = 80 } = {}) {

@@ -13,6 +13,9 @@ const list = value => Array.isArray(value) ? value.map(text).filter(Boolean) : [
 
 const WRITE_HINT = '所有产出只写到该目录内，不要写到父会话目录或其他绝对路径；完成后汇报时把文件路径落到该目录下。'
 const READ_ONLY_HINT = '只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。'
+// 完整访问（access:'full'）：沙箱不再限制写入，但任务边界还在——风险文案必须写清楚，别让它以为「哪都能改」。
+const FULL_ACCESS_HINT = '完整访问任务：文件沙箱是 danger-full-access，写文件、跑 bash/pwsh 都不会被沙箱拦。仍按任务边界只改这个目录/仓库里的东西，别碰无关路径与用户数据（这条是纪律，不是沙箱拦）。'
+const ACCESS_FULL_LABEL = '完整（danger-full-access：文件沙箱不限制写入，bash/pwsh 也不再被沙箱拦）'
 const FINISH_HINT = '完成后用 task_report 回报（progress / done / blocked / needs_auth），正文写：改了什么、改了哪些文件、怎么验证的。'
 
 const fileExists = value => {
@@ -79,20 +82,26 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   // 计划阶段（还没批准）运行期就是只读：权限文案必须如实，否则子会话会以为自己能写。
   const planning = planTask && planState === 'planning'
   const effectiveReadOnly = readOnly || planning
+  // per-task 完整访问：只读/计划阶段永远压过它（运行期事实优先），台账与 brief 任一处标了 full 都算。
+  const fullAccess = !effectiveReadOnly && (brief.access === 'full' || task.access === 'full')
   const lines = [
     `任务编号：${task.id ?? '-'}`,
     `任务：${single(brief.title ?? task.title)}`,
-    `状态：${statusLabel(task.status)}${effectiveReadOnly ? '｜只读' : ''}`,
+    `状态：${statusLabel(task.status)}${effectiveReadOnly ? '｜只读' : (fullAccess ? '｜完整访问' : '')}`,
     `目标：${text(brief.goal ?? task.goal)}`,
   ]
   // 工作目录最多出现一个：就是 target_dir；写提示紧跟其后（与旧 brief 同口径）。
   if (target !== '') {
     lines.push(`工作目录：${target}`)
     lines.push(`权限：${effectiveReadOnly ? '只读' : '可写'}`)
-    lines.push(effectiveReadOnly ? READ_ONLY_HINT : WRITE_HINT)
+    if (fullAccess) lines.push(`访问级别：${ACCESS_FULL_LABEL}`)
+    lines.push(effectiveReadOnly ? READ_ONLY_HINT : (fullAccess ? FULL_ACCESS_HINT : WRITE_HINT))
   } else if (effectiveReadOnly) {
     lines.push('权限：只读')
     lines.push(READ_ONLY_HINT)
+  } else if (fullAccess) {
+    lines.push(`访问级别：${ACCESS_FULL_LABEL}`)
+    lines.push(FULL_ACCESS_HINT)
   }
   // P8：计划任务在详情里说明「只读是预期、出口是 task_report blocked」，并给出当前编排视图。
   if (planTask) {

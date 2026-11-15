@@ -74,9 +74,11 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, description, prompt, signal, readOnly, planFirst, taskId, goal }) {
+    async spawn({ name, description, prompt, signal, readOnly, planFirst, access, taskId, goal }) {
       // team 后端没有按会话设只读的通道：明确拒绝，避免台账标只读、实际可写。
       if (readOnly === true) throw new Error('team 后端不支持只读任务：只读需要 subagent 后端，请把 backend 改回 subagent')
+      // per-task 完整访问同样只有 subagent 后端能按会话注入（team 成员没有 session 沙箱写入口）。
+      if (access === 'full') throw new Error('team 后端不支持完整访问（access:"full"）：需要按会话设沙箱，请把 backend 改回 subagent')
       // P8：计划模式同样依赖会话级沙箱 + 预设作用域的 planMode 服务，team 后端没有。
       if (planFirst === true) throw new Error('team 后端不支持计划模式：计划模式需要 subagent 后端，请把 backend 改回 subagent')
       // 真实 spawnTeammate 要求 provider（fresh 用 'spawn'）和 AbortSignal，缺一个都会被拒。
@@ -155,6 +157,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   const live = new Map()
   // 只读子任务：派发时把 childId 记下来，agent/created 一到就设沙箱（压首回合窗口）。
   const readOnlyChildren = new Set()
+  // per-task 完整访问（access:'full'）：同一机制、同一条注入路径，只是模式换成 danger-full-access。
+  // 只按 childId 记，绝不写全局默认/父会话，也不从配置或 brief 继承——漏传就什么都没发生。
+  const fullAccessChildren = new Set()
   // P8 计划任务：同样在派发前登记，agent/created 一到就设只读 + 置 plan mode + 装 exit_plan_mode guard。
   const planChildren = new Set()
   // 子会话 agent 作用域 guard 的 disposer；按 childId 收口（任务终态/停止时释放，不留悬挂监听）。
@@ -191,23 +196,37 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     if (childAgent?.session !== undefined) return childAgent.session
     return serviceOf(sessions)?.get?.(childId)
   }
-  // 只读模式：平台唯一写入口就是 session.append('sandbox/mode', { mode:'read-only' })
+  // 沙箱模式注入：平台唯一写入口就是 session.append('sandbox/mode', { mode })
   // （导出的 setSandboxMode 只是它的薄包装）。只写目标 child session，不动全局默认与父会话。
-  // 投影已有 read-only 时跳过：续派/重启 replay 都会保留，不需要重复 append。
-  const ensureReadOnly = (childId, sessionHint) => {
+  // 投影已有同一模式时跳过：续派/重启 replay 都会保留，不需要重复 append。
+  // 完整访问带 source:'delegation'（与平台把父会话覆盖种进子会话时的事件形状一致，见
+  // @deepseek-ai/dsh-subagent 的 appendDelegatedPolicyOverrides），只读保持历史形状不变。
+  const ensureSandboxMode = (childId, mode, sessionHint) => {
     try {
       const session = sessionHint ?? childSessionOf(childId)
       if (session === undefined) return false
       const policy = serviceOf(sandboxPolicy)
-      if (policy?.overrideOf?.(session) === 'read-only') return false
+      if (policy?.overrideOf?.(session) === mode) return false
       if (typeof session.append !== 'function') return false
-      session.append('sandbox/mode', { mode: 'read-only' })
-      onEvent('subagent.read-only', { sessionId: childId, detail: { sessionId: session.id ?? childId } })
+      const payload = mode === 'read-only' ? { mode } : { mode, source: 'delegation' }
+      session.append('sandbox/mode', payload)
+      onEvent(mode === 'read-only' ? 'subagent.read-only' : 'subagent.full-access', {
+        sessionId: childId,
+        detail: { sessionId: session.id ?? childId, mode },
+      })
       return true
     } catch (error) {
-      onWarn(`dsh-orchestrator: 设置只读沙箱失败：${errorText(error)}`)
+      const label = mode === 'read-only' ? '只读' : '完整访问'
+      onWarn(`dsh-orchestrator: 设置${label}沙箱失败：${errorText(error)}`)
       return false
     }
+  }
+  const ensureReadOnly = (childId, sessionHint) => ensureSandboxMode(childId, 'read-only', sessionHint)
+  // 该 childId 应注入的沙箱模式（只读/计划优先，未登记返回 undefined = 什么都不动）。
+  const sandboxModeFor = childId => {
+    if (readOnlyChildren.has(childId) || planChildren.has(childId)) return 'read-only'
+    if (fullAccessChildren.has(childId)) return 'danger-full-access'
+    return undefined
   }
   // agent/created 早于首个模型请求，能压掉「首回合还没设只读」的窗口。
   // P8：计划任务同一时机把 plan mode 置上并装 exit_plan_mode guard（都在 agent 作用域）。
@@ -216,8 +235,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       onAgentCreated(created => {
         if (created?.id === undefined) return
         const plan = planChildren.has(created.id)
-        if (!plan && !readOnlyChildren.has(created.id)) return
-        ensureReadOnly(created.id, created.session)
+        const mode = sandboxModeFor(created.id)
+        if (mode === undefined) return
+        ensureSandboxMode(created.id, mode, created.session)
         if (!plan) return
         installExitPlanGuard(created.id, created)
         const applied = applyPlanMode(created.id, true, created)
@@ -364,19 +384,22 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     releasePlanGuard(childId)
   }
   // 激活返回时子 Session 可能还没进表：等一次 session/created 再设只读，不阻塞派发。
-  const ensureReadOnlyReady = childId => {
+  const ensureModeReady = (childId, mode) => {
+    const apply = session => ensureSandboxMode(childId, mode, session)
     if (childSessionOf(childId) !== undefined || typeof onSessionCreated !== 'function') {
-      ensureReadOnly(childId)
+      apply(childSessionOf(childId))
       return
     }
+    const label = mode === 'read-only' ? '只读' : '完整访问'
     void resolveChildSession(childId).then(session => {
       if (session === undefined) {
-        onWarn(`dsh-orchestrator: 未拿到子会话 ${childId}，只读沙箱未设置`)
+        onWarn(`dsh-orchestrator: 未拿到子会话 ${childId}，${label}沙箱未设置`)
         return
       }
-      ensureReadOnly(childId, session)
-    }).catch(error => onWarn(`dsh-orchestrator: 设置只读沙箱失败：${errorText(error)}`))
+      apply(session)
+    }).catch(error => onWarn(`dsh-orchestrator: 设置${label}沙箱失败：${errorText(error)}`))
   }
+  const ensureReadOnlyReady = childId => ensureModeReady(childId, 'read-only')
   // activation 返回时子 Session 可能还没进会话表：挂一次 session/created 等同一个 childId；
   // 超时只 warn、不重试，也不阻塞派发。判同只看 id，不看 header.cwd（那正是坏的字段）。
   const resolveChildSession = childId => {
@@ -457,6 +480,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         try {
           live.delete(activation.childId)
           readOnlyChildren.delete(activation.childId)
+          fullAccessChildren.delete(activation.childId)
           releasePlanGuard(activation.childId)
           onEvent('subagent.settled', {
             taskId: activation.taskId,
@@ -472,6 +496,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         try {
           live.delete(activation.childId)
           readOnlyChildren.delete(activation.childId)
+          fullAccessChildren.delete(activation.childId)
           releasePlanGuard(activation.childId)
           onEvent('subagent.failed', {
             taskId: activation.taskId,
@@ -488,7 +513,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, label, prompt, signal, taskId, cwd, readOnly, planFirst, goal }) {
+    async spawn({ name, label, prompt, signal, taskId, cwd, readOnly, planFirst, access, goal }) {
       const parent = requireAgent()
       // agent 已创建但 session 还没挂上时，平台 startActivation 会在 parent.session 上取 .id 抛 TypeError；
       // 这里先给可读错误，并由 queue 当成可重试（等会话就绪）。
@@ -499,6 +524,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       const childId = randomUUID()
       // 只读任务：在开始创建前记下 childId，agent/created 时立刻设沙箱；激活返回后再补一次幂等设置。
       if (readOnly === true) readOnlyChildren.add(childId)
+      // 完整访问（access:'full'）：同一条注入路径换成 danger-full-access。只认显式 'full'。
+      const fullAccess = access === 'full' && readOnly !== true && planFirst !== true
+      if (fullAccess) fullAccessChildren.add(childId)
       // P8 计划任务：同一机制（只读沙箱是硬拦），另外在 agent 作用域置 plan mode + 装 exit guard。
       if (planFirst === true) planChildren.add(childId)
       // 目标目录优先；没给就沿用父会话 cwd（保持旧行为）。
@@ -535,8 +563,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
           activation = await subagents.startActivation(legacySpec)
         }
       } catch (error) {
-        // 两次都失败：清掉只读/计划登记，别攒废弃 UUID。
+        // 两次都失败：清掉只读/计划/完整访问登记，别攒废弃 UUID。
         readOnlyChildren.delete(childId)
+        fullAccessChildren.delete(childId)
         planChildren.delete(childId)
         throw error
       }
@@ -549,6 +578,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       activation.taskId = taskId
       track(activation)
       if (readOnly === true) ensureReadOnlyReady(activation.childId)
+      // 完整访问：同一入口（ensureModeReady），只读/计划优先，互斥由 tools 层在创建期就拦住。
+      if (fullAccess) ensureModeReady(activation.childId, 'danger-full-access')
       // P8：计划任务也走只读沙箱；plan mode 与 guard 尽量在激活返回时就装上，
       // agent 还没进表时由 agent/created 那条路补（不阻塞派发）。
       if (planFirst === true) {
@@ -562,6 +593,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       // 目标目录才需要补可写根；只读任务绝不能注册可写根（否则「只读」有后门）。
       // 计划任务同理：批准前不注册，批准后的续派由 send() 按 readOnly=false 补。
+      // 完整访问任务照旧注册（danger-full-access 下它用不上，只当注入失败时的兜底可写面）。
       if (readOnly !== true && planFirst !== true && typeof cwd === 'string' && cwd !== '') {
         void ensureWritableRoot(activation.childId, cwd, { wait: true }).catch(error => {
           onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
@@ -576,7 +608,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       return { id: activation.childId, name: spec.label, sessionId: activation.childId, target: activation.childId }
     },
-    async send(target, message, signal, targetDir, taskId, readOnly, objective) {
+    // access 是尾部可选参数（新参数只追加不改位置：老调用方按位置传 readOnly/objective 不受影响）。
+    async send(target, message, signal, targetDir, taskId, readOnly, objective, access) {
       const sent = await subagents.sendMessage(requireAgent(), target, [{ type: 'text', text: message }], {
         signal: signal ?? new AbortController().signal,
       })
@@ -586,6 +619,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       } catch { /* 审计事件失败不能外溢 */ }
       // 只读任务续派：resume 后按同一会话日志仍应保留 read-only；这里幂等补一次（已有则跳过）。
       if (readOnly === true) ensureReadOnly(target)
+      // 完整访问续派同理（resume 出的新 Session 对象投影可能还没读回模式；已有则跳过）。
+      if (access === 'full' && readOnly !== true) ensureModeReady(target, 'danger-full-access')
       // 冷恢复/续派时子会话在发送前还取不到，sendMessage 之后才 resolve 出**新的 Session 对象**；
       // 投递成功后再幂等补注册（失败路径不注册；失败只 warn，不影响投递结果）。
       if (readOnly !== true) {
@@ -603,11 +638,11 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       return sent
     },
-    async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective) {
+    async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access) {
       let lastError
       for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
         try {
-          return await this.send(target, message, signal, targetDir, taskId, readOnly, objective)
+          return await this.send(target, message, signal, targetDir, taskId, readOnly, objective, access)
         } catch (error) {
           lastError = error
           if (attempt < retryDelaysMs.length) {

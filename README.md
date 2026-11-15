@@ -2,7 +2,7 @@
 
 > DeepSeek Harness 的任务编排插件：一个主会话负责拆任务，子会话并行执行；带跨项目记忆、依赖编排、收件箱、日报和任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（最新 `0.13.1`）
+- npm：`@wjj865-code/dsh-orchestrator`（最新 `0.14.0`）
 - 仓库：<https://github.com/wjj865-code/dsh-orchestrator>
 - License：MIT
 
@@ -30,7 +30,7 @@
 1. DSH → 插件 → **添加插件**，粘贴：
 
    ```text
-   @wjj865-code/dsh-orchestrator@0.13.1
+   @wjj865-code/dsh-orchestrator@0.14.0
    ```
 
 2. **彻底退出 DSH 再启动**（只关窗口不生效）。
@@ -68,9 +68,9 @@ https://github.com/wjj865-code/dsh-orchestrator
 - 颜色/圆角/阴影/动效全部取宿主 `--dsw-*` token，**深浅色主题自动跟随**，面板不写死颜色。
 - 抽屉里 7 个可折叠区块：概览、**最新回复**（子会话最后一条回复）、**Brief**（验收/约束/背景/原话）、
   **目标状态**（只读）、**消息**（待发/已投递/投递失败）、**依赖**（上下游）、**产物**（复制路径）；
-  底部动作条：停止（二次确认）/重派/追加消息（仅可续派状态）/打开子会话/删除（仅终态、二次确认）。
-  按钮可见性与后端门控同源（`src/panel-gates.js`）：进行中/等你确认/要授权才能追加；终态才能删，
-  删除会级联清掉该任务的消息/通知（产物文件与记忆不动）。
+  底部动作条：停止（二次确认）/确认交付（仅待确认、二次确认）/重派/追加消息（仅可续派状态）/打开子会话/删除（仅终态、二次确认）。
+  按钮可见性与后端门控同源（`src/panel-gates.js`）：进行中/等你确认/要授权/待确认才能追加，只有「待确认」能确认交付；
+  终态才能删，删除会级联清掉该任务的消息/通知（产物文件与记忆不动）。
 - 交互细节：卡片 hover 与按下反馈、抽屉滑入滑出、区块折叠动画、骨架加载态、空态、带「重试」的错误条、
   `prefers-reduced-motion` 下关闭动效。设计细节见 [docs/UI.md](docs/UI.md)。
 
@@ -107,12 +107,23 @@ task_create({
 
 - 前置没完成：B 是 `waiting_dep`，不派发、不占并发位。
 - 前置全部 `done`：B 自动变 `pending`；下游子会话用 `task_detail` 能看到前置任务的摘要和产物（按当前台账现读）。
+  前置只是「已交付待确认」（`delivered`）还不算：先 `task_close` 确认（或等超时自动完成），下游才会晋升。
 - 前置失败：B 自动 `failed`，错误写明原因。
 - `writeScopes` 只提示冲突，不是文件锁；`priority` 高的先派。
 
+### 两段式终态（交付 → 确认）
+
+子会话 `task_report done`（以及没上报就自然结束的结算）不会直接把任务判成 `done`，而是先落到 **`delivered`（已交付待确认）**：
+
+- 协调者收到「已交付待确认」通知后：默认立刻 `task_close` 确认完成；用户要改/补充就用 `task_message` 追问——**复用同一个子会话**（可写根没释放），任务回到 `running`，完成后会再交付一次。
+- 超过 `deliveredTimeoutMinutes`（默认 60 分钟）没确认：自动收成 `done`，`close_reason=timeout`，面板与 `task_status` 都看得出是超时自动完成。
+- `done` 仍是**不可逆终态**（不提供 reopen）：要新工作用 `task_create`/`task_retry`，要改交付物就用追问窗口。
+- 依赖就绪只认 `done`；`delivered` 会短暂挡住下游，正常情况协调者几秒内就确认。
+- 面板「待你决定」筛选与收件箱都包含 `delivered`；任务卡/抽屉有「待确认」小标、交付时间与关闭原因，抽屉底部有「确认交付」（两步确认）。
+
 ### 收件箱与日报
 
-- 面板「待你决定」/ `task_inbox`：等确认、要授权、失败、长时间没动静。
+- 面板「待你决定」/ `task_inbox`：等确认、要授权、已交付待确认、失败、长时间没动静。
 - `blocked` / `needs_auth` 可带 `question` + `options`，会显示在通知、详情和面板。
 - 日报默认关闭；在 profile 配置：
 
@@ -130,14 +141,32 @@ task_create({
 
 `task_create({ ..., readOnly: true })` 会让子会话进入 read-only 沙箱；只认显式 `true`。只读任务不注册 target 可写根。
 
+### 完整访问任务（per-task access:'full'）
+
+`task_create({ ..., access: 'full' })` 让**这一个**子会话跑在 `danger-full-access` 沙箱：文件沙箱不再限制写入，`bash` / `pwsh` 也不再被沙箱拦。用途只有一个——**构建 / 发版 / 装依赖 / 写仓库外目录**这类确实需要越过默认沙箱边界的任务（例如 `npm publish` 之外的打包产物落盘、需要 `git` 写 hooks、需要写 `%LOCALAPPDATA%` 缓存）。
+
+- **默认一点都不动**：不传 `access` 就完全沿用会话策略（会话是 `workspace-write` 就还是 `workspace-write`，是 `read-only` 就还是 `read-only`）；插件不改部署默认、不改父会话、不改其他任务。
+- **只接受 `'full'`**：`access: 'workspace-write'` / `'read-only'` / `'true'` / 数字等一律创建期报错并给出提示（不静默降级成默认——「以为放开了、其实没放开」比报错危险得多）。
+- **与 `readOnly` / `planFirst` 互斥**：只读是硬拦写、计划阶段靠只读沙箱兜底，和「放开写」不可能同时成立，同时传会在创建期拒绝。`worktree` 不冲突（隔离与沙箱是两件事，检出目录照样可以完整访问）。
+- **实现方式**：与只读走**同一条**注入路径——只对子会话 append 一条 `sandbox/mode { mode:'danger-full-access', source:'delegation' }`（平台唯一写入口），agent/created 时就压掉首回合窗口；续派/冷恢复幂等补一次（已有则跳过）。
+- **不继承**：`access` 是任务级显式字段，不从配置/父任务/brief 继承；子任务再派孙任务时不会自动带上（要显式再传）。重派（`task_retry` / 面板重派）沿用原任务的 `access`。
+- **可观测**：派发提示词（brief）第二行就是「【访问级别】完整」；`task_detail` 有「访问级别：完整（danger-full-access…）」+ 任务边界纪律；`task_list` 打「·完整访问」；`task_status` 有「访问级别：完整」行；完成/失败/卡住/孤儿通知标题带「（完整访问）」；台账 `tasks.access` 列 + 日志 `task.create.created` 的 `detail.access` 留审计。
+- **风险**：这等于把该子会话的写权限交给模型——它能改**任何**用户能改的文件。只在明确需要时用，用完让它正常进终态（`task_stop` 也照样能收）。平台侧边界（首回合窗口、父会话覆盖继承、审批不在沙箱层）见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#平台--沙箱)。
+
 ### 计划任务（planFirst，先出计划再执行）
 
-`task_create({ ..., planFirst: true })` 让子会话以**计划阶段**起步：**只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**。子会话先只读探索（读代码/文档、跑只读命令、验证假设），写文件/写 shell 会被沙箱拒绝——这是预期行为，不是权限故障。探索完用 `task_report` 报 `blocked` 上报计划（正文放在 `question`，或给计划文件的绝对路径）。
+`task_create({ ..., planFirst: true })` 让子会话以**计划阶段**起步：**只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**。子会话先只读探索（读代码/文档、跑只读命令、验证假设），写文件/写 shell 会被沙箱拒绝——这是预期行为，不是权限故障。
 
-协调者把计划转交你；你批准后协调者 `task_message` 续派（或面板「追加」），插件在**投递成功且任务回到 `running` 之后**把沙箱切回 `workspace-write`、关闭 plan mode，子会话按计划执行。
+**计划交付流程：计划落盘 → 摘要上报 → 批准执行**
+
+1. 只读探索（同上）。
+2. **计划落盘**：子会话调 `plan_save({ task_id, content })`，插件在宿主进程把计划正文（Markdown）写进**主会话工作区**的 `reports/plans/<taskId>.md`，并自动登记为任务产物。这是计划阶段**唯一**被允许的写入口：路径固定、只接受任务编号（没有自定义 `path` 参数），编号形状白名单 + `relative()` 包含性校验把任何逃逸（`..`、绝对路径、盘符、跨目录）都拒在写之前；重复保存覆盖同一份文件（只留一版，没有版本对比/审批流）。
+3. **摘要上报**：子会话用 `task_report({ status: 'blocked' })` 只上报 **3–8 行摘要 + 计划文档绝对路径 + 待拍板问题清单**（`summary` 写摘要，`question` 写路径与问题，`options` 可给「批准执行 / 调整计划」）。不把计划正文塞进 `question`——上限 500 字，长计划会被截断。
+4. 协调者把摘要、路径和问题转交你（计划文档已是任务产物，通知/`task_status`/面板抽屉都能取到）；你批准后协调者 `task_message` 续派（或面板「追加」），插件在**投递成功且任务回到 `running` 之后**把沙箱切回 `workspace-write`、关闭 plan mode，子会话按计划执行。
 
 - 只认显式 `true`（字符串 `'true'` 不生效）；与 `readOnly` **互斥**，同时传会在创建期被拒。
-- 出口不是 `exit_plan_mode`：子会话没有直接人类，批准会悬空。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`，文案指向 `task_report blocked`；协调者与其它会话不受影响。
+- 出口不是 `exit_plan_mode`：子会话没有直接人类，批准会悬空。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`，文案指向「先 `plan_save` 落盘、再 `task_report blocked` 上报摘要」；协调者与其它会话不受影响。
+- `plan_save` 只对**计划任务自己的子会话**开放：别的子会话调用会被拒（越权），普通任务（非 `planFirst`）调用会被告知「直接写到自己的工作目录」，主会话调用被 guard 硬拦；主会话工作区不可用时返回可读原因、不写半截文件。
 - 计划状态落台账 `plan_state`：`planning`（等批准）/ `approved`（已批准执行）/ `rejected`（计划阶段未获批准就结束）。`task_list` 给「·计划中」标记、`task_status` 有「计划：」行、面板任务卡有「计划中」小标、抽屉概览有「计划」行；非计划任务不加任何字样。
 - `planMode` 服务不可用（平台版本没挂 / 子会话预设作用域看不到）时静默降级为「只有只读沙箱」并 warn 一行，派发不受影响。
 - 计划模式不强制模型不写文件——**硬拦只有只读沙箱**；首回合同样有极短可写窗口。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#计划阶段p8)。
@@ -169,7 +198,8 @@ task_create({
 每个子任务派发后，插件会把 `task_create.goal` 同步成该子会话的平台 goal，并**立即 disarmed**——goal 只是持久目标状态，不会自动续跑。之后：
 
 - `task_message` / 面板「追加」把消息并成「最新指示」，目标文本变化时 `edit`；
-- 子任务 `done` 时 `complete`；停止、重派、会话丢失、失败时 `clear`；
+- 子任务确认完成（`done`）时 `complete`；停止、重派、会话丢失、失败时 `clear`；
+  「已交付待确认」（`delivered`）**不收口**——追问还要 `edit` 同一个 goal，收口留到确认/超时之后；
 - 面板列表显示「目标·进行中/已完成…」小标，详情抽屉有「目标状态」只读区块（阶段、续轮、轮次、修订）；
 - 平台没有 goal 服务时静默降级，派发/续派/面板都不受影响。
 
@@ -199,29 +229,31 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 
 ## 工具
 
-协调者（10 个）：
+协调者（11 个）：
 
 | 工具 | 作用 |
 |---|---|
-| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `worktree*`（`worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup`） |
+| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'` = 该子会话 danger-full-access，构建/发版类专用）/ `worktree*`（`worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup`） |
 | `task_list` | 活跃任务/历史任务；`group` 过滤看组进度 |
-| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、最近消息、子会话最新返回（`include: 'full'` 看全文） |
-| `task_message` | 续派消息；排队/等前置任务返回提示 |
-| `task_stop` | 停止任务（运行中/排队/等前置） |
+| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、最近消息、子会话最新返回（`include: 'full'` 看全文） |
+| `task_message` | 续派消息（含「待确认」上的追问，复用原会话）；排队/等前置任务返回提示 |
+| `task_close` | 确认「已交付待确认」（`delivered`）为已完成（`done`，终态）；done 不可逆 |
+| `task_stop` | 停止任务（运行中/排队/等前置/待确认） |
 | `task_retry` | 重建 failed/orphaned，保留编排字段 |
-| `task_inbox` | 收件箱：待决、失败/丢失、长时间没动静 |
+| `task_inbox` | 收件箱：待决、待确认、失败/丢失、长时间没动静 |
 | `history_search` | 查插件记忆、历史任务、平台历史会话 |
 | `project_context` | 只读项目白名单文件、顶层结构、最近任务、相关记忆 |
 | `memory_note` | 记一条跨任务有效的决策/偏好/经验（写入即蒸馏为原子事实） |
 
-子任务（2 个）：
+子任务（3 个）：
 
 | 工具 | 作用 |
 |---|---|
-| `task_report` | `progress` / `done` / `blocked` / `needs_auth`；可带 `question` / `options` / `artifacts` |
+| `task_report` | `progress` / `done` / `blocked` / `needs_auth`；可带 `question` / `options` / `artifacts`。`done` 落「已交付待确认」，等协调者确认 |
 | `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物；只能读自己的任务，越权会被拒绝 |
+| `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为任务产物（计划阶段唯一写入口，路径固定、禁止逃逸；只对本任务的子会话、只对 `planFirst` 任务开放） |
 
-12 个工具全局注册（worker 预设不做工具收窄，子会话直接继承）；`task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调；`task_detail` / `task_report` 只对任务自己的子会话开放。
+14 个工具全局注册（worker 预设不做工具收窄，子会话直接继承）；`task_close` / `task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调；`task_detail` / `task_report` / `plan_save` 只对任务自己的子会话开放（`plan_save` 还要求任务本身是计划任务）。
 
 ## 配置
 
@@ -232,6 +264,7 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 | `spawnProvider` | `spawn` | 本地 fresh 子会话 provider |
 | `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（见 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)） |
 | `staleMinutes` | `30` | 多久无动静标陈旧 / stall 提醒间隔 |
+| `deliveredTimeoutMinutes` | `60` | 「已交付待确认」多久没确认就自动收成 `done`（1–1440 分钟；设成 1 约等于退回「交付即完成」的旧行为） |
 | `stallRounds` | `3` | 连续 progress 达阈值后提醒一次「可能卡住」 |
 | `idleWatchdog` | `true` | 空闲看门狗：`running` 长时间无心跳/消息/状态变化时告警一次（只告警，不改状态、不 kill） |
 | `watchdogIntervalMinutes` | `5` | 看门狗巡检间隔（1–1440 分钟） |
@@ -268,11 +301,12 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 
 - 日志覆盖建任务/拒绝原因/派发成败/回报/通知/清理；`goal`/`summary` 只留 80 字，不写 `user_verbatim`。
 - 快照损坏时只给路径提示，**不自动恢复**；手工用快照替换台账。
+- **计划文档不在插件 state 里**：`plan_save` 写到**主会话工作区**的 `reports/plans/<taskId>.md`（目录自动创建，重复保存覆盖同一份文件）；路径可通过任务产物查（通知、`task_status`、面板抽屉）。日志里只记路径与字数（`task.plan.saved`）。
 
 ## 架构与安全
 
 - 协调者预设挂 `persona` / `agent-instructions` / `time-context` / `tool-ask-user` / `present` / `compaction` / `preset-tools`；执行层还有 guard 硬拦 `read`/`write`/`bash`/`wait_agent`/`task_report`/`task_detail` 等（`present` 不在黑名单，只声明交付、不读文件内容）。
-- 子任务用 worker 预设，文件/shell/search/jobs/web/todo/skill/compaction/present + `tool-goal`（只读 `get_goal`，用来读自己的任务目标）；`task_report` / `task_detail` 是插件在全局注册的工具（预设不做 allow/deny 收窄，子会话直接继承），不含 delegation/plan/schedule；预设可用 `workerPreset` 换成副本（如 `orch-debug`）。
+- 子任务用 worker 预设，文件/shell/search/jobs/web/todo/skill/compaction/present + `tool-goal`（只读 `get_goal`，用来读自己的任务目标）；`task_report` / `task_detail` / `plan_save` 是插件在全局注册的工具（预设不做 allow/deny 收窄，子会话直接继承），不含 delegation/plan/schedule；预设可用 `workerPreset` 换成副本（如 `orch-debug`）。`plan_save` 是计划阶段唯一的写入口（插件在宿主进程写固定路径），协调者侧 guard 与 `COORDINATOR_DENY` 硬拦它。
 - `/api/orchestrator` 由 connection owner-only 鉴权；`snapshot`/`detail`/`artifacts`/`preview` 只读，`stop`/`retry`/`message` 是面板动作。
 - 通知走 `agent.steer`，5 秒合并；每次投递写 `notifications`。
 
@@ -291,8 +325,8 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 ```powershell
 npm version patch --no-git-tag-version
 git add package.json
-git commit -m "release: v0.13.1"
-git tag -a v0.13.1 -m "v0.13.1"
+git commit -m "release: v0.14.0"
+git tag -a v0.14.0 -m "v0.14.0"
 git push origin main --follow-tags
 ```
 
@@ -328,10 +362,10 @@ npm run mirror:sync    # 没有就 PUT 同步请求并等到出现；--no-wait �
 ## 验收
 
 1. 插件页能看到「任务编排」标题、图标和详情页。
-2. 侧栏「主会话」能打开；工具表有 12 个工具；主会话里会话头有「☰ 任务」，切到子会话后该入口隐藏。
-3. `task_create` 能派发；子会话 `task_report done` 后主会话收到通知。
+2. 侧栏「主会话」能打开；工具表有 13 个工具；主会话里会话头有「☰ 任务」，切到子会话后该入口隐藏。
+3. `task_create` 能派发；子会话 `task_report done` 后主会话收到「已交付待确认」通知，`task_close` 确认后变已完成。
 4. 建 `dependsOn` 任务时先 `waiting_dep`，前置完成后自动派发。
-5. 面板「详情」「产物」「停止/重派/追加」可用；「追加」只在可续派状态出现，「删除」只在终态出现（二次确认后级联清理）。
+5. 面板「详情」「产物」「停止/重派/追加/确认交付」可用；「追加」只在可续派状态出现，「确认交付」只在待确认出现，「删除」只在终态出现（都二次确认；删除会级联清理）。
 6. 面板三段式布局成立：顶栏指标卡可点、筛选轨有计数、点任务卡从右侧滑出详情抽屉（`Esc`/遮罩可关）；
    抽屉 7 个区块能折叠、有空态；宿主切深浅色时面板配色跟随（细节见 [docs/UI.md](docs/UI.md)）。
 
@@ -339,7 +373,7 @@ npm run mirror:sync    # 没有就 PUT 同步请求并等到出现；--no-wait �
 
 | 现象 | 处理 |
 |---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.13.1`；刷新页面；彻底重启 DSH |
+| 侧栏没有「主会话」 | 确认装的是 `0.14.0`；刷新页面；彻底重启 DSH |
 | 插件页/`npm i @latest` 装到的是旧版 | 镜像还没同步：`npm run mirror:check` 看 npmmirror 的 `latest`；缺就 `npm run mirror:sync`；再看 `release.yml` 的「触发 npmmirror 镜像同步」步骤是否成功（本地 `npm view` 结果可能是缓存，加 `--prefer-online` 复查） |
 | 会话头没有「☰ 任务」 | 该入口只在主会话显示：确认当前会话就是侧栏「主会话」打开的那个；没建主会话先从侧栏入口创建 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页和日志 |
@@ -357,7 +391,9 @@ npm run mirror:sync    # 没有就 PUT 同步请求并等到出现；--no-wait �
 - 产物在 done 时自动从 `workspaceChanges` 收集改动文件，并与显式 `task_report.artifacts` 按路径去重合并；Host 未挂 `workspaceChanges` 时只剩显式产物。
 - 日报默认关闭；`stallRounds` 只提醒一次，没有二次升级阶梯。
 - 空闲看门狗只告警：不改状态、不 kill、不重派；去重表在内存，插件重启后同一任务会再报一次。
-- 结算自动收场只认「一次 activation」：续派/冷恢复起的轮次靠平台 `subagent/end` 观察；子会话只在「没上报过 progress」时自动判完成，上报过 progress 的回合结束落「会话丢失」等人决定。
+- 结算自动收场只认「一次 activation」：续派/冷恢复起的轮次靠平台 `subagent/end` 观察；子会话只在「没上报过 progress」时自动交付（`delivered`），上报过 progress 的回合结束落「会话丢失」等人决定。
+- 两段式终态：交付不等于确认，`delivered` 要靠 `task_close` 或超时（默认 60 分钟）才收成 `done`；依赖就绪只认 `done`，所以下游会短暂等确认。`done` 不可逆，不提供 reopen。
+- 「最后一条回复」只留最后一次：`task_report done` 先把任务落到 `delivered`，本回合结束时到达的结算事件会补写完整回复（B1 时序修复）；插件在此之前被卸载/进程被杀仍可能缺。
 - 主会话工具表可能仍残留团队工具（agent-scope 自注册，`restrict` 遮不到）；执行层 guard 会硬拦。
 - 回合间 keep-alive 默认关闭，且只对「`running` + 平台 goal 未完成」的任务生效：它是宿主替子会话开工（每轮一次完整模型调用），不是成本控制，也不能阻止显式 stop / 模型报错。
 - 平台 rc.3 子会话沙箱根、Bot 模式视图、headless 收尾竞态等平台侧限制，详见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。

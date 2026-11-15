@@ -81,6 +81,17 @@ test('渲染是纯函数：同一输入两次输出相同，且不是 JSON', () 
   assert.throws(() => JSON.parse(text))
 })
 
+test('完整访问任务：任务编号后多一行【访问级别】，其余行不变', () => {
+  const text = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
+  const lines = text.split('\n')
+  assert.equal(lines[0], '【任务编号】t-1a2b3c4d')
+  assert.match(lines[1], /^【访问级别】完整（danger-full-access/)
+  assert.equal(lines[2], `【任务详情】${DETAIL_POINTER_TEXT}`)
+  // 默认任务一字不提。
+  assert.equal(renderBrief({ taskId: 't-1' }).includes('访问级别'), false)
+  assert.equal(renderBrief({ taskId: 't-1', access: 'read-only' }).includes('访问级别'), false)
+})
+
 test('validateTargetDir：相对路径/不存在/非目录都拒绝', () => {
   assert.equal(validateTargetDir('relative/dir', { isDirectory: () => true }), 'target 必须是绝对路径')
   const absolute = process.platform === 'win32' ? 'C:/work' : '/work'

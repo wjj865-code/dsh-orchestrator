@@ -5,7 +5,7 @@
 ## 角色
 
 - **协调者**：唯一主会话，固定入口；只拆任务、派子会话、看回报，不读写文件、不执行命令。
-- **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；能力不受限，另有两个插件工具：`task_report`（回报）与 `task_detail`（只读任务创建详情）。
+- **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；能力不受限，另有三个插件工具：`task_report`（回报）、`task_detail`（只读任务创建详情）与 `plan_save`（计划任务的计划落盘，见「计划阶段（P8）」）。
 - **客户端**：侧栏「主会话」入口（始终可见）+ 会话头「任务」面板（仅主会话可见）；只读快照 + 面板动作。
 
 ## 主会话
@@ -63,13 +63,29 @@
 | status | 通知级别 | 说明 |
 |---|---|---|
 | progress | silent | 只更新台账；连续达到 `stallRounds` 才推一次 `stalled` |
-| done | notify | 5 秒合并窗口后注入协调者 |
+| done | notify | 落「已交付待确认」（`delivered`）；5 秒合并窗口后注入协调者，带确认/追问动作指令 |
 | blocked | interrupt | 立即投递，可带 `question` / `options` |
 | needs_auth | interrupt | 立即投递，可带 `question` / `options` |
 
+## 两段式终态（D1：交付 → 确认）
+
+`done` 是不可逆终态，但「子会话说做完了」不等于「用户验收过」。为既保留 `done` 的审计语义、又给追问问留窗口，状态机在 `running` 与 `done` 之间加了 `delivered`（已交付待确认）：
+
+- **进入**：`task_report done`，或结算 `completed` 且没上报过 progress（`SETTLE_MAP`）。
+- **出口 1 · 确认**：协调者 `task_close`（或面板「确认交付」）→ `done`，`close_reason=coordinator`；超过 `deliveredTimeoutMinutes`（默认 60）由 sweeper 自动收成 `done`，`close_reason=timeout`。
+- **出口 2 · 追问**：`task_message` 投递成功 → `running`，复用同一个子会话（**可写根不释放**），完成后再次交付。
+- **出口 3 · 停止/丢失**：`task_stop` → `cancelled`；追问时子会话不可达 → `orphaned`。
+- 归属：`delivered` 是活跃状态（`listTasks(active)`、面板门控、`inboxCount` 都算），但不是终态；`TERMINAL_STATUSES` 不变。
+- 依赖就绪仍只认 `done`（`deps.js`）：交付不等于确认，下游要等确认/超时；正常情况协调者收到通知几秒内就确认。
+- goal 不收口：`delivered` 期间 `goal_state` 保持 active+disarmed，追问时 `edit` 正常；只有 `done` 才 `complete`。
+- 对账：`delivered` 不参与 S2 的 liveness/catalog 检查（成果已落库，等确认即可），超时 sweeper 兜底，重启不会卡死。
+- 审计：`tasks.delivered_at` 记录本次交付时间（追问后再交付会重写，超时从新时间起算），`tasks.close_reason` 记录关闭原因；`messages` 里 `kind='close'` 一行写「协调者确认 / 超时自动完成」。
+- 关闭三条路径（工具 / 面板 / 超时）共用 `src/delivered.js` 的 `closeDelivered`，副作用顺序固定：迁移 + 审计消息 → 释放可写根 → goal 收口 → 按档位清检出 → 唤醒队列。
+- 通知去重：进入 `delivered` 发一条（带 `task_close`/`task_message` 指令），确认/超时**不再发**通知，只在台账写审计消息。
+
 ## 结算闭环（S1）
 
-子会话不一定都会回报：模型可能忘了 `task_report`，也可能被打断或起不来。`src/settlement.js` 消费平台的**结算**信号，把 `running` 直接推到终态，用户不再看到「永远在跑」的幽灵任务：
+子会话不一定都会回报：模型可能忘了 `task_report`，也可能被打断或起不来。`src/settlement.js` 消费平台的**结算**信号，把 `running` 推到终态（自然结束先落 `delivered`），用户不再看到「永远在跑」的幽灵任务：
 
 | 事件源 | 覆盖 |
 |---|---|
@@ -80,14 +96,16 @@
 
 | stopReason | 台账 | 死因 / 通知 |
 |---|---|---|
-| `completed` 且没上报过 progress | `done` | 无死因；自动 done 还会补一次产物收集 |
+| `completed` 且没上报过 progress | `delivered` | 无死因；自动交付还会补一次产物收集，等 `task_close`/超时收成 `done` |
 | `completed` 但上报过 progress | `orphaned` | 回合结束却没报终态（可重派） |
 | `aborted` | `cancelled` | 被子会话中断（`dispose` / interrupt / 父级取消） |
 | `error` / `max-tokens` / `refusal` | `failed` | 异常结束 / 输出截断 / 被策略拒绝 |
 | 缺失或未知 | `orphaned` | 结算原因未知，按会话丢失处理 |
 
-- 只动 `running`：`waiting_user` / `waiting_auth`（子任务自己报了 blocked/needs_auth）与已有终态都不改，重复结算天然幂等。
-- 每次结算写一条 `settle` 消息 + `tasks.error` 死因 + 一条 `system` 通知（`cancelled`/`orphaned` 也走合并窗口），并释放可写根、唤醒队列补位。
+- 只改 `running` 的状态：`waiting_user` / `waiting_auth`（子任务自己报了 blocked/needs_auth）与已有终态都不改，重复结算天然幂等。
+- **例外：`delivered` / `done` 上要补写最后一条消息**。`task_report done` 会先把任务推到 `delivered`，本回合结束时到达的结算已经不在 `running`；旧实现直接 `skipped`，导致 `tasks.last_message_json` 永远为空（真实台账 104/104 done 全缺）。现在这两个状态走「只补消息」分支：落消息、不改状态、不发通知、不写 settle 行、不释放。
+- 只有真终态（`done`/`cancelled`/`failed`/`orphaned`）才释放可写根、收敛 goal、写 `settle` 消息；`delivered` 保留会话给追问用。
+- 每次结算写一条 `settle` 消息 + `tasks.error` 死因 + 一条 `system` 通知（`cancelled`/`orphaned` 也走合并窗口），并唤醒队列补位。
 - 取证与时序见 `docs/probes/stop-reason-probe.md`（真机 7 场景）。
 
 ### 最新返回消息（B1）
@@ -102,7 +120,8 @@
 
 - 摘要（`summarizeText`）仍走原口径：压空白、240 字截断；通知与死因只用摘要，不改文案长度。
 - 日志只留 240 字摘要（`detail.output`），完整正文经事件上的非日志字段 `lastMessage` 交给结算；两者分开，避免 jsonl 单行被正文撑大。
-- 幂等：结算只认 `running`，第二次事件直接跳过；`setTaskLastMessage` 再按正文 `digest` 兜一层——同一段正文重复落库不重写行、不动 `updated_at`，文件按任务编号覆盖，不会堆一堆副本。
+- **时序（B1 修复）**：`task_report done` 在回合中途把任务推到 `delivered`，本回合真正结束（`turn/end` 之后 13–46ms）才到结算事件。旧实现用「只认 `running`」把这条事件整条丢弃，`last_message` 永远为空（真实台账 104 条 done 全缺、唯一一条是 aborted 中途中断）。现在 `delivered`/`done` 上走「只补消息」分支：落消息但不改状态、不发通知、不写 `settle` 行、不释放可写根；更晚 activation 的正文可以覆盖旧的（它才是「最后一段话」）。
+- 幂等：`setTaskLastMessage` 按正文 `digest` 兜一层——同一段正文重复落库不重写行、不动 `updated_at`，文件按任务编号覆盖，不会堆一堆副本；`delivered`/`done` 的补写也只靠这一层去重。
 - 文件落盘失败时降级内联（宁可撑大一行台账，也不丢模型最后说的话），`reports/` 目录按需创建、启动时不建。
 
 - 通知走 `agent.steer` 直插协调者，不经过 Team 的 `sendMessage`。
@@ -126,7 +145,7 @@
 
 结算/对账管「没人跑却挂着 running」，但**有人在跑、却长时间没进展**的回合仍要人来看。`src/watchdog.js` 每 `watchdogIntervalMinutes`（默认 5 分钟）巡检一次台账：
 
-- 只看 `running`：`waiting_user` / `waiting_auth` 是故意停下的，终态不在范围；
+- 只看 `running`：`waiting_user` / `waiting_auth` 是故意停下的、`delivered` 已交付待确认，终态不在范围；
 - 判定数据源三源取最新（`lastActivityAt`）：`tasks.last_event_at`（心跳：progress、产物/问题更新等 touch）、`tasks.updated_at`（状态变化）、`messages.at`（最近一条回报消息）；最新活动早于 `watchdogIdleMinutes`（默认 15 分钟）即判空闲；
 - **只告警**：一条 `stalled` 汇总通知（超过 10 条折叠），**不改状态、不 kill、不重派**，也不写任务表；
 - 去重：同一段空闲每个任务只报一次；出现更新的活动（活动水位抬高）后允许再报一次，任务离开 `running` 就从去重表移除；去重表在内存，重启后允许再报一次；
@@ -201,6 +220,18 @@
 
 `readOnly:true`（只认显式 true）会在 `agent/created` 一到就给子会话 append `sandbox/mode {mode:'read-only'}`，激活后再幂等补一次；续派/重启会再补。只读任务不注册 target 可写根。`backend:'team'` 没有会话级只读通道，会返回可读错误。
 
+## per-task 完整访问（`access:'full'`）
+
+`access:'full'`（只认显式 `'full'`）**复用只读的整条注入路径**，只是模式换成 `danger-full-access`：
+`ensureSandboxMode(childId, mode)` 在 `agent/created` 一到就 append `sandbox/mode {mode, source:'delegation'}`
+（`source` 与平台把父会话覆盖种进子会话时的事件形状一致），激活返回后再幂等补一次，续派/冷恢复再补；
+`taskOf` 只把 `tasks.access='full'` 当真，其它值一律按默认（NULL = 沿用会话策略）。
+不传 → 一次 append 都没有、不碰默认配置、不碰父会话，也不注册/撤销任何额外授权；完整访问任务照旧登记
+target 可写根（`danger-full-access` 下用不上，只当注入失败时的兜底）。`readOnly`/`planFirst` 优先且创建期互斥；
+`backend:'team'` 没有会话级沙箱写入口，返回可读错误。视图：brief `【访问级别】完整`、`task_detail`
+「访问级别：完整」、`task_list`「·完整访问」、`task_status`「访问级别：完整」、通知标题「（完整访问）」、
+日志 `subagent.full-access` + `task.create.created.detail.access`。
+
 ## 计划阶段（P8）
 
 `planFirst:true` 的任务 = **只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**。不开 `planFirst` 的任务行为一字不改。
@@ -209,7 +240,16 @@
   （`agent/created` 一到先设、激活后幂等补，压首回合窗口），再用 **子 agent 作用域**的
   `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode。`planMode` 服务缺失/拿不到只 warn，
   降级为「只有只读沙箱」，派发不受影响。计划任务在批准前**不注册 target 可写根**。
-- **出口**：子会话只读探索后用 `task_report blocked` 上报计划（正文进 `question`），走既有的
+- **计划落盘（`plan_save`）**：计划阶段是只读沙箱，子会话没有任何写文件的手段，长计划也塞不进
+  `task_report.question`（上限 500 字）。所以计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：
+  `src/plan-doc.js` 只做纯函数——`planDocPath()` 把 `<主会话工作区>/reports/plans/<taskId>.md` 算出来
+  （没有 `path` 入参；编号形状白名单 `^t-[0-9a-z]{4,32}$` + `relative()` 包含性校验，两道闸把
+  `..`/绝对路径/盘符/跨目录拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头
+  （任务名/编号/目标/落盘时间），`writePlanDocument()` 只做一次 mkdir + 覆盖写。
+  写完走 `setTaskArtifacts` 登记为任务产物（通知、`task_status`、面板抽屉都从台账产物读，不另开视图）；
+  越权（非本任务子会话）、非计划任务、空正文、超 `MAX_PLAN_CHARS` 都在 `src/tools.js` 拒绝并给可读原因。
+  子会话拿到结果后只上报**3–8 行摘要 + 文档绝对路径 + 待拍板清单**。
+- **出口**：子会话只读探索后先 `plan_save` 落盘计划，再用 `task_report blocked` 上报摘要 + 路径，走既有的
   blocked → 通知 → 用户 → `task_message` 续派闭环，**不用** `exit_plan_mode`（子会话没有直接人类，
   批准请求会悬空）。插件在子会话 **agent 作用域** `agent.ctx.tools.guard` 拒绝 `exit_plan_mode`：
   插件根的 `ctx.tools.guard` 是全局的，会误伤协调者，所以不能注册在那里。

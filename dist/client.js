@@ -24,6 +24,7 @@
     running: "进行中",
     waiting_user: "等你确认",
     waiting_auth: "要授权",
+    delivered: "待确认",
     done: "已完成",
     failed: "失败",
     cancelled: "已取消",
@@ -36,6 +37,7 @@
     running: "info",
     waiting_user: "warn",
     waiting_auth: "warn",
+    delivered: "warn",
     done: "good",
     failed: "bad",
     cancelled: "muted",
@@ -112,7 +114,7 @@
   const matchesFilter = (task, filter) => {
     const status = task === null || task === void 0 ? void 0 : task.status;
     if (filter === "active") return status === "waiting_dep" || status === "pending" || status === "running";
-    if (filter === "waiting") return status === "waiting_user" || status === "waiting_auth";
+    if (filter === "waiting") return status === "waiting_user" || status === "waiting_auth" || status === "delivered";
     if (filter === "done") return status === "done";
     if (filter === "failed") return status === "failed";
     if (filter === "closed") return status === "cancelled" || status === "orphaned";
@@ -1268,6 +1270,7 @@
       const [detailTaskId, setDetailTaskId] = React.useState(null);
       const [collapsedSections, setCollapsedSections] = React.useState([]);
       const [confirmStop, setConfirmStop] = React.useState(null);
+      const [confirmClose, setConfirmClose] = React.useState(null);
       const [confirmDelete, setConfirmDelete] = React.useState(null);
       const [artifactData, setArtifactData] = React.useState(null);
       const [artifactError, setArtifactError] = React.useState(null);
@@ -1365,6 +1368,7 @@
         setDetailLoading(true);
         setCopyNotice(null);
         setConfirmStop(null);
+        setConfirmClose(null);
         setConfirmDelete(null);
         try {
           const body = await readDetail2(id);
@@ -1385,6 +1389,7 @@
         setDetailTaskId(null);
         setCopyNotice(null);
         setConfirmStop(null);
+        setConfirmClose(null);
         setConfirmDelete(null);
       };
       const drawerOpen = detailLoading || detail !== null || detailError !== null;
@@ -1453,6 +1458,7 @@
         setActionError(null);
         setActionNotice(null);
         setConfirmStop(null);
+        setConfirmClose(null);
         setConfirmDelete(null);
         try {
           const result = await panelAction2(endpoint, id, extra);
@@ -1460,9 +1466,14 @@
             if (endpoint === "message") setActionNotice("这条消息已发送过，未重复投递");
             else if (endpoint === "retry") {
               setActionNotice(`已有活跃重派任务（${STATUS_LABEL2[result.status] || result.status || "处理中"}），未重复创建`);
+            } else if (endpoint === "close") {
+              setActionNotice("任务已完成，无需重复确认");
             } else {
               setActionNotice(`任务已是该状态（${STATUS_LABEL2[result.status] || result.status || "已结束"}），无需重复停止`);
             }
+          }
+          if (endpoint === "close" && result && result.ok === true && result.already !== true) {
+            setActionNotice("已确认交付，任务完成");
           }
           if (endpoint === "delete" && result && result.ok === true) {
             setActionNotice("已删除这条任务记录（消息/通知已级联清理）");
@@ -1551,6 +1562,36 @@
         disabled: busy === `message:${task.id}`,
         onClick: act(() => sendMessage(task.id))
       }, h(Icon, { name: "message" }), label) : null;
+      const closeControl = (task) => {
+        if (task === null || task === void 0 || task.canClose !== true) return null;
+        if (task.status === "done") return null;
+        if (confirmClose === task.id) {
+          return h(
+            "span",
+            { key: "close-confirm", className: "orch-confirm" },
+            h("span", null, "确认交付完成？"),
+            h("button", {
+              type: "button",
+              className: "orch-btn orch-btn--sm",
+              disabled: busy === `close:${task.id}`,
+              onClick: act(() => void runPanel("close", task.id))
+            }, busy === `close:${task.id}` ? "确认中…" : "确认"),
+            h("button", {
+              type: "button",
+              className: "orch-btn orch-btn--sm",
+              onClick: act(() => setConfirmClose(null))
+            }, "取消")
+          );
+        }
+        return h("button", {
+          key: "close",
+          type: "button",
+          className: "orch-btn orch-btn--sm",
+          title: "确认这条已交付任务完成（done，不可逆）",
+          disabled: busy === `close:${task.id}`,
+          onClick: act(() => setConfirmClose(task.id))
+        }, h(Icon, { name: "check" }), "确认交付");
+      };
       const deleteControl = (task) => {
         const deletable = task !== null && task !== void 0 && task.canDelete === true;
         if (!deletable) return null;
@@ -1771,6 +1812,7 @@
               onClick: act(() => void openDetail(task.id))
             }, h(Icon, { name: "chevron" }), "详情"),
             stopControl(task),
+            closeControl(task),
             retryControl(task),
             messageControl(task),
             openControl(task.childSessionId),
@@ -2040,6 +2082,9 @@
         const overviewBody = h("div", { className: "orch-kv" }, [
           ["编号", task.id],
           ["状态", STATUS_LABEL2[task.status] || task.status || "未知"],
+          // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）。
+          ...task.deliveredAt ? [["交付", `${timeLabel2(task.deliveredAt)}（待确认：确认交付收成已完成，追加消息即追问原会话）`]] : [],
+          ...task.closeReason ? [["关闭", task.closeReasonLabel || task.closeReason]] : [],
           ["目标目录", task.targetDir || "（未设置）"],
           ["分组", task.group || "（未分组）"],
           ["优先级", `P${task.priority === void 0 || task.priority === null ? 0 : task.priority}`],
@@ -2196,6 +2241,7 @@
       const drawerFoot = () => {
         const buttons = [
           stopControl(detailTask),
+          closeControl(detailTask),
           retryControl(detailTask),
           messageControl(detailTask, "追加消息"),
           detailTask.target ? openControl(detailTask.target, "打开子会话") : null,

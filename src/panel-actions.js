@@ -13,12 +13,15 @@ import { panelFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
 import { approvePlan, approvalNote, isPlanTask, planStateOf } from './plan-mode.js'
 import { retryWorktreeOf } from './worktree.js'
-import { ACTIVE_STATUSES, TERMINAL_STATUSES, canDelete, canFollowup, deleteGate, followupGate } from './panel-gates.js'
+import { ACTIVE_STATUSES, TERMINAL_STATUSES, canClose, canDelete, canFollowup, closeGate, deleteGate, followupGate } from './panel-gates.js'
+import { CLOSE_REASONS, closeDelivered, closeReasonLabel } from './delivered.js'
 
 const TERMINAL = new Set(TERMINAL_STATUSES)
 const ACTIVE = new Set(ACTIVE_STATUSES)
 const RETRYABLE = new Set(['failed', 'orphaned'])
 const WAITING = new Set(['waiting_user', 'waiting_auth'])
+// 可续派（追问）的状态：投递成功后从这些状态回到 running。
+const RESUMABLE = new Set(['waiting_user', 'waiting_auth', 'delivered'])
 // message 幂等窗口：同任务、同文本、上一次已成功投递时，窗口内重复提交视为同一次操作。
 // 窗口故意取短（面板双击/重试），代价是「3 秒内故意发两条一模一样的消息」会被吞掉（见 docs/LIMITATIONS.md）。
 const MESSAGE_DEDUPE_MS = 3000
@@ -149,8 +152,13 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         // B1 最新返回消息：结算时落库的最后一条 assistant 消息。
         // 内联消息给正文（≤64 KiB），大文件消息只给摘要 + 路径，详情接口不读盘。
         lastMessage: task.last_message ?? null,
-        // 面板按钮可见性与动作门控同源（src/panel-gates.js）：前端只读这两个字段，不抄状态表。
+        // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）；旧行都是 null。
+        deliveredAt: task.delivered_at ?? null,
+        closeReason: task.close_reason ?? null,
+        closeReasonLabel: task.close_reason === null || task.close_reason === undefined ? null : closeReasonLabel(task.close_reason),
+        // 面板按钮可见性与动作门控同源（src/panel-gates.js）：前端只读这三个字段，不抄状态表。
         canFollowup: canFollowup(task),
+        canClose: canClose(task),
         canDelete: canDelete(task, { activeDependents }),
         count: {
           messages: messages.length,
@@ -318,6 +326,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         // P8：计划任务重派后重新走计划阶段（新会话要重新探索/批准）。
         planFirst: task.plan_first === true,
         planState: task.plan_first === true ? 'planning' : 'none',
+        // per-task 访问级别跟着原任务走（与工具层 task_retry 同口径）。
+        access: task.access === 'full' ? 'full' : null,
         worktree: retryWorktree,
         retryOf: task.id,
         dependsOn: depends.ids,
@@ -327,7 +337,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         status: depState.ready ? 'pending' : 'waiting_dep',
       })
       // T1：面板重派与 task_create 同口径——brief 只留任务编号 + task_detail 指引。
-      addMessage(db, retried.id, { kind: 'brief', rendered: renderBrief({ taskId: retried.id }) })
+      addMessage(db, retried.id, { kind: 'brief', rendered: renderBrief({ taskId: retried.id, access: retried.access === 'full' ? 'full' : undefined }) })
     } catch (error) {
       return panelFailure('RETRY_FAILED', { reason: error?.message ?? String(error) })
     }
@@ -373,7 +383,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     const seq = addMessage(db, task.id, { kind: 'followup', rendered: content, meta: { delivery: 'pending' } })
     try {
       if (typeof dispatcher.sendReliable === 'function') {
-        await dispatcher.sendReliable(task.target, content, undefined, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, content))
+        await dispatcher.sendReliable(task.target, content, undefined, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined)
       } else {
         await dispatcher.send(task.target, content)
       }
@@ -382,7 +392,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
       addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
       const latest = getTask(db, task.id)
-      if (latest !== undefined && WAITING.has(latest.status)) setTaskError(db, task.id, reason)
+      // 待确认（delivered）上追问失败：交付结果还在，保持 delivered 只记原因（与工具层同口径）。
+      if (latest !== undefined && (WAITING.has(latest.status) || latest.status === 'delivered')) setTaskError(db, task.id, reason)
       else if (latest !== undefined && latest.status === 'running') {
         try { transition(db, task.id, 'waiting_user', { error: reason }) } catch { /* ignore */ }
       }
@@ -392,9 +403,10 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     setMessageDelivery(db, task.id, seq, 'delivered')
     touchTask(db, task.id)
     const latest = getTask(db, task.id)
-    // 「等批准」状态收到追加消息 = 用户批准计划（与 task_message 同口径）。
+    // 「等批准」状态收到追加消息 = 用户批准计划（与 task_message 同口径）；
+    // 「待确认」上追问 = 回到 running 复用同一个子会话（可写根没释放）。
     const wasWaiting = latest !== undefined && WAITING.has(latest.status)
-    if (wasWaiting) {
+    if (latest !== undefined && RESUMABLE.has(latest.status)) {
       try { transition(db, task.id, 'running', { error: null }) } catch { /* ignore */ }
     }
     clearTaskQuestion(db, task.id)
@@ -407,6 +419,35 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     }
     log('ui.message', { taskId: task.id })
     return { ok: true, taskId: task.id, ...(plan === undefined ? {} : { plan }) }
+  }
+
+  // 确认交付（delivered → done）：与工具 task_close 共用 closeDelivered，二次确认在 client。
+  const close = async taskId => {
+    const task = getTask(db, String(taskId ?? ''))
+    if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
+    const gate = closeGate(task)
+    if (gate.ok !== true) {
+      const statusText = statusLabel(task.status)
+      return TERMINAL.has(task.status)
+        ? panelFailure('CLOSE_TASK_ENDED', { label: taskLabel(task), statusLabel: statusText })
+        : panelFailure('CLOSE_NOT_DELIVERED', { label: taskLabel(task), statusLabel: statusText })
+    }
+    const outcome = closeDelivered({
+      db,
+      taskId: task.id,
+      reason: CLOSE_REASONS.coordinator,
+      releaseSession: target => { try { dispatcher.releaseWritableRoots?.(target) } catch { /* 释放失败不影响关闭 */ } },
+      completeGoal: closed => { void goalBridge?.complete?.(closed.id, closed.session_id) },
+      cleanupWorktree,
+      pump: () => queue.pump(),
+      logger,
+    })
+    if (outcome.ok !== true) {
+      const latest = outcome.task ?? task
+      return panelFailure('CLOSE_NOT_DELIVERED', { label: taskLabel(latest), statusLabel: statusLabel(latest.status) })
+    }
+    log('ui.close', { taskId: task.id, detail: { already: outcome.already === true } })
+    return { ok: true, taskId: task.id, status: 'done', ...(outcome.already === true ? { already: true } : {}) }
   }
 
   // 删除任务（面板「删除子会话/任务」）：门控 = 终态 + 没有活跃下游依赖。
@@ -434,7 +475,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     return { ok: true, taskId: task.id, deleted: removed.deleted }
   }
 
-  return { detail: detailOf, artifacts: artifactsOf, preview, stop, retry, message, delete: remove, short }
+  return { detail: detailOf, artifacts: artifactsOf, preview, stop, retry, message, close, delete: remove, short }
 }
 
 export { short as panelShort }

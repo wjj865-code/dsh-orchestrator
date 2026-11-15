@@ -94,8 +94,35 @@ test('renderTaskDetail：编排字段只在非默认值时出现', () => {
   assert.match(rich, /编排：分组 发布｜优先级 5｜写域 src\/login\.js/)
 })
 
-test('renderTaskDetail：前置任务块原样接入，经验文件区分「可读」与「已丢失」', () => {
-  const dir = tempDir()
+test('renderTaskDetail：完整访问任务给「访问级别：完整」+ 任务边界纪律（不是禁写提示）', () => {
+  const task = {
+    id: 't-1', status: 'running', brief: briefOf({ access: 'full', target: 'C:/work/login' }),
+    access: 'full', artifacts: [], depends_on: [],
+  }
+  const text = renderTaskDetail(task)
+  assert.match(text, /状态：进行中｜完整访问/)
+  assert.match(text, /权限：可写/)
+  assert.match(text, /访问级别：完整（danger-full-access/)
+  assert.match(text, /仍按任务边界只改这个目录/)
+  assert.equal(text.includes(READ_ONLY_HINT), false)
+  // 台账列（brief 丢了也能从 tasks.access 读出来）。
+  const fromColumn = renderTaskDetail({ ...task, brief: briefOf(), access: 'full' })
+  assert.match(fromColumn, /访问级别：完整/)
+  // 没有访问级别标记的任务一字不提。
+  assert.doesNotMatch(renderTaskDetail({ ...task, access: null, brief: briefOf() }), /访问级别/)
+})
+
+test('renderTaskDetail：只读/计划阶段压过 access:full（运行期事实优先）', () => {
+  const readOnlyTask = {
+    id: 't-1', status: 'running', brief: briefOf({ access: 'full', readOnly: true }),
+    read_only: true, access: 'full', artifacts: [], depends_on: [],
+  }
+  const text = renderTaskDetail(readOnlyTask)
+  assert.match(text, /权限：只读/)
+  assert.equal(text.includes('访问级别：完整'), false)
+})
+
+test('renderTaskDetail：前置任务块原样接入，经验文件区分「可读」与「已丢失」', () => {  const dir = tempDir()
   const lesson = join(dir, 'lesson.md')
   writeFileSync(lesson, '# 经验', 'utf8')
   const base = { id: 't-1', status: 'running', brief: briefOf(), artifacts: [], depends_on: ['t-0'] }

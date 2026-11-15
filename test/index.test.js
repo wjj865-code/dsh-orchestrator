@@ -1,4 +1,4 @@
-import test from 'node:test'
+﻿import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -154,7 +154,7 @@ test('inject 不再硬依赖 agentTeams（缺服务也要能激活）', () => {
 test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subagent 可用', withHome(async () => {
   const f = fakeCtx({ withAgentTeams: false })
   await apply(f.ctx, {})
-  assert.equal(f.registered.length, 12)
+  assert.equal(f.registered.length, 14)
   assert.equal(f.routes.length, 1)
   assert.equal(f.warnings.some(message => /agentTeams|waiting for service/.test(message)), false)
 }))
@@ -162,7 +162,7 @@ test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subag
 test('profile 没有 agentTeams 且 backend=team：apply 不炸，派发返回可读错误', withHome(async () => {
   const f = fakeCtx({ withAgentTeams: false })
   await assert.doesNotReject(() => apply(f.ctx, { backend: 'team' }))
-  assert.equal(f.registered.length, 12)
+  assert.equal(f.registered.length, 14)
   assert.ok(f.warnings.some(message => /team 后端不可用/.test(message)), f.warnings.join(' | '))
 }))
 
@@ -174,11 +174,11 @@ test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {
   assert.equal(guards.length, 1)
 }))
 
-test('apply 注册 12 个工具，只写 $DSH_HOME/state/orchestrator', withHome(async home => {
+test('apply 注册 14 个工具，只写 $DSH_HOME/state/orchestrator', withHome(async home => {
   const { ctx, registered } = fakeCtx()
   await apply(ctx, { coordinatorSession: 's-1' })
   assert.deepEqual(registered.map(tool => tool.name).sort(),
-    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_detail', 'task_inbox', 'task_list',
+    ['history_search', 'memory_note', 'plan_save', 'project_context', 'task_close', 'task_create', 'task_detail', 'task_inbox', 'task_list',
       'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
   assert.deepEqual(readdirSync(home), ['state'])
   assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), ['logs', 'snapshots'])
@@ -226,7 +226,7 @@ test('apply 给 createTools 传 defaultCwd：无 target 时相对产物按主会
 test('无 coordinatorSession：warn 但工具注册；派活给「先打开主会话」提示', withHome(async () => {
   const { ctx, registered, warnings } = fakeCtx()
   await apply(ctx, {})
-  assert.equal(registered.length, 12)
+  assert.equal(registered.length, 14)
   assert.ok(warnings.some(message => /尚未打开主会话/.test(message)))
   const create = registered.find(tool => tool.name === 'task_create')
   const text = await create.execute({ title: 't', goal: 'g', acceptance: ['a'] })
@@ -452,12 +452,12 @@ test('绑定发生在回合中时，白名单延到 idle 后才装（当前回�
   assert.equal(other.restrictions.length, 0)
 }))
 
-test('缺 tools.guard 时 warn 不崩，12 工具照常注册', withHome(async () => {
+test('缺 tools.guard 时 warn 不崩，13 工具照常注册', withHome(async () => {
   const { ctx, warnings, registered } = fakeCtx()
   delete ctx.tools.guard
   await apply(ctx, {})
   assert.ok(warnings.some(message => /tools\.guard/.test(message)))
-  assert.equal(registered.length, 12)
+  assert.equal(registered.length, 14)
 }))
 
 test('系统提示只渲染给已绑定协调者，绑定后下一步生效', withHome(async () => {
@@ -521,7 +521,9 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
   await wait(30)
   assert.equal(sent.length, 0)
   assert.equal(coordinator.injected.length, 1)
-  assert.match(coordinator.injected[0].content[0].text, /任务「甲」完成/)
+  // 两段式终态：交付通知写「已交付待确认」并带 task_close/task_message 动作指令。
+  assert.match(coordinator.injected[0].content[0].text, /任务「甲」已交付待确认/)
+  assert.match(coordinator.injected[0].content[0].text, /task_close/)
   assert.deepEqual(coordinator.injected[0].source, { kind: 'agent-message', form: 'relay', senderSessionId: teammate.id })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))
@@ -676,9 +678,10 @@ test('结算唤醒：容量 1 时第二个任务排队，第一个 settle 后自
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))
   const rows = db.prepare('SELECT status, session_id FROM tasks').all()
-  // S1 之后第一个任务的 settle 会把台账推到终态：只剩第二个在跑，且两个会话 id 不同（没双派）。
+  // S1 之后第一个任务的 settle 会把它推到「已交付待确认」：只剩第二个在跑，且两个会话 id 不同（没双派）。
   assert.equal(rows.filter(row => row.status === 'running').length, 1)
-  assert.equal(rows.filter(row => row.status === 'done').length, 1)
+  assert.equal(rows.filter(row => row.status === 'delivered').length, 1)
+  assert.equal(rows.filter(row => row.status === 'done').length, 0)
   assert.equal(new Set(rows.map(row => row.session_id)).size, 2)
   db.close()
 }))
@@ -822,7 +825,7 @@ test('S2 启动时协调者未加载：汇总保留待发，agent/created 后补
   await disposers.at(-1)?.()
 }))
 
-test('S1：派发侧 settle completed 自动把台账 running→done，并写结算消息 + 通知', withHome(async home => {
+test('S1：派发侧 settle completed 落「已交付待确认」，写结算消息 + 通知，task_close 收成 done', withHome(async home => {
   const s1 = makeAgent('s-1')
   let settle
   const subagents = {
@@ -851,13 +854,22 @@ test('S1：派发侧 settle completed 自动把台账 running→done，并写结
   settle()
   await wait(50)
   const after = new DatabaseSync(dbPath)
-  const row = after.prepare('SELECT id, status, error FROM tasks').get()
-  assert.equal(row.status, 'done')
+  const row = after.prepare('SELECT id, status, error, last_message_json FROM tasks').get()
+  // 两段式终态：自然结束先落 delivered，确认后才 done。
+  assert.equal(row.status, 'delivered')
   assert.equal(row.error, null)
+  assert.equal(JSON.parse(row.last_message_json).text, '改完了，测试全绿')
   const message = after.prepare("SELECT rendered FROM messages WHERE task_id = ? AND kind = 'settle'").get(row.id)
-  assert.match(message.rendered, /结算.*已完成/)
+  assert.match(message.rendered, /结算.*待确认/)
   assert.equal(after.prepare("SELECT level, status FROM notifications WHERE task_id = ?").get(row.id).level, 'notify')
   after.close()
+  // 协调者确认 → done；确认不再发第二条通知。
+  const closed = await byName.task_close.execute({ task_id: row.id }, { agent: s1 })
+  assert.match(closed, /已确认完成/)
+  const final = new DatabaseSync(dbPath)
+  assert.equal(final.prepare('SELECT status FROM tasks WHERE id = ?').get(row.id).status, 'done')
+  assert.equal(final.prepare('SELECT count(*) AS n FROM notifications WHERE task_id = ?').get(row.id).n, 1)
+  final.close()
   await disposers.at(-1)?.()
 }))
 
@@ -904,7 +916,7 @@ test('D5：结算自动 done 的通知在发送前补齐产物，注入文案带
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   const row = db.prepare('SELECT id, status, artifacts_json FROM tasks').get()
   db.close()
-  assert.equal(row.status, 'done')
+  assert.equal(row.status, 'delivered')
   assert.deepEqual(JSON.parse(row.artifacts_json).map(item => item.path), [report])
   // 协调者收到的通知里就是这份清单（不是空产物），并带 present 交付指令。
   assert.equal(s1.injected.length, 1)
@@ -1109,12 +1121,14 @@ test('K2 keepAlive 开启：turn-stopping 同步给 running 子会话注入下�
   assert.equal(child.steers.length, 3)
   assert.equal(getTask(ledger, taskId).keep_alive_rounds, 3)
 
-  // S1 结算（子会话真的结束）：只写一条 settle 消息，任务落 done；之后 turn-stopping 不再续跑。
+  // S1 结算（子会话真的结束）：只写一条 settle 消息，任务落「待确认」；之后 turn-stopping 不再续跑。
   f.listeners.get('subagent/end')({ id: spawned.id, local: true, stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '做完了' }] })
   await wait(50)
-  assert.equal(getTask(ledger, taskId).status, 'done')
+  assert.equal(getTask(ledger, taskId).status, 'delivered')
+  assert.equal(getTask(ledger, taskId).last_message.text, '做完了')
   const settles = ledger.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'settle' AND task_id = ?").get(taskId).n
   assert.equal(settles, 1)
+  // 重复的 subagent/end（派发侧 + 生命周期双到达）：只补消息，不再迁移/不再写 settle。
   f.listeners.get('subagent/end')({ id: spawned.id, local: true, stopReason: 'completed' })
   await wait(20)
   assert.equal(ledger.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'settle' AND task_id = ?").get(taskId).n, 1)

@@ -6,10 +6,10 @@ import { taskCard } from './card.js'
 import { panelFailure, panelHttpStatus } from './action-errors.js'
 import { createRequestDedupe } from './request-dedupe.js'
 import { isMainSession } from './session-role.js'
-import { ACTIVE_STATUSES, canDelete, canFollowup } from './panel-gates.js'
+import { ACTIVE_STATUSES, canClose, canDelete, canFollowup } from './panel-gates.js'
 
 const ENDPOINTS = new Set(['snapshot', 'session-role'])
-const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message', 'delete'])
+const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message', 'close', 'delete'])
 const ACTIVE = new Set(ACTIVE_STATUSES)
 
 const json = (value, status) => new Response(JSON.stringify(value), {
@@ -37,7 +37,8 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
       ok: true,
       at,
       mainSession: { id: status.id ?? null, live: status.live === true },
-      inboxCount: tasks.filter(task => task.status === 'waiting_user' || task.status === 'waiting_auth').length,
+      // 「待你决定」计数：等你确认/要授权/已交付待确认——三种都需要人（或协调者）拍板。
+      inboxCount: tasks.filter(task => task.status === 'waiting_user' || task.status === 'waiting_auth' || task.status === 'delivered').length,
       tasks: tasks.map(task => {
         const card = taskCard(task)
         return {
@@ -66,8 +67,12 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
           question: task.question ?? null,
           options: Array.isArray(task.options) ? task.options : [],
           artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
-          // 面板按钮可见性与后端门控同源（src/panel-gates.js）：前端只读这两个布尔值。
+          // delivered 两段式：交付时间 / 关闭原因（供面板显示「待确认」「协调者确认/超时」）。
+          deliveredAt: task.delivered_at ?? null,
+          closeReason: task.close_reason ?? null,
+          // 面板按钮可见性与后端门控同源（src/panel-gates.js）：前端只读这三个布尔值。
           canFollowup: canFollowup(task),
+          canClose: canClose(task),
           canDelete: canDelete(task, { activeDependents: dependentCounts.get(task.id) ?? 0 }),
           queued: task.status === 'pending' && task.queued_at !== null && task.queued_at !== undefined,
           stale: ACTIVE.has(task.status) && at - task.last_event_at > staleMinutes * 60_000,
@@ -122,6 +127,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
         else if (endpoint === 'preview') result = panel.preview(body?.taskId, body?.path)
         else if (endpoint === 'stop') result = await panel.stop(body?.taskId)
         else if (endpoint === 'retry') result = await panel.retry(body?.taskId)
+        else if (endpoint === 'close') result = await panel.close(body?.taskId)
         else if (endpoint === 'delete') result = await panel.delete(body?.taskId)
         else if (endpoint === 'message') {
           const taskId = body?.taskId

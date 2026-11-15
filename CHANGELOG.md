@@ -3,6 +3,45 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
+## 0.14.0（2026-11-16）
+
+这一版把「交付」和「完成」拆成两段（`delivered` → `done`），并补上两个长期缺口：计划模式终于能把计划落盘成交付物（`plan_save`），构建/发版类任务可以只对**单条任务**放开沙箱（`access:'full'`）。
+相对 0.13.2 无破坏性变更（minor）——不开 `planFirst` / `access` 的任务行为不变，存量 `done` 任务一个字段都不动。
+行为上唯一需要协调者记住的差别：**子任务报 `done` 后任务先停在「已交付待确认」**，要协调者 `task_close` 确认（或等超时自动完成）才落 `done`。
+
+### 两段式终态：交付（`delivered`）→ 确认（`done`）
+
+- **新状态 `delivered`（已交付待确认）**：`task_report({ status:'done' })` 与「子会话自然结束」的结算都先落 `delivered`，不再直接 `done`；中断/异常仍直接 `cancelled` / `failed` / `orphaned`（两段式只改「自然交付」这一条路）。新增台账列 `delivered_at`（超时判据）与 `close_reason`（`coordinator` / `timeout`，审计与面板展示），旧库 `ALTER TABLE` 补列，存量行都是 `NULL`。
+- **新工具 `task_close`（仅主会话）**：把 `delivered` 收成 `done`（`close_reason=coordinator`）。与面板「确认交付」共用 `closeDelivered()`，副作用顺序统一：迁移 + 审计消息 + 释放可写根 + goal `complete` + 检出清理 + 队列补位；已 `done` 的重复确认按幂等成功返回（「无需重复确认」），非 `delivered` 返回 `CLOSE_NOT_DELIVERED` / 已是终态返回 `CLOSE_TASK_ENDED`。
+- **追问复用原会话**：`delivered` 上 `task_message`（或面板「追加」）投递成功 → 任务回 `running`、**同一个子会话**继续跑（可写根与平台 goal 都**不**提前收），完成后再次交付；投递失败保留 `delivered`（只记原因，不降级成 `waiting_user` / `failed`，交付结果不丢）。
+- **超时自动完成**：新增 `createDeliveredSweeper()`（`src/delivered.js`），每分钟扫一次 `delivered`，超过 `deliveredTimeoutMinutes`（新增配置，默认 60，1–1440）自动 `done` + `close_reason=timeout`；启动时先扫一次（覆盖进程停机期间过期的任务），timer `unref()` 不阻止退出。
+- **状态机与视图**：`delivered` 计入活跃任务与收件箱（`task_inbox` 单独一栏「待确认」）、不进历史列表；依赖就绪只认 `done`（`delivered` 会短暂挡住下游，确认/超时后晋升）；keep-alive、可写根释放、goal 收口都只对真终态生效。`task_status` 给「交付：已交付待确认（如何确认 / 追问 / 超时阈值）」与「关闭：协调者确认 / 超时自动完成」；`task_list` 给「·待确认」与组进度「待确认 N」；面板任务卡有「待确认」小标、抽屉有交付时间/关闭原因与「确认交付」（两步确认，`canClose` 门控）。
+- **通知**：交付通知带动作指令「确认：`task_close <编号>`；要改：`task_message` 追问原会话（不新建任务）；不确认则按超时自动完成」；重复的 `done` 回报不再发第二条通知、不重复沉淀记忆。
+- **修复（B1「最后一条返回消息」时序）**：`task_report done` 会先把状态推到 `delivered`，本回合结束时到达的结算一直被「只改 `running`」的闸门挡掉，导致**真实台账里所有经 `task_report done` 收尾的任务 `last_message` 全为空**（存量 104 条 `done` 全缺）。现在 `delivered` / `done` 上到达的结算只**补写** `last_message`（不动状态、不发通知、不写 settle 行、不释放会话），短消息内联、超 64 KiB 落 reports 文件只留路径 + 摘要。
+
+### 计划落盘（`plan_save`，计划阶段的唯一写入口）
+
+- **新工具 `plan_save({ task_id, content })` + `src/plan-doc.js`**：计划模式子会话把计划正文（Markdown：目标 / 步骤 / 要改的文件 / 验证方式 / 待拍板问题）写进**主会话工作区**的 `reports/plans/<taskId>.md`（目录自动创建，文档头带任务名/编号/目标/落盘时间），写完自动登记为任务产物——通知、`task_status`、面板抽屉都从台账产物读，不另开视图。
+- **没有自定义路径**：只收任务编号，路径由插件拼；编号形状白名单（`^t-[0-9a-z]{4,32}$`，`..`、`/`、`\`、盘符、换行、NUL 全部不合法）+ `relative()` 目录包含性校验两道闸，校验发生在 `mkdir` / `writeFile` **之前**（被拒不留空目录、不写半截文件）。正文上限 200000 字、空正文拒绝（不静默截断）；重复保存覆盖同一份（只留一版，无版本对比/审批流 UI）。
+- **谁能写**：只有任务自己的子会话（与 `task_report` 同口径）且任务本身是 `planFirst`；普通任务被告知「直接写到自己的工作目录」；别的子会话越权拒绝；协调者侧 `COORDINATOR_DENY` + 执行层 guard 硬拦。
+- **planFirst 交付流程改写**：只读探索 → `plan_save` 落盘 → `task_report blocked` 只上报 **3–8 行摘要 + 计划文档绝对路径 + 待拍板清单**（不再把计划正文塞进 500 字上限的 `question`）→ 用户批准后 `task_message` 续派执行；`PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `task_create` 返回提示同步改写，`task_detail` 直接渲染同一份说明。
+- **协调者提示（`COORDINATOR_POLICY`）**：新增硬规则「向用户汇报任务时用任务名（可附编号），不只甩 id」；planFirst 那条改成「先 `plan_save` 落盘 → 摘要 + 路径」。
+- **沙箱语义不变**：`plan_save` 是插件在宿主进程写固定路径，不是给子会话开写权限；只读沙箱对 `write` / `edit` / `pwsh` 的拦截一字未改。
+
+### 完整访问任务（`task_create({ access: 'full' })`）
+
+- **per-task 放宽沙箱**：`access: 'full'` 只给**这一条任务**的子会话 append 一条 `sandbox/mode { mode:'danger-full-access', source:'delegation' }`，复用只读任务的同一条注入路径（`agent/created` 时早注入压掉首回合窗口 + 激活返回/续派时幂等补设，已有则跳过）。用途只有一个：构建 / 发版 / 装依赖 / 写仓库外目录这类确实要越过默认沙箱边界的任务。
+- **默认一点都不动**：不传 `access` = 完全沿用会话策略（不 append 任何事件、不改部署默认、不碰父会话、不碰其他任务）；台账 `access` 为 `NULL`。
+- **只接受 `'full'`**：`'workspace-write'` / `'read-only'` / `'true'` / `true` / 数字等一律创建期报错并提示，不静默降级（「以为放开了、其实没放开」比报错危险）。与 `readOnly` / `planFirst` **互斥**（创建期拒绝）；与 `worktree` 不冲突（目录隔离 vs 权限放开是两件事）。team 后端给可读拒绝。
+- **不继承、可观测**：`access` 不写进配置/默认值、不往孙任务传；重派（`task_retry` / 面板重派）与面板追问沿用原任务的 `access`。台账新增 `tasks.access` 列（旧库 `ALTER TABLE` 补列，非 `'full'` 一律归一成 `NULL`）；brief 第二行「【访问级别】完整」、`task_detail` 「访问级别：完整（danger-full-access…）」+ 任务边界纪律（只读/计划阶段压过 full）、`task_status` / `task_list` 文案、通知标题「（完整访问）」、`task.create.created` 审计字段。
+- **新增 `scripts/verify-access-full.mjs`**：离线跑**生产代码**（台账 → brief → 派发参数 → 会话沙箱事件 → 通知）核对整条链，不用真派子会话也能看出「只对这一条任务 inject、其他会话 0 条」。
+
+### 测试与构建
+
+- **测试**：`npm test` **767 条全绿**（0.13.2 基线 723，本版 +44）。新增 `test/delivered.test.js`（9）、`test/plan-save.test.js`（8）、`test/access-full.test.js`（6），并补齐 ledger / dispatch / tools / settlement / notify / task-detail / brief / panel-* / client 等回归。
+- **构建**：`client/src/**` 改了交付相关 UI（`确认交付` 按钮、`待确认` 小标、详情「交付」「关闭」行），`dist/client.js` 与 `.map` 由 `vite build` 重建（`pretest` 自动跑），`npm run check:client` 通过。
+- **文档**：README 新增「两段式终态（交付 → 确认）」「完整访问任务（per-task access:'full'）」两节、重写「计划任务」为四步流程（含工具表、数据位置、安全边界），并发版/配置/排障/已知限制同步；`docs/ARCHITECTURE.md`、`docs/LIMITATIONS.md`、`docs/UI.md`、`docs/qa-checklist.md`、`cordis.patch.yml` 同步。
+
 ## 0.13.2（2026-11-16）
 
 计划任务这一版的收尾修复：`planFirst` 不再因读不到平台计划服务而整单创建失败；任务 blocked 后答问续派会把**原会话**拉回「进行中」；只读任务续派时回执如实写明仍只读。相对 0.13.1 无破坏性变更（patch）——不开 `planFirst` 的任务行为不变。

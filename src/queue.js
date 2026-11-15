@@ -73,7 +73,8 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
         }
         // T1：派发提示词就是 brief 本身（任务编号 + task_detail 指引）；详情由子会话读台账，
         // 前置任务/产物也走 task_detail 现读，不再在派发时拼一段快照。
-        const rendered = briefText(db, id) ?? renderBrief({ taskId: task.id })
+        const rendered = briefText(db, id)
+          ?? renderBrief({ taskId: task.id, access: task.access === 'full' ? 'full' : undefined })
         // P9：worktree 任务在派发前建检出，子会话 cwd = 检出目录 + 原 target 偏移；普通任务一次 git 都不调。
         let dispatchCwd = task.target_dir ?? undefined
         if (worktree !== undefined && WORKTREE_DISPATCH_STATES.includes(task.worktree_state)) {
@@ -97,6 +98,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
               title: task.title,
               displayName: taskLabel(task, { all: listTasks(db) }),
               readOnly: task.read_only === true,
+              access: task.access === 'full' ? 'full' : null,
               status: 'failed',
               summary: message,
               worktree: {
@@ -122,6 +124,8 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
             taskId: id,
             cwd: dispatchCwd,
             readOnly: task.read_only === true,
+            // per-task 访问级别：只把显式的 'full' 往派发层传；其余（含 undefined）一律沿用会话策略。
+            access: task.access === 'full' ? 'full' : undefined,
             // P8：计划任务在派发时就进只读沙箱 + plan mode（见 dispatch.spawn）。
             planFirst: task.plan_first === true,
             goal: task.goal,
@@ -167,6 +171,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
             title: task.title,
             displayName: taskLabel(task, { all: listTasks(db) }),
             readOnly: task.read_only === true,
+            access: task.access === 'full' ? 'full' : null,
             status: 'failed',
             summary: message,
             system: true,

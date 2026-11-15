@@ -309,11 +309,11 @@ test('K2 与 S1：keep-alive 不写终态，结算仍只走 S1 一次；结算�
   const afterInject = getTask(db, task.id)
   assert.equal(afterInject.status, 'running')
   assert.equal(afterInject.progress_count, 0)
-  // 真正的子会话结束才由 S1 结算（completed + 没上报过 progress → done）。
+  // 真正的子会话结束才由 S1 结算（completed + 没上报过 progress → 已交付待确认）。
   const outcome = reporter.report({ sessionId: 'c-1', stopReason: 'completed' })
   assert.equal(outcome.action, 'updated')
-  assert.equal(outcome.to, 'done')
-  assert.equal(getTask(db, task.id).status, 'done')
+  assert.equal(outcome.to, 'delivered')
+  assert.equal(getTask(db, task.id).status, 'delivered')
   // 重复到达的结算事件（派发侧 + 平台生命周期）只结算一次，消息也只有一条。
   const again = reporter.report({ sessionId: 'c-1', stopReason: 'completed', source: 'lifecycle' })
   assert.equal(again.action, 'skipped')
@@ -323,6 +323,6 @@ test('K2 与 S1：keep-alive 不写终态，结算仍只走 S1 一次；结算�
   // S1 结算之后同一会话再来 turn-stopping：不注入（不把已结束任务重新拉起来）。
   assert.equal(ka.handle(event(agent)), null)
   assert.equal(getTask(db, task.id).keep_alive_rounds, 1)
-  assert.equal(reporter.mapSettle('completed', { progressCount: 0 }).status, 'done')
+  assert.equal(reporter.mapSettle('completed', { progressCount: 0 }).status, 'delivered')
   db.close()
 })

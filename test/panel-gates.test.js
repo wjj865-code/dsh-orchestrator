@@ -1,16 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  ACTIVE_STATUSES, TERMINAL_STATUSES, FOLLOWUP_STATUSES, DELETABLE_STATUSES,
-  followupGate, canFollowup, deleteGate, canDelete,
+  ACTIVE_STATUSES, TERMINAL_STATUSES, FOLLOWUP_STATUSES, DELETABLE_STATUSES, CLOSABLE_STATUSES,
+  followupGate, canFollowup, closeGate, canClose, deleteGate, canDelete,
 } from '../src/panel-gates.js'
 
 // 面板按钮的显示与后端动作的接受必须是同一判定（前后端同源）：
 // 这里把判定本身钉死，client 只消费快照/detail 下发的 canFollowup / canDelete。
 const task = (status, extra = {}) => ({ id: `t-${status}`, status, target: `c-${status}`, ...extra })
 
-test('续派门控：只有进行中/等你确认/要授权，且已有子会话才可续派', () => {
-  for (const status of ['running', 'waiting_user', 'waiting_auth']) {
+test('续派门控：只有进行中/等你确认/要授权/待确认，且已有子会话才可续派', () => {
+  for (const status of ['running', 'waiting_user', 'waiting_auth', 'delivered']) {
     assert.equal(canFollowup(task(status)), true, status)
     assert.deepEqual({ ...followupGate(task(status)) }, { ok: true, reason: null })
   }
@@ -42,7 +42,7 @@ test('删除门控：只有终态可删，活跃任务一律不能删', () => {
     assert.equal(canDelete(task(status)), true, status)
     assert.deepEqual({ ...deleteGate(task(status)) }, { ok: true, reason: null })
   }
-  for (const status of ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth']) {
+  for (const status of ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered']) {
     assert.equal(canDelete(task(status)), false, status)
     assert.equal(deleteGate(task(status)).reason, 'active')
   }
@@ -56,9 +56,23 @@ test('删除门控：只有终态可删，活跃任务一律不能删', () => {
   assert.equal(canDelete(task('done'), { activeDependents: 0 }), true)
 })
 
-test('门控状态集合与台账口径一致（活跃 5 个 / 终态 3 个 / 可续派 3 个 / 可删 4 个）', () => {
-  assert.deepEqual([...ACTIVE_STATUSES], ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
+test('确认交付门控：只有待确认（delivered）能收成 done，done 重复确认按幂等放行', () => {
+  assert.deepEqual({ ...closeGate(task('delivered')) }, { ok: true, reason: null })
+  assert.equal(canClose(task('delivered')), true)
+  // 已 done 的重复确认交给 closeDelivered 幂等返回（按钮不显示，但状态不报错）。
+  assert.equal(canClose(task('done')), true)
+  for (const status of ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'failed', 'cancelled', 'orphaned']) {
+    assert.equal(canClose(task(status)), false, status)
+    assert.equal(closeGate(task(status)).reason, 'not_delivered', status)
+  }
+  assert.equal(canClose(undefined), false)
+  assert.equal(closeGate(undefined).reason, 'not_found')
+})
+
+test('门控状态集合与台账口径一致（活跃 6 个 / 终态 3 个 / 可续派 4 个 / 可确认 1 个 / 可删 4 个）', () => {
+  assert.deepEqual([...ACTIVE_STATUSES], ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered'])
   assert.deepEqual([...TERMINAL_STATUSES], ['done', 'cancelled', 'orphaned'])
-  assert.deepEqual([...FOLLOWUP_STATUSES], ['running', 'waiting_user', 'waiting_auth'])
+  assert.deepEqual([...FOLLOWUP_STATUSES], ['running', 'waiting_user', 'waiting_auth', 'delivered'])
+  assert.deepEqual([...CLOSABLE_STATUSES], ['delivered'])
   assert.deepEqual([...DELETABLE_STATUSES], ['done', 'failed', 'cancelled', 'orphaned'])
 })

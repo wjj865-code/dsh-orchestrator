@@ -16,8 +16,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER,
   goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0,
   plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT,
+  access TEXT,
   worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
-  worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT
+  worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT,
+  delivered_at INTEGER, close_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -70,6 +72,8 @@ export async function openLedger(stateDir) {
     // P8 计划模式：旧库补两列；历史行 plan_first=0 → taskOf 归一成 false / plan_state='none'。
     if (!taskColumns.includes('plan_first')) db.exec('ALTER TABLE tasks ADD COLUMN plan_first INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('plan_state')) db.exec('ALTER TABLE tasks ADD COLUMN plan_state TEXT')
+    // per-task 访问级别：NULL = 沿用会话策略（默认，老库/老行都是这条），'full' = 子会话 danger-full-access。
+    if (!taskColumns.includes('access')) db.exec('ALTER TABLE tasks ADD COLUMN access TEXT')
     // P9 worktree 隔离：七列（哪份检出 / 哪个分支 / 源仓库 / 基线 / 请求档位 / 谁决定的 / 当前状态）。
     // `worktree_source` 取 task/config/default（v2：不再有 agents-md 这类来源枚举）。
     if (!taskColumns.includes('worktree_path')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_path TEXT')
@@ -79,6 +83,10 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('worktree_mode')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_mode TEXT')
     if (!taskColumns.includes('worktree_source')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_source TEXT')
     if (!taskColumns.includes('worktree_state')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_state TEXT')
+    // delivered 两段式终态：交付时间（超时自动 done 的判据）与关闭原因（coordinator / timeout，审计用）。
+    // 旧库/存量行都是 NULL：面板与 task_status 按「没有交付/关闭记录」显示，存量 done 一律不动。
+    if (!taskColumns.includes('delivered_at')) db.exec('ALTER TABLE tasks ADD COLUMN delivered_at INTEGER')
+    if (!taskColumns.includes('close_reason')) db.exec('ALTER TABLE tasks ADD COLUMN close_reason TEXT')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -144,6 +152,8 @@ const taskOf = row => row === undefined ? undefined : ({
   // P8：计划模式两列 —— 旧行没有 plan_state（NULL）按 none；plan_first 归一成布尔。
   plan_first: row.plan_first === 1 || row.plan_first === true,
   plan_state: typeof row.plan_state === 'string' && row.plan_state !== '' ? row.plan_state : 'none',
+  // per-task 访问级别：只有 'full' 是有效值，其余（NULL/旧库/手改坏值）一律归一成 null = 沿用会话策略。
+  access: row.access === 'full' ? 'full' : null,
   // P9：worktree 七列 —— 旧行没有状态按 none；来源按 default（面板要能回答「谁决定的」）。
   worktree_path: row.worktree_path ?? null,
   worktree_branch: row.worktree_branch ?? null,
@@ -164,6 +174,9 @@ const taskOf = row => row === undefined ? undefined : ({
   last_message: parseLastMessage(row.last_message_json),
   // K2：本段 activation 已用的 keep-alive 轮数（进 running 时归零）。
   keep_alive_rounds: Number.isFinite(row.keep_alive_rounds) ? row.keep_alive_rounds : 0,
+  // delivered 两段式：交付时间（毫秒）与关闭原因（coordinator / timeout）；旧行都是 NULL。
+  delivered_at: Number.isFinite(row.delivered_at) ? row.delivered_at : null,
+  close_reason: typeof row.close_reason === 'string' && row.close_reason !== '' ? row.close_reason : null,
 })
 
 export function createTask(db, {
@@ -173,6 +186,8 @@ export function createTask(db, {
   readOnly = false,
   planFirst = false,
   planState,
+  // per-task 访问级别：null（默认）= 沿用会话策略；'full' = 子会话 danger-full-access。
+  access = null,
   // P9：隔离请求/结果快照（path/branch/repoRoot/base/mode/source/state）。
   worktree = null,
   retryOf = null,
@@ -191,17 +206,17 @@ export function createTask(db, {
   const wt = worktree !== null && typeof worktree === 'object' ? worktree : {}
   db.prepare(`INSERT INTO tasks
     (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of,
-     depends_json, group_id, write_scopes_json, priority, plan_first, plan_state,
+     depends_json, group_id, write_scopes_json, priority, plan_first, plan_state, access,
      worktree_path, worktree_branch, repo_root, worktree_base, worktree_mode, worktree_source, worktree_state,
      created_at, updated_at, last_event_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id, String(brief.title), String(brief.goal), JSON.stringify(brief), status,
       String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null,
       JSON.stringify(Array.isArray(dependsOn) ? dependsOn : []), groupId ?? null,
       JSON.stringify(Array.isArray(writeScopes) ? writeScopes : []),
       Number.isFinite(priority) ? Math.trunc(priority) : 0,
-      plan ? 1 : 0, initialPlanState,
+      plan ? 1 : 0, initialPlanState, access === 'full' ? 'full' : null,
       wt.path ?? null, wt.branch ?? null, wt.repoRoot ?? null, wt.base ?? null,
       wt.mode ?? null, wt.source ?? null, wt.state ?? null,
       now, now, now,
@@ -224,7 +239,7 @@ export function findTaskBySession(db, sessionId, { status } = {}) {
 
 export function listTasks(db, { active = false } = {}) {
   const sql = active
-    ? "SELECT * FROM tasks WHERE status IN ('waiting_dep','pending','running','waiting_user','waiting_auth') ORDER BY created_at DESC, rowid DESC"
+    ? "SELECT * FROM tasks WHERE status IN ('waiting_dep','pending','running','waiting_user','waiting_auth','delivered') ORDER BY created_at DESC, rowid DESC"
     : 'SELECT * FROM tasks ORDER BY created_at DESC, rowid DESC'
   return db.prepare(sql).all().map(taskOf)
 }
@@ -232,7 +247,7 @@ export function listTasks(db, { active = false } = {}) {
 /** 终态历史：按创建时间倒序取最多 limit 条（面板快照用，避免把活跃任务挤掉）。 */
 export function listHistoryTasks(db, limit = 200) {
   return db.prepare(`SELECT * FROM tasks
-    WHERE status NOT IN ('waiting_dep','pending','running','waiting_user','waiting_auth')
+    WHERE status NOT IN ('waiting_dep','pending','running','waiting_user','waiting_auth','delivered')
     ORDER BY created_at DESC, rowid DESC LIMIT ?`)
     .all(Math.max(0, Math.floor(limit))).map(taskOf)
 }
@@ -267,12 +282,13 @@ export function briefText(db, id) {
   return row?.rendered
 }
 
-const TERMINAL_PLAN_STATUSES = new Set(['done', 'failed', 'cancelled', 'orphaned'])
+const TERMINAL_PLAN_STATUSES = new Set(['done', 'failed', 'cancelled', 'orphaned', 'delivered'])
 
 /**
  * 计划任务进终态时收口 `plan_state`：还在「等批准」（planning）就结束的，按「未批准」记；
  * 已 approved 的不改——历史里要看得出「用户批准过，并且执行到终态」。
  * 非终态迁移（如 waiting_user → running 之外的路径）不动 plan_state。
+ * delivered（已交付待确认）也在这里收口：计划阶段已经结束，追问时不该再走一次「批准」。
  */
 const nextPlanStateOnTransition = (task, to) => {
   if (task.plan_first !== true) return undefined
@@ -291,11 +307,14 @@ export function transition(db, id, to, patch = {}) {
   // （重派/续派/冷恢复都走 transition；running → running 本来不允许，所以不会误清）。
   if (to === 'running') sets.push('keep_alive_rounds = 0')
   const values = [to, now, now]
+  // delivered 超时计时从「本次交付」起算：追问后再交付会重写时间，不会被旧交付时间提前收掉。
+  if (to === 'delivered') { sets.push('delivered_at = ?'); values.push(now) }
   const planNext = nextPlanStateOnTransition(task, to)
   if (planNext !== undefined) { sets.push('plan_state = ?'); values.push(planNext) }
   if (Object.hasOwn(patch, 'sessionId')) { sets.push('session_id = ?'); values.push(patch.sessionId) }
   if (Object.hasOwn(patch, 'target')) { sets.push('target = ?'); values.push(patch.target) }
   if (Object.hasOwn(patch, 'error')) { sets.push('error = ?'); values.push(patch.error) }
+  if (Object.hasOwn(patch, 'closeReason')) { sets.push('close_reason = ?'); values.push(patch.closeReason ?? null) }
   values.push(id)
   db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values)
   return getTask(db, id)

@@ -8,12 +8,13 @@ import { lstatSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 
 const LEVEL = {
-  progress: 'silent', done: 'notify', blocked: 'interrupt', needs_auth: 'interrupt',
+  progress: 'silent', done: 'notify', delivered: 'notify', blocked: 'interrupt', needs_auth: 'interrupt',
   failed: 'notify', stalled: 'notify', cancelled: 'notify', orphaned: 'notify',
 }
 
 const DONE_LABEL = {
-  failed: '失败', stalled: '可能卡住', cancelled: '已取消', orphaned: '会话已结束但没有终态回报', done: '完成',
+  failed: '失败', stalled: '可能卡住', cancelled: '已取消', orphaned: '会话已结束但没有终态回报',
+  done: '完成', delivered: '已交付待确认',
 }
 
 export function levelOf(status) {
@@ -158,14 +159,26 @@ const worktreeBlock = item => {
 }
 
 // 显示名由 tools 算好放进 item.displayName（重名短后缀也在那里算）；没有就回落 title。
-// 只读任务在通知标题里明确标「只读」，避免用户误以为它会写文件。
+// 权限在通知标题里明确标出来：只读（不会写文件）/ 完整访问（沙箱不拦写，破坏了可能更大）。
 const nameOf = item => {
   const base = item.displayName ?? item.title
-  return item.readOnly === true ? `${base}（只读）` : base
+  if (item.readOnly === true) return `${base}（只读）`
+  if (item.access === 'full') return `${base}（完整访问）`
+  return base
 }
 // 合并通知里每条任务只列产物；交付指令在整条消息末尾写一次（避免 N 条任务刷 N 遍指令）。
 const line = item => `- ${nameOf(item)}：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item, { hint: false })}`
 const batchHint = batch => (batch.some(hasDeliverable) ? `\n  ${PRESENT_HINT}` : '')
+
+// 两段式终态（delivered）：交付通知必须带动作指令，否则协调者只会转述「完成了」，
+// 既不会 task_close 确认、也不会想到 task_message 追问能复用原会话（用户随后只能新派任务）。
+const DELIVERED_HINT = '确认：task_close <任务编号>；要改：task_message 追问原会话（不新建任务）；不确认则按超时自动完成。'
+const deliveredBlock = item => item?.status === 'delivered'
+  ? `\n  交付确认：${DELIVERED_HINT.replace('<任务编号>', String(item.taskId ?? ''))}`
+  : ''
+const deliveredBatchHint = batch => (batch.some(item => item.status === 'delivered')
+  ? `\n  ${DELIVERED_HINT}`
+  : '')
 
 export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {}, onEvent = () => {} }) {
   let buffer = []
@@ -267,9 +280,11 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     buffer = []
     if (batch.length === 0) return undefined
     const label = status => DONE_LABEL[status] ?? '完成'
+    const allDone = batch.every(item => item.status === 'done')
+    const allSettled = batch.every(item => item.status === 'done' || item.status === 'delivered')
     const text = batch.length === 1
-      ? `任务「${nameOf(batch[0])}」${label(batch[0].status)}：${batch[0].summary}${questionBlock(batch[0])}${worktreeBlock(batch[0])}${artifactBlock(batch[0])}`
-      : `${batch.length} 个任务${batch.every(item => item.status === 'done') ? '完成' : '状态更新'}：\n${batch.map(line).join('\n')}${batchHint(batch)}`
+      ? `任务「${nameOf(batch[0])}」${label(batch[0].status)}：${batch[0].summary}${questionBlock(batch[0])}${worktreeBlock(batch[0])}${artifactBlock(batch[0])}${deliveredBlock(batch[0])}`
+      : `${batch.length} 个任务${allDone ? '完成' : (allSettled ? '已交付待确认' : '状态更新')}：\n${batch.map(line).join('\n')}${batchHint(batch)}${deliveredBatchHint(batch)}`
     return deliver(text, batch)
   }
 

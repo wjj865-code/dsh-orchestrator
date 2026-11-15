@@ -49,10 +49,18 @@ test('P8 exit_plan_mode 拒绝文案指向 task_report blocked（不是 exit_pla
   assert.match(EXIT_PLAN_MODE_DENIAL, /task_report/)
   assert.match(EXIT_PLAN_MODE_DENIAL, /blocked/)
   assert.match(EXIT_PLAN_MODE_DENIAL, /exit_plan_mode 在编排子任务里不可用/)
-  // 计划阶段说明必须写明「写被拒是预期」与不动 exit_plan_mode。
+  // 计划阶段说明必须写明「写被拒是预期」、唯一写入口是 plan_save、不动 exit_plan_mode。
   assert.match(PLAN_FIRST_DETAIL, /这是预期行为/)
   assert.match(PLAN_FIRST_DETAIL, /task_report 报 blocked/)
   assert.match(PLAN_FIRST_DETAIL, /不要调用 exit_plan_mode/)
+  // 计划交付流程：先落盘（plan_save → reports/plans/<taskId>.md），再只报 3–8 行摘要 + 绝对路径 + 待拍板清单。
+  assert.match(PLAN_FIRST_DETAIL, /plan_save/)
+  assert.match(PLAN_FIRST_DETAIL, /reports\/plans\/<taskId>\.md/)
+  assert.match(PLAN_FIRST_DETAIL, /3–8 行摘要/)
+  assert.match(PLAN_FIRST_DETAIL, /待拍板问题清单/)
+  assert.match(PLAN_FIRST_DETAIL, /唯一.*写入口/)
+  assert.match(EXIT_PLAN_MODE_DENIAL, /plan_save/)
+  assert.match(EXIT_PLAN_MODE_DENIAL, /reports\/plans\/<taskId>\.md/)
 })
 
 test('P8 keep-alive：等批准的计划任务（waiting_user）不会被当成可续跑', async () => {

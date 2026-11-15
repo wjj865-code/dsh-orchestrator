@@ -198,6 +198,95 @@ test('team：readOnly 任务给可读错误（team 后端没有会话级只读�
   await assert.rejects(() => dispatcher.spawn({ prompt: 'p', readOnly: true }), /team 后端不支持只读任务/)
 })
 
+// ---- per-task 完整访问（access:'full'） ------------------------------------------
+// 与只读同一条注入路径：只 append 目标子会话的 sandbox/mode，payload 里带 source:'delegation'。
+
+test('access:full：派发时 append sandbox/mode=danger-full-access，且照旧注册 target 可写根', async () => {
+  const env = readOnlyEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const member = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', access: 'full' })
+  await tick()
+  const modes = env.appends.filter(([, event]) => event === 'sandbox/mode')
+  assert.equal(modes.length, 1)
+  assert.deepEqual(modes[0][2], { mode: 'danger-full-access', source: 'delegation' })
+  assert.equal(modes[0][0], member.id)
+  assert.equal(env.registrations.length, 1, '完整访问仍登记 target 可写根：danger-full-access 下用不上，只当注入失败时的兜底')
+})
+
+test('access:full：agent/created 先设（压首回合窗口），激活后幂等不重复', async () => {
+  const env = readOnlyEnv({ callHookOnStart: true })
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  await dispatcher.spawn({ prompt: 'p', access: 'full' })
+  await tick()
+  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 1)
+})
+
+test('access:full：投影已是 danger-full-access 时跳过 append；不传 access 一次都不设', async () => {
+  const env = readOnlyEnv({ modeOverride: 'danger-full-access' })
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  await dispatcher.spawn({ prompt: 'p', access: 'full' })
+  await tick()
+  assert.equal(env.appends.length, 0, '已有同模式不重复 append')
+
+  // 默认不受影响：不传 access / 传了别的值（非 'full'）都不碰沙箱。
+  for (const access of [undefined, 'readOnly', 'true', true]) {
+    const plain = readOnlyEnv()
+    const normal = createSubagentDispatcher({ subagents: plain.subagents, agent, ...plain.services, sessionWaitMs: 0 })
+    await normal.spawn({ prompt: 'p', cwd: 'C:/target', ...(access === undefined ? {} : { access }) })
+    await tick()
+    assert.deepEqual(plain.appends, [], `access=${String(access)} 不该注入任何沙箱事件`)
+    assert.equal(plain.registrations.length, 1)
+  }
+})
+
+test('access:full：只写自己的会话，同批次其他任务不受污染', async () => {
+  const env = readOnlyEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const full = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', access: 'full' })
+  const normal = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
+  await tick()
+  const touched = env.appends.filter(([, event]) => event === 'sandbox/mode').map(([childId]) => childId)
+  assert.deepEqual(touched, [full.id])
+  assert.notEqual(full.id, normal.id)
+  assert.equal(env.registrations.length, 2, '两个任务各自登记自己的可写根')
+})
+
+test('access:full：续派仍是完整访问（resume 出的新 Session 对象按需补设；非 full 不设）', async () => {
+  const env = readOnlyEnv()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
+  const member = await dispatcher.spawn({ prompt: 'p', access: 'full' })
+  await tick()
+  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 1)
+  // 同一会话投影已读回模式：续派幂等跳过。
+  await dispatcher.send(member.id, '继续', undefined, undefined, 't-1', false, undefined, 'full')
+  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 1, '同一会话已有完整访问不重复')
+
+  // 冷恢复：新 Session 对象且投影暂未读回模式 → 续派时补设。
+  env.modes.delete(member.id)
+  const resumed = { id: member.id, header: { cwd: 'C:\\work' }, append(event, payload) { env.appends.push([member.id, event, payload]) } }
+  env.sessionsById.set(member.id, resumed)
+  await dispatcher.send(member.id, '再续', undefined, undefined, 't-1', false, undefined, 'full')
+  const modes = env.appends.filter(([, event]) => event === 'sandbox/mode')
+  assert.equal(modes.length, 2)
+  assert.deepEqual(modes[1][2], { mode: 'danger-full-access', source: 'delegation' })
+
+  // 不传 access 的续派不再动沙箱。
+  await dispatcher.send(member.id, '再再续', undefined, undefined, 't-1', false)
+  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 2)
+})
+
+test('access:full：缺 sandboxPolicy 服务也不炸，不影响派发', async () => {
+  const env = readOnlyEnv()
+  const bare = createSubagentDispatcher({ subagents: env.subagents, agent, onWarn: () => {} })
+  const member = await bare.spawn({ prompt: 'p', cwd: 'C:/target', access: 'full' })
+  assert.ok(member.id)
+})
+
+test('team：access:full 给可读错误（team 成员没有会话级沙箱写入口）', async () => {
+  const dispatcher = team({ agentTeams: fakeTeams(), agent })
+  await assert.rejects(() => dispatcher.spawn({ prompt: 'p', access: 'full' }), /team 后端不支持完整访问/)
+})
+
 const team = options => createDispatcher({ backend: 'team', ...options })
 const sub = options => createDispatcher({ backend: 'subagent', ...options })
 const agent = { id: 'a1', session: { id: 's1', header: { cwd: 'C:\\work' } } }

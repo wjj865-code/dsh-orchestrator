@@ -81,7 +81,7 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 | --- | --- |
 | hover | `.orch-card:hover`（底色 + 描边 + `--dsw-shadow-lv1`）、`.orch-btn:hover`、`.orch-metric:hover`（上浮 1px）、`.orch-rail-item:hover`、`.orch-section-head:hover`、`.orch-artifact:hover`（全在 `styles.css`） |
 | 动画/过渡 | 抽屉滑入滑出（`transform` + `--ds-transition-duration-slow`）、展开/折叠 `grid-template-rows: 0fr→1fr`、chevron 旋转、内容入场 `@keyframes orch-slide-in`、骨架 `@keyframes orch-shimmer`、按钮 `transform: scale(.985)` 按下反馈（`styles.css`） |
-| 二次确认 | 「停止」先变成「确认停止？/ 取消」，删除同样两步「确认删除？/ 取消」（`.orch-confirm`，`views.js` 的 `stopControl` / `deleteControl`），不再用 `window.confirm`；动作进行中禁用按钮并显示「停止中…/重派中…/删除中…」 |
+| 二次确认 | 「停止」先变成「确认停止？/ 取消」，「确认交付」（`delivered` → `done`，不可逆）与删除同样两步「确认交付完成？/ 取消」「确认删除？/ 取消」（`.orch-confirm`，`views.js` 的 `stopControl` / `closeControl` / `deleteControl`），不再用 `window.confirm`；动作进行中禁用按钮并显示「停止中…/重派中…/确认中…/删除中…」 |
 | 空态 | `.orch-empty` 图标 + 标题 + 提示（无任务 / 无匹配 / 无产物 / 无消息 / 无前置 / 无下游 / 没有 brief / 没有返回消息），`ui.js` 的 `EmptyState` |
 | 加载态 | 首帧 5 张骨架卡（`SkeletonList`，`ui.js`）、产物库 3 张、抽屉骨架；刷新按钮转圈（`.orch-spin`）；抽屉内预览加载占位 |
 | 错误态 | 快照错误「台账暂不可用：…」+ 重试；动作错误带错误码（`失败（CODE）：…`）；产物加载失败 + 重试；抽屉详情失败 + 「重新加载」；预览失败 |
@@ -107,17 +107,22 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 > P8 计划模式：任务卡状态旁有「计划中」小标（仅 `planState==='planning'`）、卡片 meta 有「计划·…」chip，
 > 抽屉概览有「计划」行、抽屉副标题有「计划：…」；均来自 `snapshot`/`detail` 的 `planFirst`/`planState`，前端只读。
 
-底部动作条：停止（二次确认）、重派、追加消息、打开子会话、删除（二次确认）。
+> 两段式终态（`delivered` = 已交付待确认）：状态徽标用 `STATUS_LABEL.delivered`「待确认」/ `STATUS_TONE.delivered` 暖色；
+> 「待你决定」筛选含 `delivered`（`logic.js` 的 `matchesFilter`）；抽屉概览多「交付」（`deliveredAt` + 待确认文案）与
+> 「关闭」（`closeReasonLabel`）两行，列表行与抽屉都带「确认交付」。
 
-按钮可见性由服务端 `src/panel-gates.js` 判定，快照/详情下发 `canFollowup` / `canDelete`，前端只读：
+底部动作条：停止（二次确认）、重派、追加消息、确认交付（二次确认）、打开子会话、删除（二次确认）。
 
-- 「追加消息」只在可续派状态显示（`running` / `waiting_user` / `waiting_auth`，且已有子会话）；终态、等前置、待派发、失败任务都不显示（失败任务改用「重派」）。
+按钮可见性由服务端 `src/panel-gates.js` 判定，快照/详情下发 `canFollowup` / `canClose` / `canDelete`，前端只读：
+
+- 「追加消息」只在可续派状态显示（`running` / `waiting_user` / `waiting_auth` / `delivered`，且已有子会话）；终态、等前置、待派发、失败任务都不显示（失败任务改用「重派」）。
+- 「确认交付」只在 `delivered` 显示（`canClose`，与工具 `task_close` 同源；`done` 的重复确认按幂等提示「任务已完成，无需重复确认」），列表行与抽屉都以「确认交付」按钮 + 两步确认呈现。
 - 「删除」只在终态显示（`done` / `failed` / `cancelled` / `orphaned`）且没有活跃下游依赖；活跃任务不显示删除，抽屉底部给一句「进行中/等派发的任务不能删除：先「停止」再删。」。删除只清台账（任务 + 消息 + 通知），产物文件/记忆不动。
 
 ## 5. 验证
 
 ```bash
-npm test            # 672 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、续派与删除门控、P8 计划模式用例
+npm test            # 767 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、续派与确认交付/删除门控、P8 计划模式、两段式终态用例
 npm run check:client
 ```
 
