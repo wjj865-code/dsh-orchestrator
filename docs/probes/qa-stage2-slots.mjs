@@ -235,8 +235,11 @@ if (leading[0]?.component) {
   if (typeof leading[0].spec?.inject === 'function') {
     try { props = leading[0].spec.inject({}) ?? {} } catch (e) { warn('spec.inject 调用异常', e.message) }
   }
+  // U1：任务入口闸门由 inject 的 hooks.mainView 提供；探针直接喂 useMainView 模拟「主会话 / 非主会话」。
+  check('leading inject 暴露 hooks.mainView（任务入口闸门）',
+    typeof props?.hooks?.mainView?.getSnapshot === 'function', Object.keys(props?.hooks ?? {}).join(','))
   let tree
-  try { tree = leading[0].component(props) } catch (e) { warn('组件无法直接调用（可能用了 hooks），跳过点击验证', e.message) }
+  try { tree = leading[0].component({ ...props, useMainView: selector => selector(true) }) } catch (e) { warn('组件无法直接调用（可能用了 hooks），跳过点击验证', e.message) }
   const clicks = []
   walk(tree, (n) => { if (n.props && typeof n.props.onClick === 'function') clicks.push(n.props.onClick) })
   if (tree) {
@@ -246,6 +249,10 @@ if (leading[0]?.component) {
     }
     check("点击触发 ctx.layout.selectPanel('orchestrator')", selectPanelCalls.includes('orchestrator'), JSON.stringify(selectPanelCalls))
   }
+  // 非主会话：任务入口必须隐藏（组件返回 null），不能只是视觉禁用。
+  let hiddenTree = 'skip'
+  try { hiddenTree = leading[0].component({ ...props, useMainView: selector => selector(false) }) } catch (e) { warn('隐藏态组件调用异常', e.message) }
+  if (hiddenTree !== 'skip') check('非主会话时任务入口隐藏（组件返回 null）', hiddenTree === null, JSON.stringify(hiddenTree))
 }
 
 // ---------- 面板渲染（假 React，状态筛选/空态/打开协调者） ----------

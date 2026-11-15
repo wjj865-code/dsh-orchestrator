@@ -5,8 +5,9 @@ import { listTasks, listHistoryTasks } from './ledger.js'
 import { taskCard } from './card.js'
 import { panelFailure, panelHttpStatus } from './action-errors.js'
 import { createRequestDedupe } from './request-dedupe.js'
+import { isMainSession } from './session-role.js'
 
-const ENDPOINTS = new Set(['snapshot'])
+const ENDPOINTS = new Set(['snapshot', 'session-role'])
 const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message'])
 const ACTIVE = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
 
@@ -82,6 +83,14 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
       }
       if (result?.ok === true) return json({ ok: true, sessionId: result.sessionId, created: result.created === true }, 200)
       return json(panelFailure('OPEN_MAIN_FAILED', { reason: result?.error ?? '创建主会话失败' }), 500)
+    }
+    if (endpoint === 'session-role') {
+      // 客户端面板闸门：只回答「这个会话是不是主会话」，不写台账、不建会话。
+      // 信号与 task_* 工具同源（coordinatorStatus → settings.main_session_id）；
+      // 任何一侧缺失都按 false 回答，客户端据此默认隐藏任务入口（见 src/session-role.js）。
+      const status = coordinatorStatus?.() ?? {}
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+      return json({ ok: true, isMain: isMainSession(sessionId, status.id) }, 200)
     }
     if (ACTIONS.has(endpoint)) {
       if (panel === undefined) return json(panelFailure('PANEL_ACTIONS_UNAVAILABLE'), 500)

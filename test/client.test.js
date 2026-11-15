@@ -6,12 +6,27 @@ import vm from 'node:vm'
 const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
-const load = () => {
+const load = (options = {}) => {
   const registrations = []
   const selected = []
   const opened = []
   const loadedIds = []
+  const cleanups = []
+  const sessionListeners = []
   let loaded
+  const services = { ...(options.services ?? {}) }
+  if (options.uiSession === true) {
+    services.uiSession = {
+      adapter: {
+        current: {
+          getSnapshot: () => ({
+            key: typeof options.currentSessionId === 'function' ? options.currentSessionId() : options.currentSessionId,
+          }),
+          subscribe: listener => { sessionListeners.push(listener); return () => {} },
+        },
+      },
+    }
+  }
   const ctx = {
     slots: {
       inject: (_name, factory) => { factory(); return () => {} },
@@ -19,6 +34,13 @@ const load = () => {
     },
     layout: { selectPanel: id => selected.push(id) },
     uiWorkspace: { openSession: id => opened.push(id) },
+    get: name => services[name],
+    // gate 在 apply 里通过 effect 启动；测试 fake 只记录清理函数，避免真的开定时器。
+    effect: callback => {
+      const dispose = callback()
+      cleanups.push(dispose)
+      return () => { if (typeof dispose === 'function') dispose() }
+    },
   }
   const requireFn = () => ({
     createElement: (type, props, ...children) => ({ type, props, children }),
@@ -30,9 +52,13 @@ const load = () => {
       },
     },
   }
+  // 只有显式给了 fetch 的用例才注入；默认（老用例）走「信号不可用 → 默认隐藏」的降级路径。
+  if (options.fetch !== undefined) sandbox.fetch = options.fetch
   vm.runInNewContext(source, sandbox)
-  return { loaded, ctx, registrations, selected, opened, loadedIds }
+  return { loaded, ctx, registrations, selected, opened, loadedIds, cleanups, sessionListeners }
 }
+
+const flush = async () => { await new Promise(resolve => setImmediate(resolve)) }
 
 // 回归：0.3.0 那次 npm 包名改成 @wjj865-code/dsh-orchestrator 后，client.js 仍注册
 // 无 scope 的 'dsh-orchestrator'，DSH client-modules 按包名索引 → 客户端半静默不加载
@@ -245,4 +271,141 @@ test('详情抽屉四区块：brief/消息/依赖/产物、空态与投递状态
   assert.match(source, /execCommand/)
   assert.match(source, /还没有产物/)
   assert.match(source, /还没有消息/)
+})
+
+// U1：任务入口（会话头「☰ 任务」）只在主会话显示；侧栏「◈ 主会话」跳转入口始终可见。
+test('任务入口闸门：默认隐藏；当前会话=主会话才显示；无会话/子会话/请求失败都隐藏', async () => {
+  const { loaded } = load()
+  const { createMainViewGate } = loaded.__test
+  let sessionId
+  let mode = 'ok'
+  const calls = []
+  const gate = createMainViewGate({
+    readSessionId: () => sessionId,
+    subscribeSession: () => () => {},
+    fetchRole: async id => {
+      calls.push(id)
+      if (mode === 'throw') throw new Error('offline')
+      if (mode === 'bad') return undefined
+      return id === 's-main'
+    },
+    timer: () => () => {},
+  })
+  assert.equal(gate.getSnapshot(), false, '未判定前默认隐藏')
+  await gate.refresh()
+  assert.equal(gate.getSnapshot(), false, '没有当前会话时隐藏')
+  assert.deepEqual(calls, [], '没有会话 id 就不该请求宿主')
+  sessionId = 'c-child'
+  await gate.refresh()
+  assert.equal(gate.getSnapshot(), false, '其他会话（子会话）隐藏')
+  assert.deepEqual(calls, ['c-child'])
+  sessionId = 's-main'
+  await gate.refresh()
+  assert.equal(gate.getSnapshot(), true, '主会话显示')
+  mode = 'throw'
+  await gate.refresh()
+  assert.equal(gate.getSnapshot(), false, '信号不可用（请求失败）→ 默认隐藏')
+  mode = 'bad'
+  await gate.refresh()
+  assert.equal(gate.getSnapshot(), false, '响应不是 ok:true → 默认隐藏')
+})
+
+test('任务入口闸门：start 订阅会话变化 + 5 秒兜底轮询，失败后能重试恢复', async () => {
+  const { loaded } = load()
+  const { createMainViewGate } = loaded.__test
+  let sessionId = 'c-child'
+  let online = true
+  const listeners = []
+  const timers = []
+  const gate = createMainViewGate({
+    readSessionId: () => sessionId,
+    subscribeSession: listener => { listeners.push(listener); return () => {} },
+    fetchRole: async id => {
+      if (!online) throw new Error('offline')
+      return id === 's-main'
+    },
+    timer: (run, ms) => { timers.push({ run, ms }); return () => {} },
+  })
+  const stop = gate.start()
+  await flush()
+  assert.equal(gate.getSnapshot(), false)
+  assert.equal(timers.length, 1)
+  assert.equal(timers[0].ms, 5000, '兜底轮询间隔 5 秒')
+  // 会话切换到主会话：订阅立即重判，不等轮询。
+  sessionId = 's-main'
+  for (const listener of listeners) listener()
+  await flush()
+  assert.equal(gate.getSnapshot(), true)
+  // 信号失败 → 隐藏；恢复后轮询重试能重新显示。
+  online = false
+  await gate.refresh()
+  assert.equal(gate.getSnapshot(), false)
+  online = true
+  await gate.refresh()
+  assert.equal(gate.getSnapshot(), true)
+  stop()
+})
+
+test('任务入口渲染：主会话显示「☰ 任务」，切子会话/信号失败隐藏；侧栏「主会话」入口始终注册', async () => {
+  let currentId = 's-main'
+  let offline = false
+  const fetchCalls = []
+  const { loaded, ctx, registrations, sessionListeners } = load({
+    uiSession: true,
+    currentSessionId: () => currentId,
+    fetch: async (url, init) => {
+      const body = JSON.parse(init.body)
+      fetchCalls.push(body)
+      if (offline) throw new Error('offline')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, isMain: body.sessionId === 's-main' }),
+      }
+    },
+  })
+  loaded.apply(ctx)
+  await flush()
+  const header = registrations.find(row => row.spec.name === 'conversation.header.leading')
+  assert.ok(header, '会话头槽位仍注册（隐藏只是组件返回 null）')
+  const injected = header.spec.inject()
+  assert.equal(typeof injected.hooks.mainView.getSnapshot, 'function')
+  assert.equal(injected.hooks.mainView.getSnapshot(), true)
+  assert.deepEqual(fetchCalls, [{ endpoint: 'session-role', sessionId: 's-main' }])
+  const render = value => header.component({
+    openPanel: () => {},
+    useMainView: selector => selector(value),
+  })
+  const shown = render(injected.hooks.mainView.getSnapshot())
+  assert.equal(shown.type, 'button')
+  assert.equal(shown.children[0], '\u2630 任务')
+  // 切到子会话：任务入口隐藏（组件返回 null），槽位本身不消失。
+  currentId = 'c-child'
+  for (const listener of sessionListeners) listener()
+  await flush()
+  assert.equal(injected.hooks.mainView.getSnapshot(), false)
+  assert.equal(render(injected.hooks.mainView.getSnapshot()), null)
+  assert.ok(registrations.some(row => row.spec.name === 'conversation.header.leading'))
+  // 侧栏「◈ 主会话」跳转入口不受闸门影响：始终注册、id/order/label 不变。
+  const launcher = registrations.find(row => row.spec.name === 'sidebar.panellist')
+  assert.ok(launcher, '侧栏「主会话」入口始终注册')
+  assert.equal(launcher.spec.id, 'orchestrator-launcher')
+  assert.equal(launcher.spec.order, 5)
+  assert.equal(launcher.spec.label(), '主会话')
+  // 信号不可用（网络失败）→ 任务入口默认隐藏。
+  currentId = 's-main'
+  offline = true
+  await injected.hooks.mainView.refresh()
+  assert.equal(injected.hooks.mainView.getSnapshot(), false)
+  assert.equal(render(injected.hooks.mainView.getSnapshot()), null)
+})
+
+test('任务入口闸门源码：session-role 端点 + uiSession/sessions 信号 + 默认隐藏', () => {
+  assert.match(source, /endpoint: 'session-role'/)
+  assert.match(source, /adapter\?\.current\?\.getSnapshot/)
+  assert.match(source, /retainedBy\?\.mainView/)
+  assert.match(source, /createMainViewGate/)
+  assert.match(source, /hooks: \{ mainView \}/)
+  assert.match(source, /useMainView/)
+  assert.match(source, /if \(visible !== true\) return null/)
 })

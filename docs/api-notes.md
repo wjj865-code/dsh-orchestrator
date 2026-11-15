@@ -126,6 +126,10 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 - 白名单：主会话由协调者预设的 `preset-tools` 用 deny 补集定型（只留 5 个 `task_*`，`ask_user_question` 由预设自有行提供）；配置覆盖的会话没有预设保证，保留运行期 `restrict` + `wait_agent` guard 兜底。
 - 双预设：子会话由 dispatch 显式带 `dsh-orchestrator-worker`（`startActivation.request.agentPreset`），绕开 `composeFrom` 的父预设工具继承；worker 预设必须自带工具行（空 `plugins` 不会继承 profile 全量工具）。
 - `spawnProvider` 只支持 `spawn`（fork 不满足 `capabilities.agentPreset`）；不是 `spawn` 时打开主会话返回可读错误，不静默降级。
+- 客户端入口判定：`/api/orchestrator` 新增只读端点 `session-role`（`{ sessionId }` → `{ ok:true, isMain }`）。
+  宿主用 `coordinatorStatus().id`（`config.coordinatorSession` → `settings.main_session_id`）与请求里的 sessionId 走
+  `src/session-role.js` 的 `isMainSession` 比较；任一侧缺失/不等都回 `isMain:false`。客户端只在 `isMain:true` 时显示
+  会话头「☰ 任务」，信号不可用时默认隐藏；侧栏「◈ 主会话」入口不经过该判定，始终可见。
 
 ## 8. 工作区推断与 artifacts（阶段 3 增量）
 

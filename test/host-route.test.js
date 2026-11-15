@@ -157,6 +157,8 @@ test('调用所有端点后台账零写入', async () => {
   const before = counts(db)
   await handler(request({ endpoint: 'snapshot' }))
   await handler(request({ endpoint: 'snapshot' }))
+  await handler(request({ endpoint: 'session-role', sessionId: 's-1' }))
+  await handler(request({ endpoint: 'session-role', sessionId: 'c-1' }))
   await handler(request({ endpoint: 'nope' }))
   assert.deepEqual(counts(db), before)
   db.close()
@@ -168,6 +170,36 @@ test('未打开主会话：mainSession.id 为 null (JSON null)', async () => {
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
   assert.equal(body.mainSession.id, null)
   assert.equal(body.mainSession.live, false)
+  db.close()
+})
+
+test('session-role：任务入口判定——只在当前会话就是主会话时 isMain=true', async () => {
+  const db = await openLedger(tempDir())
+  const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-main', live: true }) })
+  const main = await handler(request({ endpoint: 'session-role', sessionId: 's-main' }))
+  assert.equal(main.status, 200)
+  assert.deepEqual(await main.json(), { ok: true, isMain: true })
+  const child = await handler(request({ endpoint: 'session-role', sessionId: 'c-child' }))
+  assert.deepEqual(await child.json(), { ok: true, isMain: false })
+  // 语义：只要不是主会话（含子会话、空 body、空串）都隐藏任务入口。
+  assert.equal((await (await handler(request({ endpoint: 'session-role' }))).json()).isMain, false)
+  assert.equal((await (await handler(request({ endpoint: 'session-role', sessionId: '' }))).json()).isMain, false)
+  assert.equal((await (await handler(request({ endpoint: 'session-role', sessionId: 42 }))).json()).isMain, false)
+  db.close()
+})
+
+test('session-role：主会话未打开 / coordinatorStatus 缺失时降级为 false（默认隐藏）', async () => {
+  const db = await openLedger(tempDir())
+  const noMain = createHostRoute({ db, coordinatorStatus: () => ({ id: undefined, live: false }) })
+  assert.deepEqual(
+    await (await noMain(request({ endpoint: 'session-role', sessionId: 's-main' }))).json(),
+    { ok: true, isMain: false },
+  )
+  const noStatus = createHostRoute({ db })
+  assert.deepEqual(
+    await (await noStatus(request({ endpoint: 'session-role', sessionId: 's-main' }))).json(),
+    { ok: true, isMain: false },
+  )
   db.close()
 })
 

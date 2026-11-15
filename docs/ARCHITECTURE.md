@@ -6,7 +6,7 @@
 
 - **协调者**：唯一主会话，固定入口；只拆任务、派子会话、看回报，不读写文件、不执行命令。
 - **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；能力不受限，另有两个插件工具：`task_report`（回报）与 `task_detail`（只读任务创建详情）。
-- **客户端**：侧栏「主会话」入口 + 会话头「任务」面板；只读快照 + 面板动作。
+- **客户端**：侧栏「主会话」入口（始终可见）+ 会话头「任务」面板（仅主会话可见）；只读快照 + 面板动作。
 
 ## 主会话
 
@@ -19,6 +19,19 @@
 `open-main` 会确保「指挥舱」工作区存在，用协调者预设 `dsh-orchestrator-coordinator` 创建会话，`rename` 成「主会话」，写入 `settings.main_session_id`，然后跳到该会话。
 
 复用判定以台账 `settings.main_session_preset` 为准；UI 空白会话可能被 rebind 成默认预设，插件会在 `agent/created` 和复用前调用 `agentPresets.select` 拉回，失败只记日志并由 guard 兜底。
+
+### 入口可见性（U1）
+
+- **任务入口（会话头「☰ 任务」）只在主会话显示**：`client.js` 的 `createMainViewGate` 判「当前会话是不是主会话」。
+  - 当前会话信号：`uiSession.adapter.current.getSnapshot().key`（优先），取不到退 `sessions.list.getSnapshot().byId` 里
+    `retainedBy.mainView > 0` 的会话 id（与 ds-bot 的 `shownSession()` 同口径）。
+  - 身份判定：POST `/api/orchestrator` 的 `session-role` → `src/host-route.js` 用 `coordinatorStatus().id` 与请求里的 `sessionId`
+    走 `src/session-role.js` 的 `isMainSession`；信号与 `task_*` 工具、通知投递同源（台账 `main_session_id`）。
+  - 渲染：`conversation.header.leading` 的 inject 暴露 `hooks.mainView`，`HeaderButton` 在 `useMainView` 为 false/缺失时返回 `null`。
+  - 降级（fail-closed）：没有当前会话 id、宿主路由不可用、HTTP/JSON 失败、响应不是 `ok:true` 一律隐藏；失败结果不缓存，
+    换会话立即重判，另有 5 秒兜底轮询重试。同一会话的明确答案缓存，避免会话列表频繁刷新时刷请求。
+- **侧栏「◈ 主会话」跳转入口始终注册/可见**，不参与主会话判定：它是首次创建主会话的引导入口，不能因为「还没有主会话」而消失。
+- 面板主体仍然注册为 `main` keyed 槽位（`key:'orchestrator'`）；入口隐藏不等于面板消失，`selectPanel('orchestrator')` 仍可用（供其他入口/排障）。
 
 ## 队列与并发
 
