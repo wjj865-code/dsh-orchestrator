@@ -5,8 +5,10 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
-// P7 / T7.1 构建契约：只断言「vite 产出的 dist/client.js 符合平台契约」。
-// UI 行为的不变量仍由 test/client.test.js 读源码断言（T7.3 才拆成 client-source.test.js）。
+// P7 构建契约：只断言「vite 产出的 dist/client.js 符合平台契约」。
+// T7.1 立契约（空壳产物）；T7.2 搬完源码后同一批断言继续成立，另加「产物里真有 UI」与
+// 「apply 注册 4 个槽位」「__test 出口保留」三条，防止搬完只留下空壳。
+// UI 行为的不变量仍由 test/client.test.js 覆盖（T7.3 才拆成 client-source.test.js）。
 const root = new URL('../', import.meta.url)
 const distPath = new URL('../dist/client.js', import.meta.url)
 const mapPath = new URL('../dist/client.js.map', import.meta.url)
@@ -75,23 +77,63 @@ test('产物工厂形状：factory 返回 { inject, apply }，inject 覆盖三�
     assert.ok(loaded.inject.includes(service), `inject 缺 ${service}`)
   }
   assert.equal(typeof loaded.apply, 'function')
-  // 空壳阶段 apply 只做占位：给一个最小 ctx 也不应抛错（T7.2 搬入 UI 后这条会换成真实断言）。
-  assert.doesNotThrow(() => loaded.apply({}))
+  // T7.2 起 apply 会注册真实 UI：给最小 ctx 应能跑完，且四个槽位都注册上。
+  const registered = []
+  const ctx = {
+    slots: {
+      inject: (_name, factory) => { factory(); return () => {} },
+      register: (spec, component) => { registered.push({ spec, component }); return () => {} },
+    },
+    layout: { selectPanel: () => {} },
+    uiWorkspace: { openSession: () => {} },
+    get: () => undefined,
+    effect: callback => { const dispose = callback(); if (typeof dispose === 'function') dispose() },
+  }
+  assert.doesNotThrow(() => loaded.apply(ctx))
+  const slots = registered.map(row => row.spec.name)
+  assert.deepEqual(slots, ['main', 'main', 'sidebar.panellist', 'conversation.header.leading'])
+  assert.deepEqual(registered.filter(row => row.spec.name === 'main').map(row => row.spec.key).sort(),
+    ['orchestrator', 'orchestrator-launcher'])
+})
+
+test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dist/client.js', () => {
+  // 空壳产物 341 B；搬完源码后接近 100 KB。这条阈值只是「别把 UI 弄丢」的粗护栏。
+  assert.ok(statSync(distPath).size > 50_000, `产物只有 ${statSync(distPath).size} B，像是空壳`)
+  for (const marker of ['orch-shell', 'orch-drawer', 'orch-skeleton', 'createMainViewGate', 'open-main']) {
+    assert.ok(artifact.includes(marker), `产物缺少 UI 标记 ${marker}`)
+  }
+  // CSS 走 ?inline 内联：构建后整张表以字符串形式出现在产物里。
+  assert.ok(artifact.includes('.orch-shell {'), '样式表未内联进产物（?inline 失效？）')
+  assert.ok(artifact.includes('@keyframes orch-shimmer'))
+  // __test 出口保留（T7.2 验收点：单测经它验纯逻辑与闸门）。
+  const { loaded } = loadArtifact()
+  assert.deepEqual(Object.keys(loaded.__test).sort(), [
+    'STYLE_TEXT', 'TONE_COLOR', 'artifactDate', 'artifactProject', 'countTasks',
+    'createMainViewGate', 'groupArtifacts', 'matchesFilter', 'matchesQuery',
+  ])
 })
 
 test('源码守约束 1：client/src/** 不出现打包 react 的写法（React 只能 req("react")）', () => {
   const files = readdirSync(new URL('../client/src/', import.meta.url), { recursive: true })
     .filter(file => String(file).endsWith('.js'))
   assert.ok(files.length > 0, 'client/src/** 里应有 ESM 源码')
+  // T7.2 的模块边界：入口 / 装配 / 视图 / 展示件 / 样式 / 纯逻辑 / API / 闸门 / 常量。
+  for (const expected of [
+    'index.js', 'client.js', 'views.js', 'ui.js', 'styles.js', 'styles.css',
+    'logic.js', 'api.js', 'gate.js', 'constants.js',
+  ]) {
+    assert.ok(existsSync(new URL(`../client/src/${expected}`, import.meta.url)), `缺少源码文件 client/src/${expected}`)
+  }
   for (const file of files) {
     const text = readFileSync(new URL(`../client/src/${file}`, import.meta.url), 'utf8')
     assert.doesNotMatch(text, /from\s*['"]react['"]/, `${file} 不得 import react（会导致双 React）`)
     assert.doesNotMatch(text, /require\(\s*['"]react['"]\s*\)/, `${file} 不得直接 require react（只能从 factory 的 req 参数拿）`)
   }
-  // 入口必须走平台的 factory 注册协议，且不自己导出任何东西。
+  // 入口只负责注册 factory：UI 装配在 client.js，产物才是摊平后的 classic script。
   const entry = readFileSync(entryPath, 'utf8')
   assert.match(entry, /window\.__ModuleLoader__\.load\(/)
-  assert.doesNotMatch(entry, /^\s*(?:import|export)\s/m, '入口顶层不得 import/export')
+  assert.match(entry, /import \{ createClient \} from '\.\/client\.js'/)
+  assert.match(entry, /factory: req => createClient\(req\)/)
 })
 
 test('生效路径不悬空：exports["./client"] 指向的文件必须真实存在于仓库', () => {

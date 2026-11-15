@@ -328,10 +328,13 @@ npm run mirror:sync    # 没有就 PUT 同步请求并等到出现；--no-wait �
 ## 开发
 
 ```bash
-npm test                # node:test
-npm run check:client    # client.js 语法
+npm test                # node:test（pretest 先 npm run build）
+npm run build           # client/src/** --vite--> dist/client.js（平台加载的产物）
+npm run check:client    # dist/client.js 语法
 node docs/probes/api-probe.mjs
 ```
+
+> 改面板/详情 = 改 `client/src/**` 再 `npm run build`；`dist/` 入库，别手改产物。
 
 本地 link 安装（开发用）：在 profile 的 `package.json` 加
 

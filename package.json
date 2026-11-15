@@ -7,14 +7,14 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
-    "./client": "./client.js",
+    "./client": "./dist/client.js",
     "./preset-tools": "./preset-tools.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
-    "client.js",
+    "dist/",
     "preset-tools.js",
     "src/",
     "scripts/",

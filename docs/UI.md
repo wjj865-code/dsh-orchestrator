@@ -1,11 +1,13 @@
 # 面板与详情 UI（U2）
 
 任务面板（会话头「☰ 任务」打开的那个 `main` 面板）与详情抽屉的界面规范：
-DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化交互。实现全部在 `client.js`，
-样式表在运行时注入（客户端插件是经典脚本，不能 `import` CSS）。
+DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化交互。实现全部在 `client/src/**`（ESM 源码），
+由 vite 构建成 `dist/client.js`；产物是平台要求的 classic script，**不能 `import` CSS**，
+所以样式表以 `?inline` 内联回 JS、运行时注入。
 
-- 代码：`client.js`（`STYLE_TEXT` 从第 76 行开始，`ensureStyles` 在 786 行）
-- 测试：`test/client.test.js` 的 `U2 …` 用例组
+- 代码：`client/src/views.js`（面板 / 抽屉 / 启动器 / 会话头按钮）、`client/src/styles.css`（整张样式表）、
+  `client/src/styles.js`（`ensureStyles`）、`client/src/ui.js`（图标 / 徽标 / 空态 / 骨架）
+- 测试：`test/client.test.js` 的 `U2 …` 用例组（行为断言跑 `dist/client.js`，源码断言读 `client/src/**`）
 - 相关：[ARCHITECTURE.md](ARCHITECTURE.md#面板与详情ui-u2)、[README](../README.md#面板长什么样u2)
 
 ## 1. 三段式布局
@@ -28,17 +30,17 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 
 | 段 | 结构 | 代码位置 |
 | --- | --- | --- |
-| ① 顶部命令栏 | `.orch-shell > .orch-topbar`（标题、主会话状态、搜索、刷新、打开主会话） | `client.js:1514`；样式 `client.js:92` |
-| ① 概览卡 | `.orch-metrics`（进行中/待你决定/已完成/失败，点击即切筛选） | `client.js:1544`；样式 `client.js:226` |
-| ② 筛选轨 | `.orch-body > .orch-rail`（7 个筛选项，带计数徽标） | `client.js:1557`；样式 `client.js:278` |
-| ② 列表区 | `.orch-main`（提示条 + 任务卡 / 产物库） | `client.js:1576`、`client.js:1612`、`client.js:1754`、`client.js:1804`；样式 `client.js:362` |
-| ③ 右侧抽屉 | `.orch-layer > .orch-scrim + .orch-drawer`（常驻挂载，`data-open` 驱动滑入） | `client.js:2060`、`client.js:2097`；样式 `client.js:512`、`client.js:521` |
+| ① 顶部命令栏 | `.orch-shell > .orch-topbar`（标题、主会话状态、搜索、刷新、打开主会话） | `views.js`（`topbar()`）；样式 `styles.css` |
+| ① 概览卡 | `.orch-metrics`（进行中/待你决定/已完成/失败，点击即切筛选） | `views.js`（`metrics()`）；样式 `styles.css` |
+| ② 筛选轨 | `.orch-body > .orch-rail`（7 个筛选项，带计数徽标） | `views.js`（`rail()`）；样式 `styles.css` |
+| ② 列表区 | `.orch-main`（提示条 + 任务卡 / 产物库） | `views.js`（`alerts()` / `renderTask()` / `artifactView()` / `listView()`）；样式 `styles.css` |
+| ③ 右侧抽屉 | `.orch-layer > .orch-scrim + .orch-drawer`（常驻挂载，`data-open` 驱动滑入） | `views.js`（`drawerContent()` / `drawerBody()`）；样式 `styles.css` |
 
 要点：
 
 - 抽屉**常驻挂载**，只切 `data-open`：关闭时 `transform: translateX(102%)` 滑出，不是直接卸载（否则没有动画）。
-- 遮罩 `.orch-scrim` 用 `--dsw-alias-bg-mask-1`，点击遮罩、点关闭按钮、按 `Esc` 都关抽屉（`client.js:1343` 的 `drawerOpen` 副作用）。
-- 窄屏（≤860px）筛选轨变横向条、指标两列；≤640px 抽屉铺满（`client.js:756`）。
+- 遮罩 `.orch-scrim` 用 `--dsw-alias-bg-mask-1`，点击遮罩、点关闭按钮、按 `Esc` 都关抽屉（`views.js` 里 `drawerOpen` 的副作用）。
+- 窄屏（≤860px）筛选轨变横向条、指标两列；≤640px 抽屉铺满（`styles.css` 的媒体查询）。
 
 ## 2. 设计 token 落地（--dsw-*）
 
@@ -49,27 +51,27 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 
 | 用途 | token | 代码 |
 | --- | --- | --- |
-| 画布底色 | `--dsw-alias-bg-base` | `client.js:84` |
-| 顶栏/抽屉头尾底色 | `--dsw-alias-bg-layer-1` | `client.js:99` |
-| 卡片/抽屉/输入聚焦面 | `--dsw-alias-bg-layer-2` | `client.js:260` |
-| 卡片底色 / hover | `--dsw-alias-card-fill` / `-hover` | `client.js:241`、`client.js:253` |
-| 正文三档文字 | `--dsw-alias-label-primary/secondary/tertiary` | `client.js:85`、`client.js:166`、`client.js:119` |
-| 描边三档 | `--dsw-alias-border-l1/l2/l3` | `client.js:98`、`client.js:133`、`client.js:143` |
-| 选中描边（打开中的卡/指标） | `--dsw-alias-border-selected` | `client.js:143`、`client.js:259` |
-| 悬停/按下交互层 | `--dsw-alias-interactive-bg-hover` / `-active` | `client.js:178`、`client.js:181` |
-| 危险悬停 | `--dsw-alias-interactive-bg-hover-danger` | `client.js:199` |
-| 主按钮 | `--dsw-alias-button-primary-fill` + `--dsw-alias-label-primary-inverted` | `client.js:189` |
-| 圆角阶 | `--dsw-radius-xs/sm/md/lg` | `client.js:412`、`client.js:109`、`client.js:240`、`client.js:750` |
-| 悬浮阴影 / 抽屉高度 | `--dsw-shadow-lv1` / `--dsw-elevation-prominent` | `client.js:255`、`client.js:533` |
-| 骨架底色 | `--dsw-alias-bg-skeleton` | `client.js:489` |
-| 遮罩 | `--dsw-alias-bg-mask-1` | `client.js:515` |
-| 焦点环 | `--dsw-focus-ring-color` | `client.js:144` |
-| 代码/预览底色 | `--dsw-alias-markdown-code-block` | `client.js:655` |
-| 用户消息气泡 | `--dsw-specific-bubble` | `client.js:671` |
-| 状态语义色 | `--dsw-alias-state-success/error/warn/business-primary` | `client.js:53`（`TONE_COLOR`）、`client.js:123` |
-| 动效曲线/时长 | `--ds-ease-in-out`、`--ds-transition-duration(-fast/-slow)` | `client.js:138` |
+| 画布底色 | `--dsw-alias-bg-base` | `styles.css` |
+| 顶栏/抽屉头尾底色 | `--dsw-alias-bg-layer-1` | `styles.css` |
+| 卡片/抽屉/输入聚焦面 | `--dsw-alias-bg-layer-2` | `styles.css` |
+| 卡片底色 / hover | `--dsw-alias-card-fill` / `-hover` | `styles.css` |
+| 正文三档文字 | `--dsw-alias-label-primary/secondary/tertiary` | `styles.css` |
+| 描边三档 | `--dsw-alias-border-l1/l2/l3` | `styles.css` |
+| 选中描边（打开中的卡/指标） | `--dsw-alias-border-selected` | `styles.css` |
+| 悬停/按下交互层 | `--dsw-alias-interactive-bg-hover` / `-active` | `styles.css` |
+| 危险悬停 | `--dsw-alias-interactive-bg-hover-danger` | `styles.css` |
+| 主按钮 | `--dsw-alias-button-primary-fill` + `--dsw-alias-label-primary-inverted` | `styles.css` |
+| 圆角阶 | `--dsw-radius-xs/sm/md/lg` | `styles.css` |
+| 悬浮阴影 / 抽屉高度 | `--dsw-shadow-lv1` / `--dsw-elevation-prominent` | `styles.css` |
+| 骨架底色 | `--dsw-alias-bg-skeleton` | `styles.css` |
+| 遮罩 | `--dsw-alias-bg-mask-1` | `styles.css` |
+| 焦点环 | `--dsw-focus-ring-color` | `styles.css` |
+| 代码/预览底色 | `--dsw-alias-markdown-code-block` | `styles.css` |
+| 用户消息气泡 | `--dsw-specific-bubble` | `styles.css` |
+| 状态语义色 | `--dsw-alias-state-success/error/warn/business-primary` | `constants.js`（`TONE_COLOR`）、`styles.css` |
+| 动效曲线/时长 | `--ds-ease-in-out`、`--ds-transition-duration(-fast/-slow)` | `styles.css` |
 
-> 顺带修掉一个旧 bug：U2 之前 `client.js` 用的是 `--dsw-alias-color-success` 这类变量，
+> 顺带修掉一个旧 bug：U2 之前客户端用的是 `--dsw-alias-color-success` 这类变量，
 > 宿主 token 表里**并不存在**（一直走 fallback，深色主题下颜色发脏）。现在统一成
 > `--dsw-alias-state-*` / `--dsw-alias-label-*` 语义 token，测试里有 `doesNotMatch` 守着。
 
@@ -77,16 +79,16 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 
 | 交互 | 实现 |
 | --- | --- |
-| hover | `.orch-card:hover`（底色 + 描边 + `--dsw-shadow-lv1`）、`.orch-btn:hover`、`.orch-metric:hover`（上浮 1px）、`.orch-rail-item:hover`、`.orch-section-head:hover`、`.orch-artifact:hover`（`client.js:177`、`client.js:252`、`client.js:376`、`client.js:612`） |
-| 动画/过渡 | 抽屉滑入滑出（`transform` + `--ds-transition-duration-slow`）、展开/折叠 `grid-template-rows: 0fr→1fr`（`client.js:616`）、chevron 旋转、内容入场 `@keyframes orch-slide-in`（`client.js:538`）、骨架 `@keyframes orch-shimmer`（`client.js:496`）、按钮 `transform: scale(.985)` 按下反馈 |
-| 二次确认 | 「停止」先变成「确认停止？/ 取消」，删除同样两步「确认删除？/ 取消」（`.orch-confirm`，`client.js:1464`、`client.js:1519`），不再用 `window.confirm`；动作进行中禁用按钮并显示「停止中…/重派中…/删除中…」 |
-| 空态 | `.orch-empty` 图标 + 标题 + 提示（无任务 / 无匹配 / 无产物 / 无消息 / 无前置 / 无下游 / 没有 brief / 没有返回消息），`client.js:463` |
-| 加载态 | 首帧 5 张骨架卡（`SkeletonList`，`client.js:857`）、产物库 3 张、抽屉骨架；刷新按钮转圈（`.orch-spin`）；抽屉内预览加载占位 |
+| hover | `.orch-card:hover`（底色 + 描边 + `--dsw-shadow-lv1`）、`.orch-btn:hover`、`.orch-metric:hover`（上浮 1px）、`.orch-rail-item:hover`、`.orch-section-head:hover`、`.orch-artifact:hover`（全在 `styles.css`） |
+| 动画/过渡 | 抽屉滑入滑出（`transform` + `--ds-transition-duration-slow`）、展开/折叠 `grid-template-rows: 0fr→1fr`、chevron 旋转、内容入场 `@keyframes orch-slide-in`、骨架 `@keyframes orch-shimmer`、按钮 `transform: scale(.985)` 按下反馈（`styles.css`） |
+| 二次确认 | 「停止」先变成「确认停止？/ 取消」，删除同样两步「确认删除？/ 取消」（`.orch-confirm`，`views.js` 的 `stopControl` / `deleteControl`），不再用 `window.confirm`；动作进行中禁用按钮并显示「停止中…/重派中…/删除中…」 |
+| 空态 | `.orch-empty` 图标 + 标题 + 提示（无任务 / 无匹配 / 无产物 / 无消息 / 无前置 / 无下游 / 没有 brief / 没有返回消息），`ui.js` 的 `EmptyState` |
+| 加载态 | 首帧 5 张骨架卡（`SkeletonList`，`ui.js`）、产物库 3 张、抽屉骨架；刷新按钮转圈（`.orch-spin`）；抽屉内预览加载占位 |
 | 错误态 | 快照错误「台账暂不可用：…」+ 重试；动作错误带错误码（`失败（CODE）：…`）；产物加载失败 + 重试；抽屉详情失败 + 「重新加载」；预览失败 |
-| 折叠 | 抽屉每个区块标题都是 `<button>`，`aria-expanded` + `0fr↔1fr` 过渡（`client.js:1858`） |
-| 搜索 | 顶栏搜索框按标题/编号/目录过滤（`matchesQuery`，`client.js:895`） |
+| 折叠 | 抽屉每个区块标题都是 `<button>`，`aria-expanded` + `0fr↔1fr` 过渡（`views.js` 的 `detailSection`） |
+| 搜索 | 顶栏搜索框按标题/编号/目录过滤（`matchesQuery`，`logic.js`） |
 | 键盘/无障碍 | `Esc` 关抽屉、`aria-expanded`/`aria-pressed`/`aria-hidden`/`aria-label`、`:focus-visible` 焦点环 |
-| 减少动效 | `@media (prefers-reduced-motion: reduce)` 关掉全部动画/过渡（`client.js:775`） |
+| 减少动效 | `@media (prefers-reduced-motion: reduce)` 关掉全部动画/过渡（`styles.css`） |
 
 ## 4. 详情抽屉内容（保留 A3/A4/B1/G1）
 
@@ -112,7 +114,7 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 ## 5. 验证
 
 ```bash
-npm test            # 626 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、续派与删除门控用例
+npm test            # 646 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、续派与删除门控用例
 npm run check:client
 ```
 
@@ -129,8 +131,8 @@ npm run check:client
 
 ## 6. 边界
 
-- **样式靠注入**：客户端插件不能 `import` CSS，`ensureStyles()` 按 `#dsh-orchestrator-styles` 去重注入；
-  注入失败只丢样式，面板逻辑仍可用（`client.js:786`）。
+- **样式靠注入**：产物是 classic script，不能 `import` CSS；`styles.css` 构建期以 `?inline` 内联成
+  `STYLE_TEXT`，`ensureStyles()` 按 `#dsh-orchestrator-styles` 去重注入；注入失败只丢样式，面板逻辑仍可用（`styles.js`）。
 - **单测不跑真 React**：`test/client.test.js` 用 React 垫片只渲染一帧（结构 + 骨架态）；
   有数据/抽屉/产物视图的渲染由一次性探针（白盒预置 hook 槽位）验证过，未进仓库。
 - **图标内联 SVG**：跟随 `currentColor`，随 token 变色；不使用平台 icon sprite（避免跨包私有符号）。

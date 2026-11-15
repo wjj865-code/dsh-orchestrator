@@ -1,9 +1,21 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import vm from 'node:vm'
 
-const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
+// P7 / T7.2：UI 源码在 `client/src/**`（ESM），平台加载的是 vite 产物 `dist/client.js`（classic script）。
+// - 行为断言跑**产物**：`vm.runInNewContext` 按 <script> 解析执行，与平台加载方式一致；
+// - 源码断言读**源码树**（含 `styles.css`）：确认「该有的代码/样式还在源码里」，防止只改产物或只改源码。
+// T7.3 会把这两类彻底拆成 client.test.js（契约，读产物）+ client-source.test.js（不变量，读源码）。
+const artifact = readFileSync(new URL('../dist/client.js', import.meta.url), 'utf8')
+const source = (() => {
+  const root = new URL('../client/src/', import.meta.url)
+  const files = readdirSync(root, { recursive: true })
+    .map(file => String(file).replaceAll('\\', '/'))
+    .filter(file => file.endsWith('.js') || file.endsWith('.css'))
+    .sort()
+  return files.map(file => readFileSync(new URL(file, root), 'utf8')).join('\n')
+})()
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
 const load = (options = {}) => {
@@ -70,7 +82,7 @@ const load = (options = {}) => {
   }
   // 只有显式给了 fetch 的用例才注入；默认（老用例）走「信号不可用 → 默认隐藏」的降级路径。
   if (options.fetch !== undefined) sandbox.fetch = options.fetch
-  vm.runInNewContext(source, sandbox)
+  vm.runInNewContext(artifact, sandbox)
   return { loaded, ctx, registrations, selected, opened, loadedIds, cleanups, sessionListeners, resetHooks, hooks }
 }
 
@@ -94,7 +106,10 @@ test('模块 id 回归：__ModuleLoader__.load({ id }) 必须等于 package.json
 })
 
 test('经典脚本：能被 <script> 解析，无顶层 import/export，id 等于包名', () => {
-  assert.doesNotMatch(source, /^\s*(import|export)\s/m)
+  // 产物必须是 classic script（源码是 ESM，由 vite 摊平）；平台用 <script> 直接加载它。
+  assert.doesNotMatch(artifact, /^\s*(import|export)\s/m)
+  // 源码是 ESM：入口靠 import 拉装配代码，产物才是摊平后的经典脚本。
+  assert.match(source, /^import /m)
   const { loaded } = load()
   assert.equal(loaded.id, pkg.name)
   assert.equal(typeof loaded.apply, 'function')
@@ -219,8 +234,10 @@ test('会话头按钮文案仍是任务面板', () => {
 })
 
 test('package.json 声明 client 产物与 dsh.client 清单', () => {
-  assert.equal(pkg.exports['./client'], './client.js')
-  assert.ok(pkg.files.includes('client.js'))
+  // 生效入口 = 构建产物（P7/T7.2 起）：平台原样 serve exports["./client"] 指向的文件。
+  assert.equal(pkg.exports['./client'], './dist/client.js')
+  assert.ok(pkg.files.includes('dist/'))
+  assert.equal(pkg.files.includes('client.js'), false, '产物入库后根目录不再有手写 client.js')
   assert.equal(pkg.dsh.client.platform, 'web')
   const inject = pkg.dsh.client.inject
   assert.ok(inject.includes('@deepseek-ai/dsh-client-ui-sidebar'))
@@ -426,7 +443,7 @@ test('任务入口闸门源码：session-role 端点 + uiSession/sessions 信号
   assert.match(source, /if \(visible !== true\) return null/)
 })
 
-// 面板首帧冒烟：client.js 里 TasksPanel 是整个 UI 的主体，之前只有源码正则断言。
+// 面板首帧冒烟：client/src/views.js 里的 TasksPanel 是整个 UI 的主体，之前只有源码正则断言。
 // 这条用例真的把组件渲染一次（React 垫片），确保三段式结构与加载态能出来，不会一挂载就抛。
 test('U2 面板首帧渲染：三段式结构 + 骨架加载态 + 抽屉默认关闭', () => {
   const { loaded, ctx, registrations, resetHooks } = load()
@@ -477,8 +494,9 @@ test('U2 面板首帧渲染：三段式结构 + 骨架加载态 + 抽屉默认�
 
 // ---------------------------------------------------------------------------
 // U2：DeepSeek 风格 + 三段式布局 + 右侧抽屉详情。
-// 面板样式写在 client.js 里的 STYLE_TEXT，运行时注入 <style id="dsh-orchestrator-styles">：
-// 客户端插件是经典脚本、不能 import CSS，hover/过渡/关键帧也只能靠样式表表达。
+// 面板样式写在 client/src/styles.css，构建期以 ?inline 内联成 STYLE_TEXT，运行时注入
+// <style id="dsh-orchestrator-styles">：客户端插件是经典脚本、不能 import CSS，
+// hover/过渡/关键帧也只能靠样式表表达。
 // ---------------------------------------------------------------------------
 
 test('U2 三段式布局：顶部命令栏 / 中部列表（筛选轨+任务卡）/ 右侧抽屉', () => {
@@ -583,7 +601,7 @@ test('U2 纯函数：筛选/计数与产物分组（按项目/日期）', () => 
     { id: 't-5', title: '取消', status: 'cancelled', artifacts: [] },
     { id: 't-6', title: '等前置', status: 'waiting_dep', artifacts: [] },
   ]
-  // 注意：client.js 跑在 vm 沙箱里，返回的数组/对象来自另一个 realm，
+  // 注意：产物跑在 vm 沙箱里，返回的数组/对象来自另一个 realm，
   // deepStrictEqual 会因原型不同判不等 —— 统一用 Array.from / Object.assign 搬回本 realm 再比。
   const plain = value => Object.assign({}, value)
   assert.deepEqual(plain(countTasks(tasks)), {

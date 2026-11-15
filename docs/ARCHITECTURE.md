@@ -22,7 +22,7 @@
 
 ### 入口可见性（U1）
 
-- **任务入口（会话头「☰ 任务」）只在主会话显示**：`client.js` 的 `createMainViewGate` 判「当前会话是不是主会话」。
+- **任务入口（会话头「☰ 任务」）只在主会话显示**：`client/src/gate.js` 的 `createMainViewGate` 判「当前会话是不是主会话」。
   - 当前会话信号：`uiSession.adapter.current.getSnapshot().key`（优先），取不到退 `sessions.list.getSnapshot().byId` 里
     `retainedBy.mainView > 0` 的会话 id（与 ds-bot 的 `shownSession()` 同口径）。
   - 身份判定：POST `/api/orchestrator` 的 `session-role` → `src/host-route.js` 用 `coordinatorStatus().id` 与请求里的 `sessionId`
@@ -234,14 +234,16 @@
 
 面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件，视觉规范见 [UI.md](UI.md)。四件事值得记在架构里：
 
-- **构建链与产物路径（P7）**：客户端源码在 `client/src/**`（ESM），由 `vite.client.config.mjs` 构建成
-  `dist/client.js`（iife classic script，配 `dist/client.js.map`），**产物入库**。平台 `clientExportOf()` 读
+- **构建链与产物路径（P7，T7.2 已切生效入口）**：客户端源码在 `client/src/**`（ESM），由 `vite.client.config.mjs`
+  构建成 `dist/client.js`（iife classic script，配 `dist/client.js.map`），**产物入库**。平台 `clientExportOf()` 读
   `package.json` 的 `exports["./client"]`，把那个文件**原样** serve 成 `/plugins/<id>/client.js`；路由只服务
-  这一个 JS（+ 同名 `.map`），`.css` 一律 404 → 样式必须 `?inline` 回 JS。当前处于 **T7.1（脚手架/空壳）**：
-  `exports["./client"]` 仍指向手写的 `client.js`，`dist/client.js` 只用来立契约；T7.2 把 UI 搬进 `client/src/**`
-  后才切到 `./dist/client.js`。改 UI = 改 `client/src/` + `npm run build`（`npm test` 经 `pretest` 自动构建）。
-- **样式表怎么进来的**：客户端插件是经典脚本（不能 `import` CSS），所以 `client.js` 把整张表写成 `STYLE_TEXT`
-  字符串，`ensureStyles()` 在 `apply()` 里按 `#dsh-orchestrator-styles` 去重注入 `<style>`。颜色/圆角/阴影/动效
+  这一个 JS（+ 同名 `.map`），`.css` 一律 404 → 样式必须 `?inline` 回 JS。当前 `exports["./client"]` 已指向
+  **`./dist/client.js`**（`files` 含 `dist/`），根目录不再有手写 `client.js`；改 UI = 改 `client/src/` + `npm run build`
+  （`npm test` 经 `pretest` 自动构建）。源码分模块：`index.js`（只注册 factory）→ `client.js`（装配 + `apply` +
+  `__test`）→ `views.js`（面板/抽屉/启动器）→ `ui.js`（展示件）、`styles.css`（样式表）、`logic.js`（纯函数）、
+  `api.js`（宿主 HTTP 契约）、`gate.js`（任务入口闸门）、`constants.js`（文案/常量）。
+- **样式表怎么进来的**：产物是 classic script（不能 `import` CSS），所以 `styles.css` 在构建期被 `?inline`
+  内联成 `STYLE_TEXT` 字符串，`ensureStyles()` 在 `apply()` 里按 `#dsh-orchestrator-styles` 去重注入 `<style>`。颜色/圆角/阴影/动效
   全部取宿主 `@deepseek-ai/dsh-client-ui-theme` 的 `--dsw-*` / `--ds-*` token，深浅色由宿主写在
   `body[data-ds-dark-theme]` 的 alias token 决定，面板不做任何主题判断。
 - **三段式**：① 顶部命令栏（标题/主会话状态/搜索/刷新/打开主会话）② 中部工作区（筛选轨 + 任务卡列表 / 产物库）
@@ -254,7 +256,7 @@
   投递状态落在 `messages.meta_json.delivery`（pending → delivered/failed，只改 meta 不加行）；A3 之前的旧消息按紧随其后的 `delivery_failed` 行推断。
 - **按钮可见性与动作门控同源**：`src/panel-gates.js` 是唯一判定（`followupGate` / `deleteGate`）。
   服务端面板动作与 `task_message` 工具都先过它；`snapshot`/`detail` 再把 `canFollowup` / `canDelete`
-  下发给客户端，`client.js` 只读这两个布尔值渲染按钮，不另抄一份状态表——避免「按钮在、点了 409」或反过来的分叉。
+  下发给客户端，`client/src/views.js` 只读这两个布尔值渲染按钮，不另抄一份状态表——避免「按钮在、点了 409」或反过来的分叉。
   续派 = `running` / `waiting_user` / `waiting_auth` 且已有子会话；删除 = `done` / `failed` / `cancelled` / `orphaned`
   且没有活跃下游依赖。删除只清台账行（任务 + messages + notifications），不删产物文件与 memories（见 LIMITATIONS）。
 
