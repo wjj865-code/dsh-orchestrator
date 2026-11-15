@@ -201,6 +201,32 @@
 
 `readOnly:true`（只认显式 true）会在 `agent/created` 一到就给子会话 append `sandbox/mode {mode:'read-only'}`，激活后再幂等补一次；续派/重启会再补。只读任务不注册 target 可写根。`backend:'team'` 没有会话级只读通道，会返回可读错误。
 
+## 计划阶段（P8）
+
+`planFirst:true` 的任务 = **只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**。不开 `planFirst` 的任务行为一字不改。
+
+- **进入**：`queue.pump` 从台账 `task.plan_first` 透传给 `dispatcher.spawn`；派发时复用 `ensureReadOnly`
+  （`agent/created` 一到先设、激活后幂等补，压首回合窗口），再用 **子 agent 作用域**的
+  `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode。`planMode` 服务缺失/拿不到只 warn，
+  降级为「只有只读沙箱」，派发不受影响。计划任务在批准前**不注册 target 可写根**。
+- **出口**：子会话只读探索后用 `task_report blocked` 上报计划（正文进 `question`），走既有的
+  blocked → 通知 → 用户 → `task_message` 续派闭环，**不用** `exit_plan_mode`（子会话没有直接人类，
+  批准请求会悬空）。插件在子会话 **agent 作用域** `agent.ctx.tools.guard` 拒绝 `exit_plan_mode`：
+  插件根的 `ctx.tools.guard` 是全局的，会误伤协调者，所以不能注册在那里。
+- **退出（批准）**：协调者 `task_message` 或面板「追加」投递成功、任务从 `waiting_user`/`waiting_auth`
+  回到 `running` 之后，`session.append('sandbox/mode', {mode:'workspace-write'})` +
+  `planMode.set(agent, false)` + 台账 `plan_state='approved'`；同时补登记 target 可写根
+  （rc.3 子会话 `header.cwd` 是父会话目录）。投递失败路径不碰 plan 状态（任务仍等你决定）。
+- **停止/终态**：`task_stop` 与结算/对账进终态时释放 guard；还在 `planning` 就结束的 `plan_state` 收口成
+  `rejected`，已 `approved` 的保留（历史里能看出批准过）。
+- **台账视图**：`plan_first`（0/1）+ `plan_state`（`none` / `planning` / `approved` / `rejected`）。
+  运行期真相在平台会话日志的 `plan/mode` 事件（重启/压缩由平台投影恢复），台账只是编排视图；
+  两者以续派/终态事件对齐，面板显示台账视图。
+- **面板/工具视图**：`snapshot` / `detail` 下发 `planFirst` / `planState`；任务卡「计划中」小标 +
+  「计划·…」chip、抽屉概览「计划」行；`task_list` 给「·计划中」标记，`task_status` 给「计划：」行。
+  非计划任务不下发任何计划字样。
+- **互斥**：`planFirst` 与 `readOnly` 在 `task_create` 创建期拒绝（只读任务永远不切回可写）。
+
 ## 目标目录推断
 
 不传 `target` 时，用 `title` + `goal` 匹配 `workspaceRegistry.list()` 的显示名与路径末段：

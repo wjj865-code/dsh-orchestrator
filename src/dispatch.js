@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { resolve as resolvePath } from 'node:path'
 import { messageText } from './last-message.js'
+import { EXIT_PLAN_MODE_DENIAL } from './plan-mode.js'
 
 let counter = 0
 
@@ -73,9 +74,11 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, description, prompt, signal, readOnly, taskId, goal }) {
+    async spawn({ name, description, prompt, signal, readOnly, planFirst, taskId, goal }) {
       // team 后端没有按会话设只读的通道：明确拒绝，避免台账标只读、实际可写。
       if (readOnly === true) throw new Error('team 后端不支持只读任务：只读需要 subagent 后端，请把 backend 改回 subagent')
+      // P8：计划模式同样依赖会话级沙箱 + 预设作用域的 planMode 服务，team 后端没有。
+      if (planFirst === true) throw new Error('team 后端不支持计划模式：计划模式需要 subagent 后端，请把 backend 改回 subagent')
       // 真实 spawnTeammate 要求 provider（fresh 用 'spawn'）和 AbortSignal，缺一个都会被拒。
       const input = {
         name: name ?? slugify(String(prompt ?? '').slice(0, 20)),
@@ -152,6 +155,14 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   const live = new Map()
   // 只读子任务：派发时把 childId 记下来，agent/created 一到就设沙箱（压首回合窗口）。
   const readOnlyChildren = new Set()
+  // P8 计划任务：同样在派发前登记，agent/created 一到就设只读 + 置 plan mode + 装 exit_plan_mode guard。
+  const planChildren = new Set()
+  // 子会话 agent 作用域 guard 的 disposer；按 childId 收口（任务终态/停止时释放，不留悬挂监听）。
+  const planGuards = new Map()
+  // planMode 服务缺失只 warn 一次/子会话（rc 包/预设没挂时每个任务都 warn 会刷日志）。
+  const planModeWarned = new Set()
+  // 已经成功置过 plan mode 的子会话：agent/created 与激活返回两条路都会调一次，靠它去重。
+  const planApplied = new Set()
   // 服务按调用时惰性取：插件加载顺序不保证 agents/sessions/sandboxPolicy 已就绪。
   const serviceOf = value => typeof value === 'function' ? value() : value
   // 可写根授权按 targetId → (Session 对象 → (目录 → disposer)) 记：同一会话 resume 前后可能有多个会话对象，
@@ -199,15 +210,111 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     }
   }
   // agent/created 早于首个模型请求，能压掉「首回合还没设只读」的窗口。
+  // P8：计划任务同一时机把 plan mode 置上并装 exit_plan_mode guard（都在 agent 作用域）。
   if (typeof onAgentCreated === 'function') {
     try {
       onAgentCreated(created => {
-        if (created?.id === undefined || !readOnlyChildren.has(created.id)) return
+        if (created?.id === undefined) return
+        const plan = planChildren.has(created.id)
+        if (!plan && !readOnlyChildren.has(created.id)) return
         ensureReadOnly(created.id, created.session)
+        if (!plan) return
+        installExitPlanGuard(created.id, created)
+        const applied = applyPlanMode(created.id, true, created)
+        try {
+          onEvent('subagent.plan-mode.entered', {
+            sessionId: created.id,
+            detail: { planMode: applied.outcome ?? null, reason: applied.ok === true ? null : (applied.reason ?? null) },
+          })
+        } catch { /* 审计事件失败不能外溢 */ }
       })
     } catch (error) {
       onWarn(`dsh-orchestrator: 订阅 agent/created 失败：${errorText(error)}`)
     }
+  }
+
+  // P8：取子 agent。planMode 装在 worker 预设作用域，只能从 `agent.ctx.get('planMode')` 拿
+  // （插件根作用域的 ctx.get 看不到预设作用域的服务）。
+  const childAgentOf = (childId, hint) => hint ?? serviceOf(agents)?.get?.(childId)
+
+  const planModeServiceOf = childAgent => {
+    const ctx = childAgent?.ctx
+    if (ctx === undefined) return undefined
+    try {
+      const service = typeof ctx.get === 'function' ? ctx.get('planMode') : ctx.planMode
+      return service ?? ctx.planMode
+    } catch {
+      return ctx.planMode
+    }
+  }
+
+  /** 置/关 plan mode；服务缺失、agent 还没出现、调用失败都只降级（只读沙箱仍在）。 */
+  const applyPlanMode = (childId, active, agentHint) => {
+    if (active === true && planApplied.has(childId)) return { ok: true, outcome: 'noop', skipped: true }
+    const childAgent = childAgentOf(childId, agentHint)
+    if (childAgent === undefined) return { ok: false, reason: 'agent-missing' }
+    const service = planModeServiceOf(childAgent)
+    if (service === undefined || typeof service.set !== 'function') {
+      if (!planModeWarned.has(childId)) {
+        planModeWarned.add(childId)
+        onWarn('dsh-orchestrator: planMode 服务不可用（平台未挂载或子会话预设作用域看不到），已降级为只有只读沙箱')
+      }
+      return { ok: false, reason: 'service-missing' }
+    }
+    try {
+      const outcome = service.set(childAgent, active === true)
+      if (active === true) planApplied.add(childId)
+      else planApplied.delete(childId)
+      return { ok: true, outcome }
+    } catch (error) {
+      onWarn(`dsh-orchestrator: 设置 plan mode 失败：${errorText(error)}`)
+      return { ok: false, reason: errorText(error) }
+    }
+  }
+
+  /**
+   * P8：子会话的 exit_plan_mode 一律拒绝，并指向 task_report blocked 出口。
+   * 必须注册在 agent 作用域（agent.ctx.tools.guard）：插件根的 ctx.tools.guard 是全局的，会误伤协调者。
+   */
+  const installExitPlanGuard = (childId, agentHint) => {
+    if (planGuards.has(childId)) return true
+    const childAgent = childAgentOf(childId, agentHint)
+    const tools = childAgent?.ctx?.tools
+    if (tools === undefined || typeof tools.guard !== 'function') return false
+    try {
+      const dispose = tools.guard(exec => {
+        if (exec?.name !== 'exit_plan_mode') return undefined
+        // agent 作用域本身已经限定；这里再挡一道，防止同一 ctx 被复用时的串扰。
+        const caller = exec?.agent?.id ?? exec?.agent?.session?.id
+        if (caller !== undefined && caller !== childId) return undefined
+        return EXIT_PLAN_MODE_DENIAL
+      })
+      if (typeof dispose === 'function') planGuards.set(childId, dispose)
+      return true
+    } catch (error) {
+      onWarn(`dsh-orchestrator: 安装 exit_plan_mode guard 失败：${errorText(error)}`)
+      return false
+    }
+  }
+
+  /** 计划期的 guard 收口：一段 activation 结束就释放，续派/冷恢复按 agent/created 重新装。 */
+  const releasePlanGuard = childId => {
+    const dispose = planGuards.get(childId)
+    if (dispose === undefined) return
+    planGuards.delete(childId)
+    try {
+      dispose()
+    } catch (error) {
+      onWarn(`dsh-orchestrator: 释放 exit_plan_mode guard 失败：${errorText(error)}`)
+    }
+  }
+
+  /** 任务终态/停止：guard + 计划登记一起收口（不再在后续 agent/created 里重新进入计划模式）。 */
+  const releasePlan = childId => {
+    planChildren.delete(childId)
+    planModeWarned.delete(childId)
+    planApplied.delete(childId)
+    releasePlanGuard(childId)
   }
   // 激活返回时子 Session 可能还没进表：等一次 session/created 再设只读，不阻塞派发。
   const ensureReadOnlyReady = childId => {
@@ -303,6 +410,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         try {
           live.delete(activation.childId)
           readOnlyChildren.delete(activation.childId)
+          releasePlanGuard(activation.childId)
           onEvent('subagent.settled', {
             taskId: activation.taskId,
             sessionId: activation.childId,
@@ -317,6 +425,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         try {
           live.delete(activation.childId)
           readOnlyChildren.delete(activation.childId)
+          releasePlanGuard(activation.childId)
           onEvent('subagent.failed', {
             taskId: activation.taskId,
             sessionId: activation.childId,
@@ -332,7 +441,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, label, prompt, signal, taskId, cwd, readOnly, goal }) {
+    async spawn({ name, label, prompt, signal, taskId, cwd, readOnly, planFirst, goal }) {
       const parent = requireAgent()
       // agent 已创建但 session 还没挂上时，平台 startActivation 会在 parent.session 上取 .id 抛 TypeError；
       // 这里先给可读错误，并由 queue 当成可重试（等会话就绪）。
@@ -343,6 +452,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       const childId = randomUUID()
       // 只读任务：在开始创建前记下 childId，agent/created 时立刻设沙箱；激活返回后再补一次幂等设置。
       if (readOnly === true) readOnlyChildren.add(childId)
+      // P8 计划任务：同一机制（只读沙箱是硬拦），另外在 agent 作用域置 plan mode + 装 exit guard。
+      if (planFirst === true) planChildren.add(childId)
       // 目标目录优先；没给就沿用父会话 cwd（保持旧行为）。
       const baseCwd = cwd ?? parent.session?.header?.cwd
       const activationPrompt = [{ type: 'text', text: String(prompt ?? '') }]
@@ -377,8 +488,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
           activation = await subagents.startActivation(legacySpec)
         }
       } catch (error) {
-        // 两次都失败：清掉只读登记，别攒废弃 UUID。
+        // 两次都失败：清掉只读/计划登记，别攒废弃 UUID。
         readOnlyChildren.delete(childId)
+        planChildren.delete(childId)
         throw error
       }
       onEvent('subagent.spawn.accepted', {
@@ -390,8 +502,20 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       activation.taskId = taskId
       track(activation)
       if (readOnly === true) ensureReadOnlyReady(activation.childId)
+      // P8：计划任务也走只读沙箱；plan mode 与 guard 尽量在激活返回时就装上，
+      // agent 还没进表时由 agent/created 那条路补（不阻塞派发）。
+      if (planFirst === true) {
+        ensureReadOnlyReady(activation.childId)
+        installExitPlanGuard(activation.childId)
+        const applied = applyPlanMode(activation.childId, true)
+        onEvent('subagent.plan-mode.entered', {
+          sessionId: activation.childId,
+          detail: { planMode: applied.outcome ?? null, reason: applied.ok === true ? null : (applied.reason ?? null) },
+        })
+      }
       // 目标目录才需要补可写根；只读任务绝不能注册可写根（否则「只读」有后门）。
-      if (readOnly !== true && typeof cwd === 'string' && cwd !== '') {
+      // 计划任务同理：批准前不注册，批准后的续派由 send() 按 readOnly=false 补。
+      if (readOnly !== true && planFirst !== true && typeof cwd === 'string' && cwd !== '') {
         void ensureWritableRoot(activation.childId, cwd, { wait: true }).catch(error => {
           onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
         })
@@ -447,6 +571,49 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       throw new Error(`投递失败：${lastError?.message ?? lastError}`)
     },
+    /**
+     * P8：用户批准计划后的恢复执行。沙箱切回 workspace-write（与 ensureReadOnly 同一入口、同一事件形状），
+     * 关 plan mode，并释放 exit_plan_mode guard（批准后不再需要）。
+     * 只由 tools.js / panel-actions.js 在「投递成功且任务回到 running」之后调用。
+     */
+    async approvePlan(target, targetDir) {
+      const session = childSessionOf(target)
+      let sandbox = 'missing'
+      if (session !== undefined) {
+        try {
+          if (typeof session.append === 'function') {
+            session.append('sandbox/mode', { mode: 'workspace-write' })
+            sandbox = 'workspace-write'
+            onEvent('subagent.sandbox.resumed', { sessionId: target, detail: { mode: 'workspace-write' } })
+          }
+        } catch (error) {
+          onWarn(`dsh-orchestrator: 计划批准后切换沙箱失败：${errorText(error)}`)
+        }
+      }
+      // rc.3 子会话 header.cwd 是父会话目录：批准后补 target 可写根（派发时计划任务跳过注册）。
+      if (sandbox === 'workspace-write' && typeof targetDir === 'string' && targetDir !== '') {
+        try {
+          await ensureWritableRoot(target, targetDir)
+        } catch (error) {
+          onWarn(`dsh-orchestrator: 计划批准后登记可写根失败：${errorText(error)}`)
+        }
+      }
+      const applied = applyPlanMode(target, false)
+      releasePlan(target)
+      onEvent('subagent.plan-mode.approved', {
+        sessionId: target,
+        detail: { sandbox, planMode: applied.outcome ?? null, reason: applied.ok === true ? null : (applied.reason ?? null) },
+      })
+      if (sandbox !== 'workspace-write') {
+        return {
+          ok: false,
+          reason: session === undefined ? `未拿到子会话 ${target}` : '沙箱模式写入失败（会话没有 append）',
+          sandbox,
+          planMode: applied.outcome ?? null,
+        }
+      }
+      return { ok: true, sandbox, planMode: applied.outcome ?? null }
+    },
     /** 有本地 activation 直接 dispose（提前取消）；没有（重启后）走 interrupt。两种都释放可写根。 */
     async stop(target, taskId) {
       try {
@@ -463,6 +630,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         return subagents.interruptByParent(target, parentSessionId(), 'continuable')
       } finally {
         releaseWritableRoot(target)
+        releasePlan(target)
         // G1：停止 = 放弃该目标，清掉平台 goal（不留下「active」误导后续续派/面板）。
         if (goalBridge !== undefined && typeof goalBridge.clear === 'function') {
           void Promise.resolve(goalBridge.clear(taskId, target)).catch(error => {
@@ -474,6 +642,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     /** 任务进入终态（done/cancelled/orphaned/failed）时由上层调用，释放该会话的可写根。 */
     releaseWritableRoots(target) {
       releaseWritableRoot(target)
+      releasePlan(target)
     },
     members() {
       return listChildren(parentSessionId()).catch(error => {
@@ -501,6 +670,8 @@ function createUnavailableDispatcher(reason) {
     async send() { fail() },
     async sendReliable() { fail() },
     async stop() { fail() },
+    // P8：计划批准在无后端时也只能返回可读失败，不能让工具层抛未处理拒绝。
+    async approvePlan() { return { ok: false, reason } },
     async members() { return [] },
     // catalog 只有 reconcile 一个调用点：必须抛错让对账走「目录不可用 → known=undefined」分支。
     // 返回 [] 会被当成「目录为空」，把所有 running/waiting 任务误标 orphaned。

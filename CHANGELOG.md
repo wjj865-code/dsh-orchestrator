@@ -3,6 +3,31 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
+## 未发布：P8 子任务计划模式（planFirst）
+
+`task_create({ planFirst: true })` 让子会话以**计划阶段**起步：只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）。
+子会话只读探索后用 `task_report blocked` 上报计划；用户批准后协调者 `task_message`（或面板「追加」）续派，
+插件在投递成功且任务回到 `running` 之后切回 `workspace-write`、关闭 plan mode。不开 `planFirst` 的任务行为不变。
+
+### 计划模式（P8）
+
+- **`task_create` 新增 `planFirst`**：只认显式 `true`；与 `readOnly` 互斥（创建期拒绝并给可读原因）。
+- **台账两列**：`plan_first`（0/1）+ `plan_state`（`none` / `planning` / `approved` / `rejected`），
+  旧库逐列 `ALTER TABLE` 补；计划任务在 `planning` 状态进终态收口成 `rejected`，已 `approved` 的保留。
+- **派发进入**：复用 `ensureReadOnly`（`agent/created` 先设 + 激活后幂等补），再用子 agent 作用域的
+  `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 服务缺失只 warn，降级为「只有只读沙箱」；
+  计划任务批准前不注册 target 可写根。
+- **`exit_plan_mode` 拒绝**：在子会话 **agent 作用域** 装 `agent.ctx.tools.guard`（插件根的 guard 是全局的，会误伤协调者），
+  文案指向 `task_report blocked`；协调者与其它会话不受影响。
+- **批准退出**：投递成功 + 回到 `running` 后 `sandbox/mode → workspace-write` + `planMode.set(agent,false)` +
+  补登记 target 可写根；投递失败路径不碰 plan 状态。
+- **视图**：`task_list` 「·计划中」、`task_status` 「计划：」行、`task_detail` 计划阶段说明（只读是预期）、
+  快照/详情下发 `planFirst`/`planState`、面板任务卡「计划中」小标 + 「计划·…」chip + 抽屉概览「计划」行；非计划任务无任何计划字样。
+- **文档**：README「计划任务」、`docs/ARCHITECTURE.md`「计划阶段（P8）」、`docs/LIMITATIONS.md`「计划阶段（P8）」、
+  `docs/UI.md` 概览行、`docs/qa-checklist.md` §35 复核矩阵。
+- **测试**：新增 `test/plan-mode.test.js` 26 条（映射/台账/工具/派发/面板/客户端），`npm test` 672 条全绿。
+- 版本号暂留 0.12.0：P6/P7 与 P8 的发版（0.13.0 / 0.14.0 / 0.15.0）统一在发布批次处理，本次只本地提交、不 push。
+
 ## 0.12.0（2026-11-15）
 
 面板门控 + 删除任务/子会话 + 发版后镜像同步固化：新增 `src/panel-gates.js` 做唯一的「能否续派」判定，面板与 `task_message`

@@ -84,6 +84,8 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
             taskId: id,
             cwd: task.target_dir ?? undefined,
             readOnly: task.read_only === true,
+            // P8：计划任务在派发时就进只读沙箱 + plan mode（见 dispatch.spawn）。
+            planFirst: task.plan_first === true,
             goal: task.goal,
           })
         } catch (error) {

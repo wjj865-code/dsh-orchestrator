@@ -130,6 +130,18 @@ task_create({
 
 `task_create({ ..., readOnly: true })` 会让子会话进入 read-only 沙箱；只认显式 `true`。只读任务不注册 target 可写根。
 
+### 计划任务（planFirst，先出计划再执行）
+
+`task_create({ ..., planFirst: true })` 让子会话以**计划阶段**起步：**只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**。子会话先只读探索（读代码/文档、跑只读命令、验证假设），写文件/写 shell 会被沙箱拒绝——这是预期行为，不是权限故障。探索完用 `task_report` 报 `blocked` 上报计划（正文放在 `question`，或给计划文件的绝对路径）。
+
+协调者把计划转交你；你批准后协调者 `task_message` 续派（或面板「追加」），插件在**投递成功且任务回到 `running` 之后**把沙箱切回 `workspace-write`、关闭 plan mode，子会话按计划执行。
+
+- 只认显式 `true`（字符串 `'true'` 不生效）；与 `readOnly` **互斥**，同时传会在创建期被拒。
+- 出口不是 `exit_plan_mode`：子会话没有直接人类，批准会悬空。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`，文案指向 `task_report blocked`；协调者与其它会话不受影响。
+- 计划状态落台账 `plan_state`：`planning`（等批准）/ `approved`（已批准执行）/ `rejected`（计划阶段未获批准就结束）。`task_list` 给「·计划中」标记、`task_status` 有「计划：」行、面板任务卡有「计划中」小标、抽屉概览有「计划」行；非计划任务不加任何字样。
+- `planMode` 服务不可用（平台版本没挂 / 子会话预设作用域看不到）时静默降级为「只有只读沙箱」并 warn 一行，派发不受影响。
+- 计划模式不强制模型不写文件——**硬拦只有只读沙箱**；首回合同样有极短可写窗口。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#计划阶段p8)。
+
 ### 目标状态（平台 goal，只读）
 
 每个子任务派发后，插件会把 `task_create.goal` 同步成该子会话的平台 goal，并**立即 disarmed**——goal 只是持久目标状态，不会自动续跑。之后：
@@ -169,7 +181,7 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 
 | 工具 | 作用 |
 |---|---|
-| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` |
+| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` |
 | `task_list` | 活跃任务/历史任务；`group` 过滤看组进度 |
 | `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、最近消息、子会话最新返回（`include: 'full'` 看全文） |
 | `task_message` | 续派消息；排队/等前置任务返回提示 |

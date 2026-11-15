@@ -11,6 +11,7 @@ import { taskLabel } from './task-label.js'
 import { statusLabel } from './state.js'
 import { panelFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
+import { approvePlan, approvalNote, isPlanTask, planStateOf } from './plan-mode.js'
 import { ACTIVE_STATUSES, TERMINAL_STATUSES, canDelete, canFollowup, deleteGate, followupGate } from './panel-gates.js'
 
 const TERMINAL = new Set(TERMINAL_STATUSES)
@@ -122,6 +123,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         targetDir: task.target_dir ?? null,
         target: task.target ?? null,
         readOnly: task.read_only === true,
+        // P8：计划模式（面板小标 / 抽屉概览/状态行）。
+        planFirst: task.plan_first === true,
+        planState: planStateOf(task),
         group: task.group_id ?? null,
         priority: task.priority ?? 0,
         dependsOn: task.depends_on,
@@ -298,6 +302,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         coordinatorSession: status.id ?? task.coordinator_session,
         targetDir: task.target_dir,
         readOnly: task.read_only === true,
+        // P8：计划任务重派后重新走计划阶段（新会话要重新探索/批准）。
+        planFirst: task.plan_first === true,
+        planState: task.plan_first === true ? 'planning' : 'none',
         retryOf: task.id,
         dependsOn: depends.ids,
         groupId: task.group_id,
@@ -369,13 +376,21 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     setMessageDelivery(db, task.id, seq, 'delivered')
     touchTask(db, task.id)
     const latest = getTask(db, task.id)
-    if (latest !== undefined && WAITING.has(latest.status)) {
+    // 「等批准」状态收到追加消息 = 用户批准计划（与 task_message 同口径）。
+    const wasWaiting = latest !== undefined && WAITING.has(latest.status)
+    if (wasWaiting) {
       try { transition(db, task.id, 'running', { error: null }) } catch { /* ignore */ }
     }
     clearTaskQuestion(db, task.id)
     incrementAttempts(db, task.id)
+    // P8：投递成功且回到 running 之后才切沙箱、关 plan mode；失败路径不碰 plan 状态。
+    let plan
+    if (wasWaiting && isPlanTask(task) && planStateOf(task) === 'planning') {
+      const approved = await approvePlan({ db, dispatcher, task, log })
+      plan = { approved: approved?.ok === true, note: approvalNote(approved) }
+    }
     log('ui.message', { taskId: task.id })
-    return { ok: true, taskId: task.id }
+    return { ok: true, taskId: task.id, ...(plan === undefined ? {} : { plan }) }
   }
 
   // 删除任务（面板「删除子会话/任务」）：门控 = 终态 + 没有活跃下游依赖。

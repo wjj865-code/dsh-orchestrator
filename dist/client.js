@@ -60,6 +60,12 @@
     cleared: "已清除"
   };
   const GOAL_ACTIVATION_LABEL = { armed: "自动续轮已启用", disarmed: "不自动续轮" };
+  const PLAN_STATE_LABEL = {
+    none: "无计划状态",
+    planning: "计划中（等批准）",
+    approved: "已批准执行",
+    rejected: "计划未通过"
+  };
   const TONE_COLOR = {
     good: "var(--dsw-alias-state-success-primary, #01a241)",
     bad: "var(--dsw-alias-state-error-primary, #ec1313)",
@@ -1167,6 +1173,7 @@
     DELIVERY_TONE: DELIVERY_TONE2,
     GOAL_PHASE_LABEL: GOAL_PHASE_LABEL2,
     GOAL_ACTIVATION_LABEL: GOAL_ACTIVATION_LABEL2,
+    PLAN_STATE_LABEL: PLAN_STATE_LABEL2,
     TONE_COLOR: TONE_COLOR2,
     displayNameOf: displayNameOf2,
     textOf: textOf2,
@@ -1700,6 +1707,8 @@
             h("span", { className: "orch-dot", style: { background: tone, color: tone } }),
             h("span", { className: "orch-card-title", title: displayName }, displayName),
             statusBadge(task.status),
+            // P8：计划阶段小标（只在「等批准」时出现；批准后正常执行，不占视觉）。
+            task.planState === "planning" ? h(Badge, { tone: "info", title: "计划模式：子会话只读探索，用 task_report blocked 上报计划，批准后自动切回可写" }, "计划中") : null,
             h("span", { className: "orch-card-time", title: "最近事件" }, timeLabel2(task.lastEventAt))
           ),
           h(
@@ -1713,6 +1722,10 @@
             task.stale ? h(Chip, { tone: "warn", title: "超过 30 分钟没有新事件" }, "⚠ 可能卡住") : null,
             task.goalState ? h(Chip, { title: "平台目标状态（只读）" }, h(Icon, { name: "goal", size: 11 }), `目标·${GOAL_PHASE_LABEL2[task.goalState.phase] || task.goalState.phase || "未知"}`) : null,
             task.readOnly === true ? h(Chip, { tone: "warn", title: "只读任务：写文件/写 shell 会被沙箱拒绝" }, "只读") : null,
+            task.planFirst === true ? h(Chip, {
+              tone: task.planState === "planning" ? "info" : "muted",
+              title: "计划模式：plan_state 由台账下发（只读展示）"
+            }, `计划·${PLAN_STATE_LABEL2[task.planState] || task.planState || "无计划状态"}`) : null,
             artifacts.length > 0 ? h(
               "button",
               {
@@ -2007,6 +2020,7 @@
           ["目标目录", task.targetDir || "（未设置）"],
           ["分组", task.group || "（未分组）"],
           ["优先级", `P${task.priority === void 0 || task.priority === null ? 0 : task.priority}`],
+          ["计划", task.planFirst === true ? PLAN_STATE_LABEL2[task.planState] || task.planState || "无计划状态" : "（不是计划任务）"],
           ["写域", Array.isArray(task.writeScopes) && task.writeScopes.length > 0 ? task.writeScopes.join("、") : "（未声明）"],
           ["创建", timeLabel2(task.createdAt)],
           ["更新", timeLabel2(task.updatedAt)]
@@ -2190,7 +2204,8 @@
             { className: "orch-drawer-sub" },
             detailTask === null ? null : h("span", null, `编号 ${detailTask.id}`),
             detailTask === null ? null : h("span", null, `更新 ${timeLabel2(detailTask.updatedAt)}`),
-            detailTask !== null && detailTask.readOnly === true ? h("span", null, "只读任务") : null
+            detailTask !== null && detailTask.readOnly === true ? h("span", null, "只读任务") : null,
+            detailTask !== null && detailTask.planFirst === true ? h("span", null, `计划：${PLAN_STATE_LABEL2[detailTask.planState] || detailTask.planState || "无计划状态"}`) : null
           )
         ),
         h(
@@ -2269,6 +2284,7 @@
       DELIVERY_TONE,
       GOAL_PHASE_LABEL,
       GOAL_ACTIVATION_LABEL,
+      PLAN_STATE_LABEL,
       TONE_COLOR,
       displayNameOf,
       textOf,

@@ -4,6 +4,7 @@
 // 不碰任务状态；经验文件只 stat 存在性，不读正文（子会话自己有 read 工具，读全文由它决定）。
 import { statSync } from 'node:fs'
 import { statusLabel } from './state.js'
+import { PLAN_FIRST_DETAIL, isPlanTask, planStateOf, PLAN_STATE_LABEL } from './plan-mode.js'
 
 const text = value => typeof value === 'string' ? value.trim() : ''
 const single = value => text(value).replace(/[\r\n]+/g, ' ')
@@ -69,20 +70,30 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   const brief = task.brief ?? {}
   const target = text(brief.target ?? task.target_dir)
   const readOnly = brief.readOnly === true || task.read_only === true
+  const planTask = isPlanTask(task)
+  const planState = planStateOf(task)
+  // 计划阶段（还没批准）运行期就是只读：权限文案必须如实，否则子会话会以为自己能写。
+  const planning = planTask && planState === 'planning'
+  const effectiveReadOnly = readOnly || planning
   const lines = [
     `任务编号：${task.id ?? '-'}`,
     `任务：${single(brief.title ?? task.title)}`,
-    `状态：${statusLabel(task.status)}${readOnly ? '｜只读' : ''}`,
+    `状态：${statusLabel(task.status)}${effectiveReadOnly ? '｜只读' : ''}`,
     `目标：${text(brief.goal ?? task.goal)}`,
   ]
   // 工作目录最多出现一个：就是 target_dir；写提示紧跟其后（与旧 brief 同口径）。
   if (target !== '') {
     lines.push(`工作目录：${target}`)
-    lines.push(`权限：${readOnly ? '只读' : '可写'}`)
-    lines.push(readOnly ? READ_ONLY_HINT : WRITE_HINT)
-  } else if (readOnly) {
+    lines.push(`权限：${effectiveReadOnly ? '只读' : '可写'}`)
+    lines.push(effectiveReadOnly ? READ_ONLY_HINT : WRITE_HINT)
+  } else if (effectiveReadOnly) {
     lines.push('权限：只读')
     lines.push(READ_ONLY_HINT)
+  }
+  // P8：计划任务在详情里说明「只读是预期、出口是 task_report blocked」，并给出当前编排视图。
+  if (planTask) {
+    lines.push(`计划状态：${PLAN_STATE_LABEL[planState] ?? planState}`)
+    lines.push(PLAN_FIRST_DETAIL)
   }
   const acceptance = list(brief.acceptance)
   if (acceptance.length > 0) lines.push(`【验收标准】\n${acceptance.map(item => `- ${single(item)}`).join('\n')}`)

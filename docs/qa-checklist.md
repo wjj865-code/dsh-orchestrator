@@ -908,3 +908,38 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 重派同口径 | `task_retry` 与面板 retry 都 `renderBrief({ taskId: 新编号 })`，不内联目标 | `tools.test.js` T1 重派；`panel-actions.test.js` retry brief |
 | 挂载链 | 全局注册（`index.js` 的 `createTools(...).map(ctx.tools.register)`）；worker 预设不挂 `preset-tools`；协调者 allow 白名单不含 | `index.test.js` 12 工具 + `task_detail`；`config.test.js` worker 不收窄 |
 | 队列兜底 | 无 brief 消息时 `renderBrief({ taskId })`，不再拼标题+目标 | `queue.test.js` 派发提示词 |
+
+## 35. P8 子任务计划模式复核矩阵
+
+**判据**：`npm test` 672 条全绿；`node --test test/plan-mode.test.js` 26 条全绿；真机端到端（派发 → 只读 → blocked 上报 → 批准 → 可写 → done）过一遍。
+
+### 35.1 单测（`test/plan-mode.test.js`）
+
+| 项 | 期望 | 用例 |
+| --- | --- | --- |
+| 状态映射 | 列表只在 `planning` 标「·计划中」；`task_status` 区分 planning/approved/rejected；非计划任务无字样 | P8 计划状态映射；task_list/task_status |
+| 台账两列 | 默认 `false`/`none`；`planFirst` 落 `planning`；旧库 `ALTER` 补列、旧行读 false/none；`setPlanState` 不动 status | P8 台账 3 条 |
+| 终态收口 | 还在 `planning` 就结束 → `rejected`；已 `approved` 的终态保留 | P8 台账收口 |
+| `task_create` 契约 | 只认显式 `true`（字符串不生效）；派发透传 `planFirst`；brief 仍是纯指引；工具结果带批准指引 | task_create 3 条 |
+| 互斥 | `planFirst + readOnly` 创建期拒绝、不建任务、不 spawn | task_create 互斥 |
+| 批准链路 | `task_message` 投递成功 + 回 running 后切沙箱、`plan_state=approved`；投递失败不批；running 中普通消息不批 | task_message 3 条 |
+| 停止/重派 | `task_stop` → `rejected`；`task_retry` 重新进 `planning` | task_stop / task_retry |
+| 详情文案 | 计划阶段权限显示「只读」、批准后「可写」；计划阶段说明写明只读是预期、出口是 `task_report blocked` | task_detail 纯渲染 |
+| 派发进入 | 计划任务：只读沙箱 + `planMode.set(true)` + agent 作用域 guard；`agent/created` 先路径不重复设置；非计划任务一次都不碰；服务缺失只 warn | 派发 4 条 |
+| 批准退出 | `sandbox/mode=workspace-write` + `planMode.set(false)` + 释放 guard + 补 target 可写根；拿不到会话时 `ok:false` | 批准 2 条 |
+| 面板/快照 | snapshot/detail 下发 `planFirst`/`planState`；面板「追加」同走批准链路 | 面板 2 条 |
+| 客户端 | 源码与 dist 产物都带「计划中」小标与计划状态文案 | 客户端 1 条 |
+| team 后端 | `planFirst` 明确拒绝（没有会话级沙箱 / planMode） | team 拒绝 |
+
+### 35.2 真机矩阵（装 profile + 重启后逐条勾）
+
+| 场景 | 期望 |
+| --- | --- |
+| 派发 `planFirst:true` 任务 | 子会话沙箱 read-only；面板任务卡「计划中」小标 + 「计划·计划中（等批准）」chip |
+| 计划阶段让子会话写文件 | 被沙箱拒绝；模型按提示改走只读探索（错误回灌属预期） |
+| 子会话调 `exit_plan_mode` | 被插件拒绝，文案指向 `task_report blocked`；协调者调同名工具不受影响 |
+| 子会话 `task_report blocked` 上报计划 | 协调者收到「待你决定」通知（question/options 原样）；`task_status` 显示「计划：计划中」 |
+| 用户批准（`task_message` 或面板「追加」） | 投递成功后沙箱切回 `workspace-write`、plan mode 关闭；子会话能写文件；`plan_state=approved` |
+| 不批准直接 `task_stop` | 任务 `cancelled` + `plan_state=rejected`；子会话被中断 |
+| 非计划任务 | 全程无 `planMode` 调用、无「计划」字样、无 exit guard |
+| `planMode` 服务不可用（预设没挂） | 只 warn 一行；计划任务仍只读、仍能 blocked 上报；批准后仍切回可写 |

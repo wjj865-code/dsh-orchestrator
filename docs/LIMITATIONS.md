@@ -66,6 +66,23 @@
 - worker 不强制 chdir：`danger-full-access` 下模型给目标目录外的绝对路径仍可能写成功；硬约束只能调回 `workspace-write`。
 - 升级 DSH 后必须重跑 `docs/probes/*` 契约探针；平台入参形状变过（rc.1 → rc.3）。
 
+## 计划阶段（P8）
+
+- **plan mode 是软引导**：平台只注入一段系统提示，不拦工具、不写沙箱状态。真正挡住写入的是只读沙箱；
+  模型仍可能在计划阶段反复尝试写，被拒的错误会回灌给它（提示词已写明「只读是预期行为」）。
+- **服务可见性**：`planMode` 挂在子会话预设作用域，插件必须走 `agent.ctx.get('planMode')`；
+  平台版本没挂 / profile 没 isolate 时静默降级为「只有只读沙箱」并 warn 一行，派发不受影响。
+- **`exit_plan_mode` 被拒**：插件在子会话 agent 作用域拒绝它——子会话没有直接人类，批准会悬空。
+  计划出口固定是 `task_report blocked`；协调者与其它会话不受该 guard 影响。
+- **切回可写的范围**：`workspace-write` 的根 = 子会话 `header.cwd`（rc.3 是**指挥舱**）+ 插件登记的 target 可写根，
+  子会话理论上也能写插件的 state 目录。可接受但不理想，如实记录。
+- **首回合窗口**：`ensureReadOnly` 在 `agent/created` 之后补，首回合有极短可写窗口（与 `readOnly` 任务同一风险）。
+- **两处真相**：平台会话日志的 `plan/mode` 是运行期事实，台账 `plan_state` 是编排视图；重启/压缩后平台投影会恢复
+  plan 状态，台账靠续派/终态事件对齐。面板与 `task_status` 显示的是台账视图，极端时序下可能短暂滞后。
+- **互斥**：`planFirst` 与 `readOnly` 创建期互斥（只读任务永远不会切回可写）。
+- **rc 包**：`@deepseek-ai/dsh-plan-mode` 仍是 rc 包，升级 DSH 后要按仓库惯例重跑 `docs/probes/contract-probe-t0.1.mjs`
+  复核 `set()` / `get()` / `exit_plan_mode` 契约。
+
 ## 通知与生命周期
 
 - 通知走 `agent.steer`：空闲唤醒、忙时 next-step 排队；同一 agent 的忙时排队由平台保证。

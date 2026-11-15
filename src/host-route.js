@@ -49,6 +49,9 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
           childSessionId: task.session_id ?? null,
           targetDir: task.target_dir ?? null,
           readOnly: task.read_only === true,
+          // P8：计划模式（列表小标 / 抽屉概览）；非计划任务固定 false + 'none'。
+          planFirst: task.plan_first === true,
+          planState: typeof task.plan_state === 'string' && task.plan_state !== '' ? task.plan_state : 'none',
           retryOf: task.retry_of ?? null,
           groupId: task.group_id ?? null,
           dependsOn: Array.isArray(task.depends_on) ? task.depends_on : [],

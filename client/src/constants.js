@@ -43,6 +43,10 @@ export const GOAL_PHASE_LABEL = {
   active: '进行中', paused: '已暂停', blocked: '受阻', complete: '已完成', cleared: '已清除',
 }
 export const GOAL_ACTIVATION_LABEL = { armed: '自动续轮已启用', disarmed: '不自动续轮' }
+// P8 计划模式：plan_state 由服务端台账下发（none/planning/approved/rejected），面板只读展示。
+export const PLAN_STATE_LABEL = {
+  none: '无计划状态', planning: '计划中（等批准）', approved: '已批准执行', rejected: '计划未通过',
+}
 // 语义色只取设计平台 token：旧版用的那组 alias color 变量在宿主 token 表里并不存在，
 // 一直走的是 fallback（深色主题下会脏）。这里换成 state/label 语义 token，深浅色自动跟随。
 export const TONE_COLOR = {

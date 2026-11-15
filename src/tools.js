@@ -22,6 +22,7 @@ import { artifactLines } from './notify.js'
 import { toolFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
 import { followupGate } from './panel-gates.js'
+import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, planStatusLine } from './plan-mode.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
 const str = description => ({ type: 'string', description })
@@ -63,8 +64,11 @@ function lastMessageLines(record, { full = false } = {}) {
 }
 
 function taskLine(db, task, { staleMinutes = 30 } = {}) {
+  const planMarker = planListMarker(task)
   const parts = [
-    `- ${taskLabelWithId(task)}`, task.read_only ? `${labelOf(task.status)}·只读` : labelOf(task.status), `子会话 ${task.target ?? '-'}`,
+    `- ${taskLabelWithId(task)}`,
+    `${task.read_only ? `${labelOf(task.status)}·只读` : labelOf(task.status)}${planMarker}`,
+    `子会话 ${task.target ?? '-'}`,
     `目标：${short(task.goal)}`,
   ]
   if (task.status === 'waiting_dep') {
@@ -373,6 +377,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       user_verbatim: str('用户原话，可空'),
       target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
       readOnly: { type: 'boolean', description: '只读任务：子会话沙箱 read-only（读正常，写文件/写 shell 被拒）；默认 false，只在明确需要时传 true' },
+      planFirst: { type: 'boolean', description: '计划模式：子会话先只读探索并上报计划，批准后再执行；与 readOnly 互斥；默认 false' },
       dependsOn: strList('前置任务编号数组；依赖全部完成后才派发；任一前置失败则本任务失败'),
       group: str('可选分组名，如“登录改造”；面板按组汇总进度'),
       writeScopes: strList('可选写域（目录/文件路径）；与活跃任务重叠时给冲突提示（advisory）'),
@@ -384,7 +389,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const agentId = exec?.agent?.id
       // 只认显式 true：字符串/偏真值都不算，避免模型顺手传 'true' 把普通任务变只读。
       const readOnly = args.readOnly === true
-      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, readOnly, callId } })
+      // P8：计划模式同样是显式 true；与只读互斥（只读任务永远不切回可写，计划批准后要执行）。
+      const planFirst = args.planFirst === true
+      if (planFirst && readOnly) {
+        log('task.create.rejected', { agentId, detail: { reason: 'plan-readonly-conflict', callId } })
+        return '计划模式（planFirst）与只读（readOnly）互斥：只读任务永远不切回可写，而计划批准后要执行。请二选一（要计划就只传 planFirst:true）。'
+      }
+      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, readOnly, planFirst, callId } })
       const errors = validateBrief(args)
       if (errors.length > 0) {
         log('task.create.rejected', { agentId, detail: { reason: 'validation', message: errors.join('；'), callId } })
@@ -468,15 +479,20 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           }
         } catch { /* 记忆检索失败不能阻止派任务 */ }
       }
-      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读/经验才写入标记。
+      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读/计划/经验才写入标记。
       const brief = {
-        ...args, target: effectiveTarget, ...(readOnly ? { readOnly: true } : {}), ...(experience === undefined ? {} : { experience }),
+        ...args,
+        target: effectiveTarget,
+        ...(readOnly ? { readOnly: true } : {}),
+        ...(planFirst ? { planFirst: true } : {}),
+        ...(experience === undefined ? {} : { experience }),
       }
       const task = createTask(db, {
         brief,
         coordinatorSession: current.id ?? coordinatorSession,
         targetDir: effectiveTarget,
         readOnly,
+        planFirst,
         dependsOn: depends.ids,
         groupId,
         writeScopes,
@@ -492,6 +508,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           callId,
           targetDir: effectiveTarget ?? null,
           readOnly,
+          planFirst,
           dependsOn: depends.ids,
           group: groupId,
           writeScopes,
@@ -522,7 +539,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const outcome = await queue.enqueueAndPump(task.id)
       const resultTask = outcome.task
       const inferredNote = inferred === undefined ? '' : `（目标目录按工作区推断：${inferred.path}）`
-      const notes = [invalidHint(), inferredNote, conflictNote, dependencyNote].filter(Boolean).join('\n')
+      const planNote = planFirst
+        ? '计划模式：子会话只读探索，探索完用 task_report blocked 上报计划；你转交用户，批准后用 task_message 续派（插件自动切回可写）。'
+        : ''
+      const notes = [invalidHint(), inferredNote, planNote, conflictNote, dependencyNote].filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       if (resultTask?.status === 'running') {
         return `任务「${taskLabelWithId(task)}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
@@ -560,10 +580,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id, hint: '用 task_list 查编号。' })
       const messages = recentMessages(db, task.id, 3)
       const recent = messages.map(row => `- [${row.kind}] ${short(row.rendered, 80)}`).join('\n')
+      const planLine = planStatusLine(task)
       const lines = [
         `任务「${taskLabelWithId(task)}」`,
         `状态：${labelOf(task.status)}`,
         ...(task.read_only ? ['权限：只读（读正常，写文件/写 shell 被拒绝）'] : []),
+        ...(planLine === undefined ? [] : [planLine]),
         ...(task.group_id ? [`分组：${task.group_id}`] : []),
         ...(task.priority !== 0 ? [`优先级：${task.priority}`] : []),
         `子会话：${task.target ?? '-'}`,
@@ -697,10 +719,18 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       setMessageDelivery(db, task.id, seq, 'delivered')
       touchTask(db, task.id)
       const current = getTask(db, task.id)
+      // 「等批准」状态收到续派 = 用户批准计划；先记住，投递成功回到 running 之后才切可写。
+      const wasWaiting = WAITING_STATUS.has(current.status)
       if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
       clearTaskQuestion(db, task.id)
       incrementAttempts(db, task.id)
-      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。`
+      // P8：计划阶段出口 —— 批准 = 投递成功且回到 running；失败路径不碰 plan 状态（仍在等你确认）。
+      let planNote = ''
+      if (wasWaiting && isPlanTask(task) && planStateOf(task) === 'planning') {
+        const approved = await approvePlan({ db, dispatcher, task, log })
+        planNote = `\n${approvalNote(approved)}`
+      }
+      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}`
     }),
 
     wrap('task_stop', '停止一个子任务（会中断它的当前一轮）。', objectSchema({ task_id: str('任务编号') }), async (args, exec) => {
@@ -768,6 +798,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         coordinatorSession: current.id ?? coordinatorSession,
         targetDir: task.target_dir,
         readOnly: task.read_only === true,
+        // P8：计划任务重派后重新走一次计划阶段（新会话要重新探索/批准）。
+        planFirst: task.plan_first === true,
+        planState: task.plan_first === true ? 'planning' : 'none',
         retryOf: task.id,
         dependsOn: depends.ids,
         groupId: task.group_id,

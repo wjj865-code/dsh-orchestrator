@@ -96,13 +96,16 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 
 | 区块 | 内容 | 来源 |
 | --- | --- | --- |
-| 概览 | 编号/状态/目标目录/分组/优先级/写域/创建/更新 | `detail.task` |
+| 概览 | 编号/状态/目标目录/分组/优先级/计划/写域/创建/更新 | `detail.task` |
 | 最新回复（B1） | 子会话最后一条 assistant 消息：内联给正文，大文件给摘要 + 报告文件路径 | `detail.task.lastMessage`（`src/panel-actions.js` 新增回传） |
 | Brief | 目标、验收标准、约束、背景资料、用户原话（结构化列表，不再是纯文本块） | `detail.task.brief` |
 | 目标状态（G1） | 平台 goal 的 objective/阶段/续轮/轮次/修订，只读、无写操作 | `detail.task.goalState` |
 | 消息 | 最近 20 条；followup 标「待发/已投递/投递失败」 | `detail.messages` |
 | 依赖 | 上游前置 + 下游依赖，各带状态与错误 | `detail.dependencies` / `detail.dependents` |
 | 产物 | 路径/标签/存在性 + 复制路径 | `detail.task.artifacts` |
+
+> P8 计划模式：任务卡状态旁有「计划中」小标（仅 `planState==='planning'`）、卡片 meta 有「计划·…」chip，
+> 抽屉概览有「计划」行、抽屉副标题有「计划：…」；均来自 `snapshot`/`detail` 的 `planFirst`/`planState`，前端只读。
 
 底部动作条：停止（二次确认）、重派、追加消息、打开子会话、删除（二次确认）。
 
@@ -114,7 +117,7 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 ## 5. 验证
 
 ```bash
-npm test            # 646 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、续派与删除门控用例
+npm test            # 672 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、续派与删除门控、P8 计划模式用例
 npm run check:client
 ```
 

@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0,
   question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER,
-  goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0
+  goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0,
+  plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -64,6 +65,9 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('last_message_json')) db.exec('ALTER TABLE tasks ADD COLUMN last_message_json TEXT')
     // K2 keep-alive 预算：旧库补列，历史行按 0 轮（不阻止人工续派/重派）。
     if (!taskColumns.includes('keep_alive_rounds')) db.exec('ALTER TABLE tasks ADD COLUMN keep_alive_rounds INTEGER NOT NULL DEFAULT 0')
+    // P8 计划模式：旧库补两列；历史行 plan_first=0 → taskOf 归一成 false / plan_state='none'。
+    if (!taskColumns.includes('plan_first')) db.exec('ALTER TABLE tasks ADD COLUMN plan_first INTEGER NOT NULL DEFAULT 0')
+    if (!taskColumns.includes('plan_state')) db.exec('ALTER TABLE tasks ADD COLUMN plan_state TEXT')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -126,6 +130,9 @@ const parseLastMessage = value => {
 const taskOf = row => row === undefined ? undefined : ({
   ...row,
   read_only: row.read_only === 1 || row.read_only === true,
+  // P8：计划模式两列 —— 旧行没有 plan_state（NULL）按 none；plan_first 归一成布尔。
+  plan_first: row.plan_first === 1 || row.plan_first === true,
+  plan_state: typeof row.plan_state === 'string' && row.plan_state !== '' ? row.plan_state : 'none',
   brief: JSON.parse(row.brief_json),
   artifacts: parseArtifacts(row.artifacts_json),
   depends_on: parseStringArray(row.depends_json),
@@ -145,6 +152,8 @@ export function createTask(db, {
   coordinatorSession,
   targetDir,
   readOnly = false,
+  planFirst = false,
+  planState,
   retryOf = null,
   dependsOn = [],
   groupId = null,
@@ -154,16 +163,22 @@ export function createTask(db, {
 } = {}) {
   const now = Date.now()
   const id = `t-${randomUUID().slice(0, 8)}`
+  const plan = planFirst === true
+  const initialPlanState = typeof planState === 'string' && planState !== ''
+    ? planState
+    : (plan ? 'planning' : 'none')
   db.prepare(`INSERT INTO tasks
     (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of,
-     depends_json, group_id, write_scopes_json, priority, created_at, updated_at, last_event_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     depends_json, group_id, write_scopes_json, priority, plan_first, plan_state,
+     created_at, updated_at, last_event_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id, String(brief.title), String(brief.goal), JSON.stringify(brief), status,
       String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null,
       JSON.stringify(Array.isArray(dependsOn) ? dependsOn : []), groupId ?? null,
       JSON.stringify(Array.isArray(writeScopes) ? writeScopes : []),
       Number.isFinite(priority) ? Math.trunc(priority) : 0,
+      plan ? 1 : 0, initialPlanState,
       now, now, now,
     )
   return getTask(db, id)
@@ -227,6 +242,20 @@ export function briefText(db, id) {
   return row?.rendered
 }
 
+const TERMINAL_PLAN_STATUSES = new Set(['done', 'failed', 'cancelled', 'orphaned'])
+
+/**
+ * 计划任务进终态时收口 `plan_state`：还在「等批准」（planning）就结束的，按「未批准」记；
+ * 已 approved 的不改——历史里要看得出「用户批准过，并且执行到终态」。
+ * 非终态迁移（如 waiting_user → running 之外的路径）不动 plan_state。
+ */
+const nextPlanStateOnTransition = (task, to) => {
+  if (task.plan_first !== true) return undefined
+  if (!TERMINAL_PLAN_STATUSES.has(to)) return undefined
+  if (task.plan_state !== 'planning') return undefined
+  return 'rejected'
+}
+
 export function transition(db, id, to, patch = {}) {
   const task = getTask(db, id)
   if (task === undefined) throw new Error(`任务不存在：${id}`)
@@ -237,6 +266,8 @@ export function transition(db, id, to, patch = {}) {
   // （重派/续派/冷恢复都走 transition；running → running 本来不允许，所以不会误清）。
   if (to === 'running') sets.push('keep_alive_rounds = 0')
   const values = [to, now, now]
+  const planNext = nextPlanStateOnTransition(task, to)
+  if (planNext !== undefined) { sets.push('plan_state = ?'); values.push(planNext) }
   if (Object.hasOwn(patch, 'sessionId')) { sets.push('session_id = ?'); values.push(patch.sessionId) }
   if (Object.hasOwn(patch, 'target')) { sets.push('target = ?'); values.push(patch.target) }
   if (Object.hasOwn(patch, 'error')) { sets.push('error = ?'); values.push(patch.error) }
@@ -315,6 +346,14 @@ export function bumpKeepAliveRound(db, id, max) {
 export function touchTask(db, id) {
   const now = Date.now()
   db.prepare('UPDATE tasks SET updated_at = ?, last_event_at = ? WHERE id = ?').run(now, now, id)
+  return getTask(db, id)
+}
+
+/** P8：计划阶段的编排视图（none/planning/approved/rejected）；运行期真相在平台会话日志。 */
+export function setPlanState(db, id, planState) {
+  const now = Date.now()
+  db.prepare('UPDATE tasks SET plan_state = ?, updated_at = ? WHERE id = ?')
+    .run(String(planState), now, id)
   return getTask(db, id)
 }
 

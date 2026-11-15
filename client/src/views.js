@@ -9,7 +9,7 @@ export function createViews({
   Icon, Badge, Chip, EmptyState, Banner, SkeletonList,
   FILTERS, METRICS, POLL_MS, POLL_BACKOFF_MS,
   STATUS_LABEL, STATUS_TONE, MESSAGE_KIND_LABEL, DELIVERY_LABEL, DELIVERY_TONE,
-  GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, TONE_COLOR,
+  GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL, TONE_COLOR,
   displayNameOf, textOf, listOf, timeLabel, shortPath,
   countTasks, matchesFilter, matchesQuery, groupArtifacts,
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
@@ -542,6 +542,10 @@ export function createViews({
           h('span', { className: 'orch-dot', style: { background: tone, color: tone } }),
           h('span', { className: 'orch-card-title', title: displayName }, displayName),
           statusBadge(task.status),
+          // P8：计划阶段小标（只在「等批准」时出现；批准后正常执行，不占视觉）。
+          task.planState === 'planning'
+            ? h(Badge, { tone: 'info', title: '计划模式：子会话只读探索，用 task_report blocked 上报计划，批准后自动切回可写' }, '计划中')
+            : null,
           h('span', { className: 'orch-card-time', title: '最近事件' }, timeLabel(task.lastEventAt)),
         ),
         h('div', { className: 'orch-card-meta' },
@@ -560,6 +564,12 @@ export function createViews({
             : null,
           task.readOnly === true
             ? h(Chip, { tone: 'warn', title: '只读任务：写文件/写 shell 会被沙箱拒绝' }, '只读')
+            : null,
+          task.planFirst === true
+            ? h(Chip, {
+              tone: task.planState === 'planning' ? 'info' : 'muted',
+              title: '计划模式：plan_state 由台账下发（只读展示）',
+            }, `计划·${PLAN_STATE_LABEL[task.planState] || task.planState || '无计划状态'}`)
             : null,
           artifacts.length > 0
             ? h('button', {
@@ -802,6 +812,7 @@ export function createViews({
         ['目标目录', task.targetDir || '（未设置）'],
         ['分组', task.group || '（未分组）'],
         ['优先级', `P${task.priority === undefined || task.priority === null ? 0 : task.priority}`],
+        ['计划', task.planFirst === true ? (PLAN_STATE_LABEL[task.planState] || task.planState || '无计划状态') : '（不是计划任务）'],
         ['写域', Array.isArray(task.writeScopes) && task.writeScopes.length > 0 ? task.writeScopes.join('、') : '（未声明）'],
         ['创建', timeLabel(task.createdAt)],
         ['更新', timeLabel(task.updatedAt)],
@@ -985,6 +996,9 @@ export function createViews({
           detailTask === null ? null : h('span', null, `编号 ${detailTask.id}`),
           detailTask === null ? null : h('span', null, `更新 ${timeLabel(detailTask.updatedAt)}`),
           detailTask !== null && detailTask.readOnly === true ? h('span', null, '只读任务') : null,
+          detailTask !== null && detailTask.planFirst === true
+            ? h('span', null, `计划：${PLAN_STATE_LABEL[detailTask.planState] || detailTask.planState || '无计划状态'}`)
+            : null,
         ),
       ),
       h('div', { className: 'orch-drawer-body' },

@@ -9,7 +9,7 @@ import {
   PANEL_ID, LAUNCHER_ID, ROUTE, TONE_COLOR,
   FILTERS, METRICS, POLL_MS, POLL_BACKOFF_MS,
   STATUS_LABEL, STATUS_TONE, MESSAGE_KIND_LABEL, DELIVERY_LABEL, DELIVERY_TONE,
-  GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL,
+  GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL,
 } from './constants.js'
 import {
   countTasks, matchesFilter, matchesQuery, groupArtifacts, artifactDate, artifactProject,
@@ -51,6 +51,7 @@ export const createClient = (req) => {
     DELIVERY_TONE,
     GOAL_PHASE_LABEL,
     GOAL_ACTIVATION_LABEL,
+    PLAN_STATE_LABEL,
     TONE_COLOR,
     displayNameOf,
     textOf,
