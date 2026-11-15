@@ -1,0 +1,12 @@
+# K1 keep-alive probe profile patch (throwaway).
+# `probe` is registered by keepalive-probe/index.js; the default route must point
+# at it before any agent is created, otherwise headless boot fails with NO_ADAPTER.
+- id: agent-default-model
+  config:
+    provider: probe
+    model: mock
+- id: session-title-llm
+  disabled: true
+- insert:
+    - id: keepalive-probe
+      name: keepalive-probe

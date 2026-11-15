@@ -1,0 +1,24 @@
+{"at":1794721285886,"type":"agent.created","agent":"session-3d8b414a-c047-457f-8927-00b055386e0e","parent":null}
+{"at":1794721285889,"type":"agent.status","agent":"session-3d8b414a-c047-457f-8927-00b055386e0e","status":"running"}
+{"at":1794721285890,"type":"session.event","sid":"session-3d8b414a-c047-457f-8927-00b055386e0e","eventType":"turn/start","data":{"turn":1}}
+{"at":1794721286129,"type":"llm.request","sid":"session-3d8b414a-c047-457f-8927-00b055386e0e","n":1,"tail":"<system-reminder>\nA skill is a reusable set of task-specific instructions. The f","tool":false,"child":false}
+{"at":1794721286142,"type":"child.spawn","childId":"709cc88b-7f1c-41c5-8559-61a6f271c10c","mode":"followup"}
+{"at":1794721286163,"type":"agent.created","agent":"709cc88b-7f1c-41c5-8559-61a6f271c10c","parent":"session-3d8b414a-c047-457f-8927-00b055386e0e"}
+{"at":1794721286166,"type":"agent.status","agent":"709cc88b-7f1c-41c5-8559-61a6f271c10c","status":"running"}
+{"at":1794721286168,"type":"session.event","sid":"709cc88b-7f1c-41c5-8559-61a6f271c10c","eventType":"turn/start","data":{"turn":1}}
+{"at":1794721286176,"type":"child.activation","childId":"709cc88b-7f1c-41c5-8559-61a6f271c10c","messageId":"e89b5cb6-bc45-4b58-bea1-ac44c45f6d1f"}
+{"at":1794721286270,"type":"llm.request","sid":"709cc88b-7f1c-41c5-8559-61a6f271c10c","n":1,"tail":"<system-reminder>\nA skill is a reusable set of task-specific instructions. The f","tool":false,"child":true}
+{"at":1794721286273,"type":"turn-stopping","agent":"709cc88b-7f1c-41c5-8559-61a6f271c10c","turn":1,"n":1,"mode":"followup","aborted":false,"inbox":{"next":0,"turn":0}}
+{"at":1794721286274,"type":"keepalive.injected","agent":"709cc88b-7f1c-41c5-8559-61a6f271c10c","mode":"followup","inbox":{"next":0,"turn":1}}
+{"at":1794721286275,"type":"session.event","sid":"709cc88b-7f1c-41c5-8559-61a6f271c10c","eventType":"turn/end","data":{"turn":1,"reason":{"kind":"completed"}}}
+{"at":1794721286276,"type":"session.event","sid":"709cc88b-7f1c-41c5-8559-61a6f271c10c","eventType":"turn/start","data":{"turn":2}}
+{"at":1794721286316,"type":"llm.request","sid":"709cc88b-7f1c-41c5-8559-61a6f271c10c","n":2,"tail":"K1 keep-alive followup","tool":false,"child":true}
+{"at":1794721286318,"type":"turn-stopping","agent":"709cc88b-7f1c-41c5-8559-61a6f271c10c","turn":2,"n":2,"mode":"followup","aborted":false,"inbox":{"next":0,"turn":0}}
+{"at":1794721286319,"type":"session.event","sid":"709cc88b-7f1c-41c5-8559-61a6f271c10c","eventType":"turn/end","data":{"turn":2,"reason":{"kind":"completed"}}}
+{"at":1794721286321,"type":"agent.status","agent":"709cc88b-7f1c-41c5-8559-61a6f271c10c","status":"idle"}
+{"at":1794721286331,"type":"subagent.end","runId":"d0cb5d66-1956-4418-a514-3a1459d59e2a","provider":"spawn","parentSessionId":"session-3d8b414a-c047-457f-8927-00b055386e0e","id":"709cc88b-7f1c-41c5-8559-61a6f271c10c","local":true,"stopReason":"completed","lastAssistantMessage":[{"type":"text","text":"child turn 2"}]}
+{"at":1794721286332,"type":"child.result","childId":"709cc88b-7f1c-41c5-8559-61a6f271c10c","result":{"stopReason":"completed","output":[{"type":"text","text":"child turn 2"}]}}
+{"at":1794721286375,"type":"llm.request","sid":"session-3d8b414a-c047-457f-8927-00b055386e0e","n":2,"tail":"<system-reminder>\nA skill is a reusable set of task-specific instructions. The f","tool":true,"child":false}
+{"at":1794721286376,"type":"turn-stopping","agent":"session-3d8b414a-c047-457f-8927-00b055386e0e","turn":1,"n":1,"mode":"none","aborted":false,"inbox":{"next":0,"turn":0}}
+{"at":1794721286377,"type":"session.event","sid":"session-3d8b414a-c047-457f-8927-00b055386e0e","eventType":"turn/end","data":{"turn":1,"reason":{"kind":"completed"}}}
+{"at":1794721286379,"type":"agent.status","agent":"session-3d8b414a-c047-457f-8927-00b055386e0e","status":"idle"}
