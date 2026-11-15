@@ -1,5 +1,12 @@
 // 通知分级：progress 静默，done 批量合并，blocked/needs_auth 立即打断。
 // cancelled/orphaned 来自结算自动上报（S1）：异常收场，按 notify 合并窗口提醒。
+//
+// 产物 → 交付（P6）：通知里只列「present 能接住」的绝对路径，并明确要求协调者在自己回合里交付。
+// 判据与平台一致（reports/t0.1-probes.md §3.3 + D6/D7）：present 用 lstat 判 type，目录 / 符号链接 /
+// 不存在一律被拒；平台单次硬上限 8，本插件按「1-2 个最关键的、最多 4 个」收敛成产品上限。
+import { lstatSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
+
 const LEVEL = {
   progress: 'silent', done: 'notify', blocked: 'interrupt', needs_auth: 'interrupt',
   failed: 'notify', stalled: 'notify', cancelled: 'notify', orphaned: 'notify',
@@ -13,16 +20,99 @@ export function levelOf(status) {
   return LEVEL[status] ?? 'silent'
 }
 
-const artifactBlock = item => {
+/** present 单次调用的产品上限（平台硬上限 8：reports/t0.1-probes.md D6）。 */
+const PRESENT_MAX_FILES = 4
+
+/** 非交付项的分类文案：告诉模型「为什么这条没进交付候选」。 */
+const SKIP_LABEL = {
+  directory: '目录',
+  symlink: '符号链接',
+  missing: '不存在',
+  relative: '非绝对路径',
+  other: '不是普通文件',
+}
+
+// present 先 lstat 判 type、再 stat 判存在（dsh-tool-present/src/index.ts:88-93）：
+// 只有「存在的普通文件」能交付；目录、符号链接、缺失的路径都会让整次 present 失败。
+const classifyPath = path => {
+  if (typeof path !== 'string' || path.trim() === '') return 'other'
+  if (!isAbsolute(path)) return 'relative'
+  let stats
+  try {
+    stats = lstatSync(path)
+  } catch (error) {
+    return error?.code === 'ENOENT' ? 'missing' : 'other'
+  }
+  if (stats.isFile()) return 'file'
+  if (stats.isSymbolicLink()) return 'symlink'
+  if (stats.isDirectory()) return 'directory'
+  return 'other'
+}
+
+/**
+ * 把 item.artifacts 拆成「可交付的普通文件」与「跳过原因计数」。
+ * 按路径去重（同一文件被显式回报和自动收集各报一次时只列一条）。
+ */
+const deliverableOf = item => {
+  const artifacts = Array.isArray(item.artifacts) ? item.artifacts : []
+  const files = []
+  const seen = new Set()
+  const skipped = new Map()
+  for (const entry of artifacts) {
+    if (entry === null || entry === undefined || typeof entry !== 'object') continue
+    const path = typeof entry.path === 'string' ? entry.path.trim() : ''
+    const kind = classifyPath(path)
+    if (kind !== 'file') {
+      skipped.set(kind, (skipped.get(kind) ?? 0) + 1)
+      continue
+    }
+    if (seen.has(path)) continue
+    seen.add(path)
+    files.push({ path, label: typeof entry.label === 'string' ? entry.label.trim() : '' })
+  }
+  return { files, skipped }
+}
+
+const artifactRow = entry => `  - ${entry.path}${entry.label ? ` — ${entry.label}` : ''}`
+
+const skipLine = skipped => {
+  const entries = [...skipped.entries()]
+  if (entries.length === 0) return ''
+  const total = entries.reduce((sum, [, count]) => sum + count, 0)
+  const parts = entries.map(([kind, count]) => `${SKIP_LABEL[kind] ?? kind} ${count}`)
+  return `另有 ${total} 条产物不能交付（${parts.join('、')}）`
+}
+
+// 指令写进通知文案（不是系统提示）：插件不代调 present（它要求 open turn，见 T0.1 探针 ③），
+// 只负责把「已 stat 校验过存在、是普通文件」的绝对路径交到协调者手上并说清怎么交付。
+const PRESENT_HINT = '交付：在你自己的回合里调用 present，files 里每项 path 填上面这些绝对路径（1-2 个最关键的，最多 4 个）；插件已 stat 校验存在且是普通文件，不要另找路径。'
+
+/**
+ * 产物区块。
+ * @param {object} item 通知条目（artifacts / artifactsTruncated）
+ * @param {{hint?: boolean}} options hint=false 用于多条任务合并的通知：只在整条消息末尾写一次交付指令。
+ */
+const artifactBlock = (item, { hint = true } = {}) => {
   const artifacts = Array.isArray(item.artifacts) ? item.artifacts : []
   if (artifacts.length === 0) return ''
-  const rows = artifacts.map(entry =>
-    `  - ${entry.path}${entry.label ? ` — ${entry.label}` : ''}${entry.exists === false ? '（未找到）' : ''}`)
-  const truncated = typeof item.artifactsTruncated === 'number' && item.artifactsTruncated > 0
-    ? `\n  另有 ${item.artifactsTruncated} 条产物未列出`
-    : ''
-  return `\n  产物：\n${rows.join('\n')}${truncated}`
+  const { files, skipped } = deliverableOf(item)
+  const shown = files.slice(0, PRESENT_MAX_FILES)
+  const truncated = typeof item.artifactsTruncated === 'number' && Number.isFinite(item.artifactsTruncated)
+    ? Math.max(0, Math.trunc(item.artifactsTruncated))
+    : 0
+  // 折叠数 = 超上限的候选 + 台账层截断（artifactsTruncated 是根本没进 item.artifacts 的条数）。
+  const hidden = files.length - shown.length + truncated
+  const parts = []
+  if (shown.length > 0) parts.push(`产物：\n${shown.map(artifactRow).join('\n')}`)
+  else parts.push('产物：没有可直接交付的普通文件')
+  if (hidden > 0) parts.push(`另有 ${hidden} 条产物未列出`)
+  const skippedText = skipLine(skipped)
+  if (skippedText !== '') parts.push(skippedText)
+  if (shown.length > 0 && hint) parts.push(PRESENT_HINT)
+  return `\n  ${parts.join('\n  ')}`
 }
+
+const hasDeliverable = item => deliverableOf(item).files.length > 0
 
 const questionBlock = item => {
   const question = typeof item.question === 'string' && item.question.trim() !== '' ? item.question.trim() : ''
@@ -40,7 +130,9 @@ const nameOf = item => {
   const base = item.displayName ?? item.title
   return item.readOnly === true ? `${base}（只读）` : base
 }
-const line = item => `- ${nameOf(item)}：${item.summary}${questionBlock(item)}${artifactBlock(item)}`
+// 合并通知里每条任务只列产物；交付指令在整条消息末尾写一次（避免 N 条任务刷 N 遍指令）。
+const line = item => `- ${nameOf(item)}：${item.summary}${questionBlock(item)}${artifactBlock(item, { hint: false })}`
+const batchHint = batch => (batch.some(hasDeliverable) ? `\n  ${PRESENT_HINT}` : '')
 
 export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {}, onEvent = () => {} }) {
   let buffer = []
@@ -144,7 +236,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     const label = status => DONE_LABEL[status] ?? '完成'
     const text = batch.length === 1
       ? `任务「${nameOf(batch[0])}」${label(batch[0].status)}：${batch[0].summary}${questionBlock(batch[0])}${artifactBlock(batch[0])}`
-      : `${batch.length} 个任务${batch.every(item => item.status === 'done') ? '完成' : '状态更新'}：\n${batch.map(line).join('\n')}`
+      : `${batch.length} 个任务${batch.every(item => item.status === 'done') ? '完成' : '状态更新'}：\n${batch.map(line).join('\n')}${batchHint(batch)}`
     return deliver(text, batch)
   }
 

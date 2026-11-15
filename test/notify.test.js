@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { openLedger, addNotification } from '../src/ledger.js'
 import { levelOf, createNotifier } from '../src/notify.js'
 import { tempDir } from './helpers.js'
@@ -201,39 +203,153 @@ test('投递失败落一条 failed 记录，delivered_at 为空', async () => {
 })
 
 
-test('产物随 done 通知列出绝对路径、说明与未找到', async () => {
+// P6 / T6.1：通知里的产物必须「可交付 + 带交付指令」。判据跟平台 present 一致
+// （lstat 判 type：目录 / 符号链接 / 不存在都拒），所以用真实临时文件验证，不用假路径。
+const fileIn = (dir, name, content = 'x') => {
+  const path = join(dir, name)
+  writeFileSync(path, content, 'utf8')
+  return path
+}
+
+test('产物随 done 通知列出可交付的绝对路径，并带 present 交付指令', async () => {
+  const dir = tempDir()
+  const report = fileIn(dir, 'report.md', '# ok')
+  const missing = join(dir, 'missing.txt')
   const delivered = []
   const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
   notifier.push({
     taskId: 't-1', title: 'A', status: 'done', summary: '完成',
     artifacts: [
-      { path: 'C:/work/report.md', label: '报告', exists: true },
-      { path: 'C:/work/missing.txt', label: '', exists: false },
+      { path: report, label: '报告', exists: true },
+      { path: missing, label: '', exists: false },
     ],
   })
   await wait(25)
   assert.equal(delivered.length, 1)
   assert.match(delivered[0], /产物：/)
-  assert.match(delivered[0], /C:\/work\/report\.md — 报告/)
-  assert.match(delivered[0], /C:\/work\/missing\.txt（未找到）/)
+  assert.ok(delivered[0].includes(`- ${report} — 报告`))
+  // 交付指令：明确让人在自己回合里调 present，参数是上面这些绝对路径，且已 stat 校验。
+  assert.match(delivered[0], /交付：在你自己的回合里调用 present/)
+  assert.match(delivered[0], /files 里每项 path 填上面这些绝对路径/)
+  assert.match(delivered[0], /最多 4 个/)
+  assert.match(delivered[0], /插件已 stat 校验存在且是普通文件，不要另找路径/)
+  // 不存在的路径不能进候选，只计数。
+  assert.equal(delivered[0].includes(`- ${missing}`), false)
+  assert.match(delivered[0], /另有 1 条产物不能交付（不存在 1）/)
 })
 
-test('合并窗口内多条 report 的产物各自保留，不互相覆盖', async () => {
+test('目录不进交付候选：present 只收普通文件', async () => {
+  const dir = tempDir()
+  const dist = join(dir, 'dist')
+  mkdirSync(dist)
   const delivered = []
   const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
-  notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成', artifacts: [{ path: 'C:/a.txt', label: '甲', exists: true }] })
-  notifier.push({ taskId: 't-2', title: 'B', status: 'done', summary: '完成', artifacts: [{ path: 'C:/b.txt', label: '乙', exists: true }] })
+  notifier.push({
+    taskId: 't-1', title: 'A', status: 'done', summary: '完成',
+    artifacts: [{ path: dist, label: '构建目录', exists: true }],
+  })
+  await wait(25)
+  assert.equal(delivered[0].includes(`- ${dist}`), false)
+  assert.match(delivered[0], /产物：没有可直接交付的普通文件/)
+  assert.match(delivered[0], /另有 1 条产物不能交付（目录 1）/)
+  // 一条可交付候选都没有时，不写交付指令（写了只会诱发一次必然失败的 present）。
+  assert.doesNotMatch(delivered[0], /调用 present/)
+})
+
+test('符号链接不进交付候选：present 用 lstat 判 type，链接同样被拒', async t => {
+  const dir = tempDir()
+  const realDir = join(dir, 'real')
+  mkdirSync(realDir)
+  const link = join(dir, 'link')
+  try {
+    // Windows 上文件符号链接需要特权，目录联接（junction）不需要，且 lstat 同样报 symlink。
+    symlinkSync(realDir, link, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch {
+    t.skip('当前环境无法创建符号链接/目录联接')
+    return
+  }
+  const file = fileIn(dir, 'a.md')
+  const delivered = []
+  const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
+  notifier.push({
+    taskId: 't-1', title: 'A', status: 'done', summary: '完成',
+    artifacts: [{ path: link }, { path: file }],
+  })
+  await wait(25)
+  assert.equal(delivered[0].includes(`- ${link}`), false)
+  assert.ok(delivered[0].includes(`- ${file}`))
+  assert.match(delivered[0], /另有 1 条产物不能交付（符号链接 1）/)
+})
+
+test('相对路径不进交付候选：协调者的 cwd 不是任务目录', async () => {
+  const dir = tempDir()
+  fileIn(dir, 'a.md')
+  const delivered = []
+  const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成', artifacts: [{ path: 'a.md' }] })
+  await wait(25)
+  assert.match(delivered[0], /产物：没有可直接交付的普通文件/)
+  assert.match(delivered[0], /另有 1 条产物不能交付（非绝对路径 1）/)
+})
+
+test('交付候选最多 4 个，其余折叠成「另有 N 条产物未列出」', async () => {
+  const dir = tempDir()
+  const files = Array.from({ length: 6 }, (_, index) => fileIn(dir, `out-${index}.md`))
+  const delivered = []
+  const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
+  notifier.push({
+    taskId: 't-1', title: 'A', status: 'done', summary: '完成',
+    artifacts: files.map(path => ({ path })), artifactsTruncated: 2,
+  })
+  await wait(25)
+  for (const path of files.slice(0, 4)) assert.ok(delivered[0].includes(`- ${path}`))
+  for (const path of files.slice(4)) assert.equal(delivered[0].includes(`- ${path}`), false)
+  // 2 条超上限（6 个候选只列 4 个）+ 2 条台账层截断 = 4 条未列出。
+  assert.match(delivered[0], /另有 4 条产物未列出/)
+})
+
+test('blocked / needs_auth 通知同样带交付指令与绝对路径', async () => {
+  const dir = tempDir()
+  const report = fileIn(dir, 'plan.md')
+  const delivered = []
+  const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
+  for (const status of ['blocked', 'needs_auth']) {
+    notifier.push({
+      taskId: `t-${status}`, title: status, status, summary: '需要你定',
+      question: '选一个方案', options: ['A', 'B'],
+      artifacts: [{ path: report, label: '计划' }],
+    })
+  }
+  await wait(10)
+  assert.equal(delivered.length, 2)
+  for (const text of delivered) {
+    assert.match(text, /需要你/)
+    assert.ok(text.includes(`- ${report} — 计划`))
+    assert.match(text, /交付：在你自己的回合里调用 present/)
+  }
+})
+
+test('多条任务合并的通知只写一次交付指令', async () => {
+  const dir = tempDir()
+  const a = fileIn(dir, 'a.md')
+  const b = fileIn(dir, 'b.md')
+  const delivered = []
+  const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成', artifacts: [{ path: a, label: '甲' }] })
+  notifier.push({ taskId: 't-2', title: 'B', status: 'done', summary: '完成', artifacts: [{ path: b, label: '乙' }] })
   await wait(25)
   assert.equal(delivered.length, 1)
-  assert.match(delivered[0], /C:\/a\.txt — 甲/)
-  assert.match(delivered[0], /C:\/b\.txt — 乙/)
+  assert.ok(delivered[0].includes(`- ${a} — 甲`))
+  assert.ok(delivered[0].includes(`- ${b} — 乙`))
+  assert.equal((delivered[0].match(/调用 present/g) ?? []).length, 1)
 })
 
-
 test('产物被截断时通知追加「另有 N 条产物未列出」', async () => {
+  const dir = tempDir()
+  const report = fileIn(dir, 'a.md')
   const delivered = []
   const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
-  notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成', artifacts: [{ path: 'C:/a.txt', label: '甲', exists: true }], artifactsTruncated: 5 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'done', summary: '完成', artifacts: [{ path: report, label: '甲' }], artifactsTruncated: 5 })
   await wait(25)
   assert.match(delivered[0], /另有 5 条产物未列出/)
 })
