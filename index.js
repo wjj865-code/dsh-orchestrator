@@ -326,6 +326,36 @@ export async function apply(ctx, rawConfig = {}) {
     onOrphaned: task => { void goalBridge.clear(task.id, task.session_id) },
   })
 
+  // 自动 done 的产物补齐（D5）：必须在结算通知发出**之前**跑完，否则「子会话自然结束 → 结算自动判 done」
+  // 这条最常见收场路径的通知里永远没有产物，也就没有 present 交付指令（reports/t6.1-present.md §5）。
+  // 返回补齐后的台账行给通知渲染；收集失败只告警，不影响已落库的终态。
+  function collectArtifactsBeforeSettleNotify(task, status) {
+    if (status !== 'done') return task
+    const sessionId = task?.session_id
+    if (sessionId === undefined || sessionId === null) return task
+    const session = service('agents')?.get?.(sessionId)?.session ?? service('sessions')?.get?.(sessionId)
+    if (session === undefined) return task
+    try {
+      const result = collectWorkspaceArtifacts({
+        session,
+        workspaceChanges: service('workspaceChanges'),
+        fallbackCwd: task.target_dir ?? join(stateDir(), 'workspace'),
+        max: MAX_AUTO_ARTIFACTS,
+      })
+      const added = appendMissingArtifacts(task.artifacts, result.artifacts)
+      if (added.length === 0) return task
+      const updated = setTaskArtifacts(db, task.id, added)
+      logger.log('task.settle.artifacts.auto', {
+        taskId: task.id,
+        detail: { added: added.length, turns: result.turns },
+      })
+      return updated ?? task
+    } catch (error) {
+      warnings(`dsh-orchestrator: 结算前产物收集失败：${error?.message ?? error}`)
+      return task
+    }
+  }
+
   settlement = createSettlementReporter({
     db,
     notifier,
@@ -335,6 +365,8 @@ export async function apply(ctx, rawConfig = {}) {
     reportsDir: join(dir, 'reports'),
     releaseSession: target => dispatcher.releaseWritableRoots?.(target),
     pump: () => queue?.pump(),
+    // D5：通知前补齐产物，让结算通知也带可交付清单（与 task_report 那条路同一份产物）。
+    beforeNotify: collectArtifactsBeforeSettleNotify,
     // G1：结算自动收场时收敛平台 goal：done → complete；其余终态（cancelled/failed/orphaned）→ clear。
     onTerminal: (task, status) => {
       void (status === 'done' ? goalBridge.complete(task.id, task.session_id) : goalBridge.clear(task.id, task.session_id))
@@ -368,37 +400,10 @@ export async function apply(ctx, rawConfig = {}) {
     enabled: config.idleWatchdog,
   })
 
-  // 自动 done 的产物补齐：task_report done 那条路有 workspace/changes 钩子，这条路没有。
-  function collectAfterSettle(outcome) {
-    if (outcome?.action !== 'updated' || outcome.to !== 'done') return
-    const task = outcome.task
-    const sessionId = task?.session_id
-    if (sessionId === undefined || sessionId === null) return
-    const session = service('agents')?.get?.(sessionId)?.session ?? service('sessions')?.get?.(sessionId)
-    if (session === undefined) return
-    try {
-      const result = collectWorkspaceArtifacts({
-        session,
-        workspaceChanges: service('workspaceChanges'),
-        fallbackCwd: task.target_dir ?? join(stateDir(), 'workspace'),
-        max: MAX_AUTO_ARTIFACTS,
-      })
-      const added = appendMissingArtifacts(task.artifacts, result.artifacts)
-      if (added.length === 0) return
-      setTaskArtifacts(db, task.id, added)
-      logger.log('task.settle.artifacts.auto', {
-        taskId: task.id,
-        detail: { added: added.length, turns: result.turns },
-      })
-    } catch (error) {
-      warnings(`dsh-orchestrator: 结算后产物收集失败：${error?.message ?? error}`)
-    }
-  }
-
+  // 产物补齐已挪到通知之前（collectArtifactsBeforeSettleNotify，作为 beforeNotify 钩子），
+  // 这条路径只需要把事件喂给结算器：task_report done 那条路另有 workspace/changes 钩子。
   function reportSettle(input) {
-    const outcome = settlement?.report(input)
-    if (outcome?.action === 'updated') collectAfterSettle(outcome)
-    return outcome
+    return settlement?.report(input)
   }
 
   // 平台生命周期事件：续派/冷恢复起的新 activation 不走 dispatch 的 track，只有 subagent/end 能看到。

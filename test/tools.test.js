@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import{ join } from 'node:path'
 import { openLedger, createTask, getTask, listTasks, recentMessages, transition, setTaskLastMessage } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
@@ -405,6 +405,59 @@ test('task_status include=full：报告文件被删时降级为摘要 + 读取�
   const text = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
   assert.match(text, /全文读取失败/)
   assert.match(text, /gone\.md/)
+  db.close()
+})
+
+// P6 / T6.2：task_status 产物区块 —— 错过通知时的兜底回流路径。口径必须与通知一致（风险 R17）：
+// 只列 present 能接住的普通文件，目录 / 符号链接 / 已不存在只计数；带交付指令与条数。
+test('task_status 产物区块：列可交付绝对路径 + 条数，目录/不存在只计数', async () => {
+  const target = tempDir()
+  const report = join(target, 'report.md')
+  writeFileSync(report, '# ok', 'utf8')
+  mkdirSync(join(target, 'dist'))
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', { ...sampleBrief({ title: '带产物' }), target })
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', {
+    task_id: task.id,
+    status: 'done',
+    summary: '完成',
+    artifacts: [{ path: 'report.md', label: '报告' }, { path: 'dist' }, { path: 'missing.txt' }],
+  }, { agent: { id: task.session_id } })
+
+  const text = await call(tools, 'task_status', { task_id: task.id })
+  assert.match(text, /产物：共 3 条（可交付 1 条）/)
+  assert.ok(text.includes(`- ${report} — 报告`))
+  assert.match(text, /另有 2 条产物不能交付（目录 1、不存在 1）/)
+  // 交付指令与通知同一句：插件已 stat 校验过，别让模型另找路径。
+  assert.match(text, /交付：在你自己的回合里调用 present/)
+  assert.match(text, /插件已 stat 校验存在且是普通文件，不要另找路径/)
+  // 目录与不存在的路径不进交付清单（混进去会让整次 present 失败）。
+  assert.equal(text.includes(`- ${join(target, 'dist')}`), false)
+  assert.equal(text.includes(`- ${join(target, 'missing.txt')}`), false)
+  db.close()
+})
+
+test('task_status 无产物不显示产物区块；产物被删后按现状重新判定', async () => {
+  const target = tempDir()
+  const report = join(target, 'a.md')
+  writeFileSync(report, 'x', 'utf8')
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', { ...sampleBrief({ title: '产物变化' }), target })
+  const task = listTasks(db)[0]
+  assert.doesNotMatch(await call(tools, 'task_status', { task_id: task.id }), /产物：/)
+
+  await call(tools, 'task_report', {
+    task_id: task.id, status: 'done', summary: '完成', artifacts: [{ path: 'a.md', label: '甲' }],
+  }, { agent: { id: task.session_id } })
+  assert.match(await call(tools, 'task_status', { task_id: task.id }), /产物：共 1 条（可交付 1 条）/)
+
+  // 台账里记着 exists:true，但交付判据是「现在还在不在」，所以删掉后按不存在计数、不给交付指令。
+  unlinkSync(report)
+  const after = await call(tools, 'task_status', { task_id: task.id })
+  assert.match(after, /产物：共 1 条，没有可直接交付的普通文件/)
+  assert.match(after, /另有 1 条产物不能交付（不存在 1）/)
+  assert.doesNotMatch(after, /调用 present/)
   db.close()
 })
 

@@ -18,6 +18,7 @@ import {
 } from './ledger.js'
 import { collectWorkspaceArtifacts } from './artifact-collect.js'
 import { formatBytes, PREVIEW_CHARS, readLastMessage } from './last-message.js'
+import { artifactLines } from './notify.js'
 import { toolFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
 import { followupGate } from './panel-gates.js'
@@ -601,6 +602,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       if (task.retry_of) lines.push(`重派自：${task.retry_of}`)
       if (task.error !== null && task.error !== undefined) lines.push(`原因：${task.error}`)
+      // P6/T6.2：产物区块（错过通知时的兜底回流路径）。与通知同一口径（artifactLines 共用）：
+      // 只列 present 能接住的普通文件，目录 / 符号链接 / 已不存在只计数不进清单；带交付指令。
+      lines.push(...artifactLines({ artifacts: task.artifacts }, { counts: true }))
       // B1：结算时落的最完整返回消息 → 主会话不必打开子会话就能读到它最后说了什么。
       if (task.last_message !== null && task.last_message !== undefined) {
         lines.push(...lastMessageLines(task.last_message, { full: args.include === 'full' }))

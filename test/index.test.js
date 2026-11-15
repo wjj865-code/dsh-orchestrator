@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply, inject, name, COORDINATOR_DENY } from '../index.js'
@@ -53,7 +53,7 @@ function fakeGoalService() {
   }
 }
 
-function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, connection, sessionController, workspaces, goals } = {}) {
+function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, connection, sessionController, workspaces, goals, sessions, workspaceChanges } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
   const routes = []
@@ -93,6 +93,8 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       if (name === 'connection') return routeService
       if (name === 'sessionController') return sessionController
       if (name === 'workspaceRegistry') return workspaces
+      if (name === 'sessions') return sessions
+      if (name === 'workspaceChanges') return workspaceChanges
       if (name === 'goals') return goals
       return undefined
     },
@@ -859,8 +861,64 @@ test('S1：派发侧 settle completed 自动把台账 running→done，并写结
   await disposers.at(-1)?.()
 }))
 
-test('S1：平台 subagent/end（续派/冷恢复）也能把 running 推到 cancelled 并通知', withHome(async home => {
+// D5：结算自动判 done 是「子会话自然结束」这条最常见收场路径。产物必须在通知发出**之前**补齐，
+// 否则通知里没有产物、也就没有 present 交付指令（T6.1 报告 §5 的偏差）。
+test('D5：结算自动 done 的通知在发送前补齐产物，注入文案带清单与交付指令', withHome(async home => {
   const s1 = makeAgent('s-1')
+  let childId
+  let settle
+  const subagents = {
+    async startActivation(spec) {
+      childId = spec.childId
+      return {
+        childId: spec.childId,
+        messageId: 'msg-1',
+        result: new Promise(resolve => { settle = () => resolve({ output: [{ type: 'text', text: '改完了，测试全绿' }], stopReason: 'completed' }) }),
+        dispose: async () => {},
+      }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const target = join(home, 'work')
+  mkdirSync(target)
+  const report = join(target, 'report.md')
+  writeFileSync(report, '# ok', 'utf8')
+  // 子会话只通过 sessions 服务可达（agents 目录里只有协调者），覆盖 index 的两条查会话回退。
+  const childSession = { id: undefined, ownEvents: () => [{ type: 'workspace/changes', seq: 3, data: { turn: 1 } }] }
+  const { ctx, registered, disposers } = fakeCtx({
+    agents: [s1],
+    subagents,
+    sessions: { get: id => (id === childSession.id ? childSession : undefined) },
+    workspaceChanges: { summary: () => ({ cwd: target, files: [{ path: 'report.md', added: 3, deleted: 0 }] }) },
+  })
+  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 1 })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'], target }, { agent: s1 })
+  childSession.id = childId
+  settle()
+  await wait(50)
+
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const row = db.prepare('SELECT id, status, artifacts_json FROM tasks').get()
+  db.close()
+  assert.equal(row.status, 'done')
+  assert.deepEqual(JSON.parse(row.artifacts_json).map(item => item.path), [report])
+  // 协调者收到的通知里就是这份清单（不是空产物），并带 present 交付指令。
+  assert.equal(s1.injected.length, 1)
+  const text = s1.injected[0].content[0].text
+  assert.match(text, /产物：/)
+  assert.ok(text.includes(`- ${report} — +3/-0`))
+  assert.match(text, /交付：在你自己的回合里调用 present/)
+  // 同一份清单也能从 task_status 取回（错过通知的兜底路径）。
+  const status = await byName.task_status.execute({ task_id: row.id }, { agent: s1 })
+  assert.ok(status.includes(`- ${report} — +3/-0`))
+  await disposers.at(-1)?.()
+}))
+
+test('S1：平台 subagent/end（续派/冷恢复）也能把 running 推到 cancelled 并通知', withHome(async home => {  const s1 = makeAgent('s-1')
   let childId
   const subagents = {
     async startActivation(spec) {

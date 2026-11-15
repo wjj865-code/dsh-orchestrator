@@ -1,13 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, transition, addMessage, recentMessages, recordProgress } from '../src/ledger.js'
+import { openLedger, createTask, getTask, transition, addMessage, recentMessages, recordProgress, setTaskArtifacts } from '../src/ledger.js'
 import { createSettlementReporter, mapSettle, outputSummary, PAUSED_REASON } from '../src/settlement.js'
 import { MAX_INLINE_BYTES, SUMMARY_CHARS } from '../src/last-message.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
-const setup = async ({ status = 'running', sessionId = 'child-1', progress = 0 } = {}) => {
+const setup = async ({ status = 'running', sessionId = 'child-1', progress = 0, beforeNotify } = {}) => {
   const dir = tempDir()
   const db = await openLedger(dir)
   const reportsDir = join(dir, 'reports')
@@ -32,6 +32,7 @@ const setup = async ({ status = 'running', sessionId = 'child-1', progress = 0 }
     reportsDir,
     releaseSession: target => released.push(target),
     pump: () => { pumped += 1 },
+    ...(beforeNotify === undefined ? {} : { beforeNotify }),
   })
   return {
     db, task, pushed, logs, released, reporter, dir, reportsDir,
@@ -99,9 +100,73 @@ test('completed → done：写 settle 消息、清空 error、发通知、释放
   assert.equal(f.pushed[0].status, 'done')
   assert.equal(f.pushed[0].system, true)
   assert.match(f.pushed[0].summary, /改完了/)
+  // D5：通知 payload 永远带 artifacts 字段（空也是 []），渲染层据此决定要不要写产物区块。
+  assert.deepEqual(f.pushed[0].artifacts, [])
   assert.deepEqual(f.released, ['child-1'])
   assert.equal(f.pumped(), 1)
   assert.ok(f.logs.some(([event]) => event === 'task.settle'))
+  f.db.close()
+})
+
+test('D5：结算通知带台账里已有的产物（不用等收集）', async () => {
+  const f = await setup()
+  const report = join(tempDir(), 'report.md')
+  writeFileSync(report, '# ok', 'utf8')
+  setTaskArtifacts(f.db, f.task.id, [{ path: report, label: '报告', exists: true }])
+  f.reporter.report({ taskId: f.task.id, stopReason: 'completed', output: [{ type: 'text', text: '改完了' }] })
+  assert.equal(f.pushed.length, 1)
+  assert.deepEqual(f.pushed[0].artifacts.map(item => item.path), [report])
+  assert.equal(f.pushed[0].artifacts[0].label, '报告')
+  f.db.close()
+})
+
+test('D5：beforeNotify 在发通知之前跑，通知用的是补齐后的产物；返回 undefined 表示不改', async () => {
+  const dir = tempDir()
+  const report = join(dir, 'late.md')
+  writeFileSync(report, '# ok', 'utf8')
+  // 钩子只能在 setup 之后拿到 db，所以先声明再赋值。
+  let f
+  let seen = null
+  f = await setup({
+    beforeNotify: (task, status) => {
+      seen = { status, sessionId: task.session_id, artifacts: task.artifacts.length }
+      if (status !== 'done') return undefined
+      setTaskArtifacts(f.db, task.id, [{ path: report, label: '补的', exists: true }])
+      return getTask(f.db, task.id)
+    },
+  })
+  const outcome = f.reporter.report({
+    taskId: f.task.id,
+    stopReason: 'completed',
+    output: [{ type: 'text', text: '改完了，测试全绿' }],
+  })
+  // 钩子收到的是「刚进终态、还没产物」的那一行。
+  assert.deepEqual(seen, { status: 'done', sessionId: 'child-1', artifacts: 0 })
+  // 通知里看到的是钩子补齐后的产物（顺序反了就会是空数组——D5 原缺陷）。
+  assert.equal(f.pushed.length, 1)
+  assert.deepEqual(f.pushed[0].artifacts.map(item => item.path), [report])
+  // 返回值也带补齐后的台账行，调用方不必再查库。
+  assert.equal(outcome.task.artifacts.length, 1)
+  f.db.close()
+
+  // 非 done 终态不触发产物收集语义（钩子自己返回 undefined，通知字段仍存在）。
+  const cancelled = await setup({ beforeNotify: () => undefined })
+  cancelled.reporter.report({ taskId: cancelled.task.id, stopReason: 'aborted' })
+  assert.equal(cancelled.pushed[0].status, 'cancelled')
+  assert.deepEqual(cancelled.pushed[0].artifacts, [])
+  cancelled.db.close()
+})
+
+test('D5：beforeNotify 抛错不回滚终态，通知照发（产物退化为台账现值）', async () => {
+  const f = await setup({
+    beforeNotify: () => { throw new Error('收集炸了') },
+  })
+  const outcome = f.reporter.report({ taskId: f.task.id, stopReason: 'completed', output: [{ type: 'text', text: '改完了' }] })
+  assert.equal(outcome.to, 'done')
+  assert.equal(getTask(f.db, f.task.id).status, 'done')
+  assert.equal(f.pushed.length, 1)
+  assert.deepEqual(f.pushed[0].artifacts, [])
+  assert.ok(f.logs.some(([event, fields]) => event === 'task.settle.before-notify-failed' && /收集炸了/.test(fields.detail.error)))
   f.db.close()
 })
 

@@ -73,7 +73,7 @@ const deliverableOf = item => {
   return { files, skipped }
 }
 
-const artifactRow = entry => `  - ${entry.path}${entry.label ? ` — ${entry.label}` : ''}`
+const artifactRow = entry => `- ${entry.path}${entry.label ? ` — ${entry.label}` : ''}`
 
 const skipLine = skipped => {
   const entries = [...skipped.entries()]
@@ -88,13 +88,16 @@ const skipLine = skipped => {
 const PRESENT_HINT = '交付：在你自己的回合里调用 present，files 里每项 path 填上面这些绝对路径（1-2 个最关键的，最多 4 个）；插件已 stat 校验存在且是普通文件，不要另找路径。'
 
 /**
- * 产物区块。
- * @param {object} item 通知条目（artifacts / artifactsTruncated）
- * @param {{hint?: boolean}} options hint=false 用于多条任务合并的通知：只在整条消息末尾写一次交付指令。
+ * 产物区块的行（通知与 task_status 共用同一份渲染，避免两处清单口径漂移：风险 R17）。
+ * 返回不带缩进的行；`[]` 表示没有产物（调用方不要渲染区块）。
+ * @param {object} item 含 artifacts / artifactsTruncated 的条目（台账行也满足）
+ * @param {{hint?: boolean, counts?: boolean}} options
+ *   hint=false：多任务合并通知里交付指令只在整条消息末尾写一次；
+ *   counts=true：首行带总条数 / 可交付条数（task_status 用，通知里保持短语）。
  */
-const artifactBlock = (item, { hint = true } = {}) => {
+export function artifactLines(item, { hint = true, counts = false } = {}) {
   const artifacts = Array.isArray(item.artifacts) ? item.artifacts : []
-  if (artifacts.length === 0) return ''
+  if (artifacts.length === 0) return []
   const { files, skipped } = deliverableOf(item)
   const shown = files.slice(0, PRESENT_MAX_FILES)
   const truncated = typeof item.artifactsTruncated === 'number' && Number.isFinite(item.artifactsTruncated)
@@ -102,14 +105,28 @@ const artifactBlock = (item, { hint = true } = {}) => {
     : 0
   // 折叠数 = 超上限的候选 + 台账层截断（artifactsTruncated 是根本没进 item.artifacts 的条数）。
   const hidden = files.length - shown.length + truncated
-  const parts = []
-  if (shown.length > 0) parts.push(`产物：\n${shown.map(artifactRow).join('\n')}`)
-  else parts.push('产物：没有可直接交付的普通文件')
-  if (hidden > 0) parts.push(`另有 ${hidden} 条产物未列出`)
+  const lines = []
+  if (shown.length > 0) {
+    lines.push(counts ? `产物：共 ${artifacts.length} 条（可交付 ${files.length} 条）` : '产物：')
+    lines.push(...shown.map(artifactRow))
+  } else {
+    lines.push(counts ? `产物：共 ${artifacts.length} 条，没有可直接交付的普通文件` : '产物：没有可直接交付的普通文件')
+  }
+  if (hidden > 0) lines.push(`另有 ${hidden} 条产物未列出`)
   const skippedText = skipLine(skipped)
-  if (skippedText !== '') parts.push(skippedText)
-  if (shown.length > 0 && hint) parts.push(PRESENT_HINT)
-  return `\n  ${parts.join('\n  ')}`
+  if (skippedText !== '') lines.push(skippedText)
+  if (shown.length > 0 && hint) lines.push(PRESENT_HINT)
+  return lines
+}
+
+/**
+ * 产物区块（通知用）：两空格缩进挂在任务行下面。
+ * @param {object} item 通知条目（artifacts / artifactsTruncated）
+ * @param {{hint?: boolean}} options hint=false 用于多条任务合并的通知：只在整条消息末尾写一次交付指令。
+ */
+const artifactBlock = (item, { hint = true } = {}) => {
+  const lines = artifactLines(item, { hint })
+  return lines.length === 0 ? '' : `\n  ${lines.join('\n  ')}`
 }
 
 const hasDeliverable = item => deliverableOf(item).files.length > 0

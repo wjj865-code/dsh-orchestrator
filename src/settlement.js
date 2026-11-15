@@ -56,6 +56,9 @@ export function createSettlementReporter({
   releaseSession = () => {},
   pump = () => {},
   onTerminal = () => {},
+  // D5：通知发出前的产物补齐钩子（index.js 注入）。返回补齐后的任务行，通知用它渲染产物区块；
+  // 返回 undefined/null 表示不改。钩子内部吞错，收集失败不能回滚已经落库的终态。
+  beforeNotify = () => undefined,
 } = {}) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志失败不能打断结算 */ }
@@ -71,6 +74,9 @@ export function createSettlementReporter({
         readOnly: task.read_only === true,
         status,
         summary,
+        // D5：结算是最常见的收场路径（子会话自然结束 → 自动判 done），通知不带产物
+        // 就等于主路径永远拿不到 present 交付候选（reports/t6.1-present.md §5）。
+        artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
         system: true,
       })
     } catch (error) {
@@ -153,7 +159,16 @@ export function createSettlementReporter({
     } catch (failure) {
       log('task.settle.message-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
     }
-    notify(next, mapped.status, summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`))
+    // D5：先补齐产物、再发通知。之前这条顺序反了（先 notify 后 collect），
+    // 导致「结算自动 done」的通知里永远没有产物、也就没有 present 交付指令。
+    let final = next
+    try {
+      const refreshed = beforeNotify(next, mapped.status)
+      if (refreshed !== null && typeof refreshed === 'object') final = refreshed
+    } catch (failure) {
+      log('task.settle.before-notify-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
+    }
+    notify(final, mapped.status, summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`))
     try { releaseSession(task.session_id ?? task.target) } catch { /* 释放失败不影响已落库的终态 */ }
     // G1：终态收敛平台 goal（done → complete；cancelled/failed/orphaned → clear）。
     // 回调内部吞错，不能因为 goal 服务缺席/失败回滚已完成的状态迁移。
@@ -185,7 +200,7 @@ export function createSettlementReporter({
         summary: lastMessageRecord.summary,
         digest: lastMessageRecord.digest,
       },
-      task: next,
+      task: final,
     }
   }
 
