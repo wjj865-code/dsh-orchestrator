@@ -10,7 +10,7 @@
 
 | 能力 | 说明 |
 |---|---|
-| 协调者 | 固定「主会话」，只拆任务、派子会话、看回报，不读写文件 |
+| 协调者 | 固定「主会话」，只拆任务、派子会话、看回报、用 `present` 交付产物，不读写文件 |
 | 子任务 | 独立 DSH 子会话，按目标目录运行；可只读、续派、停止、重派 |
 | 依赖编排 | `dependsOn` 前置；完成自动晋升，失败沿依赖链传播 |
 | 分组/写域/优先级 | `group` 分组、`writeScopes` 冲突提示、`priority` 队列排序 |
@@ -197,7 +197,7 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 
 ## 架构与安全
 
-- 协调者预设只挂 `persona` / `agent-instructions` / `time-context` / `tool-ask-user` / `compaction` / `preset-tools`；执行层还有 guard 硬拦 `read`/`write`/`bash`/`wait_agent` 等。
+- 协调者预设挂 `persona` / `agent-instructions` / `time-context` / `tool-ask-user` / `present` / `compaction` / `preset-tools`；执行层还有 guard 硬拦 `read`/`write`/`bash`/`wait_agent` 等（`present` 不在黑名单，只声明交付、不读文件内容）。
 - 子任务用 worker 预设，文件/shell/search/jobs/web/todo/skill/compaction/present + `tool-goal`（只读 `get_goal`，用来读自己的任务目标），不含 delegation/plan/schedule；预设可用 `workerPreset` 换成副本（如 `orch-debug`）。
 - `/api/orchestrator` 由 connection owner-only 鉴权；`snapshot`/`detail`/`artifacts`/`preview` 只读，`stop`/`retry`/`message` 是面板动作。
 - 通知走 `agent.steer`，5 秒合并；每次投递写 `notifications`。

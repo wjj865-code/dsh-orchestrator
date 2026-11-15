@@ -43,7 +43,7 @@
 - 结论：预设层的「allow 名单」只能用 **deny 补集**实现，见根目录 `preset-tools.js`：`allow` 是显式保留名单；mount 时一次性 deny 掉所有已注册、不在 allow 里的全局工具，之后每次 `tools/change` 只 deny 新出现的同类工具（按「不在 allow 的全局工具」判定，不写死工具名）。每批实际被 deny 的工具都写 `preset-tools: deny …` 进日志，便于审计。`run_code`（PTC 保留传输）平台禁止 deny，跳过并在文档标注。
 - 时序：预设是 eager 挂载，`task_*` 可能还没注册；deny 补集天然处理顺序——只 deny 已出现的全局工具，allow 名单里的工具后注册也不会被 deny，不硬抛、不把协调者削成空表。
 - 覆盖用例（`test/preset-tools.test.js`，8/8 PASS）：`mount 后动态注册的全局工具被 deny，协调者工具表不增加`、`mount 时一次性 deny 已存在的全部非 allow 全局工具，并写审计日志`、`后注册的全局工具在 tools/change 后补 deny，且不重复`。
-- `ask_user_question` 由预设行 `tool-ask-user` 自己注册，**不放进 allow**（放进去会 unknown name 抛错）。
+- `ask_user_question` 由预设行 `tool-ask-user` 自己注册，**不放进 `restrict({ allow })`**（放进去会 `unknown global tool` 抛错）。注意 preset-tools 的 `allow` 是另一回事：它只用于过滤 deny、不交给 `restrict`，列 own 名字是幂等的（当前为 `present` 作跨 profile 保底）。
 
 **退化方案（若 worker 栈复制不可接受）**：不把 restrict 放进 preset scope，只在**主会话自己的 agent scope** 装 `agent.ctx.tools.restrict`（创建后 / `agent/created`）。子会话 scope 链是「child agent → preset scope」，不含父 agent 自己的 layer，所以不会漏给子会话；代价是退回「运行期收窄」，不是预设层。
 
@@ -132,7 +132,7 @@ plugins:
 - `persona.prefix` 是**必填**（`dsh-persona` 的 Config：`prefix: required`），漏了 preset 直接 broken。
 - **协调者也要 `compaction` 组**（长期对话，不挂会撑爆上下文）：与 worker 同一组，带 `isolate: { compaction: true, toolResultPruner: true }` 和三条子行/config。
 - `task_*` 工具来自本插件（host bundle 全局注册），不在 preset 行里；`preset-tools` 用 **deny 补集**（§1.5）：allow 名单之外的全局工具逐个 deny，mount 时 + 每次 `tools/change` 增量补，不硬抛、不因 `task_*` 后注册把协调者削空。
-- `ask_user_question` 由 `tool-ask-user` 行自己注册（名字是 `ask_user_question`，不是 `ask_user`），**不写进 allow**——写进去会抛 `unknown global tool`；预设自有工具本身不受 deny 影响。
+- `ask_user_question` 由 `tool-ask-user` 行自己注册（名字是 `ask_user_question`，不是 `ask_user`），**不写进 `restrict({ allow })`**——写进去会抛 `unknown global tool`；预设自有工具本身不受 deny 影响。preset-tools 的 allow 只过滤 deny、不交给 restrict，所以可以列 own 名字（`present` 就列了一份，防 SDK 等 profile 把它注册成全局工具时被 deny）。
 - **`task_report` 不进 allow**（子会话专用，全局注册，会被 deny）；`show_view` 与 memory 在 base asar 未证实，**默认不带**，Task 10 在 ds-bot 环境确认后再决定是否补 allow。
 - `run_code` 是 PTC 保留传输，平台禁止 deny，`preset-tools` 跳过；若 profile 用 PTC executor，协调者内部的工具调用仍按 `tools.view` 过滤（Task 10 记录）。
 

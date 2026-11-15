@@ -7,6 +7,10 @@
 // 所以「allow 名单」在预设层只能用补集表达：deny 掉所有**已注册的全局工具**中不在
 // allow 名单里的项；预设自己挂的工具不受影响。
 //
+// allow 默认只列全局工具；把预设自有工具名（如 present）也列进来是幂等的：这里只用它
+// 过滤 deny，不交给 restrict，所以不会触发 `unknown global tool`，还能在别的 profile
+// 把同名工具注册成全局时保底（例如 SDK 的 host plane 也挂 present）。
+//
 // 时序：预设是 profile 加载时 eager 挂载的，我们的 `task_*` 可能还没注册。这里在
 // `tools/change` 上增量补 deny（只 deny 新出现的全局工具），不硬抛、不一次性削成空表。
 //

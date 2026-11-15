@@ -143,6 +143,7 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
     assert.match(source, new RegExp(`- ${tool}`), `协调者 allow 名单应包含 ${tool}`)
   }
   assert.match(source, /'@deepseek-ai\/dsh-tool-present'/)
+  assert.equal((source.match(/'@deepseek-ai\/dsh-tool-present'/g) ?? []).length, 2, '协调者与 worker 预设各挂一行 present')
   assert.doesNotMatch(source, /dsh-present/)
   assert.match(source, /isolate:\s*\n\s+compaction: true/)
   assert.equal((source.match(/compaction: true/g) ?? []).length, 2)
@@ -193,6 +194,22 @@ test('worker 预设挂 tool-goal：子会话才有 get_goal 可读自己的任�
   // 协调者只做协调（preset-tools 白名单），不给自己挂 goal 工具。
   const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
   assert.equal(coordinator.rows.some(row => row.id === 'tool-goal'), false)
+})
+
+test('协调者预设挂 present 交付工具：主会话可交付子会话产物', () => {
+  const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
+  const presentRows = coordinator.rows.filter(row => row.id === 'present')
+  assert.equal(presentRows.length, 1, '协调者预设应恰好有一行 present（避免 loader 重复 id）')
+  const rowText = presentRows[0].lines.join('\n')
+  assert.match(rowText, /name:\s*'@deepseek-ai\/dsh-tool-present'/, '要用标准包名 @deepseek-ai/dsh-tool-present')
+  // 纯行：present 默认 maxFiles=8，不需要配置项，也不按平台禁用。
+  assert.doesNotMatch(rowText, /^\s+(config|disabled):/m)
+  // present 在 web/desktop 是预设自有工具（own），allow 里列一份作为跨 profile 保底：
+  // allow 只用于过滤 deny，不交给 restrict，所以写 own 名字不会 unknown global tool。
+  assert.match(coordinator.text, /^\s+- present\s*$/m, '协调者 allow 名单应包含 present 保底')
+  // 协调者与 worker 各一行：整份补丁恰好 2 行。
+  assert.equal((source.match(/id: present/g) ?? []).length, 2, '整份补丁应有协调者、worker 两行 present')
 })
 
 test('package.json 导出 preset-tools', () => {

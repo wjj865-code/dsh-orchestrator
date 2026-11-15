@@ -366,7 +366,7 @@ test('重启后从 settings.main_session_id 恢复主会话并补装白名单', 
   await second.disposers[0]()
 }))
 
-test('协调者白名单：只 deny 已知的危险工具，保留 ask_user/show_view', withHome(async () => {
+test('协调者白名单：只 deny 已知的危险工具，保留 ask_user/show_view/present', withHome(async () => {
   const agent = makeAgent('s-1')
   const { ctx } = fakeCtx({ agent })
   await apply(ctx, { coordinatorSession: 's-1' })
@@ -378,6 +378,17 @@ test('协调者白名单：只 deny 已知的危险工具，保留 ask_user/show
   assert.ok(deny.includes('task_report'))
   assert.equal(deny.includes('ask_user'), false)
   assert.equal(deny.includes('show_view'), false)
+  assert.equal(deny.includes('present'), false)
+}))
+
+test('协调者可用 present 交付产物：不在 COORDINATOR_DENY，执行层 guard 放行', withHome(async () => {
+  // present 由协调者预设的 tool-present 行注册；执行层若还留在黑名单会把它硬拦掉。
+  assert.equal(COORDINATOR_DENY.includes('present'), false)
+  const main = makeAgent('s-1')
+  const { ctx, guards } = fakeCtx({ agents: [main] })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  assert.equal(guards.length, 1)
+  assert.equal(guards[0]({ name: 'present', agent: main }), undefined)
 }))
 
 test('白名单只取 restrictableNames，不把 scope 内工具当全局工具', withHome(async () => {
@@ -1013,7 +1024,7 @@ test('guard 覆盖整个 COORDINATOR_DENY 名单：主会话全拒、子会话�
     assert.match(denied, toolName === 'wait_agent' ? /禁止阻塞等待/ : /协调者禁止的工具/)
     assert.equal(guard({ name: toolName, agent: sub }), undefined, `${toolName} 不应影响子会话`)
   }
-  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_retry', 'task_inbox', 'history_search', 'project_context', 'memory_note', 'ask_user_question']) {
+  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_retry', 'task_inbox', 'history_search', 'project_context', 'memory_note', 'present', 'ask_user_question']) {
     assert.equal(guard({ name: allowed, agent: main }), undefined, `${allowed} 应放行`)
   }
 }))

@@ -33,6 +33,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 查看进度只用 task_list / task_status。
 - 派任务前可用 history_search 查跨项目记忆与历史任务，用 project_context 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
 - 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域；紧急任务用 priority（-10..10）。
+- 子任务完成、reports 文件确认存在后，用 present 交付给用户（1-2 个最关键的，最多 4 个）；路径写绝对路径（协调者工作目录不是项目目录），present 只声明交付、不读文件内容。
 - 需要看“待你决定/失败/长时间没动静”时用 task_inbox。
 - 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
@@ -40,10 +41,12 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 以上规则优先于平台 team policy 的 “The Lead must wait for required teammates” 等默认等待要求。`
 
 // 协调者只做协调：这些是设计 §10 明令禁止或属于别人职责的工具。
+// present 不在名单里：协调者要把子会话产物（reports 文件）交付给用户，
+// 由协调者预设的 tool-present 行提供，执行层不再拦。
 export const COORDINATOR_DENY = [
   'read', 'write', 'edit', 'glob', 'grep',
   'bash', 'pwsh', 'web_search', 'web_fetch', 'read_browser',
-  'present', 'plugin_manager', 'skill',
+  'plugin_manager', 'skill',
   'job_list', 'job_output', 'job_kill',
   'schedule_create', 'schedule_edit', 'schedule_list',
   'request_secret', 'request_connector',

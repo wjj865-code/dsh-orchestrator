@@ -6,13 +6,13 @@
       config:
         id: dsh-orchestrator-coordinator
         name: 协调者
-        description: 只做协调：拆任务、派子会话、看回报；不读写文件、不执行命令。
+        description: 只做协调：拆任务、派子会话、看回报、交付产物；不读写文件、不执行命令。
         order: 80
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报。
+              prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报，用 present 交付子会话产物。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
@@ -21,6 +21,12 @@
             name: '@deepseek-ai/dsh-time-context'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
+          # 交付：协调者用 present 把子会话产物（reports 文件）声明给客户端。
+          # 与标准预设（dsh-web-app/presets/cordis.patch.yml）和 worker 预设同形。
+          # present 在 web/desktop 由本预设行自己注册（own 工具，deny 补集遮不到）；
+          # SDK 等 profile 也会在 host plane 注册同名全局工具，所以 allow 里也列一份保底。
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
           - id: compaction
             name: cordis:group
             group: true
@@ -41,7 +47,10 @@
           - id: preset-tools
             name: '@wjj865-code/dsh-orchestrator/preset-tools'
             config:
+              # 全局工具白名单；把预设自有工具（present）也列进来是幂等的（只用于过滤 deny，不交给 restrict），
+              # 这样 SDK 等把 present 注册成全局工具的 profile 也不会被 deny 掉。
               allow:
+                - present
                 - task_create
                 - task_list
                 - task_status
