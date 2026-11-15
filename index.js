@@ -12,6 +12,7 @@ import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
 import { createQueue } from './src/queue.js'
 import { createStartupReconciler } from './src/reconcile.js'
+import { createIdleWatchdog } from './src/watchdog.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
@@ -314,6 +315,19 @@ export async function apply(ctx, rawConfig = {}) {
     pump: () => queue?.pump(),
   })
 
+  // 空闲看门狗（W1）：running 却长时间没有心跳/消息/状态变化时告警一次。
+  // 只告警：不改状态、不 kill、不重派；去重按任务（同一段空闲只报一次，活动后重置）。
+  const watchdog = createIdleWatchdog({
+    db,
+    notifier,
+    logger,
+    onWarn: warnings,
+    labelFor: task => taskLabel(task, { all: listTasks(db) }),
+    idleMinutes: config.watchdogIdleMinutes,
+    intervalMinutes: config.watchdogIntervalMinutes,
+    enabled: config.idleWatchdog,
+  })
+
   // 自动 done 的产物补齐：task_report done 那条路有 workspace/changes 钩子，这条路没有。
   function collectAfterSettle(outcome) {
     if (outcome?.action !== 'updated' || outcome.to !== 'done') return
@@ -364,6 +378,10 @@ export async function apply(ctx, rawConfig = {}) {
   // 启动对账（S2）：running 无活跃子会话 / catalog 查不到 → orphaned，并汇总上报一次；
   // 此时协调者可能还没加载，汇总会保留到 agent/created 再补发。
   await reconciler.reconcile({ coordinatorSessionId: resolvedCoordinatorId() })
+
+  // 看门狗放在启动对账之后：先让 S2 把「进程重启后没人在跑」的 running 标 orphaned，
+  // 剩下的 running 才交给看门狗判断是否空闲（避免同一任务既报丢失又报卡住）。
+  watchdog.start()
 
   // 启动恢复：pending 且没有子会话的任务重新入队；超时的（非排队）已在上面标 failed。
   queue.load()
@@ -463,6 +481,8 @@ export async function apply(ctx, rawConfig = {}) {
   }
 
   ctx.effect?.(() => async () => {
+    // 看门狗先停：定时器巡检会在 db.close() 之后继续读台账（卸载期不允许）。
+    try { watchdog.stop() } catch { /* 看门狗清理失败不阻断卸载 */ }
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
     for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, routeDisposer].reverse()) {

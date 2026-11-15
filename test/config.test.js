@@ -104,6 +104,30 @@ test('maxQueue 默认 50，非法回落；autoResumeQueue 默认开', () => {
   assert.equal(loadConfig({ autoResumeQueue: false }).autoResumeQueue, false)
 })
 
+test('空闲看门狗：默认开启、巡检 5 分钟、空闲阈值 15 分钟，均可配', () => {
+  const config = loadConfig({})
+  assert.equal(config.idleWatchdog, true)
+  assert.equal(config.watchdogIntervalMinutes, 5)
+  assert.equal(config.watchdogIdleMinutes, 15)
+  const custom = loadConfig({ idleWatchdog: false, watchdogIntervalMinutes: 2, watchdogIdleMinutes: 45 })
+  assert.equal(custom.idleWatchdog, false)
+  assert.equal(custom.watchdogIntervalMinutes, 2)
+  assert.equal(custom.watchdogIdleMinutes, 45)
+  // 只有显式 false 才关；不传/其它值保持开。
+  assert.equal(loadConfig({ idleWatchdog: 'no' }).idleWatchdog, true)
+  assert.equal(loadConfig({ idleWatchdog: true }).idleWatchdog, true)
+})
+
+test('空闲看门狗：非法分钟数回落默认，超界夹到 1–1440', () => {
+  const bad = loadConfig({ watchdogIntervalMinutes: 0, watchdogIdleMinutes: Number.NaN })
+  assert.equal(bad.watchdogIntervalMinutes, 5)
+  assert.equal(bad.watchdogIdleMinutes, 15)
+  assert.equal(loadConfig({ watchdogIntervalMinutes: '5' }).watchdogIntervalMinutes, 5)
+  const clamped = loadConfig({ watchdogIntervalMinutes: 99999, watchdogIdleMinutes: 0.5 })
+  assert.equal(clamped.watchdogIntervalMinutes, 1440)
+  assert.equal(clamped.watchdogIdleMinutes, 1)
+})
+
 test('不泄漏未声明的原始键', () => {
   const config = loadConfig({ foo: 1, coordinatorSession: 's-1' })
   assert.equal('foo' in config, false)

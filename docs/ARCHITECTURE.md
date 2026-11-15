@@ -94,6 +94,17 @@
 - catalog 读失败只 warn，`running` 的 liveness 判定照做；标记前重读状态，已落终态的不覆盖，重复启动幂等；
 - 标记完发**一条汇总通知**（任务名 + id，超过 10 条折叠「另有 N 个」）。启动时协调者还没加载导致投递 `skipped` 时保留待发，`agent/created` 后补发一次，不重复打扰。
 
+## 空闲看门狗（W1）
+
+结算/对账管「没人跑却挂着 running」，但**有人在跑、却长时间没进展**的回合仍要人来看。`src/watchdog.js` 每 `watchdogIntervalMinutes`（默认 5 分钟）巡检一次台账：
+
+- 只看 `running`：`waiting_user` / `waiting_auth` 是故意停下的，终态不在范围；
+- 判定数据源三源取最新（`lastActivityAt`）：`tasks.last_event_at`（心跳：progress、产物/问题更新等 touch）、`tasks.updated_at`（状态变化）、`messages.at`（最近一条回报消息）；最新活动早于 `watchdogIdleMinutes`（默认 15 分钟）即判空闲；
+- **只告警**：一条 `stalled` 汇总通知（超过 10 条折叠），**不改状态、不 kill、不重派**，也不写任务表；
+- 去重：同一段空闲每个任务只报一次；出现更新的活动（活动水位抬高）后允许再报一次，任务离开 `running` 就从去重表移除；去重表在内存，重启后允许再报一次；
+- 启动时放在 S2 对账之后：先让「进程重启后没人跑」的 `running` 落 `orphaned`，避免同一任务既报丢失又报卡住；
+- 关闭：`idleWatchdog:false`；插件卸载先 `stop()` 再关台账，定时器不会在 `db.close()` 后继续巡检。
+
 ## 产物
 
 - `task_report.artifacts: [{path,label?}]`，相对路径按 `target_dir`（无则主会话目录）解析。

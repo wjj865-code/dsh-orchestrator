@@ -1021,3 +1021,47 @@ test('D1：workerPreset 写成非法 id 时回落默认并 warn', withHome(async
   assert.equal(spawned[0].agentPreset, 'dsh-orchestrator-worker')
   await disposers.at(-1)?.()
 }))
+
+test('W1 空闲看门狗接入：启动即巡检空闲 running 任务、只告警不改状态，卸载时停掉', withHome(async home => {
+  // 预置一条 40 分钟无动静的 running 任务；子会话 live 且在 catalog 里，启动对账不会先标 orphaned。
+  const { openLedger, createTask, transition, getTask } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = createTask(ledger, {
+    brief: { title: '看门狗任务', goal: 'g', constraints: [], acceptance: ['a'], refs: [] },
+    coordinatorSession: 's-1',
+  })
+  transition(ledger, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  const aged = Date.now() - 40 * 60_000
+  ledger.prepare('UPDATE tasks SET created_at = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
+    .run(aged, aged, aged, task.id)
+  ledger.close()
+
+  const s1 = makeAgent('s-1')
+  const child = makeAgent('c-1')
+  const subagents = {
+    async startActivation() { throw new Error('看门狗不应派发任务') },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [{ id: 'c-1', mode: 'continuable', label: 'x', activity: 'inactive' }] },
+  }
+  const f = fakeCtx({ agents: [s1, child], subagents })
+  await apply(f.ctx, { coordinatorSession: 's-1', mergeWindowMs: 5, watchdogIdleMinutes: 15 })
+
+  // 启动即巡检一次：汇总通知直接注入协调者（system 通知，不依赖子会话 sender）。
+  assert.equal(s1.injected.length, 1)
+  const text = s1.injected[0].content[0].text
+  assert.match(text, /空闲看门狗/)
+  assert.match(text, /看门狗任务/)
+  assert.match(text, /只告警、不改任务状态/)
+
+  const check = await openLedger(join(home, 'state', 'orchestrator'))
+  assert.equal(getTask(check, task.id).status, 'running', '看门狗不能改任务状态')
+  const notification = check.prepare('SELECT level, status FROM notifications WHERE task_id = ?').get(task.id)
+  assert.equal(notification.level, 'notify')
+  assert.equal(notification.status, 'delivered')
+  check.close()
+
+  // 卸载清理：看门狗随 effect 停掉，不阻塞卸载。
+  await f.disposers[0]()
+}))
+

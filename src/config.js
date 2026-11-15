@@ -1,10 +1,14 @@
 // 配置归一化：非法值一律回落默认，不让坏配置把插件带崩。
+import { DEFAULT_WATCHDOG_IDLE_MINUTES, DEFAULT_WATCHDOG_INTERVAL_MINUTES } from './watchdog.js'
+
 const DEFAULTS = {
   staleMinutes: 30,
   stallRounds: 3,
   mergeWindowMs: 5000,
   memoryLimit: 3,
   snapshotRetentionDays: 7,
+  watchdogIntervalMinutes: DEFAULT_WATCHDOG_INTERVAL_MINUTES,
+  watchdogIdleMinutes: DEFAULT_WATCHDOG_IDLE_MINUTES,
 }
 
 // 子会话默认用插件自带的 worker 预设；调试时可换成副本（如 orch-debug）。
@@ -17,6 +21,12 @@ const nonEmpty = (value, fallback) =>
 
 const positive = (value, fallback) =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
+
+// 分钟数：只认正整数，1–1440（一天）；超界夹到边界，其余回落默认。
+const minutes = (value, fallback) => {
+  const valid = positive(value, undefined)
+  return valid === undefined ? fallback : Math.min(1440, Math.max(1, Math.floor(valid)))
+}
 
 export function loadConfig(raw = {}) {
   const config = { ...DEFAULTS }
@@ -44,5 +54,9 @@ export function loadConfig(raw = {}) {
     ? raw.digestAt.trim()
     : ''
   config.digestTimeZone = nonEmpty(raw?.digestTimeZone, '')
+  // 空闲看门狗（W1）：默认开；巡检默认 5 分钟、running 空闲超过 15 分钟告警一次，两个值都按分钟配。
+  config.idleWatchdog = raw?.idleWatchdog !== false
+  config.watchdogIntervalMinutes = minutes(raw?.watchdogIntervalMinutes, DEFAULTS.watchdogIntervalMinutes)
+  config.watchdogIdleMinutes = minutes(raw?.watchdogIdleMinutes, DEFAULTS.watchdogIdleMinutes)
   return config
 }

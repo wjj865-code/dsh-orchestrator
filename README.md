@@ -153,6 +153,9 @@ npm run preset:debug   # 把随包「创造模式」组合复制成可安装的 
 | `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（见 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)） |
 | `staleMinutes` | `30` | 多久无动静标陈旧 / stall 提醒间隔 |
 | `stallRounds` | `3` | 连续 progress 达阈值后提醒一次「可能卡住」 |
+| `idleWatchdog` | `true` | 空闲看门狗：`running` 长时间无心跳/消息/状态变化时告警一次（只告警，不改状态、不 kill） |
+| `watchdogIntervalMinutes` | `5` | 看门狗巡检间隔（1–1440 分钟） |
+| `watchdogIdleMinutes` | `15` | 看门狗判空闲的阈值（1–1440 分钟；同一段空闲每任务只报一次，有活动后重置） |
 | `digestAt` | `''` | 每日日报 `HH:MM`；空 = 关闭 |
 | `digestTimeZone` | `''` | 日报时区；空 = 系统时区 |
 | `maxQueue` | `50` | `pending` + `waiting_dep` 安全阀 |
@@ -232,6 +235,7 @@ git push origin main --follow-tags
 - `writeScopes` 只做冲突提示；依赖关系创建后不可编辑；`dependsOn` 不允许指向未来 id。
 - 产物在 done 时自动从 `workspaceChanges` 收集改动文件，并与显式 `task_report.artifacts` 按路径去重合并；Host 未挂 `workspaceChanges` 时只剩显式产物。
 - 日报默认关闭；`stallRounds` 只提醒一次，没有二次升级阶梯。
+- 空闲看门狗只告警：不改状态、不 kill、不重派；去重表在内存，插件重启后同一任务会再报一次。
 - 结算自动收场只认「一次 activation」：续派/冷恢复起的轮次靠平台 `subagent/end` 观察；子会话只在「没上报过 progress」时自动判完成，上报过 progress 的回合结束落「会话丢失」等人决定。
 - 主会话工具表可能仍残留团队工具（agent-scope 自注册，`restrict` 遮不到）；执行层 guard 会硬拦。
 - 平台 rc.3 子会话沙箱根、Bot 模式视图、headless 收尾竞态等平台侧限制，详见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
