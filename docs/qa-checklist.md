@@ -880,6 +880,8 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 ## 33. L1 brief 精简复核矩阵（目标指引 + 经验文件指针）
 
+> 已被 §34（T1 brief 纯指引）取代：`【目标兜底】` 与「经验摘要进 brief」都已移除，本节只作历史记录。
+
 **判据**：`npm test` 全绿；`node --test test/brief.test.js test/memory.test.js test/tools.test.js` 单独全绿；两种目标形态与经验精简/降级各有独立用例（不采信开发输出，独立复跑）。
 
 | 项 | 期望 | 用例 |
@@ -890,3 +892,19 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 经验精简 | 完整事实写 `$DSH_HOME/state/orchestrator/lessons/<项目>-<hash8>.md`（含层标签、日期、`id`、来源、生成时间）；brief = `【历史经验】N 条｜完整内容见经验文件（可 read 全文）` + 每条 ≤64 字摘要 + `完整经验：<路径>`；同项目路径稳定 | `memory.test.js` L1 经验文件；`tools.test.js` L1 经验精简 |
 | 经验降级 | `stateDir` 缺失 / `lessons/` 被同名文件占位 → 退回内联块（含全文、无 `完整经验：`）；无命中 → 不追加小节、不建目录 | `memory.test.js` L1 降级两条 + 无命中；`tools.test.js` L1 经验降级 |
 | 重派同口径 | `task_retry` / 面板重派重渲染的 brief 与 `task_create` 一致（指引形态 + 兜底） | `tools.test.js` L1 重派 |
+
+## 34. T1 复核矩阵（task_detail + brief 纯指引）
+
+**判据**：`npm test` 587 条全绿；`node --test test/brief.test.js test/task-detail.test.js` 23 条全绿；主会话/子会话身份与越权拒绝都有反例（不采信单一路径）。
+
+| 项 | 期望 | 用例 |
+| --- | --- | --- |
+| brief 形态 | 只有 `【任务编号】t-…` + `【任务详情】先调 task_detail…` 两行；无目标/验收/经验/兜底/get_goal | `brief.test.js` 两行形态 + 小节缺席；`tools.test.js` T1 brief 纯指引（prompt 恰好两行） |
+| task_detail 字段 | 编号/标题/状态/目标全文（保留换行）/工作目录+权限/验收/约束/背景/原话/编排/前置任务/经验文件/已有产物/完成口径 | `task-detail.test.js` 纯渲染三条 + 工具读取 |
+| 只读 | 不写消息、不改 `status`/`updated_at`/`last_event_at`/`progress_count`；经验文件只 `stat` | `task-detail.test.js`「只读——不写消息、不动任务行」 |
+| 越权拒绝 | 主会话、别的子会话、未派发任务都拒绝；提示改用 `task_status`；不落消息 | `task-detail.test.js` 越权/未派发；`index.test.js` 全局注册 + 越权 |
+| 经验 | 创建时写记忆文件，指针 `{path,count}` 存 `brief.experience`；详情给路径+条数；`stateDir` 缺失退回内联块；无命中无小节 | `tools.test.js` T1 经验/降级/不相关；`task-detail.test.js` 可读/已丢失/内联 |
+| 前置现读 | 派发提示词不含前置摘要；`task_detail` 按当前台账给完成摘要与产物 | `tools.test.js` 依赖用例；`task-detail.test.js` 前置现读 |
+| 重派同口径 | `task_retry` 与面板 retry 都 `renderBrief({ taskId: 新编号 })`，不内联目标 | `tools.test.js` T1 重派；`panel-actions.test.js` retry brief |
+| 挂载链 | 全局注册（`index.js` 的 `createTools(...).map(ctx.tools.register)`）；worker 预设不挂 `preset-tools`；协调者 allow 白名单不含 | `index.test.js` 12 工具 + `task_detail`；`config.test.js` worker 不收窄 |
+| 队列兜底 | 无 brief 消息时 `renderBrief({ taskId })`，不再拼标题+目标 | `queue.test.js` 派发提示词 |

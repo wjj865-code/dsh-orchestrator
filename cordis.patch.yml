@@ -69,6 +69,10 @@
         description: 子会话的完整工作栈；显式指定它，避免继承协调者预设的工具收窄。
         order: 81
         plugins:
+          # task_report / task_detail 是 dsh-orchestrator 插件在 host plane 注册的**全局**工具
+          # （index.js 的 createTools(...).map(tool => ctx.tools.register(tool))），不是独立预设包，所以这里没有
+          # 对应的「工具行」。本预设也刻意不做 allow/deny 收窄（不挂 preset-tools）：子会话工具表里直接就有它们。
+          # 只读的 get_goal 由下面的 tool-goal 行提供（web-app 关掉了 host plane 的同名行）。
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:

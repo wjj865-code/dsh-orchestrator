@@ -6,11 +6,12 @@ const text = value => typeof value === 'string' ? value.trim() : ''
 const single = value => text(value).replace(/[\r\n]+/g, ' ')
 const list = value => Array.isArray(value) ? value.map(text).filter(Boolean) : []
 
-// L1 brief 精简：平台 goal 可用时，目标正文只写进平台 goal（子会话用 get_goal 读），
-// brief 里留一句指引 + 一段截断兜底；goal 降级（没有 goals 服务）时仍然内联全文。
-export const MAX_GOAL_FALLBACK_CHARS = 160
-export const GOAL_POINTER_TEXT = `先调 get_goal 读取完整目标（含「最新指示」）；本行不是目标内容，别按它猜任务。`
-export const GOAL_FALLBACK_TEXT = 'get_goal 不可用时按此执行：'
+// T1 brief 纯指引化：任务创建详情（目标全文/验收/约束/背景/经验/依赖/产物）全在台账里，
+// 由子会话用 task_detail 现取；brief 只留任务编号 + 一句指引，不再内联目标正文、经验摘要或
+// 「get_goal 不可用」的兜底文本——这样提示词长度不随目标/记忆增长，详情也永远是最新台账。
+export const DETAIL_POINTER_TEXT = '先调 task_detail（参数 task_id 填上面的任务编号）读取完整任务详情：'
+  + '目标全文、验收标准、约束、背景资料、用户原话、工作目录与权限、前置任务、经验文件、已有产物。'
+  + '本行只是指引，不要凭它猜任务内容。'
 
 /** 返回错误列表；空数组表示合法。 */
 export function validateBrief(brief = {}) {
@@ -31,50 +32,18 @@ export function validateTargetDir(target, { isDirectory = value => statSync(valu
   return ok ? undefined : 'target 目录不存在或不是目录'
 }
 
-/** 【目标】小节：goal 可用时给「指引 + 截断兜底」，降级时内联全文。 */
-export function goalLines(brief = {}, { goalAvailable = false } = {}) {
-  const goal = single(brief.goal)
-  if (goalAvailable !== true || goal === '') return [`【目标】${goal}`]
-  const head = goal.length > MAX_GOAL_FALLBACK_CHARS
-    ? `${goal.slice(0, MAX_GOAL_FALLBACK_CHARS)}…`
-    : goal
-  return [`【目标】${GOAL_POINTER_TEXT}`, `【目标兜底】${GOAL_FALLBACK_TEXT}${head}`]
-}
-
 /**
- * @param {object} brief
- * @param {{ goalAvailable?: boolean }} [options] goalAvailable=true 表示平台 goal 已可用（派发时会把目标
- *   写进子会话 goal，子会话能 get_goal 读到），此时 brief 只留指引 + 兜底；否则内联全文。
+ * 渲染派发给子会话的 brief（T1：纯指引）。
+ *
+ * 只输出【任务编号】+【任务详情】两行：brief 正文不再携带任何创建详情（目标/验收/经验/兜底都不进），
+ * 子会话拿到任务编号后调 task_detail 读台账里的完整快照。
+ *
+ * @param {{ taskId?: string }} [options] taskId 是台账任务编号（如 t-1a2b3c4d），也是 task_detail 的参数。
  */
-export function renderBrief(brief = {}, { goalAvailable = false } = {}) {
-  const lines = [`【任务】${single(brief.title)}`, ...goalLines(brief, { goalAvailable })]
-  const target = text(brief.target)
-  const readOnly = brief.readOnly === true
-  // brief 里最多只出现一个目录：就是 target_dir；不要把指挥舱/父会话目录也写进来，否则模型容易被带偏。
-  if (target !== '') {
-    lines.push(`【工作目录】${single(target)}`)
-    if (readOnly) {
-      // 只读任务：写提示换成禁令，避免和沙箱行为冲突。
-      lines.push('【权限】只读')
-      lines.push('只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。')
-    } else {
-      // 正向提示（不是硬约束）：worker 不强制 chdir，danger-full-access 下越界绝对路径写得出去。
-      lines.push('所有产出只写到该目录内，不要写到父会话目录或其他绝对路径；完成后汇报时把文件路径落到该目录下。')
-    }
-  } else if (readOnly) {
-    lines.push('【权限】只读')
-    lines.push('只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。')
-  }
-  const constraints = list(brief.constraints)
-  if (constraints.length > 0) lines.push(`【约束】${constraints.map(item => `- ${single(item)}`).join('；')}`)
-  lines.push(`【验收标准】\n${list(brief.acceptance).map(item => `- ${single(item)}`).join('\n')}`)
-  const refs = list(brief.refs)
-  if (refs.length > 0) lines.push(`【背景资料】${refs.map(item => `- ${single(item)}`).join('；')}`)
-  const verbatim = text(brief.user_verbatim)
-  if (verbatim !== '') {
-    const quoted = verbatim.split(/\r?\n/).map(line => `> ${line.trim()}`).join('\n')
-    lines.push(`【用户原话】\n${quoted}`)
-  }
-  lines.push('完成后请汇报：改了什么、改了哪些文件、怎么验证的。')
+export function renderBrief({ taskId } = {}) {
+  const id = single(taskId)
+  const lines = []
+  if (id !== '') lines.push(`【任务编号】${id}`)
+  lines.push(`【任务详情】${DETAIL_POINTER_TEXT}`)
   return lines.join('\n')
 }

@@ -19,10 +19,11 @@
 - **goal 不驱动自动续跑**：插件只把 goal 当持久目标状态；`create` 之后**立即 `disarm`**，不会让平台 `goal-round-driver` 给子会话自动续轮。子会话回合结束后仍按原逻辑等 `task_message` 续派。
 - **不是所有环境都有 goal 能力**：`ctx.goals` 缺失、旧版 profile 或服务方法被裁剪时，插件静默降级——不创建 goal、不 warn、不影响派发/续派/停止/结算；台账与面板不显示 goal 状态。
 - **子会话写入限制**：goal 只能由宿主（本插件）对**注册表里的 live agent** 操作。冷恢复/重启后子 agent 还没进注册表时，`attach`/`update` 最多等 3 秒，超时跳过；该轮不会补建目标，下一次 `task_message` 成功后才可能补上。
-- **目标不自动注入子会话**：平台的 `dsh-goal` 只管状态与投影（inject 只有 `agents` / `sessionProjections`），不往系统提示或消息里写 objective；子会话要看到目标必须自己调 `get_goal`。所以 worker 预设挂了 `tool-goal` 行——不挂这行时子会话对目标完全无感（`get_goal` 工具根本不在工具表里）。
+- **目标不自动注入子会话**：平台的 `dsh-goal` 只管状态与投影（inject 只有 `agents` / `sessionProjections`），不往系统提示或消息里写 objective；子会话要看到**实时**目标必须自己调 `get_goal`。所以 worker 预设挂了 `tool-goal` 行——不挂这行时子会话读不到之后 `task_message` 并进去的「最新指示」（创建时的目标快照仍能从 `task_detail` 拿到）。
 - **子会话只读目标、不能改**：`dsh-orchestrator-worker` 预设的 `tool-goal` 只提供 `get_goal` 的可用路径；`create_goal` / `update_goal` 由平台 `goalToolExecution` + `requireDirectHuman` 校验，要求**顶层 agent 的直接人类回合**，子会话调用必被拒（`GOAL_TOOL_AUTHORITY_REQUIRED`）。只有协调者的 `task_message`（或面板「追加」）会触发 `edit`。目标文本 = `task.goal` + `最新指示：<消息>`，超过 2000 字符截断，只是展示用的持久状态。
-- **brief 里的目标是指引，不是副本（L1）**：goal 能力可用时 brief 只写「先调 `get_goal` 读完整目标」+ 前 160 字兜底，正文只在平台 goal 里。所以「goal 可用」是派发时刻的能力探测（`ctx.goals` 方法齐全），**不是**「attach 一定成功」：子 agent 3 秒内没进注册表、worker 预设没挂 `tool-goal`、或 `get_goal` 被裁剪时，子会话只能拿到这 160 字兜底；要改目标仍走 `task_message`（会 `edit` 平台 goal，也不会重渲染 brief）。
-- **经验文件是快照，不是台账（L1）**：`lessons/<项目>-<hash>.md` 每次派发覆盖为「本次命中的事实层记忆」；没有历史版本、不参与每日快照、也没有保留期清理。手动删掉文件后 brief 里的指针会短暂指向不存在的路径（下次派发重新生成）；要改记忆请用 `memory_note` / `history_search`，手改文件会被覆盖。写文件失败时 brief 退回内联块（更长，但经验不会丢）。
+- **brief 只有编号和指引，详情要自己取（T1）**：brief 不再内联目标、验收、经验或兜底，只有 `【任务编号】` + 「先调 `task_detail` 读详情」。所以子会话的第一个动作应当是 `task_detail`；若它跳过这一步直接干活，只能靠 `get_goal`（实时目标）和自身上下文。前提是子会话工具表里有 `task_detail`：它由插件在 host plane 全局注册（`index.js` 的 `createTools(...).map(ctx.tools.register)`），worker 预设没有 `preset-tools` 收窄；如果你把 `workerPreset` 换成自带 allow/deny 收窄的预设、且没把 `task_detail` 列进 allow，子会话就只能靠 `get_goal` 和自己找上下文。
+- **经验文件是快照，不是台账（T1）**：`lessons/<项目>-<hash>.md` 每次派发覆盖为「本次命中的事实层记忆」；没有历史版本、不参与每日快照、也没有保留期清理。手动删掉文件后，`task_detail` 里的指针会显示「文件已丢失」（下次派发重新生成）；要改记忆请用 `memory_note` / `history_search`，手改文件会被覆盖。写文件失败时经验以更长的内联块只出现在 `task_detail` 里（brief 长度不变，经验不会丢）。
+- **`task_detail` 只读且只给自己**：它按创建时的 `brief_json` 快照返回目标/验收/经验，前置任务/产物按**当前**台账现读；主会话或别的子会话调用会被拒绝（越权）。它不写消息、不改状态，因此也不能用它「续派」或「修正」任务——那些仍走 `task_message` / `task_stop`。
 - **终态收敛的边界**：`done→complete`；`stop/retry/orphaned/failed→clear`。孤儿/失败时子 agent 往往已不在注册表，平台侧不会真的调用 `clear`（平台 goal 只存在于该会话日志里，进程内也没人再驱动它），插件只把台账镜像标成 `cleared` 供面板显示。
 - **外部重新 arm 的窗口**：插件只在 spawn/续派/终态钩子上保证 `disarmed`。如果其它组件（如用户在子会话里 `/goal resume`，或宿主未来改动）把同一个子会话重新 `arm`，插件不会实时监控，下一次钩子才会再压回 `disarmed`；这中间平台可能自动续轮。
 - **面板只读**：面板与 `task_status` 能看 goal 的 phase/activation/轮次/修订，但没有暂停、恢复、清除 goal 的按钮或工具；要调整目标请直接 `task_message`。

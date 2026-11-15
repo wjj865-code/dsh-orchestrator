@@ -5,7 +5,8 @@ import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
 import { taskLabel, taskLabelWithId } from './task-label.js'
 import { canTransition, statusLabel } from './state.js'
-import { dependencyState, promoteDependents, validateDepends } from './deps.js'
+import { dependencyState, promoteDependents, upstreamBrief, validateDepends } from './deps.js'
+import { renderTaskDetail } from './task-detail.js'
 import {
   GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock,
   distillLessons, distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember, searchMemories, taskLogText,
@@ -91,14 +92,6 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   const status = typeof coordinatorStatus === 'function'
     ? coordinatorStatus
     : () => ({ id: config?.coordinatorSession, live: true })
-  // L1：平台 goal 可用 → brief 只给「用 get_goal 读目标」的指引 + 兜底；不可用 → 内联全文。
-  const goalAvailable = () => {
-    try {
-      return goalBridge?.available?.() === true
-    } catch {
-      return false
-    }
-  }
   // 记忆文件目录：插件唯一写入根（$DSH_HOME/state/orchestrator）；没给就退回内联记忆块。
   const lessonStateDir = stateDir ?? config?.stateDir
   const invalidHint = () => {
@@ -421,8 +414,6 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           })
         }
       }
-      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读才写入标记。
-      const brief = { ...args, target: effectiveTarget, ...(readOnly ? { readOnly: true } : {}) }
       const current = status()
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
       const title = String(args.title).trim()
@@ -456,6 +447,29 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         })
         return `待派发队列已满（${maxQueue} 个），先 task_stop 或等队列消化后再派。`
       }
+      // T1：创建详情是台账里的快照，brief 只负责把子会话引到 task_detail。
+      // 经验在创建前算好：完整内容写记忆文件（指针进 brief.experience），写不了文件时存内联块；
+      // 两种形态都只进 task_detail，不进 brief 提示词，提示词长度因此与经验条数无关。
+      let experience
+      if (config?.memoryInject !== false) {
+        try {
+          const built = buildLessonBlock(db, {
+            stateDir: lessonStateDir,
+            projectKey: projectKeyOf(effectiveTarget),
+            query: `${title} ${goal}`,
+            limit: config?.memoryLimit ?? 3,
+          })
+          if (built.count > 0) {
+            experience = built.mode === 'pointer' && typeof built.path === 'string'
+              ? { path: built.path, count: built.count }
+              : (built.block === '' ? undefined : { inline: built.block, count: built.count })
+          }
+        } catch { /* 记忆检索失败不能阻止派任务 */ }
+      }
+      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读/经验才写入标记。
+      const brief = {
+        ...args, target: effectiveTarget, ...(readOnly ? { readOnly: true } : {}), ...(experience === undefined ? {} : { experience }),
+      }
       const task = createTask(db, {
         brief,
         coordinatorSession: current.id ?? coordinatorSession,
@@ -483,19 +497,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           status: initialStatus,
         },
       })
-      let memoryBlock = ''
-      if (config?.memoryInject !== false) {
-        try {
-          // L1：完整经验写记忆文件，brief 只留短摘要 + 指针；写不了文件时自动退回内联块。
-          memoryBlock = buildLessonBlock(db, {
-            stateDir: lessonStateDir,
-            projectKey: projectKeyOf(effectiveTarget),
-            query: `${title} ${goal}`,
-            limit: config?.memoryLimit ?? 3,
-          }).block
-        } catch { /* 记忆检索失败不能阻止派任务 */ }
-      }
-      const rendered = `【任务编号】${task.id}\n${renderBrief(brief, { goalAvailable: goalAvailable() })}${memoryBlock === '' ? '' : `\n${memoryBlock}`}`
+      const rendered = renderBrief({ taskId: task.id })
       addMessage(db, task.id, { kind: 'brief', rendered })
       const conflictNote = conflictsText(conflicts)
       const depNames = depends.ids.map(id => {
@@ -607,6 +609,32 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       lines.push(`最近消息：\n${recent || '- 无'}`)
       return lines.join('\n')
+    }),
+
+    // T1：brief 纯指引化后，创建详情由子会话自己读。只读 + owner-only：
+    // 台账里 brief 是创建时快照，前置任务/产物按当前台账现读；不写库、不改状态。
+    wrap('task_detail', '子会话读任务创建详情（只读）：目标全文、验收标准、约束、背景资料、用户原话、工作目录与权限、前置任务、经验文件、已有产物。只对该任务自己的子会话开放，越权调用会被拒绝。', objectSchema({
+      task_id: str('任务编号（brief 的【任务编号】里给过，如 t-1a2b3c4d）'),
+    }), async (args, exec) => {
+      const taskId = String(args.task_id ?? '').trim()
+      if (taskId === '') return '缺少 task_id：brief 的【任务编号】就是它（如 t-1a2b3c4d）。'
+      const task = getTask(db, taskId)
+      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId, hint: '确认 brief 的【任务编号】是否抄错。' })
+      const agent = exec?.agent
+      const caller = agent?.id ?? agent?.session?.id
+      const callerId = caller === null || caller === undefined ? undefined : String(caller)
+      const ownerId = task.session_id === null || task.session_id === undefined ? undefined : String(task.session_id)
+      // 越权拒绝：主会话要详情用 task_status；别的子会话读不到不是自己的任务。
+      if (ownerId === undefined || callerId === undefined || callerId !== ownerId) {
+        log('task.detail.rejected', { taskId, agentId: agent?.id, detail: { caller: callerId ?? null, owner: ownerId ?? null } })
+        return `读取被拒绝：task_detail 只对任务自己的子会话开放（任务「${taskLabelWithId(task)}」属于子会话 ${task.target ?? ownerId ?? '（尚未派发）'}，当前调用方 ${callerId ?? '（未知）'}）。主会话查任务用 task_status。`
+      }
+      return renderTaskDetail(task, {
+        // 前置任务/摘要按当前台账现读：依赖可能在创建之后才完成。
+        dependencies: upstreamBrief(db, task.depends_on),
+        experience: task.brief?.experience,
+        artifacts: task.artifacts,
+      })
     }),
 
     wrap('task_message', '给已有子任务追加一条消息（续派），不新建任务。投递失败会重试 3 次，仍失败则任务转「等你确认」。', objectSchema({
@@ -744,7 +772,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         sessionId: current.id,
         detail: { retryOf: task.id, dependsOn: depends.ids, status: retried.status, callId: exec?.callId },
       })
-      addMessage(db, retried.id, { kind: 'brief', rendered: `【任务编号】${retried.id}\n${renderBrief(task.brief, { goalAvailable: goalAvailable() })}` })
+      addMessage(db, retried.id, { kind: 'brief', rendered: renderBrief({ taskId: retried.id }) })
       if (current.live === false) {
         const message = invalidHint() === '' ? toolFailure('MAIN_SESSION_UNAVAILABLE') : invalidHint()
         log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })

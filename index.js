@@ -55,7 +55,8 @@ export const COORDINATOR_DENY = [
   'create_bot', 'create_group', 'delete_group', 'update_group', 'update_bot',
   'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
   'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',
-  'task_report',
+  // 子会话专属工具：task_report 回报、task_detail 只读自己的创建详情（T1）；协调者看任务用 task_status。
+  'task_report', 'task_detail',
 ]
 
 const stateDir = () => join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'state', 'orchestrator')

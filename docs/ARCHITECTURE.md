@@ -5,7 +5,7 @@
 ## 角色
 
 - **协调者**：唯一主会话，固定入口；只拆任务、派子会话、看回报，不读写文件、不执行命令。
-- **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；能力不受限，只多一个 `task_report` 工具。
+- **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；能力不受限，另有两个插件工具：`task_report`（回报）与 `task_detail`（只读任务创建详情）。
 - **客户端**：侧栏「主会话」入口 + 会话头「任务」面板；只读快照 + 面板动作。
 
 ## 主会话
@@ -38,7 +38,7 @@
   - 全部 `done` → `pending` 入队；
   - 任一失败/取消/丢失/不存在 → 下游 `failed`，错误写明原因；
   - 晋升是循环的，失败会沿依赖链传播。
-- 派发时 brief 追加 `【前置任务】` 摘要和产物路径。
+- 前置任务摘要与产物不在派发时预渲染：子会话用 `task_detail` 按**当前**台账现读（依赖可能在创建之后才完成），见下文「brief 纯指引（T1）」。
 - `group` 只用于展示/过滤，`task_list({group})` 给出完成数。
 - `writeScopes` 是 advisory 冲突提示，不是文件锁。
 - `priority` 为 `-10..10`，只影响队列顺序。
@@ -130,7 +130,7 @@
 - **台账/面板只读**：每次成功变更把裁剪后的 `{id,revision,objective,phase,activation,roundsStarted,maxGoalRounds,updatedAt}` 写进 `tasks.goal_state_json`；snapshot 只下发生命周期字段（不含 objective），详情抽屉展示完整只读状态，面板没有任何 goal 写操作。
 - **静默降级**：`ctx.goals` 缺失或方法不全时 `createGoalBridge` 的所有钩子 no-op，不 warn、不阻塞派发/续派/结算、不写镜像。
 - **子会话可读**：`dsh-orchestrator-worker` 预设带一行 `tool-goal`（`@deepseek-ai/dsh-tool-goal`）。web-app 层把 host plane 的 `tool-goal` 行 `disabled: true`、改由预设挂载，而 `goals` 服务仍在 host plane（`dsh-base` 的 `goal` / `goal-round-driver` 行），所以子会话拿得到 `get_goal` 读到本任务目标；`create_goal` / `update_goal` 因平台权限校验（`requireDirectHuman`：需要顶层 agent 的**直接人类**回合）在子会话里必然被拒，等于只读。
-  平台**不会**把 objective 注入系统提示或消息（`dsh-goal` 的 inject 只有 `agents` / `sessionProjections`），`get_goal` 是子会话看到目标的唯一途径；不挂这行时子会话对目标完全无感。
+  平台**不会**把 objective 注入系统提示或消息（`dsh-goal` 的 inject 只有 `agents` / `sessionProjections`），所以 `get_goal` 是子会话读**实时目标（含「最新指示」）**的途径；创建时的目标快照另由 `task_detail` 提供（T1）。不挂这行时子会话仍能从 `task_detail` 拿到创建时的目标，但读不到之后 `task_message` 并进去的最新指示。
 
 ## 回合间 keep-alive（K2）
 
@@ -149,18 +149,29 @@
   不会把已结算任务重新拉起来。`aborted`/`error`/blocked 不经过 `turn-stopping`，keep-alive 也无法阻止显式 stop / 父级 dispose / 模型报错。
 - **默认关闭**：`config.keepAlive !== true` 时监听器在查台账之前返回（连 `db` 都不用），升级后行为与旧版一致。
 
-## brief 精简（L1）
+## brief 纯指引（T1）
 
-brief 是派发时留给子会话的唯一起步上下文，目标与经验各只保留「够开工」的那一份：
+派发给子会话的 brief 只回答「你是谁、去哪读详情」，创建详情全部留在台账、由子会话用 `task_detail` 现取：
 
-- **目标**：`goalBridge.available()` 为真（`ctx.goals` 的 `get/create/disarm/edit/complete/clear` 齐全）时，`renderBrief(brief, { goalAvailable: true })`
-  把 `【目标】` 渲染成指引「先调 `get_goal` 读取完整目标（含「最新指示」）」+ 一行 `【目标兜底】get_goal 不可用时按此执行：<目标前 160 字>…`；
-  目标正文只在平台 goal 里。能力探测失败（抛错/缺方法）或 `attach` 落空时 brief 内联全文，行为与旧版一致。
-  重派（`task_retry`、面板 `retry`）重渲染 brief 用同一口径，避免同一条任务前后两种形态。
-- **经验**：`task_create` 命中事实层记忆时，`buildLessonBlock` 把完整内容写
-  `$DSH_HOME/state/orchestrator/lessons/<项目目录名>-<key 短 hash>.md`（同项目稳定同名，每次派发覆盖为最新快照；含层标签、日期、`id`、来源任务/会话），
-  brief 里只留「N 条｜完整内容见经验文件（可 read 全文）」+ 每条 ≤64 字摘要 + `完整经验：<路径>`。指针块超 `MAX_MEMORY_BLOCK` 时先丢摘要行、**路径行永不截断**。
-- **降级**：`stateDir` 缺失、`lessons/` 建不出来或写文件失败 → 退回 `buildMemoryBlock` 的内联块（经验不丢，brief 变长）；无命中 → 不追加小节、不建目录。
+- **brief 形态**：`renderBrief({ taskId })` 只输出两行——`【任务编号】t-xxxxxxxx` + `【任务详情】先调 task_detail（参数 task_id 填上面的任务编号）读取完整任务详情：…`。
+  目标、验收、约束、背景、用户原话、工作目录/权限、经验、前置任务、产物都不再内联；也不再有「`get_goal` 不可用」的兜底文本。
+  目标正文仍在平台 goal（G1 `attach`）里，子会话也可以 `get_goal` 读；`task_detail` 读的是创建时 `brief_json` 快照，两条路互不依赖。
+- **task_detail（只读）**：`src/task-detail.js` 的 `renderTaskDetail` 渲染
+  任务编号/标题/状态 → 目标全文（保留换行）→ 工作目录 + 可写/只读提示 → `【验收标准】`/`【约束】`/`【背景资料】`/`【用户原话】`
+  → 编排（分组/优先级/写域，只在非默认时出现）→ `【前置任务】`（复用 `deps.upstreamBrief`，按**当前**台账现读状态/最近回报/产物）
+  → `【经验文件】<路径>（N 条）｜可 read 全文`（写文件失败时退回内联块）→ `【已有产物】`（路径/标签/存在性）→ 完成口径。
+  实现只读台账：不写消息、不改状态/时间戳；经验文件只 `stat` 存在性，正文交给子会话自己的 `read`。
+- **越权拒绝**：`task_detail` 只允许任务自己的子会话（`exec.agent.id` 或 `exec.agent.session.id` 等于 `tasks.session_id`）；
+  主会话或别的子会话调用返回「读取被拒绝…主会话查任务用 task_status」，并记 `task.detail.rejected` 日志。
+- **经验不再进提示词**：`task_create` 命中事实层记忆时 `buildLessonBlock` 照旧写
+  `$DSH_HOME/state/orchestrator/lessons/<项目目录名>-<key 短 hash>.md`，但只把指针 `{ path, count }`（或降级时的 `{ inline }`）
+  存进 `brief.experience`，由 `task_detail` 给出。`stateDir` 缺失/写文件失败 → 内联块只出现在详情里；无命中 → 不建文件、详情无经验小节。
+- **重派同口径**：`task_retry` 与面板 `retry` 都用 `renderBrief({ taskId: 新任务编号 })` 重渲染，`task.brief` 快照（含经验指针）整体复制。
+- **挂载链**：`task_detail` 和其它 `task_*` 一样由 `index.js` 的 `createTools(...).map(tool => ctx.tools.register(tool))` 注册成 host plane 全局工具
+  （`index.js:430-441`）；`cordis.patch.yml` 的 `dsh-orchestrator-worker` 预设**不挂** `preset-tools`、不做 allow/deny 收窄，
+  所以子会话工具表直接继承它（与 `task_report` 同一条路）。协调者预设的 `preset-tools` 白名单不含 `task_detail`，执行层 `COORDINATOR_DENY` 也把它列为子会话专属工具，
+  所以主会话看不到/调不到它；即便某个 profile 例外地暴露出来，工具内的 owner 校验仍会拒绝。
+- **队列兜底**：`queue.pump` 优先用落库的 brief 消息；没有（直接建台账/旧数据）时用 `renderBrief({ taskId })` 兜底，不再拼 `【任务】标题 + 目标`。
 - 接线：`index.js` 把插件写入根作为 `createTools({ stateDir })` 传入；`memoryInject:false` 时整段跳过。`project_context` 仍用内联记忆块（协调者读，不走文件）。
 
 
@@ -214,7 +225,7 @@ $DSH_HOME/state/orchestrator/
   tasks.sqlite
   snapshots/tasks-YYYY-MM-DD.sqlite
   logs/YYYY-MM-DD.jsonl
-  lessons/<项目>-<short-hash>.md   # brief 经验指针指向的记忆文件（每次派发覆盖）
+  lessons/<项目>-<short-hash>.md   # task_detail 经验指针指向的记忆文件（每次派发覆盖）
   reports/<taskId>.md              # 超 64 KiB 的返回消息全文
   workspace/                 # 指挥舱
 ```

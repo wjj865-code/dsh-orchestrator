@@ -3,7 +3,8 @@
 import {
   briefText, clearQueued, countPending, getTask, listPendingQueue, listTasks, markQueued, transition,
 } from './ledger.js'
-import { promoteDependents, upstreamBrief } from './deps.js'
+import { promoteDependents } from './deps.js'
+import { renderBrief } from './brief.js'
 import { taskLabel } from './task-label.js'
 
 export function createQueue({ db, dispatcher, config = {}, logger, notifier, retryDelaysMs = [2000, 5000, 10000, 30000] }) {
@@ -70,9 +71,9 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
           ids.shift()
           continue
         }
-        const rendered = [briefText(db, id) ?? `【任务】${task.title}\n目标：${task.goal}`, upstreamBrief(db, task.depends_on)]
-          .filter(text => typeof text === 'string' && text !== '')
-          .join('\n')
+        // T1：派发提示词就是 brief 本身（任务编号 + task_detail 指引）；详情由子会话读台账，
+        // 前置任务/产物也走 task_detail 现读，不再在派发时拼一段快照。
+        const rendered = briefText(db, id) ?? renderBrief({ taskId: task.id })
         let member
         try {
           member = await dispatcher.spawn({

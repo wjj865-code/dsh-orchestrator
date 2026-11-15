@@ -196,6 +196,19 @@ test('worker 预设挂 tool-goal：子会话才有 get_goal 可读自己的任�
   assert.equal(coordinator.rows.some(row => row.id === 'tool-goal'), false)
 })
 
+test('worker 预设不做工具收窄：orchestrator 的全局工具（task_report/task_detail）子会话直接可见', () => {
+  const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const worker = presetPlugins(source, 'dsh-orchestrator-worker')
+  // 挂载链：index.js 的 createTools(...).map(tool => ctx.tools.register(tool)) 把 task_detail 注册成
+  // host plane 的**全局**工具；worker 预设不挂 preset-tools，所以不做 allow/deny 收窄，子会话直接继承。
+  assert.equal(worker.rows.some(row => row.id === 'preset-tools'), false,
+    'worker 预设挂 preset-tools 会把 task_report/task_detail 一起遮掉')
+  assert.match(worker.text, /task_report \/ task_detail/, 'worker 预设应保留全局工具挂载链的说明')
+  const index = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
+  assert.match(index, /createTools\(\{[\s\S]{0,800}?\.map\(tool => ctx\.tools\.register\(tool\)\)/,
+    'task_detail 与其它 task_* 一样走全局注册')
+})
+
 test('协调者预设挂 present 交付工具：主会话可交付子会话产物', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')

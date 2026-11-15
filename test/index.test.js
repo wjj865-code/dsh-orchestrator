@@ -8,7 +8,7 @@ import { openLedger, listTasks } from '../src/ledger.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', 'ask_user', 'show_view'], restrictableTools = knownTools } = {}) {
+function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', 'task_detail', 'ask_user', 'show_view'], restrictableTools = knownTools } = {}) {
   const restrictions = []
   const injected = []
   return {
@@ -152,7 +152,7 @@ test('inject 不再硬依赖 agentTeams（缺服务也要能激活）', () => {
 test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subagent 可用', withHome(async () => {
   const f = fakeCtx({ withAgentTeams: false })
   await apply(f.ctx, {})
-  assert.equal(f.registered.length, 11)
+  assert.equal(f.registered.length, 12)
   assert.equal(f.routes.length, 1)
   assert.equal(f.warnings.some(message => /agentTeams|waiting for service/.test(message)), false)
 }))
@@ -160,7 +160,7 @@ test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subag
 test('profile 没有 agentTeams 且 backend=team：apply 不炸，派发返回可读错误', withHome(async () => {
   const f = fakeCtx({ withAgentTeams: false })
   await assert.doesNotReject(() => apply(f.ctx, { backend: 'team' }))
-  assert.equal(f.registered.length, 11)
+  assert.equal(f.registered.length, 12)
   assert.ok(f.warnings.some(message => /team 后端不可用/.test(message)), f.warnings.join(' | '))
 }))
 
@@ -172,14 +172,33 @@ test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {
   assert.equal(guards.length, 1)
 }))
 
-test('apply 注册 11 个工具，只写 $DSH_HOME/state/orchestrator', withHome(async home => {
+test('apply 注册 12 个工具，只写 $DSH_HOME/state/orchestrator', withHome(async home => {
   const { ctx, registered } = fakeCtx()
   await apply(ctx, { coordinatorSession: 's-1' })
   assert.deepEqual(registered.map(tool => tool.name).sort(),
-    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_inbox', 'task_list',
+    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_detail', 'task_inbox', 'task_list',
       'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
   assert.deepEqual(readdirSync(home), ['state'])
   assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), ['logs', 'snapshots'])
+}))
+
+// 挂载链证据：task_detail 由 index 的 createTools(...).map(ctx.tools.register) 注册成 host plane 全局工具，
+// worker 预设不做 preset-tools 收窄（见 test/config.test.js），所以子会话工具表里直接就有它。
+test('task_detail 走全局注册：主会话越权被拒，任务自己的子会话可读', withHome(async () => {
+  const coordinator = makeAgent('s-1')
+  const { ctx, registered } = fakeCtx({ agent: coordinator })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  assert.ok(byName.task_detail, 'task_detail 应注册在 host plane（子会话继承全局工具）')
+  const created = await byName.task_create.execute({ title: '详情', goal: '完整目标', acceptance: ['a'] }, { agent: coordinator })
+  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const denied = await byName.task_detail.execute({ task_id: taskId }, { agent: coordinator })
+  assert.match(denied, /读取被拒绝/)
+  assert.match(denied, /主会话查任务用 task_status/)
+  // 派发出去的会话 id 就是 m-1（fakeCtx 的 spawn 结果），它以「任务自己的子会话」身份读到详情。
+  const detail = await byName.task_detail.execute({ task_id: taskId }, { agent: { id: 'm-1' } })
+  assert.match(detail, /目标：完整目标/)
+  assert.match(detail, /【验收标准】/)
 }))
 
 test('apply 给 createTools 传 defaultCwd：无 target 时相对产物按主会话目录（指挥舱）解析', withHome(async home => {
@@ -205,7 +224,7 @@ test('apply 给 createTools 传 defaultCwd：无 target 时相对产物按主会
 test('无 coordinatorSession：warn 但工具注册；派活给「先打开主会话」提示', withHome(async () => {
   const { ctx, registered, warnings } = fakeCtx()
   await apply(ctx, {})
-  assert.equal(registered.length, 11)
+  assert.equal(registered.length, 12)
   assert.ok(warnings.some(message => /尚未打开主会话/.test(message)))
   const create = registered.find(tool => tool.name === 'task_create')
   const text = await create.execute({ title: 't', goal: 'g', acceptance: ['a'] })
@@ -376,6 +395,7 @@ test('协调者白名单：只 deny 已知的危险工具，保留 ask_user/show
   assert.ok(deny.includes('write'))
   assert.ok(deny.includes('bash'))
   assert.ok(deny.includes('task_report'))
+  assert.ok(deny.includes('task_detail'), 'task_detail 也是子会话专属工具')
   assert.equal(deny.includes('ask_user'), false)
   assert.equal(deny.includes('show_view'), false)
   assert.equal(deny.includes('present'), false)
@@ -430,12 +450,12 @@ test('绑定发生在回合中时，白名单延到 idle 后才装（当前回�
   assert.equal(other.restrictions.length, 0)
 }))
 
-test('缺 tools.guard 时 warn 不崩，10 工具照常注册', withHome(async () => {
+test('缺 tools.guard 时 warn 不崩，12 工具照常注册', withHome(async () => {
   const { ctx, warnings, registered } = fakeCtx()
   delete ctx.tools.guard
   await apply(ctx, {})
   assert.ok(warnings.some(message => /tools\.guard/.test(message)))
-  assert.equal(registered.length, 11)
+  assert.equal(registered.length, 12)
 }))
 
 test('系统提示只渲染给已绑定协调者，绑定后下一步生效', withHome(async () => {

@@ -86,6 +86,27 @@ test('stop 中断子会话并标 cancelled', async () => {
   db.close()
 })
 
+test('retry 的 brief 与 task_create 同口径：任务编号 + task_detail 指引（面板重派）', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const old = createTask(db, {
+    brief: sampleBrief({ title: '失败任务', goal: '把目标写得很长'.repeat(40) }), coordinatorSession: 's-1',
+  })
+  transition(db, old.id, 'failed', { error: 'boom' })
+  const result = await actions.retry(old.id)
+  assert.equal(result.ok, true)
+  const row = db.prepare("SELECT rendered FROM messages WHERE task_id = ? AND kind = 'brief'").get(result.taskId)
+  assert.ok(row !== undefined, '重派也要写 brief 消息')
+  const lines = row.rendered.split('\n')
+  // T1：面板重派与 task_create 同口径——新任务编号 + 一句 task_detail 指引，不再内联目标。
+  assert.equal(lines.length, 2)
+  assert.equal(lines[0], `【任务编号】${result.taskId}`)
+  assert.match(lines[1], /task_detail/)
+  assert.equal(row.rendered.includes('把目标写得很长把目标写得很长'), false)
+  assert.equal(row.rendered.includes('【目标】'), false)
+  db.close()
+})
+
 test('retry 用原 brief 新建任务并保留编排字段', async () => {
   const env = setup()
   const { db, actions } = await env.init()

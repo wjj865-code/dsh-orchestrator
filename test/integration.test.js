@@ -69,9 +69,17 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → done 通�
     assert.equal(spawned[0].provider, 'spawn')
     assert.equal(spawned[0].delivery, 'caller')
     assert.equal(spawned[0].parent, coordinator)
-    assert.match(spawned[0].prompt[0].text, /【验收标准】/)
+    assert.match(spawned[0].prompt[0].text, new RegExp(`【任务编号】${taskId}`))
+    assert.match(spawned[0].prompt[0].text, /task_detail/)
+    assert.equal(spawned[0].prompt[0].text.includes('空窗口时报表给出明确说明'), false)
     assert.throws(() => JSON.parse(spawned[0].prompt[0].text))
     assert.equal(spawned[0].prompt[0].text.includes('"title"'), false)
+
+    // T1：子会话按指引读详情（验收/约束/原话都在 task_detail 里）。
+    const detail = await byName.task_detail.execute({ task_id: taskId }, { agent: teammate })
+    assert.match(detail, /【验收标准】/)
+    assert.match(detail, /【约束】/)
+    assert.match(detail, /【用户原话】/)
 
     await byName.task_report.execute({ task_id: taskId, status: 'progress', summary: '已定位分支' }, { agent: teammate })
     assert.equal(sent.length, 0)

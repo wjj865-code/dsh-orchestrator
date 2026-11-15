@@ -103,7 +103,7 @@ export function promoteDependents(db, { enqueue = () => {}, log = () => {} } = {
   return { promoted, failed }
 }
 
-/** 已就绪依赖的摘要块，派发时追加到 brief 后面（创建时依赖可能还没完成）。 */
+/** 前置任务摘要块：task_detail 现读时用（创建时依赖可能还没完成，所以按当前台账渲染）。 */
 export function upstreamBrief(db, dependsOn) {
   const ids = Array.isArray(dependsOn) ? dependsOn : []
   if (ids.length === 0) return ''

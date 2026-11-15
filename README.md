@@ -14,7 +14,7 @@
 | 子任务 | 独立 DSH 子会话，按目标目录运行；可只读、续派、停止、重派 |
 | 依赖编排 | `dependsOn` 前置；完成自动晋升，失败沿依赖链传播 |
 | 分组/写域/优先级 | `group` 分组、`writeScopes` 冲突提示、`priority` 队列排序 |
-| 跨项目记忆 | 分层沉淀：done 摘要进 `task-log`（只归档、不注入 brief），经验/决策/偏好蒸馏成原子事实才注入；`history_search` / `project_context` 补上下文 |
+| 跨项目记忆 | 分层沉淀：done 摘要进 `task-log`（只归档、不进任务详情），经验/决策/偏好蒸馏成原子事实才随 `task_detail` 注入；`history_search` / `project_context` 补上下文 |
 | 收件箱/日报 | `task_inbox` 看待决与卡点；`digestAt` 开每日汇总 |
 | 任务面板 | 侧栏入口 + 会话头面板；详情/停止/重派/追加；产物库按项目/日期分组、可预览/复制 |
 | 产物收集 | done 自动从 `workspaceChanges` 收集改动文件，与显式 `artifacts` 按路径去重合并 |
@@ -83,7 +83,7 @@ task_create({
 ```
 
 - 前置没完成：B 是 `waiting_dep`，不派发、不占并发位。
-- 前置全部 `done`：B 自动变 `pending`，brief 带 `【前置任务】` 摘要和产物。
+- 前置全部 `done`：B 自动变 `pending`；下游子会话用 `task_detail` 能看到前置任务的摘要和产物（按当前台账现读）。
 - 前置失败：B 自动 `failed`，错误写明原因。
 - `writeScopes` 只提示冲突，不是文件锁；`priority` 高的先派。
 
@@ -116,7 +116,7 @@ task_create({
 - 面板列表显示「目标·进行中/已完成…」小标，详情抽屉有「目标状态」只读区块（阶段、续轮、轮次、修订）；
 - 平台没有 goal 服务时静默降级，派发/续派/面板都不受影响。
 
-目标文本只是持久状态，平台也不会把它注入系统提示或消息；子会话靠 `get_goal` 自己读（worker 预设挂了 `tool-goal`），认不认这个目标由它决定。goal 可用时 brief 里只留一句「用 `get_goal` 读目标」的指引 + 截断兜底（goal 降级时仍内联全文）。改目标请走 `task_message`，子会话的 `update_goal` 会被平台权限校验拒绝。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#目标g1)。
+目标文本只是持久状态，平台也不会把它注入系统提示或消息；子会话靠 `get_goal` 读（worker 预设挂了 `tool-goal`），也能用 `task_detail` 读创建时的目标快照。派发给子会话的 brief 是**纯指引**：只有【任务编号】+「先调 `task_detail` 读详情」，目标全文、验收、经验、前置任务、产物都不再内联到提示词。改目标请走 `task_message`，子会话的 `update_goal` 会被平台权限校验拒绝。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#目标g1)。
 
 ### 回合间续跑（keep-alive，默认关）
 
@@ -157,13 +157,14 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 | `project_context` | 只读项目白名单文件、顶层结构、最近任务、相关记忆 |
 | `memory_note` | 记一条跨任务有效的决策/偏好/经验（写入即蒸馏为原子事实） |
 
-子任务（1 个）：
+子任务（2 个）：
 
 | 工具 | 作用 |
 |---|---|
 | `task_report` | `progress` / `done` / `blocked` / `needs_auth`；可带 `question` / `options` / `artifacts` |
+| `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物；只能读自己的任务，越权会被拒绝 |
 
-11 个工具全局注册；`task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调。
+12 个工具全局注册（worker 预设不做工具收窄，子会话直接继承）；`task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调；`task_detail` / `task_report` 只对任务自己的子会话开放。
 
 ## 配置
 
@@ -187,7 +188,7 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 | `maxQueue` | `50` | `pending` + `waiting_dep` 安全阀 |
 | `autoResumeQueue` | `true` | 重启后自动恢复排队任务 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
-| `memoryInject` | `true` | 新任务 brief 注入事实层记忆（`lesson`/`decision`/`preference`/`note`；`task-log` 日志不注入）；完整内容写 `lessons/` 记忆文件，brief 只给短摘要 + 指针 |
+| `memoryInject` | `true` | 新任务的经验注入：`task_create` 把命中的事实层记忆（`lesson`/`decision`/`preference`/`note`；`task-log` 不注入）写进 `lessons/` 记忆文件，`task_detail` 给出文件路径（brief 不再内联经验） |
 | `memoryLimit` | `3` | 注入记忆条数（1–10） |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
 
@@ -199,7 +200,7 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 tasks.sqlite
 snapshots/tasks-YYYY-MM-DD.sqlite   # 每天一份，保留 7 天
 logs/YYYY-MM-DD.jsonl               # 按天，保留 7 天
-lessons/<项目>-<short-hash>.md      # brief 里经验指针指向的记忆文件（每次派发覆盖为最新快照）
+lessons/<项目>-<short-hash>.md      # task_detail 里经验指针指向的记忆文件（每次派发覆盖为最新快照）
 reports/<taskId>.md                 # 超 64 KiB 的子会话返回消息全文
 workspace/                          # 「指挥舱」工作区
 debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调试预设 bundle
@@ -210,8 +211,8 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 
 ## 架构与安全
 
-- 协调者预设挂 `persona` / `agent-instructions` / `time-context` / `tool-ask-user` / `present` / `compaction` / `preset-tools`；执行层还有 guard 硬拦 `read`/`write`/`bash`/`wait_agent` 等（`present` 不在黑名单，只声明交付、不读文件内容）。
-- 子任务用 worker 预设，文件/shell/search/jobs/web/todo/skill/compaction/present + `tool-goal`（只读 `get_goal`，用来读自己的任务目标），不含 delegation/plan/schedule；预设可用 `workerPreset` 换成副本（如 `orch-debug`）。
+- 协调者预设挂 `persona` / `agent-instructions` / `time-context` / `tool-ask-user` / `present` / `compaction` / `preset-tools`；执行层还有 guard 硬拦 `read`/`write`/`bash`/`wait_agent`/`task_report`/`task_detail` 等（`present` 不在黑名单，只声明交付、不读文件内容）。
+- 子任务用 worker 预设，文件/shell/search/jobs/web/todo/skill/compaction/present + `tool-goal`（只读 `get_goal`，用来读自己的任务目标）；`task_report` / `task_detail` 是插件在全局注册的工具（预设不做 allow/deny 收窄，子会话直接继承），不含 delegation/plan/schedule；预设可用 `workerPreset` 换成副本（如 `orch-debug`）。
 - `/api/orchestrator` 由 connection owner-only 鉴权；`snapshot`/`detail`/`artifacts`/`preview` 只读，`stop`/`retry`/`message` 是面板动作。
 - 通知走 `agent.steer`，5 秒合并；每次投递写 `notifications`。
 

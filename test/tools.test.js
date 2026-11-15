@@ -82,10 +82,10 @@ const call = (tools, name, args, exec) => {
   return tools[name].execute(args, resolved)
 }
 
-test('注册 11 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
+test('注册 12 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
   const { db, tools } = await setup()
   assert.deepEqual(Object.keys(tools).sort(),
-    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_inbox', 'task_list',
+    ['history_search', 'memory_note', 'project_context', 'task_create', 'task_detail', 'task_inbox', 'task_list',
       'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
   const walk = (value, path) => {
     if (value === null || typeof value !== 'object') return
@@ -127,7 +127,7 @@ test('模型 JSON Schema 不出现 required: true（provider 只认数组，布�
   db.close()
 })
 
-test('task_create：正常创建、子会话 spawn、台账 running，prompt 是渲染文本', async () => {
+test('task_create：正常创建、子会话 spawn、台账 running，prompt 是纯指引 brief', async () => {
   const { db, dispatcher, tools } = await setup()
   const signal = new AbortController().signal
   const text = await call(tools, 'task_create', sampleBrief({ title: 'A', goal: '目标A', user_verbatim: '原话' }), { signal })
@@ -142,10 +142,19 @@ test('task_create：正常创建、子会话 spawn、台账 running，prompt 是
   // 派发是异步队列，用的是插件自有 signal，不能复用这次工具调用的 signal（回合结束会被 abort）。
   assert.ok(spawn[3] instanceof AbortSignal)
   assert.equal(spawn[3].aborted, false)
-  assert.match(spawn[2], /【任务】A/)
-  assert.match(spawn[2], /【目标】目标A/)
-  assert.match(spawn[2], /【用户原话】/)
+  // T1：提示词只有任务编号 + task_detail 指引，目标/验收/原话都不再内联。
+  assert.match(spawn[2], new RegExp(`【任务编号】${task.id}`))
+  assert.match(spawn[2], /task_detail/)
+  assert.equal(spawn[2].includes('目标A'), false)
+  // 指引里会提到「用户原话」这个字段名，但不会带正文（引用块才是内联正文）。
+  assert.equal(spawn[2].includes('> 原话'), false)
+  assert.equal(spawn[2].includes('【用户原话】'), false)
+  assert.equal(spawn[2].includes('【目标】'), false)
   assert.equal(spawn[2].includes('"title"'), false)
+  // 详情确实能从台账读到（子会话按指引现取）。
+  const detail = await call(tools, 'task_detail', { task_id: task.id }, { agent: { id: task.session_id } })
+  assert.match(detail, /目标：目标A/)
+  assert.match(detail, /【用户原话】\n> 原话/)
   db.close()
 })
 
@@ -782,7 +791,7 @@ test('非主会话调用 task_* 被拒，且不产生副作用', async () => {
   db.close()
 })
 
-test('task_create 校验 target 并落 target_dir，brief 带【工作目录】', async () => {
+test('task_create 校验 target 并落 target_dir；brief 是纯指引，工作目录在 task_detail 里', async () => {
   const { db, tools } = await setup()
   const bad = await call(tools, 'task_create', { ...sampleBrief({ title: 'b' }), target: 'relative/dir' })
   assert.match(bad, /绝对路径/)
@@ -792,8 +801,13 @@ test('task_create 校验 target 并落 target_dir，brief 带【工作目录】'
   assert.match(ok, /已派发/)
   const row = db.prepare("SELECT target_dir FROM tasks WHERE title = '带目录'").get()
   assert.equal(row.target_dir, target)
+  const task = listTasks(db).find(item => item.title === '带目录')
   const brief = db.prepare("SELECT rendered FROM messages WHERE kind = 'brief' ORDER BY rowid DESC LIMIT 1").get()
-  assert.match(brief.rendered, /【工作目录】/)
+  assert.match(brief.rendered, new RegExp(`【任务编号】${task.id}`))
+  assert.equal(brief.rendered.includes('【工作目录】'), false)
+  const detail = await call(tools, 'task_detail', { task_id: task.id }, { agent: { id: task.session_id } })
+  assert.match(detail, /工作目录：/)
+  assert.equal(detail.includes(target), true)
   db.close()
 })
 
@@ -807,7 +821,7 @@ test('task_create 拒绝不存在的绝对目录', async () => {
 })
 
 
-test('不传 target：唯一命中工作区 → target_dir 落工作区目录，brief 带【工作目录】', async () => {
+test('不传 target：唯一命中工作区 → target_dir 落工作区目录，详情里能看到工作目录', async () => {
   const target = tempDir()
   const workspaces = { list: () => [{ id: 'w1', title: '公众号文章', path: target }] }
   const { db, dispatcher, tools } = await setup({ workspaces })
@@ -818,7 +832,10 @@ test('不传 target：唯一命中工作区 → target_dir 落工作区目录，
   assert.equal(task.target_dir, target)
   assert.equal(task.brief.target, target)
   const brief = db.prepare("SELECT rendered FROM messages WHERE kind = 'brief' ORDER BY rowid DESC LIMIT 1").get()
-  assert.match(brief.rendered, /【工作目录】/)
+  assert.match(brief.rendered, /task_detail/)
+  assert.equal(brief.rendered.includes('【工作目录】'), false)
+  const detail = await call(tools, 'task_detail', { task_id: task.id }, { agent: { id: task.session_id } })
+  assert.equal(detail.includes(`工作目录：${target}`), true)
   assert.equal(dispatcher.calls.length, 1)
   db.close()
 })
@@ -1077,102 +1094,88 @@ test('memory_note 写入并可按关键词检索；done 回报自动沉淀', asy
   assert.match(done, /登录修复/)
 })
 
-test('task_create 会把相关历史经验注入 brief，不相关的不注入', async () => {
-  const { db, dispatcher, tools } = await setup()
-  await call(tools, 'memory_note', { text: '登录模块统一走 session cookie', kind: 'decision' })
-  await call(tools, 'task_create', sampleBrief({ title: '修复登录模块', goal: '登录异常' }))
-  const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
-  assert.match(prompt, /【历史经验】/)
-  assert.match(prompt, /session cookie/)
-  const unrelated = await call(tools, 'task_create', sampleBrief({ title: '写周报', goal: '整理本周进度' }))
-  assert.match(unrelated, /已派发/)
-  const prompts = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').map(callRow => callRow[2])
-  assert.match(prompts[0], /【历史经验】/)
-  assert.doesNotMatch(prompts[1], /【历史经验】/)
-  // 没有 stateDir（降级路径）：走内联记忆块，不出现「完整经验」文件指针。
-  assert.doesNotMatch(prompts[0], /完整经验：/)
-})
-
-// ---- L1 brief 精简：目标指引 + 经验文件指针 ----
+// ---- T1 brief 纯指引化：详情全走 task_detail ----
 
 const longGoal = '把 brief 精简成指引加指针'.repeat(20)
 
-test('L1 goal 可用：brief 目标改成 get_goal 指引 + 兜底，不再内联目标全文', async () => {
-  const bridge = { available: () => true, clear() {}, complete() {}, update() {} }
-  const { db, dispatcher, tools } = await setup({ goalBridge: bridge })
-  const text = await call(tools, 'task_create', sampleBrief({ title: '精简 brief', goal: longGoal }))
-  assert.match(text, /已派发/)
-  const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
-  assert.match(prompt, /【目标】先调 get_goal 读取完整目标/)
-  assert.match(prompt, /【目标兜底】get_goal 不可用时按此执行：/)
-  assert.equal(prompt.includes(longGoal), false)
-  // 兜底至少带着目标开头，attach 失败时子会话也能开工。
-  assert.equal(prompt.includes(longGoal.slice(0, 40)), true)
-  db.close()
-})
-
-test('L1 goal 降级：没有 goals 服务 / 能力探测抛错时 brief 内联目标全文', async () => {
-  const plain = await setup()
-  await call(plain.tools, 'task_create', sampleBrief({ title: '无 goal 服务', goal: longGoal }))
-  const inlinePrompt = plain.dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
-  assert.equal(inlinePrompt.includes(longGoal), true)
-  assert.equal(inlinePrompt.includes('get_goal'), false)
-  assert.equal(inlinePrompt.includes('【目标兜底】'), false)
-  plain.db.close()
-
-  const throwing = { available() { throw new Error('goals 服务坏了') } }
-  const broken = await setup({ goalBridge: throwing })
-  await call(broken.tools, 'task_create', sampleBrief({ title: '探测抛错', goal: longGoal }))
-  const brokenPrompt = broken.dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
-  assert.equal(brokenPrompt.includes(longGoal), true)
-  assert.equal(brokenPrompt.includes('get_goal'), false)
-  broken.db.close()
-})
-
-test('L1 经验精简：完整经验写记忆文件，brief 只给短摘要 + 指针', async () => {
+test('T1 brief 纯指引：目标与经验都不进提示词，详情在 task_detail 里现取', async () => {
   const stateDir = tempDir()
   const target = tempDir()
   const { db, dispatcher, tools } = await setup({ stateDir })
-  const lesson = '登录模块先查半成品再动手，避免重做'
-  await call(tools, 'memory_note', { text: lesson, kind: 'lesson' })
-  await call(tools, 'task_create', { ...sampleBrief({ title: '修复登录模块', goal: '登录异常' }), target })
+  await call(tools, 'memory_note', { text: '登录模块统一走 session cookie', kind: 'decision' })
+  await call(tools, 'task_create', { ...sampleBrief({ title: '修复登录模块', goal: longGoal }), target })
+  const task = listTasks(db).find(item => item.title === '修复登录模块')
   const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
-  assert.match(prompt, /【历史经验】1 条｜完整内容见经验文件（可 read 全文）/)
-  assert.equal(prompt.includes('先查半成品'), true)
-  const pointerLine = prompt.split('\n').find(line => line.startsWith('完整经验：'))
-  assert.ok(pointerLine !== undefined, prompt)
-  const path = pointerLine.slice('完整经验：'.length)
+  // 提示词只有两行：任务编号 + task_detail 指引。
+  const promptLines = prompt.split('\n')
+  assert.equal(promptLines.length, 2)
+  assert.equal(promptLines[0], `【任务编号】${task.id}`)
+  assert.match(prompt, /task_detail/)
+  assert.equal(prompt.includes(longGoal.slice(0, 20)), false)
+  assert.equal(prompt.includes('session cookie'), false)
+  for (const section of ['【目标】', '【目标兜底】', '【历史经验】', '【验收标准】', 'get_goal']) {
+    assert.equal(prompt.includes(section), false, `brief 不应内联 ${section}`)
+  }
+  // 详情：目标全文 + 经验文件指针（完整内容在文件里，可 read）。
+  const detail = await call(tools, 'task_detail', { task_id: task.id }, { agent: { id: task.session_id } })
+  assert.equal(detail.includes(longGoal), true)
+  assert.match(detail, /【验收标准】/)
+  const pointerLine = detail.split('\n').find(line => line.startsWith('【经验文件】'))
+  assert.ok(pointerLine !== undefined, detail)
+  assert.match(pointerLine, /（1 条）｜可 read 全文/)
+  const path = pointerLine.slice('【经验文件】'.length).split('（1 条）')[0]
   assert.equal(path.startsWith(join(stateDir, 'lessons')), true)
   assert.equal(existsSync(path), true)
-  const body = readFileSync(path, 'utf8')
-  assert.equal(body.includes(lesson), true)
-  assert.match(body, /\[经验\]/)
+  assert.equal(readFileSync(path, 'utf8').includes('session cookie'), true)
+  // 指针模式不在详情里重复正文（避免详情又变长）。
+  assert.equal(detail.includes('【历史经验】'), false)
   db.close()
 })
 
-test('L1 经验降级：stateDir 缺失时 task_create 退回内联块，不产生路径', async () => {
+test('T1 经验降级：stateDir 缺失时经验只进 task_detail（内联块），brief 仍是纯指引', async () => {
   const { db, dispatcher, tools } = await setup()
   await call(tools, 'memory_note', { text: '登录模块统一走 session cookie', kind: 'decision' })
   await call(tools, 'task_create', sampleBrief({ title: '修复登录模块', goal: '登录异常' }))
+  const task = listTasks(db).find(item => item.title === '修复登录模块')
   const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
-  assert.match(prompt, /【历史经验】\n/)
-  assert.equal(prompt.includes('完整经验：'), false)
+  assert.equal(prompt.includes('session cookie'), false)
+  assert.equal(prompt.includes('【历史经验】'), false)
+  const detail = await call(tools, 'task_detail', { task_id: task.id }, { agent: { id: task.session_id } })
+  assert.match(detail, /【历史经验】\n/)
+  assert.match(detail, /session cookie/)
+  assert.equal(detail.includes('【经验文件】'), false)
   db.close()
 })
 
-test('L1 重派：task_retry 重渲染的 brief 与 task_create 同口径（目标指引）', async () => {
-  const bridge = { available: () => true, clear() {}, complete() {}, update() {} }
-  const { db, dispatcher, tools } = await setup({ goalBridge: bridge })
+test('T1 不相关经验：task_create 不为无关任务建经验指针，详情里没有经验小节', async () => {
+  const stateDir = tempDir()
+  const { db, dispatcher, tools } = await setup({ stateDir })
+  await call(tools, 'memory_note', { text: '登录模块统一走 session cookie', kind: 'decision' })
+  await call(tools, 'task_create', sampleBrief({ title: '写周报', goal: '整理本周进度' }))
+  const task = listTasks(db).find(item => item.title === '写周报')
+  assert.equal(task.brief.experience, undefined)
+  const detail = await call(tools, 'task_detail', { task_id: task.id }, { agent: { id: task.session_id } })
+  assert.equal(detail.includes('【经验文件】'), false)
+  assert.equal(detail.includes('【历史经验】'), false)
+  assert.equal(dispatcher.calls.length, 1)
+  db.close()
+})
+
+test('T1 重派：task_retry 重渲染的 brief 与 task_create 同口径（任务编号 + 指引）', async () => {
+  const { db, dispatcher, tools } = await setup()
   const created = createTask(db, { brief: { ...sampleBrief({ title: '重派目标' }), goal: longGoal }, coordinatorSession: 's-1' })
   transition(db, created.id, 'failed', { error: '子会话创建失败' })
   const text = await call(tools, 'task_retry', { task_id: created.id })
   assert.match(text, /已重派/)
   const retried = listTasks(db).find(task => task.retry_of === created.id)
   const rendered = recentMessages(db, retried.id, 1)[0].rendered
-  assert.match(rendered, /【目标】先调 get_goal 读取完整目标/)
-  assert.match(rendered, /【目标兜底】/)
+  assert.equal(rendered.split('\n')[0], `【任务编号】${retried.id}`)
+  assert.match(rendered, /task_detail/)
   assert.equal(rendered.includes(longGoal), false)
   assert.equal(dispatcher.calls.some(callRow => callRow[0] === 'spawn'), true)
+  // 重派的新任务自己的子会话能读到原目标全文。
+  const detail = await call(tools, 'task_detail', { task_id: retried.id }, { agent: { id: retried.session_id } })
+  assert.equal(detail.includes(longGoal), true)
   db.close()
 })
 
@@ -1212,7 +1215,7 @@ test('project_context 读取白名单文件与顶层结构，不读 .env，不�
   assert.doesNotMatch(text, /SECRET=/)
 })
 
-test('依赖：前置未完成时建 waiting_dep、不派发；前置 done 后自动晋升并注入前置摘要/产物', async () => {
+test('依赖：前置未完成时建 waiting_dep、不派发；前置 done 后自动晋升，前置摘要/产物在 task_detail 里', async () => {
   const { writeFileSync } = await import('node:fs')
   const target = tempDir()
   const depFile = join(target, 'dep.md')
@@ -1234,9 +1237,13 @@ test('依赖：前置未完成时建 waiting_dep、不派发；前置 done 后�
   assert.equal(downstream.group_id, '发布')
   assert.equal(downstream.priority, 5)
   const prompt = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').at(-1)[2]
-  assert.match(prompt, /【前置任务】/)
-  assert.match(prompt, /前置已完成/)
-  assert.match(prompt, /dep\.md/)
+  // T1：派发提示词不拼前置摘要（避免快照过期），改为子会话 task_detail 现读。
+  assert.equal(prompt.includes('【前置任务】'), false)
+  assert.match(prompt, /task_detail/)
+  const detail = await call(tools, 'task_detail', { task_id: downstream.id }, { agent: { id: downstream.session_id } })
+  assert.match(detail, /【前置任务】/)
+  assert.match(detail, /前置已完成/)
+  assert.match(detail, /dep\.md/)
 })
 
 test('依赖：前置运行中时下游 waiting_dep，前置完成后晋升；前置失败时下游自动失败', async () => {
@@ -1278,7 +1285,9 @@ test('优先级：高优先级任务先派发', async () => {
   await queue.pump()
   const prompts = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').map(callRow => callRow[2])
   assert.ok(prompts.length >= 2)
-  assert.match(prompts.at(-1), /高优先级/)
+  const highTask = listTasks(db).find(task => task.title === '高优先级')
+  // brief 是纯指引：用【任务编号】确认派发的是高优先级那条，而不是靠标题。
+  assert.match(prompts.at(-1), new RegExp(`【任务编号】${highTask.id}`))
 })
 
 test('写域冲突只提示不阻断；同组任务可按 group 过滤看进度', async () => {
@@ -1381,12 +1390,15 @@ test('M1 分层：done 只沉淀 task-log（一行、无产物清单），不注
   assert.equal(logs[0].text.includes('console.log'), false) // 不落 verbatim 代码
   assert.equal(rows.some(row => row.kind === 'lesson'), false) // 没有经验标记就不造 lesson
 
-  // 下个同类任务：task-log 不进 brief
+  // 下个同类任务：日志层不进详情（brief 本身已不含经验，详情里也只有事实层）。
   await call(tools, 'task_create', sampleBrief({ title: '再修登录', goal: '修复登录' }))
+  const next = listTasks(db).find(item => item.title === '再修登录')
   const prompts = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').map(callRow => callRow[2])
   assert.equal(prompts.length, 2)
   assert.doesNotMatch(prompts[1], /【历史经验】/)
-  assert.doesNotMatch(prompts[1], /替换了登录校验逻辑/)
+  const detail = await call(tools, 'task_detail', { task_id: next.id }, { agent: { id: next.session_id } })
+  assert.doesNotMatch(detail, /【历史经验】/)
+  assert.doesNotMatch(detail, /替换了登录校验逻辑/)
 
   // 显式查历史时日志层可见，并标出层
   const found = await call(tools, 'history_search', { query: '登录校验' })
@@ -1395,7 +1407,7 @@ test('M1 分层：done 只沉淀 task-log（一行、无产物清单），不注
   assert.match(found, /登录修复/)
 })
 
-test('M1 分层：done 摘要里的经验分句蒸馏成 lesson 原子事实并注入后续 brief；verbatim/命令不注入', async () => {
+test('M1 分层：done 摘要里的经验分句蒸馏成 lesson 原子事实并进后续任务详情；verbatim/命令不注入', async () => {
   const { db, dispatcher, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '登录修复', goal: '修复登录' }))
   const task = listTasks(db).find(item => item.title === '登录修复')
@@ -1413,13 +1425,18 @@ test('M1 分层：done 摘要里的经验分句蒸馏成 lesson 原子事实并�
   assert.equal(lessons.some(text => text.includes('先查半成品')), true)
 
   await call(tools, 'task_create', sampleBrief({ title: '再修登录', goal: '登录异常' }))
+  const next = listTasks(db).find(item => item.title === '再修登录')
   const prompt = dispatcher.calls.filter(callRow => callRow[0] === 'spawn')[1][2]
-  assert.match(prompt, /【历史经验】/)
-  assert.match(prompt, /先查半成品/)
-  assert.match(prompt, /\[经验\]/)
-  assert.doesNotMatch(prompt, /任务「登录修复」完成/) // 日志层不注入
-  assert.doesNotMatch(prompt, /用户原话：把完整日志贴给我/)
-  assert.doesNotMatch(prompt, /npm test -- --watch/)
+  // T1：经验不进 brief 提示词，只进 task_detail（stateDir 缺失时是内联块降级）。
+  assert.doesNotMatch(prompt, /【历史经验】/)
+  assert.doesNotMatch(prompt, /先查半成品/)
+  const detail = await call(tools, 'task_detail', { task_id: next.id }, { agent: { id: next.session_id } })
+  assert.match(detail, /【历史经验】/)
+  assert.match(detail, /先查半成品/)
+  assert.match(detail, /\[经验\]/)
+  assert.doesNotMatch(detail, /任务「登录修复」完成/) // 日志层不注入
+  assert.doesNotMatch(detail, /用户原话：把完整日志贴给我/)
+  assert.doesNotMatch(detail, /npm test -- --watch/)
 })
 
 test('M1 写入即蒸馏：memory_note 去代码块与命令日志，长文本截断为原子事实', async () => {

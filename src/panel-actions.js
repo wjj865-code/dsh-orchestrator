@@ -65,14 +65,6 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     try { logger?.log?.(event, fields) } catch { /* 日志不能影响 UI 动作 */ }
   }
   const current = () => typeof coordinatorStatus === 'function' ? coordinatorStatus() : { id: undefined, live: true }
-  // L1：重派时 brief 与 task_create 同口径——goal 可用才写「指引 + 兜底」，否则内联全文。
-  const goalAvailable = () => {
-    try {
-      return goalBridge?.available?.() === true
-    } catch {
-      return false
-    }
-  }
 
   const detailOf = taskId => {
     const task = getTask(db, String(taskId ?? ''))
@@ -281,7 +273,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         priority: task.priority,
         status: depState.ready ? 'pending' : 'waiting_dep',
       })
-      addMessage(db, retried.id, { kind: 'brief', rendered: `【任务编号】${retried.id}\n${renderBrief(task.brief, { goalAvailable: goalAvailable() })}` })
+      // T1：面板重派与 task_create 同口径——brief 只留任务编号 + task_detail 指引。
+      addMessage(db, retried.id, { kind: 'brief', rendered: renderBrief({ taskId: retried.id }) })
     } catch (error) {
       return panelFailure('RETRY_FAILED', { reason: error?.message ?? String(error) })
     }
