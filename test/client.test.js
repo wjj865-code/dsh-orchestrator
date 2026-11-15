@@ -777,3 +777,70 @@ test('抽屉动作条同源门控：进行中给「追加消息」不给删除�
   })()
   assert.match(drawerText, /先「停止」/)
 })
+
+// F4 回归（0.13.0 冒烟发现）：面板「隔离」小标未接线 —— views.js 从 createViews 的参数里
+// 解构 WORKTREE_STATE_LABEL / WORKTREE_SOURCE_LABEL，client.js 却没传，值恒为 undefined。
+// 只要台账里有一条 worktree_state != 'none' 的任务，renderTask 就抛 TypeError，整个 main 槽位
+// 被错误边界清空（面板全白）。这条用例把「接线 + 未知状态兜底」钉在产物上：喂快照渲染一次，
+// 断言不抛错、卡片出现「隔离·已隔离」，未知状态退化成原始值而不是崩面板。
+test('F4 回归：worktree 任务渲染「隔离」小标，状态表缺失/未知值不抛错', () => {
+  const { loaded, ctx, registrations, resetHooks, hooks } = load()
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  // 这个文件里的 flattenText 调函数组件时只传 props、不传 children（React 垫片的 children 在
+  // 第三个参数里），所以 Badge/Chip 的文案拿不到。这里补一个按 React 语义展开的函数，
+  // 让「隔离·…」这种由 Chip 渲染的文案能被断言到。
+  const textOf = node => {
+    if (node === null || node === undefined) return ''
+    if (typeof node === 'string') return node
+    if (typeof node === 'number') return String(node)
+    if (Array.isArray(node)) return node.map(textOf).join('')
+    if (typeof node !== 'object') return ''
+    if (typeof node.type === 'function') {
+      return textOf(node.type({ ...(node.props ?? {}), children: node.children }))
+    }
+    return textOf(node.children)
+  }
+  resetHooks()
+  hooks.slots[0] = snapshotOf([
+    taskRow('t-wt', 'running', {
+      worktreeState: 'created',
+      worktreeBranch: 'task/t9-demo',
+      worktreePath: 'C:/repo/.agents/worktrees/t-demo',
+      worktreeSource: 'task',
+    }),
+    // 文案表里没有的状态（脏数据 / 服务端新增枚举）：小标退化成原始值，不能打死面板。
+    taskRow('t-wt-weird', 'done', { worktreeState: 'weird-state', worktreeSource: 'nope' }),
+    // 未隔离任务：零「隔离」字样，不受影响。
+    taskRow('t-plain', 'done', { worktreeState: 'none' }),
+  ])
+  const tree = panel.component({ openSession: () => {} })
+  assert.equal(tree.props.className, 'orch-shell')
+  const cards = collect(tree, node => node.type === 'article')
+  assert.equal(cards.length, 3, '3 条任务各一张卡（worktree 任务不能崩渲染）')
+  const createdCard = cards.find(node => textOf(node).includes('t-wt'))
+  assert.match(textOf(createdCard), /隔离·已隔离/)
+  const weirdCard = cards.find(node => textOf(node).includes('t-wt-weird'))
+  assert.match(textOf(weirdCard), /隔离·weird-state/)
+  const plainCard = cards.find(node => textOf(node).includes('t-plain'))
+  assert.doesNotMatch(textOf(plainCard), /隔离/)
+
+  // 抽屉「隔离」行同样接线：状态/分支/检出/决定者四段都能读出来。
+  resetHooks()
+  hooks.slots[0] = snapshotOf([])
+  hooks.slots[10] = {
+    ok: true,
+    task: {
+      id: 't-wt', title: 't-wt', status: 'running', goal: '', targetDir: null, target: 'c-1',
+      readOnly: false, group: null, priority: 0, dependsOn: [], writeScopes: [], question: null,
+      options: [], error: null, createdAt: 0, updatedAt: 0, artifacts: [], brief: {}, goalState: null,
+      lastMessage: null, canFollowup: false, canDelete: false,
+      worktreeState: 'created', worktreeBranch: 'task/t9-demo',
+      worktreePath: 'C:/repo/.agents/worktrees/t-demo', worktreeSource: 'task',
+    },
+    dependencies: [], dependents: [], messages: [],
+  }
+  hooks.slots[13] = 't-wt'
+  const drawerText = flattenText(panel.component({ openSession: () => {} }))
+  assert.match(drawerText, /已隔离｜分支 task\/t9-demo｜检出 C:\/repo\/\.agents\/worktrees\/t-demo｜决定 协调者传字段/)
+})

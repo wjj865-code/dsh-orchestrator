@@ -66,6 +66,21 @@
     approved: "已批准执行",
     rejected: "计划未通过"
   };
+  const WORKTREE_STATE_LABEL = {
+    none: "未隔离",
+    requested: "待建检出",
+    created: "已隔离",
+    reused: "复用已有检出",
+    degraded: "已降级（不是 git 仓库）",
+    rejected: "隔离被拒绝",
+    failed: "隔离创建失败",
+    cleaned: "检出已清理"
+  };
+  const WORKTREE_SOURCE_LABEL = {
+    task: "协调者传字段",
+    config: "配置兜底",
+    default: "都没说"
+  };
   const TONE_COLOR = {
     good: "var(--dsw-alias-state-success-primary, #01a241)",
     bad: "var(--dsw-alias-state-error-primary, #ec1313)",
@@ -1174,8 +1189,8 @@
     GOAL_PHASE_LABEL: GOAL_PHASE_LABEL2,
     GOAL_ACTIVATION_LABEL: GOAL_ACTIVATION_LABEL2,
     PLAN_STATE_LABEL: PLAN_STATE_LABEL2,
-    WORKTREE_STATE_LABEL,
-    WORKTREE_SOURCE_LABEL,
+    WORKTREE_STATE_LABEL: WORKTREE_STATE_LABEL2,
+    WORKTREE_SOURCE_LABEL: WORKTREE_SOURCE_LABEL2,
     TONE_COLOR: TONE_COLOR2,
     displayNameOf: displayNameOf2,
     textOf: textOf2,
@@ -1733,7 +1748,7 @@
             task.worktreeState && task.worktreeState !== "none" ? h(Chip, {
               tone: task.worktreeState === "failed" ? "bad" : ["created", "reused"].includes(task.worktreeState) ? "info" : "muted",
               title: task.worktreePath ? `检出 ${task.worktreePath}` : "未建检出"
-            }, `隔离·${WORKTREE_STATE_LABEL[task.worktreeState] || task.worktreeState}`) : null,
+            }, `隔离·${WORKTREE_STATE_LABEL2?.[task.worktreeState] || task.worktreeState}`) : null,
             artifacts.length > 0 ? h(
               "button",
               {
@@ -2029,7 +2044,7 @@
           ["分组", task.group || "（未分组）"],
           ["优先级", `P${task.priority === void 0 || task.priority === null ? 0 : task.priority}`],
           ["计划", task.planFirst === true ? PLAN_STATE_LABEL2[task.planState] || task.planState || "无计划状态" : "（不是计划任务）"],
-          ["隔离", task.worktreeState && task.worktreeState !== "none" ? `${WORKTREE_STATE_LABEL[task.worktreeState] || task.worktreeState}｜分支 ${task.worktreeBranch || "-"}｜检出 ${task.worktreePath || "-"}｜决定 ${WORKTREE_SOURCE_LABEL[task.worktreeSource] || task.worktreeSource || "未知"}` : "（未隔离）"],
+          ["隔离", task.worktreeState && task.worktreeState !== "none" ? `${WORKTREE_STATE_LABEL2?.[task.worktreeState] || task.worktreeState}｜分支 ${task.worktreeBranch || "-"}｜检出 ${task.worktreePath || "-"}｜决定 ${WORKTREE_SOURCE_LABEL2?.[task.worktreeSource] || task.worktreeSource || "未知"}` : "（未隔离）"],
           ["写域", Array.isArray(task.writeScopes) && task.writeScopes.length > 0 ? task.writeScopes.join("、") : "（未声明）"],
           ["创建", timeLabel2(task.createdAt)],
           ["更新", timeLabel2(task.updatedAt)]
@@ -2294,6 +2309,8 @@
       GOAL_PHASE_LABEL,
       GOAL_ACTIVATION_LABEL,
       PLAN_STATE_LABEL,
+      WORKTREE_STATE_LABEL,
+      WORKTREE_SOURCE_LABEL,
       TONE_COLOR,
       displayNameOf,
       textOf,

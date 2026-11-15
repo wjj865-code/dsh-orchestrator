@@ -10,6 +10,7 @@ import {
   FILTERS, METRICS, POLL_MS, POLL_BACKOFF_MS,
   STATUS_LABEL, STATUS_TONE, MESSAGE_KIND_LABEL, DELIVERY_LABEL, DELIVERY_TONE,
   GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL,
+  WORKTREE_STATE_LABEL, WORKTREE_SOURCE_LABEL,
 } from './constants.js'
 import {
   countTasks, matchesFilter, matchesQuery, groupArtifacts, artifactDate, artifactProject,
@@ -52,6 +53,8 @@ export const createClient = (req) => {
     GOAL_PHASE_LABEL,
     GOAL_ACTIVATION_LABEL,
     PLAN_STATE_LABEL,
+    WORKTREE_STATE_LABEL,
+    WORKTREE_SOURCE_LABEL,
     TONE_COLOR,
     displayNameOf,
     textOf,

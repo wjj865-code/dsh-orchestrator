@@ -579,7 +579,7 @@ export function createViews({
             ? h(Chip, {
               tone: task.worktreeState === 'failed' ? 'bad' : (['created', 'reused'].includes(task.worktreeState) ? 'info' : 'muted'),
               title: task.worktreePath ? `检出 ${task.worktreePath}` : '未建检出',
-            }, `隔离·${WORKTREE_STATE_LABEL[task.worktreeState] || task.worktreeState}`)
+            }, `隔离·${WORKTREE_STATE_LABEL?.[task.worktreeState] || task.worktreeState}`)
             : null,
           artifacts.length > 0
             ? h('button', {
@@ -824,7 +824,7 @@ export function createViews({
         ['优先级', `P${task.priority === undefined || task.priority === null ? 0 : task.priority}`],
         ['计划', task.planFirst === true ? (PLAN_STATE_LABEL[task.planState] || task.planState || '无计划状态') : '（不是计划任务）'],
         ['隔离', task.worktreeState && task.worktreeState !== 'none'
-          ? `${WORKTREE_STATE_LABEL[task.worktreeState] || task.worktreeState}｜分支 ${task.worktreeBranch || '-'}｜检出 ${task.worktreePath || '-'}｜决定 ${WORKTREE_SOURCE_LABEL[task.worktreeSource] || task.worktreeSource || '未知'}`
+          ? `${WORKTREE_STATE_LABEL?.[task.worktreeState] || task.worktreeState}｜分支 ${task.worktreeBranch || '-'}｜检出 ${task.worktreePath || '-'}｜决定 ${WORKTREE_SOURCE_LABEL?.[task.worktreeSource] || task.worktreeSource || '未知'}`
           : '（未隔离）'],
         ['写域', Array.isArray(task.writeScopes) && task.writeScopes.length > 0 ? task.writeScopes.join('、') : '（未声明）'],
         ['创建', timeLabel(task.createdAt)],
