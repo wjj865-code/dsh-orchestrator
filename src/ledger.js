@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0,
   question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER,
-  goal_state_json TEXT, last_message_json TEXT
+  goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -62,6 +62,8 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('stall_notified_at')) db.exec('ALTER TABLE tasks ADD COLUMN stall_notified_at INTEGER')
     if (!taskColumns.includes('goal_state_json')) db.exec('ALTER TABLE tasks ADD COLUMN goal_state_json TEXT')
     if (!taskColumns.includes('last_message_json')) db.exec('ALTER TABLE tasks ADD COLUMN last_message_json TEXT')
+    // K2 keep-alive 预算：旧库补列，历史行按 0 轮（不阻止人工续派/重派）。
+    if (!taskColumns.includes('keep_alive_rounds')) db.exec('ALTER TABLE tasks ADD COLUMN keep_alive_rounds INTEGER NOT NULL DEFAULT 0')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -134,6 +136,8 @@ const taskOf = row => row === undefined ? undefined : ({
   progress_count: Number.isFinite(row.progress_count) ? row.progress_count : 0,
   goal_state: parseGoalState(row.goal_state_json),
   last_message: parseLastMessage(row.last_message_json),
+  // K2：本段 activation 已用的 keep-alive 轮数（进 running 时归零）。
+  keep_alive_rounds: Number.isFinite(row.keep_alive_rounds) ? row.keep_alive_rounds : 0,
 })
 
 export function createTask(db, {
@@ -229,6 +233,9 @@ export function transition(db, id, to, patch = {}) {
   nextStatus(task.status, to)
   const now = Date.now()
   const sets = ['status = ?', 'updated_at = ?', 'last_event_at = ?', 'progress_count = 0', 'stall_notified_at = NULL']
+  // K2：每次进入 running 都是新的一段 activation，keep-alive 预算重新开始
+  // （重派/续派/冷恢复都走 transition；running → running 本来不允许，所以不会误清）。
+  if (to === 'running') sets.push('keep_alive_rounds = 0')
   const values = [to, now, now]
   if (Object.hasOwn(patch, 'sessionId')) { sets.push('session_id = ?'); values.push(patch.sessionId) }
   if (Object.hasOwn(patch, 'target')) { sets.push('target = ?'); values.push(patch.target) }
@@ -288,6 +295,20 @@ export function setTaskLastMessage(db, id, record) {
   db.prepare('UPDATE tasks SET last_message_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
     .run(JSON.stringify(record), now, now, id)
   return getTask(db, id)
+}
+
+/**
+ * K2 keep-alive 预算：原子地给「仍在 running」的任务 +1 轮，返回新的轮数；
+ * 已到上限（或任务已不在 running）返回 null，调用方据此停止注入。
+ * 用条件 UPDATE 而不是「先读后写」，重复/并发的 turn-stopping 事件也不会超发。
+ */
+export function bumpKeepAliveRound(db, id, max) {
+  const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : 0
+  const now = Date.now()
+  const row = db.prepare(`UPDATE tasks SET keep_alive_rounds = keep_alive_rounds + 1, updated_at = ?, last_event_at = ?
+    WHERE id = ? AND status = 'running' AND keep_alive_rounds < ?
+    RETURNING keep_alive_rounds`).get(now, now, id, limit)
+  return Number.isFinite(row?.keep_alive_rounds) ? row.keep_alive_rounds : null
 }
 
 /** 只更新时间戳，不改状态（progress 回报用）。 */

@@ -14,6 +14,7 @@ import { createQueue } from './src/queue.js'
 import { createStartupReconciler } from './src/reconcile.js'
 import { createIdleWatchdog } from './src/watchdog.js'
 import { createGoalBridge } from './src/goal.js'
+import { createKeepAlive } from './src/keepalive.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
@@ -339,6 +340,20 @@ export async function apply(ctx, rawConfig = {}) {
     },
   })
 
+  // 回合间 keep-alive（K2）：`agent/turn-stopping` 时给「running 且平台 goal 未完成」的子会话
+  // 同步投递下一轮（默认 steer 进 next-step），让 loop 在回合尾部接着跑而不进 idle；
+  // agent 不 idle，S1 的结算观察器就没有机会在轮次之间 dispose，竞态窗口被消除。
+  // 默认关闭（config.keepAlive），轮数预算落台账（tasks.keep_alive_rounds），进入 running 时归零。
+  // goal 状态读 live 视图（goalBridge.stateOf），读不到就退回台账镜像；没有 goal 的任务不续跑。
+  const keepAlive = createKeepAlive({
+    db,
+    config,
+    logger,
+    goalState: task => goalBridge.stateOf(task.id, task.session_id) ?? task.goal_state ?? null,
+  })
+  // 订阅必须早于任何子会话回合结束；放在 settlement 之后、watchdog 之前（不依赖队列/看门狗）。
+  const keepAliveDisposer = keepAlive.start(ctx)
+
   // 空闲看门狗（W1）：running 却长时间没有心跳/消息/状态变化时告警一次。
   // 只告警：不改状态、不 kill、不重派；去重按任务（同一段空闲只报一次，活动后重置）。
   const watchdog = createIdleWatchdog({
@@ -513,7 +528,7 @@ export async function apply(ctx, rawConfig = {}) {
     try { watchdog.stop() } catch { /* 看门狗清理失败不阻断卸载 */ }
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
-    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, routeDisposer].reverse()) {
+    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, keepAliveDisposer, routeDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
     // 卸载期间的收尾也不能变成未处理拒绝（宿主会判 fatal load failure）。

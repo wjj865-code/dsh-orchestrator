@@ -946,6 +946,107 @@ test('S1：waiting_user 任务收到 settle 不改状态（子任务自己报了
   await disposers.at(-1)?.()
 }))
 
+test('K2 keepAlive 默认关闭：agent/turn-stopping 到达也不注入、不动台账', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const spawned = { id: undefined }
+  const subagents = {
+    async startActivation(spec) {
+      spawned.id = spec.childId
+      return { childId: spec.childId, messageId: 'msg-1', result: new Promise(() => {}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [{ id: spawned.id ?? '', mode: 'continuable' }] },
+  }
+  const f = fakeCtx({ agents: [s1], subagents })
+  await apply(f.ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '续跑', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const child = {
+    id: spawned.id, session: { id: spawned.id, header: {} }, status: 'running',
+    inbox: { nextStep: [], nextTurn: [] }, steers: [],
+    steer(message) { this.steers.push(message) },
+  }
+  f.live.set(spawned.id, child)
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const { setTaskGoalState } = await import('../src/ledger.js')
+  setTaskGoalState(ledger, ledger.prepare('SELECT id FROM tasks').get().id, {
+    id: 'goal-1', revision: 1, objective: 'g', phase: 'active', activation: 'disarmed', roundsStarted: 0,
+  })
+  ledger.close()
+  assert.ok(f.listeners.has('agent/turn-stopping'), '未订阅 agent/turn-stopping')
+  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 1, signal: { aborted: false } })
+  await wait(20)
+  assert.equal(child.steers.length, 0)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  assert.equal(db.prepare('SELECT keep_alive_rounds FROM tasks').get().keep_alive_rounds, 0)
+  assert.equal(db.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'keepalive'").get().n, 0)
+  db.close()
+  await f.disposers.at(-1)?.()
+}))
+
+test('K2 keepAlive 开启：turn-stopping 同步给 running 子会话注入下一轮，S1 仍只结算一次', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const spawned = { id: undefined }
+  const subagents = {
+    async startActivation(spec) {
+      spawned.id = spec.childId
+      return { childId: spec.childId, messageId: 'msg-1', result: new Promise(() => {}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [{ id: spawned.id ?? '', mode: 'continuable' }] },
+  }
+  const f = fakeCtx({ agents: [s1], subagents })
+  await apply(f.ctx, { coordinatorSession: 's-1', keepAlive: true, keepAliveMaxRounds: 3, mergeWindowMs: 1 })
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '续跑', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const child = {
+    id: spawned.id, session: { id: spawned.id, header: {} }, status: 'running',
+    inbox: { nextStep: [], nextTurn: [] }, steers: [],
+    steer(message) { this.steers.push(message) },
+  }
+  f.live.set(spawned.id, child)
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const { setTaskGoalState, getTask } = await import('../src/ledger.js')
+  const taskId = ledger.prepare('SELECT id FROM tasks').get().id
+  setTaskGoalState(ledger, taskId, {
+    id: 'goal-1', revision: 1, objective: 'g', phase: 'active', activation: 'disarmed', roundsStarted: 0,
+  })
+
+  // 回合边界：注入 steer，消息带自定义 source，轮数落台账。
+  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 1, signal: { aborted: false } })
+  assert.equal(child.steers.length, 1)
+  assert.equal(child.steers[0].role, 'user')
+  assert.equal(child.steers[0].source.kind, 'orchestrator-keepalive')
+  assert.equal(child.steers[0].source.taskId, taskId)
+  assert.equal(getTask(ledger, taskId).keep_alive_rounds, 1)
+  assert.equal(getTask(ledger, taskId).status, 'running')
+
+  // 轮数用满后停：第 4 次 turn-stopping 不再注入。
+  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 2, signal: { aborted: false } })
+  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 3, signal: { aborted: false } })
+  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 4, signal: { aborted: false } })
+  assert.equal(child.steers.length, 3)
+  assert.equal(getTask(ledger, taskId).keep_alive_rounds, 3)
+
+  // S1 结算（子会话真的结束）：只写一条 settle 消息，任务落 done；之后 turn-stopping 不再续跑。
+  f.listeners.get('subagent/end')({ id: spawned.id, local: true, stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '做完了' }] })
+  await wait(50)
+  assert.equal(getTask(ledger, taskId).status, 'done')
+  const settles = ledger.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'settle' AND task_id = ?").get(taskId).n
+  assert.equal(settles, 1)
+  f.listeners.get('subagent/end')({ id: spawned.id, local: true, stopReason: 'completed' })
+  await wait(20)
+  assert.equal(ledger.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'settle' AND task_id = ?").get(taskId).n, 1)
+  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 5, signal: { aborted: false } })
+  assert.equal(child.steers.length, 3)
+  assert.equal(getTask(ledger, taskId).keep_alive_rounds, 3)
+  ledger.close()
+  await f.disposers.at(-1)?.()
+}))
+
 test('注册 /api/orchestrator 只读路由：POST + buffered + snapshot', withHome(async () => {
   const s1 = makeAgent('s-1')
   const { ctx, routes } = fakeCtx({ agents: [s1] })

@@ -27,6 +27,16 @@
 - **外部重新 arm 的窗口**：插件只在 spawn/续派/终态钩子上保证 `disarmed`。如果其它组件（如用户在子会话里 `/goal resume`，或宿主未来改动）把同一个子会话重新 `arm`，插件不会实时监控，下一次钩子才会再压回 `disarmed`；这中间平台可能自动续轮。
 - **面板只读**：面板与 `task_status` 能看 goal 的 phase/activation/轮次/修订，但没有暂停、恢复、清除 goal 的按钮或工具；要调整目标请直接 `task_message`。
 
+## 回合间 keep-alive（K2）
+
+- **默认关闭，且需要平台 goal**：`keepAlive` 只能是显式 `true`；`ctx.goals` 缺失（goal 降级）或到结算时都没能 attach 成功时，任务没有 `goal_state`，keep-alive 一律不注入——否则没人能判定「目标完成」，只能一路跑到轮数上限。开关的判定只看 phase 不是 `complete`/`cleared`，goal 之外的「做完没做完」不在插件判断范围内。
+- **只在正常结束路径上生效**：`agent/turn-stopping` 只在 turn 正常收尾时派发。`aborted`（stop/父级 dispose）、`error`、blocked 都不经过它，所以 keep-alive 不能阻止显式停止、不能把异常回合救回来；`max-tokens` 即使走到 `turn-stopping`，最终结算原因仍由 `turn/end` 决定，不能靠 keep-alive「翻转」成完成。
+- **续跑是宿主替子会话开工**：注入的是 `role:'user'` 消息（`source.kind='orchestrator-keepalive'`），子会话可能继续调工具、继续花钱；轮数上限只是「不再主动续」，不是成本控制，也不限制单轮内的工作量。自定义 source 在真实 Web UI/历史压缩里的表现尚未在真机验证（K1 探针用的是平台内置 kind）。
+- **不和 armed goal 混用**：keep-alive 期间 agent 不 idle，平台 `goal-round-driver` 等不到 idle 触发，`roundsStarted`/`maxGoalRounds` 不会推进；预算只有台账的 `keep_alive_rounds`。插件自己的 goal 桥永远是 `create + disarm`，所以混用只会在外部把同一子会话重新 `arm` 时出现。
+- **监听器必须吞错**：`turn-stopping` 是 serial 且被 await 的，监听器抛错可能打断当前回合。实现里 `handle` 全量 `try/catch`、`start()` 再兜一层；注入失败只记日志并算掉一轮（宁可少续，不多发），不回滚台账。
+- **进程重启不跨回合**：keep-alive 只在进程内生效；重启后任务仍 `running` 但 agent 不在的，走 S2 对账 → `orphaned`。`keep_alive_rounds` 保留只读值，不阻止人工 `task_message`/重派。
+- **多驱动叠加**：别的插件也监听 `turn-stopping` 时 inbox 会叠加。本插件发现 `nextStep`/`nextTurn` 非空就不再注入，但无法阻止别人注入。
+
 ## 编排
 
 - `dependsOn` 只能指向已存在的任务；没有“编辑已有任务依赖”的接口，因此也不会出现环。

@@ -118,8 +118,17 @@ task_create({
 
 目标文本只是持久状态，平台也不会把它注入系统提示或消息；子会话靠 `get_goal` 自己读（worker 预设挂了 `tool-goal`），认不认这个目标由它决定。goal 可用时 brief 里只留一句「用 `get_goal` 读目标」的指引 + 截断兜底（goal 降级时仍内联全文）。改目标请走 `task_message`，子会话的 `update_goal` 会被平台权限校验拒绝。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#目标g1)。
 
-### 调试子会话（`orch-debug`）
+### 回合间续跑（keep-alive，默认关）
 
+子会话回合结束后默认就结束这一段 activation，等结算或人工续派。`keepAlive: true` 时，插件订阅平台的 `agent/turn-stopping`，在回合边界（`agent.status` 仍为 `running`、还没 idle）同步投递下一条消息，让子会话**接着跑**：
+
+- 只对「台账 `running` + 平台 goal 未完成（phase 不是 `complete` / `cleared`）」的任务注入；没有平台 goal 的任务不续跑；
+- 默认 `keepAliveMode: 'steer'`（同一回合再走一步，不写 `turn/end`）；改成 `followup` 则是新回合；
+- 轮数上限 `keepAliveMaxRounds`（默认 8，1–50）落台账 `tasks.keep_alive_rounds`，每次进入 `running`（重派/续派/冷恢复）归零，`task_status` 会显示「已注入 N 轮」；
+- 停止条件：轮满、goal 已收口、任务不在 `running`（`task_stop` / S1 结算 / S2 对账都会让它离开 `running`）、回合被中断、只读任务、inbox 已有人排了下一轮、注入异常；
+- 默认关闭：关着时监听器在查台账之前就返回，行为与旧版逐字一致。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#回合间-keep-alivek2)。
+
+### 调试子会话（`orch-debug`）
 想让子任务跑在「创造模式」的能力栈上（`cordis_*` 只读运行时洞察工具 + `dsh-doc` 技能 + `plugin_manager`）调试、更新 DSH 插件时：
 
 ```powershell
@@ -169,6 +178,10 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 | `idleWatchdog` | `true` | 空闲看门狗：`running` 长时间无心跳/消息/状态变化时告警一次（只告警，不改状态、不 kill） |
 | `watchdogIntervalMinutes` | `5` | 看门狗巡检间隔（1–1440 分钟） |
 | `watchdogIdleMinutes` | `15` | 看门狗判空闲的阈值（1–1440 分钟；同一段空闲每任务只报一次，有活动后重置） |
+| `keepAlive` | `false` | 回合间续跑：`agent/turn-stopping` 时给「`running` 且平台 goal 未完成」的子会话投递下一轮（不 idle、不结算）；默认关，需要 `ctx.goals` |
+| `keepAliveMode` | `steer` | 续跑注入方式：`steer`（同一回合再走一步，不写 `turn/end`）/ `followup`（新回合） |
+| `keepAliveMaxRounds` | `8` | 每段 activation 的续跑轮数上限（1–50；进入 `running` 时归零） |
+| `keepAlivePrompt` | `''` | 覆盖默认续跑提示（空 = 内置提示；「第 N/M 轮」标记总在最前） |
 | `digestAt` | `''` | 每日日报 `HH:MM`；空 = 关闭 |
 | `digestTimeZone` | `''` | 日报时区；空 = 系统时区 |
 | `maxQueue` | `50` | `pending` + `waiting_dep` 安全阀 |
@@ -253,6 +266,7 @@ git push origin main --follow-tags
 - 空闲看门狗只告警：不改状态、不 kill、不重派；去重表在内存，插件重启后同一任务会再报一次。
 - 结算自动收场只认「一次 activation」：续派/冷恢复起的轮次靠平台 `subagent/end` 观察；子会话只在「没上报过 progress」时自动判完成，上报过 progress 的回合结束落「会话丢失」等人决定。
 - 主会话工具表可能仍残留团队工具（agent-scope 自注册，`restrict` 遮不到）；执行层 guard 会硬拦。
+- 回合间 keep-alive 默认关闭，且只对「`running` + 平台 goal 未完成」的任务生效：它是宿主替子会话开工（每轮一次完整模型调用），不是成本控制，也不能阻止显式 stop / 模型报错。
 - 平台 rc.3 子会话沙箱根、Bot 模式视图、headless 收尾竞态等平台侧限制，详见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
 
 ## 开发

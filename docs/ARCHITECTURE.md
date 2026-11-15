@@ -132,6 +132,23 @@
 - **子会话可读**：`dsh-orchestrator-worker` 预设带一行 `tool-goal`（`@deepseek-ai/dsh-tool-goal`）。web-app 层把 host plane 的 `tool-goal` 行 `disabled: true`、改由预设挂载，而 `goals` 服务仍在 host plane（`dsh-base` 的 `goal` / `goal-round-driver` 行），所以子会话拿得到 `get_goal` 读到本任务目标；`create_goal` / `update_goal` 因平台权限校验（`requireDirectHuman`：需要顶层 agent 的**直接人类**回合）在子会话里必然被拒，等于只读。
   平台**不会**把 objective 注入系统提示或消息（`dsh-goal` 的 inject 只有 `agents` / `sessionProjections`），`get_goal` 是子会话看到目标的唯一途径；不挂这行时子会话对目标完全无感。
 
+## 回合间 keep-alive（K2）
+
+`src/keepalive.js`。平台在回合结束前派发 `agent/turn-stopping`（serial 且被 await）：监听器返回前投递的消息进 inbox，loop 在回合尾部重读 inbox 继续跑——
+`steer` → `next-step`（同一 turn 多走一步，不写 `turn/end`），`followup` → `next-turn`（新 turn）。因此 `agent.status` 不经过 `idle`，
+而 S1 的结算观察器与平台 goal driver 都以 `idle` 为触发点，轮次之间根本没有可观察的 idle：不是处理了「结算 vs 续轮」竞态，而是不产生这个观察点（K1 探针实测见 [reports/k1-keepalive-probe.md](../reports/k1-keepalive-probe.md)）。
+
+- **接线**：`index.js:348` `createKeepAlive({ db, config, logger, goalState })`，`index.js:355` `keepAlive.start(ctx)` 订阅 `agent/turn-stopping`（`src/keepalive.js:230`），disposer 进 `ctx.effect` 清理列表（`index.js:531`）。
+- **续跑判定**（纯函数 `keepAliveSkipReason()`，`src/keepalive.js:49`）：开关开 / 无 `signal.aborted` / `agent.status === 'running'` / 任务存在且 `running` / 非只读 / inbox 无 `nextStep`·`nextTurn` / 平台 goal 存在且 phase 不是 `complete`·`cleared` / 轮数未满；全部通过才注入（`handle`，`src/keepalive.js:129`）。
+- **预算**：`tasks.keep_alive_rounds`（旧库自动补列）+ `bumpKeepAliveRound()`（`src/ledger.js` 条件 `UPDATE ... WHERE status='running' AND keep_alive_rounds < ?`，
+  重复/并发事件不会超发）；每次 `transition(..., 'running')` 归零，等于「每段 activation 一份预算」。轮满、goal 收口、注入异常都在 `handle` 里就地停。
+- **注入形态**：`role:'user'` 消息，`source.kind = 'orchestrator-keepalive'`（带 `taskId`/`round`），正文「（keep-alive 第 N/M 轮）+ 默认提示或 `keepAlivePrompt`」；
+  默认 `steer`，`keepAliveMode:'followup'` 切新回合。每次注入写一条 `kind='keepalive'` 审计消息 + `task.keepalive.injected` 日志；停止原因写 `task.keepalive.stopped`（同任务同原因只记一次）。
+- **与 S1 的边界**：keep-alive 不改任务状态、不写 `progress_count`、不写 `kind='followup'` 消息（避开面板「同文去重」口径）、不调用结算。
+  结算仍然只在 `subagent.settled` / `subagent/end` 上由 S1 做一次（状态机天然幂等）；任务一旦离开 `running`，同一会话后续的 `turn-stopping` 直接跳过，
+  不会把已结算任务重新拉起来。`aborted`/`error`/blocked 不经过 `turn-stopping`，keep-alive 也无法阻止显式 stop / 父级 dispose / 模型报错。
+- **默认关闭**：`config.keepAlive !== true` 时监听器在查台账之前返回（连 `db` 都不用），升级后行为与旧版一致。
+
 ## brief 精简（L1）
 
 brief 是派发时留给子会话的唯一起步上下文，目标与经验各只保留「够开工」的那一份：

@@ -580,6 +580,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         const activation = task.goal_state.activation === 'armed' ? '自动续轮已启用（异常）' : '不自动续轮'
         lines.push(`目标状态：${phase}｜${activation}${task.goal_state.revision === undefined ? '' : `｜修订 ${task.goal_state.revision}`}`)
       }
+      // K2：keep-alive 续跑计数（只在真的续过时显示；预算按每段 activation 归零）。
+      if ((task.keep_alive_rounds ?? 0) > 0) {
+        const limit = config?.keepAliveMaxRounds
+        lines.push(`续跑：keep-alive 已注入 ${task.keep_alive_rounds}${Number.isFinite(limit) ? `/${limit}` : ''} 轮${config?.keepAlive === true && task.status === 'running' ? '（仍在续跑）' : ''}`)
+      }
       if (task.depends_on.length > 0 && task.status !== 'waiting_dep') {
         lines.push(`前置任务：${task.depends_on.map(id => {
           const dep = getTask(db, id)
