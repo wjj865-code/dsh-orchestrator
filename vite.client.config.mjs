@@ -1,0 +1,32 @@
+import { defineConfig } from 'vite'
+
+// 客户端构建：`client/src/**`（ESM 源码）→ `dist/client.js`（平台要求的 classic script）。
+//
+// 平台契约（0.2.2-rc.3，证据见 reports/t0.1-probes.md §3.8 / 设计文档「关键约束」）：
+// - `clientExportOf()` 读 package.json 的 `exports["./client"]`，把那个文件**原样 serve** 成
+//   `/plugins/<id>/client.js` → 平台不打包，那个文件自己必须是 classic script；
+// - 只 serve 一个 JS（+ 同名 `.map`），CSS 路由白名单不含 `.css` → 样式只能 `?inline` 进 JS；
+// - 平台按 `exports["./client"]` 的**文件内容**算 rev，所以产物文件名固定、不带 hash。
+//
+// 因此：lib mode + iife + `entryFileNames: 'client.js'`，`name` 必填（rollup iife 要求），
+// 顶层不许出现 import/export。minify 先关：体积不是当前约束，可读性对排查更有价值。
+export default defineConfig({
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
+    sourcemap: true,
+    minify: false,
+    // 平台是 Chromium（Electron / Web GUI），按 ES2022 输出即可；不降到更老语法，避免产物变形。
+    target: 'es2022',
+    lib: {
+      entry: 'client/src/index.js',
+      formats: ['iife'],
+      name: 'DshOrchestratorClient',
+      fileName: () => 'client.js',
+    },
+    rollupOptions: {
+      // 平台按固定名字取文件；`dist/client.js` 与 `dist/client.js.map` 成对入库。
+      output: { entryFileNames: 'client.js' },
+    },
+  },
+})

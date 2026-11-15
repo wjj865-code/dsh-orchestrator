@@ -232,8 +232,14 @@
 
 ## 面板与详情（UI U2）
 
-面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件，视觉规范见 [UI.md](UI.md)。三件事值得记在架构里：
+面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件，视觉规范见 [UI.md](UI.md)。四件事值得记在架构里：
 
+- **构建链与产物路径（P7）**：客户端源码在 `client/src/**`（ESM），由 `vite.client.config.mjs` 构建成
+  `dist/client.js`（iife classic script，配 `dist/client.js.map`），**产物入库**。平台 `clientExportOf()` 读
+  `package.json` 的 `exports["./client"]`，把那个文件**原样** serve 成 `/plugins/<id>/client.js`；路由只服务
+  这一个 JS（+ 同名 `.map`），`.css` 一律 404 → 样式必须 `?inline` 回 JS。当前处于 **T7.1（脚手架/空壳）**：
+  `exports["./client"]` 仍指向手写的 `client.js`，`dist/client.js` 只用来立契约；T7.2 把 UI 搬进 `client/src/**`
+  后才切到 `./dist/client.js`。改 UI = 改 `client/src/` + `npm run build`（`npm test` 经 `pretest` 自动构建）。
 - **样式表怎么进来的**：客户端插件是经典脚本（不能 `import` CSS），所以 `client.js` 把整张表写成 `STYLE_TEXT`
   字符串，`ensureStyles()` 在 `apply()` 里按 `#dsh-orchestrator-styles` 去重注入 `<style>`。颜色/圆角/阴影/动效
   全部取宿主 `@deepseek-ai/dsh-client-ui-theme` 的 `--dsw-*` / `--ds-*` token，深浅色由宿主写在

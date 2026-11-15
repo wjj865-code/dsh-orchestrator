@@ -43,8 +43,10 @@
     "url": "https://github.com/wjj865-code/dsh-orchestrator/issues"
   },
   "scripts": {
+    "build": "vite build --config vite.client.config.mjs",
+    "pretest": "npm run build",
     "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"",
-    "check:client": "node --check client.js",
+    "check:client": "node --check dist/client.js",
     "preset:debug": "node scripts/orch-debug-preset.mjs",
     "preset:debug:check": "node scripts/orch-debug-preset.mjs --check",
     "mirror:sync": "node scripts/mirror-sync.mjs",
@@ -70,5 +72,8 @@
     "deepseek-harness",
     "orchestrator",
     "tasks"
-  ]
+  ],
+  "devDependencies": {
+    "vite": "7.3.8"
+  }
 }
