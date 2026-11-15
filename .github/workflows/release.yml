@@ -48,6 +48,12 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - name: Install dependencies
+        # npm test 先跑 pretest → `vite build`（vite 是 devDependency），不装依赖会 `vite: not found`（exit 127）。
+        # 仓库不提交 package-lock.json（vite 已 pin 精确版本），所以用 npm install 而不是 npm ci。
+        shell: bash
+        run: npm install --no-audit --no-fund
+
       - name: Tag 必须等于 package.json version
         shell: bash
         run: |
