@@ -120,14 +120,15 @@ task_create({
 
 ### 调试子会话（`orch-debug`）
 
-想让子任务跑在「创造模式」的能力栈上（`cordis_*` 只读运行时洞察工具 + `dsh-doc` 技能）调试 DSH 插件时：
+想让子任务跑在「创造模式」的能力栈上（`cordis_*` 只读运行时洞察工具 + `dsh-doc` 技能 + `plugin_manager`）调试、更新 DSH 插件时：
 
 ```powershell
 npm run preset:debug   # 把随包「创造模式」组合复制成可安装的 orch-debug 预设
+node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成的 bundle 还跟不跟得上随包组合
 ```
 
 再用 `plugin_manager` 安装生成的 bundle，在插件配置里写 `workerPreset: orch-debug`，**彻底退出 DSH 再启动**。
-安装步骤、能力边界（预设不是沙箱、`cordis_*` 只读、升级后要重新生成）与验证清单见
+安装步骤、与 `cordis` 的逐项对齐差异、插件更新流程（`plugin_manager` / client 热重载 / host HMR / 动态插件边界）与验证清单见
 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)。
 
 ## 工具

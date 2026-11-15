@@ -45,6 +45,7 @@
     "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"",
     "check:client": "node --check client.js",
     "preset:debug": "node scripts/orch-debug-preset.mjs",
+    "preset:debug:check": "node scripts/orch-debug-preset.mjs --check",
     "prepublishOnly": "npm test && npm run check:client"
   },
   "dsh": {

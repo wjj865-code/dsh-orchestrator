@@ -12,13 +12,13 @@
 //
 // 本模块只做「读源组合 → 拼 YAML → 落盘」，不安装、不改 profile；失败一律降级成可读结果，
 // 不抛异常（加载期/CLI 都不该因为找不到源组合而崩）。
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 export const DEBUG_PRESET_ID = 'orch-debug'
 export const SOURCE_PRESET_ID = 'cordis'
 export const DEBUG_PRESET_NAME = '调试（创造者能力）'
-export const DEBUG_PRESET_DESCRIPTION = '「创造模式」组合的副本：只读运行时洞察工具 + dsh-doc 技能，给调试子会话用。'
+export const DEBUG_PRESET_DESCRIPTION = '「创造模式」组合的副本：运行时洞察 + dsh-doc 技能 + plugin_manager，给调试子会话用。'
 export const DEBUG_PRESET_ORDER = 300
 /** 随包发货 preset 在 Desktop 的 app.asar 里的路径（web-app bundle 的 presets 目录）。 */
 export const SOURCE_PRESET_ENTRY = 'dsh/node_modules/@deepseek-ai/dsh-web-app/presets/cordis.patch.yml'
@@ -282,16 +282,245 @@ export function replaceSkillDirs(pluginsText, skillDir) {
   return [...lines.slice(0, keyIndex), ...replacement, ...lines.slice(end)].join('\n')
 }
 
+const CUSTOM_SKILLS_RE = /^(\s*)customSkillDirs:\s*$/
+
+/**
+ * 把 `customSkillDirs` 整块（键 + 值）删掉，用于「对齐比较」。
+ *
+ * 源组合（随包 cordis）写的是 baseUrl 解析表达式，生成物写的是 bundle 里的绝对路径或整块省略
+ * （`--no-skills` / 源码检出无技能源）：三者语义差别只在技能根落点，工具/权限/系统提示不受影响。
+ * 所以比较插件列表时整块抹平；技能根是否真的可用由 `checkDebugPreset` 的 `skills` 单独查。
+ */
+export function normalizeSkillDirsBlock(pluginsText) {
+  if (typeof pluginsText !== 'string' || pluginsText === '') return pluginsText
+  const lines = pluginsText.split('\n')
+  const out = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = CUSTOM_SKILLS_RE.exec(lines[index])
+    if (match === null) {
+      out.push(lines[index])
+      continue
+    }
+    const keyIndent = match[1].length
+    // 跳过键和值块（比 key 更深的行），下一轮从块的下一行继续。
+    let end = index + 1
+    while (end < lines.length) {
+      const line = lines[end]
+      if (line.trim() !== '' && indentOf(line) <= keyIndent) break
+      end += 1
+    }
+    index = end - 1
+  }
+  return out.join('\n')
+}
+
+/**
+ * 从生成物里读 `customSkillDirs` 指向的技能根（只认生成器写的单引号绝对路径）。
+ * 源组合的 `!!js` 表达式返回 undefined——它不是可检查的本地路径。
+ */
+export function customSkillDirOf(pluginsText) {
+  if (typeof pluginsText !== 'string' || pluginsText === '') return undefined
+  const lines = pluginsText.split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = CUSTOM_SKILLS_RE.exec(lines[index])
+    if (match === null) continue
+    const keyIndent = match[1].length
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const line = lines[cursor]
+      if (line.trim() === '') continue
+      if (indentOf(line) <= keyIndent) break
+      const value = /^\s*-\s*(.+)$/.exec(line)
+      if (value === null) continue
+      let raw = value[1].trim()
+      if (raw.startsWith('!!js')) return undefined
+      if (raw.startsWith("'") && raw.endsWith("'")) raw = raw.slice(1, -1).replace(/''/g, "'")
+      return raw
+    }
+  }
+  return undefined
+}
+
+/** 插件列表按顶层行（`- id:` 在第 0 列）切成一行一条；组内子行随父行保留。 */
+export function splitPluginRows(pluginsText) {
+  if (typeof pluginsText !== 'string' || pluginsText.trim() === '') return []
+  const rows = []
+  let current
+  for (const line of pluginsText.split('\n')) {
+    const rowMatch = /^- id:\s*(\S+)\s*$/.exec(line)
+    if (rowMatch !== null) {
+      current = { id: rowMatch[1], lines: [line] }
+      rows.push(current)
+    } else if (current !== undefined) {
+      current.lines.push(line)
+    }
+  }
+  return rows.map(row => ({
+    id: row.id,
+    name: (/^ {2}name:\s*(.+)$/m.exec(row.lines.join('\n'))?.[1] ?? '').trim(),
+    disabled: (/^ {2}disabled:\s*(.+)$/m.exec(row.lines.join('\n'))?.[1] ?? '').trim(),
+    // 行文本抹平技能根后逐字比较：工具行、`!!js` 条件、块量系统提示、顺序都算进对齐。
+    text: normalizeSkillDirsBlock(row.lines.join('\n')).trimEnd(),
+  }))
+}
+
+/** 找两段文本的第一处不同，给对齐差异一句可读定位。 */
+function firstLineDifference(left, right) {
+  const leftLines = left.split('\n')
+  const rightLines = right.split('\n')
+  const total = Math.max(leftLines.length, rightLines.length)
+  for (let index = 0; index < total; index += 1) {
+    if (leftLines[index] === rightLines[index]) continue
+    const format = line => line === undefined ? '(结束)' : JSON.stringify(line.trim() === '' ? ' ' : line.trim())
+    return `第 ${index + 1} 行：源 ${format(leftLines[index])}，生成物 ${format(rightLines[index])}`
+  }
+  return '内容不同'
+}
+
+/**
+ * 比较「源预设的 plugins」与「生成物的 plugins」：返回逐行差异。
+ *
+ * 生成器只允许四处改写（预设 id / 显示名 / 描述 / 排序）与 `customSkillDirs` 的落点；
+ * plugins 列表本身必须逐字一致——工具、技能、`disabled` 权限条件、persona 系统提示都在里面。
+ * 对齐比较是 `prepareDebugPreset` 的自检，也是 `--check` 在 DSH 升级后判断「要不要重新生成」的依据。
+ */
+export function comparePresetPlugins(sourcePlugins, generatedPlugins) {
+  const source = splitPluginRows(sourcePlugins)
+  const generated = splitPluginRows(generatedPlugins)
+  const differences = []
+  const generatedById = new Map(generated.map(row => [row.id, row]))
+  const sourceById = new Map(source.map(row => [row.id, row]))
+  for (const row of source) {
+    if (!generatedById.has(row.id)) {
+      differences.push({ kind: 'missing', id: row.id, detail: `缺少插件行 ${row.id}（${row.name}）` })
+    }
+  }
+  for (const row of generated) {
+    if (!sourceById.has(row.id)) {
+      differences.push({ kind: 'extra', id: row.id, detail: `多出插件行 ${row.id}（${row.name}）` })
+    }
+  }
+  // 共同行的相对顺序变了也算差异：顺序会改变工具/提示词在请求里的排列。
+  const commonSource = source.filter(row => generatedById.has(row.id)).map(row => row.id)
+  const commonGenerated = generated.filter(row => sourceById.has(row.id)).map(row => row.id)
+  for (let index = 0; index < Math.min(commonSource.length, commonGenerated.length); index += 1) {
+    if (commonSource[index] === commonGenerated[index]) continue
+    differences.push({
+      kind: 'order',
+      id: commonSource[index],
+      detail: `共同插件行第 ${index + 1} 个应为 ${commonSource[index]}，实际 ${commonGenerated[index]}`,
+    })
+  }
+  for (const left of source) {
+    const right = generatedById.get(left.id)
+    if (right === undefined) continue
+    if (left.name !== right.name) {
+      differences.push({ kind: 'name', id: left.id, detail: `${left.id}：包名 ${left.name} → ${right.name}` })
+      continue
+    }
+    if (left.disabled !== right.disabled) {
+      differences.push({
+        kind: 'disabled',
+        id: left.id,
+        detail: `${left.id}：disabled ${left.disabled === '' ? '(无)' : left.disabled} → ${right.disabled === '' ? '(无)' : right.disabled}`,
+      })
+      continue
+    }
+    if (left.text !== right.text) {
+      differences.push({ kind: 'config', id: left.id, detail: `${left.id}：${firstLineDifference(left.text, right.text)}` })
+    }
+  }
+  return {
+    aligned: differences.length === 0,
+    sourceRows: source.length,
+    generatedRows: generated.length,
+    differences,
+  }
+}
+
+/**
+ * 检查**已生成的 bundle** 是否仍与当前安装的随包 `cordis` 组合对齐。
+ *
+ * 用途：DSH 升级后组合会变（增删工具、改 `disabled`、改系统提示），旧 bundle 不会自动跟随。
+ * 返回 `{ ok:true, path, plugins, skills }`，或 `{ ok:false, reason, differences?, hint }`：
+ * `missing-bundle` / `invalid-bundle` / `no-source` / `no-preset-row` / `drift`。
+ * 技能只做报告：`skills.dshDoc` 为 false 表示没挂（`--no-skills` 或复制失败），不算漂移。
+ */
+export function checkDebugPreset({ outDir, source, env = process.env, platform = process.platform, resourcesPath } = {}) {
+  if (typeof outDir !== 'string' || outDir === '') {
+    return { ok: false, reason: 'no-out-dir', hint: '未指定输出目录（--out <dir>）' }
+  }
+  const dir = resolve(outDir)
+  const patchPath = join(dir, 'cordis.patch.yml')
+  if (!existsSync(patchPath)) {
+    return { ok: false, reason: 'missing-bundle', hint: `没找到 ${patchPath}：先跑一次 npm run preset:debug 生成并安装` }
+  }
+  let existingText
+  try {
+    existingText = readFileSync(patchPath, 'utf8')
+  } catch (error) {
+    return { ok: false, reason: 'read-failed', hint: `读取 ${patchPath} 失败：${error?.message ?? error}` }
+  }
+  const existingPlugins = extractPluginsBlock(existingText, DEBUG_PRESET_ID)
+  if (existingPlugins === undefined) {
+    return { ok: false, reason: 'invalid-bundle', hint: `${patchPath} 里没有 preset-${DEBUG_PRESET_ID} 的 plugins 列表` }
+  }
+  const located = locateSourcePreset({ source, env, platform, resourcesPath })
+  if (located.ok !== true) {
+    const tried = located.tried?.length ? `（已尝试：${located.tried.join('；')}）` : ''
+    return { ok: false, reason: located.reason ?? 'no-source', hint: SOURCE_HINT + tried }
+  }
+  const sourcePlugins = extractPluginsBlock(located.text, SOURCE_PRESET_ID)
+  if (sourcePlugins === undefined) {
+    return {
+      ok: false,
+      reason: 'no-preset-row',
+      hint: `${located.path} 里没有找到 \`- id: preset-${SOURCE_PRESET_ID}\` 的 plugins 列表：DSH 版本可能换了预设格式。`,
+    }
+  }
+  const comparison = comparePresetPlugins(sourcePlugins, existingPlugins)
+  const skillDir = customSkillDirOf(existingPlugins)
+  const skills = { dir: skillDir, dshDoc: skillDir !== undefined && existsSync(join(skillDir, 'dsh-doc', 'SKILL.md')) }
+  const sourceInfo = { kind: located.kind, path: located.path, entry: located.entry }
+  if (comparison.aligned !== true) {
+    return {
+      ok: false,
+      reason: 'drift',
+      path: patchPath,
+      source: sourceInfo,
+      skills,
+      differences: comparison.differences,
+      hint: 'bundle 与当前随包 cordis 组合不一致：重新跑 npm run preset:debug，再重装 bundle 并彻底重启 DSH。',
+    }
+  }
+  return { ok: true, path: patchPath, source: sourceInfo, plugins: comparison.generatedRows, skills }
+}
+
+/** 技能根下的技能目录名（用于报告「挂了哪些技能」，读不到时为空数组）。 */
+export function skillNamesOf(dir) {
+  if (typeof dir !== 'string' || dir === '' || !existsSync(dir)) return []
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+      .sort()
+  } catch {
+    return []
+  }
+}
+
 /** 解析技能目录：显式目录 > 从 asar 抄到 bundle > 跳过（缺源时）。 */
 function resolveSkillDir({ outDir, skills, skillsDir, located }) {
-  if (typeof skillsDir === 'string' && skillsDir !== '') return { dir: resolve(skillsDir), status: 'external' }
-  if (skills === false) return { dir: undefined, status: 'skipped:disabled' }
+  if (typeof skillsDir === 'string' && skillsDir !== '') {
+    const dir = resolve(skillsDir)
+    return { dir, status: 'external', names: skillNamesOf(dir) }
+  }
+  if (skills === false) return { dir: undefined, status: 'skipped:disabled', names: [] }
   // 普通文件源（源码检出）不假定技能目录位置：用 --skills-dir 显式给。
-  if (located.kind !== 'asar') return { dir: undefined, status: 'skipped:no-asar-source' }
+  if (located.kind !== 'asar') return { dir: undefined, status: 'skipped:no-asar-source', names: [] }
   const target = join(outDir, 'skills')
   const copied = copyAsarTree(located.path, SKILLS_ENTRY, target)
-  if (copied.ok !== true) return { dir: undefined, status: `skipped:${copied.reason}` }
-  return { dir: target, status: `copied:${copied.files.length}` }
+  if (copied.ok !== true) return { dir: undefined, status: `skipped:${copied.reason}`, names: [] }
+  return { dir: target, status: `copied:${copied.files.length}`, names: skillNamesOf(target) }
 }
 
 /** 生成可安装 bundle 的补丁文本：insert 一行 preset-orch-debug 声明，plugins 原样保留。 */
@@ -307,6 +536,7 @@ export function renderBundlePatch({
   return [
     `# 由 dsh-orchestrator 生成（勿手改）：preset ${id} = 随包「创造模式」(${SOURCE_PRESET_ID}) 组合的副本。`,
     '# 重新生成：node scripts/orch-debug-preset.mjs',
+    '# 对齐检查：node scripts/orch-debug-preset.mjs --check',
     '- insert:',
     `    - id: preset-${id}`,
     "      name: '@deepseek-ai/dsh-agent-preset'",
@@ -382,10 +612,15 @@ export function prepareDebugPreset({ outDir, source, skills, skillsDir, env = pr
   const skill = resolveSkillDir({ outDir: targetDir, skills, skillsDir, located })
   const result = materializeDebugPreset({ outDir: targetDir, plugins: replaceSkillDirs(extracted, skill.dir), ...options })
   if (result.ok !== true) return result
+  // 自检：生成物里的 plugins 必须与源组合逐行一致（只允许 customSkillDirs 落点不同）。
+  const generatedPlugins = extractPluginsBlock(result.patch, DEBUG_PRESET_ID)
+  const alignment = comparePresetPlugins(extracted, generatedPlugins ?? '')
   return {
     ...result,
     source: { kind: located.kind, path: located.path, entry: located.entry },
     skills: skill.status,
     skillDir: skill.dir,
+    skillNames: skill.names,
+    alignment,
   }
 }

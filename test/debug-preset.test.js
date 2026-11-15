@@ -8,17 +8,23 @@ import {
   DEBUG_PRESET_ORDER,
   SKILLS_ENTRY,
   SOURCE_PRESET_ENTRY,
+  checkDebugPreset,
+  comparePresetPlugins,
   copyAsarTree,
+  customSkillDirOf,
   debugPresetDir,
   extractPluginsBlock,
   listAsarEntries,
   locateSourcePreset,
   materializeDebugPreset,
+  normalizeSkillDirsBlock,
   prepareDebugPreset,
   readAsarFile,
   renderBundleManifest,
   renderBundlePatch,
   replaceSkillDirs,
+  skillNamesOf,
+  splitPluginRows,
 } from '../src/debug-preset.js'
 
 // 结构照抄随包发货的 presets/cordis.patch.yml（去掉长 prompt，保留分组/块量与 !!js 行）。
@@ -333,11 +339,126 @@ test('locateSourcePreset 支持 Electron resourcesPath 候选', () => {
   assert.equal(located.kind, 'asar')
 })
 
+test('splitPluginRows 按顶层插件行切分，组内子行随父行保留', () => {
+  const plugins = extractPluginsBlock(CORDIS_PATCH, 'cordis')
+  const rows = splitPluginRows(plugins)
+  assert.deepEqual(rows.map(row => row.id),
+    ['persona', 'tool-pwsh', 'planning', 'tool-cordis', 'skill-filesystem', 'tool-skill'])
+  const planning = rows.find(row => row.id === 'planning')
+  assert.match(planning.text, /^ {4}- id: plan-mode$/m, '组内子行留在 planning 行文本里，不单列')
+  assert.equal(planning.disabled, '')
+  assert.equal(rows.find(row => row.id === 'tool-pwsh').disabled, "!!js process.platform !== 'win32'")
+})
+
+test('comparePresetPlugins 对生成物返回 aligned（技能根落点不算差异）', () => {
+  const source = extractPluginsBlock(CORDIS_PATCH, 'cordis')
+  const generated = extractPluginsBlock(
+    renderBundlePatch({ plugins: replaceSkillDirs(source, join('C:', 'bundle', 'skills')) }),
+    DEBUG_PRESET_ID,
+  )
+  const comparison = comparePresetPlugins(source, generated)
+  assert.equal(comparison.aligned, true, JSON.stringify(comparison.differences))
+  assert.equal(comparison.sourceRows, 6)
+  assert.equal(comparison.generatedRows, 6)
+  assert.deepEqual(comparison.differences, [])
+})
+
+test('comparePresetPlugins 指出缺少/多出/包名/权限条件/配置差异', () => {
+  const source = extractPluginsBlock(CORDIS_PATCH, 'cordis')
+  const rowText = id => splitPluginRows(source).find(row => row.id === id).text
+
+  const missing = comparePresetPlugins(source, source.replace(`${rowText('tool-cordis')}\n`, ''))
+  assert.equal(missing.aligned, false)
+  assert.ok(missing.differences.some(d => d.kind === 'missing' && d.id === 'tool-cordis'), JSON.stringify(missing.differences))
+
+  const extra = comparePresetPlugins(source, `${source}\n- id: tool-extra\n  name: '@x/y'`)
+  assert.ok(extra.differences.some(d => d.kind === 'extra' && d.id === 'tool-extra'), JSON.stringify(extra.differences))
+
+  const renamed = comparePresetPlugins(source,
+    source.replace("name: '@deepseek-ai/dsh-tool-cordis'", "name: '@deepseek-ai/dsh-tool-other'"))
+  assert.ok(renamed.differences.some(d => d.kind === 'name' && d.id === 'tool-cordis'), JSON.stringify(renamed.differences))
+
+  const ungated = comparePresetPlugins(source,
+    source.replace("disabled: !!js process.platform !== 'win32'", 'disabled: !!js false'))
+  assert.ok(ungated.differences.some(d => d.kind === 'disabled' && d.id === 'tool-pwsh'), JSON.stringify(ungated.differences))
+
+  const promptChanged = comparePresetPlugins(source,
+    source.replace('You are a coding agent.', 'You are a debugging agent.'))
+  assert.ok(promptChanged.differences.some(d => d.kind === 'config' && d.id === 'persona'), JSON.stringify(promptChanged.differences))
+  assert.match(promptChanged.differences.find(d => d.id === 'persona').detail, /第 \d+ 行/)
+})
+
+test('normalizeSkillDirsBlock 抹平技能根；customSkillDirOf 读生成物路径', () => {
+  const source = extractPluginsBlock(CORDIS_PATCH, 'cordis')
+  const generated = replaceSkillDirs(source, 'C:/bundle/skills')
+  assert.match(source, /createRequire\(baseUrl\)/)
+  assert.doesNotMatch(normalizeSkillDirsBlock(source), /createRequire/)
+  assert.equal(normalizeSkillDirsBlock(source), normalizeSkillDirsBlock(generated))
+  assert.equal(customSkillDirOf(source), undefined, '源组合的 !!js 表达式不是可检查的本地路径')
+  assert.equal(customSkillDirOf(generated), 'C:/bundle/skills')
+  // yamlQuote 把单引号写成两个，读回来要还原。
+  assert.equal(customSkillDirOf(replaceSkillDirs(source, "C:/it's/skills")), "C:/it's/skills")
+})
+
+test('skillNamesOf 列出技能根下的目录，读不到时返回空数组', () => {
+  const dir = join(tempDir(), 'skills')
+  mkdirSync(join(dir, 'dsh-doc'), { recursive: true })
+  mkdirSync(join(dir, 'other'), { recursive: true })
+  writeFileSync(join(dir, 'notes.md'), 'x', 'utf8')
+  assert.deepEqual(skillNamesOf(dir), ['dsh-doc', 'other'])
+  assert.deepEqual(skillNamesOf(join(dir, 'nope')), [])
+  assert.deepEqual(skillNamesOf(undefined), [])
+})
+
+test('prepareDebugPreset 自检：plugins 与源组合对齐并报告技能目录', () => {
+  const dir = tempDir()
+  const asarPath = join(dir, 'app.asar')
+  writeFileSync(asarPath, buildAsar([
+    { path: SOURCE_PRESET_ENTRY, content: CORDIS_PATCH },
+    { path: `${SKILLS_ENTRY}/dsh-doc/SKILL.md`, content: '# dsh-doc\n' },
+  ]))
+  const result = prepareDebugPreset({ outDir: join(dir, 'bundle'), env: { DSH_ASAR: asarPath }, platform: 'linux' })
+  assert.equal(result.ok, true, result.hint)
+  assert.equal(result.alignment.aligned, true, JSON.stringify(result.alignment.differences))
+  assert.deepEqual(result.alignment.differences, [])
+  assert.deepEqual(result.skillNames, ['dsh-doc'])
+})
+
+test('checkDebugPreset：刚生成时对齐，组合漂移时给出逐行差异', () => {
+  const dir = tempDir()
+  const source = writeSource(dir)
+  const outDir = join(dir, 'bundle')
+  const made = prepareDebugPreset({ outDir, source, env: {}, platform: 'linux' })
+  assert.equal(made.ok, true, made.hint)
+
+  const clean = checkDebugPreset({ outDir, source, env: {}, platform: 'linux' })
+  assert.equal(clean.ok, true, clean.hint)
+  assert.equal(clean.plugins, 6)
+  assert.equal(clean.skills.dshDoc, false, '普通文件源没有技能复制：检查只报告，不算漂移')
+
+  const patchPath = join(outDir, 'cordis.patch.yml')
+  const drifted = readFileSync(patchPath, 'utf8').replace(
+    '          - id: tool-cordis\n',
+    "          - id: tool-cordis\n          - id: tool-extra\n            name: '@x/y'\n",
+  )
+  writeFileSync(patchPath, drifted, 'utf8')
+  const broken = checkDebugPreset({ outDir, source, env: {}, platform: 'linux' })
+  assert.equal(broken.ok, false)
+  assert.equal(broken.reason, 'drift')
+  assert.ok(broken.differences.some(d => d.kind === 'extra' && d.id === 'tool-extra'), JSON.stringify(broken.differences))
+  assert.match(broken.hint, /重新跑 npm run preset:debug/)
+
+  const absent = checkDebugPreset({ outDir: join(dir, 'nope'), source, env: {}, platform: 'linux' })
+  assert.equal(absent.ok, false)
+  assert.equal(absent.reason, 'missing-bundle')
+})
+
 test('调试子任务文档覆盖安装步骤、宿主重启与能力边界', () => {
   const doc = readFileSync(new URL('../docs/DEBUG-PRESET.md', import.meta.url), 'utf8')
   for (const needle of [
     'workerPreset', 'orch-debug', 'install_bundle', '彻底退出 DSH',
     'cordis_inspect_list', '不是沙箱', 'preset:debug', '.agent-presets', 'createRequire(baseUrl)',
+    '--check', 'plugin_manager', 'client-hmr', 'restart-required', '动态',
   ]) {
     assert.match(doc, new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `文档缺少：${needle}`)
   }
