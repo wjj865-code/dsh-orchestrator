@@ -1,7 +1,7 @@
 // dsh-orchestrator：协调者会话 + 子任务。唯一写入是 $DSH_HOME/state/orchestrator。
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { loadConfig } from './src/config.js'
+import { loadConfig, DEFAULT_WORKER_PRESET } from './src/config.js'
 import { openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts, listTasks } from './src/ledger.js'
 import { collectWorkspaceArtifacts, appendMissingArtifacts, MAX_AUTO_ARTIFACTS } from './src/artifact-collect.js'
 import { createSettlementReporter } from './src/settlement.js'
@@ -59,6 +59,11 @@ export async function apply(ctx, rawConfig = {}) {
   const dir = stateDir()
   const db = await openLedger(dir)
   const warnings = message => ctx.logger?.warn?.(message)
+  // workerPreset 写错（大写/空格/不合法字符）会被归一化回落：明确告诉用户实际用的是哪个。
+  const rawWorkerPreset = rawConfig?.workerPreset
+  if (rawWorkerPreset !== undefined && config.workerPreset === DEFAULT_WORKER_PRESET && rawWorkerPreset !== DEFAULT_WORKER_PRESET) {
+    warnings(`dsh-orchestrator: workerPreset=${JSON.stringify(rawWorkerPreset)} 不是合法预设 id（小写字母/数字/连字符），已回落到 ${DEFAULT_WORKER_PRESET}`)
+  }
   const logger = createLogger({ stateDir: dir, onWarn: warnings })
   if (ctx.tools === undefined) warnings('dsh-orchestrator: 缺少 tools 服务，工具注册/白名单/guard 不可用')
   else if (typeof ctx.tools.guard !== 'function') warnings('dsh-orchestrator: tools.guard 缺失，wait_agent 执行期拦截不可用')
@@ -223,6 +228,8 @@ export async function apply(ctx, rawConfig = {}) {
     subagents: ctx.subagents,
     getAgent: resolveCoordinator,
     provider: config.spawnProvider,
+    // 子会话预设（dispatch 里落到启动 spec 的 agentPreset）：默认 worker，调试时可指 orch-debug。
+    workerPreset: config.workerPreset,
     onWarn: warnings,
     // rc.3 子会话沙箱根取父会话 header.cwd：派发后给子会话补注册 target 可写根。
     // 服务惰性取，加载顺序不保证；agents 在 inject 里，sessions/sandboxPolicy 用 ctx.get。

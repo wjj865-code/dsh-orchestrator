@@ -17,11 +17,13 @@
     "client.js",
     "preset-tools.js",
     "src/",
+    "scripts/",
     "cordis.patch.yml",
     "locale/*.json",
     "docs/DETAIL.md",
     "docs/ARCHITECTURE.md",
     "docs/LIMITATIONS.md",
+    "docs/DEBUG-PRESET.md",
     "icon.svg",
     "README.md"
   ],
@@ -42,6 +44,7 @@
   "scripts": {
     "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"",
     "check:client": "node --check client.js",
+    "preset:debug": "node scripts/orch-debug-preset.mjs",
     "prepublishOnly": "npm test && npm run check:client"
   },
   "dsh": {

@@ -7,6 +7,11 @@ const DEFAULTS = {
   snapshotRetentionDays: 7,
 }
 
+// 子会话默认用插件自带的 worker 预设；调试时可换成副本（如 orch-debug）。
+// 平台对 preset id 的要求是小写字母/数字/连字符，非法值一律回落默认，避免派发时才报组合失败。
+export const DEFAULT_WORKER_PRESET = 'dsh-orchestrator-worker'
+const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/
+
 const nonEmpty = (value, fallback) =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback
 
@@ -19,6 +24,9 @@ export function loadConfig(raw = {}) {
     config[key] = positive(raw?.[key], DEFAULTS[key])
   }
   config.spawnProvider = nonEmpty(raw?.spawnProvider, 'spawn')
+  // workerPreset 透传给子会话启动（dispatch 的 agentPreset 通道）；只认合法 preset id。
+  const workerPreset = nonEmpty(raw?.workerPreset, DEFAULT_WORKER_PRESET)
+  config.workerPreset = PRESET_ID.test(workerPreset) ? workerPreset : DEFAULT_WORKER_PRESET
   config.backend = raw?.backend === 'team' ? 'team' : 'subagent'
   config.maxQueue = Number.isFinite(raw?.maxQueue) && raw.maxQueue >= 1 ? Math.floor(raw.maxQueue) : 50
   config.autoResumeQueue = raw?.autoResumeQueue !== false

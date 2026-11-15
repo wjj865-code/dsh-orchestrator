@@ -10,6 +10,7 @@ test('loadConfig 填默认值', () => {
   assert.equal(config.maxActive, undefined)
   assert.equal(config.mergeWindowMs, 5000)
   assert.equal(config.spawnProvider, 'spawn')
+  assert.equal(config.workerPreset, 'dsh-orchestrator-worker')
   assert.equal(config.coordinatorSession, undefined)
   assert.equal(config.memoryInject, true)
   assert.equal(config.memoryLimit, 3)
@@ -75,6 +76,19 @@ test('spawnProvider 可覆盖，空值/非字符串回落 spawn', () => {
   assert.equal(loadConfig({ spawnProvider: 42 }).spawnProvider, 'spawn')
 })
 
+test('workerPreset 默认 worker 预设；合法覆盖去空格；非法 id 回落', () => {
+  assert.equal(loadConfig({}).workerPreset, 'dsh-orchestrator-worker')
+  assert.equal(loadConfig({ workerPreset: 'orch-debug' }).workerPreset, 'orch-debug')
+  assert.equal(loadConfig({ workerPreset: '  orch-debug  ' }).workerPreset, 'orch-debug')
+  assert.equal(loadConfig({ workerPreset: '' }).workerPreset, 'dsh-orchestrator-worker')
+  assert.equal(loadConfig({ workerPreset: 42 }).workerPreset, 'dsh-orchestrator-worker')
+  // 平台要求 preset id 是小写字母/数字/连字符：大写、空格、下划线、前缀连字符都不接受。
+  assert.equal(loadConfig({ workerPreset: 'Orch-Debug' }).workerPreset, 'dsh-orchestrator-worker')
+  assert.equal(loadConfig({ workerPreset: 'orch debug' }).workerPreset, 'dsh-orchestrator-worker')
+  assert.equal(loadConfig({ workerPreset: 'orch_debug' }).workerPreset, 'dsh-orchestrator-worker')
+  assert.equal(loadConfig({ workerPreset: '-orch' }).workerPreset, 'dsh-orchestrator-worker')
+})
+
 test('backend 默认 subagent，仅 team 是合法回退', () => {
   assert.equal(loadConfig({}).backend, 'subagent')
   assert.equal(loadConfig({ backend: 'team' }).backend, 'team')
@@ -121,6 +135,11 @@ test('package.json 导出 preset-tools', () => {
   assert.equal(pkg.publishConfig.access, 'public')
   assert.equal(pkg.exports['./preset-tools'], './preset-tools.js')
   assert.ok(pkg.files.includes('preset-tools.js'))
+  // D1：调试预设生成脚本与文档随包发布。
+  assert.ok(pkg.files.includes('scripts/'))
+  assert.ok(pkg.files.includes('docs/DEBUG-PRESET.md'))
+  assert.equal(pkg.scripts['preset:debug'], 'node scripts/orch-debug-preset.mjs')
+  assert.match(readFileSync(new URL('../README.md', import.meta.url), 'utf8'), /`workerPreset`/)
 })
 
 test('插件展示元数据：locale/icon/docs 都在文件与 exports 里', () => {

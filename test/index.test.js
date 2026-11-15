@@ -972,3 +972,52 @@ test('index 装配主会话预设守护（selectPreset/guardPreset）', () => {
   assert.match(source, /selectPreset:/)
   assert.match(source, /guardPreset/)
 })
+
+/** D1 透传用夹具：记下每个 startActivation 的入参，activation 永不结算（只为读 spec）。 */
+function recordingSubagents(spawned) {
+  return {
+    async startActivation(spec) {
+      spawned.push(spec)
+      return { childId: spec.childId, messageId: 'msg-1', result: new Promise(() => {}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+}
+
+test('D1：config.workerPreset 透传到子会话 startActivation 的 agentPreset', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const spawned = []
+  const { ctx, registered, disposers } = fakeCtx({ agents: [s1], subagents: recordingSubagents(spawned) })
+  await apply(ctx, { coordinatorSession: 's-1', workerPreset: 'orch-debug' })
+  const create = registered.find(tool => tool.name === 'task_create')
+  await create.execute({ title: '调试子任务', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.equal(spawned.length, 1)
+  assert.equal(spawned[0].agentPreset, 'orch-debug')
+  assert.equal(spawned[0].provider, 'spawn')
+  await disposers.at(-1)?.()
+}))
+
+test('D1：不配 workerPreset 时子会话仍用默认 worker 预设（行为不变）', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const spawned = []
+  const { ctx, registered, disposers } = fakeCtx({ agents: [s1], subagents: recordingSubagents(spawned) })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const create = registered.find(tool => tool.name === 'task_create')
+  await create.execute({ title: '普通任务', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.equal(spawned[0].agentPreset, 'dsh-orchestrator-worker')
+  await disposers.at(-1)?.()
+}))
+
+test('D1：workerPreset 写成非法 id 时回落默认并 warn', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const spawned = []
+  const { ctx, registered, warnings, disposers } = fakeCtx({ agents: [s1], subagents: recordingSubagents(spawned) })
+  await apply(ctx, { coordinatorSession: 's-1', workerPreset: 'Orch Debug' })
+  assert.ok(warnings.some(message => /workerPreset/.test(message)), warnings.join(' | '))
+  const create = registered.find(tool => tool.name === 'task_create')
+  await create.execute({ title: '非法预设', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.equal(spawned[0].agentPreset, 'dsh-orchestrator-worker')
+  await disposers.at(-1)?.()
+}))

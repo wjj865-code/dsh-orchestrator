@@ -106,6 +106,18 @@ task_create({
 
 `task_create({ ..., readOnly: true })` 会让子会话进入 read-only 沙箱；只认显式 `true`。只读任务不注册 target 可写根。
 
+### 调试子会话（`orch-debug`）
+
+想让子任务跑在「创造模式」的能力栈上（`cordis_*` 只读运行时洞察工具 + `dsh-doc` 技能）调试 DSH 插件时：
+
+```powershell
+npm run preset:debug   # 把随包「创造模式」组合复制成可安装的 orch-debug 预设
+```
+
+再用 `plugin_manager` 安装生成的 bundle，在插件配置里写 `workerPreset: orch-debug`，**彻底退出 DSH 再启动**。
+安装步骤、能力边界（预设不是沙箱、`cordis_*` 只读、升级后要重新生成）与验证清单见
+[docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)。
+
 ## 工具
 
 协调者（10 个）：
@@ -138,6 +150,7 @@ task_create({
 | `coordinatorSession` | — | 显式覆盖主会话；不配则读 `settings.main_session_id` |
 | `backend` | `subagent` | 派发后端；`team` 仅旧平台可用，rc.3 起会返回可读错误 |
 | `spawnProvider` | `spawn` | 本地 fresh 子会话 provider |
+| `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（见 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)） |
 | `staleMinutes` | `30` | 多久无动静标陈旧 / stall 提醒间隔 |
 | `stallRounds` | `3` | 连续 progress 达阈值后提醒一次「可能卡住」 |
 | `digestAt` | `''` | 每日日报 `HH:MM`；空 = 关闭 |
@@ -158,6 +171,7 @@ tasks.sqlite
 snapshots/tasks-YYYY-MM-DD.sqlite   # 每天一份，保留 7 天
 logs/YYYY-MM-DD.jsonl               # 按天，保留 7 天
 workspace/                          # 「指挥舱」工作区
+debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调试预设 bundle
 ```
 
 - 日志覆盖建任务/拒绝原因/派发成败/回报/通知/清理；`goal`/`summary` 只留 80 字，不写 `user_verbatim`。
@@ -166,7 +180,7 @@ workspace/                          # 「指挥舱」工作区
 ## 架构与安全
 
 - 协调者预设只挂 `persona` / `agent-instructions` / `time-context` / `tool-ask-user` / `compaction` / `preset-tools`；执行层还有 guard 硬拦 `read`/`write`/`bash`/`wait_agent` 等。
-- 子任务用 worker 预设，文件/shell/web/todo/skill/compaction/present，不含 delegation/goal/plan/schedule。
+- 子任务用 worker 预设，文件/shell/web/todo/skill/compaction/present，不含 delegation/goal/plan/schedule；预设可用 `workerPreset` 换成副本（如 `orch-debug`）。
 - `/api/orchestrator` 由 connection owner-only 鉴权；`snapshot`/`detail`/`artifacts`/`preview` 只读，`stop`/`retry`/`message` 是面板动作。
 - 通知走 `agent.steer`，5 秒合并；每次投递写 `notifications`。
 
@@ -207,6 +221,8 @@ git push origin main --follow-tags
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页和日志 |
 | 提示「尚未打开主会话」 | 面板点「打开主会话」 |
 | 提示「team 后端不可用」 | `backend` 改回 `subagent` |
+| 日志提示 `workerPreset` 回落 | 预设 id 只能用小写字母/数字/连字符；改值后彻底重启 |
+| 子任务没有 `cordis_*` 工具 | 确认 `orch-debug` bundle 已装、`workerPreset: orch-debug`、已彻底重启；插件页看 `preset-orch-debug` 是否 broken（见 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)） |
 | 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制 |
 | Bot 模式看不到入口 | 用会话头「任务」按钮；侧栏入口只在纯 dsh 表面 |
 | 台账损坏 | 用 `snapshots/` 最新快照手工替换 |

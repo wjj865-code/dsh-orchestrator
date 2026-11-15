@@ -28,6 +28,8 @@
 - `run_code` / PTC：平台禁止 `restrict` 指名 PTC 保留传输 `run_code`；若 profile 配了 PTC executor，协调者可能经它间接调用被 deny 的工具。desktop 默认没有 PTC executor。
 - `show_view` 在 base asar 未证实存在；协调者 allow 默认不带。memory 已由插件自己的 `memories` 表实现，不依赖平台 memory 服务。
 - `task_report` 目前靠全局注册对子会话可见；若某 profile 不可见，改为专用轻量工具模块，不把整个插件塞进 worker 预设。
+- **子会话预设（`workerPreset`）只在派发时生效**：续派/冷恢复沿用会话创建时记下的 `agentPreset`，改配置不会切换已有子会话；值不是合法 preset id 时静默回落 `dsh-orchestrator-worker`（日志一行 warn）。
+- **`orch-debug` 调试预设**复制随包「创造模式」(`cordis`) 组合：预设声明装在 profile 里，**升级 DSH 后必须重跑 `npm run preset:debug` 重新生成并重装**，否则组合里的包名/行 id 与新版对不上会让声明行 broken；预设可执行 Host 代码，不是沙箱。旧的 `$DSH_HOME/.agent-presets/<id>/` 目录在 rc.3 已无人读取，本插件不再写那个路径。
 
 ## 平台 / 沙箱
 
