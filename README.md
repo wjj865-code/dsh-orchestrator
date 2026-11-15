@@ -245,7 +245,7 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 仓库带 GitHub Actions：
 
 - `ci.yml`：push main / PR 跑测试。
-- `release.yml`：推 `v*` tag 时跑测试并发布 npm（`NPM_TOKEN`，带 provenance）。
+- `release.yml`：推 `v*` tag 时跑测试并发布 npm（`NPM_TOKEN`，带 provenance），发完**主动触发 npmmirror 镜像同步**。
 
 发布流程：
 
@@ -258,6 +258,33 @@ git push origin main --follow-tags
 ```
 
 要求仓库 Secrets 里有 `NPM_TOKEN`（npm Granular Token，Read and write，Bypass 2FA）。长期可换 npm Trusted Publishing（OIDC），不再存长期 token。
+
+### npm 发布后：触发 npmmirror 镜像同步
+
+`npm publish` 只写 `registry.npmjs.org`；`registry.npmmirror.com` 是另一套库，靠它自己的后台按需/定时回源，
+新版本常常几十分钟到几小时才出现。这段时间国内用户（默认走镜像）`npm i @wjj865-code/dsh-orchestrator@latest`
+拿到的还是旧版，插件页也装不到新版。所以**发版最后一步固定补一次同步**：
+
+| 谁做 | 怎么做 |
+| --- | --- |
+| `release.yml`（自动） | Publish 后跑「触发 npmmirror 镜像同步」步骤：`PUT /-/package/{name}/syncs`，再轮询约 3 分钟等 `latest` 变成新版本；失败/超时只出 warning，不判发布失败 |
+| 本地/发布失败后（手动） | `npm run mirror:sync`（触发 + 轮询，默认最多等 180s）；`npm run mirror:check` 只看镜像当前版本，不触发 |
+
+```powershell
+npm run mirror:check   # 查镜像：latest 是不是 package.json 的版本
+npm run mirror:sync    # 没有就 PUT 同步请求并等到出现；--no-wait 只触发，--timeout 600 多等会儿
+```
+
+要点：
+
+- 同步接口对 scoped 包的名字要 URL 编码：`PUT https://registry.npmmirror.com/-/package/@wjj865-code%2Fdsh-orchestrator/syncs`，
+  返回体形如 `{"ok":true,"id":"<logId>","type":"sync_package","state":"waiting"}`（`id` 可用来找同步日志）。
+- 幂等：镜像已有该版本时脚本直接报「无需同步」退出 0；上游 npm 还没有该版本时直接报错退出 1（别对着超时瞎等）。
+- **本地 npm 缓存会骗人**：`npm view ... --registry=https://registry.npmmirror.com` 可能拿到几十分钟前的缓存
+  （显示旧 `latest` 或 `404 No match found for version`）。怀疑时加 `--prefer-online`（或 `--cache <新目录>`）再看，
+  或直接看 HTTP 响应。`npm run mirror:check` 每次都发真请求，不受本地缓存影响。
+- 同步完的验收：`npm view @wjj865-code/dsh-orchestrator dist-tags --registry=https://registry.npmmirror.com`
+  显示 `{ latest: '<x.y.z>' }`，且 `.../-/dsh-orchestrator-<x.y.z>.tgz` 能 200 下载。
 
 ## 验收
 
@@ -274,6 +301,7 @@ git push origin main --follow-tags
 | 现象 | 处理 |
 |---|---|
 | 侧栏没有「主会话」 | 确认装的是 `0.11.0`；刷新页面；彻底重启 DSH |
+| 插件页/`npm i @latest` 装到的是旧版 | 镜像还没同步：`npm run mirror:check` 看 npmmirror 的 `latest`；缺就 `npm run mirror:sync`；再看 `release.yml` 的「触发 npmmirror 镜像同步」步骤是否成功（本地 `npm view` 结果可能是缓存，加 `--prefer-online` 复查） |
 | 会话头没有「☰ 任务」 | 该入口只在主会话显示：确认当前会话就是侧栏「主会话」打开的那个；没建主会话先从侧栏入口创建 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页和日志 |
 | 提示「尚未打开主会话」 | 面板点「打开主会话」 |

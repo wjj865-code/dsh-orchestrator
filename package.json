@@ -47,6 +47,8 @@
     "check:client": "node --check client.js",
     "preset:debug": "node scripts/orch-debug-preset.mjs",
     "preset:debug:check": "node scripts/orch-debug-preset.mjs --check",
+    "mirror:sync": "node scripts/mirror-sync.mjs",
+    "mirror:check": "node scripts/mirror-sync.mjs --check",
     "prepublishOnly": "npm test && npm run check:client"
   },
   "dsh": {
