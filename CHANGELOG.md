@@ -5,7 +5,14 @@
 
 ## 未发布
 
-调试预设 D2：`orch-debug` 与随包「创造模式」(`cordis`) 逐项对齐可验证，文档补全插件更新流程（client 热重载 / host 更新 / 动态插件边界）。相对 0.9.0 无破坏性变更。
+调试预设 D2：`orch-debug` 与随包「创造模式」(`cordis`) 逐项对齐可验证，文档补全插件更新流程（client 热重载 / host 更新 / 动态插件边界）。
+G1 补齐：worker 预设挂 `tool-goal`，子会话终于能 `get_goal` 读自己的任务目标。相对 0.9.0 无破坏性变更。
+
+### 修复
+
+- **子会话读不到自己的目标**：`dsh-orchestrator-worker` 预设原先没有任何 goal 工具行，而 web-app 层把 host plane 的 `tool-goal` 行 `disabled: true`（模型面工具改由预设挂载），`goals` 服务则留在 host plane——两边都缺，子会话工具表里就没有 `get_goal`，G1 写进平台的目标只有宿主和面板看得见。
+  现在 worker 预设在 `tool-jobs` 后补一行 `tool-goal`（`@deepseek-ai/dsh-tool-goal`，与随包 `standard` / `ptc` / `cordis` 预设逐字同形），子会话可 `get_goal` 读到本任务目标（含「最新指示」拼接文本）。
+- **写能力仍然关闭**：`create_goal` / `update_goal` 由平台 `goalToolExecution` + `requireDirectHuman` 校验，要求顶层 agent 的直接人类回合，子会话调用必被拒；改目标仍只走 `task_message` / 面板「追加」。协调者预设不挂 `tool-goal`（它只做协调，工具面由 `preset-tools` 白名单收窄）。
 
 ### 新增
 
@@ -17,6 +24,7 @@
 ### 测试
 
 - `test/debug-preset.test.js` 新增插件行切分、对齐比较（缺少/多出/顺序/包名/`disabled`/系统提示）、技能根归一化、`skillNamesOf`、`prepareDebugPreset` 自检与 `--check` 漂移检测用例。
+- `test/config.test.js` 新增 worker 预设 `tool-goal` 行的回归用例（按 `config.id` 抠 plugins 块：worker 恰好一行、包名正确、纯行无 `config`/`disabled`、整份补丁只出现一次；协调者不挂）。
 
 ## 0.9.0（2026-11-15）
 

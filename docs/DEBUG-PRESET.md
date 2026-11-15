@@ -230,7 +230,7 @@ npm run preset:debug                           # 重新生成 bundle
 | `dsh-doc` 技能 | 生成时从安装包把 `@deepseek-ai/dsh-agent-preset/skills/dsh-doc` 抄进 bundle，`skill-filesystem` 的 `customSkillDirs` 指向那个绝对目录；`SKILL.md` + `references/` 覆盖插件开发、补丁方言、MCP、Web UI、预设、HMR 等。移动/删除生成目录只会丢技能，不影响其余能力（重新生成即可）。 |
 | `plugin_manager` / `plugin_market` | 与创造模式同一行，带 `disabled: !!js "!ctx.get('profileContext')"`：Desktop/Web profile 的 `profileContext` 存在时**启用**（调试子会话也继承宿主服务），Headless/SDK/ACP 里关闭。每次调用需 `danger-full-access` 或当次批准；`readOnly` 任务不能用。 |
 | 文件/shell/web/todo/present/skill | 与 worker 预设同级；调试任务可以读写仓库、跑测试。子会话的可写根 = `task_create.target`，别把 profile 目录漏配。 |
-| planning（plan mode）、goal、schedule | 创造模式自带的交互能力；调试时一般用不到，但会出现在工具表里。 |
+| planning（plan mode）、schedule | 创造模式自带的交互能力；调试时一般用不到，但会出现在工具表里。`tool-goal` 现在 worker 预设也有（只读 `get_goal`），不再是差异。 |
 | delegation（`subagent` / `subagent_fork` / workflow） | 子会话可以再派自己的子会话；注意别和编排台账混用。 |
 
 边界与坑：

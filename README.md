@@ -116,7 +116,7 @@ task_create({
 - 面板列表显示「目标·进行中/已完成…」小标，详情抽屉有「目标状态」只读区块（阶段、续轮、轮次、修订）；
 - 平台没有 goal 服务时静默降级，派发/续派/面板都不受影响。
 
-目标文本只是持久状态，不改变 brief；子会话自己也没有 goal 工具，改目标请走 `task_message`。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#目标g1)。
+目标文本只是持久状态，不改变 brief，平台也不会把它注入系统提示或消息；子会话靠 `get_goal` 自己读（worker 预设挂了 `tool-goal`），认不认这个目标由它决定。改目标请走 `task_message`，子会话的 `update_goal` 会被平台权限校验拒绝。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#目标g1)。
 
 ### 调试子会话（`orch-debug`）
 
@@ -196,7 +196,7 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 ## 架构与安全
 
 - 协调者预设只挂 `persona` / `agent-instructions` / `time-context` / `tool-ask-user` / `compaction` / `preset-tools`；执行层还有 guard 硬拦 `read`/`write`/`bash`/`wait_agent` 等。
-- 子任务用 worker 预设，文件/shell/web/todo/skill/compaction/present，不含 delegation/goal/plan/schedule；预设可用 `workerPreset` 换成副本（如 `orch-debug`）。
+- 子任务用 worker 预设，文件/shell/search/jobs/web/todo/skill/compaction/present + `tool-goal`（只读 `get_goal`，用来读自己的任务目标），不含 delegation/plan/schedule；预设可用 `workerPreset` 换成副本（如 `orch-debug`）。
 - `/api/orchestrator` 由 connection owner-only 鉴权；`snapshot`/`detail`/`artifacts`/`preview` 只读，`stop`/`retry`/`message` 是面板动作。
 - 通知走 `agent.steer`，5 秒合并；每次投递写 `notifications`。
 

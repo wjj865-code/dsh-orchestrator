@@ -152,6 +152,49 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   assert.doesNotMatch(source, /createRequire\(baseUrl\)/, 'bundle 在磁盘求值会 MODULE_NOT_FOUND')
 })
 
+/** 从补丁文本里抠出某个预设（按 config.id）的 plugins 块，返回行对象与原文。 */
+function presetPlugins(source, presetId) {
+  const lines = source.split(/\r?\n/)
+  const idRe = new RegExp(`^(\\s*)id:\\s*${presetId}\\s*$`)
+  const start = lines.findIndex(line => idRe.test(line))
+  assert.ok(start >= 0, `cordis.patch.yml 里应有 config.id: ${presetId}`)
+  const configIndent = /^(\s*)/.exec(lines[start])[1].length
+  const keyRe = new RegExp(`^${' '.repeat(configIndent)}plugins:\\s*$`)
+  const keyIndex = lines.findIndex((line, index) => index > start && keyRe.test(line))
+  assert.ok(keyIndex >= 0, `${presetId} 应有 plugins: 键`)
+  const body = []
+  for (let index = keyIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line.trim() !== '' && line.length - line.trimStart().length <= configIndent) break
+    body.push(line)
+  }
+  // 只认 `- id:` 开头的行；组内子行（含 `- id:` 的子分组）随父行的缩进保留。
+  const rowIndent = Math.min(...body.filter(line => line.trim() !== '').map(line => line.length - line.trimStart().length))
+  const rows = []
+  for (const line of body) {
+    const rowMatch = new RegExp(`^${' '.repeat(rowIndent)}- id:\\s*(\\S+)\\s*$`).exec(line)
+    if (rowMatch !== null) rows.push({ id: rowMatch[1], lines: [line] })
+    else if (rows.length > 0) rows[rows.length - 1].lines.push(line)
+  }
+  return { rows, text: body.join('\n') }
+}
+
+test('worker 预设挂 tool-goal：子会话才有 get_goal 可读自己的任务目标', () => {
+  const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const worker = presetPlugins(source, 'dsh-orchestrator-worker')
+  const goalRows = worker.rows.filter(row => row.id === 'tool-goal')
+  assert.equal(goalRows.length, 1, 'worker 预设应恰好有一行 tool-goal（host plane 的 tool-goal 被 web-app 关掉了）')
+  const rowText = goalRows[0].lines.join('\n')
+  assert.match(rowText, /name:\s*'@deepseek-ai\/dsh-tool-goal'/)
+  // 纯行：goal 工具没有配置项，也不按平台条件禁用（read-only 任务是沙箱层面的事）。
+  assert.doesNotMatch(rowText, /^\s+(config|disabled):/m)
+  // 只挂一次：同一个预设里重复行会让 loader 报重复 id。
+  assert.equal((source.match(/id: tool-goal/g) ?? []).length, 1, '整份补丁只应出现一行 tool-goal')
+  // 协调者只做协调（preset-tools 白名单），不给自己挂 goal 工具。
+  const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
+  assert.equal(coordinator.rows.some(row => row.id === 'tool-goal'), false)
+})
+
 test('package.json 导出 preset-tools', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(pkg.name, '@wjj865-code/dsh-orchestrator')

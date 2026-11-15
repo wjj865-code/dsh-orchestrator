@@ -86,6 +86,12 @@
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          # 子会话要能读自己的任务目标（G1 把 task.goal 写进平台 goal）：
+          # goals 服务留在 host plane（dsh-base 的 goal 行），web-app 只把模型面 tool-goal 行交给预设，
+          # 所以预设不挂这一行时子会话没有任何 goal 工具，get_goal 无从调用。
+          # 只读可用：get_goal 无权限门槛；create_goal/update_goal 需要「顶层 agent 的直接人类回合」，子会话会被拒。
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
           - id: tool-todo
