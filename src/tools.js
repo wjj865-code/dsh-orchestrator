@@ -17,6 +17,7 @@ import {
 } from './ledger.js'
 import { collectWorkspaceArtifacts } from './artifact-collect.js'
 import { toolFailure } from './action-errors.js'
+import { objectiveForMessage } from './goal.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
 const str = description => ({ type: 'string', description })
@@ -62,7 +63,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   const log = (event, fields) => {
@@ -302,9 +303,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
 
   // targetDir 用于续派前幂等补注册 target 可写根（resume 后 session 对象会换，旧授权不生效）。
   // readOnly 用于只读任务续派时幂等补设沙箱（只读任务不注册可写根）。
-  const sendFollowup = async (target, message, signal, targetDir, taskId, readOnly) => {
-    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir, taskId, readOnly)
-    return dispatcher.send(target, message, signal, targetDir, taskId, readOnly)
+  const sendFollowup = async (target, message, signal, targetDir, taskId, readOnly, objective) => {
+    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir, taskId, readOnly, objective)
+    return dispatcher.send(target, message, signal, targetDir, taskId, readOnly, objective)
   }
   // 任务进入终态才释放可写根；waiting_user/waiting_auth 保留（续派还要用）。
   const releaseTaskSession = task => {
@@ -541,6 +542,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           : []),
         `目标：${task.goal}`,
       ]
+      // 平台 goal 只读状态（G1）：让协调者不用打开面板也能确认目标生命周期。
+      if (task.goal_state !== null && task.goal_state !== undefined) {
+        const phase = { active: '进行中', paused: '已暂停', blocked: '受阻', complete: '已完成', cleared: '已清除' }[task.goal_state.phase] ?? task.goal_state.phase ?? '未知'
+        const activation = task.goal_state.activation === 'armed' ? '自动续轮已启用（异常）' : '不自动续轮'
+        lines.push(`目标状态：${phase}｜${activation}${task.goal_state.revision === undefined ? '' : `｜修订 ${task.goal_state.revision}`}`)
+      }
       if (task.depends_on.length > 0 && task.status !== 'waiting_dep') {
         lines.push(`前置任务：${task.depends_on.map(id => {
           const dep = getTask(db, id)
@@ -588,7 +595,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
       const seq = addMessage(db, task.id, { kind: 'followup', rendered: message, meta: { delivery: 'pending' } })
       try {
-        await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id, task.read_only === true)
+        await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, message))
       } catch (error) {
         const reason = error?.message ?? String(error)
         setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
@@ -640,9 +647,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (task.target !== null && task.target !== undefined) {
         // 停止失败也要把任务标掉：用户要的是「停」，不是让 stop 抛错卡住。
         try {
-          await dispatcher.stop(task.target)
+          await dispatcher.stop(task.target, task.id)
         } catch (error) {
           log('task.stop.failed', { taskId: task.id, sessionId: task.session_id, detail: { reason: error?.message ?? String(error) } })
+          // dispatch.stop 的 finally 已尽力清 goal；自定义派发器/极端路径再兜一次（幂等）。
+          void goalBridge?.clear?.(task.id, task.target)
         }
       }
       queue.remove(task.id)
@@ -675,6 +684,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const depends = validateDepends(db, task.depends_on)
       if (depends.ok === false) return toolFailure('RETRY_DEPENDS_INVALID', { reason: depends.error })
       const depState = dependencyState(db, { depends_on: depends.ids })
+      // G1：旧尝试的目标到此为止（failed/orphaned），清掉后再建新任务；新子会话派发时重新 create。
+      void goalBridge?.clear?.(task.id, task.session_id)
       const retried = createTask(db, {
         brief: task.brief,
         coordinatorSession: current.id ?? coordinatorSession,
@@ -984,7 +995,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         detail: { status: args.status, summary: args.summary ?? '', callId: exec?.callId },
       })
       // 任务到终态意味着并发槽位空出来了，唤醒队列补位；done 同时释放该会话的 target 可写根。
-      if (next.status === 'done') releaseTaskSession(task)
+      if (next.status === 'done') {
+        // G1：子会话自己报 done = 目标达成，complete 并 disarm；已 complete 时桥内部幂等。
+        void goalBridge?.complete?.(task.id, task.session_id)
+        releaseTaskSession(task)
+      }
       if (next.status === 'done' || next.status === 'failed' || next.status === 'cancelled') queue.pump()
       const hint = invalidHint()
       return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${hint === '' ? '' : `\n${hint}`}`

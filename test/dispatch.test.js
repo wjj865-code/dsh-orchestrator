@@ -834,3 +834,85 @@ test('rc.3：catalog/members 走 listDescendants 而不是 listChildren', async 
   assert.deepEqual(await dispatcher.catalog(), [{ id: 'c1', mode: 'continuable' }])
   assert.deepEqual(calls, [['listDescendants', 's1']])
 })
+
+// G1：goal 桥的派发/续派/停止挂钩点。桥自身行为在 goal.test.js 单测，这里只验证 dispatch 的调用契约。
+function goalSpy() {
+  const calls = []
+  return {
+    calls,
+    async attach(taskId, sessionId, objective) { calls.push(['attach', taskId, sessionId, objective]) },
+    async update(taskId, sessionId, objective) { calls.push(['update', taskId, sessionId, objective]) },
+    async clear(taskId, sessionId) { calls.push(['clear', taskId, sessionId]) },
+    async complete(taskId, sessionId) { calls.push(['complete', taskId, sessionId]) },
+  }
+}
+
+test('G1：spawn 后按 taskId + 子会话 + 任务目标 attach（不 await、不阻塞派发）', async () => {
+  const env = grantEnv()
+  const bridge = goalSpy()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0, goalBridge: bridge })
+  const member = await dispatcher.spawn({ prompt: 'p', taskId: 't-1', goal: '把登录修好' })
+  await tick()
+  assert.deepEqual(bridge.calls, [['attach', 't-1', member.id, '把登录修好']])
+})
+
+test('G1：spawn 没给 goal 时不创建目标（等待依赖/异常任务不产生空 goal）', async () => {
+  const env = grantEnv()
+  const bridge = goalSpy()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0, goalBridge: bridge })
+  await dispatcher.spawn({ prompt: 'p', taskId: 't-1', goal: '  ' })
+  await tick()
+  assert.deepEqual(bridge.calls, [])
+})
+
+test('G1：续派投递成功后用「原目标 + 最新指示」update，失败路径不 update', async () => {
+  const env = grantEnv()
+  const bridge = goalSpy()
+  const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0, goalBridge: bridge })
+  const member = await dispatcher.spawn({ prompt: 'p', taskId: 't-1' })
+  await tick()
+  await dispatcher.send(member.id, '换方向', undefined, 'C:/target', 't-1', false, '原目标\n\n最新指示：换方向')
+  await tick()
+  assert.deepEqual(bridge.calls, [['update', 't-1', member.id, '原目标\n\n最新指示：换方向']])
+  const failing = createSubagentDispatcher({
+    subagents: { ...env.subagents, async sendMessage() { throw new Error('投递失败') } },
+    agent,
+    ...env.services,
+    retryDelaysMs: [],
+    sessionWaitMs: 0,
+    goalBridge: bridge,
+  })
+  bridge.calls.length = 0
+  await assert.rejects(() => failing.send(member.id, '再换', undefined, 'C:/target', 't-1', false, '新目标'))
+  assert.deepEqual(bridge.calls, [])
+})
+
+test('G1：stop 清目标；dispose 抛错也在 finally 里清', async () => {
+  const cleared = []
+  const bridge = {
+    async attach() {},
+    async update() {},
+    async clear(taskId, sessionId) { cleared.push([taskId, sessionId]) },
+    async complete() {},
+  }
+  const subagents = {
+    async startActivation(spec) {
+      return {
+        childId: spec.childId,
+        messageId: 'm1',
+        result: new Promise(() => {}),
+        dispose: async () => { throw new Error('dispose 失败') },
+      }
+    },
+    async sendMessage() { return 'm' },
+    async interrupt() {},
+    async listDescendants() { return [] },
+  }
+  const dispatcher = createSubagentDispatcher({ subagents, agent, goalBridge: bridge })
+  const member = await dispatcher.spawn({ prompt: 'p', taskId: 't-1' })
+  await assert.rejects(() => dispatcher.stop(member.id, 't-1'), /dispose 失败/)
+  assert.deepEqual(cleared, [['t-1', member.id]])
+  // 没有本地 activation（重启后）：走 interrupt，同样清目标。
+  await dispatcher.stop('c-old', 't-2')
+  assert.deepEqual(cleared, [['t-1', member.id], ['t-2', 'c-old']])
+})

@@ -57,7 +57,7 @@ export function teamUnavailableMessage(missing) {
     + '（rc.3 起平台移除了 agentTeams 成员 API），请把 backend 改回 subagent'
 }
 
-export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = 'spawn', retryDelaysMs = [1000, 2000, 4000], onWarn = noop }) {
+export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = 'spawn', retryDelaysMs = [1000, 2000, 4000], onWarn = noop, goalBridge }) {
   // 能力探测在构造时做一次：缺方法立即给可读错误，不留到每次派发时报 is not a function。
   const missing = missingTeamMethods(agentTeams)
   if (missing.length > 0) throw new Error(teamUnavailableMessage(missing))
@@ -72,7 +72,7 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, description, prompt, signal, readOnly }) {
+    async spawn({ name, description, prompt, signal, readOnly, taskId, goal }) {
       // team 后端没有按会话设只读的通道：明确拒绝，避免台账标只读、实际可写。
       if (readOnly === true) throw new Error('team 后端不支持只读任务：只读需要 subagent 后端，请把 backend 改回 subagent')
       // 真实 spawnTeammate 要求 provider（fresh 用 'spawn'）和 AbortSignal，缺一个都会被拒。
@@ -86,21 +86,28 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
       }
       const result = await agentTeams.spawnTeammate(requireAgent(), input)
       const member = result.member
+      if (goalBridge !== undefined && typeof goalBridge.attach === 'function' && typeof goal === 'string' && goal.trim() !== '') {
+        void Promise.resolve(goalBridge.attach(taskId, member.id, goal)).catch(() => {})
+      }
       return { id: member.id, name: member.name, sessionId: member.id, target: member.name }
     },
-    async send(target, message, signal) {
-      return agentTeams.sendMessage(requireAgent(), {
+    async send(target, message, signal, targetDir, taskId, readOnly, objective) {
+      const sent = await agentTeams.sendMessage(requireAgent(), {
         target,
         content: [{ type: 'text', text: message }],
         ...(signal === undefined ? {} : { signal }),
       })
+      if (goalBridge !== undefined && typeof goalBridge.update === 'function' && typeof objective === 'string' && objective.trim() !== '') {
+        void Promise.resolve(goalBridge.update(taskId, target, objective)).catch(() => {})
+      }
+      return sent
     },
     /** 续派消息：失败按 retryDelaysMs 重试；全部失败时抛出最后一次原因。 */
-    async sendReliable(target, message, signal) {
+    async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective) {
       let lastError
       for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
         try {
-          return await this.send(target, message, signal)
+          return await this.send(target, message, signal, targetDir, taskId, readOnly, objective)
         } catch (error) {
           lastError = error
           if (attempt < retryDelaysMs.length) {
@@ -111,8 +118,14 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
       }
       throw new Error(`投递失败：${lastError?.message ?? lastError}`)
     },
-    async stop(target) {
-      return agentTeams.interrupt(requireAgent(), target)
+    async stop(target, taskId) {
+      try {
+        return agentTeams.interrupt(requireAgent(), target)
+      } finally {
+        if (goalBridge !== undefined && typeof goalBridge.clear === 'function') {
+          void Promise.resolve(goalBridge.clear(taskId, target)).catch(() => {})
+        }
+      }
     },
     members() {
       return agentTeams.listMembers(requireAgent())
@@ -120,7 +133,7 @@ export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = '
   }
 }
 
-export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000 }) {
+export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000, goalBridge }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
   const requireAgent = () => {
     const current = currentAgent()
@@ -315,7 +328,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, label, prompt, signal, taskId, cwd, readOnly }) {
+    async spawn({ name, label, prompt, signal, taskId, cwd, readOnly, goal }) {
       const parent = requireAgent()
       // agent 已创建但 session 还没挂上时，平台 startActivation 会在 parent.session 上取 .id 抛 TypeError；
       // 这里先给可读错误，并由 queue 当成可重试（等会话就绪）。
@@ -379,9 +392,16 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
           onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
         })
       }
+      // G1：子会话起来后声明式建 goal（create + disarm，不驱动续轮）。
+      // 不 await：goal 服务不可用/子 agent 晚出现都不能拖慢派发；桥内部吞错。
+      if (goalBridge !== undefined && typeof goalBridge.attach === 'function' && typeof goal === 'string' && goal.trim() !== '') {
+        void Promise.resolve(goalBridge.attach(taskId, activation.childId, goal)).catch(error => {
+          onWarn(`dsh-orchestrator: 创建子会话目标失败：${errorText(error)}`)
+        })
+      }
       return { id: activation.childId, name: spec.label, sessionId: activation.childId, target: activation.childId }
     },
-    async send(target, message, signal, targetDir, taskId, readOnly) {
+    async send(target, message, signal, targetDir, taskId, readOnly, objective) {
       const sent = await subagents.sendMessage(requireAgent(), target, [{ type: 'text', text: message }], {
         signal: signal ?? new AbortController().signal,
       })
@@ -400,13 +420,19 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
           onWarn(`dsh-orchestrator: 续派后补注册可写根失败：${errorText(error)}`)
         }
       }
+      // G1：续派后目标文本可能变化 → edit（桥内部比较文本；agent 冷恢复晚出现时等一会儿）。
+      if (goalBridge !== undefined && typeof goalBridge.update === 'function' && typeof objective === 'string' && objective.trim() !== '') {
+        void Promise.resolve(goalBridge.update(taskId, target, objective)).catch(error => {
+          onWarn(`dsh-orchestrator: 更新子会话目标失败：${errorText(error)}`)
+        })
+      }
       return sent
     },
-    async sendReliable(target, message, signal, targetDir, taskId, readOnly) {
+    async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective) {
       let lastError
       for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
         try {
-          return await this.send(target, message, signal, targetDir, taskId, readOnly)
+          return await this.send(target, message, signal, targetDir, taskId, readOnly, objective)
         } catch (error) {
           lastError = error
           if (attempt < retryDelaysMs.length) {
@@ -418,7 +444,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       throw new Error(`投递失败：${lastError?.message ?? lastError}`)
     },
     /** 有本地 activation 直接 dispose（提前取消）；没有（重启后）走 interrupt。两种都释放可写根。 */
-    async stop(target) {
+    async stop(target, taskId) {
       try {
         const activation = live.get(target)
         if (activation !== undefined) {
@@ -433,6 +459,12 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         return subagents.interruptByParent(target, parentSessionId(), 'continuable')
       } finally {
         releaseWritableRoot(target)
+        // G1：停止 = 放弃该目标，清掉平台 goal（不留下「active」误导后续续派/面板）。
+        if (goalBridge !== undefined && typeof goalBridge.clear === 'function') {
+          void Promise.resolve(goalBridge.clear(taskId, target)).catch(error => {
+            onWarn(`dsh-orchestrator: 清除子会话目标失败：${errorText(error)}`)
+          })
+        }
       }
     },
     /** 任务进入终态（done/cancelled/orphaned/failed）时由上层调用，释放该会话的可写根。 */
@@ -474,12 +506,12 @@ function createUnavailableDispatcher(reason) {
   }
 }
 
-export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs }) {
+export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge }) {
   if (backend === 'team') {
     // agentTeams 用惰性 getter 传进来时在这里解析：缺服务的 profile 只有选 team 后端才会报错。
     const teams = typeof agentTeams === 'function' ? agentTeams() : agentTeams
     try {
-      return createTeamDispatcher({ agentTeams: teams, agent, getAgent, provider, retryDelaysMs, onWarn })
+      return createTeamDispatcher({ agentTeams: teams, agent, getAgent, provider, retryDelaysMs, onWarn, goalBridge })
     } catch (error) {
       // 平台升级把 team 后端废了：插件照常加载（面板与其他能力可用），
       // 派发时给同一条可读错误，而不是插件加载失败或抛 is not a function。
@@ -488,5 +520,5 @@ export function createDispatcher({ backend = 'subagent', agentTeams, subagents, 
       return createUnavailableDispatcher(reason)
     }
   }
-  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs })
+  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge })
 }

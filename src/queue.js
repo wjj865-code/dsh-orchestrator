@@ -83,6 +83,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
             taskId: id,
             cwd: task.target_dir ?? undefined,
             readOnly: task.read_only === true,
+            goal: task.goal,
           })
         } catch (error) {
           if (retryable(error)) {

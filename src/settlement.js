@@ -58,6 +58,7 @@ export function createSettlementReporter({
   labelFor,
   releaseSession = () => {},
   pump = () => {},
+  onTerminal = () => {},
 } = {}) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志失败不能打断结算 */ }
@@ -135,6 +136,9 @@ export function createSettlementReporter({
     }
     notify(next, mapped.status, summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`))
     try { releaseSession(task.session_id ?? task.target) } catch { /* 释放失败不影响已落库的终态 */ }
+    // G1：终态收敛平台 goal（done → complete；cancelled/failed/orphaned → clear）。
+    // 回调内部吞错，不能因为 goal 服务缺席/失败回滚已完成的状态迁移。
+    try { onTerminal(next, mapped.status) } catch { /* goal 收口失败不影响结算 */ }
     try { pump() } catch { /* 队列补位失败不影响结算 */ }
     log('task.settle', {
       taskId: task.id,

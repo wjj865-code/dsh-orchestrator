@@ -32,6 +32,11 @@ window.__ModuleLoader__.load({
     }
     const DELIVERY_LABEL = { pending: '待发', delivered: '已投递', failed: '投递失败' }
     const DELIVERY_TONE = { pending: 'warn', delivered: 'good', failed: 'bad' }
+    // 平台 goal 只读展示（G1）：phase/activation 来自 ctx.goals，面板不提供任何写操作。
+    const GOAL_PHASE_LABEL = {
+      active: '进行中', paused: '已暂停', blocked: '受阻', complete: '已完成', cleared: '已清除',
+    }
+    const GOAL_ACTIVATION_LABEL = { armed: '自动续轮已启用', disarmed: '不自动续轮' }
     const TONE_COLOR = {
       good: 'var(--dsw-alias-color-success, #2e7d32)',
       bad: 'var(--dsw-alias-color-danger, #c62828)',
@@ -514,6 +519,21 @@ window.__ModuleLoader__.load({
             verbatim !== '' ? `用户原话：\n${verbatim.split(/\r?\n/).map(line => `> ${line}`).join('\n')}` : '',
           ].filter(Boolean).join('\n\n'))
 
+        // 1b) 平台 goal（只读）：phase/activation/轮次，插件自动维护；面板没有改目标的按钮。
+        const goalState = task.goalState !== null && typeof task.goalState === 'object' ? task.goalState : null
+        const goalBody = goalState === null
+          ? h('div', { style: styles.empty }, '没有平台目标状态（goal 服务不可用，或任务尚未派发/已收口）。')
+          : h('div', { style: styles.detailLine }, [
+            `目标：${textOf(goalState.objective) || '（未记录）'}`,
+            `阶段：${GOAL_PHASE_LABEL[goalState.phase] || goalState.phase || '未知'}`,
+            `续轮：${GOAL_ACTIVATION_LABEL[goalState.activation] || goalState.activation || '未知'}（插件声明式接入，恒为不自动续轮）`,
+            goalState.roundsStarted === null || goalState.roundsStarted === undefined
+              ? ''
+              : `轮次：${goalState.roundsStarted}/${goalState.maxGoalRounds === null || goalState.maxGoalRounds === undefined ? '?' : goalState.maxGoalRounds}`,
+            goalState.revision === null || goalState.revision === undefined ? '' : `修订：${goalState.revision}`,
+            '只读展示：由插件在派发、续派与终态时自动维护；面板不提供暂停/恢复/清除操作。',
+          ].filter(Boolean).join('\n'))
+
         // 2) 消息：最近 20 条；followup 带投递状态（待发/已投递/投递失败）。
         const messages = Array.isArray(detail.messages) ? detail.messages : []
         const shownMessages = messages.slice(-20)
@@ -583,6 +603,7 @@ window.__ModuleLoader__.load({
           task.question ? h('div', { style: styles.notice }, `需要你：${task.question}${Array.isArray(task.options) && task.options.length ? `（${task.options.join(' / ')}）` : ''}`) : null,
           task.error ? h('div', { style: styles.error }, `错误：${task.error}`) : null,
           detailSection('Brief', acceptance.length > 0 ? `验收 ${acceptance.length} 条` : '', briefBody),
+          detailSection('目标状态', goalState === null ? '' : (GOAL_PHASE_LABEL[goalState.phase] || goalState.phase || ''), goalBody),
           detailSection('消息', messages.length > 0 ? `${messages.length} 条` : '', messageBody),
           detailSection('依赖', `上游 ${dependencies.length} · 下游 ${dependents.length}`, depBody),
           detailSection('产物', artifacts.length > 0 ? `${artifacts.length} 个` : '', artifactBody),
@@ -764,6 +785,9 @@ window.__ModuleLoader__.load({
                   task.queued ? h('span', { style: styles.meta }, '排队中') : null,
                   task.stale ? h('span', { style: styles.meta }, '⚠') : null,
                   h('span', { style: styles.meta }, STATUS_LABEL[task.status] || task.status),
+                  task.goalState
+                    ? h('span', { style: styles.meta, title: '平台目标状态（只读）' }, `目标·${GOAL_PHASE_LABEL[task.goalState.phase] || task.goalState.phase || '未知'}`)
+                    : null,
                   task.readOnly === true ? h('span', { style: styles.meta, title: '只读任务：写文件/写 shell 会被沙箱拒绝' }, '只读') : null,
                   h('span', { style: styles.meta }, timeLabel(task.lastEventAt)),
                   artifacts.length > 0

@@ -19,6 +19,7 @@
 | 任务面板 | 侧栏入口 + 会话头面板；详情/停止/重派/追加；产物库按项目/日期分组、可预览/复制 |
 | 产物收集 | done 自动从 `workspaceChanges` 收集改动文件，与显式 `artifacts` 按路径去重合并 |
 | 结算闭环 | 子会话结束/中断自动收场：正常完成→已完成，被中断→已取消，异常→失败，只报过进展→会话丢失 |
+| 目标状态 | 子任务目标同步到平台 `ctx.goals`（create 后立即 disarm，不自动续轮）；台账与面板只读展示 phase/activation |
 
 协调者不阻塞等待：进度用 `task_list` / `task_inbox`，子任务完成会主动通知。
 
@@ -105,6 +106,17 @@ task_create({
 ### 只读任务
 
 `task_create({ ..., readOnly: true })` 会让子会话进入 read-only 沙箱；只认显式 `true`。只读任务不注册 target 可写根。
+
+### 目标状态（平台 goal，只读）
+
+每个子任务派发后，插件会把 `task_create.goal` 同步成该子会话的平台 goal，并**立即 disarmed**——goal 只是持久目标状态，不会自动续跑。之后：
+
+- `task_message` / 面板「追加」把消息并成「最新指示」，目标文本变化时 `edit`；
+- 子任务 `done` 时 `complete`；停止、重派、会话丢失、失败时 `clear`；
+- 面板列表显示「目标·进行中/已完成…」小标，详情抽屉有「目标状态」只读区块（阶段、续轮、轮次、修订）；
+- 平台没有 goal 服务时静默降级，派发/续派/面板都不受影响。
+
+目标文本只是持久状态，不改变 brief；子会话自己也没有 goal 工具，改目标请走 `task_message`。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#目标g1)。
 
 ### 调试子会话（`orch-debug`）
 

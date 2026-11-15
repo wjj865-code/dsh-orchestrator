@@ -52,6 +52,16 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
           updatedAt: task.updated_at,
           lastEventAt: task.last_event_at,
           error: task.error ?? null,
+          // 平台 goal 只读状态（G1）：snapshot 只给生命周期字段，不下发 objective/brief 原文。
+          goalState: task.goal_state === null || task.goal_state === undefined
+            ? null
+            : {
+              phase: task.goal_state.phase ?? null,
+              activation: task.goal_state.activation ?? null,
+              revision: task.goal_state.revision ?? null,
+              roundsStarted: task.goal_state.roundsStarted ?? 0,
+              updatedAt: task.goal_state.updatedAt ?? null,
+            },
         }
       }),
     }

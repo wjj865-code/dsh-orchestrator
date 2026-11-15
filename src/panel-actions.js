@@ -10,6 +10,7 @@ import { dependencyState, validateDepends } from './deps.js'
 import { taskLabel } from './task-label.js'
 import { statusLabel } from './state.js'
 import { panelFailure } from './action-errors.js'
+import { objectiveForMessage } from './goal.js'
 
 const TERMINAL = new Set(['done', 'cancelled', 'orphaned'])
 const RETRYABLE = new Set(['failed', 'orphaned'])
@@ -59,7 +60,7 @@ const messageDeliveries = rows => {
   })
 }
 
-export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger }) {
+export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge }) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志不能影响 UI 动作 */ }
   }
@@ -106,6 +107,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         updatedAt: task.updated_at,
         artifacts: task.artifacts,
         brief: task.brief,
+        // 平台 goal 只读镜像：面板只展示，不提供暂停/恢复/清除动作。
+        goalState: task.goal_state ?? null,
         count: {
           messages: messages.length,
           artifacts: task.artifacts.length,
@@ -200,8 +203,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       return reason
     }
     if (task.target !== null && task.target !== undefined) {
-      try { await dispatcher.stop(task.target) } catch (error) {
+      try { await dispatcher.stop(task.target, task.id) } catch (error) {
         log('ui.stop.failed', { taskId: task.id, detail: { error: warn('STOP_DISPATCH_FAILED', error) } })
+        void goalBridge?.clear?.(task.id, task.target)
       }
     }
     try { queue.remove(task.id) } catch (error) {
@@ -253,6 +257,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     // 工具层保持历史行为（创建后标 failed 再抛错），两边错误码/文案仍共用 action-errors。
     if (status.live === false) return panelFailure('MAIN_SESSION_UNAVAILABLE')
     const depState = dependencyState(db, { depends_on: depends.ids })
+    // G1：旧尝试进入终态，清掉平台 goal；新任务派发时会重新 create+disarm。
+    void goalBridge?.clear?.(task.id, task.session_id)
     let retried
     try {
       retried = createTask(db, {
@@ -317,7 +323,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     const seq = addMessage(db, task.id, { kind: 'followup', rendered: content, meta: { delivery: 'pending' } })
     try {
       if (typeof dispatcher.sendReliable === 'function') {
-        await dispatcher.sendReliable(task.target, content, undefined, task.target_dir, task.id, task.read_only === true)
+        await dispatcher.sendReliable(task.target, content, undefined, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, content))
       } else {
         await dispatcher.send(task.target, content)
       }

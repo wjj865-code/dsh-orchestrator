@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0,
-  question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER
+  question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER,
+  goal_state_json TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -59,6 +60,7 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('question_options_json')) db.exec('ALTER TABLE tasks ADD COLUMN question_options_json TEXT')
     if (!taskColumns.includes('progress_count')) db.exec('ALTER TABLE tasks ADD COLUMN progress_count INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('stall_notified_at')) db.exec('ALTER TABLE tasks ADD COLUMN stall_notified_at INTEGER')
+    if (!taskColumns.includes('goal_state_json')) db.exec('ALTER TABLE tasks ADD COLUMN goal_state_json TEXT')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -96,6 +98,17 @@ const parseStringArray = value => {
   }
 }
 
+// goal 只读镜像：坏 JSON 当没有（旧库/手工改库都不该让面板/任务读崩）。
+const parseGoalState = value => {
+  if (value === null || value === undefined) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 const taskOf = row => row === undefined ? undefined : ({
   ...row,
   read_only: row.read_only === 1 || row.read_only === true,
@@ -107,6 +120,7 @@ const taskOf = row => row === undefined ? undefined : ({
   question: row.question ?? null,
   options: parseStringArray(row.question_options_json),
   progress_count: Number.isFinite(row.progress_count) ? row.progress_count : 0,
+  goal_state: parseGoalState(row.goal_state_json),
 })
 
 export function createTask(db, {
@@ -237,6 +251,14 @@ export function setTaskArtifacts(db, id, artifacts) {
   const merged = mergeArtifacts(current, artifacts)
   db.prepare('UPDATE tasks SET artifacts_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
     .run(JSON.stringify(merged), now, now, id)
+  return getTask(db, id)
+}
+
+/** 记录平台 goal 的只读镜像（G1）：不参与状态机，不改任务状态；null 表示清掉镜像。 */
+export function setTaskGoalState(db, id, state) {
+  const now = Date.now()
+  db.prepare('UPDATE tasks SET goal_state_json = ?, updated_at = ? WHERE id = ?')
+    .run(state === null || state === undefined ? null : JSON.stringify(state), now, id)
   return getTask(db, id)
 }
 

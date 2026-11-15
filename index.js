@@ -13,6 +13,7 @@ import { createTools } from './src/tools.js'
 import { createQueue } from './src/queue.js'
 import { createStartupReconciler } from './src/reconcile.js'
 import { createIdleWatchdog } from './src/watchdog.js'
+import { createGoalBridge } from './src/goal.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
@@ -66,6 +67,15 @@ export async function apply(ctx, rawConfig = {}) {
     warnings(`dsh-orchestrator: workerPreset=${JSON.stringify(rawWorkerPreset)} 不是合法预设 id（小写字母/数字/连字符），已回落到 ${DEFAULT_WORKER_PRESET}`)
   }
   const logger = createLogger({ stateDir: dir, onWarn: warnings })
+  // 平台 goal 接入（G1）：能力缺失时桥不可用，所有钩子静默 no-op；不阻塞派发/续派/结算。
+  const goalBridge = createGoalBridge({
+    db,
+    goals: () => ctx.get?.('goals') ?? ctx.goals,
+    agents: () => ctx.agents ?? ctx.get?.('agents'),
+    onAgentCreated: handler => ctx.on?.('agent/created', ({ agent } = {}) => handler(agent)),
+    onWarn: warnings,
+    onEvent: (event, fields) => logger.log(event, fields),
+  })
   if (ctx.tools === undefined) warnings('dsh-orchestrator: 缺少 tools 服务，工具注册/白名单/guard 不可用')
   else if (typeof ctx.tools.guard !== 'function') warnings('dsh-orchestrator: tools.guard 缺失，wait_agent 执行期拦截不可用')
   if (ctx.systemPrompt === undefined) warnings('dsh-orchestrator: 缺少 systemPrompt 服务，协调者等待禁令只剩执行期 guard')
@@ -240,6 +250,7 @@ export async function apply(ctx, rawConfig = {}) {
     onSessionCreated: handler => ctx.on('session/created', handler),
     // 只读子任务：agent/created 一到就设沙箱，压掉首回合窗口。
     onAgentCreated: handler => ctx.on('agent/created', ({ agent } = {}) => handler(agent)),
+    goalBridge,
     onEvent: (event, fields) => {
       logger.log(event, fields)
       if (event === 'subagent.settled') {
@@ -304,6 +315,8 @@ export async function apply(ctx, rawConfig = {}) {
     onWarn: warnings,
     notifier,
     labelFor: task => taskLabel(task, { all: listTasks(db) }),
+    // G1：对账标 orphaned 时同步收口平台 goal（agent 已不 live，桥只写台账镜像）。
+    onOrphaned: task => { void goalBridge.clear(task.id, task.session_id) },
   })
 
   settlement = createSettlementReporter({
@@ -313,6 +326,10 @@ export async function apply(ctx, rawConfig = {}) {
     labelFor: task => taskLabel(task, { all: listTasks(db) }),
     releaseSession: target => dispatcher.releaseWritableRoots?.(target),
     pump: () => queue?.pump(),
+    // G1：结算自动收场时收敛平台 goal：done → complete；其余终态（cancelled/failed/orphaned）→ clear。
+    onTerminal: (task, status) => {
+      void (status === 'done' ? goalBridge.complete(task.id, task.session_id) : goalBridge.clear(task.id, task.session_id))
+    },
   })
 
   // 空闲看门狗（W1）：running 却长时间没有心跳/消息/状态变化时告警一次。
@@ -395,6 +412,7 @@ export async function apply(ctx, rawConfig = {}) {
     sessionQuery: () => service('sessionQuery'),
     sessions: () => service('sessions'),
     workspaceChanges: () => service('workspaceChanges'),
+    goalBridge,
   }).map(tool => ctx.tools.register(tool))
 
   // task_report done 所在回合的 workspace/changes 事件在 turn stopping 时才追加：
@@ -433,6 +451,7 @@ export async function apply(ctx, rawConfig = {}) {
     config,
     coordinatorStatus,
     logger,
+    goalBridge,
   })
 
   // 客户端面板路由：鉴权由 connection 服务统一负责；snapshot 只查台账；

@@ -4,6 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply, inject, name, COORDINATOR_DENY } from '../index.js'
+import { openLedger, listTasks } from '../src/ledger.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -26,7 +27,33 @@ function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', '
   }
 }
 
-function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, connection, sessionController, workspaces } = {}) {
+function fakeGoalService() {
+  const calls = []
+  const state = { view: undefined }
+  return {
+    calls,
+    state,
+    get(agent) { calls.push(['get', agent.id]); return state.view },
+    create(agent, request) {
+      calls.push(['create', agent.id, request.objective])
+      state.view = {
+        id: 'goal-1', revision: 1, objective: request.objective, phase: 'active', activation: 'armed',
+        roundsStarted: 0, maxGoalRounds: 256, createdAt: 1, updatedAt: 1,
+      }
+      return state.view
+    },
+    disarm(agent) {
+      calls.push(['disarm', agent.id])
+      state.view = { ...state.view, activation: 'disarmed' }
+      return state.view
+    },
+    edit(agent, ref, request) { calls.push(['edit', agent.id, ref, request.objective]); return state.view },
+    complete(agent, ref) { calls.push(['complete', agent.id, ref]); return state.view },
+    clear(agent, ref) { calls.push(['clear', agent.id, ref]); return { id: ref.id, revision: ref.revision + 1 } },
+  }
+}
+
+function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, connection, sessionController, workspaces, goals } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
   const routes = []
@@ -66,6 +93,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       if (name === 'connection') return routeService
       if (name === 'sessionController') return sessionController
       if (name === 'workspaceRegistry') return workspaces
+      if (name === 'goals') return goals
       return undefined
     },
     ...(withInject
@@ -1063,5 +1091,47 @@ test('W1 空闲看门狗接入：启动即巡检空闲 running 任务、只告�
 
   // 卸载清理：看门狗随 effect 停掉，不阻塞卸载。
   await f.disposers[0]()
+}))
+
+test('G1：apply 接入 goals：派发后 create+disarm，台账写只读镜像', withHome(async home => {
+  const goals = fakeGoalService()
+  const s1 = makeAgent('s-1')
+  const f = fakeCtx({ agents: [s1], goals })
+  await apply(f.ctx, { coordinatorSession: 's-1', autoResumeQueue: false })
+  const create = f.registered.find(tool => tool.name === 'task_create')
+  const text = await create.execute({ title: 'G1 目标', goal: '实现目标', acceptance: ['a'] }, { agent: s1 })
+  assert.match(text, /已派发/)
+  // 子 agent 晚于派发进注册表：agent/created 到达后桥再 create+disarm。
+  const child = { id: 'm-1', session: { id: 'm-1', header: {} } }
+  f.live.set('m-1', child)
+  f.listeners.get('agent/created')({ agent: child })
+  await wait(20)
+  assert.deepEqual(goals.calls.map(call => call[0]), ['get', 'create', 'disarm'])
+  assert.equal(goals.state.view.activation, 'disarmed')
+  const check = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = listTasks(check).find(item => item.title === 'G1 目标')
+  assert.equal(task.goal_state.phase, 'active')
+  assert.equal(task.goal_state.activation, 'disarmed')
+  assert.equal(task.goal_state.objective, '实现目标')
+  check.close()
+  await f.disposers.at(-1)?.()
+}))
+
+test('G1：没有 goals 服务时 apply 与派发静默降级（不 warn、不写镜像）', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const f = fakeCtx({ agents: [s1] })
+  await apply(f.ctx, { coordinatorSession: 's-1', autoResumeQueue: false })
+  assert.equal(f.warnings.some(message => /goal/i.test(message)), false)
+  const create = f.registered.find(tool => tool.name === 'task_create')
+  await create.execute({ title: '无 goals', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const child = { id: 'm-1', session: { id: 'm-1', header: {} } }
+  f.live.set('m-1', child)
+  f.listeners.get('agent/created')({ agent: child })
+  await wait(10)
+  const check = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = listTasks(check).find(item => item.title === '无 goals')
+  assert.equal(task.goal_state, null)
+  check.close()
+  await f.disposers.at(-1)?.()
 }))
 

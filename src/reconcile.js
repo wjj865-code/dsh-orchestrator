@@ -116,6 +116,7 @@ export function createStartupReconciler({
   onWarn = () => {},
   notifier,
   labelFor,
+  onOrphaned = () => {},
   maxSummary = RECONCILE_SUMMARY_MAX,
 } = {}) {
   // 已标 orphaned、但汇总还没送到的任务快照。
@@ -189,6 +190,10 @@ export function createStartupReconciler({
     if (Array.isArray(result.tasks) && result.tasks.length > 0) {
       const known = new Set(pending.map(task => task.id))
       for (const task of result.tasks) if (!known.has(task.id)) pending.push(task)
+      // G1：孤儿是终态，清掉平台 goal；agent 此时通常已不在注册表，桥只收口台账镜像。
+      for (const task of result.tasks) {
+        try { onOrphaned(task) } catch { /* goal 收口失败不影响对账 */ }
+      }
     }
     if (result.tasks?.length > 0 || pending.length > 0) {
       result.summary = await flushSummary()
