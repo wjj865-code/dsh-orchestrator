@@ -2,7 +2,7 @@
 
 > DeepSeek Harness 的任务编排插件：一个主会话负责拆任务，子会话并行执行；带跨项目记忆、依赖编排、收件箱、日报和任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（最新 `0.10.0`）
+- npm：`@wjj865-code/dsh-orchestrator`（最新 `0.11.0`）
 - 仓库：<https://github.com/wjj865-code/dsh-orchestrator>
 - License：MIT
 
@@ -30,7 +30,7 @@
 1. DSH → 插件 → **添加插件**，粘贴：
 
    ```text
-   @wjj865-code/dsh-orchestrator@0.10.0
+   @wjj865-code/dsh-orchestrator@0.11.0
    ```
 
 2. **彻底退出 DSH 再启动**（只关窗口不生效）。
@@ -252,8 +252,8 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 ```powershell
 npm version patch --no-git-tag-version
 git add package.json
-git commit -m "release: v0.10.0"
-git tag -a v0.10.0 -m "v0.10.0"
+git commit -m "release: v0.11.0"
+git tag -a v0.11.0 -m "v0.11.0"
 git push origin main --follow-tags
 ```
 
@@ -262,7 +262,7 @@ git push origin main --follow-tags
 ## 验收
 
 1. 插件页能看到「任务编排」标题、图标和详情页。
-2. 侧栏「主会话」能打开；工具表有 11 个工具；主会话里会话头有「☰ 任务」，切到子会话后该入口隐藏。
+2. 侧栏「主会话」能打开；工具表有 12 个工具；主会话里会话头有「☰ 任务」，切到子会话后该入口隐藏。
 3. `task_create` 能派发；子会话 `task_report done` 后主会话收到通知。
 4. 建 `dependsOn` 任务时先 `waiting_dep`，前置完成后自动派发。
 5. 面板「详情」「产物」「停止/重派/追加」可用。
@@ -273,7 +273,7 @@ git push origin main --follow-tags
 
 | 现象 | 处理 |
 |---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.10.0`；刷新页面；彻底重启 DSH |
+| 侧栏没有「主会话」 | 确认装的是 `0.11.0`；刷新页面；彻底重启 DSH |
 | 会话头没有「☰ 任务」 | 该入口只在主会话显示：确认当前会话就是侧栏「主会话」打开的那个；没建主会话先从侧栏入口创建 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页和日志 |
 | 提示「尚未打开主会话」 | 面板点「打开主会话」 |
