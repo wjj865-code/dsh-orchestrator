@@ -40,8 +40,12 @@
 
 - 通知走 `agent.steer`：空闲唤醒、忙时 next-step 排队；同一 agent 的忙时排队由平台保证。
 - 平台另发 `subagent-settled`，不经过本插件、不写 `notifications`，不能当成插件投递成功。
+- **结算自动收场（S1）只覆盖「一次 activation」**：派发侧 `activation.result` 只对第一次生效，`task_message` / 冷恢复起的轮次只能靠 `subagent/end` 观察；平台若停发该事件，续派轮次会退回「只有 `task_report` 才推终态」。
+- **`completed` 不等于「工作做完了」**：continuable 子会话可以在一轮结束时正常收场等续派。所以只在「没上报过 progress」时才自动 `done`；上报过 progress 的回合结束落 `orphaned`（可重派），由人决定下一步。
+- **caller signal 在发布后不再取消子会话**（真机 S4 实测 `completed`）：插件侧取消只能靠 `dispose()` / interrupt，落 `aborted`。
+- `refusal` 只有源码级依据（pre-step hook deny / 策略拒绝），真机没有稳定构造；`max-tokens` 由 `maxTokens` 截断触发，真实长输出落同一个值。
 - headless 一次性进程在 5 秒合并窗口内退出时，`steer` 可能因 initiator scope dispose 失败；`notifications` 记 `failed` 是正确审计。长驻 desktop/服务进程不受影响。
-- 重启窗口：子会话已完成但 `task_report` 尚未被协调者消费时重启，会对账为 `orphaned`，报告会丢，重建即可。
+- 重启窗口：子会话已完成但结算事件尚未被消费时重启，会对账为 `orphaned`，结果会丢，重建即可。
 - Bot 模式：ds-bot 的 Bot 表面只认自己的 DSH Agent 会话，打开主会话后视图可能仍停在 Bot 会话；纯 dsh 表面不受影响。
 
 ## UI

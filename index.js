@@ -2,8 +2,10 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig } from './src/config.js'
-import { openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts } from './src/ledger.js'
+import { openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts, listTasks } from './src/ledger.js'
 import { collectWorkspaceArtifacts, appendMissingArtifacts, MAX_AUTO_ARTIFACTS } from './src/artifact-collect.js'
+import { createSettlementReporter } from './src/settlement.js'
+import { taskLabel } from './src/task-label.js'
 import { createMainSession } from './src/main-session.js'
 import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
@@ -206,6 +208,9 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   let queue
+  // 结算上报器：子会话结束/中断时把台账从 running 推到终态（S1）。
+  // 队列/派发器后面才创建，这里用惰性引用；事件可能早于赋值，所以都走可选调用。
+  let settlement
   const dispatcher = createDispatcher({
     backend: config.backend,
     // agentTeams 是可选的：不放进 inject，缺这个服务的 profile 也能激活。
@@ -225,6 +230,19 @@ export async function apply(ctx, rawConfig = {}) {
     onAgentCreated: handler => ctx.on('agent/created', ({ agent } = {}) => handler(agent)),
     onEvent: (event, fields) => {
       logger.log(event, fields)
+      if (event === 'subagent.settled') {
+        reportSettle({
+          taskId: fields.taskId,
+          sessionId: fields.sessionId,
+          stopReason: fields.detail?.stopReason,
+          output: typeof fields.detail?.output === 'string' && fields.detail.output !== ''
+            ? [{ type: 'text', text: fields.detail.output }]
+            : [],
+          source: 'dispatcher',
+        })
+      } else if (event === 'subagent.failed') {
+        settlement?.fail({ taskId: fields.taskId, sessionId: fields.sessionId, error: fields.detail?.error, source: 'dispatcher' })
+      }
       // 子会话结算 = 并发槽位释放，唤醒队列补位。
       if (event === 'subagent.settled' || event === 'subagent.failed') queue?.pump()
     },
@@ -265,6 +283,62 @@ export async function apply(ctx, rawConfig = {}) {
 
 
   queue = createQueue({ db, dispatcher, config, logger, notifier })
+
+  settlement = createSettlementReporter({
+    db,
+    notifier,
+    logger,
+    labelFor: task => taskLabel(task, { all: listTasks(db) }),
+    releaseSession: target => dispatcher.releaseWritableRoots?.(target),
+    pump: () => queue?.pump(),
+  })
+
+  // 自动 done 的产物补齐：task_report done 那条路有 workspace/changes 钩子，这条路没有。
+  function collectAfterSettle(outcome) {
+    if (outcome?.action !== 'updated' || outcome.to !== 'done') return
+    const task = outcome.task
+    const sessionId = task?.session_id
+    if (sessionId === undefined || sessionId === null) return
+    const session = service('agents')?.get?.(sessionId)?.session ?? service('sessions')?.get?.(sessionId)
+    if (session === undefined) return
+    try {
+      const result = collectWorkspaceArtifacts({
+        session,
+        workspaceChanges: service('workspaceChanges'),
+        fallbackCwd: task.target_dir ?? join(stateDir(), 'workspace'),
+        max: MAX_AUTO_ARTIFACTS,
+      })
+      const added = appendMissingArtifacts(task.artifacts, result.artifacts)
+      if (added.length === 0) return
+      setTaskArtifacts(db, task.id, added)
+      logger.log('task.settle.artifacts.auto', {
+        taskId: task.id,
+        detail: { added: added.length, turns: result.turns },
+      })
+    } catch (error) {
+      warnings(`dsh-orchestrator: 结算后产物收集失败：${error?.message ?? error}`)
+    }
+  }
+
+  function reportSettle(input) {
+    const outcome = settlement?.report(input)
+    if (outcome?.action === 'updated') collectAfterSettle(outcome)
+    return outcome
+  }
+
+  // 平台生命周期事件：续派/冷恢复起的新 activation 不走 dispatch 的 track，只有 subagent/end 能看到。
+  // 和派发侧事件重叠到达时，第二次会因为任务已不在 running 被跳过（状态机天然幂等）。
+  const settleDisposer = typeof ctx.on === 'function'
+    ? ctx.on('subagent/end', info => {
+      if (info?.local !== true || info?.id === undefined) return
+      reportSettle({
+        sessionId: String(info.id),
+        stopReason: info.stopReason,
+        output: info.lastAssistantMessage,
+        source: 'lifecycle',
+      })
+    })
+    : undefined
 
   // 启动对账：catalog 里查不到的活跃任务标 orphaned；catalog 读不到只 warn。
   await reconcileOrphans({
@@ -376,7 +450,7 @@ export async function apply(ctx, rawConfig = {}) {
   ctx.effect?.(() => async () => {
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
-    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, routeDisposer].reverse()) {
+    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, routeDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
     // 卸载期间的收尾也不能变成未处理拒绝（宿主会判 fatal load failure）。

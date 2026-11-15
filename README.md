@@ -18,6 +18,7 @@
 | 收件箱/日报 | `task_inbox` 看待决与卡点；`digestAt` 开每日汇总 |
 | 任务面板 | 侧栏入口 + 会话头面板；详情/停止/重派/追加；产物库按项目/日期分组、可预览/复制 |
 | 产物收集 | done 自动从 `workspaceChanges` 收集改动文件，与显式 `artifacts` 按路径去重合并 |
+| 结算闭环 | 子会话结束/中断自动收场：正常完成→已完成，被中断→已取消，异常→失败，只报过进展→会话丢失 |
 
 协调者不阻塞等待：进度用 `task_list` / `task_inbox`，子任务完成会主动通知。
 
@@ -215,6 +216,7 @@ git push origin main --follow-tags
 - `writeScopes` 只做冲突提示；依赖关系创建后不可编辑；`dependsOn` 不允许指向未来 id。
 - 产物在 done 时自动从 `workspaceChanges` 收集改动文件，并与显式 `task_report.artifacts` 按路径去重合并；Host 未挂 `workspaceChanges` 时只剩显式产物。
 - 日报默认关闭；`stallRounds` 只提醒一次，没有二次升级阶梯。
+- 结算自动收场只认「一次 activation」：续派/冷恢复起的轮次靠平台 `subagent/end` 观察；子会话只在「没上报过 progress」时自动判完成，上报过 progress 的回合结束落「会话丢失」等人决定。
 - 主会话工具表可能仍残留团队工具（agent-scope 自注册，`restrict` 遮不到）；执行层 guard 会硬拦。
 - 平台 rc.3 子会话沙箱根、Bot 模式视图、headless 收尾竞态等平台侧限制，详见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
 

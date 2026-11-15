@@ -19,6 +19,18 @@ const noop = () => {}
 
 const errorText = error => `${error?.code === undefined ? '' : `[${error.code}] `}${error?.message ?? error}`
 
+// 结算事件带一段可读输出（与平台 SubagentResult.output 同形），供台账记「死因」用。
+const settleOutput = (output, max = 240) => {
+  const blocks = Array.isArray(output) ? output : []
+  const text = blocks
+    .filter(block => block?.type === 'text' && typeof block.text === 'string')
+    .map(block => block.text)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return text === '' ? '' : (text.length > max ? `${text.slice(0, max)}…` : text)
+}
+
 /** 两个目录是否同一个：Windows 大小写不敏感；解析失败就按原串比较。 */
 export function sameDirectory(left, right) {
   if (typeof left !== 'string' || typeof right !== 'string') return false
@@ -278,8 +290,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
           live.delete(activation.childId)
           readOnlyChildren.delete(activation.childId)
           onEvent('subagent.settled', {
+            taskId: activation.taskId,
             sessionId: activation.childId,
-            detail: { stopReason: result?.stopReason ?? null },
+            detail: { stopReason: result?.stopReason ?? null, output: settleOutput(result?.output) },
           })
         } catch { /* 结算事件失败不能外溢 */ }
       },
@@ -287,7 +300,11 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         try {
           live.delete(activation.childId)
           readOnlyChildren.delete(activation.childId)
-          onEvent('subagent.failed', { sessionId: activation.childId, detail: { error: errorText(error) } })
+          onEvent('subagent.failed', {
+            taskId: activation.taskId,
+            sessionId: activation.childId,
+            detail: { error: errorText(error) },
+          })
         } catch { /* 结算事件失败不能外溢 */ }
       },
     ).catch(() => {})
@@ -352,6 +369,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         sessionId: activation.childId,
         detail: { childId: activation.childId, messageId: activation.messageId ?? null, provider },
       })
+      // 结算事件带上 taskId：台账按任务精确回写，不依赖 session_id 反查。
+      activation.taskId = taskId
       track(activation)
       if (readOnly === true) ensureReadOnlyReady(activation.childId)
       // 目标目录才需要补可写根；只读任务绝不能注册可写根（否则「只读」有后门）。

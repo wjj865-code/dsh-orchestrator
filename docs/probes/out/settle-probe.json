@@ -1,0 +1,1244 @@
+{
+  "startedAt": "2026-11-15T03:53:13.748Z",
+  "events": [
+    {
+      "t": 1794714794146,
+      "rel": 398,
+      "type": "subscribed",
+      "data": {
+        "event": "subagent/start",
+        "ok": true
+      }
+    },
+    {
+      "t": 1794714794148,
+      "rel": 400,
+      "type": "subscribed",
+      "data": {
+        "event": "subagent/end",
+        "ok": true
+      }
+    },
+    {
+      "t": 1794714794149,
+      "rel": 401,
+      "type": "subscribed",
+      "data": {
+        "event": "session/event",
+        "ok": true
+      }
+    },
+    {
+      "t": 1794714794324,
+      "rel": 576,
+      "type": "root/created",
+      "data": {
+        "id": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "origin": null
+      }
+    },
+    {
+      "t": 1794714795833,
+      "rel": 2085,
+      "type": "scenario/start",
+      "data": {
+        "id": "completed"
+      }
+    },
+    {
+      "t": 1794714795880,
+      "rel": 2132,
+      "type": "lifecycle/subagent-start",
+      "data": {
+        "runId": "e01fd2b8-88ec-4113-baad-e0b935910002",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "df3d4611-ae29-4ec1-8452-58087a716081",
+        "local": true
+      }
+    },
+    {
+      "t": 1794714795887,
+      "rel": 2139,
+      "type": "scenario/completed/spawned",
+      "data": {
+        "childId": "df3d4611-ae29-4ec1-8452-58087a716081",
+        "messageId": "ba5fa58f-a34f-49f6-b333-fadb46862f2c"
+      }
+    },
+    {
+      "t": 1794714796882,
+      "rel": 3134,
+      "type": "lifecycle/subagent-end",
+      "data": {
+        "runId": "e01fd2b8-88ec-4113-baad-e0b935910002",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "df3d4611-ae29-4ec1-8452-58087a716081",
+        "local": true,
+        "stopReason": "completed",
+        "lastAssistantMessage": [
+          {
+            "type": "reasoning",
+            "text": ""
+          },
+          {
+            "type": "text",
+            "text": "OK"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714796884,
+      "rel": 3136,
+      "type": "scenario/completed/settled",
+      "data": {
+        "resolved": {
+          "stopReason": "completed",
+          "output": "OK",
+          "structured": null
+        },
+        "at": 3136,
+        "turns": [
+          {
+            "rel": 2134,
+            "type": "turn/start",
+            "seq": 4
+          },
+          {
+            "rel": 3121,
+            "type": "turn/end",
+            "seq": 17,
+            "reason": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714796895,
+      "rel": 3147,
+      "type": "scenario/end",
+      "data": {
+        "id": "completed",
+        "outcome": {
+          "childId": "df3d4611-ae29-4ec1-8452-58087a716081",
+          "resolved": {
+            "stopReason": "completed",
+            "output": "OK",
+            "structured": null
+          },
+          "at": 3136
+        }
+      }
+    },
+    {
+      "t": 1794714796904,
+      "rel": 3156,
+      "type": "scenario/start",
+      "data": {
+        "id": "dispose-immediately"
+      }
+    },
+    {
+      "t": 1794714796958,
+      "rel": 3210,
+      "type": "lifecycle/subagent-start",
+      "data": {
+        "runId": "6a6756b3-43bb-46d8-9bdd-de49e31be8f7",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "090e7fa7-9396-475c-b1a7-3cab9c54ffc1",
+        "local": true
+      }
+    },
+    {
+      "t": 1794714796961,
+      "rel": 3213,
+      "type": "scenario/dispose-immediately/spawned",
+      "data": {
+        "childId": "090e7fa7-9396-475c-b1a7-3cab9c54ffc1"
+      }
+    },
+    {
+      "t": 1794714796993,
+      "rel": 3245,
+      "type": "lifecycle/subagent-end",
+      "data": {
+        "runId": "6a6756b3-43bb-46d8-9bdd-de49e31be8f7",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "090e7fa7-9396-475c-b1a7-3cab9c54ffc1",
+        "local": true,
+        "stopReason": "aborted"
+      }
+    },
+    {
+      "t": 1794714796994,
+      "rel": 3246,
+      "type": "scenario/dispose-immediately/settled",
+      "data": {
+        "resolved": {
+          "stopReason": "aborted",
+          "output": "",
+          "structured": null
+        },
+        "at": 3246,
+        "dispose": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "t": 1794714796996,
+      "rel": 3248,
+      "type": "scenario/end",
+      "data": {
+        "id": "dispose-immediately",
+        "outcome": {
+          "childId": "090e7fa7-9396-475c-b1a7-3cab9c54ffc1",
+          "resolved": {
+            "stopReason": "aborted",
+            "output": "",
+            "structured": null
+          },
+          "at": 3246
+        }
+      }
+    },
+    {
+      "t": 1794714797012,
+      "rel": 3264,
+      "type": "scenario/start",
+      "data": {
+        "id": "dispose-mid-run"
+      }
+    },
+    {
+      "t": 1794714797070,
+      "rel": 3322,
+      "type": "lifecycle/subagent-start",
+      "data": {
+        "runId": "8e0e4ad1-4205-45f4-a119-105263e582b5",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "6db18f67-d9df-47e7-ace0-ed26cafd24d0",
+        "local": true
+      }
+    },
+    {
+      "t": 1794714797075,
+      "rel": 3327,
+      "type": "scenario/dispose-mid-run/spawned",
+      "data": {
+        "childId": "6db18f67-d9df-47e7-ace0-ed26cafd24d0"
+      }
+    },
+    {
+      "t": 1794714798648,
+      "rel": 4900,
+      "type": "lifecycle/subagent-end",
+      "data": {
+        "runId": "8e0e4ad1-4205-45f4-a119-105263e582b5",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "6db18f67-d9df-47e7-ace0-ed26cafd24d0",
+        "local": true,
+        "stopReason": "aborted",
+        "lastAssistantMessage": [
+          {
+            "type": "reasoning",
+            "text": "The user wants a line-by-line explanation of 30 lines, each identical `const a = 1;`. Each line one sentence, no tools. I should note the redundancy: all declare the same identifier, which is a syntax error (redeclaration in same scope). But the request is just to explain each line. I can explain each line and additionally note the issue at the end? \"不要调用工具\" — don't call tools. I won't. The skill \"using-superpowers\" says use when starting any conversation... but the user explicitly says don't call tools. Hmm, there's a conflict: skill says load using-superpowers before ANY response. But the user says 不要调用工具 (don't call tools). The skill tool is a tool. The instruction says if the task"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714798651,
+      "rel": 4903,
+      "type": "scenario/dispose-mid-run/settled",
+      "data": {
+        "resolved": {
+          "stopReason": "aborted",
+          "output": "",
+          "structured": null
+        },
+        "at": 4903,
+        "dispose": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "t": 1794714798653,
+      "rel": 4905,
+      "type": "scenario/end",
+      "data": {
+        "id": "dispose-mid-run",
+        "outcome": {
+          "childId": "6db18f67-d9df-47e7-ace0-ed26cafd24d0",
+          "resolved": {
+            "stopReason": "aborted",
+            "output": "",
+            "structured": null
+          },
+          "at": 4903
+        }
+      }
+    },
+    {
+      "t": 1794714798654,
+      "rel": 4906,
+      "type": "scenario/start",
+      "data": {
+        "id": "signal-after-publish"
+      }
+    },
+    {
+      "t": 1794714798709,
+      "rel": 4961,
+      "type": "lifecycle/subagent-start",
+      "data": {
+        "runId": "b46f5b79-fd22-48ea-aa95-e478728c8ad8",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "fadcc618-524e-4017-b951-4d1f97c4b502",
+        "local": true
+      }
+    },
+    {
+      "t": 1794714798711,
+      "rel": 4963,
+      "type": "scenario/signal-after-publish/spawned",
+      "data": {
+        "childId": "fadcc618-524e-4017-b951-4d1f97c4b502"
+      }
+    },
+    {
+      "t": 1794714798720,
+      "rel": 4972,
+      "type": "scenario/signal-after-publish/aborted-signal",
+      "data": {}
+    },
+    {
+      "t": 1794714799344,
+      "rel": 5596,
+      "type": "lifecycle/subagent-end",
+      "data": {
+        "runId": "b46f5b79-fd22-48ea-aa95-e478728c8ad8",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "fadcc618-524e-4017-b951-4d1f97c4b502",
+        "local": true,
+        "stopReason": "completed",
+        "lastAssistantMessage": [
+          {
+            "type": "reasoning",
+            "text": ""
+          },
+          {
+            "type": "text",
+            "text": "OK"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714799346,
+      "rel": 5598,
+      "type": "scenario/signal-after-publish/settled",
+      "data": {
+        "resolved": {
+          "stopReason": "completed",
+          "output": "OK",
+          "structured": null
+        },
+        "at": 5598,
+        "turns": [
+          {
+            "rel": 4962,
+            "type": "turn/start",
+            "seq": 4
+          },
+          {
+            "rel": 5547,
+            "type": "turn/end",
+            "seq": 17,
+            "reason": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714799348,
+      "rel": 5600,
+      "type": "scenario/end",
+      "data": {
+        "id": "signal-after-publish",
+        "outcome": {
+          "childId": "fadcc618-524e-4017-b951-4d1f97c4b502",
+          "resolved": {
+            "stopReason": "completed",
+            "output": "OK",
+            "structured": null
+          },
+          "at": 5598
+        }
+      }
+    },
+    {
+      "t": 1794714799361,
+      "rel": 5613,
+      "type": "scenario/start",
+      "data": {
+        "id": "max-tokens"
+      }
+    },
+    {
+      "t": 1794714799426,
+      "rel": 5678,
+      "type": "lifecycle/subagent-start",
+      "data": {
+        "runId": "bdc5273d-8503-40a0-b81a-15fdab2c1c29",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "612fae32-f7bd-4446-928a-388526eea57d",
+        "local": true
+      }
+    },
+    {
+      "t": 1794714799429,
+      "rel": 5681,
+      "type": "scenario/max-tokens/spawned",
+      "data": {
+        "childId": "612fae32-f7bd-4446-928a-388526eea57d"
+      }
+    },
+    {
+      "t": 1794714800201,
+      "rel": 6453,
+      "type": "lifecycle/subagent-end",
+      "data": {
+        "runId": "bdc5273d-8503-40a0-b81a-15fdab2c1c29",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "612fae32-f7bd-4446-928a-388526eea57d",
+        "local": true,
+        "stopReason": "max-tokens",
+        "lastAssistantMessage": [
+          {
+            "type": "reasoning",
+            "text": "The user asks for a 200-word"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714800204,
+      "rel": 6456,
+      "type": "scenario/max-tokens/settled",
+      "data": {
+        "resolved": {
+          "stopReason": "max-tokens",
+          "output": "",
+          "structured": null
+        },
+        "at": 6456,
+        "turns": [
+          {
+            "rel": 5679,
+            "type": "turn/start",
+            "seq": 4
+          },
+          {
+            "rel": 6410,
+            "type": "turn/end",
+            "seq": 17,
+            "reason": "max-tokens"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714800205,
+      "rel": 6457,
+      "type": "scenario/end",
+      "data": {
+        "id": "max-tokens",
+        "outcome": {
+          "childId": "612fae32-f7bd-4446-928a-388526eea57d",
+          "resolved": {
+            "stopReason": "max-tokens",
+            "output": "",
+            "structured": null
+          },
+          "at": 6456
+        }
+      }
+    },
+    {
+      "t": 1794714800207,
+      "rel": 6459,
+      "type": "scenario/start",
+      "data": {
+        "id": "bad-model"
+      }
+    },
+    {
+      "t": 1794714800264,
+      "rel": 6516,
+      "type": "lifecycle/subagent-start",
+      "data": {
+        "runId": "3f60a276-e190-4a0e-897f-36656633b87e",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "3269dad8-daff-41ba-908e-b9c2cae66dd0",
+        "local": true
+      }
+    },
+    {
+      "t": 1794714800269,
+      "rel": 6521,
+      "type": "scenario/bad-model/spawned",
+      "data": {
+        "childId": "3269dad8-daff-41ba-908e-b9c2cae66dd0"
+      }
+    },
+    {
+      "t": 1794714800541,
+      "rel": 6793,
+      "type": "lifecycle/subagent-end",
+      "data": {
+        "runId": "3f60a276-e190-4a0e-897f-36656633b87e",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "3269dad8-daff-41ba-908e-b9c2cae66dd0",
+        "local": true,
+        "stopReason": "error"
+      }
+    },
+    {
+      "t": 1794714800543,
+      "rel": 6795,
+      "type": "scenario/bad-model/settled",
+      "data": {
+        "resolved": {
+          "stopReason": "error",
+          "output": "",
+          "structured": null
+        },
+        "at": 6795
+      }
+    },
+    {
+      "t": 1794714800545,
+      "rel": 6797,
+      "type": "scenario/end",
+      "data": {
+        "id": "bad-model",
+        "outcome": {
+          "childId": "3269dad8-daff-41ba-908e-b9c2cae66dd0",
+          "resolved": {
+            "stopReason": "error",
+            "output": "",
+            "structured": null
+          },
+          "at": 6795
+        }
+      }
+    },
+    {
+      "t": 1794714800546,
+      "rel": 6798,
+      "type": "scenario/start",
+      "data": {
+        "id": "resume-after-settle"
+      }
+    },
+    {
+      "t": 1794714800594,
+      "rel": 6846,
+      "type": "lifecycle/subagent-start",
+      "data": {
+        "runId": "6117de06-c978-4f98-9815-a0e0a057cb7c",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "d73c8b95-99f0-4bf5-a124-167a7c1e3aba",
+        "local": true
+      }
+    },
+    {
+      "t": 1794714800597,
+      "rel": 6849,
+      "type": "scenario/resume-after-settle/spawned",
+      "data": {
+        "childId": "d73c8b95-99f0-4bf5-a124-167a7c1e3aba"
+      }
+    },
+    {
+      "t": 1794714801541,
+      "rel": 7793,
+      "type": "lifecycle/subagent-end",
+      "data": {
+        "runId": "6117de06-c978-4f98-9815-a0e0a057cb7c",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "d73c8b95-99f0-4bf5-a124-167a7c1e3aba",
+        "local": true,
+        "stopReason": "completed",
+        "lastAssistantMessage": [
+          {
+            "type": "reasoning",
+            "text": ""
+          },
+          {
+            "type": "text",
+            "text": "OK"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714801542,
+      "rel": 7794,
+      "type": "scenario/resume-after-settle/first-settled",
+      "data": {
+        "resolved": {
+          "stopReason": "completed",
+          "output": "OK",
+          "structured": null
+        },
+        "at": 7794
+      }
+    },
+    {
+      "t": 1794714801656,
+      "rel": 7908,
+      "type": "lifecycle/subagent-start",
+      "data": {
+        "runId": "b9e752b2-8f3b-488a-b782-bd0947d93953",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "d73c8b95-99f0-4bf5-a124-167a7c1e3aba",
+        "local": true
+      }
+    },
+    {
+      "t": 1794714801659,
+      "rel": 7911,
+      "type": "scenario/resume-after-settle/resumed",
+      "data": {
+        "messageId": null
+      }
+    },
+    {
+      "t": 1794714802825,
+      "rel": 9077,
+      "type": "lifecycle/subagent-end",
+      "data": {
+        "runId": "b9e752b2-8f3b-488a-b782-bd0947d93953",
+        "provider": "spawn",
+        "parentSessionId": "session-edef2d96-25b1-414e-ae00-e6018d4acd54",
+        "id": "d73c8b95-99f0-4bf5-a124-167a7c1e3aba",
+        "local": true,
+        "stopReason": "completed",
+        "lastAssistantMessage": [
+          {
+            "type": "reasoning",
+            "text": "The user is asking me to reply with just \"OK\" again, and a message from agent lead says the same. I should just reply OK without tools."
+          },
+          {
+            "type": "text",
+            "text": "OK"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714803200,
+      "rel": 9452,
+      "type": "scenario/resume-after-settle/second-lifecycle",
+      "data": {
+        "ends": [
+          {
+            "rel": 9080,
+            "stopReason": "completed",
+            "local": true
+          }
+        ],
+        "turns": [
+          {
+            "rel": 6848,
+            "type": "turn/start",
+            "seq": 4
+          },
+          {
+            "rel": 7750,
+            "type": "turn/end",
+            "seq": 17,
+            "reason": "completed"
+          },
+          {
+            "rel": 7910,
+            "type": "turn/start",
+            "seq": 20
+          },
+          {
+            "rel": 9068,
+            "type": "turn/end",
+            "seq": 28,
+            "reason": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "t": 1794714803204,
+      "rel": 9456,
+      "type": "scenario/end",
+      "data": {
+        "id": "resume-after-settle",
+        "outcome": {
+          "childId": "d73c8b95-99f0-4bf5-a124-167a7c1e3aba",
+          "first": {
+            "resolved": {
+              "stopReason": "completed",
+              "output": "OK",
+              "structured": null
+            },
+            "at": 7794
+          },
+          "second": [
+            {
+              "rel": 9080,
+              "stopReason": "completed",
+              "local": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "t": 1794714803207,
+      "rel": 9459,
+      "type": "probe/done",
+      "data": {
+        "lifecycleEnds": {
+          "df3d4611-ae29-4ec1-8452-58087a716081": [
+            {
+              "rel": 3136,
+              "stopReason": "completed",
+              "local": true
+            }
+          ],
+          "090e7fa7-9396-475c-b1a7-3cab9c54ffc1": [
+            {
+              "rel": 3246,
+              "stopReason": "aborted",
+              "local": true
+            }
+          ],
+          "6db18f67-d9df-47e7-ace0-ed26cafd24d0": [
+            {
+              "rel": 4903,
+              "stopReason": "aborted",
+              "local": true
+            }
+          ],
+          "fadcc618-524e-4017-b951-4d1f97c4b502": [
+            {
+              "rel": 5598,
+              "stopReason": "completed",
+              "local": true
+            }
+          ],
+          "612fae32-f7bd-4446-928a-388526eea57d": [
+            {
+              "rel": 6456,
+              "stopReason": "max-tokens",
+              "local": true
+            }
+          ],
+          "3269dad8-daff-41ba-908e-b9c2cae66dd0": [
+            {
+              "rel": 6795,
+              "stopReason": "error",
+              "local": true
+            }
+          ],
+          "d73c8b95-99f0-4bf5-a124-167a7c1e3aba": [
+            {
+              "rel": 7794,
+              "stopReason": "completed",
+              "local": true
+            },
+            {
+              "rel": 9080,
+              "stopReason": "completed",
+              "local": true
+            }
+          ]
+        },
+        "turnEnds": {
+          "session-edef2d96-25b1-414e-ae00-e6018d4acd54": [
+            {
+              "rel": 579,
+              "type": "turn/start",
+              "seq": 4
+            },
+            {
+              "rel": 2182,
+              "type": "turn/end",
+              "seq": 21,
+              "reason": "completed"
+            },
+            {
+              "rel": 9076,
+              "type": "turn/start",
+              "seq": 29
+            }
+          ],
+          "df3d4611-ae29-4ec1-8452-58087a716081": [
+            {
+              "rel": 2134,
+              "type": "turn/start",
+              "seq": 4
+            },
+            {
+              "rel": 3121,
+              "type": "turn/end",
+              "seq": 17,
+              "reason": "completed"
+            }
+          ],
+          "090e7fa7-9396-475c-b1a7-3cab9c54ffc1": [
+            {
+              "rel": 3211,
+              "type": "turn/start",
+              "seq": 4
+            },
+            {
+              "rel": 3227,
+              "type": "turn/end",
+              "seq": 6,
+              "reason": "aborted"
+            }
+          ],
+          "6db18f67-d9df-47e7-ace0-ed26cafd24d0": [
+            {
+              "rel": 3325,
+              "type": "turn/start",
+              "seq": 4
+            },
+            {
+              "rel": 4850,
+              "type": "turn/end",
+              "seq": 17,
+              "reason": "aborted"
+            }
+          ],
+          "fadcc618-524e-4017-b951-4d1f97c4b502": [
+            {
+              "rel": 4962,
+              "type": "turn/start",
+              "seq": 4
+            },
+            {
+              "rel": 5547,
+              "type": "turn/end",
+              "seq": 17,
+              "reason": "completed"
+            }
+          ],
+          "612fae32-f7bd-4446-928a-388526eea57d": [
+            {
+              "rel": 5679,
+              "type": "turn/start",
+              "seq": 4
+            },
+            {
+              "rel": 6410,
+              "type": "turn/end",
+              "seq": 17,
+              "reason": "max-tokens"
+            }
+          ],
+          "3269dad8-daff-41ba-908e-b9c2cae66dd0": [
+            {
+              "rel": 6518,
+              "type": "turn/start",
+              "seq": 4
+            },
+            {
+              "rel": 6784,
+              "type": "turn/end",
+              "seq": 16,
+              "reason": "error"
+            }
+          ],
+          "d73c8b95-99f0-4bf5-a124-167a7c1e3aba": [
+            {
+              "rel": 6848,
+              "type": "turn/start",
+              "seq": 4
+            },
+            {
+              "rel": 7750,
+              "type": "turn/end",
+              "seq": 17,
+              "reason": "completed"
+            },
+            {
+              "rel": 7910,
+              "type": "turn/start",
+              "seq": 20
+            },
+            {
+              "rel": 9068,
+              "type": "turn/end",
+              "seq": 28,
+              "reason": "completed"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "completed",
+      "steps": [
+        {
+          "rel": 2139,
+          "name": "spawned",
+          "data": {
+            "childId": "df3d4611-ae29-4ec1-8452-58087a716081",
+            "messageId": "ba5fa58f-a34f-49f6-b333-fadb46862f2c"
+          }
+        },
+        {
+          "rel": 3136,
+          "name": "settled",
+          "data": {
+            "resolved": {
+              "stopReason": "completed",
+              "output": "OK",
+              "structured": null
+            },
+            "at": 3136,
+            "turns": [
+              {
+                "rel": 2134,
+                "type": "turn/start",
+                "seq": 4
+              },
+              {
+                "rel": 3121,
+                "type": "turn/end",
+                "seq": 17,
+                "reason": "completed"
+              }
+            ]
+          }
+        }
+      ],
+      "outcome": {
+        "childId": "df3d4611-ae29-4ec1-8452-58087a716081",
+        "resolved": {
+          "stopReason": "completed",
+          "output": "OK",
+          "structured": null
+        },
+        "at": 3136
+      }
+    },
+    {
+      "id": "dispose-immediately",
+      "steps": [
+        {
+          "rel": 3213,
+          "name": "spawned",
+          "data": {
+            "childId": "090e7fa7-9396-475c-b1a7-3cab9c54ffc1"
+          }
+        },
+        {
+          "rel": 3246,
+          "name": "settled",
+          "data": {
+            "resolved": {
+              "stopReason": "aborted",
+              "output": "",
+              "structured": null
+            },
+            "at": 3246,
+            "dispose": {
+              "ok": true
+            }
+          }
+        }
+      ],
+      "outcome": {
+        "childId": "090e7fa7-9396-475c-b1a7-3cab9c54ffc1",
+        "resolved": {
+          "stopReason": "aborted",
+          "output": "",
+          "structured": null
+        },
+        "at": 3246
+      }
+    },
+    {
+      "id": "dispose-mid-run",
+      "steps": [
+        {
+          "rel": 3327,
+          "name": "spawned",
+          "data": {
+            "childId": "6db18f67-d9df-47e7-ace0-ed26cafd24d0"
+          }
+        },
+        {
+          "rel": 4903,
+          "name": "settled",
+          "data": {
+            "resolved": {
+              "stopReason": "aborted",
+              "output": "",
+              "structured": null
+            },
+            "at": 4903,
+            "dispose": {
+              "ok": true
+            }
+          }
+        }
+      ],
+      "outcome": {
+        "childId": "6db18f67-d9df-47e7-ace0-ed26cafd24d0",
+        "resolved": {
+          "stopReason": "aborted",
+          "output": "",
+          "structured": null
+        },
+        "at": 4903
+      }
+    },
+    {
+      "id": "signal-after-publish",
+      "steps": [
+        {
+          "rel": 4963,
+          "name": "spawned",
+          "data": {
+            "childId": "fadcc618-524e-4017-b951-4d1f97c4b502"
+          }
+        },
+        {
+          "rel": 4972,
+          "name": "aborted-signal",
+          "data": {}
+        },
+        {
+          "rel": 5598,
+          "name": "settled",
+          "data": {
+            "resolved": {
+              "stopReason": "completed",
+              "output": "OK",
+              "structured": null
+            },
+            "at": 5598,
+            "turns": [
+              {
+                "rel": 4962,
+                "type": "turn/start",
+                "seq": 4
+              },
+              {
+                "rel": 5547,
+                "type": "turn/end",
+                "seq": 17,
+                "reason": "completed"
+              }
+            ]
+          }
+        }
+      ],
+      "outcome": {
+        "childId": "fadcc618-524e-4017-b951-4d1f97c4b502",
+        "resolved": {
+          "stopReason": "completed",
+          "output": "OK",
+          "structured": null
+        },
+        "at": 5598
+      }
+    },
+    {
+      "id": "max-tokens",
+      "steps": [
+        {
+          "rel": 5681,
+          "name": "spawned",
+          "data": {
+            "childId": "612fae32-f7bd-4446-928a-388526eea57d"
+          }
+        },
+        {
+          "rel": 6456,
+          "name": "settled",
+          "data": {
+            "resolved": {
+              "stopReason": "max-tokens",
+              "output": "",
+              "structured": null
+            },
+            "at": 6456,
+            "turns": [
+              {
+                "rel": 5679,
+                "type": "turn/start",
+                "seq": 4
+              },
+              {
+                "rel": 6410,
+                "type": "turn/end",
+                "seq": 17,
+                "reason": "max-tokens"
+              }
+            ]
+          }
+        }
+      ],
+      "outcome": {
+        "childId": "612fae32-f7bd-4446-928a-388526eea57d",
+        "resolved": {
+          "stopReason": "max-tokens",
+          "output": "",
+          "structured": null
+        },
+        "at": 6456
+      }
+    },
+    {
+      "id": "bad-model",
+      "steps": [
+        {
+          "rel": 6521,
+          "name": "spawned",
+          "data": {
+            "childId": "3269dad8-daff-41ba-908e-b9c2cae66dd0"
+          }
+        },
+        {
+          "rel": 6795,
+          "name": "settled",
+          "data": {
+            "resolved": {
+              "stopReason": "error",
+              "output": "",
+              "structured": null
+            },
+            "at": 6795
+          }
+        }
+      ],
+      "outcome": {
+        "childId": "3269dad8-daff-41ba-908e-b9c2cae66dd0",
+        "resolved": {
+          "stopReason": "error",
+          "output": "",
+          "structured": null
+        },
+        "at": 6795
+      }
+    },
+    {
+      "id": "resume-after-settle",
+      "steps": [
+        {
+          "rel": 6849,
+          "name": "spawned",
+          "data": {
+            "childId": "d73c8b95-99f0-4bf5-a124-167a7c1e3aba"
+          }
+        },
+        {
+          "rel": 7794,
+          "name": "first-settled",
+          "data": {
+            "resolved": {
+              "stopReason": "completed",
+              "output": "OK",
+              "structured": null
+            },
+            "at": 7794
+          }
+        },
+        {
+          "rel": 7911,
+          "name": "resumed",
+          "data": {
+            "messageId": null
+          }
+        },
+        {
+          "rel": 9452,
+          "name": "second-lifecycle",
+          "data": {
+            "ends": [
+              {
+                "rel": 9080,
+                "stopReason": "completed",
+                "local": true
+              }
+            ],
+            "turns": [
+              {
+                "rel": 6848,
+                "type": "turn/start",
+                "seq": 4
+              },
+              {
+                "rel": 7750,
+                "type": "turn/end",
+                "seq": 17,
+                "reason": "completed"
+              },
+              {
+                "rel": 7910,
+                "type": "turn/start",
+                "seq": 20
+              },
+              {
+                "rel": 9068,
+                "type": "turn/end",
+                "seq": 28,
+                "reason": "completed"
+              }
+            ]
+          }
+        }
+      ],
+      "outcome": {
+        "childId": "d73c8b95-99f0-4bf5-a124-167a7c1e3aba",
+        "first": {
+          "resolved": {
+            "stopReason": "completed",
+            "output": "OK",
+            "structured": null
+          },
+          "at": 7794
+        },
+        "second": [
+          {
+            "rel": 9080,
+            "stopReason": "completed",
+            "local": true
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -615,7 +615,9 @@ test('结算唤醒：容量 1 时第二个任务排队，第一个 settle 后自
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))
   const rows = db.prepare('SELECT status, session_id FROM tasks').all()
-  assert.equal(rows.filter(row => row.status === 'running').length, 2)
+  // S1 之后第一个任务的 settle 会把台账推到终态：只剩第二个在跑，且两个会话 id 不同（没双派）。
+  assert.equal(rows.filter(row => row.status === 'running').length, 1)
+  assert.equal(rows.filter(row => row.status === 'done').length, 1)
   assert.equal(new Set(rows.map(row => row.session_id)).size, 2)
   db.close()
 }))
@@ -648,6 +650,109 @@ test('重启对账：running 子会话不 live 标 orphaned；waiting 不 live �
   assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(waitingTask.id).status, 'waiting_auth')
   db.close()
   await disposers[0]()
+}))
+
+test('S1：派发侧 settle completed 自动把台账 running→done，并写结算消息 + 通知', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  let settle
+  const subagents = {
+    async startActivation(spec) {
+      return {
+        childId: spec.childId,
+        messageId: 'msg-1',
+        result: new Promise(resolve => { settle = () => resolve({ output: [{ type: 'text', text: '改完了，测试全绿' }], stopReason: 'completed' }) }),
+        dispose: async () => {},
+      }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const { ctx, registered, disposers } = fakeCtx({ agents: [s1], subagents })
+  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 1 })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
+  const before = new DatabaseSync(dbPath)
+  assert.equal(before.prepare('SELECT status FROM tasks').get().status, 'running')
+  before.close()
+
+  settle()
+  await wait(50)
+  const after = new DatabaseSync(dbPath)
+  const row = after.prepare('SELECT id, status, error FROM tasks').get()
+  assert.equal(row.status, 'done')
+  assert.equal(row.error, null)
+  const message = after.prepare("SELECT rendered FROM messages WHERE task_id = ? AND kind = 'settle'").get(row.id)
+  assert.match(message.rendered, /结算.*已完成/)
+  assert.equal(after.prepare("SELECT level, status FROM notifications WHERE task_id = ?").get(row.id).level, 'notify')
+  after.close()
+  await disposers.at(-1)?.()
+}))
+
+test('S1：平台 subagent/end（续派/冷恢复）也能把 running 推到 cancelled 并通知', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  let childId
+  const subagents = {
+    async startActivation(spec) {
+      childId = spec.childId
+      // 首次 activation 永不结算：这里只验证平台生命周期事件这条独立通路。
+      return { childId: spec.childId, messageId: 'msg-1', result: new Promise(() => {}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [{ id: childId ?? '', mode: 'continuable' }] },
+  }
+  const { ctx, registered, listeners, disposers } = fakeCtx({ agents: [s1], subagents })
+  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 1 })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  assert.ok(listeners.has('subagent/end'), '未订阅平台生命周期事件')
+  listeners.get('subagent/end')({ id: childId, local: true, stopReason: 'aborted', lastAssistantMessage: [{ type: 'text', text: '被中断了' }] })
+  await wait(50)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const row = db.prepare('SELECT status, error FROM tasks').get()
+  assert.equal(row.status, 'cancelled')
+  assert.match(row.error, /stopReason=aborted/)
+  const message = db.prepare("SELECT meta_json FROM messages WHERE kind = 'settle'").get()
+  assert.equal(JSON.parse(message.meta_json).source, 'lifecycle')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM notifications').get().n, 1)
+  db.close()
+  await disposers.at(-1)?.()
+}))
+
+test('S1：waiting_user 任务收到 settle 不改状态（子任务自己报了 blocked）', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  let childId
+  const subagents = {
+    async startActivation(spec) {
+      childId = spec.childId
+      return { childId: spec.childId, messageId: 'msg-1', result: new Promise(() => {}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [{ id: childId ?? '', mode: 'continuable' }] },
+  }
+  const { ctx, registered, listeners, disposers } = fakeCtx({ agents: [s1], subagents })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '丙', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
+  const { openLedger, transition } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const row = ledger.prepare('SELECT id FROM tasks').get()
+  transition(ledger, row.id, 'waiting_user')
+  ledger.close()
+  listeners.get('subagent/end')({ id: childId, local: true, stopReason: 'completed' })
+  await wait(20)
+  const db = new DatabaseSync(dbPath)
+  assert.equal(db.prepare('SELECT status FROM tasks').get().status, 'waiting_user')
+  assert.equal(db.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'settle'").get().n, 0)
+  db.close()
+  await disposers.at(-1)?.()
 }))
 
 test('注册 /api/orchestrator 只读路由：POST + buffered + snapshot', withHome(async () => {

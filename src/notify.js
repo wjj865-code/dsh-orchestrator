@@ -1,7 +1,12 @@
 // 通知分级：progress 静默，done 批量合并，blocked/needs_auth 立即打断。
+// cancelled/orphaned 来自结算自动上报（S1）：异常收场，按 notify 合并窗口提醒。
 const LEVEL = {
   progress: 'silent', done: 'notify', blocked: 'interrupt', needs_auth: 'interrupt',
-  failed: 'notify', stalled: 'notify',
+  failed: 'notify', stalled: 'notify', cancelled: 'notify', orphaned: 'notify',
+}
+
+const DONE_LABEL = {
+  failed: '失败', stalled: '可能卡住', cancelled: '已取消', orphaned: '会话已结束但没有终态回报', done: '完成',
 }
 
 export function levelOf(status) {
@@ -123,7 +128,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     const batch = buffer
     buffer = []
     if (batch.length === 0) return undefined
-    const label = status => status === 'failed' ? '失败' : status === 'stalled' ? '可能卡住' : '完成'
+    const label = status => DONE_LABEL[status] ?? '完成'
     const text = batch.length === 1
       ? `任务「${nameOf(batch[0])}」${label(batch[0].status)}：${batch[0].summary}${questionBlock(batch[0])}${artifactBlock(batch[0])}`
       : `${batch.length} 个任务${batch.every(item => item.status === 'done') ? '完成' : '状态更新'}：\n${batch.map(line).join('\n')}`

@@ -12,7 +12,21 @@ test('状态到级别映射', () => {
   assert.equal(levelOf('blocked'), 'interrupt')
   assert.equal(levelOf('needs_auth'), 'interrupt')
   assert.equal(levelOf('failed'), 'notify')
+  // 结算自动上报的两种异常收场也要走合并通知（不能静默）。
+  assert.equal(levelOf('cancelled'), 'notify')
+  assert.equal(levelOf('orphaned'), 'notify')
   assert.equal(levelOf('weird'), 'silent')
+})
+
+test('结算异常状态的通知文案：已取消 / 会话已结束但没有终态回报', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'cancelled', summary: '子会话被中断' })
+  await wait(25)
+  notifier.push({ taskId: 't-2', title: 'B', status: 'orphaned', summary: '回合结束但没报终态' })
+  await wait(25)
+  assert.match(delivered[0], /任务「A」已取消：子会话被中断/)
+  assert.match(delivered[1], /任务「B」会话已结束但没有终态回报/)
 })
 
 test('silent 不投递，notify 合并，interrupt 立刻投递', async () => {

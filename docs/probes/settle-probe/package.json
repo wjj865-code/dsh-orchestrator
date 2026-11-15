@@ -1,0 +1,8 @@
+{
+  "name": "settle-probe",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "真机探针：子会话 settle 的 stopReason 取值与时序（不发布、不装 desktop profile）",
+  "main": "index.js"
+}

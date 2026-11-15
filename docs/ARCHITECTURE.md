@@ -53,6 +53,29 @@
 | blocked | interrupt | 立即投递，可带 `question` / `options` |
 | needs_auth | interrupt | 立即投递，可带 `question` / `options` |
 
+## 结算闭环（S1）
+
+子会话不一定都会回报：模型可能忘了 `task_report`，也可能被打断或起不来。`src/settlement.js` 消费平台的**结算**信号，把 `running` 直接推到终态，用户不再看到「永远在跑」的幽灵任务：
+
+| 事件源 | 覆盖 |
+|---|---|
+| `dispatch.js` 的 `subagent.settled` / `subagent.failed` | 本次派发的那一次 activation |
+| 平台 `subagent/end`（`local === true`） | 含 `task_message` / 冷恢复起的新 activation（派发侧的 `result` 只覆盖第一次） |
+
+映射（`SETTLE_MAP` / `mapSettle`）：
+
+| stopReason | 台账 | 死因 / 通知 |
+|---|---|---|
+| `completed` 且没上报过 progress | `done` | 无死因；自动 done 还会补一次产物收集 |
+| `completed` 但上报过 progress | `orphaned` | 回合结束却没报终态（可重派） |
+| `aborted` | `cancelled` | 被子会话中断（`dispose` / interrupt / 父级取消） |
+| `error` / `max-tokens` / `refusal` | `failed` | 异常结束 / 输出截断 / 被策略拒绝 |
+| 缺失或未知 | `orphaned` | 结算原因未知，按会话丢失处理 |
+
+- 只动 `running`：`waiting_user` / `waiting_auth`（子任务自己报了 blocked/needs_auth）与已有终态都不改，重复结算天然幂等。
+- 每次结算写一条 `settle` 消息 + `tasks.error` 死因 + 一条 `system` 通知（`cancelled`/`orphaned` 也走合并窗口），并释放可写根、唤醒队列补位。
+- 取证与时序见 `docs/probes/stop-reason-probe.md`（真机 7 场景）。
+
 - 通知走 `agent.steer` 直插协调者，不经过 Team 的 `sendMessage`。
 - 每次投递写 `notifications`：`delivered` / `failed`（带 reason）/ `skipped`；合并后续行 `merged_into` 指向首条。
 - `task_inbox` 汇总待决、失败/丢失、长时间没动静；问题/选项来自台账 `question` / `question_options_json`。

@@ -566,12 +566,38 @@ test('subagent：settle 后发出事件，dispose 走 activation', async () => {
   const service = fakeSubagents({ deferred: true })
   const events = []
   const dispatcher = sub({ subagents: service, agent, onEvent: (event, fields) => events.push([event, fields]) })
-  const member = await dispatcher.spawn({ label: 'x', prompt: 'p' })
+  const member = await dispatcher.spawn({ label: 'x', prompt: 'p', taskId: 't-9' })
   assert.equal(dispatcher.has(member.id), true)
   service.resolveAll()
   await new Promise(resolve => setTimeout(resolve, 5))
   assert.equal(dispatcher.has(member.id), false)
-  assert.ok(events.some(([event]) => event === 'subagent.settled'))
+  const settled = events.find(([event]) => event === 'subagent.settled')
+  assert.ok(settled !== undefined)
+  // 结算事件要带 taskId + stopReason + 可读输出摘要：台账据此自动落终态、记死因。
+  assert.equal(settled[1].taskId, 't-9')
+  assert.equal(settled[1].sessionId, member.id)
+  assert.equal(settled[1].detail.stopReason, 'completed')
+  assert.equal(settled[1].detail.output, '')
+})
+
+test('subagent：activation.result 被拒时发 subagent.failed（带 taskId 与错误）', async () => {
+  const events = []
+  const service = fakeSubagents()
+  const original = service.startActivation
+  service.startActivation = async spec => ({
+    childId: spec.childId,
+    messageId: 'msg-1',
+    result: Promise.reject(new Error('teardown 炸了')),
+    dispose: async () => {},
+  })
+  const dispatcher = sub({ subagents: service, agent, onEvent: (event, fields) => events.push([event, fields]) })
+  await dispatcher.spawn({ label: 'x', prompt: 'p', taskId: 't-10' })
+  await new Promise(resolve => setTimeout(resolve, 5))
+  const failed = events.find(([event]) => event === 'subagent.failed')
+  assert.ok(failed !== undefined)
+  assert.equal(failed[1].taskId, 't-10')
+  assert.match(failed[1].detail.error, /teardown 炸了/)
+  assert.equal(typeof original, 'function')
 })
 
 test('team：rc.3 缺成员 API 时构造即抛可读错误，文案不含 is not a function', () => {
