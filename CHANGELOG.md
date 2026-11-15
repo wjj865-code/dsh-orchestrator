@@ -3,13 +3,65 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
-## 未发布：P9 子任务 worktree 隔离（结构化声明 + 职责切分）
+## 0.13.0（2026-11-15）
+
+通知与产物回流闭环（T6）+ 客户端源码化与 vite 构建（P7）+ 子任务计划模式（P8）+ 子任务 worktree 隔离（P9），
+另修 0.13.0 UI 冒烟发现的 F4：面板「隔离」小标没接线，台账里一旦出现 worktree 任务整块面板变白。
+相对 0.12.0 无破坏性变更（minor）——不开 `planFirst` / `worktree` 的任务行为不变，只是面板与 `task_status`
+多了计划/隔离两种小标。
+
+### 交付闭环（T6：通知与 `task_status` 带产物 + present 交付指令）
+
+- **通知产物按可交付性过滤**（T6.1）：`src/notify.js` 的产物区块只列 present 接得住的候选（`lstat` 判普通文件 +
+  绝对路径），目录 / 符号链接 / 不存在 / 相对路径跳过并计数（「另有 K 条产物不能交付（目录 1、不存在 1）」）；
+  候选上限 4，超出折叠成「另有 N 条产物未列出」。
+- **交付指令一条**：单条 done、合并 done、`blocked`/`needs_auth` 打断三条投递路径都写「在你自己的回合里调用
+  `present`，`files` 填上面这些绝对路径」；无可交付候选时不写指令（不诱导一次必然失败的 present）。
+- **`task_status` 产物区块**（T6.2）：`产物：共 N 条（可交付 M 条）` + 可交付绝对路径 + 不可交付按类型计数，
+  与通知**共用同一个渲染函数** `artifactLines()`（不是两处各写一份）；无产物时零字样。
+- **结算通知带产物（D5）**：`settlement.notify()` payload 总带 `artifacts`；新增 `beforeNotify(task, status)` 钩子排在
+  `transition → lastMessage → beforeNotify → notify` 上，`index.js` 把产物收集改接该钩子（通知拿到补齐后的台账行）；
+  钩子抛错只记日志，不回滚终态、不阻塞通知。
+
+### 构建（P7：客户端源码化 + vite）
+
+- **vite 构建脚手架**（T7.1）：`vite@7.3.8` pin 成唯一新增 devDependency；`npm run build` → `dist/client.js`
+  （iife classic script，只有一个 `window.__ModuleLoader__.load`，不含 react）；`pretest` 自动构建、`check:client`
+  校验产物；`test/client-build.test.js` 把「无顶层 import/export」「`__ModuleLoader__.load` 且 id = 包名」
+  「源码不许引 react」三条契约钉住。
+- **源码迁入 `client/src/**`**（T7.2）：2283 行手写 `client.js` 拆成 10 个 ESM 文件（入口 / styles / logic / api / 组件），
+  `STYLE_TEXT` 落到 `client/src/styles.css` 用 `?inline` 构建期内联，旧代码逐字保留；`exports["./client"]` 与 `files`
+  切到 `dist/`，根 `client.js` 删除（`npm pack` 里只剩 `dist/client.js`）；两次构建产物字节一致、map 里 `sources`
+  全为相对路径。
+
+### 计划模式（P8）
+
+`task_create({ planFirst: true })` 让子会话以**计划阶段**起步：只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）。
+子会话只读探索后用 `task_report blocked` 上报计划；用户批准后协调者 `task_message`（或面板「追加」）续派，
+插件在投递成功且任务回到 `running` 之后切回 `workspace-write`、关闭 plan mode。不开 `planFirst` 的任务行为不变。
+
+- **`task_create` 新增 `planFirst`**：只认显式 `true`；与 `readOnly` 互斥（创建期拒绝并给可读原因）。
+- **台账两列**：`plan_first`（0/1）+ `plan_state`（`none` / `planning` / `approved` / `rejected`），
+  旧库逐列 `ALTER TABLE` 补；计划任务在 `planning` 状态进终态收口成 `rejected`，已 `approved` 的保留。
+- **派发进入**：复用 `ensureReadOnly`（`agent/created` 先设 + 激活后幂等补），再用子 agent 作用域的
+  `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 服务缺失只 warn，降级为「只有只读沙箱」；
+  计划任务批准前不注册 target 可写根。
+- **`exit_plan_mode` 拒绝**：在子会话 **agent 作用域** 装 `agent.ctx.tools.guard`（插件根的 guard 是全局的，会误伤协调者），
+  文案指向 `task_report blocked`；协调者与其它会话不受影响。
+- **批准退出**：投递成功 + 回到 `running` 后 `sandbox/mode → workspace-write` + `planMode.set(agent,false)` +
+  补登记 target 可写根；投递失败路径不碰 plan 状态。
+- **视图**：`task_list` 「·计划中」、`task_status` 「计划：」行、`task_detail` 计划阶段说明（只读是预期）、
+  快照/详情下发 `planFirst`/`planState`、面板任务卡「计划中」小标 + 「计划·…」chip + 抽屉概览「计划」行；非计划任务无任何计划字样。
+- **文档**：README「计划任务」、`docs/ARCHITECTURE.md`「计划阶段（P8）」、`docs/LIMITATIONS.md`「计划阶段（P8）」、
+  `docs/UI.md` 概览行、`docs/qa-checklist.md` §35 复核矩阵。
+- **测试**：新增 `test/plan-mode.test.js` 26 条（映射/台账/工具/派发/面板/客户端），当期 `npm test` 672 条全绿。
+- 发版：随 0.13.0 一版打包（原计划 0.13.0 / 0.14.0 分批发改为一版）。
+
+### 隔离（P9）
 
 `task_create({ ..., worktree: true })` 时插件在宿主进程建 `git worktree`，子会话在检出目录
 （`<repo>/.agents/worktrees/<taskId>`）里干活；分支留在你的仓库、**合并由你决定**。不开 `worktree` 的任务行为一字不改
 （一次 git 都不调）。
-
-### worktree 隔离（P9）
 
 - **结构化声明只有两处**（零自然语言解析）：profile 配置 `worktreePolicy` / `worktreeBranchPrefix` /
   `worktreeRecentDays`，与 `task_create` 的 `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` /
@@ -32,33 +84,21 @@
   面板「隔离」小标 + 「隔离·…」chip + 抽屉「隔离」行；普通任务零隔离字样。
 - **文档**：README「隔离任务」、`docs/ARCHITECTURE.md`「worktree 隔离（P9）」、`docs/LIMITATIONS.md`
   「worktree 隔离（P9）」、`docs/qa-checklist.md` §36 复核矩阵。
-- **测试**：新增 `test/worktree.test.js` 26 条 + `test/worktree-request.test.js` 19 条，`npm test` 717 条全绿。
-- 版本号暂留 0.12.0：P6/P7/P8/P9 的发版（0.13.0–0.16.0）统一在发布批次处理，本次只本地提交、不 push。
+- **测试**：新增 `test/worktree.test.js` 26 条 + `test/worktree-request.test.js` 19 条，当期 `npm test` 717 条全绿。
+- 发版：随 0.13.0 一版打包（原计划 0.13.0–0.16.0 分批发改为一版）。
 
-## 未发布：P8 子任务计划模式（planFirst）
+### 修复（F4：面板「隔离」小标未接线会让整块面板变白）
 
-`task_create({ planFirst: true })` 让子会话以**计划阶段**起步：只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）。
-子会话只读探索后用 `task_report blocked` 上报计划；用户批准后协调者 `task_message`（或面板「追加」）续派，
-插件在投递成功且任务回到 `running` 之后切回 `workspace-write`、关闭 plan mode。不开 `planFirst` 的任务行为不变。
-
-### 计划模式（P8）
-
-- **`task_create` 新增 `planFirst`**：只认显式 `true`；与 `readOnly` 互斥（创建期拒绝并给可读原因）。
-- **台账两列**：`plan_first`（0/1）+ `plan_state`（`none` / `planning` / `approved` / `rejected`），
-  旧库逐列 `ALTER TABLE` 补；计划任务在 `planning` 状态进终态收口成 `rejected`，已 `approved` 的保留。
-- **派发进入**：复用 `ensureReadOnly`（`agent/created` 先设 + 激活后幂等补），再用子 agent 作用域的
-  `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 服务缺失只 warn，降级为「只有只读沙箱」；
-  计划任务批准前不注册 target 可写根。
-- **`exit_plan_mode` 拒绝**：在子会话 **agent 作用域** 装 `agent.ctx.tools.guard`（插件根的 guard 是全局的，会误伤协调者），
-  文案指向 `task_report blocked`；协调者与其它会话不受影响。
-- **批准退出**：投递成功 + 回到 `running` 后 `sandbox/mode → workspace-write` + `planMode.set(agent,false)` +
-  补登记 target 可写根；投递失败路径不碰 plan 状态。
-- **视图**：`task_list` 「·计划中」、`task_status` 「计划：」行、`task_detail` 计划阶段说明（只读是预期）、
-  快照/详情下发 `planFirst`/`planState`、面板任务卡「计划中」小标 + 「计划·…」chip + 抽屉概览「计划」行；非计划任务无任何计划字样。
-- **文档**：README「计划任务」、`docs/ARCHITECTURE.md`「计划阶段（P8）」、`docs/LIMITATIONS.md`「计划阶段（P8）」、
-  `docs/UI.md` 概览行、`docs/qa-checklist.md` §35 复核矩阵。
-- **测试**：新增 `test/plan-mode.test.js` 26 条（映射/台账/工具/派发/面板/客户端），`npm test` 672 条全绿。
-- 版本号暂留 0.12.0：P6/P7 与 P8 的发版（0.13.0 / 0.14.0 / 0.15.0）统一在发布批次处理，本次只本地提交、不 push。
+- **根因**：`client/src/views.js` 从 `createViews({…})` 参数里解构 `WORKTREE_STATE_LABEL` / `WORKTREE_SOURCE_LABEL`，
+  但 `client/src/client.js` 既没 import 也没传，两个值恒为 `undefined`；台账里只要有一条 `worktree_state != 'none'`
+  的任务，卡片渲染就抛 `TypeError`，`main` 槽位被宿主错误边界清空（面板全白）。0.13.0 UI 冒烟第 4 项（F4）发现。
+- **修复**：`client.js` 补 import 与传参；`views.js` 两处使用点改成 `WORKTREE_STATE_LABEL?.[…]` /
+  `WORKTREE_SOURCE_LABEL?.[…]`，文案表缺失或服务端新增枚举时退化成原始值、不再打死面板。
+  `dist/client.js` 由 `vite build` 重建（未手改产物）。
+- **回归**：`test/client.test.js` 新增 1 条（+67 行）：喂 `worktreeState:'created'` 快照断言卡片出现「隔离·已隔离」、
+  抽屉「隔离」行状态/分支/检出/决定者四段齐全；未知状态 `weird-state` 断言不抛错并退化成原始值；`none` 任务零「隔离」字样。
+  真机复测（dsh-dev 临时宿主 + headless Chrome/CDP）：`.orch-shell` 1、122 张卡片、console 0 error。
+  发版前 `npm test` **718 条全绿**（717 + 本条回归）。
 
 ## 0.12.0（2026-11-15）
 

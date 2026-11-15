@@ -2,7 +2,7 @@
 
 > DeepSeek Harness 的任务编排插件：一个主会话负责拆任务，子会话并行执行；带跨项目记忆、依赖编排、收件箱、日报和任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（最新 `0.12.0`）
+- npm：`@wjj865-code/dsh-orchestrator`（最新 `0.13.0`）
 - 仓库：<https://github.com/wjj865-code/dsh-orchestrator>
 - License：MIT
 
@@ -30,7 +30,7 @@
 1. DSH → 插件 → **添加插件**，粘贴：
 
    ```text
-   @wjj865-code/dsh-orchestrator@0.12.0
+   @wjj865-code/dsh-orchestrator@0.13.0
    ```
 
 2. **彻底退出 DSH 再启动**（只关窗口不生效）。
@@ -291,8 +291,8 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 ```powershell
 npm version patch --no-git-tag-version
 git add package.json
-git commit -m "release: v0.12.0"
-git tag -a v0.12.0 -m "v0.12.0"
+git commit -m "release: v0.13.0"
+git tag -a v0.13.0 -m "v0.13.0"
 git push origin main --follow-tags
 ```
 
@@ -339,7 +339,7 @@ npm run mirror:sync    # 没有就 PUT 同步请求并等到出现；--no-wait �
 
 | 现象 | 处理 |
 |---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.12.0`；刷新页面；彻底重启 DSH |
+| 侧栏没有「主会话」 | 确认装的是 `0.13.0`；刷新页面；彻底重启 DSH |
 | 插件页/`npm i @latest` 装到的是旧版 | 镜像还没同步：`npm run mirror:check` 看 npmmirror 的 `latest`；缺就 `npm run mirror:sync`；再看 `release.yml` 的「触发 npmmirror 镜像同步」步骤是否成功（本地 `npm view` 结果可能是缓存，加 `--prefer-online` 复查） |
 | 会话头没有「☰ 任务」 | 该入口只在主会话显示：确认当前会话就是侧栏「主会话」打开的那个；没建主会话先从侧栏入口创建 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页和日志 |
