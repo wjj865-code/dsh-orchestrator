@@ -16,7 +16,7 @@
 | 分组/写域/优先级 | `group` 分组、`writeScopes` 冲突提示、`priority` 队列排序 |
 | 跨项目记忆 | 分层沉淀：done 摘要进 `task-log`（只归档、不进任务详情），经验/决策/偏好蒸馏成原子事实才随 `task_detail` 注入；`history_search` / `project_context` 补上下文 |
 | 收件箱/日报 | `task_inbox` 看待决与卡点；`digestAt` 开每日汇总 |
-| 任务面板 | 侧栏入口 + 会话头面板；详情/停止/重派/追加；产物库按项目/日期分组、可预览/复制 |
+| 任务面板 | 会话头入口；DeepSeek 风格三段式（命令栏 / 筛选轨+任务卡 / 右侧详情抽屉）；详情/停止/重派/追加；产物库按项目/日期分组、可预览/复制 |
 | 产物收集 | done 自动从 `workspaceChanges` 收集改动文件，与显式 `artifacts` 按路径去重合并 |
 | 结算闭环 | 子会话结束/中断自动收场：正常完成→已完成，被中断→已取消，异常→失败，只报过进展→会话丢失 |
 | 目标状态 | 子任务目标同步到平台 `ctx.goals`（create 后立即 disarm，不自动续轮）；台账与面板只读展示 phase/activation |
@@ -54,6 +54,24 @@ https://github.com/wjj865-code/dsh-orchestrator
   客户端把当前会话 id 发给 `/api/orchestrator` 的 `session-role` 端点，宿主回答是不是主会话。
   信号不可用（拿不到当前会话、宿主请求失败、响应异常）时**默认隐藏**——宁可少一个入口，也不在子会话里露出任务面板。
 - 面板右上角「打开主会话」：创建/复用一个主会话。
+
+### 面板长什么样（U2）
+
+面板走 DeepSeek 设计平台风格，分成三段：
+
+| 段 | 内容 |
+| --- | --- |
+| 顶部命令栏 | 标题 + 主会话状态点、任务搜索框、刷新、打开主会话；下面是 4 张指标卡（进行中/待你决定/已完成/失败，点一下等于切筛选） |
+| 中部工作区 | 左侧筛选轨（带计数徽标）+ 任务卡列表；切到「产物」变成产物库（按项目/日期分组） |
+| 右侧详情抽屉 | 点任务卡或「详情」从右侧滑入，遮罩、`Esc`、关闭按钮都能收起 |
+
+- 颜色/圆角/阴影/动效全部取宿主 `--dsw-*` token，**深浅色主题自动跟随**，面板不写死颜色。
+- 抽屉里 7 个可折叠区块：概览、**最新回复**（子会话最后一条回复）、**Brief**（验收/约束/背景/原话）、
+  **目标状态**（只读）、**消息**（待发/已投递/投递失败）、**依赖**（上下游）、**产物**（复制路径）；
+  底部动作条：停止（二次确认）/重派/追加消息/打开子会话。
+- 交互细节：卡片 hover 与按下反馈、抽屉滑入滑出、区块折叠动画、骨架加载态、空态、带「重试」的错误条、
+  `prefers-reduced-motion` 下关闭动效。设计细节见 [docs/UI.md](docs/UI.md)。
+
 
 ## 怎么用
 
@@ -219,7 +237,8 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 - `/api/orchestrator` 由 connection owner-only 鉴权；`snapshot`/`detail`/`artifacts`/`preview` 只读，`stop`/`retry`/`message` 是面板动作。
 - 通知走 `agent.steer`，5 秒合并；每次投递写 `notifications`。
 
-更细的机制、目标目录推断、沙箱与错误降级见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+更细的机制、目标目录推断、沙箱与错误降级见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；
+面板/抽屉的布局、`--dsw-*` token 对照与交互清单见 [docs/UI.md](docs/UI.md)。
 
 ## 发版（维护者）
 
@@ -247,6 +266,8 @@ git push origin main --follow-tags
 3. `task_create` 能派发；子会话 `task_report done` 后主会话收到通知。
 4. 建 `dependsOn` 任务时先 `waiting_dep`，前置完成后自动派发。
 5. 面板「详情」「产物」「停止/重派/追加」可用。
+6. 面板三段式布局成立：顶栏指标卡可点、筛选轨有计数、点任务卡从右侧滑出详情抽屉（`Esc`/遮罩可关）；
+   抽屉 7 个区块能折叠、有空态；宿主切深浅色时面板配色跟随（细节见 [docs/UI.md](docs/UI.md)）。
 
 ## 排障
 

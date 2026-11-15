@@ -42,8 +42,24 @@ const load = (options = {}) => {
       return () => { if (typeof dispose === 'function') dispose() }
     },
   }
+  // React 垫片：只够「渲染一次」用（面板首帧冒烟）。hook 顺序按调用序号记录，
+  // 不重渲染也就没有依赖数组/清理逻辑——真实行为归浏览器，这里只保证首帧不崩、结构正确。
+  const hooks = { cursor: 0, slots: [] }
+  const resetHooks = () => { hooks.cursor = 0; hooks.slots.length = 0 }
   const requireFn = () => ({
     createElement: (type, props, ...children) => ({ type, props, children }),
+    useState: initial => {
+      const index = hooks.cursor++
+      if (!(index in hooks.slots)) hooks.slots[index] = initial
+      return [hooks.slots[index], () => {}]
+    },
+    useRef: initial => {
+      const index = hooks.cursor++
+      if (!(index in hooks.slots)) hooks.slots[index] = { current: initial }
+      return hooks.slots[index]
+    },
+    useCallback: (fn) => { hooks.cursor += 1; return fn },
+    useEffect: () => { hooks.cursor += 1 },
   })
   const sandbox = {
     window: {
@@ -55,7 +71,7 @@ const load = (options = {}) => {
   // 只有显式给了 fetch 的用例才注入；默认（老用例）走「信号不可用 → 默认隐藏」的降级路径。
   if (options.fetch !== undefined) sandbox.fetch = options.fetch
   vm.runInNewContext(source, sandbox)
-  return { loaded, ctx, registrations, selected, opened, loadedIds, cleanups, sessionListeners }
+  return { loaded, ctx, registrations, selected, opened, loadedIds, cleanups, sessionListeners, resetHooks }
 }
 
 const flush = async () => { await new Promise(resolve => setImmediate(resolve)) }
@@ -408,4 +424,210 @@ test('任务入口闸门源码：session-role 端点 + uiSession/sessions 信号
   assert.match(source, /hooks: \{ mainView \}/)
   assert.match(source, /useMainView/)
   assert.match(source, /if \(visible !== true\) return null/)
+})
+
+// 面板首帧冒烟：client.js 里 TasksPanel 是整个 UI 的主体，之前只有源码正则断言。
+// 这条用例真的把组件渲染一次（React 垫片），确保三段式结构与加载态能出来，不会一挂载就抛。
+test('U2 面板首帧渲染：三段式结构 + 骨架加载态 + 抽屉默认关闭', () => {
+  const { loaded, ctx, registrations, resetHooks } = load()
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  assert.equal(typeof panel.component, 'function')
+  resetHooks()
+  const tree = panel.component({ openSession: () => {} })
+  assert.equal(tree.type, 'div')
+  assert.equal(tree.props.className, 'orch-shell')
+
+  const classes = []
+  const nodes = []
+  const walk = node => {
+    if (node === null || node === undefined) return
+    if (Array.isArray(node)) { for (const child of node) walk(child); return }
+    if (typeof node !== 'object') return
+    // 函数组件（Icon/Badge/Chip/Banner/SkeletonList…）垫片不会自动展开，这里手动调一次。
+    if (typeof node.type === 'function') { walk(node.type(node.props ?? {})); return }
+    nodes.push(node)
+    if (node.props !== null && node.props !== undefined && typeof node.props.className === 'string') {
+      classes.push(...node.props.className.split(' '))
+    }
+    walk(node.children)
+  }
+  walk(tree)
+  // 三段式：顶部命令栏 / 中部（筛选轨 + 列表）/ 右侧抽屉层。
+  for (const cls of [
+    'orch-topbar', 'orch-metrics', 'orch-body', 'orch-rail', 'orch-main',
+    'orch-layer', 'orch-scrim', 'orch-drawer',
+  ]) {
+    assert.ok(classes.includes(cls), `首帧缺少布局节点 ${cls}`)
+  }
+  // 首帧还没有快照 → 骨架卡（不是空白，也不是错误态）。
+  assert.ok(classes.includes('orch-skeleton-card'), '首帧应显示加载骨架')
+  // 概览卡 4 个、筛选项 7 个。
+  assert.equal(classes.filter(name => name === 'orch-metric').length, 4)
+  assert.equal(classes.filter(name => name === 'orch-rail-item').length, 7)
+  // 抽屉默认关闭，且关闭时不渲染内容（只挂壳，靠 data-open 过渡滑出）。
+  const drawer = nodes.find(node => node.type === 'aside' && node.props?.className === 'orch-drawer')
+  assert.ok(drawer, '抽屉壳应常驻挂载')
+  assert.equal(drawer.props['data-open'], 'false')
+  assert.equal(drawer.props['aria-hidden'], 'true')
+  assert.deepEqual(drawer.children, [null])
+  const scrim = nodes.find(node => node.props?.className === 'orch-scrim')
+  assert.equal(scrim.props['data-open'], 'false')
+})
+
+// ---------------------------------------------------------------------------
+// U2：DeepSeek 风格 + 三段式布局 + 右侧抽屉详情。
+// 面板样式写在 client.js 里的 STYLE_TEXT，运行时注入 <style id="dsh-orchestrator-styles">：
+// 客户端插件是经典脚本、不能 import CSS，hover/过渡/关键帧也只能靠样式表表达。
+// ---------------------------------------------------------------------------
+
+test('U2 三段式布局：顶部命令栏 / 中部列表（筛选轨+任务卡）/ 右侧抽屉', () => {
+  for (const cls of [
+    'orch-shell', 'orch-topbar', 'orch-metrics', 'orch-body', 'orch-rail',
+    'orch-main', 'orch-drawer', 'orch-scrim', 'orch-layer',
+  ]) {
+    assert.ok(source.includes(cls), `缺少布局 class ${cls}`)
+  }
+  // 抽屉用 data-open 驱动 transform 过渡（关闭时仍挂载，才能滑出而不是瞬移）。
+  assert.match(source, /'data-open': drawerOpen \? 'true' : 'false'/)
+  assert.match(source, /const STYLE_ID = 'dsh-orchestrator-styles'/)
+  assert.match(source, /const ensureStyles = \(\) =>/)
+  assert.match(source, /style\.id = STYLE_ID/)
+  assert.match(source, /style\.textContent = STYLE_TEXT/)
+  assert.match(source, /ensureStyles\(\)/)
+})
+
+test('U2 DeepSeek 风格：颜色/圆角/层次全部走宿主 --dsw-* 设计平台 token', () => {
+  const tokens = [
+    // 表面与层次
+    '--dsw-alias-bg-layer-1', '--dsw-alias-bg-layer-2', '--dsw-alias-bg-layer-3',
+    '--dsw-alias-card-fill', '--dsw-alias-card-fill-hover', '--dsw-alias-bg-base',
+    '--dsw-alias-bg-mask-1',
+    // 文字三档
+    '--dsw-alias-label-primary', '--dsw-alias-label-secondary', '--dsw-alias-label-tertiary',
+    // 描边
+    '--dsw-alias-border-l1', '--dsw-alias-border-l2', '--dsw-alias-border-l3', '--dsw-alias-border-selected',
+    // 状态语义色
+    '--dsw-alias-state-success-primary', '--dsw-alias-state-error-primary',
+    '--dsw-alias-state-warn-primary', '--dsw-alias-state-business-primary',
+    // 交互层
+    '--dsw-alias-interactive-bg-hover', '--dsw-alias-interactive-bg-active',
+    '--dsw-alias-interactive-bg-hover-danger', '--dsw-alias-button-primary-fill',
+    // 圆角 / 阴影 / 焦点 / 动效 / 骨架
+    '--dsw-radius-sm', '--dsw-radius-md', '--dsw-radius-lg',
+    '--dsw-shadow-lv1', '--dsw-elevation-prominent',
+    '--dsw-focus-ring-color', '--dsw-alias-bg-skeleton',
+    '--ds-transition-duration', '--ds-ease-in-out',
+  ]
+  for (const token of tokens) assert.ok(source.includes(token), `缺少设计平台 token ${token}`)
+  // 旧代码里的 --dsw-alias-color-* 在宿主 token 表里并不存在（一直是失效的 fallback）。
+  assert.doesNotMatch(source, /--dsw-alias-color-/)
+})
+
+test('U2 交互：hover / 过渡动画 / 骨架加载态 / 空态 / 错误态 / 二次确认 / 折叠', () => {
+  // 样式层
+  assert.match(source, /@keyframes orch-shimmer/)
+  assert.match(source, /@keyframes orch-rotate/)
+  assert.match(source, /@keyframes orch-slide-in/)
+  assert.match(source, /\.orch-card:hover/)
+  assert.match(source, /\.orch-btn:hover/)
+  assert.match(source, /\.orch-section-body-wrap/)
+  assert.match(source, /prefers-reduced-motion/)
+  // 加载态 / 空态 / 错误态
+  assert.match(source, /orch-skeleton/)
+  assert.match(source, /orch-empty/)
+  assert.match(source, /orch-banner--error/)
+  assert.match(source, /重新加载/)
+  // 破坏性动作二次确认（停止 → 确认停止 / 取消）
+  assert.match(source, /confirmStop/)
+  assert.match(source, /确认停止/)
+  assert.match(source, /取消/)
+  // 折叠展开：区块标题是 button，带 aria-expanded
+  assert.match(source, /'aria-expanded': !isCollapsed/)
+  // 抽屉按 Esc 关闭
+  assert.match(source, /event\.key === 'Escape'/)
+  // 右抽屉里的四区块与 B1 最新回复、G1 目标状态都还在
+  assert.match(source, /detailSection\('最新回复'/)
+  // 区块签名是 (key, title, hint, body)：标题必须显式传，少传一个参数会把提示文案当标题
+  // （U2 实现时踩过：标题丢了、hint 渲染成区块体）。
+  for (const title of ['概览', '最新回复', 'Brief', '目标状态', '消息', '依赖', '产物']) {
+    assert.match(source, new RegExp(`detailSection\\('${title}', '${title}'`), `${title} 必须同时作为 key 与标题传入`)
+  }
+})
+
+test('U2 样式表自检：括号成对 + 组件用到的 class 都有样式规则', () => {
+  const { STYLE_TEXT } = load().loaded.__test
+  const count = (text, char) => text.split(char).length - 1
+  assert.equal(count(STYLE_TEXT, '{'), count(STYLE_TEXT, '}'), '样式表花括号必须成对')
+  assert.equal(count(STYLE_TEXT, '('), count(STYLE_TEXT, ')'), '样式表圆括号必须成对')
+  assert.doesNotMatch(STYLE_TEXT, /\$\{/, '样式表里不应残留模板占位符')
+  // 组件里出现的 orch-* class 名必须在样式表里有对应规则：防止改名只改一半。
+  // 前缀 `--orch-*` 是 CSS 自定义属性（如 --orch-tone），不是 class，用 [^\w-] 排除掉。
+  const keyframes = new Set(['orch-rotate', 'orch-shimmer', 'orch-slide-in'])
+  const used = new Set()
+  for (const match of source.matchAll(/(?:^|[^\w-])(orch-[a-z0-9-]+)/g)) used.add(match[1])
+  const missing = [...used].filter(name => !keyframes.has(name) && !STYLE_TEXT.includes(`.${name}`))
+  assert.deepEqual(missing, [], `这些 class 没有对应样式规则：${missing.join(', ')}`)
+})
+
+test('U2 纯函数：筛选/计数与产物分组（按项目/日期）', () => {
+  const { loaded } = load()
+  const {
+    countTasks, matchesFilter, matchesQuery, groupArtifacts, artifactDate, artifactProject, TONE_COLOR,
+  } = loaded.__test
+  const tasks = [
+    { id: 't-1', title: '跑测试', status: 'running', artifacts: [{ path: 'a.md' }] },
+    { id: 't-2', title: '等你决定', status: 'waiting_user', artifacts: [] },
+    { id: 't-3', title: '已完成', status: 'done', artifacts: [{ path: 'b.md' }, { path: 'c.md' }] },
+    { id: 't-4', title: '失败', status: 'failed', artifacts: [] },
+    { id: 't-5', title: '取消', status: 'cancelled', artifacts: [] },
+    { id: 't-6', title: '等前置', status: 'waiting_dep', artifacts: [] },
+  ]
+  // 注意：client.js 跑在 vm 沙箱里，返回的数组/对象来自另一个 realm，
+  // deepStrictEqual 会因原型不同判不等 —— 统一用 Array.from / Object.assign 搬回本 realm 再比。
+  const plain = value => Object.assign({}, value)
+  assert.deepEqual(plain(countTasks(tasks)), {
+    all: 6, active: 2, waiting: 1, done: 1, failed: 1, closed: 1, artifacts: 2,
+  })
+  assert.equal(tasks.filter(task => matchesFilter(task, 'all')).length, 6)
+  assert.equal(tasks.filter(task => matchesFilter(task, 'active')).length, 2)
+  assert.equal(tasks.filter(task => matchesFilter(task, 'waiting')).length, 1)
+  assert.equal(tasks.filter(task => matchesFilter(task, 'done')).length, 1)
+  assert.equal(tasks.filter(task => matchesFilter(task, 'failed')).length, 1)
+  assert.equal(tasks.filter(task => matchesFilter(task, 'closed')).length, 1)
+  assert.equal(tasks.filter(task => matchesFilter(task, 'artifacts')).length, 2)
+  assert.equal(matchesFilter({ status: 'unknown-status' }, 'all'), true)
+  assert.equal(matchesFilter({}, 'weird-filter'), true)
+  // 搜索：标题/id/目录都能命中，空查询放行。
+  assert.equal(matchesQuery(tasks[0], '跑'), true)
+  assert.equal(matchesQuery({ id: 't-abc', title: 'x' }, 'ABC'), true)
+  assert.equal(matchesQuery({ targetDir: 'C:/work/demo' }, 'demo'), true)
+  assert.equal(matchesQuery(tasks[0], '   '), true)
+  assert.equal(matchesQuery(tasks[0], '不存在'), false)
+  // 产物分组：按项目名升序、按日期降序；同组内按时间倒序。
+  const at = new Date(2026, 4, 7, 9, 0, 0).getTime()
+  assert.equal(artifactDate(at), '2026-05-07')
+  assert.equal(artifactDate(undefined), '日期未知')
+  assert.equal(artifactProject({ project: '项目A' }), '项目A')
+  assert.equal(artifactProject({ targetDir: 'C:\\work\\proj\\' }), 'proj')
+  assert.equal(artifactProject({}), '未关联项目')
+  const rows = [
+    { path: 'a.md', at: new Date(2026, 4, 7).getTime(), project: 'p2', targetDir: null },
+    { path: 'b.md', at: new Date(2026, 4, 8).getTime(), project: 'p1', targetDir: null },
+    { path: 'c.md', at: new Date(2026, 4, 7, 12).getTime(), project: 'p2', targetDir: null },
+  ]
+  const groupsOf = (items, mode) => Array.from(
+    groupArtifacts(items, mode),
+    ([name, list]) => [name, Array.from(list, item => item.path)],
+  )
+  assert.deepEqual(groupsOf(rows, 'project'), [['p1', ['b.md']], ['p2', ['c.md', 'a.md']]])
+  assert.deepEqual(groupsOf(rows, 'date'), [['2026-05-08', ['b.md']], ['2026-05-07', ['c.md', 'a.md']]])
+  // 脏数据（null / 非对象 / 空路径）不进分组。
+  const dirty = Array.from(groupArtifacts([null, {}, { path: '' }, { path: 'ok.md' }], 'project'),
+    ([name, list]) => [name, Array.from(list, item => item.path)])
+  assert.deepEqual(dirty, [['未关联项目', ['ok.md']]])
+  // 状态色也走设计平台 token（不再是宿主里不存在的 --dsw-alias-color-*）。
+  for (const tone of ['good', 'bad', 'warn', 'info', 'muted']) {
+    assert.match(TONE_COLOR[tone], /^var\(--dsw-alias-(state|label)-/, tone)
+  }
 })

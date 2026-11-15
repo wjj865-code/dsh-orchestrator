@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { openLedger, createTask, getTask, listTasks, transition, addMessage, setTaskArtifacts } from '../src/ledger.js'
+import {
+  openLedger, createTask, getTask, listTasks, transition, addMessage, setTaskArtifacts, setTaskLastMessage,
+} from '../src/ledger.js'
 import { createPanelActions } from '../src/panel-actions.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
@@ -590,6 +592,38 @@ test('detail 消息投递失败：followup 标 failed，并保留 delivery_faile
   const detail = actions.detail(task.id)
   assert.equal(detail.messages.find(row => row.kind === 'followup').delivery, 'failed')
   assert.equal(detail.messages.some(row => row.kind === 'delivery_failed'), true)
+  db.close()
+})
+
+// U2/B1：详情抽屉新增「最新回复」区块（子会话最后一条 assistant 消息）。
+// 内联消息给正文，大文件消息给摘要 + 路径；没有回复时是 null（面板显示空态），不造空字符串。
+test('detail 回传最新回复（B1）：内联正文 / 文件摘要 / 没有回复为 null', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const task = runningTask(db, '有回复')
+  const at = Date.now()
+  setTaskLastMessage(db, task.id, {
+    at, stopReason: 'end_turn', source: 'settlement', bytes: 6, chars: 2, digest: 'd1',
+    summary: '搞定', stored: 'inline', text: '搞定',
+  })
+  const inline = actions.detail(task.id)
+  assert.equal(inline.ok, true)
+  assert.equal(inline.task.lastMessage.stored, 'inline')
+  assert.equal(inline.task.lastMessage.text, '搞定')
+  assert.equal(inline.task.lastMessage.at, at)
+  // 大消息只留摘要 + 路径，正文不进 detail（避免详情接口被 64 KiB 正文撑大）。
+  setTaskLastMessage(db, task.id, {
+    at, stopReason: null, source: 'settlement', bytes: 90000, chars: 90000, digest: 'd2',
+    summary: '很长…', stored: 'file', path: 'C:/state/reports/t-x.md',
+  })
+  const file = actions.detail(task.id)
+  assert.equal(file.task.lastMessage.stored, 'file')
+  assert.equal(file.task.lastMessage.path, 'C:/state/reports/t-x.md')
+  assert.equal(file.task.lastMessage.text, undefined)
+  assert.equal(file.task.lastMessage.summary, '很长…')
+  // 没有回复的任务：null，而不是 {} 或 ''。
+  const lonely = createTask(db, { brief: sampleBrief({ title: '没有回复' }), coordinatorSession: 's-1' })
+  assert.equal(actions.detail(lonely.id).task.lastMessage, null)
   db.close()
 })
 

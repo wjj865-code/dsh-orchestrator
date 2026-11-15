@@ -220,16 +220,32 @@
 |---|---|
 | `snapshot` | 只读快照 |
 | `open-main` | 创建/打开主会话 |
-| `detail` | 任务详情、消息、依赖、产物 |
+| `detail` | 任务详情、消息、依赖、产物、最新回复（B1） |
 | `artifacts` | 产物汇总（项目/日期分组所需字段） |
 | `preview` | 预览台账里登记的文本产物（前 64 KiB） |
 | `stop` | 停止任务 |
 | `retry` | 重派 failed/orphaned |
 | `message` | 追加消息 |
 
-面板 2s 轮询，连续失败退避 30s；任务行「详情/停止/重派/追加」；「产物」筛选打开产物库（按项目/日期分组，预览/复制/打开子会话）。
+面板 2s 轮询，连续失败退避 30s；任务卡「详情/停止/重派/追加/打开子会话」；「产物」筛选打开产物库（按项目/日期分组，预览/复制/打开子会话/详情）。
 
-详情抽屉分四区块：**brief**（验收/约束/背景/用户原话）、**消息**（最近 20 条；`followup` 标待发/已投递/投递失败）、**依赖**（上游前置 + 下游依赖本任务，各带状态与错误）、**产物**（路径/标签/存在性，路径可一键复制）。四区块都有空态。投递状态落在 `messages.meta_json.delivery`（pending → delivered/failed，只改 meta 不加行）；A3 之前的旧消息按紧随其后的 `delivery_failed` 行推断。
+## 面板与详情（UI U2）
+
+面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件，视觉规范见 [UI.md](UI.md)。三件事值得记在架构里：
+
+- **样式表怎么进来的**：客户端插件是经典脚本（不能 `import` CSS），所以 `client.js` 把整张表写成 `STYLE_TEXT`
+  字符串，`ensureStyles()` 在 `apply()` 里按 `#dsh-orchestrator-styles` 去重注入 `<style>`。颜色/圆角/阴影/动效
+  全部取宿主 `@deepseek-ai/dsh-client-ui-theme` 的 `--dsw-*` / `--ds-*` token，深浅色由宿主写在
+  `body[data-ds-dark-theme]` 的 alias token 决定，面板不做任何主题判断。
+- **三段式**：① 顶部命令栏（标题/主会话状态/搜索/刷新/打开主会话）② 中部工作区（筛选轨 + 任务卡列表 / 产物库）
+  ③ 右侧详情抽屉。抽屉常驻挂载、`data-open` 驱动 `transform` 过渡；`Esc`/遮罩/关闭按钮都能收起。
+  列表侧把纯逻辑提到组件外（`countTasks` / `matchesFilter` / `matchesQuery` / `groupArtifacts`），单测直接断言行为。
+- **详情抽屉 7 区块**：概览、**最新回复**（B1，`detail.task.lastMessage`）、**brief**（验收/约束/背景/用户原话，
+  结构化列表）、**目标状态**（G1，只读）、**消息**（最近 20 条；`followup` 标待发/已投递/投递失败）、
+  **依赖**（上游前置 + 下游依赖本任务，各带状态与错误）、**产物**（路径/标签/存在性，路径可一键复制）。
+  每个区块都可折叠（`aria-expanded` + `0fr↔1fr` 过渡），都有空态。底部动作条：停止（内联二次确认）/重派/追加消息/打开子会话。
+  投递状态落在 `messages.meta_json.delivery`（pending → delivered/failed，只改 meta 不加行）；A3 之前的旧消息按紧随其后的 `delivery_failed` 行推断。
+
 
 ## 落盘与日志
 

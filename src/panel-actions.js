@@ -109,6 +109,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         brief: task.brief,
         // 平台 goal 只读镜像：面板只展示，不提供暂停/恢复/清除动作。
         goalState: task.goal_state ?? null,
+        // B1 最新返回消息：结算时落库的最后一条 assistant 消息。
+        // 内联消息给正文（≤64 KiB），大文件消息只给摘要 + 路径，详情接口不读盘。
+        lastMessage: task.last_message ?? null,
         count: {
           messages: messages.length,
           artifacts: task.artifacts.length,
