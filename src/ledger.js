@@ -429,6 +429,22 @@ export function addNotification(db, { taskId, level, status = 'delivered', deliv
   return Number(result.lastInsertRowid)
 }
 
+/**
+ * 删除一条任务（面板「删除」/终态收尾）：任务行 + 它的 messages / notifications 一起清掉。
+ * 只做台账级联：产物文件、reports 正文文件、记忆（memories）不动——把它们当用户数据/知识，
+ * 删台账不该顺手删盘；平台侧的子会话历史也没有删除 API（见 docs/LIMITATIONS.md）。
+ * 调用方（panel-actions）负责门控：只允许终态、且不能有活跃下游依赖。
+ * @returns {undefined | {task: object, deleted: {messages: number, notifications: number}}}
+ */
+export function deleteTask(db, id) {
+  const task = getTask(db, id)
+  if (task === undefined) return undefined
+  const messages = Number(db.prepare('DELETE FROM messages WHERE task_id = ?').run(id).changes)
+  const notifications = Number(db.prepare('DELETE FROM notifications WHERE task_id = ?').run(id).changes)
+  db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
+  return { task, deleted: { messages, notifications } }
+}
+
 export function getSetting(db, key) {
   return db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value
 }

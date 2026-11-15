@@ -73,6 +73,12 @@ export const ACTION_ERRORS = Object.freeze({
     panel: ({ label }) => `任务「${label}」还没有子会话，先停止再重建。`,
     tool: ({ label }) => `任务「${label}」还没有子会话，先停止再重建。`,
   }),
+  // 失败任务：能重派，但不再续派（旧面板既能「追加」又能「重派」，语义重复且容易把消息投进死会话）。
+  MESSAGE_NOT_FOLLOWABLE: define({
+    http: 409,
+    panel: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，不能续派；失败任务用「重派」按原 brief 新起一条，要新工作请 task_create。`,
+    tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，不能续派；失败任务用 task_retry 按原 brief 新起一条，要新工作请 task_create。`,
+  }),
   MESSAGE_DELIVERY_FAILED: define({
     http: 502,
     panel: ({ reason }) => `续派失败：${reason}`,
@@ -81,6 +87,17 @@ export const ACTION_ERRORS = Object.freeze({
   MESSAGE_UNREACHABLE: define({
     http: 502,
     tool: ({ label, reason }) => `续派失败：任务「${label}」的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`,
+  }),
+  // delete：只允许删终态任务；活跃的还有子会话/队列占位，先停止。
+  DELETE_TASK_ACTIVE: define({
+    http: 409,
+    panel: ({ label, statusLabel }) => `任务「${label}」还在${statusLabel}，不能删除；先「停止」再删。`,
+    tool: ({ label, statusLabel }) => `任务「${label}」还在${statusLabel}，不能删除；先 task_stop 再删。`,
+  }),
+  DELETE_HAS_ACTIVE_DEPENDENTS: define({
+    http: 409,
+    panel: ({ label, links }) => `还有活跃任务依赖「${label}」（${links}），删了会让它们变成缺前置；先处理下游再删。`,
+    tool: ({ label, links }) => `还有活跃任务依赖「${label}」（${links}），删了会让它们变成缺前置；先处理下游再删。`,
   }),
   // artifacts 预览
   ARTIFACT_NOT_FOUND: define({

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts, setTaskLastMessage } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts, setTaskLastMessage } from '../src/ledger.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -452,4 +452,24 @@ test('M1 迁移：旧 kind=task-done 迁到 task-log 并重算 hash，重复打�
   assert.equal(rows[0].hash, row.hash)
   assert.equal(again.prepare("SELECT count(*) AS n FROM memories WHERE kind = 'task-done'").get().n, 0)
   again.close()
+})
+
+test('deleteTask：删任务行并级联 messages/notifications，返回删除计数；不存在返回 undefined', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief({ title: '待删' }), coordinatorSession: 's-1' })
+  transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  transition(db, task.id, 'done')
+  addMessage(db, task.id, { kind: 'brief', rendered: '简报' })
+  addMessage(db, task.id, { kind: 'report', rendered: '结果' })
+  addNotification(db, { taskId: task.id, level: 'info' })
+  addNotification(db, { taskId: task.id, level: 'warn' })
+  const removed = deleteTask(db, task.id)
+  assert.equal(removed.task.id, task.id)
+  assert.deepEqual(removed.deleted, { messages: 2, notifications: 2 })
+  assert.equal(getTask(db, task.id), undefined)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages').get().n, 0)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM notifications').get().n, 0)
+  // 幂等：再删一次返回 undefined，不抛错。
+  assert.equal(deleteTask(db, task.id), undefined)
+  db.close()
 })

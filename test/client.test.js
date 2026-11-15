@@ -71,7 +71,7 @@ const load = (options = {}) => {
   // 只有显式给了 fetch 的用例才注入；默认（老用例）走「信号不可用 → 默认隐藏」的降级路径。
   if (options.fetch !== undefined) sandbox.fetch = options.fetch
   vm.runInNewContext(source, sandbox)
-  return { loaded, ctx, registrations, selected, opened, loadedIds, cleanups, sessionListeners, resetHooks }
+  return { loaded, ctx, registrations, selected, opened, loadedIds, cleanups, sessionListeners, resetHooks, hooks }
 }
 
 const flush = async () => { await new Promise(resolve => setImmediate(resolve)) }
@@ -630,4 +630,132 @@ test('U2 纯函数：筛选/计数与产物分组（按项目/日期）', () => 
   for (const tone of ['good', 'bad', 'warn', 'info', 'muted']) {
     assert.match(TONE_COLOR[tone], /^var\(--dsw-alias-(state|label)-/, tone)
   }
+})
+
+// ---------------------------------------------------------------------------
+// 面板优化：追加消息状态门控 + 删除任务（仅终态、二次确认、台账级联清理）。
+// 按钮可见性只读快照/detail 下发的 canFollowup / canDelete（服务端门控同源），
+// 前端不再抄一份状态表——这条用例把「前端只看下发字段」渲染出来验证。
+// ---------------------------------------------------------------------------
+const flattenText = node => {
+  if (node === null || node === undefined) return ''
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(flattenText).join('')
+  if (typeof node !== 'object') return ''
+  if (typeof node.type === 'function') return flattenText(node.type(node.props ?? {}))
+  return flattenText(node.children)
+}
+
+const collect = (tree, predicate, out = []) => {
+  if (tree === null || tree === undefined) return out
+  if (Array.isArray(tree)) {
+    for (const child of tree) collect(child, predicate, out)
+    return out
+  }
+  if (typeof tree !== 'object') return out
+  if (typeof tree.type === 'function') {
+    collect(tree.type(tree.props ?? {}), predicate, out)
+    return out
+  }
+  if (predicate(tree)) out.push(tree)
+  collect(tree.children, predicate, out)
+  return out
+}
+
+const taskRow = (id, status, extra = {}) => ({
+  id, title: id, status, label: status, tone: 'info', childSessionId: null, targetDir: null,
+  readOnly: false, retryOf: null, groupId: null, dependsOn: [], writeScopes: [], priority: 0,
+  question: null, options: [], artifacts: [], queued: false, stale: false,
+  updatedAt: 0, lastEventAt: 0, error: null, goalState: null,
+  canFollowup: false, canDelete: false, ...extra,
+})
+
+const snapshotOf = tasks => ({
+  ok: true, at: 0, mainSession: { id: 's-main', live: true }, inboxCount: 0, tasks,
+})
+
+test('按钮门控：追加只给可续派任务，删除只给终态任务（读快照 canFollowup/canDelete）', () => {
+  const { loaded, ctx, registrations, resetHooks, hooks } = load()
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  resetHooks()
+  hooks.slots[0] = snapshotOf([
+    taskRow('t-run', 'running', { childSessionId: 'c-run', canFollowup: true }),
+    taskRow('t-pending', 'pending'),
+    taskRow('t-done', 'done', { childSessionId: 'c-done', canDelete: true }),
+    taskRow('t-done-blocked', 'done', { canDelete: false }),
+    taskRow('t-failed', 'failed', { childSessionId: 'c-fail', canDelete: true }),
+  ])
+  const tree = panel.component({ openSession: () => {} })
+  const cards = collect(tree, node => node.type === 'article')
+  assert.equal(cards.length, 5, '5 条任务各一张卡')
+  const labelsOfCard = (status, title) => {
+    const card = cards.find(node => node.props['data-status'] === status && flattenText(node).includes(title))
+    assert.ok(card, `找不到卡片 ${status}/${title}`)
+    return collect(card, node => node.type === 'button').map(flattenText)
+  }
+  const running = labelsOfCard('running', 't-run')
+  const pending = labelsOfCard('pending', 't-pending')
+  const done = labelsOfCard('done', 't-done')
+  const doneBlocked = labelsOfCard('done', 't-done-blocked')
+  const failed = labelsOfCard('failed', 't-failed')
+  assert.ok(running.includes('追加'), '进行中任务应能追加消息')
+  assert.equal(running.includes('删除'), false, '进行中任务不能删除（先停止）')
+  assert.ok(pending.includes('停止'))
+  assert.equal(pending.includes('追加'), false, '还没有子会话，不显示追加')
+  assert.equal(pending.includes('删除'), false)
+  assert.equal(done.includes('追加'), false, '已完成是终态，不显示追加')
+  assert.ok(done.includes('删除'), '终态任务应能删除')
+  assert.equal(doneBlocked.includes('删除'), false, '还有活跃下游依赖的终态任务也不能删（服务端 canDelete=false）')
+  assert.equal(failed.includes('追加'), false, '失败任务改用重派，不显示追加')
+  assert.ok(failed.includes('重派'))
+  assert.ok(failed.includes('删除'))
+  // 源码层：显示条件只认下发字段，且复用 stop 的内联二次确认样式。
+  assert.match(source, /task\.canFollowup === true/)
+  assert.match(source, /task\.canDelete === true/)
+  assert.match(source, /confirmDelete/)
+  assert.match(source, /确认删除/)
+})
+
+test('抽屉动作条同源门控：进行中给「追加消息」不给删除；终态给删除并提示先停止才可删', () => {
+  const { loaded, ctx, registrations, resetHooks, hooks } = load()
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const detailOf = (id, extra) => ({
+    ok: true,
+    task: {
+      id, title: id, status: extra.status, goal: '', targetDir: null, target: 'c-1', readOnly: false,
+      group: null, priority: 0, dependsOn: [], writeScopes: [], question: null, options: [], error: null,
+      createdAt: 0, updatedAt: 0, artifacts: [], brief: {}, goalState: null, lastMessage: null,
+      canFollowup: extra.canFollowup, canDelete: extra.canDelete,
+    },
+    dependencies: [], dependents: [], messages: [],
+  })
+  // 抽屉打开：detail 槽位 + detailTaskId 槽位；任务卡列表给空，避免背景卡干扰断言。
+  const footLabels = detail => {
+    resetHooks()
+    hooks.slots[0] = snapshotOf([])
+    hooks.slots[10] = detail
+    hooks.slots[13] = detail.task.id
+    const tree = panel.component({ openSession: () => {} })
+    const foot = collect(tree, node => node.type === 'footer' && node.props?.className === 'orch-drawer-foot')[0]
+    assert.ok(foot, '抽屉应渲染底部动作条')
+    return collect(foot, node => node.type === 'button').map(flattenText)
+  }
+  const running = footLabels(detailOf('t-run', { status: 'running', canFollowup: true, canDelete: false }))
+  assert.ok(running.includes('追加消息'))
+  assert.equal(running.includes('删除'), false)
+  const done = footLabels(detailOf('t-done', { status: 'done', canFollowup: false, canDelete: true }))
+  assert.equal(done.includes('追加消息'), false)
+  assert.ok(done.includes('删除'))
+  // 活跃任务不显示删除，但给一句「先停止」的提示（验收允许「不显示或提示先 stop」）。
+  const drawerText = (() => {
+    resetHooks()
+    hooks.slots[0] = snapshotOf([])
+    hooks.slots[10] = detailOf('t-run2', { status: 'running', canFollowup: true, canDelete: false })
+    hooks.slots[13] = 't-run2'
+    return flattenText(panel.component({ openSession: () => {} }))
+  })()
+  assert.match(drawerText, /先「停止」/)
 })

@@ -536,6 +536,21 @@ test('task_message：终态任务拒绝续派', async () => {
   db.close()
 })
 
+// 面板优化：门控与面板按钮同源（panel-gates.followupGate）——失败任务改用 task_retry，不再续派。
+test('task_message：失败任务拒绝续派，提示改用 task_retry', async () => {
+  const { db, dispatcher, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '失败任务' }))
+  const task = listTasks(db)[0]
+  transition(db, task.id, 'failed', { error: 'boom' })
+  const before = db.prepare('SELECT count(*) AS n FROM messages').get().n
+  const text = await call(tools, 'task_message', { task_id: task.id, message: '继续' })
+  assert.match(text, /不能续派/)
+  assert.match(text, /task_retry/)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages').get().n, before)
+  assert.equal(dispatcher.calls.filter(call => call[0] === 'sendReliable').length, 0)
+  db.close()
+})
+
 test('task_message：重试 3 次仍失败 → waiting_user + error + 失败消息行', async () => {
   const { db, tools } = await setup({ failSend: true })
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))

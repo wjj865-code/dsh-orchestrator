@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  openLedger, createTask, getTask, listTasks, transition, addMessage, setTaskArtifacts, setTaskLastMessage,
+  openLedger, createTask, getTask, listTasks, transition, addMessage, addNotification,
+  setTaskArtifacts, setTaskLastMessage,
 } from '../src/ledger.js'
 import { createPanelActions } from '../src/panel-actions.js'
 import { tempDir, sampleBrief } from './helpers.js'
@@ -624,6 +625,128 @@ test('detail 回传最新回复（B1）：内联正文 / 文件摘要 / 没有�
   // 没有回复的任务：null，而不是 {} 或 ''。
   const lonely = createTask(db, { brief: sampleBrief({ title: '没有回复' }), coordinatorSession: 's-1' })
   assert.equal(actions.detail(lonely.id).task.lastMessage, null)
+  db.close()
+})
+
+// ---------------------------------------------------------------------------
+// 面板优化：追加消息状态门控 + 删除任务/子会话。
+// 门控与 client.js 的按钮显示同源：detail 下发 canFollowup / canDelete，
+// 面板只渲染，不在前端另写一套状态表。
+// ---------------------------------------------------------------------------
+
+test('message 门控与按钮同源：失败任务拒绝续派，提示改用重派', async () => {
+  const env = setup()
+  const { db, actions, calls } = await env.init()
+  const task = runningTask(db, '失败任务')
+  transition(db, task.id, 'failed', { error: 'boom' })
+  const result = await actions.message(task.id, '继续')
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'MESSAGE_NOT_FOLLOWABLE')
+  assert.match(result.error, /重派/)
+  assert.equal(calls.send.length, 0)
+  // 失败任务仍可重派：门控只挡续派，不挡建新尝试。
+  assert.equal(actions.detail(task.id).task.canFollowup, false)
+  assert.equal(actions.detail(task.id).task.canDelete, true)
+  db.close()
+})
+
+test('detail 回传 canFollowup/canDelete：进行中可续派不可删，终态不可续派但可删', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const running = runningTask(db, '在跑')
+  const runningDetail = actions.detail(running.id).task
+  assert.equal(runningDetail.canFollowup, true)
+  assert.equal(runningDetail.canDelete, false)
+  const done = createTask(db, { brief: sampleBrief({ title: '已完成' }), coordinatorSession: 's-1', status: 'done' })
+  const doneDetail = actions.detail(done.id).task
+  assert.equal(doneDetail.canFollowup, false)
+  assert.equal(doneDetail.canDelete, true)
+  const waitingDep = createTask(db, {
+    brief: sampleBrief({ title: '等前置' }), coordinatorSession: 's-1', status: 'waiting_dep',
+  })
+  const waitingDetail = actions.detail(waitingDep.id).task
+  assert.equal(waitingDetail.canFollowup, false)
+  assert.equal(waitingDetail.canDelete, false)
+  db.close()
+})
+
+test('delete：终态任务级联清理消息与通知，其他任务不受影响', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const keep = runningTask(db, '保留')
+  const task = createTask(db, { brief: sampleBrief({ title: '待删' }), coordinatorSession: 's-1' })
+  transition(db, task.id, 'running', { sessionId: 'c-del', target: 'c-del' })
+  transition(db, task.id, 'done')
+  addMessage(db, task.id, { kind: 'brief', rendered: '简报' })
+  addMessage(db, task.id, { kind: 'report', rendered: '结果' })
+  addMessage(db, keep.id, { kind: 'brief', rendered: '别删' })
+  addNotification(db, { taskId: task.id, level: 'info' })
+  addNotification(db, { taskId: keep.id, level: 'info' })
+  const result = await actions.delete(task.id)
+  assert.equal(result.ok, true)
+  assert.equal(result.taskId, task.id)
+  assert.deepEqual(result.deleted, { messages: 2, notifications: 1 })
+  assert.equal(getTask(db, task.id), undefined)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n, 0)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM notifications WHERE task_id = ?').get(task.id).n, 0)
+  assert.equal(getTask(db, keep.id).status, 'running')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(keep.id).n, 1)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM notifications WHERE task_id = ?').get(keep.id).n, 1)
+  // 已删除的任务再查详情：按不存在处理，不留半截记录。
+  assert.equal(actions.detail(task.id).code, 'TASK_NOT_FOUND')
+  db.close()
+})
+
+test('delete 门控：活跃任务返回 DELETE_TASK_ACTIVE，且一行都不删', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  for (const status of ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth']) {
+    const task = createTask(db, { brief: sampleBrief({ title: `活跃-${status}` }), coordinatorSession: 's-1', status })
+    addMessage(db, task.id, { kind: 'brief', rendered: '简报' })
+    const result = await actions.delete(task.id)
+    assert.equal(result.ok, false, status)
+    assert.equal(result.code, 'DELETE_TASK_ACTIVE', status)
+    assert.match(result.error, /先「停止」/, status)
+    assert.notEqual(getTask(db, task.id), undefined, status)
+    assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n, 1, status)
+  }
+  db.close()
+})
+
+test('delete 门控：还有活跃下游依赖时拒绝（避免依赖链变 missing）', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const upstream = createTask(db, { brief: sampleBrief({ title: '已完成前置' }), coordinatorSession: 's-1' })
+  transition(db, upstream.id, 'running', { sessionId: 'c-up', target: 'c-up' })
+  transition(db, upstream.id, 'done')
+  const downstream = createTask(db, {
+    brief: sampleBrief({ title: '等前置的下游' }), coordinatorSession: 's-1', dependsOn: [upstream.id], status: 'waiting_dep',
+  })
+  // 详情与快照同源：活跃下游在的时候 canDelete=false（按钮隐藏），不是等点了才 409。
+  assert.equal(actions.detail(upstream.id).task.canDelete, false)
+  const blocked = await actions.delete(upstream.id)
+  assert.equal(blocked.ok, false)
+  assert.equal(blocked.code, 'DELETE_HAS_ACTIVE_DEPENDENTS')
+  assert.match(blocked.error, /下游/)
+  assert.notEqual(getTask(db, upstream.id), undefined)
+  // 下游也结束之后才允许删：只挡活跃依赖，不永久禁止删历史。
+  transition(db, downstream.id, 'cancelled')
+  assert.equal(actions.detail(upstream.id).task.canDelete, true)
+  const result = await actions.delete(upstream.id)
+  assert.equal(result.ok, true)
+  assert.equal(getTask(db, upstream.id), undefined)
+  db.close()
+})
+
+test('delete 不存在：TASK_NOT_FOUND，不碰其他数据', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const keep = runningTask(db, '保留')
+  const result = await actions.delete('t-nope')
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'TASK_NOT_FOUND')
+  assert.equal(listTasks(db).length, 1)
+  assert.equal(getTask(db, keep.id).status, 'running')
   db.close()
 })
 

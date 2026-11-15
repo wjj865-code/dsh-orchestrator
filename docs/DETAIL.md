@@ -21,11 +21,14 @@
 
 ## 面板动作与错误码
 
-面板的 stop/retry/message 与工具 `task_stop`/`task_retry`/`task_message` 共用 `src/action-errors.js` 的同一套 code、门控语义和文案：面板失败返回 `{ ok:false, code, error }`，host-route 按 code 映射 HTTP 状态（400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部）；工具层保持可读字符串返回。面板把错误显示成 `动作 失败（CODE）：原因`。
+面板的 stop/retry/message/delete 与工具 `task_stop`/`task_retry`/`task_message` 共用 `src/action-errors.js` 的同一套 code、门控语义和文案：面板失败返回 `{ ok:false, code, error }`，host-route 按 code 映射 HTTP 状态（400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部）；工具层保持可读字符串返回。面板把错误显示成 `动作 失败（CODE）：原因`。
+
+「能不能点」与「接不接」是同一份判定：`src/panel-gates.js` 的 `followupGate` / `deleteGate` 同时供面板动作、`task_message` 和 snapshot/detail 的 `canFollowup`/`canDelete` 使用，客户端只读下发字段。
 
 - `stop`：已 cancelled/done/orphaned 再 stop 返回 `{ ok:true, already:true }`，面板提示「已是该状态」；并发双击只迁移一次。收子会话失败不阻断取消，结果带 `warnings[].code=STOP_DISPATCH_FAILED`。
 - `retry`：只允许 failed/orphaned；同一失败任务已有活跃重派时直接返回那条任务（`already:true` + `retryOf`），不会重复创建；同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。
-- `message`：面板每次点击生成 `clientRequestId`，host-route 按 `(taskId, clientRequestId)` 进程内去重；没有 id 的旧客户端退回「同任务 3 秒内相同文本」窗口去重。投递失败返回 `MESSAGE_DELIVERY_FAILED`，失败记录不会被当成已投递，窗口内可立刻重发。
+- `message`：只允许 running/waiting_user/waiting_auth 且已有子会话；终态 `MESSAGE_TASK_ENDED`、等前置 `MESSAGE_WAITING_DEP`、待派发/排队/无会话 `MESSAGE_NO_SESSION`、失败任务 `MESSAGE_NOT_FOLLOWABLE`（改用重派）。面板每次点击生成 `clientRequestId`，host-route 按 `(taskId, clientRequestId)` 进程内去重；没有 id 的旧客户端退回「同任务 3 秒内相同文本」窗口去重。投递失败返回 `MESSAGE_DELIVERY_FAILED`，失败记录不会被当成已投递，窗口内可立刻重发。
+- `delete`：只允许终态（done/failed/cancelled/orphaned），活跃任务返回 `DELETE_TASK_ACTIVE`（先停止）；还有活跃下游依赖返回 `DELETE_HAS_ACTIVE_DEPENDENTS`（删了会让下游缺前置）。成功时级联删除该任务的 messages/notifications，返回 `deleted:{messages,notifications}`；产物文件、报告正文与 memories 不动。
 
 ## 边界
 

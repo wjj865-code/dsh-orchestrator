@@ -6,10 +6,11 @@ import { taskCard } from './card.js'
 import { panelFailure, panelHttpStatus } from './action-errors.js'
 import { createRequestDedupe } from './request-dedupe.js'
 import { isMainSession } from './session-role.js'
+import { ACTIVE_STATUSES, canDelete, canFollowup } from './panel-gates.js'
 
 const ENDPOINTS = new Set(['snapshot', 'session-role'])
-const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message'])
-const ACTIVE = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
+const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message', 'delete'])
+const ACTIVE = new Set(ACTIVE_STATUSES)
 
 const json = (value, status) => new Response(JSON.stringify(value), {
   status,
@@ -23,7 +24,15 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
     const status = coordinatorStatus?.() ?? {}
     const at = now()
     // 活跃任务始终全量；历史只取最近 limit 条。不能先全量再 slice，否则老 running 会被截掉。
-    const tasks = [...listTasks(db, { active: true }), ...listHistoryTasks(db, limit)]
+    const activeTasks = listTasks(db, { active: true })
+    // 活跃下游计数：终态任务若有活跃任务依赖它，删了会让下游变「缺前置」，面板据此隐藏删除。
+    const dependentCounts = new Map()
+    for (const item of activeTasks) {
+      for (const id of Array.isArray(item.depends_on) ? item.depends_on : []) {
+        dependentCounts.set(id, (dependentCounts.get(id) ?? 0) + 1)
+      }
+    }
+    const tasks = [...activeTasks, ...listHistoryTasks(db, limit)]
     return {
       ok: true,
       at,
@@ -48,6 +57,9 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
           question: task.question ?? null,
           options: Array.isArray(task.options) ? task.options : [],
           artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
+          // 面板按钮可见性与后端门控同源（src/panel-gates.js）：前端只读这两个布尔值。
+          canFollowup: canFollowup(task),
+          canDelete: canDelete(task, { activeDependents: dependentCounts.get(task.id) ?? 0 }),
           queued: task.status === 'pending' && task.queued_at !== null && task.queued_at !== undefined,
           stale: ACTIVE.has(task.status) && at - task.last_event_at > staleMinutes * 60_000,
           updatedAt: task.updated_at,
@@ -101,6 +113,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
         else if (endpoint === 'preview') result = panel.preview(body?.taskId, body?.path)
         else if (endpoint === 'stop') result = await panel.stop(body?.taskId)
         else if (endpoint === 'retry') result = await panel.retry(body?.taskId)
+        else if (endpoint === 'delete') result = await panel.delete(body?.taskId)
         else if (endpoint === 'message') {
           const taskId = body?.taskId
           const requestId = typeof body?.clientRequestId === 'string'

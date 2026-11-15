@@ -813,6 +813,7 @@ window.__ModuleLoader__.load({
       stop: ['M8 8h8v8H8z'],
       retry: ['M3 12a9 9 0 1 0 3-6.7', 'M3 4v5h5'],
       message: ['M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-5A8 8 0 1 1 21 12z'],
+      trash: ['M4 7h16', 'M9 7V5h6v2', 'M6 7l1 13h10l1-13', 'M10 11v5', 'M14 11v5'],
       external: ['M14 4h6v6', 'M20 4l-9 9', 'M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4'],
       folder: ['M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
       copy: ['M9 9h10v10H9z', 'M15 5H5v10'],
@@ -1209,6 +1210,8 @@ window.__ModuleLoader__.load({
       const [collapsedSections, setCollapsedSections] = React.useState([])
       // 破坏性动作二次确认：null 或待确认的任务 id（不再用 window.confirm，样式与宿主一致）。
       const [confirmStop, setConfirmStop] = React.useState(null)
+      // 删除同样要二次确认：停止还能救回来，删除是台账级联清理（不可恢复）。
+      const [confirmDelete, setConfirmDelete] = React.useState(null)
       const [artifactData, setArtifactData] = React.useState(null)
       const [artifactError, setArtifactError] = React.useState(null)
       const [artifactLoading, setArtifactLoading] = React.useState(false)
@@ -1317,6 +1320,7 @@ window.__ModuleLoader__.load({
         setDetailLoading(true)
         setCopyNotice(null)
         setConfirmStop(null)
+        setConfirmDelete(null)
         try {
           const body = await readDetail(id)
           if (turn !== detailSeq.current) return
@@ -1337,6 +1341,7 @@ window.__ModuleLoader__.load({
         setDetailTaskId(null)
         setCopyNotice(null)
         setConfirmStop(null)
+        setConfirmDelete(null)
       }
 
       // 抽屉打开时按 Esc 关闭（与平台菜单一致的习惯）。
@@ -1408,6 +1413,7 @@ window.__ModuleLoader__.load({
         setActionError(null)
         setActionNotice(null)
         setConfirmStop(null)
+        setConfirmDelete(null)
         try {
           const result = await panelAction(endpoint, id, extra)
           // 幂等命中：stop 已结束 / retry 已有活跃重派 / message 重复投递，都按提示处理而不是报错。
@@ -1419,10 +1425,17 @@ window.__ModuleLoader__.load({
               setActionNotice(`任务已是该状态（${STATUS_LABEL[result.status] || result.status || '已结束'}），无需重复停止`)
             }
           }
+          if (endpoint === 'delete' && result && result.ok === true) {
+            // 删除成功：台账记录没了，抽屉里的详情也失效，直接收起。
+            setActionNotice('已删除这条任务记录（消息/通知已级联清理）')
+          }
           await load(undefined)
           if (filter === 'artifacts') await loadArtifacts(undefined)
-          // 抽屉正开着同一个任务：动作后刷新详情（状态/消息都变了）。
-          if (detailTaskId === id) await openDetail(id)
+          // 抽屉正开着同一个任务：动作后刷新详情（状态/消息都变了）；已删除则直接关闭。
+          if (detailTaskId === id) {
+            if (endpoint === 'delete') closeDetail()
+            else await openDetail(id)
+          }
         } catch (failure) {
           const code = failure && typeof failure.code === 'string' && failure.code !== '' ? `（${failure.code}）` : ''
           setActionError(`${endpoint} 失败${code}：${String((failure && failure.message) || failure)}`)
@@ -1495,14 +1508,43 @@ window.__ModuleLoader__.load({
         busy === `retry:${task.id}` ? '重派中…' : '重派')
         : null
 
-      const messageControl = task => task.childSessionId
+      // 追加消息：只给「支持续派」的任务（进行中/等你确认/要授权，且已有子会话）。
+      // 判定在服务端 panel-gates.js，快照/detail 下发 canFollowup；前端只读，不抄状态表。
+      const messageControl = (task, label = '追加') => (task !== null && task !== undefined && task.canFollowup === true)
         ? h('button', {
           key: 'message', type: 'button', className: 'orch-btn orch-btn--sm',
           title: '给子会话追加一条消息',
           disabled: busy === `message:${task.id}`,
           onClick: act(() => sendMessage(task.id)),
-        }, h(Icon, { name: 'message' }), '追加')
+        }, h(Icon, { name: 'message' }), label)
         : null
+
+      // 删除任务（连同 messages/notifications 级联清理）：只有终态任务显示（canDelete 由服务端判定）。
+      // 两步：先点「删除」→ 内联「确认删除？/ 取消」，与停止同一套确认条，避免误删。
+      const deleteControl = task => {
+        const deletable = task !== null && task !== undefined && task.canDelete === true
+        if (!deletable) return null
+        if (confirmDelete === task.id) {
+          return h('span', { key: 'delete-confirm', className: 'orch-confirm' },
+            h('span', null, '确认删除？'),
+            h('button', {
+              type: 'button', className: 'orch-btn orch-btn--sm orch-btn--danger',
+              disabled: busy === `delete:${task.id}`,
+              onClick: act(() => void runPanel('delete', task.id)),
+            }, busy === `delete:${task.id}` ? '删除中…' : '确认删除'),
+            h('button', {
+              type: 'button', className: 'orch-btn orch-btn--sm',
+              onClick: act(() => setConfirmDelete(null)),
+            }, '取消'),
+          )
+        }
+        return h('button', {
+          key: 'delete', type: 'button', className: 'orch-btn orch-btn--sm orch-btn--danger',
+          title: '从台账删除这条任务与它的消息/通知（需要二次确认）',
+          disabled: busy === `delete:${task.id}`,
+          onClick: act(() => setConfirmDelete(task.id)),
+        }, h(Icon, { name: 'trash' }), '删除')
+      }
 
       const openControl = (sessionId, label) => h('button', {
         key: `open:${label || 'child'}`, type: 'button', className: 'orch-btn orch-btn--sm',
@@ -1665,6 +1707,7 @@ window.__ModuleLoader__.load({
             retryControl(task),
             messageControl(task),
             openControl(task.childSessionId),
+            deleteControl(task),
           ),
           artifacts.length > 0
             ? h('div', { className: 'orch-expand', 'data-open': isExpanded ? 'true' : 'false' },
@@ -2045,14 +2088,13 @@ window.__ModuleLoader__.load({
         const buttons = [
           stopControl(detailTask),
           retryControl(detailTask),
-          detailTask.target
-            ? h('button', {
-              key: 'message', type: 'button', className: 'orch-btn orch-btn--sm',
-              disabled: busy === `message:${detailTask.id}`,
-              onClick: () => sendMessage(detailTask.id),
-            }, h(Icon, { name: 'message' }), '追加消息')
-            : null,
+          messageControl(detailTask, '追加消息'),
           detailTask.target ? openControl(detailTask.target, '打开子会话') : null,
+          deleteControl(detailTask),
+          // 不能删就说清原因：活跃任务先「停止」；终态但还有活跃下游先处理下游。
+          detailTask.canDelete !== true
+            ? h('span', { key: 'delete-hint', className: 'orch-muted' }, '当前不能删除：活跃任务先「停止」；有活跃下游依赖则先处理下游。')
+            : null,
         ].filter(Boolean)
         return buttons.length === 0 ? null : h('footer', { className: 'orch-drawer-foot' }, buttons)
       }

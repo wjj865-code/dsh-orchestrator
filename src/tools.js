@@ -20,6 +20,7 @@ import { collectWorkspaceArtifacts } from './artifact-collect.js'
 import { formatBytes, PREVIEW_CHARS, readLastMessage } from './last-message.js'
 import { toolFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
+import { followupGate } from './panel-gates.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
 const str = description => ({ type: 'string', description })
@@ -646,18 +647,21 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
-      if (TERMINAL_STATUS.has(task.status)) {
-        return toolFailure('MESSAGE_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
-      }
-      if (task.status === 'waiting_dep') {
-        return toolFailure('MESSAGE_WAITING_DEP', { label: labelFor(task), depends: task.depends_on.join('、') })
-      }
-      if (task.status === 'pending' && (task.target === null || task.target === undefined)) {
-        return task.queued_at === null || task.queued_at === undefined
-          ? toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
-          : toolFailure('MESSAGE_QUEUED', { label: labelFor(task), ahead: Math.max(queue.position(task.id) - 1, 0) })
-      }
-      if (task.target === null || task.target === undefined) {
+      // 与面板「追加」按钮同源（src/panel-gates.js）：终态/等前置/待派发/失败/无会话各自给可执行提示。
+      const gate = followupGate(task)
+      if (gate.ok !== true) {
+        if (gate.reason === 'waiting_dep') {
+          return toolFailure('MESSAGE_WAITING_DEP', { label: labelFor(task), depends: task.depends_on.join('、') })
+        }
+        if (gate.reason === 'queued') {
+          return toolFailure('MESSAGE_QUEUED', { label: labelFor(task), ahead: Math.max(queue.position(task.id) - 1, 0) })
+        }
+        if (gate.reason === 'failed' || gate.reason === 'not_followable') {
+          return toolFailure('MESSAGE_NOT_FOLLOWABLE', { label: labelFor(task), statusLabel: labelOf(task.status) })
+        }
+        if (gate.reason === 'ended') {
+          return toolFailure('MESSAGE_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
+        }
         return toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
       }
       const message = args.message ?? ''

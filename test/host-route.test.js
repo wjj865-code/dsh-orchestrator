@@ -467,3 +467,67 @@ test('message 并发同 clientRequestId 合并成一次投递', async () => {
   assert.equal((await b.json()).already, true)
   db.close()
 })
+
+// 面板优化：快照下发按钮可见性，前端不自己重写状态表（前后端同源）。
+test('snapshot 下发 canFollowup/canDelete：进行中不可删可续派，终态可删不可续派', async () => {
+  const { db, handler } = await setup()
+  const running = createTask(db, { brief: sampleBrief({ title: '在跑' }), coordinatorSession: 's-1' })
+  transition(db, running.id, 'running', { sessionId: 'c-run', target: 'c-run' })
+  const done = createTask(db, { brief: sampleBrief({ title: '完成' }), coordinatorSession: 's-1' })
+  transition(db, done.id, 'running', { sessionId: 'c-done', target: 'c-done' })
+  transition(db, done.id, 'done')
+  const pending = createTask(db, { brief: sampleBrief({ title: '待派发' }), coordinatorSession: 's-1' })
+  const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  const byId = Object.fromEntries(body.tasks.map(row => [row.id, row]))
+  assert.equal(byId[running.id].canFollowup, true)
+  assert.equal(byId[running.id].canDelete, false)
+  assert.equal(byId[done.id].canFollowup, false)
+  assert.equal(byId[done.id].canDelete, true)
+  assert.equal(byId[pending.id].canFollowup, false)
+  assert.equal(byId[pending.id].canDelete, false)
+  db.close()
+})
+
+test('snapshot 的 canDelete 与活跃下游依赖同源：有活跃下游的终态任务不给删', async () => {
+  const { db, handler } = await setup()
+  const upstream = createTask(db, { brief: sampleBrief({ title: '已完成后置' }), coordinatorSession: 's-1' })
+  transition(db, upstream.id, 'running', { sessionId: 'c-up', target: 'c-up' })
+  transition(db, upstream.id, 'done')
+  const downstream = createTask(db, {
+    brief: sampleBrief({ title: '下游' }), coordinatorSession: 's-1', dependsOn: [upstream.id], status: 'waiting_dep',
+  })
+  const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  const byId = Object.fromEntries(body.tasks.map(row => [row.id, row]))
+  assert.equal(byId[upstream.id].canDelete, false, '还有活跃下游时不能删')
+  assert.equal(byId[downstream.id].canDelete, false, '下游本身还在活跃')
+  transition(db, downstream.id, 'cancelled')
+  const next = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  const nextById = Object.fromEntries(next.tasks.map(row => [row.id, row]))
+  assert.equal(nextById[upstream.id].canDelete, true, '下游结束后可以删')
+  db.close()
+})
+
+test('delete 端点透传 panel.delete；活跃任务的门控错误按 409 返回', async () => {
+  const db = await openLedger(tempDir())
+  const calls = []
+  const panel = {
+    detail: () => ({ ok: true }),
+    artifacts: () => ({ ok: true, items: [] }),
+    delete: async taskId => {
+      calls.push(['delete', taskId])
+      if (taskId === 't-active') {
+        return { ok: false, code: 'DELETE_TASK_ACTIVE', error: '任务「跑着」还在进行中，不能删除；先「停止」再删。' }
+      }
+      return { ok: true, taskId, deleted: { messages: 2, notifications: 1 } }
+    },
+  }
+  const handler = createHostRoute({ db, panel })
+  const removed = await handler(request({ endpoint: 'delete', taskId: 't-done' }))
+  assert.equal(removed.status, 200)
+  assert.deepEqual(await removed.json(), { ok: true, taskId: 't-done', deleted: { messages: 2, notifications: 1 } })
+  const blocked = await handler(request({ endpoint: 'delete', taskId: 't-active' }))
+  assert.equal(blocked.status, 409)
+  assert.equal((await blocked.json()).code, 'DELETE_TASK_ACTIVE')
+  assert.deepEqual(calls, [['delete', 't-done'], ['delete', 't-active']])
+  db.close()
+})

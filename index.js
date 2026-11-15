@@ -480,7 +480,7 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   // 客户端面板路由：鉴权由 connection 服务统一负责；snapshot 只查台账；
-  // detail/artifacts/preview 只读，stop/retry/message 是面板动作（owner-only）。
+  // detail/artifacts/preview 只读，stop/retry/message/delete 是面板动作（owner-only）。
   const routeOptions = {
     ...HOST_ROUTE_OPTIONS,
     fetch: createHostRoute({

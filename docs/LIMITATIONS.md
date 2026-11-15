@@ -87,6 +87,14 @@
 - 入口隐藏只是 UI 层：`main` 面板（`key:'orchestrator'`）仍然注册，`/api/orchestrator` 的 `snapshot`/动作端点也没有会话身份校验
   （owner-only 由平台 connection 负责）；真正的主会话权限仍由 `task_*` 工具的调用方校验兜底，不能把入口隐藏当成安全边界。
 - 面板是轮询（2s），没有 SSE；任务很多时快照会变大。
+- **删除只删台账，不删盘**：面板「删除」级联清 `tasks` / `messages` / `notifications`，但产物文件、
+  `reports/<taskId>.md` 全文报告、`memories` 里的经验/决策都保留（它们是用户数据与跨任务知识）；
+  平台侧的子会话历史也没有删除 API，删的只是本插件的任务记录。
+- **删除不给活跃任务**：`waiting_dep` / `pending` / `running` / `waiting_user` / `waiting_auth` 先「停止」；
+  终态任务若还有活跃下游依赖也不让删（`DELETE_HAS_ACTIVE_DEPENDENTS`），否则下游会因「前置不存在」直接失败。
+  删除不可恢复（每日台账快照里可能还能找到旧行，但没有自动恢复入口）。
+- 删除与「追加」的按钮可见性由 `src/panel-gates.js` 统一判定并随 snapshot/detail 下发；旧版快照没有
+  `canFollowup`/`canDelete` 字段时按 false 处理（fail-closed，按钮不显示）。
 - 日报默认关闭；开启后每个主会话一条 schedule，主会话重建会重建 schedule。
 
 ## 面板动作幂等

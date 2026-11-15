@@ -2,6 +2,9 @@
 // 协调者只能创建、续派、停止、重派。
 export const STATUSES = ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'done', 'failed', 'cancelled', 'orphaned']
 
+/** 活跃状态（还没落终态）：台账 listTasks(active)、面板闸门、看门狗共用同一口径。 */
+export const ACTIVE_STATUSES = ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth']
+
 // 对外状态文案：工具层、面板动作、卡片共用一套（客户端 client.js 因浏览器环境单独保留同值副本）。
 export const STATUS_LABEL = {
   waiting_dep: '等前置', pending: '待派发', running: '进行中', waiting_user: '等你确认', waiting_auth: '要授权',

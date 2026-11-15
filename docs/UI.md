@@ -79,7 +79,7 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 | --- | --- |
 | hover | `.orch-card:hover`（底色 + 描边 + `--dsw-shadow-lv1`）、`.orch-btn:hover`、`.orch-metric:hover`（上浮 1px）、`.orch-rail-item:hover`、`.orch-section-head:hover`、`.orch-artifact:hover`（`client.js:177`、`client.js:252`、`client.js:376`、`client.js:612`） |
 | 动画/过渡 | 抽屉滑入滑出（`transform` + `--ds-transition-duration-slow`）、展开/折叠 `grid-template-rows: 0fr→1fr`（`client.js:616`）、chevron 旋转、内容入场 `@keyframes orch-slide-in`（`client.js:538`）、骨架 `@keyframes orch-shimmer`（`client.js:496`）、按钮 `transform: scale(.985)` 按下反馈 |
-| 二次确认 | 「停止」先变成「确认停止？/ 取消」内联确认条（`.orch-confirm`，`client.js:1464`），不再用 `window.confirm`；动作进行中禁用按钮并显示「停止中…/重派中…」 |
+| 二次确认 | 「停止」先变成「确认停止？/ 取消」，删除同样两步「确认删除？/ 取消」（`.orch-confirm`，`client.js:1464`、`client.js:1519`），不再用 `window.confirm`；动作进行中禁用按钮并显示「停止中…/重派中…/删除中…」 |
 | 空态 | `.orch-empty` 图标 + 标题 + 提示（无任务 / 无匹配 / 无产物 / 无消息 / 无前置 / 无下游 / 没有 brief / 没有返回消息），`client.js:463` |
 | 加载态 | 首帧 5 张骨架卡（`SkeletonList`，`client.js:857`）、产物库 3 张、抽屉骨架；刷新按钮转圈（`.orch-spin`）；抽屉内预览加载占位 |
 | 错误态 | 快照错误「台账暂不可用：…」+ 重试；动作错误带错误码（`失败（CODE）：…`）；产物加载失败 + 重试；抽屉详情失败 + 「重新加载」；预览失败 |
@@ -102,12 +102,17 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 | 依赖 | 上游前置 + 下游依赖，各带状态与错误 | `detail.dependencies` / `detail.dependents` |
 | 产物 | 路径/标签/存在性 + 复制路径 | `detail.task.artifacts` |
 
-底部动作条：停止（二次确认）、重派、追加消息、打开子会话。
+底部动作条：停止（二次确认）、重派、追加消息、打开子会话、删除（二次确认）。
+
+按钮可见性由服务端 `src/panel-gates.js` 判定，快照/详情下发 `canFollowup` / `canDelete`，前端只读：
+
+- 「追加消息」只在可续派状态显示（`running` / `waiting_user` / `waiting_auth`，且已有子会话）；终态、等前置、待派发、失败任务都不显示（失败任务改用「重派」）。
+- 「删除」只在终态显示（`done` / `failed` / `cancelled` / `orphaned`）且没有活跃下游依赖；活跃任务不显示删除，抽屉底部给一句「进行中/等派发的任务不能删除：先「停止」再删。」。删除只清台账（任务 + 消息 + 通知），产物文件/记忆不动。
 
 ## 5. 验证
 
 ```bash
-npm test            # 602 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染用例
+npm test            # 626 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、续派与删除门控用例
 npm run check:client
 ```
 
@@ -117,6 +122,7 @@ npm run check:client
 2. 点任务卡或「详情」→ 右侧抽屉滑入，遮罩变暗，`.orch-drawer[data-open=true]`；再点遮罩/关闭/按 `Esc` → 滑出。
 3. 抽屉里逐个点区块标题 → 折叠/展开有过渡；「最新回复」在子会话结算后出现。
 4. 点「停止」→ 出现「确认停止？/ 取消」；确认后按钮变「停止中…」，台账状态变已取消。
+5. 进行中任务只有「追加」没有「删除」；等它 done/failed/cancelled 后刷新，出现「删除」→ 点一下变「确认删除？/ 取消」，确认后卡片消失（消息/通知级联清理，详情抽屉自动收起）。
 5. 切「产物」筛选 → 产物库按项目分组，可切「按日期」、点「预览」看文本（>64 KiB 标注截断）、复制路径。
 6. 切宿主深浅色主题 → 面板颜色跟随，无硬编码残留。
 7. 断网/宿主动作失败 → 出现带「重试」的错误条，而不是空白。

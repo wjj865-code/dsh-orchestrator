@@ -1,9 +1,9 @@
-// 面板动作：/api/orchestrator 的 stop/retry/message/detail/artifacts/preview。
+// 面板动作：/api/orchestrator 的 stop/retry/message/delete/detail/artifacts/preview。
 // 与工具层共享同一台账/队列/派发器；鉴权由连接层 owner-only 负责。
 import { closeSync, openSync, readSync, statSync } from 'node:fs'
 import { renderBrief } from './brief.js'
 import {
-  addMessage, clearTaskQuestion, createTask, findRecentDeliveredFollowup, getTask, listTasks,
+  addMessage, clearTaskQuestion, createTask, deleteTask, findRecentDeliveredFollowup, getTask, listTasks,
   recentMessages, setMessageDelivery, setTaskError, transition, touchTask, incrementAttempts,
 } from './ledger.js'
 import { dependencyState, validateDepends } from './deps.js'
@@ -11,8 +11,10 @@ import { taskLabel } from './task-label.js'
 import { statusLabel } from './state.js'
 import { panelFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
+import { ACTIVE_STATUSES, TERMINAL_STATUSES, canDelete, canFollowup, deleteGate, followupGate } from './panel-gates.js'
 
-const TERMINAL = new Set(['done', 'cancelled', 'orphaned'])
+const TERMINAL = new Set(TERMINAL_STATUSES)
+const ACTIVE = new Set(ACTIVE_STATUSES)
 const RETRYABLE = new Set(['failed', 'orphaned'])
 const WAITING = new Set(['waiting_user', 'waiting_auth'])
 // message 幂等窗口：同任务、同文本、上一次已成功投递时，窗口内重复提交视为同一次操作。
@@ -60,6 +62,28 @@ const messageDeliveries = rows => {
   })
 }
 
+/** 续派门控的 reason → 面板错误码（工具层用同一 reason 映射到 toolFailure，判定本身在 panel-gates）。 */
+const followupFailure = task => {
+  const gate = followupGate(task)
+  if (gate.ok === true) return undefined
+  const label = taskLabel(task)
+  const statusText = statusLabel(task.status)
+  switch (gate.reason) {
+    case 'waiting_dep':
+      return panelFailure('MESSAGE_WAITING_DEP', { label, depends: task.depends_on.join('、') })
+    // 排队/待派发/没有子会话：面板统一给「先停止再重建」，不细分排队位置（面板没有 ahead 信息）。
+    case 'queued':
+    case 'pending':
+    case 'no_session':
+      return panelFailure('MESSAGE_NO_SESSION', { label })
+    case 'failed':
+    case 'not_followable':
+      return panelFailure('MESSAGE_NOT_FOLLOWABLE', { label, statusLabel: statusText })
+    default:
+      return panelFailure('MESSAGE_TASK_ENDED', { label, statusLabel: statusText })
+  }
+}
+
 export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge }) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志不能影响 UI 动作 */ }
@@ -82,10 +106,12 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         : { id, title: dep.title, status: dep.status, error: dep.error ?? null }
     })
     // 下游 = 依赖链上引用本任务的任务；失败会沿依赖链传播，面板要能看到「谁会被我拖住」。
-    const dependents = listTasks(db, { active: false })
-      .filter(item => item.depends_on.includes(task.id))
+    const dependentTasks = listTasks(db, { active: false }).filter(item => item.depends_on.includes(task.id))
+    const dependents = dependentTasks
       .slice(0, DETAIL_DEPENDENT_LIMIT)
       .map(item => ({ id: item.id, title: item.title, status: item.status, error: item.error ?? null }))
+    // 活跃下游会挡住删除：与 snapshot/动作同源（panel-gates.deleteGate）。
+    const activeDependents = dependentTasks.filter(item => ACTIVE.has(item.status)).length
     return {
       ok: true,
       task: {
@@ -112,6 +138,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         // B1 最新返回消息：结算时落库的最后一条 assistant 消息。
         // 内联消息给正文（≤64 KiB），大文件消息只给摘要 + 路径，详情接口不读盘。
         lastMessage: task.last_message ?? null,
+        // 面板按钮可见性与动作门控同源（src/panel-gates.js）：前端只读这两个字段，不抄状态表。
+        canFollowup: canFollowup(task),
+        canDelete: canDelete(task, { activeDependents }),
         count: {
           messages: messages.length,
           artifacts: task.artifacts.length,
@@ -301,15 +330,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     const content = typeof text === 'string' ? text.trim() : ''
     if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
     if (content === '') return panelFailure('MESSAGE_EMPTY')
-    if (TERMINAL.has(task.status)) {
-      return panelFailure('MESSAGE_TASK_ENDED', { label: taskLabel(task), statusLabel: statusLabel(task.status) })
-    }
-    if (task.status === 'waiting_dep') {
-      return panelFailure('MESSAGE_WAITING_DEP', { label: taskLabel(task), depends: task.depends_on.join('、') })
-    }
-    if (task.status === 'pending' || task.target === null || task.target === undefined) {
-      return panelFailure('MESSAGE_NO_SESSION', { label: taskLabel(task) })
-    }
+    // 与面板按钮同源（panel-gates.followupGate）：终态/等前置/待派发/失败/无会话一律拒绝。
+    const denied = followupFailure(task)
+    if (denied !== undefined) return denied
     // 幂等：同任务 + 同文本 + 窗口内已成功投递过 → 视为同一次点击，不重复发、不重复累计 attempts。
     // 上一次投递失败（后面有 delivery_failed 行）不算成功，窗口内允许立刻重发。
     const dedupeMs = Number.isFinite(config?.messageDedupeMs)
@@ -355,7 +378,32 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     return { ok: true, taskId: task.id }
   }
 
-  return { detail: detailOf, artifacts: artifactsOf, preview, stop, retry, message, short }
+  // 删除任务（面板「删除子会话/任务」）：门控 = 终态 + 没有活跃下游依赖。
+  // 二次确认在 client（confirmDelete）做；这里不信任前端，任何状态都重新判定。
+  const remove = async taskId => {
+    const task = getTask(db, String(taskId ?? ''))
+    if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
+    // 活跃下游依赖删掉前置后会变「缺前置」直接失败（deps.js 的 missing 分支），所以只挡活跃的。
+    const dependents = listTasks(db, { active: true }).filter(item => item.depends_on.includes(task.id))
+    const gate = deleteGate(task, { activeDependents: dependents.length })
+    if (gate.ok !== true) {
+      if (gate.reason === 'has_dependents') {
+        const links = dependents.slice(0, 3).map(item => taskLabel(item)).join('、')
+        return panelFailure('DELETE_HAS_ACTIVE_DEPENDENTS', {
+          label: taskLabel(task),
+          links: dependents.length > 3 ? `${links} 等 ${dependents.length} 个` : links,
+        })
+      }
+      // 活跃任务先停止；unknown 状态按「不是终态」拒绝，不猜可删。
+      return panelFailure('DELETE_TASK_ACTIVE', { label: taskLabel(task), statusLabel: statusLabel(task.status) })
+    }
+    const removed = deleteTask(db, task.id)
+    if (removed === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
+    log('ui.delete', { taskId: task.id, detail: { status: task.status, ...removed.deleted } })
+    return { ok: true, taskId: task.id, deleted: removed.deleted }
+  }
+
+  return { detail: detailOf, artifacts: artifactsOf, preview, stop, retry, message, delete: remove, short }
 }
 
 export { short as panelShort }

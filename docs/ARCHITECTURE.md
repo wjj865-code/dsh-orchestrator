@@ -225,9 +225,10 @@
 | `preview` | 预览台账里登记的文本产物（前 64 KiB） |
 | `stop` | 停止任务 |
 | `retry` | 重派 failed/orphaned |
-| `message` | 追加消息 |
+| `message` | 追加消息（仅可续派状态，见 `src/panel-gates.js`） |
+| `delete` | 删除终态任务（台账级联清 messages/notifications） |
 
-面板 2s 轮询，连续失败退避 30s；任务卡「详情/停止/重派/追加/打开子会话」；「产物」筛选打开产物库（按项目/日期分组，预览/复制/打开子会话/详情）。
+面板 2s 轮询，连续失败退避 30s；任务卡「详情/停止/重派/追加/删除/打开子会话」，其中「追加」只在可续派状态显示、「删除」只在终态显示（两个布尔值 `canFollowup`/`canDelete` 由服务端判定并随 snapshot/detail 下发，见下节）；「产物」筛选打开产物库（按项目/日期分组，预览/复制/打开子会话/详情）。
 
 ## 面板与详情（UI U2）
 
@@ -243,8 +244,13 @@
 - **详情抽屉 7 区块**：概览、**最新回复**（B1，`detail.task.lastMessage`）、**brief**（验收/约束/背景/用户原话，
   结构化列表）、**目标状态**（G1，只读）、**消息**（最近 20 条；`followup` 标待发/已投递/投递失败）、
   **依赖**（上游前置 + 下游依赖本任务，各带状态与错误）、**产物**（路径/标签/存在性，路径可一键复制）。
-  每个区块都可折叠（`aria-expanded` + `0fr↔1fr` 过渡），都有空态。底部动作条：停止（内联二次确认）/重派/追加消息/打开子会话。
+  每个区块都可折叠（`aria-expanded` + `0fr↔1fr` 过渡），都有空态。底部动作条：停止（内联二次确认）/重派/追加消息（仅可续派）/打开子会话/删除（仅终态，内联二次确认）。
   投递状态落在 `messages.meta_json.delivery`（pending → delivered/failed，只改 meta 不加行）；A3 之前的旧消息按紧随其后的 `delivery_failed` 行推断。
+- **按钮可见性与动作门控同源**：`src/panel-gates.js` 是唯一判定（`followupGate` / `deleteGate`）。
+  服务端面板动作与 `task_message` 工具都先过它；`snapshot`/`detail` 再把 `canFollowup` / `canDelete`
+  下发给客户端，`client.js` 只读这两个布尔值渲染按钮，不另抄一份状态表——避免「按钮在、点了 409」或反过来的分叉。
+  续派 = `running` / `waiting_user` / `waiting_auth` 且已有子会话；删除 = `done` / `failed` / `cancelled` / `orphaned`
+  且没有活跃下游依赖。删除只清台账行（任务 + messages + notifications），不删产物文件与 memories（见 LIMITATIONS）。
 
 
 ## 落盘与日志
