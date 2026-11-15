@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts, setTaskLastMessage } from '../src/ledger.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -371,6 +371,42 @@ test('artifacts_json 损坏或非数组时读回空数组', async () => {  const
   assert.deepEqual(getTask(db, task.id).artifacts, [])
   db.prepare('UPDATE tasks SET artifacts_json = ? WHERE id = ?').run('{"a":1}', task.id)
   assert.deepEqual(getTask(db, task.id).artifacts, [])
+  db.close()
+})
+
+test('B1 last_message_json：旧库自动补列、坏 JSON 当没有、同正文回落幂等', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const legacyDir = mkdtempSync(join(tmpdir(), 'orch-ledger-lm-legacy-'))
+  const legacy = new DatabaseSync(join(legacyDir, 'tasks.sqlite'))
+  legacy.exec(`CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
+    status TEXT NOT NULL, session_id TEXT, target TEXT, coordinator_session TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER)`)
+  legacy.prepare('INSERT INTO tasks (id,title,goal,brief_json,status,coordinator_session,created_at,updated_at,last_event_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('t-old', 'old', 'g', '{}', 'done', 's-1', 1, 1, 1)
+  legacy.close()
+  const db = await openLedger(legacyDir)
+  assert.ok(db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name).includes('last_message_json'))
+  assert.equal(getTask(db, 't-old').last_message, null)
+  db.prepare('UPDATE tasks SET last_message_json = ? WHERE id = ?').run('not-json', 't-old')
+  assert.equal(getTask(db, 't-old').last_message, null)
+
+  const task = createTask(db, { brief: sampleBrief({ title: '带返回' }), coordinatorSession: 's-1' })
+  const record = { at: 1, stopReason: 'completed', source: 'lifecycle', bytes: 6, chars: 2, digest: 'abc123', summary: '正文', stored: 'inline', text: '正文' }
+  const first = setTaskLastMessage(db, task.id, record)
+  assert.equal(first.last_message.text, '正文')
+  const firstUpdatedAt = first.updated_at
+  // 同 digest 再写：幂等，不动 updated_at
+  const again = setTaskLastMessage(db, task.id, { ...record, at: 999 })
+  assert.equal(again.last_message.at, 1)
+  assert.equal(again.updated_at, firstUpdatedAt)
+  // digest 变了才覆盖
+  const replaced = setTaskLastMessage(db, task.id, { ...record, digest: 'def456', text: '新正文', summary: '新正文' })
+  assert.equal(replaced.last_message.text, '新正文')
+  assert.equal(replaced.last_message.digest, 'def456')
+  // 空记录不覆盖
+  assert.equal(setTaskLastMessage(db, task.id, null).last_message.text, '新正文')
   db.close()
 })
 

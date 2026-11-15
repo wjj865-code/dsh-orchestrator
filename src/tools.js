@@ -16,6 +16,7 @@ import {
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
 } from './ledger.js'
 import { collectWorkspaceArtifacts } from './artifact-collect.js'
+import { formatBytes, PREVIEW_CHARS, readLastMessage } from './last-message.js'
 import { toolFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
 
@@ -40,6 +41,22 @@ const labelOf = statusLabel
 const short = (value, max = 40) => {
   const text = String(value ?? '').split('\n')[0].trim()
   return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+// 子会话最新返回消息（B1）：默认给摘要/预览，include=full 才读全文（长消息从 reports 文件读）。
+function lastMessageLines(record, { full = false } = {}) {
+  const where = record.stored === 'file' ? '全文存 reports 文件' : '内联存台账'
+  const head = `最近返回（结算 ${record.stopReason ?? '未知'}｜${record.chars ?? '?'} 字｜${formatBytes(record.bytes)}｜${where}）：`
+  if (full === true) {
+    const text = readLastMessage(record)
+    return [head, text === '' ? '- 空' : text]
+  }
+  if (record.stored === 'file') {
+    return [head, `全文：${record.path ?? '(路径缺失)'}`, `摘要：${record.summary || '-'}`, '看全文：task_status 带 include=full']
+  }
+  const text = readLastMessage(record)
+  if (text.length <= PREVIEW_CHARS) return [head, text]
+  return [head, `${text.slice(0, PREVIEW_CHARS)}…`, `（已截断，共 ${record.chars ?? text.length} 字；全文用 include=full）`]
 }
 
 function taskLine(db, task, { staleMinutes = 30 } = {}) {
@@ -517,7 +534,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return header + tasks.map(task => taskLine(db, task, { staleMinutes })).join('\n')
     }),
 
-    wrap('task_status', '查看一个任务的详情与最近消息。', objectSchema({ task_id: str('任务编号，如 t-1a2b3c4d') }), async (args, exec) => {
+    wrap('task_status', '查看一个任务的详情与最近消息。', objectSchema({
+      task_id: str('任务编号，如 t-1a2b3c4d'),
+      include: str('可选：填 full 时返回子会话最新返回消息的全文（长消息从 reports 文件读）'),
+    }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
       const task = getTask(db, args.task_id ?? '')
@@ -561,6 +581,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       if (task.retry_of) lines.push(`重派自：${task.retry_of}`)
       if (task.error !== null && task.error !== undefined) lines.push(`原因：${task.error}`)
+      // B1：结算时落的最完整返回消息 → 主会话不必打开子会话就能读到它最后说了什么。
+      if (task.last_message !== null && task.last_message !== undefined) {
+        lines.push(...lastMessageLines(task.last_message, { full: args.include === 'full' }))
+      }
       if (config?.backend !== 'team' && task.session_id !== null && task.session_id !== undefined) {
         lines.push('打开方式：协调者会话的子代理目录（subagent catalog），按上面的子会话 id 打开；它不在普通会话列表里。')
       }

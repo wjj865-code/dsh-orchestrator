@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0,
   question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER,
-  goal_state_json TEXT
+  goal_state_json TEXT, last_message_json TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -61,6 +61,7 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('progress_count')) db.exec('ALTER TABLE tasks ADD COLUMN progress_count INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('stall_notified_at')) db.exec('ALTER TABLE tasks ADD COLUMN stall_notified_at INTEGER')
     if (!taskColumns.includes('goal_state_json')) db.exec('ALTER TABLE tasks ADD COLUMN goal_state_json TEXT')
+    if (!taskColumns.includes('last_message_json')) db.exec('ALTER TABLE tasks ADD COLUMN last_message_json TEXT')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -109,6 +110,17 @@ const parseGoalState = value => {
   }
 }
 
+// 最新返回消息只读镜像（B1）：坏 JSON 当没有，读取方（task_status）降级为「没有返回消息」。
+const parseLastMessage = value => {
+  if (value === null || value === undefined) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 const taskOf = row => row === undefined ? undefined : ({
   ...row,
   read_only: row.read_only === 1 || row.read_only === true,
@@ -121,6 +133,7 @@ const taskOf = row => row === undefined ? undefined : ({
   options: parseStringArray(row.question_options_json),
   progress_count: Number.isFinite(row.progress_count) ? row.progress_count : 0,
   goal_state: parseGoalState(row.goal_state_json),
+  last_message: parseLastMessage(row.last_message_json),
 })
 
 export function createTask(db, {
@@ -259,6 +272,21 @@ export function setTaskGoalState(db, id, state) {
   const now = Date.now()
   db.prepare('UPDATE tasks SET goal_state_json = ?, updated_at = ? WHERE id = ?')
     .run(state === null || state === undefined ? null : JSON.stringify(state), now, id)
+  return getTask(db, id)
+}
+
+/** 记录子会话最后一次返回消息（B1）：只写镜像，不改状态。
+ *  同一段正文（digest 相同）重复落库是幂等的：不重写行、不动 updated_at，
+ *  所以派发侧与生命周期事件重复送达、或手动重试，都不会把内容写两遍。 */
+export function setTaskLastMessage(db, id, record) {
+  if (record === null || record === undefined) return getTask(db, id)
+  const task = getTask(db, id)
+  if (task === undefined) return undefined
+  const current = task.last_message
+  if (current !== null && typeof current?.digest === 'string' && current.digest === record.digest) return task
+  const now = Date.now()
+  db.prepare('UPDATE tasks SET last_message_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
+    .run(JSON.stringify(record), now, now, id)
   return getTask(db, id)
 }
 

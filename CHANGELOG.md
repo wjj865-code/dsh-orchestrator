@@ -6,7 +6,8 @@
 ## 未发布
 
 调试预设 D2：`orch-debug` 与随包「创造模式」(`cordis`) 逐项对齐可验证，文档补全插件更新流程（client 热重载 / host 更新 / 动态插件边界）。
-G1 补齐：worker 预设挂 `tool-goal`，子会话终于能 `get_goal` 读自己的任务目标。相对 0.9.0 无破坏性变更。
+G1 补齐：worker 预设挂 `tool-goal`，子会话终于能 `get_goal` 读自己的任务目标。
+B1：子会话结算时把完整的「最后一条 assistant 消息」落进台账，主会话用 `task_status` 直接读（长消息写 `reports/` 文件）。相对 0.9.0 无破坏性变更。
 
 ### 修复
 
@@ -16,6 +17,8 @@ G1 补齐：worker 预设挂 `tool-goal`，子会话终于能 `get_goal` 读自�
 
 ### 新增
 
+- **最新返回消息（B1）**：结算时持久化子会话最后一条 assistant 消息（新增 `src/last-message.js` + `tasks.last_message_json`）。≤64 KiB 内联台账；更大写 `$DSH_HOME/state/orchestrator/reports/<taskId>.md`，台账只留路径 + 240 字摘要；写文件失败降级内联，空输出不覆盖上一次记录。派发侧 `subagent.settled` 的 `detail.output` 仍是 240 字摘要（日志不膨胀），完整正文走事件上的非日志字段 `lastMessage`。
+- **`task_status` 新增 `include: 'full'`**：默认给正文（超 1200 字给预览 + 截断提示）或「reports 路径 + 摘要」，`full` 时读全文（文件被删则降级为摘要 + 读取失败原因）。
 - **对齐自检**：`prepareDebugPreset` 生成后自动比较「源 cordis 组合 vs 生成物 plugins」，只允许预设 id / 显示名 / 描述 / 排序与 `customSkillDirs` 落点不同；工具行、`!!js` 权限条件、persona 系统提示逐行比对，结果随 `alignment` 返回。
 - **`--check` 只读检查**：`node scripts/orch-debug-preset.mjs --check` 读取当前安装的随包 `cordis` 与已生成 bundle，发现漂移时打印逐行差异并以退出码 1 结束；技能根单独报告 `dsh-doc` 是否在位。DSH 升级后先跑它再决定重新生成。
 - **技能目录报告**：生成结果新增 `skillNames`（如 `['dsh-doc']`），`--check` 同时复核 `skills/dsh-doc/SKILL.md` 是否存在。
@@ -25,6 +28,7 @@ G1 补齐：worker 预设挂 `tool-goal`，子会话终于能 `get_goal` 读自�
 
 - `test/debug-preset.test.js` 新增插件行切分、对齐比较（缺少/多出/顺序/包名/`disabled`/系统提示）、技能根归一化、`skillNamesOf`、`prepareDebugPreset` 自检与 `--check` 漂移检测用例。
 - `test/config.test.js` 新增 worker 预设 `tool-goal` 行的回归用例（按 `config.id` 抠 plugins 块：worker 恰好一行、包名正确、纯行无 `config`/`disabled`、整份补丁只出现一次；协调者不挂）。
+- B1 用例：`test/settlement.test.js`（短消息内联、超 64 KiB 写 `reports/` 并与文件内容比对、派发侧只给 `lastMessage`、重复结算幂等且不多写文件、空输出不覆盖）、`test/ledger.test.js`（旧库补 `last_message_json`、坏 JSON、同 digest 回落幂等）、`test/tools.test.js`（默认正文/预览/路径 + 摘要、`include: 'full'` 读全文、报告文件缺失降级）、`test/dispatch.test.js`（事件带完整 `lastMessage`、`detail.output` 仍 241 字符）、`test/index.test.js`（平台 `subagent/end` 全链路短/长两条）。
 
 ## 0.9.0（2026-11-15）
 

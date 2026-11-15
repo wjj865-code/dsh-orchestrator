@@ -261,6 +261,8 @@ export async function apply(ctx, rawConfig = {}) {
           output: typeof fields.detail?.output === 'string' && fields.detail.output !== ''
             ? [{ type: 'text', text: fields.detail.output }]
             : [],
+          // B1：派发侧已抽出完整文本（detail.output 只有 240 字摘要，只能给日志）。
+          lastMessage: typeof fields.lastMessage === 'string' ? fields.lastMessage : undefined,
           source: 'dispatcher',
         })
       } else if (event === 'subagent.failed') {
@@ -324,6 +326,8 @@ export async function apply(ctx, rawConfig = {}) {
     notifier,
     logger,
     labelFor: task => taskLabel(task, { all: listTasks(db) }),
+    // B1：超 64KB 的返回消息写这里（按需创建，启动时不建目录）。
+    reportsDir: join(dir, 'reports'),
     releaseSession: target => dispatcher.releaseWritableRoots?.(target),
     pump: () => queue?.pump(),
     // G1：结算自动收场时收敛平台 goal：done → complete；其余终态（cancelled/failed/orphaned）→ clear。

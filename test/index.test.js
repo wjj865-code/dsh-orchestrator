@@ -850,13 +850,56 @@ test('S1：平台 subagent/end（续派/冷恢复）也能把 running 推到 can
   await wait(50)
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-  const row = db.prepare('SELECT status, error FROM tasks').get()
+  const row = db.prepare('SELECT id, status, error, last_message_json FROM tasks').get()
   assert.equal(row.status, 'cancelled')
   assert.match(row.error, /stopReason=aborted/)
+  // B1：结算把完整返回消息落进台账，主会话用 task_status 就读得到。
+  const stored = JSON.parse(row.last_message_json)
+  assert.equal(stored.stored, 'inline')
+  assert.equal(stored.text, '被中断了')
   const message = db.prepare("SELECT meta_json FROM messages WHERE kind = 'settle'").get()
   assert.equal(JSON.parse(message.meta_json).source, 'lifecycle')
   assert.equal(db.prepare('SELECT count(*) AS n FROM notifications').get().n, 1)
   db.close()
+  const status = await byName.task_status.execute({ task_id: row.id, include: 'full' }, { agent: s1 })
+  assert.match(status, /最近返回（结算 aborted/)
+  assert.match(status, /被中断了/)
+  await disposers.at(-1)?.()
+}))
+
+test('B1：超 64KB 的 lastAssistantMessage 落 reports 文件，task_status 默认给路径+摘要、include=full 给全文', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  let childId
+  const subagents = {
+    async startActivation(spec) {
+      childId = spec.childId
+      return { childId: spec.childId, messageId: 'msg-1', result: new Promise(() => {}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [{ id: childId ?? '', mode: 'continuable' }] },
+  }
+  const { ctx, registered, listeners, disposers } = fakeCtx({ agents: [s1], subagents })
+  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 1 })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '长回执', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const big = `最后一行\n${'细'.repeat(25_000)}`
+  listeners.get('subagent/end')({ id: childId, local: true, stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: big }] })
+  await wait(50)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const row = db.prepare('SELECT id, last_message_json FROM tasks').get()
+  const record = JSON.parse(row.last_message_json)
+  db.close()
+  assert.equal(record.stored, 'file')
+  assert.ok(record.path.startsWith(join(home, 'state', 'orchestrator', 'reports')))
+  assert.equal(readFileSync(record.path, 'utf8'), big)
+  const preview = await byName.task_status.execute({ task_id: row.id }, { agent: s1 })
+  assert.ok(preview.includes(record.path))
+  assert.match(preview, /摘要：/)
+  assert.ok(!preview.includes(big))
+  const full = await byName.task_status.execute({ task_id: row.id, include: 'full' }, { agent: s1 })
+  assert.ok(full.includes(big))
   await disposers.at(-1)?.()
 }))
 

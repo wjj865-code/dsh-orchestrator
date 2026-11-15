@@ -1,9 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import{ join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, transition } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, transition, setTaskLastMessage } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
+import { captureLastMessage } from '../src/last-message.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity } = {}) {
@@ -339,6 +340,59 @@ test('task_status：详情、最近 3 条、不存在提示', async () => {
   assert.match(text, /进行中/)
   assert.match(text, /最近消息/)
   assert.match(text, /\[brief\]/)
+  assert.doesNotMatch(text, /最近返回/, '还没有结算返回消息时不显示该区块')
+  db.close()
+})
+
+// B1：结算落下的最新返回消息，主会话用 task_status 读；长消息给路径 + 摘要，include=full 才读全文。
+test('task_status：返回子会话最新返回消息，长消息给路径+摘要，include=full 读全文', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '带回执' }))
+  const task = listTasks(db)[0]
+  const reportsDir = tempDir()
+
+  const short = captureLastMessage({ text: '改完了：npm test 540/540 全绿。', taskId: task.id, reportsDir, stopReason: 'completed' })
+  setTaskLastMessage(db, task.id, short)
+  const shortText = await call(tools, 'task_status', { task_id: task.id })
+  assert.match(shortText, /最近返回（结算 completed｜/)
+  assert.match(shortText, /内联存台账/)
+  assert.match(shortText, /改完了：npm test 540\/540 全绿。/)
+
+  // 内联但偏长：默认只给预览，include=full 给全文
+  const medium = '细'.repeat(2000)
+  setTaskLastMessage(db, task.id, captureLastMessage({ text: medium, taskId: task.id, reportsDir }))
+  const preview = await call(tools, 'task_status', { task_id: task.id })
+  assert.match(preview, /已截断，共 2000 字；全文用 include=full/)
+  assert.ok(!preview.includes(medium))
+  const full = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
+  assert.ok(full.includes(medium))
+
+  // 超 64KB：默认给 reports 路径 + 摘要，include=full 从文件读全文
+  const huge = `结尾一行\n${'细'.repeat(25_000)}`
+  const record = captureLastMessage({ text: huge, taskId: task.id, reportsDir, stopReason: 'max-tokens' })
+  setTaskLastMessage(db, task.id, record)
+  assert.equal(record.stored, 'file')
+  const fileStatus = await call(tools, 'task_status', { task_id: task.id })
+  assert.match(fileStatus, /全文存 reports 文件/)
+  assert.match(fileStatus, /结算 max-tokens/)
+  assert.ok(fileStatus.includes(record.path))
+  assert.match(fileStatus, /摘要：/)
+  assert.match(fileStatus, /看全文：task_status 带 include=full/)
+  const fromFile = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
+  assert.ok(fromFile.includes(huge))
+  db.close()
+})
+
+test('task_status include=full：报告文件被删时降级为摘要 + 读取失败原因', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '缺文件' }))
+  const task = listTasks(db)[0]
+  const reportsDir = tempDir()
+  const record = captureLastMessage({ text: '细'.repeat(25_000), taskId: task.id, reportsDir })
+  setTaskLastMessage(db, task.id, { ...record, path: join(reportsDir, 'gone.md') })
+  const text = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
+  assert.match(text, /全文读取失败/)
+  assert.match(text, /gone\.md/)
   db.close()
 })
 

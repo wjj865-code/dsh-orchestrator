@@ -139,7 +139,7 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 |---|---|
 | `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` |
 | `task_list` | 活跃任务/历史任务；`group` 过滤看组进度 |
-| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、最近消息 |
+| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、最近消息、子会话最新返回（`include: 'full'` 看全文） |
 | `task_message` | 续派消息；排队/等前置任务返回提示 |
 | `task_stop` | 停止任务（运行中/排队/等前置） |
 | `task_retry` | 重建 failed/orphaned，保留编排字段 |

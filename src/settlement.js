@@ -3,7 +3,10 @@
 //   1) dispatch.js 的 subagent.settled / subagent.failed（本次派发的那次 activation）；
 //   2) 平台 subagent/end 生命周期事件（含续派/冷恢复起的新 activation，见 docs/probes/stop-reason-probe.md）。
 // stopReason 取值域来自平台类型：completed / aborted / error / max-tokens / refusal。
-import { addMessage, findTaskBySession, getTask, transition } from './ledger.js'
+// B1：结算同时把子会话最后一条 assistant 消息落进台账（短内联 / 长写 reports 文件），
+//     主会话用 task_status 就能读到全文，不必再打开子会话历史。
+import { addMessage, findTaskBySession, getTask, setTaskLastMessage, transition } from './ledger.js'
+import { captureLastMessage, messageText, summarizeText } from './last-message.js'
 import { statusLabel } from './state.js'
 
 /** stopReason → 台账终态与死因。completed 只在「没有只报 progress」时算完成。 */
@@ -35,15 +38,7 @@ const MAX_SUMMARY = 240
 
 /** 从 ContentBlock[] 取可读摘要（平台 SubagentResult.output / lastAssistantMessage 都是这个形状）。 */
 export function outputSummary(output, max = MAX_SUMMARY) {
-  const blocks = Array.isArray(output) ? output : []
-  const text = blocks
-    .filter(block => block?.type === 'text' && typeof block.text === 'string')
-    .map(block => block.text)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  if (text === '') return ''
-  return text.length > max ? `${text.slice(0, max)}…` : text
+  return summarizeText(messageText(output), max)
 }
 
 /**
@@ -56,6 +51,8 @@ export function createSettlementReporter({
   notifier,
   logger,
   labelFor,
+  // B1：长返回消息的落盘目录（<state>/reports）；不给就一律内联进台账。
+  reportsDir,
   releaseSession = () => {},
   pump = () => {},
   onTerminal = () => {},
@@ -88,10 +85,11 @@ export function createSettlementReporter({
    * @param {string} [input.sessionId] 子会话 id（平台事件只有这个）
    * @param {string|null} [input.stopReason] 平台 SubagentStopReason
    * @param {Array} [input.output] 子会话最终输出（ContentBlock[]）
+   * @param {string} [input.lastMessage] 子会话最终输出全文（派发侧已抽出文本时用它，优先于 output）
    * @param {string} [input.error] 结算失败原因（subagent.failed 路径）
    * @param {string} [input.source] 事件来源，只用于日志
    */
-  const report = ({ taskId, sessionId, stopReason, output, error, source = 'unknown' } = {}) => {
+  const report = ({ taskId, sessionId, stopReason, output, lastMessage, error, source = 'unknown' } = {}) => {
     let task
     try {
       task = taskId === undefined || taskId === null ? findTaskBySession(db, sessionId) : getTask(db, String(taskId))
@@ -109,7 +107,9 @@ export function createSettlementReporter({
       return { action: 'skipped', reason: 'not-running', taskId: task.id, from }
     }
     const mapped = mapSettle(stopReason, { progressCount: task.progress_count ?? 0 })
-    const summary = outputSummary(output)
+    // 完整正文（不截断）先算出来：摘要给通知/死因，正文进台账或 reports 文件。
+    const fullText = typeof lastMessage === 'string' && lastMessage !== '' ? messageText(lastMessage) : messageText(output)
+    const summary = summarizeText(fullText)
     const extra = typeof error === 'string' && error !== '' ? error : ''
     const detail = mapped.reason ?? ''
     const errorText = [detail, summary, extra].filter(part => part !== '').join('：').slice(0, 500) || null
@@ -123,6 +123,25 @@ export function createSettlementReporter({
         detail: { from, to: mapped.status, error: failure?.message ?? String(failure), source },
       })
       return { action: 'failed', reason: 'transition-failed', taskId: task.id, from }
+    }
+    // B1：把完整返回消息落进台账（短消息内联，超 64KB 写 reports 文件只留路径 + 摘要）。
+    // 失败只记日志：结算落库比「看得见最后一段话」优先，不能因此回滚终态。
+    let lastMessageRecord = null
+    try {
+      lastMessageRecord = captureLastMessage({
+        text: fullText,
+        taskId: task.id,
+        reportsDir,
+        stopReason: mapped.stopReason,
+        source,
+      })
+      if (lastMessageRecord !== null) {
+        const updated = setTaskLastMessage(db, task.id, lastMessageRecord)
+        if (updated !== undefined) next = updated
+      }
+    } catch (failure) {
+      lastMessageRecord = null
+      log('task.settle.last-message-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
     }
     const note = detail !== '' ? detail : (summary !== '' ? summary : '子会话已结束')
     try {
@@ -143,7 +162,12 @@ export function createSettlementReporter({
     log('task.settle', {
       taskId: task.id,
       sessionId: task.session_id ?? sessionId ?? null,
-      detail: { from, to: mapped.status, stopReason: mapped.stopReason, source },
+      detail: {
+        from, to: mapped.status, stopReason: mapped.stopReason, source,
+        lastMessage: lastMessageRecord === null
+          ? null
+          : { stored: lastMessageRecord.stored, bytes: lastMessageRecord.bytes, chars: lastMessageRecord.chars },
+      },
     })
     return {
       action: 'updated',
@@ -153,6 +177,14 @@ export function createSettlementReporter({
       reason: mapped.reason,
       stopReason: mapped.stopReason,
       summary,
+      lastMessage: lastMessageRecord === null ? null : {
+        stored: lastMessageRecord.stored,
+        bytes: lastMessageRecord.bytes,
+        chars: lastMessageRecord.chars,
+        path: lastMessageRecord.path ?? null,
+        summary: lastMessageRecord.summary,
+        digest: lastMessageRecord.digest,
+      },
       task: next,
     }
   }

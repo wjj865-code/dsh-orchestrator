@@ -2,6 +2,7 @@
 // 后端二选一：subagent（默认，直连 ctx.subagents）或 team（旧的 agentTeams 名册）。
 import { randomUUID } from 'node:crypto'
 import { resolve as resolvePath } from 'node:path'
+import { messageText } from './last-message.js'
 
 let counter = 0
 
@@ -306,6 +307,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
             taskId: activation.taskId,
             sessionId: activation.childId,
             detail: { stopReason: result?.stopReason ?? null, output: settleOutput(result?.output) },
+            // 非日志字段（logger 只取 detail）：完整返回消息交给结算上报器持久化（B1），
+            // 超 64KB 由结算侧写 reports 文件，日志里仍只留 240 字摘要。
+            lastMessage: messageText(result?.output),
           })
         } catch { /* 结算事件失败不能外溢 */ }
       },

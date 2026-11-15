@@ -77,6 +77,21 @@
 - 每次结算写一条 `settle` 消息 + `tasks.error` 死因 + 一条 `system` 通知（`cancelled`/`orphaned` 也走合并窗口），并释放可写根、唤醒队列补位。
 - 取证与时序见 `docs/probes/stop-reason-probe.md`（真机 7 场景）。
 
+### 最新返回消息（B1）
+
+两路事件都自带子会话最后一条 assistant 消息（`subagent/result.output` / 平台 `subagent/end.lastAssistantMessage`），结算时顺手落进台账，主会话用 `task_status` 就能读到「它最后说了什么」，不必打开子会话历史：
+
+| 情况 | 存储 | `task_status` 默认 | `include: 'full'` |
+|---|---|---|---|
+| 正文 ≤ 64 KiB | `tasks.last_message_json.text`（内联） | 正文（超 1200 字给预览 + 截断提示） | 正文全文 |
+| 正文 > 64 KiB | `<state>/reports/<taskId>.md`，台账只留 `path` + `summary` | `reports` 路径 + 240 字摘要 | 读文件给全文（文件缺失时给摘要 + 失败原因） |
+| 空输出 / `subagent.failed` | 不写（不拿空记录覆盖上一次） | 不显示该区块 | 同左 |
+
+- 摘要（`summarizeText`）仍走原口径：压空白、240 字截断；通知与死因只用摘要，不改文案长度。
+- 日志只留 240 字摘要（`detail.output`），完整正文经事件上的非日志字段 `lastMessage` 交给结算；两者分开，避免 jsonl 单行被正文撑大。
+- 幂等：结算只认 `running`，第二次事件直接跳过；`setTaskLastMessage` 再按正文 `digest` 兜一层——同一段正文重复落库不重写行、不动 `updated_at`，文件按任务编号覆盖，不会堆一堆副本。
+- 文件落盘失败时降级内联（宁可撑大一行台账，也不丢模型最后说的话），`reports/` 目录按需创建、启动时不建。
+
 - 通知走 `agent.steer` 直插协调者，不经过 Team 的 `sendMessage`。
 - 每次投递写 `notifications`：`delivered` / `failed`（带 reason）/ `skipped`；合并后续行 `merged_into` 指向首条。
 - `task_inbox` 汇总待决、失败/丢失、长时间没动静；问题/选项来自台账 `question` / `question_options_json`。

@@ -580,6 +580,33 @@ test('subagent：settle 后发出事件，dispose 走 activation', async () => {
   assert.equal(settled[1].detail.output, '')
 })
 
+test('subagent：结算事件带完整 lastMessage（detail.output 仍是 240 字摘要）', async () => {
+  const full = `开头一行\n${'细'.repeat(400)}`
+  const service = {
+    async startActivation(spec) {
+      return {
+        childId: spec.childId,
+        messageId: 'msg-1',
+        result: Promise.resolve({ output: [{ type: 'text', text: full }], stopReason: 'completed' }),
+        dispose: async () => {},
+      }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+  const events = []
+  const dispatcher = sub({ subagents: service, agent, onEvent: (event, fields) => events.push([event, fields]) })
+  await dispatcher.spawn({ label: 'x', prompt: 'p', taskId: 't-11' })
+  await new Promise(resolve => setTimeout(resolve, 5))
+  const settled = events.find(([event]) => event === 'subagent.settled')
+  assert.ok(settled !== undefined)
+  // 日志字段保持摘要（不把 64KB 正文写进 jsonl），完整正文走非日志字段给结算落库。
+  assert.equal(settled[1].detail.output.length, 241)
+  assert.ok(settled[1].detail.output.endsWith('…'))
+  assert.equal(settled[1].lastMessage, full)
+})
+
 test('subagent：activation.result 被拒时发 subagent.failed（带 taskId 与错误）', async () => {
   const events = []
   const service = fakeSubagents()
