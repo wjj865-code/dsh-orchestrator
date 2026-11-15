@@ -2,7 +2,7 @@
 
 > DeepSeek Harness 的任务编排插件：一个主会话负责拆任务，子会话并行执行；带跨项目记忆、依赖编排、收件箱、日报和任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（最新 `0.7.0`）
+- npm：`@wjj865-code/dsh-orchestrator`（最新 `0.8.0`）
 - 仓库：<https://github.com/wjj865-code/dsh-orchestrator>
 - License：MIT
 
@@ -29,7 +29,7 @@
 1. DSH → 插件 → **添加插件**，粘贴：
 
    ```text
-   @wjj865-code/dsh-orchestrator@0.7.0
+   @wjj865-code/dsh-orchestrator@0.8.0
    ```
 
 2. **彻底退出 DSH 再启动**（只关窗口不生效）。
@@ -198,8 +198,8 @@ debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调
 ```powershell
 npm version patch --no-git-tag-version
 git add package.json
-git commit -m "release: v0.7.0"
-git tag -a v0.7.0 -m "v0.7.0"
+git commit -m "release: v0.8.0"
+git tag -a v0.8.0 -m "v0.8.0"
 git push origin main --follow-tags
 ```
 
@@ -217,7 +217,7 @@ git push origin main --follow-tags
 
 | 现象 | 处理 |
 |---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.7.0`；刷新页面；彻底重启 DSH |
+| 侧栏没有「主会话」 | 确认装的是 `0.8.0`；刷新页面；彻底重启 DSH |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页和日志 |
 | 提示「尚未打开主会话」 | 面板点「打开主会话」 |
 | 提示「team 后端不可用」 | `backend` 改回 `subagent` |
