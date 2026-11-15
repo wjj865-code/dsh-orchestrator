@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { collectWorkspaceArtifacts, appendMissingArtifacts, changedEventsOf } from '../src/artifact-collect.js'
 import { tempDir } from './helpers.js'
 
@@ -47,10 +47,13 @@ test('collectWorkspaceArtifacts：无事件 / 无服务 / 摘要已释放都返�
 })
 
 test('collectWorkspaceArtifacts：超过上限截断并报告 omitted；cwd 缺失时保留绝对路径', () => {
+  // 用例要跨平台：POSIX 上 'C:/work' 不是绝对路径，绝对路径按当前平台构造。
+  const cwd = resolve('/work')
+  const absolutePath = resolve('/abs/out.md')
   const result = collectWorkspaceArtifacts({
     session: sessionWith([changeEvent(1)]),
     workspaceChanges: { summary: () => ({
-      cwd: 'C:/work',
+      cwd,
       files: Array.from({ length: 4 }, (_, index) => ({ path: `f-${index}.txt`, added: index, deleted: 0 })),
     }) },
     max: 3,
@@ -59,9 +62,9 @@ test('collectWorkspaceArtifacts：超过上限截断并报告 omitted；cwd 缺�
   assert.equal(result.omitted, 1)
   const absolute = collectWorkspaceArtifacts({
     session: sessionWith([changeEvent(1)]),
-    workspaceChanges: { summary: () => ({ files: [{ path: 'C:/abs/out.md', added: 1, deleted: 0 }] }) },
+    workspaceChanges: { summary: () => ({ files: [{ path: absolutePath, added: 1, deleted: 0 }] }) },
   })
-  assert.equal(absolute.artifacts[0].path, 'C:/abs/out.md')
+  assert.equal(absolute.artifacts[0].path, absolutePath)
 })
 
 test('changedEventsOf 兼容 events 数组；appendMissingArtifacts 不覆盖已有路径', () => {
