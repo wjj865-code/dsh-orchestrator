@@ -768,7 +768,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         const timeout = Number.isFinite(config?.deliveredTimeoutMinutes)
           ? Math.max(1, Math.min(1440, Math.floor(config.deliveredTimeoutMinutes)))
           : DELIVERED_TIMEOUT_MINUTES
-        lines.push(`交付：已交付待确认（task_close 确认完成；task_message 追问原会话；超过 ${timeout} 分钟自动完成）`)
+        lines.push(`交付：已交付待确认（默认等你或用户确认：要改 task_message 追问原会话；确认完成才 task_close；超过 ${timeout} 分钟自动完成）`)
       }
       if (task.close_reason !== null && task.close_reason !== undefined) {
         lines.push(`关闭：${closeReasonLabel(task.close_reason)}`)
@@ -916,7 +916,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，批准后同一会话会自动切回可写。'
         : ''
       const deliveredNote = wasDelivered
-        ? '\n该任务此前是「已交付待确认」，已回到进行中并在同一子会话继续；完成后仍要 task_close 确认。'
+        ? '\n该任务此前是「已交付待确认」，已回到进行中并在同一子会话继续；完成后会再次落「已交付待确认」，等你/用户确认或超时自动完成。'
         : ''
       return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}`
     }),
@@ -1159,7 +1159,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       if (waiting.length > 0) blocks.push(`【待你决定】${waiting.length}\n${waiting.map(lineOf).join('\n')}`)
       if (confirm.length > 0) {
-        blocks.push(`【待确认】${confirm.length}（已交付待确认：task_close 确认完成，task_message 追问原会话）\n${confirm.map(lineOf).join('\n')}`)
+        blocks.push(`【待确认】${confirm.length}（已交付待确认：默认保持、等你或用户拍板；要改 task_message 追问原会话，用户确认后才 task_close，超时自动完成）\n${confirm.map(lineOf).join('\n')}`)
       }
       if (failed.length > 0) blocks.push(`【失败/丢失】${failed.length}\n${failed.map(lineOf).join('\n')}`)
       if (stale.length > 0) blocks.push(`【长时间没动静】${stale.length}\n${stale.map(lineOf).join('\n')}`)
@@ -1341,7 +1341,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return `已记录任务「${labelFor(next)}」的重复 done 回报（当前${labelOf(next.status)}，未重复迁移）。${hint === '' ? '' : `\n${hint}`}`
       }
       const deliveredNote = deliveredNow
-        ? `\n任务已交付待确认：确认完成用 task_close；要改直接用 task_message 追问原会话（不用新建任务）。`
+        ? `\n已交付待确认：这是交付、不是终态；协调者可能用 task_message 追问（同一会话继续），确认或超时后才收成完成。`
         : ''
       return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${deliveredNote}${hint === '' ? '' : `\n${hint}`}`
     }),

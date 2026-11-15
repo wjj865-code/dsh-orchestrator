@@ -3,7 +3,7 @@
 //
 // 产物 → 交付（P6）：通知里只列「present 能接住」的绝对路径，并明确要求协调者在自己回合里交付。
 // 判据与平台一致（reports/t0.1-probes.md §3.3 + D6/D7）：present 用 lstat 判 type，目录 / 符号链接 /
-// 不存在一律被拒；平台单次硬上限 8，本插件按「1-2 个最关键的、最多 4 个」收敛成产品上限。
+// 不存在一律被拒；平台单次硬上限 8，本插件按「1-4 个最关键的、最多 4 个」收敛成产品上限。
 import { lstatSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 
@@ -86,7 +86,7 @@ const skipLine = skipped => {
 
 // 指令写进通知文案（不是系统提示）：插件不代调 present（它要求 open turn，见 T0.1 探针 ③），
 // 只负责把「已 stat 校验过存在、是普通文件」的绝对路径交到协调者手上并说清怎么交付。
-const PRESENT_HINT = '交付：在你自己的回合里调用 present，files 里每项 path 填上面这些绝对路径（1-2 个最关键的，最多 4 个）；插件已 stat 校验存在且是普通文件，不要另找路径。'
+export const PRESENT_HINT = '交付：在你自己的回合里调用 present，files 里每项 path 填上面这些绝对路径（1-4 个最关键的，最多 4 个）；插件已 stat 校验存在且是普通文件，不要另找路径。'
 
 /**
  * 产物区块的行（通知与 task_status 共用同一份渲染，避免两处清单口径漂移：风险 R17）。
@@ -171,8 +171,9 @@ const line = item => `- ${nameOf(item)}：${item.summary}${questionBlock(item)}$
 const batchHint = batch => (batch.some(hasDeliverable) ? `\n  ${PRESENT_HINT}` : '')
 
 // 两段式终态（delivered）：交付通知必须带动作指令，否则协调者只会转述「完成了」，
-// 既不会 task_close 确认、也不会想到 task_message 追问能复用原会话（用户随后只能新派任务）。
-const DELIVERED_HINT = '确认：task_close <任务编号>；要改：task_message 追问原会话（不新建任务）；不确认则按超时自动完成。'
+// 也会忘了 task_message 追问能复用原会话（用户随后只能新派任务）。
+// 默认口径是「保持待确认、别急着关」（0.14.x 起）：关闭要用户明确确认，或等超时。
+export const DELIVERED_HINT = '默认保持待确认（别急着关闭）：要改 task_message 追问原会话（不新建任务）；用户明确说确认完成时再 task_close <任务编号>；一直不确认则超时自动完成。'
 const deliveredBlock = item => item?.status === 'delivered'
   ? `\n  交付确认：${DELIVERED_HINT.replace('<任务编号>', String(item.taskId ?? ''))}`
   : ''

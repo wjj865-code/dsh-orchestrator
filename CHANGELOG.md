@@ -3,6 +3,50 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
+## 0.14.1（2026-11-16）
+
+这一版只改「怎么说」和「怎么读」：README 按**只服务使用者**重写（维护者内容移到 `docs/CONTRIBUTING.md`），
+协调者预设从「默认立刻 `task_close` 确认」改成**默认保持待确认、不主动关闭**，并把 6 个文案面查出的 **13 处口径冲突**一次修干净、用测试锁住。
+相对 0.14.0 **无破坏性变更**（patch）——台账结构、工具入参、状态迁移一字未动；唯一可感知的变化是「交付后默认停在待确认等用户拍板」。
+
+### README 拆分：只写使用者要的
+
+- **README 重写为 360 行使用者文档**：一句话定位 / 安装与升级（含「刷新页面不会换版本，必须彻底重启 DSH」）/ 快速上手 /
+  状态机与交付口径 / 各任务类型 / 工具清单 / 配置 / 状态与数据 / 已知限制 / 故障排查 / 文档索引。
+- **维护者内容移入新建的 `docs/CONTRIBUTING.md`（103 行）**：环境、仓库结构（模块地图）、本地开发命令、测试策略、
+  发版流程（版本真源、`release.yml`、provenance、`NPM_TOKEN`、npmmirror 同步）、发布前清仓库、`dist/` 入库约定、改动边界。
+- `package.json` 的 `files` 补 `docs/CONTRIBUTING.md`，保证 npm 包里 README 的链接打得开。
+- 删掉过时内容：0.13 时代的「工具表 13 个」、keep-alive「与旧版逐字一致」、goal/keep-alive 各占一节的长篇历史叙述
+  （压成「可选能力」两段）、「reports 文件确认存在后再 present」、「默认立刻 task_close」。
+
+### 预设默认：交付后不自动关闭
+
+- **协调者预设（`COORDINATOR_POLICY`）**：子任务报 `done` 后默认**保持待确认、不要主动 `task_close`**——追问窗口留着，
+  用户看完结果常还要改；只有用户明确说「确认 / 没问题 / 不用再改」，或确实需要终态（派依赖它的任务、删任务、收尾）时才关闭。
+  要改一律 `task_message` 追问（复用同一个子会话），一直不确认按 `deliveredTimeoutMinutes` 超时自动完成。
+- **通知与视图同口径**：`DELIVERED_HINT` 不再以「确认：task_close」开头催关闭；`task_status` 交付行、`task_inbox`「待确认」栏头、
+  `task_message` 追问回执、`task_report` 回执（受众是子会话，不再教它 `task_close`）全部改成「默认保持、确认才关、超时兜底」。
+- **对子会话讲清语义**：`task_detail` 的收尾提示与 keep-alive 默认提示都补上「报 done 只是交付，会停在『已交付待确认』；
+  收到追问就在同一会话继续，不要自行宣告任务结束」。
+- 行为本身不变：超时自动完成仍默认 60 分钟兜底，协调者仍可随时 `task_close`；不想多一步可配 `deliveredTimeoutMinutes: 1`。
+
+### 文案一致性：13 处冲突修复 + 测试锁定
+
+- **6 个文案面、13 处**：`index.js` 预设（1）、`src/notify.js`（注释 / `PRESENT_HINT` / `DELIVERED_HINT`，3）、
+  `src/tools.js`（`task_status` / `task_message` / `task_inbox` / `task_report`，4）、`src/task-detail.js`（收尾提示，1）、
+  `src/keepalive.js`（默认续跑提示，1）、文档（`docs/DETAIL.md` 补「两段式交付」/`task_close`/`delivered` 可追问，1；
+  `docs/ARCHITECTURE.md` 错字与旧版对比句，1；`README.md` 整篇重写，1）。
+- **present 口径归一**：通知正文与注释里的「1-2 个最关键的」改为「1-4 个最关键的」（与 0.13.1 起的偏好一致）。
+- **新增 `test/copy-consistency.test.js`（8 条）**：锁「口径」不锁措辞——`done` 不是终态、协调者默认不主动 `task_close`、
+  追问复用原会话、present 1-4、brief 不越权定义交付语义、README 不写维护者内容；并用冲突正则
+  （`默认立刻 task_close` / `done 即结束` / `自动关闭` / `1-2 个最关键`）防止改回去。
+- **测试**：`npm test` **775/775**（0.14.0 基线 767 + 新增 8）。
+
+### 升级提示
+
+- 装 0.14.1 仍要**彻底退出 DSH 再启动**；刷新页面只重载前端，不会换服务端代码。
+- 行为差异只有一条：任务交付后默认停在「已交付待确认」，等你确认或用追加消息提修改；不需要这个窗口就配 `deliveredTimeoutMinutes: 1`。
+
 ## 0.14.0（2026-11-16）
 
 这一版把「交付」和「完成」拆成两段（`delivered` → `done`），并补上两个长期缺口：计划模式终于能把计划落盘成交付物（`plan_save`），构建/发版类任务可以只对**单条任务**放开沙箱（`access:'full'`）。

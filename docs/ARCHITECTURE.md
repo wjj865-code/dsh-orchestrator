@@ -69,7 +69,7 @@
 
 ## 两段式终态（D1：交付 → 确认）
 
-`done` 是不可逆终态，但「子会话说做完了」不等于「用户验收过」。为既保留 `done` 的审计语义、又给追问问留窗口，状态机在 `running` 与 `done` 之间加了 `delivered`（已交付待确认）：
+`done` 是不可逆终态，但「子会话说做完了」不等于「用户验收过」。为既保留 `done` 的审计语义、又给追问留窗口，状态机在 `running` 与 `done` 之间加了 `delivered`（已交付待确认）：
 
 - **进入**：`task_report done`，或结算 `completed` 且没上报过 progress（`SETTLE_MAP`）。
 - **出口 1 · 确认**：协调者 `task_close`（或面板「确认交付」）→ `done`，`close_reason=coordinator`；超过 `deliveredTimeoutMinutes`（默认 60）由 sweeper 自动收成 `done`，`close_reason=timeout`。
@@ -179,7 +179,7 @@
 - **与 S1 的边界**：keep-alive 不改任务状态、不写 `progress_count`、不写 `kind='followup'` 消息（避开面板「同文去重」口径）、不调用结算。
   结算仍然只在 `subagent.settled` / `subagent/end` 上由 S1 做一次（状态机天然幂等）；任务一旦离开 `running`，同一会话后续的 `turn-stopping` 直接跳过，
   不会把已结算任务重新拉起来。`aborted`/`error`/blocked 不经过 `turn-stopping`，keep-alive 也无法阻止显式 stop / 父级 dispose / 模型报错。
-- **默认关闭**：`config.keepAlive !== true` 时监听器在查台账之前返回（连 `db` 都不用），升级后行为与旧版一致。
+- **默认关闭**：`config.keepAlive !== true` 时监听器在查台账之前返回（连 `db` 都不用），默认路径零开销。
 
 ## brief 纯指引（T1）
 

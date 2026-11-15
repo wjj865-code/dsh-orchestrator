@@ -1,42 +1,42 @@
 # dsh-orchestrator
 
-> DeepSeek Harness 的任务编排插件：一个主会话负责拆任务，子会话并行执行；带跨项目记忆、依赖编排、收件箱、日报和任务面板。
+> **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目标目录里把活干完，进度与结论落进持久台账，浏览器里有任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（最新 `0.14.0`）
+- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.14.1`）
 - 仓库：<https://github.com/wjj865-code/dsh-orchestrator>
-- License：MIT
+- License：MIT｜Node `>= 22.15`（`engines`），DSH rc.3+ 实测（Web 表面为主，Desktop 同构）
 
-## 这是什么
+## 目录
 
-| 能力 | 说明 |
-|---|---|
-| 协调者 | 固定「主会话」，只拆任务、派子会话、看回报、用 `present` 交付产物，不读写文件 |
-| 子任务 | 独立 DSH 子会话，按目标目录运行；可只读、续派、停止、重派 |
-| 依赖编排 | `dependsOn` 前置；完成自动晋升，失败沿依赖链传播 |
-| 分组/写域/优先级 | `group` 分组、`writeScopes` 冲突提示、`priority` 队列排序 |
-| 跨项目记忆 | 分层沉淀：done 摘要进 `task-log`（只归档、不进任务详情），经验/决策/偏好蒸馏成原子事实才随 `task_detail` 注入；`history_search` / `project_context` 补上下文 |
-| 收件箱/日报 | `task_inbox` 看待决与卡点；`digestAt` 开每日汇总 |
-| 任务面板 | 会话头入口；DeepSeek 风格三段式（命令栏 / 筛选轨+任务卡 / 右侧详情抽屉）；详情/停止/重派/追加（仅可续派状态）/删除（仅终态、二次确认）；产物库按项目/日期分组、可预览/复制 |
-| 产物收集 | done 自动从 `workspaceChanges` 收集改动文件，与显式 `artifacts` 按路径去重合并 |
-| 结算闭环 | 子会话结束/中断自动收场：正常完成→已完成，被中断→已取消，异常→失败，只报过进展→会话丢失 |
-| 目标状态 | 子任务目标同步到平台 `ctx.goals`（create 后立即 disarm，不自动续轮）；台账与面板只读展示 phase/activation |
+- [安装与升级](#安装与升级)
+- [快速上手](#快速上手)
+- [核心概念](#核心概念)
+- [工具清单](#工具清单)
+- [配置](#配置)
+- [状态与数据](#状态与数据)
+- [已知限制](#已知限制)
+- [故障排查](#故障排查)
+- [更多文档](#更多文档)
 
-协调者不阻塞等待：进度用 `task_list` / `task_inbox`，子任务完成会主动通知。
-
-## 快速开始
+## 安装与升级
 
 ### 从 npm 安装（推荐）
 
 1. DSH → 插件 → **添加插件**，粘贴：
 
    ```text
-   @wjj865-code/dsh-orchestrator@0.14.0
+   @wjj865-code/dsh-orchestrator@0.14.1
    ```
 
-2. **彻底退出 DSH 再启动**（只关窗口不生效）。
-3. 纯 dsh 表面左侧栏「插件」下方会出现「◈ 主会话」；Bot 模式用会话头「任务」按钮进面板（任务入口只在主会话显示）。
+2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）。
+3. 纯 dsh 表面左侧栏「插件」下方会出现「◈ 主会话」；Bot 模式用会话头「任务」按钮进面板。
 
-以后升级：在 DSH 插件页用 registry 包的更新入口升级；维护者发版流程见下文。
+### 升级
+
+- 升级 = **装新版 + 彻底重启 DSH**：插件宿主侧代码在 DSH 进程启动时加载，**刷新页面不会换版本**（页面刷新最多重载前端资源，不会重新加载插件）。装完发现还是旧行为，先确认「是否真的重启过」。
+- 在 DSH 插件页用 registry 包的更新入口升级；从 GitHub 装的先卸载旧版再装新版。
+- 旧包名 `dsh-orchestrator` 与新版不兼容，先移除。
+- 升级后建议核对一次：插件页版本号、工具表里 `task_*` 是否齐全、子会话是否能 `task_report`。
 
 ### 从 GitHub 安装（备选）
 
@@ -44,40 +44,30 @@
 https://github.com/wjj865-code/dsh-orchestrator
 ```
 
-装完同样要彻底重启。升级时先卸载旧版再装新版；旧包名 `dsh-orchestrator` 要先移除。
+装完同样要彻底重启；升级时先卸载旧版再装新版。
 
-### 打开入口
+### 装好后的自检
 
-- 侧栏「插件」下方「主会话」：直达协调者对话。**始终可见**（还没建主会话时也靠它引导创建）。
-- 会话头「☰ 任务」：打开任务面板。**只在主会话显示**；切到子会话或其他会话时自动隐藏。
-  判定信号是台账主会话 id（`settings.main_session_id`，配置 `coordinatorSession` 覆盖）：
-  客户端把当前会话 id 发给 `/api/orchestrator` 的 `session-role` 端点，宿主回答是不是主会话。
-  信号不可用（拿不到当前会话、宿主请求失败、响应异常）时**默认隐藏**——宁可少一个入口，也不在子会话里露出任务面板。
+1. 插件页能看到「任务编排」标题、图标和详情页。
+2. 侧栏「主会话」能打开；协调者工具表 11 个工具，子会话另有 3 个（全局共 14 个）。
+3. 派一条任务，子会话 `task_report done` 后主会话收到「已交付待确认」通知；`task_close` 能确认成「已完成」。
+4. 会话头「☰ 任务」只在主会话显示，切到子会话后自动隐藏。
+
+### 入口在哪
+
+- 侧栏「插件」下方「◈ 主会话」：直达协调者对话，**始终可见**（还没建主会话时靠它引导创建）。
+- 会话头「☰ 任务」：打开任务面板，**只在主会话显示**。判定信号是台账主会话 id（`settings.main_session_id`，配置 `coordinatorSession` 覆盖）：客户端把当前会话 id 发到 `/api/orchestrator` 的 `session-role` 端点，宿主回答是不是主会话；信号不可用（拿不到会话、请求失败）时**默认隐藏**——宁可少一个入口，也不在子会话里露出面板。
 - 面板右上角「打开主会话」：创建/复用一个主会话。
 
-### 面板长什么样（U2）
+## 快速上手
 
-面板走 DeepSeek 设计平台风格，分成三段：
+### 1. 打开主会话
 
-| 段 | 内容 |
-| --- | --- |
-| 顶部命令栏 | 标题 + 主会话状态点、任务搜索框、刷新、打开主会话；下面是 4 张指标卡（进行中/待你决定/已完成/失败，点一下等于切筛选） |
-| 中部工作区 | 左侧筛选轨（带计数徽标）+ 任务卡列表；切到「产物」变成产物库（按项目/日期分组） |
-| 右侧详情抽屉 | 点任务卡或「详情」从右侧滑入，遮罩、`Esc`、关闭按钮都能收起 |
+侧栏「◈ 主会话」（或面板「打开主会话」）。协调者预设只做协调：没有 `read`/`write`/`bash`，也不会阻塞等待子任务。
 
-- 颜色/圆角/阴影/动效全部取宿主 `--dsw-*` token，**深浅色主题自动跟随**，面板不写死颜色。
-- 抽屉里 7 个可折叠区块：概览、**最新回复**（子会话最后一条回复）、**Brief**（验收/约束/背景/原话）、
-  **目标状态**（只读）、**消息**（待发/已投递/投递失败）、**依赖**（上下游）、**产物**（复制路径）；
-  底部动作条：停止（二次确认）/确认交付（仅待确认、二次确认）/重派/追加消息（仅可续派状态）/打开子会话/删除（仅终态、二次确认）。
-  按钮可见性与后端门控同源（`src/panel-gates.js`）：进行中/等你确认/要授权/待确认才能追加，只有「待确认」能确认交付；
-  终态才能删，删除会级联清掉该任务的消息/通知（产物文件与记忆不动）。
-- 交互细节：卡片 hover 与按下反馈、抽屉滑入滑出、区块折叠动画、骨架加载态、空态、带「重试」的错误条、
-  `prefers-reduced-motion` 下关闭动效。设计细节见 [docs/UI.md](docs/UI.md)。
+### 2. 说需求 = 派单
 
-
-## 怎么用
-
-用自然语言对主会话说需求即可。协调者会调用 `task_create` 拆任务，例如：
+用自然语言对主会话说需求即可，协调者会调用 `task_create` 拆任务：
 
 ```js
 task_create({
@@ -89,10 +79,9 @@ task_create({
 })
 ```
 
-### 依赖与分组
+有先后关系用 `dependsOn`，同一需求用 `group`，会改同一批文件用 `writeScopes`，紧急的给 `priority`：
 
 ```js
-// 先建 A，再建依赖 A 的 B
 task_create({ title: '改接口', goal: '...', acceptance: ['...'], group: '登录改造' })
 task_create({
   title: '联调登录',
@@ -105,317 +94,266 @@ task_create({
 })
 ```
 
-- 前置没完成：B 是 `waiting_dep`，不派发、不占并发位。
-- 前置全部 `done`：B 自动变 `pending`；下游子会话用 `task_detail` 能看到前置任务的摘要和产物（按当前台账现读）。
-  前置只是「已交付待确认」（`delivered`）还不算：先 `task_close` 确认（或等超时自动完成），下游才会晋升。
-- 前置失败：B 自动 `failed`，错误写明原因。
-- `writeScopes` 只提示冲突，不是文件锁；`priority` 高的先派。
+### 3. 看进度
 
-### 两段式终态（交付 → 确认）
+- 协调者不阻塞等待：进度用 `task_list` / `task_status` / `task_inbox`，子任务完成会主动通知（`agent.steer` 注入，5 秒合并）。
+- 子会话用 `task_report` 汇报：`progress`（有进展未完成）/ `done`（做完了，交付）/ `blocked`（等人决定）/ `needs_auth`（需要授权）。
 
-子会话 `task_report done`（以及没上报就自然结束的结算）不会直接把任务判成 `done`，而是先落到 **`delivered`（已交付待确认）**：
+### 4. 交付、确认与追问（0.14 起是两段式）
 
-- 协调者收到「已交付待确认」通知后：默认立刻 `task_close` 确认完成；用户要改/补充就用 `task_message` 追问——**复用同一个子会话**（可写根没释放），任务回到 `running`，完成后会再交付一次。
-- 超过 `deliveredTimeoutMinutes`（默认 60 分钟）没确认：自动收成 `done`，`close_reason=timeout`，面板与 `task_status` 都看得出是超时自动完成。
-- `done` 仍是**不可逆终态**（不提供 reopen）：要新工作用 `task_create`/`task_retry`，要改交付物就用追问窗口。
-- 依赖就绪只认 `done`；`delivered` 会短暂挡住下游，正常情况协调者几秒内就确认。
-- 面板「待你决定」筛选与收件箱都包含 `delivered`；任务卡/抽屉有「待确认」小标、交付时间与关闭原因，抽屉底部有「确认交付」（两步确认）。
+子会话报 `done` **不等于**任务结束，而是落到 **`delivered`（已交付待确认）**：
 
-### 收件箱与日报
+- **默认保持待确认，不主动关闭**：追问窗口留着，用户看完结果常还要改。协调者只在用户明确说「确认 / 没问题 / 不用再改」，或确实需要终态（要派依赖它的任务、要删任务、要收尾）时才 `task_close`。
+- 要改/补充：`task_message`（或面板「追加」）**复用同一个子会话**，任务回到 `running`，完成后会再交付一次。
+- 一直不确认：超过 `deliveredTimeoutMinutes`（默认 60 分钟）自动收成 `done`（`close_reason=timeout`）。
+- 面板「待你决定」筛选与收件箱都包含 `delivered`，任务卡/抽屉有「待确认」小标、交付时间与关闭原因。
 
-- 面板「待你决定」/ `task_inbox`：等确认、要授权、已交付待确认、失败、长时间没动静。
-- `blocked` / `needs_auth` 可带 `question` + `options`，会显示在通知、详情和面板。
-- 日报默认关闭；在 profile 配置：
+### 5. 面板
 
-  ```yaml
-  - id: orchestrator
-    name: '@wjj865-code/dsh-orchestrator'
-    config:
-      digestAt: '09:00'
-      digestTimeZone: Asia/Shanghai
-  ```
+会话头「☰ 任务」打开，DeepSeek 设计平台风格三段式：
 
-  打开主会话后自动挂 schedule；到点汇总完成/在跑/待决定/失败/产物。
+| 段 | 内容 |
+| --- | --- |
+| 顶部命令栏 | 标题 + 主会话状态点、任务搜索、刷新、打开主会话；4 张指标卡（进行中/待你决定/已完成/失败，点击即切筛选） |
+| 中部工作区 | 左侧筛选轨（带计数徽标）+ 任务卡列表；切到「产物」变成产物库（按项目/日期分组、可预览/复制） |
+| 右侧详情抽屉 | 遮罩、`Esc`、关闭按钮都能收起；7 个可折叠区块：概览、最新回复、Brief、目标状态、消息、依赖、产物 |
 
-### 只读任务
+- 颜色/圆角/阴影/动效全部取宿主 `--dsw-*` token，深浅色主题自动跟随。
+- 底部动作条：停止（二次确认）/ 确认交付（仅「待确认」，二次确认）/ 重派 / 追加消息（仅可续派状态）/ 打开子会话 / 删除（仅终态、二次确认，级联清台账）。可见性与后端门控同源（`src/panel-gates.js`）。
+- 交互细节与 token 对照见 [docs/UI.md](docs/UI.md)。
 
-`task_create({ ..., readOnly: true })` 会让子会话进入 read-only 沙箱；只认显式 `true`。只读任务不注册 target 可写根。
+## 核心概念
 
-### 完整访问任务（per-task access:'full'）
+### 任务状态机：交付（`delivered`）≠ 完成（`done`）
 
-`task_create({ ..., access: 'full' })` 让**这一个**子会话跑在 `danger-full-access` 沙箱：文件沙箱不再限制写入，`bash` / `pwsh` 也不再被沙箱拦。用途只有一个——**构建 / 发版 / 装依赖 / 写仓库外目录**这类确实需要越过默认沙箱边界的任务（例如 `npm publish` 之外的打包产物落盘、需要 `git` 写 hooks、需要写 `%LOCALAPPDATA%` 缓存）。
+| 状态 | 含义 | 谁推进 |
+| --- | --- | --- |
+| `waiting_dep` | 等前置完成，不派发、不占并发位 | 前置 `done` 后自动 → `pending` |
+| `pending` | 排队等并发槽位 | 队列自动派发 → `running` |
+| `running` | 子会话在跑 | 子会话回报 / 结算 |
+| `waiting_user` | 子会话 `blocked`，等人决定 | `task_message` 续派 → `running` |
+| `waiting_auth` | 子会话 `needs_auth`，等授权 | 同上 |
+| **`delivered`** | **已交付待确认**：成果已落库，等确认或追问 | `task_close` → `done`；`task_message` → `running`；超时 → `done` |
+| `done` | 已完成（**不可逆终态**，不提供 reopen） | — |
+| `failed` | 失败（可 `task_retry` / 面板重派） | — |
+| `cancelled` | 被 `task_stop` 停掉 | — |
+| `orphaned` | 会话丢了（上报过 progress 的回合异常结束） | 可重派 |
 
-- **默认一点都不动**：不传 `access` 就完全沿用会话策略（会话是 `workspace-write` 就还是 `workspace-write`，是 `read-only` 就还是 `read-only`）；插件不改部署默认、不改父会话、不改其他任务。
-- **只接受 `'full'`**：`access: 'workspace-write'` / `'read-only'` / `'true'` / 数字等一律创建期报错并给出提示（不静默降级成默认——「以为放开了、其实没放开」比报错危险得多）。
-- **与 `readOnly` / `planFirst` 互斥**：只读是硬拦写、计划阶段靠只读沙箱兜底，和「放开写」不可能同时成立，同时传会在创建期拒绝。`worktree` 不冲突（隔离与沙箱是两件事，检出目录照样可以完整访问）。
-- **实现方式**：与只读走**同一条**注入路径——只对子会话 append 一条 `sandbox/mode { mode:'danger-full-access', source:'delegation' }`（平台唯一写入口），agent/created 时就压掉首回合窗口；续派/冷恢复幂等补一次（已有则跳过）。
-- **不继承**：`access` 是任务级显式字段，不从配置/父任务/brief 继承；子任务再派孙任务时不会自动带上（要显式再传）。重派（`task_retry` / 面板重派）沿用原任务的 `access`。
-- **可观测**：派发提示词（brief）第二行就是「【访问级别】完整」；`task_detail` 有「访问级别：完整（danger-full-access…）」+ 任务边界纪律；`task_list` 打「·完整访问」；`task_status` 有「访问级别：完整」行；完成/失败/卡住/孤儿通知标题带「（完整访问）」；台账 `tasks.access` 列 + 日志 `task.create.created` 的 `detail.access` 留审计。
-- **风险**：这等于把该子会话的写权限交给模型——它能改**任何**用户能改的文件。只在明确需要时用，用完让它正常进终态（`task_stop` 也照样能收）。平台侧边界（首回合窗口、父会话覆盖继承、审批不在沙箱层）见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#平台--沙箱)。
+- 依赖就绪**只认 `done`**：`delivered` 会短暂挡住下游，确认或超时后自动晋升。
+- `delivered` 是唯一允许「追问复用原会话」的收尾态；`done` 之后要改只能新派任务。
+- 面板「待你决定」与 `task_inbox` 都把 `delivered` 当待办。
 
-### 计划任务（planFirst，先出计划再执行）
+### 依赖、分组、写域、优先级
 
-`task_create({ ..., planFirst: true })` 让子会话以**计划阶段**起步：**只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**。子会话先只读探索（读代码/文档、跑只读命令、验证假设），写文件/写 shell 会被沙箱拒绝——这是预期行为，不是权限故障。
+- `dependsOn`：前置没完成 → `waiting_dep`；全部 `done` → 自动 `pending`；任一失败 → 下游自动 `failed`（写清原因）。创建后不可编辑，也不允许指向未来 id。
+- `group`：分组，面板按组汇总进度（`task_list({ group })` 看「已完成/待确认」）。
+- `writeScopes`：写域，**只做冲突提示**，不是文件锁。
+- `priority`：`-10..10`，高的先派。
 
-**计划交付流程：计划落盘 → 摘要上报 → 批准执行**
+### 交付口径：`present`
 
-1. 只读探索（同上）。
-2. **计划落盘**：子会话调 `plan_save({ task_id, content })`，插件在宿主进程把计划正文（Markdown）写进**主会话工作区**的 `reports/plans/<taskId>.md`，并自动登记为任务产物。这是计划阶段**唯一**被允许的写入口：路径固定、只接受任务编号（没有自定义 `path` 参数），编号形状白名单 + `relative()` 包含性校验把任何逃逸（`..`、绝对路径、盘符、跨目录）都拒在写之前；重复保存覆盖同一份文件（只留一版，没有版本对比/审批流）。
-3. **摘要上报**：子会话用 `task_report({ status: 'blocked' })` 只上报 **3–8 行摘要 + 计划文档绝对路径 + 待拍板问题清单**（`summary` 写摘要，`question` 写路径与问题，`options` 可给「批准执行 / 调整计划」）。不把计划正文塞进 `question`——上限 500 字，长计划会被截断。
-4. 协调者把摘要、路径和问题转交你（计划文档已是任务产物，通知/`task_status`/面板抽屉都能取到）；你批准后协调者 `task_message` 续派（或面板「追加」），插件在**投递成功且任务回到 `running` 之后**把沙箱切回 `workspace-write`、关闭 plan mode，子会话按计划执行。
+- 协调者不读写文件（`read`/`write`/`glob`/`grep`/`bash` 都被拒），交付只靠 `present`。
+- 默认用 `present` 展示 **1–4 个最关键的产物（最多 4 个）**：只列真实存在的普通文件、写绝对路径，不必等用户点名；没有产物就不提 `present`。
+- 存在性由插件与子任务负责（通知里的路径已 `lstat` 校验）；`present` 只声明交付、不读文件内容。
+- 子任务 `done` 时还会从 `workspaceChanges` 自动收集本轮改动文件，与显式 `artifacts` 按路径去重合并。
 
-- 只认显式 `true`（字符串 `'true'` 不生效）；与 `readOnly` **互斥**，同时传会在创建期被拒。
-- 出口不是 `exit_plan_mode`：子会话没有直接人类，批准会悬空。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`，文案指向「先 `plan_save` 落盘、再 `task_report blocked` 上报摘要」；协调者与其它会话不受影响。
-- `plan_save` 只对**计划任务自己的子会话**开放：别的子会话调用会被拒（越权），普通任务（非 `planFirst`）调用会被告知「直接写到自己的工作目录」，主会话调用被 guard 硬拦；主会话工作区不可用时返回可读原因、不写半截文件。
-- 计划状态落台账 `plan_state`：`planning`（等批准）/ `approved`（已批准执行）/ `rejected`（计划阶段未获批准就结束）。`task_list` 给「·计划中」标记、`task_status` 有「计划：」行、面板任务卡有「计划中」小标、抽屉概览有「计划」行；非计划任务不加任何字样。
-- `planMode` 服务不可用（平台版本没挂 / 子会话预设作用域看不到）时静默降级为「只有只读沙箱」并 warn 一行，派发不受影响。
-- 计划模式不强制模型不写文件——**硬拦只有只读沙箱**；首回合同样有极短可写窗口。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#计划阶段p8)。
+### 计划任务：`planFirst` + `plan_save`
 
-### 隔离任务（worktree，默认不隔离）
+`task_create({ ..., planFirst: true })` 让子会话以**计划阶段**起步：**只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**。写文件/写 shell 被沙箱拒绝是预期行为，不是权限故障。
 
-`task_create({ ..., worktree: true })` 时插件在**宿主进程**里对目标仓库执行 `git worktree add -b <branch> <repo>/.agents/worktrees/<taskId> <base>`，子会话的工作目录换成这份**检出目录**（在检出里写文件、提交），用户的工作树保持干净。分支留在你的仓库里，**合并由你决定**（插件不合并、不 push、不碰远程）。
+四步流程：
 
-**声明只有结构化两处，插件不解析任何自然语言**（不读 `AGENTS.md`、不做正则兜底）：
+1. **只读探索**：读代码/文档、跑只读命令、验证假设。
+2. **计划落盘**：调 `plan_save({ task_id, content })`，插件在宿主进程把计划正文写进**主会话工作区**的 `reports/plans/<taskId>.md`，并自动登记为任务产物。这是计划阶段**唯一**允许的写入口：路径固定、只收任务编号（编号形状白名单 + `relative()` 包含性校验，逃逸在写之前就拒），正文上限 200000 字，重复保存覆盖同一份（只有一版，没有版本对比/审批流）。
+3. **摘要上报**：`task_report({ status: 'blocked', summary, question, options })` 只报 **3–8 行摘要 + 计划文档绝对路径 + 待拍板问题**；不要把计划正文塞进 `question`（500 字上限会截断）。
+4. **批准执行**：用户批准后协调者 `task_message` 续派（或面板「追加」），插件在投递成功且任务回到 `running` 后把沙箱切回 `workspace-write`、关闭 plan mode。
+
+- 只认显式 `true`；与 `readOnly` **互斥**（创建期拒绝）。
+- 出口不是 `exit_plan_mode`：子会话没有直接人类，插件在子会话作用域拒绝它，文案指向「先 `plan_save`、再 `task_report blocked`」。
+- `plan_save` 只对本任务的子会话、只对计划任务开放；协调者侧 guard 硬拦。
+- 台账 `plan_state`：`planning`（等批准）/ `approved` / `rejected`；`task_list` 给「·计划中」，面板任务卡有「计划中」小标。
+- 边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#计划阶段p8)。
+
+### 完整访问任务：`access: 'full'`
+
+`task_create({ ..., access: 'full' })` 让**这一条任务**的子会话跑在 `danger-full-access`：文件沙箱不再限制写入，`bash` / `pwsh` 也不再被沙箱拦。用途只有构建 / 发版 / 装依赖 / 写仓库外目录这类确实要越过默认边界的活。
+
+- **默认一点都不动**：不传 `access` 就完全沿用会话策略，插件不改部署默认、不碰父会话、不碰其他任务。
+- **只接受 `'full'`**：`'workspace-write'` / `'read-only'` / `'true'` / 数字一律创建期报错，不静默降级。
+- **与 `readOnly` / `planFirst` 互斥**；与 `worktree` 不冲突（隔离目录 vs 放开权限是两件事）。
+- **不继承**：任务级字段，不写配置、不往孙任务传；重派/追问沿用原任务的 `access`。
+- **可观测**：brief 第二行「【访问级别】完整」、`task_detail`/`task_status` 明写、通知标题带「（完整访问）」、台账 `tasks.access` 审计。
+- **风险**：等于把该子会话的写权限交给模型——它能改任何用户能改的文件。用完正常进终态，`task_stop` 照样能收。
+
+### 隔离任务：`worktree`
+
+`task_create({ ..., worktree: true })` 时插件在**宿主进程**里对目标仓库执行 `git worktree add -b <branch> <repo>/.agents/worktrees/<taskId> <base>`，子会话在检出目录里干活，用户工作树保持干净；分支留在仓库里，**合并由你决定**（插件不合并、不 push、不碰远程）。
+
+声明只有结构化两处，插件不解析自然语言：
 
 | 层级 | 载体 | 字段 |
 |---|---|---|
 | 用户级默认 | profile 配置 | `worktreePolicy`（`required` / `auto` / `off`，默认 `auto`）、`worktreeBranchPrefix`（默认 `orch/`）、`worktreeRecentDays`（默认 `7`） |
 | 任务级决定 | `task_create` 参数 | `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup` |
 
-职责切分：**DSH 注入指引 → 协调者判断 → 插件执行**。平台 `dsh-agent-instructions` 把用户级 + 工作区级 `AGENTS.md` 注入协调者上下文；协调者据此（再用 `project_context` 读目标仓库 `AGENTS.md`）判断「要不要建 / 基线 / 分支名」，转成上面的结构化字段；插件只做校验 + 建检出 + 设 `target_dir` + 标注 + 清理。
+- **要不要建**：`required` 每个需求都隔离；`auto` 默认不隔离，「目标仓库是 git 仓库 ∧ 同一需求已有任务在跑 ∧ 本次是新需求」三条都满足才建议；`off` 一律不隔离。你在 `AGENTS.md` 里写「必须隔离」的生效路径是 **DSH 注入 → 协调者读懂 → 传 `worktree:true`**；要硬保证就配 `worktreePolicy: required`。
+- **基线**：`worktreeBase` 缺省用仓库默认分支；近 N 天只有 1 个活跃分支就直接用它；**≥2 个时插件不建任务**，返回候选让协调者用 `ask_user_question` 问你，拿到答案再带 `worktreeBase` 重调。
+- **分支名**：默认 `orch/<taskId>`；想用可读名（如 `orch/fix-login-retry`）就显式传 `worktreeBranch`，用户/项目的命名约定优先。非法或重名**报错不自动改名**（换名或改 `worktreeMode:'continue'` 复用已有检出）。
+- **不是 git 仓库** → 降级普通模式并提示；**建树失败**（没装 git / 路径已存在 / 分支已存在）→ 任务失败并写原因，不静默降级。
+- **清理**：`worktreeCleanup:'off'`（默认，检出+分支都留）/ `'checkout-only'`（只删检出，推荐）/ `'full'`（连分支一起删，有未合并提交会提示）。
+- **并发**：同一检出上不要并发两个任务，用 `dependsOn` 串行。
+- 视图：`task_status` 有「隔离：」行，`task_list` 打「·隔离」，通知与面板写「产物在分支 X 的检出目录 Y，合并由你决定」。
 
-- **要不要建**：`required` 时每个需求都隔离；`auto` 时默认不隔离，只有「目标是 git 仓库 ∧ 同一需求已有任务在执行 ∧ 本次是新需求」三条都满足才建议隔离；`off` 一律不隔离。你在 `AGENTS.md` 里写「每个需求都必须建 worktree」依然有效，生效路径是**注入 → 协调者读懂 → 传 `worktree:true`**；要硬保证就写配置 `worktreePolicy: required`（协调者漏传也会兜底建，返回里标明「按配置兜底」）。
-- **基线**：`worktreeBase` 缺省用仓库默认分支；仓库近 `worktreeRecentDays` 天只有 1 个活跃分支时直接用那条；**≥2 个时插件不建任务**，返回候选让协调者用 `ask_user_question` 问你，拿到答案后带 `worktreeBase` 重调。
-- **分支名**：默认 `orch/<taskId>`；非法或重名**报错不自动改名**（换名或改 `worktreeMode:'continue'` 复用已有检出）。
-- **不是 git 仓库** → 降级普通模式并明确提示（产物落在当前工作树）；**建树失败**（没装 git / 路径已存在 / 分支已存在）→ 任务标失败并写原因，**不静默降级**。
-- **互斥**：`worktree` 与 `readOnly` / `planFirst` 在创建期直接拒绝（只读/计划阶段本来就不写文件）。计划批准后要隔离，重新派发一个带 `worktree:true` 的任务。
-- **`.agents/` 不污染 `.gitignore`**：写进 `.git/info/exclude`（不可写时降级，`git status` 里会看到该目录，见 LIMITATIONS）。
-- **清理默认保留**：`worktreeCleanup:'off'`（默认，检出 + 分支都留）；`'checkout-only'` 只删检出、保留分支（推荐）；`'full'` 连分支一起删（有未合并提交时会提示）。
-- **视图**：`task_status` 有「隔离：」行（分支 / 检出 / 基线 / 决定者），`task_list` 打「·隔离」，通知与面板写「产物在分支 X 的检出目录 Y，合并由你决定」；普通任务零隔离字样。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#worktree-隔离p9)。
+### 只读任务
 
-### 目标状态（平台 goal，只读）
+`task_create({ ..., readOnly: true })` 让子会话进 read-only 沙箱，只认显式 `true`；只读任务不注册 target 可写根，续派也**不会**转可写（契约如此）。
 
-每个子任务派发后，插件会把 `task_create.goal` 同步成该子会话的平台 goal，并**立即 disarmed**——goal 只是持久目标状态，不会自动续跑。之后：
+### 记忆分层
 
-- `task_message` / 面板「追加」把消息并成「最新指示」，目标文本变化时 `edit`；
-- 子任务确认完成（`done`）时 `complete`；停止、重派、会话丢失、失败时 `clear`；
-  「已交付待确认」（`delivered`）**不收口**——追问还要 `edit` 同一个 goal，收口留到确认/超时之后；
-- 面板列表显示「目标·进行中/已完成…」小标，详情抽屉有「目标状态」只读区块（阶段、续轮、轮次、修订）；
-- 平台没有 goal 服务时静默降级，派发/续派/面板都不受影响。
+- **日志层**：`done` 摘要写进 `task-log`（一行一条），**只归档、永不注入**任务详情。
+- **事实层**：摘要里带经验/教训标记的分句蒸馏成 `lesson`，加上 `decision` / `preference` / `note` 原子事实，才随 `task_create` 写进 `lessons/` 记忆文件、由 `task_detail` 给出路径；`memoryLimit` 控制注入条数（默认 3）。
+- **检索**：`history_search` 查插件记忆/历史任务/平台历史会话；`project_context` 读项目白名单文件、顶层结构、最近任务；`memory_note` 记一条跨任务有效的决策/偏好/经验。
 
-目标文本只是持久状态，平台也不会把它注入系统提示或消息；子会话靠 `get_goal` 读（worker 预设挂了 `tool-goal`），也能用 `task_detail` 读创建时的目标快照。派发给子会话的 brief 是**纯指引**：只有【任务编号】+「先调 `task_detail` 读详情」，目标全文、验收、经验、前置任务、产物都不再内联到提示词。改目标请走 `task_message`，子会话的 `update_goal` 会被平台权限校验拒绝。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#目标g1)。
+### 收件箱与日报
 
-### 回合间续跑（keep-alive，默认关）
+- `task_inbox` / 面板「待你决定」：待你决定、待确认（`delivered`）、失败/丢失、长时间没动静。
+- `blocked` / `needs_auth` 可带 `question` + `options`，显示在通知、详情与面板。
+- 日报默认关闭；profile 配 `digestAt: '09:00'`（`digestTimeZone` 可选）后，打开主会话自动挂 schedule，到点汇总完成/在跑/待决定/失败/产物。
+- 空闲看门狗默认开：`running` 长时间无心跳/消息/状态变化时告警一次，只告警、不改状态、不 kill。
 
-子会话回合结束后默认就结束这一段 activation，等结算或人工续派。`keepAlive: true` 时，插件订阅平台的 `agent/turn-stopping`，在回合边界（`agent.status` 仍为 `running`、还没 idle）同步投递下一条消息，让子会话**接着跑**：
+### 可选能力：平台 goal 与回合间 keep-alive
 
-- 只对「台账 `running` + 平台 goal 未完成（phase 不是 `complete` / `cleared`）」的任务注入；没有平台 goal 的任务不续跑；
-- 默认 `keepAliveMode: 'steer'`（同一回合再走一步，不写 `turn/end`）；改成 `followup` 则是新回合；
-- 轮数上限 `keepAliveMaxRounds`（默认 8，1–50）落台账 `tasks.keep_alive_rounds`，每次进入 `running`（重派/续派/冷恢复）归零，`task_status` 会显示「已注入 N 轮」；
-- 停止条件：轮满、goal 已收口、任务不在 `running`（`task_stop` / S1 结算 / S2 对账都会让它离开 `running`）、回合被中断、只读任务、inbox 已有人排了下一轮、注入异常；
-- 默认关闭：关着时监听器在查台账之前就返回，行为与旧版逐字一致。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#回合间-keep-alivek2)。
+两者都不参与普通编排（goal 只是只读镜像，keep-alive 默认关）：
 
-### 调试子会话（`orch-debug`）
-想让子任务跑在「创造模式」的能力栈上（`cordis_*` 只读运行时洞察工具 + `dsh-doc` 技能 + `plugin_manager`）调试、更新 DSH 插件时：
+- **平台 goal（只读镜像）**：派发后把 `task_create.goal` 同步成子会话的平台 goal 并**立即 disarm**（不会自动续跑）。`task_message` 把消息并成「最新指示」并 `edit`；确认完成时 `complete`，停止/重派/失败时 `clear`。平台没有 goal 服务时静默降级。子会话用 `get_goal` 读，`task_detail` 也有创建时的目标快照。
+- **回合间 keep-alive（默认关）**：`keepAlive: true` 时订阅 `agent/turn-stopping`，在回合边界给「`running` 且平台 goal 未完成」的子会话注入下一轮，轮数上限 `keepAliveMaxRounds`（默认 8）。默认 `steer`（同一回合再走一步）。它是宿主替子会话开工，不是成本控制。
 
-```powershell
-npm run preset:debug   # 把随包「创造模式」组合复制成可安装的 orch-debug 预设
-node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成的 bundle 还跟不跟得上随包组合
-```
-
-再用 `plugin_manager` 安装生成的 bundle，在插件配置里写 `workerPreset: orch-debug`，**彻底退出 DSH 再启动**。
-安装步骤、与 `cordis` 的逐项对齐差异、插件更新流程（`plugin_manager` / client 热重载 / host HMR / 动态插件边界）与验证清单见
-[docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)。
-
-## 工具
+## 工具清单
 
 协调者（11 个）：
 
 | 工具 | 作用 |
 |---|---|
-| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'` = 该子会话 danger-full-access，构建/发版类专用）/ `worktree*`（`worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup`） |
+| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` |
 | `task_list` | 活跃任务/历史任务；`group` 过滤看组进度 |
-| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、最近消息、子会话最新返回（`include: 'full'` 看全文） |
-| `task_message` | 续派消息（含「待确认」上的追问，复用原会话）；排队/等前置任务返回提示 |
-| `task_close` | 确认「已交付待确认」（`delivered`）为已完成（`done`，终态）；done 不可逆 |
+| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、最近消息、最新返回（`include:'full'` 看全文） |
+| `task_message` | 续派消息（含「待确认」上的追问，复用原会话）；排队/等前置会返回提示 |
+| `task_close` | 把「已交付待确认」（`delivered`）确认成已完成（`done`，终态） |
 | `task_stop` | 停止任务（运行中/排队/等前置/待确认） |
 | `task_retry` | 重建 failed/orphaned，保留编排字段 |
 | `task_inbox` | 收件箱：待决、待确认、失败/丢失、长时间没动静 |
 | `history_search` | 查插件记忆、历史任务、平台历史会话 |
 | `project_context` | 只读项目白名单文件、顶层结构、最近任务、相关记忆 |
-| `memory_note` | 记一条跨任务有效的决策/偏好/经验（写入即蒸馏为原子事实） |
+| `memory_note` | 记一条跨任务有效的决策/偏好/经验 |
 
 子任务（3 个）：
 
 | 工具 | 作用 |
 |---|---|
-| `task_report` | `progress` / `done` / `blocked` / `needs_auth`；可带 `question` / `options` / `artifacts`。`done` 落「已交付待确认」，等协调者确认 |
-| `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物；只能读自己的任务，越权会被拒绝 |
-| `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为任务产物（计划阶段唯一写入口，路径固定、禁止逃逸；只对本任务的子会话、只对 `planFirst` 任务开放） |
+| `task_report` | `progress` / `done` / `blocked` / `needs_auth`；可带 `question` / `options` / `artifacts`。`done` 落「已交付待确认」，等确认或追问 |
+| `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物；越权会被拒 |
+| `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为产物（计划阶段唯一写入口） |
 
-14 个工具全局注册（worker 预设不做工具收窄，子会话直接继承）；`task_close` / `task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调；`task_detail` / `task_report` / `plan_save` 只对任务自己的子会话开放（`plan_save` 还要求任务本身是计划任务）。
+- 14 个工具**全局注册**，worker 预设不做工具收窄，子会话直接继承。
+- `task_close` / `task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调；`task_detail` / `task_report` / `plan_save` 只对任务自己的子会话开放（`plan_save` 还要求任务是计划任务）。
+- 派发给子会话的 **brief 是纯指引**（任务编号 + 「先调 `task_detail`」），目标全文、验收、经验、前置、产物都不内联进提示词。
 
 ## 配置
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `coordinatorSession` | — | 显式覆盖主会话；不配则读 `settings.main_session_id` |
-| `backend` | `subagent` | 派发后端；`team` 仅旧平台可用，rc.3 起会返回可读错误 |
+| `backend` | `subagent` | 派发后端；`team` 仅旧平台可用，rc.3 起返回可读错误 |
 | `spawnProvider` | `spawn` | 本地 fresh 子会话 provider |
 | `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（见 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)） |
 | `staleMinutes` | `30` | 多久无动静标陈旧 / stall 提醒间隔 |
-| `deliveredTimeoutMinutes` | `60` | 「已交付待确认」多久没确认就自动收成 `done`（1–1440 分钟；设成 1 约等于退回「交付即完成」的旧行为） |
+| `deliveredTimeoutMinutes` | `60` | 「已交付待确认」多久没确认就自动 `done`（1–1440；设成 1 约等于「交付即完成」的旧行为） |
 | `stallRounds` | `3` | 连续 progress 达阈值后提醒一次「可能卡住」 |
-| `idleWatchdog` | `true` | 空闲看门狗：`running` 长时间无心跳/消息/状态变化时告警一次（只告警，不改状态、不 kill） |
-| `watchdogIntervalMinutes` | `5` | 看门狗巡检间隔（1–1440 分钟） |
-| `watchdogIdleMinutes` | `15` | 看门狗判空闲的阈值（1–1440 分钟；同一段空闲每任务只报一次，有活动后重置） |
-| `keepAlive` | `false` | 回合间续跑：`agent/turn-stopping` 时给「`running` 且平台 goal 未完成」的子会话投递下一轮（不 idle、不结算）；默认关，需要 `ctx.goals` |
-| `keepAliveMode` | `steer` | 续跑注入方式：`steer`（同一回合再走一步，不写 `turn/end`）/ `followup`（新回合） |
-| `keepAliveMaxRounds` | `8` | 每段 activation 的续跑轮数上限（1–50；进入 `running` 时归零） |
-| `keepAlivePrompt` | `''` | 覆盖默认续跑提示（空 = 内置提示；「第 N/M 轮」标记总在最前） |
+| `idleWatchdog` | `true` | 空闲看门狗，只告警 |
+| `watchdogIntervalMinutes` | `5` | 看门狗巡检间隔（1–1440） |
+| `watchdogIdleMinutes` | `15` | 判空闲阈值（1–1440，同一段空闲每任务只报一次） |
+| `keepAlive` | `false` | 回合间续跑开关（需要 `ctx.goals`） |
+| `keepAliveMode` | `steer` | `steer`（同回合再走一步）/ `followup`（新回合） |
+| `keepAliveMaxRounds` | `8` | 每段 activation 的续跑轮数上限（1–50） |
+| `keepAlivePrompt` | `''` | 覆盖默认续跑提示 |
 | `digestAt` | `''` | 每日日报 `HH:MM`；空 = 关闭 |
 | `digestTimeZone` | `''` | 日报时区；空 = 系统时区 |
 | `maxQueue` | `50` | `pending` + `waiting_dep` 安全阀 |
 | `autoResumeQueue` | `true` | 重启后自动恢复排队任务 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
-| `memoryInject` | `true` | 新任务的经验注入：`task_create` 把命中的事实层记忆（`lesson`/`decision`/`preference`/`note`；`task-log` 不注入）写进 `lessons/` 记忆文件，`task_detail` 给出文件路径（brief 不再内联经验） |
+| `memoryInject` | `true` | 新任务是否注入事实层记忆 |
 | `memoryLimit` | `3` | 注入记忆条数（1–10） |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
-| `worktreePolicy` | `auto` | worktree 隔离的用户级默认：`required`（每个需求都隔离）/ `auto`（默认不隔离，三条件满足才建议）/ `off`（一律不隔离）。渲染进协调者 policy，并在 `task_create` 没传 `worktree` 时兜底 |
+| `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，漏传时兜底 |
 | `worktreeBranchPrefix` | `orch/` | 隔离任务分支前缀（默认名 `<prefix><taskId>`） |
-| `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（天，1–90）；≥2 个活跃分支时插件返回候选让协调者问你基线 |
+| `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（1–90） |
 
-## 数据与日志
+## 状态与数据
 
-唯一写入在 `$DSH_HOME/state/orchestrator/`（未设置时 `~/.dsh`）：
+插件只写 `$DSH_HOME/state/orchestrator/`（未设置时 `~/.dsh`）：`tasks.sqlite` 是台账，`snapshots/` 每天一份快照（保留 7 天），`logs/` 是按天的 JSONL 日志（保留 7 天），`lessons/` 放注入任务的经验文件，`reports/` 放超长返回消息的全文。
 
-```text
-tasks.sqlite
-snapshots/tasks-YYYY-MM-DD.sqlite   # 每天一份，保留 7 天
-logs/YYYY-MM-DD.jsonl               # 按天，保留 7 天
-lessons/<项目>-<short-hash>.md      # task_detail 里经验指针指向的记忆文件（每次派发覆盖为最新快照）
-reports/<taskId>.md                 # 超 64 KiB 的子会话返回消息全文
-workspace/                          # 「指挥舱」工作区
-debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调试预设 bundle
-```
-
-- 日志覆盖建任务/拒绝原因/派发成败/回报/通知/清理；`goal`/`summary` 只留 80 字，不写 `user_verbatim`。
-- 快照损坏时只给路径提示，**不自动恢复**；手工用快照替换台账。
-- **计划文档不在插件 state 里**：`plan_save` 写到**主会话工作区**的 `reports/plans/<taskId>.md`（目录自动创建，重复保存覆盖同一份文件）；路径可通过任务产物查（通知、`task_status`、面板抽屉）。日志里只记路径与字数（`task.plan.saved`）。
-
-## 架构与安全
-
-- 协调者预设挂 `persona` / `agent-instructions` / `time-context` / `tool-ask-user` / `present` / `compaction` / `preset-tools`；执行层还有 guard 硬拦 `read`/`write`/`bash`/`wait_agent`/`task_report`/`task_detail` 等（`present` 不在黑名单，只声明交付、不读文件内容）。
-- 子任务用 worker 预设，文件/shell/search/jobs/web/todo/skill/compaction/present + `tool-goal`（只读 `get_goal`，用来读自己的任务目标）；`task_report` / `task_detail` / `plan_save` 是插件在全局注册的工具（预设不做 allow/deny 收窄，子会话直接继承），不含 delegation/plan/schedule；预设可用 `workerPreset` 换成副本（如 `orch-debug`）。`plan_save` 是计划阶段唯一的写入口（插件在宿主进程写固定路径），协调者侧 guard 与 `COORDINATOR_DENY` 硬拦它。
-- `/api/orchestrator` 由 connection owner-only 鉴权；`snapshot`/`detail`/`artifacts`/`preview` 只读，`stop`/`retry`/`message` 是面板动作。
-- 通知走 `agent.steer`，5 秒合并；每次投递写 `notifications`。
-
-更细的机制、目标目录推断、沙箱与错误降级见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；
-面板/抽屉的布局、`--dsw-*` token 对照与交互清单见 [docs/UI.md](docs/UI.md)。
-
-## 发版（维护者）
-
-仓库带 GitHub Actions：
-
-- `ci.yml`：push main / PR 跑测试。
-- `release.yml`：推 `v*` tag 时跑测试并发布 npm（`NPM_TOKEN`，带 provenance），发完**主动触发 npmmirror 镜像同步**。
-
-发布流程：
-
-```powershell
-npm version patch --no-git-tag-version
-git add package.json
-git commit -m "release: v0.14.0"
-git tag -a v0.14.0 -m "v0.14.0"
-git push origin main --follow-tags
-```
-
-要求仓库 Secrets 里有 `NPM_TOKEN`（npm Granular Token，Read and write，Bypass 2FA）。长期可换 npm Trusted Publishing（OIDC），不再存长期 token。
-
-### npm 发布后：触发 npmmirror 镜像同步
-
-`npm publish` 只写 `registry.npmjs.org`；`registry.npmmirror.com` 是另一套库，靠它自己的后台按需/定时回源，
-新版本常常几十分钟到几小时才出现。这段时间国内用户（默认走镜像）`npm i @wjj865-code/dsh-orchestrator@latest`
-拿到的还是旧版，插件页也装不到新版。所以**发版最后一步固定补一次同步**：
-
-| 谁做 | 怎么做 |
-| --- | --- |
-| `release.yml`（自动） | Publish 后跑「触发 npmmirror 镜像同步」步骤：`PUT /-/package/{name}/syncs`，再轮询约 3 分钟等 `latest` 变成新版本；失败/超时只出 warning，不判发布失败 |
-| 本地/发布失败后（手动） | `npm run mirror:sync`（触发 + 轮询，默认最多等 180s）；`npm run mirror:check` 只看镜像当前版本，不触发 |
-
-```powershell
-npm run mirror:check   # 查镜像：latest 是不是 package.json 的版本
-npm run mirror:sync    # 没有就 PUT 同步请求并等到出现；--no-wait 只触发，--timeout 600 多等会儿
-```
-
-要点：
-
-- 同步接口对 scoped 包的名字要 URL 编码：`PUT https://registry.npmmirror.com/-/package/@wjj865-code%2Fdsh-orchestrator/syncs`，
-  返回体形如 `{"ok":true,"id":"<logId>","type":"sync_package","state":"waiting"}`（`id` 可用来找同步日志）。
-- 幂等：镜像已有该版本时脚本直接报「无需同步」退出 0；上游 npm 还没有该版本时直接报错退出 1（别对着超时瞎等）。
-- **本地 npm 缓存会骗人**：`npm view ... --registry=https://registry.npmmirror.com` 可能拿到几十分钟前的缓存
-  （显示旧 `latest` 或 `404 No match found for version`）。怀疑时加 `--prefer-online`（或 `--cache <新目录>`）再看，
-  或直接看 HTTP 响应。`npm run mirror:check` 每次都发真请求，不受本地缓存影响。
-- 同步完的验收：`npm view @wjj865-code/dsh-orchestrator dist-tags --registry=https://registry.npmmirror.com`
-  显示 `{ latest: '<x.y.z>' }`，且 `.../-/dsh-orchestrator-<x.y.z>.tgz` 能 200 下载。
-
-## 验收
-
-1. 插件页能看到「任务编排」标题、图标和详情页。
-2. 侧栏「主会话」能打开；工具表有 13 个工具；主会话里会话头有「☰ 任务」，切到子会话后该入口隐藏。
-3. `task_create` 能派发；子会话 `task_report done` 后主会话收到「已交付待确认」通知，`task_close` 确认后变已完成。
-4. 建 `dependsOn` 任务时先 `waiting_dep`，前置完成后自动派发。
-5. 面板「详情」「产物」「停止/重派/追加/确认交付」可用；「追加」只在可续派状态出现，「确认交付」只在待确认出现，「删除」只在终态出现（都二次确认；删除会级联清理）。
-6. 面板三段式布局成立：顶栏指标卡可点、筛选轨有计数、点任务卡从右侧滑出详情抽屉（`Esc`/遮罩可关）；
-   抽屉 7 个区块能折叠、有空态；宿主切深浅色时面板配色跟随（细节见 [docs/UI.md](docs/UI.md)）。
-
-## 排障
-
-| 现象 | 处理 |
-|---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.14.0`；刷新页面；彻底重启 DSH |
-| 插件页/`npm i @latest` 装到的是旧版 | 镜像还没同步：`npm run mirror:check` 看 npmmirror 的 `latest`；缺就 `npm run mirror:sync`；再看 `release.yml` 的「触发 npmmirror 镜像同步」步骤是否成功（本地 `npm view` 结果可能是缓存，加 `--prefer-online` 复查） |
-| 会话头没有「☰ 任务」 | 该入口只在主会话显示：确认当前会话就是侧栏「主会话」打开的那个；没建主会话先从侧栏入口创建 |
-| 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页和日志 |
-| 提示「尚未打开主会话」 | 面板点「打开主会话」 |
-| 提示「team 后端不可用」 | `backend` 改回 `subagent` |
-| 日志提示 `workerPreset` 回落 | 预设 id 只能用小写字母/数字/连字符；改值后彻底重启 |
-| 子任务没有 `cordis_*` 工具 | 确认 `orch-debug` bundle 已装、`workerPreset: orch-debug`、已彻底重启；插件页看 `preset-orch-debug` 是否 broken（见 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)） |
-| 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制 |
-| Bot 模式看不到入口 | 用会话头「任务」按钮；侧栏入口只在纯 dsh 表面 |
-| 台账损坏 | 用 `snapshots/` 最新快照手工替换 |
+- 快照损坏时**不会自动恢复**：先备份，再用 `snapshots/` 里最新一份手工替换台账。
+- 面板「删除」只删台账记录（任务/消息/通知），产物文件与记忆不删。
+- 计划文档不在插件 state 里：`plan_save` 写到**主会话工作区**的 `reports/plans/<taskId>.md`。
+- 目录布局与生命周期细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的「落盘与日志」。
 
 ## 已知限制
 
-- `writeScopes` 只做冲突提示；依赖关系创建后不可编辑；`dependsOn` 不允许指向未来 id。
-- 产物在 done 时自动从 `workspaceChanges` 收集改动文件，并与显式 `task_report.artifacts` 按路径去重合并；Host 未挂 `workspaceChanges` 时只剩显式产物。
-- 日报默认关闭；`stallRounds` 只提醒一次，没有二次升级阶梯。
-- 空闲看门狗只告警：不改状态、不 kill、不重派；去重表在内存，插件重启后同一任务会再报一次。
-- 结算自动收场只认「一次 activation」：续派/冷恢复起的轮次靠平台 `subagent/end` 观察；子会话只在「没上报过 progress」时自动交付（`delivered`），上报过 progress 的回合结束落「会话丢失」等人决定。
-- 两段式终态：交付不等于确认，`delivered` 要靠 `task_close` 或超时（默认 60 分钟）才收成 `done`；依赖就绪只认 `done`，所以下游会短暂等确认。`done` 不可逆，不提供 reopen。
-- 「最后一条回复」只留最后一次：`task_report done` 先把任务落到 `delivered`，本回合结束时到达的结算事件会补写完整回复（B1 时序修复）；插件在此之前被卸载/进程被杀仍可能缺。
-- 主会话工具表可能仍残留团队工具（agent-scope 自注册，`restrict` 遮不到）；执行层 guard 会硬拦。
-- 回合间 keep-alive 默认关闭，且只对「`running` + 平台 goal 未完成」的任务生效：它是宿主替子会话开工（每轮一次完整模型调用），不是成本控制，也不能阻止显式 stop / 模型报错。
-- 平台 rc.3 子会话沙箱根、Bot 模式视图、headless 收尾竞态等平台侧限制，详见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
+**平台与沙箱**
 
-## 开发
+- **委托子会话的审批固定 `never`**：子会话写被拒时**不会弹审批**，沙箱拒绝就是终局。子会话里没有「升级权限再试一次」这条路；要越过沙箱边界只能用 `access:'full'`（见上）或换 CI/人工执行。
+- **插件没有命令白名单**：隔离只在「沙箱模式 / 可写根」这一层做，**不对 `bash` / `pwsh` 的命令做 allow/deny 名单**；`danger-full-access` 下模型能跑任意命令，没有命令级护栏。字符串白名单本身可被复合命令绕过，这里不做「假安全」。
+- **构建 / 发版需要完整访问或 CI**：子会话默认 `workspace-write`，写不进仓库外的东西，也可能被平台限制 `pwsh` 写 target（Windows）。两条正路：① 给**单条**任务 `access:'full'`；② 把构建交给 CI 或人在终端跑（子会话只改源码 + 交构建清单），插件零改动。
+- 首回合可写窗口：只读/计划/完整访问都在 `agent/created` 之后设置，极短窗口内仍是继承来的模式。
+- 父会话自己是 `danger-full-access` 时，平台会把该覆盖按 delegation 种进所有子会话（不是插件做的，插件也不改写）。
 
-```bash
-npm test                # node:test（pretest 先 npm run build）
-npm run build           # client/src/** --vite--> dist/client.js（平台加载的产物）
-npm run check:client    # dist/client.js 语法
-node docs/probes/api-probe.mjs
-```
+**编排**
 
-> 改面板/详情 = 改 `client/src/**` 再 `npm run build`；`dist/` 入库，别手改产物。
+- `writeScopes` 只做冲突提示；`dependsOn` 创建后不可编辑。
+- `done` 不可逆、无 reopen；要改交付物用追问窗口，要新工作新派/重派。
+- 结算自动收场只覆盖「一次 activation」；上报过 progress 的回合异常结束会落 `orphaned`。
+- 「最后一条回复」可能缺：插件在结算事件到达前被卸载/进程被杀时拿不到。
+- 主会话工具表可能残留团队工具（agent-scope 自注册，`restrict` 遮不到），执行层 guard 会拦。
 
-本地 link 安装（开发用）：在 profile 的 `package.json` 加
+**worktree / 计划 / 视图**
 
-```json
-"@wjj865-code/dsh-orchestrator": "link:C:/Users/72489/Documents/dsh-orchestrator"
-```
+- worktree 需宿主有 `git`；未合并的产物不在你的工作树里，合并责任在用户；默认不清理会占磁盘。
+- 计划模式硬拦只靠只读沙箱，plan mode 本身是软引导；计划文档只有一版，没有审批流 UI。
+- 会话头「☰ 任务」依赖宿主身份信号，刚打开主会话 1 秒内可能短暂不可见；面板轮询 2 秒，没有 SSE。
+- 面板「删除」只删台账（级联清消息/通知），产物文件、`reports/` 全文、记忆不删。
+- Bot 模式视图停在 Bot 会话；纯 dsh 表面不受影响。
 
-并把 `@wjj865-code/dsh-orchestrator` 加入 `dsh.profile.bundles`，重启 profile。
+## 故障排查
+
+| 现象 | 处理 |
+|---|---|
+| 侧栏没有「主会话」 | 确认装的是 `0.14.1`；**彻底退出 DSH 再启动**（刷新页面无效） |
+| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.14.1` 显式版本；维护者侧可主动同步镜像（见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#发版)） |
+| 会话头没有「☰ 任务」 | 只在主会话显示：确认当前会话就是侧栏「主会话」打开的；没建就点「打开主会话」 |
+| 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页与 `logs/` |
+| 提示「尚未打开主会话」 | 面板点「打开主会话」 |
+| 子任务报 done 后一直「待确认」 | 正常：默认保持待确认等用户拍板；要收尾就 `task_close`，或等 `deliveredTimeoutMinutes` 超时自动完成 |
+| 任务停在「会话丢失」 | 子会话只在没报过 progress 时自动交付；上报过 progress 的回合异常结束落 `orphaned`。先用 `task_status` 看进展，需要接着做就 `task_retry` |
+| 提示「team 后端不可用」 | `backend` 改回 `subagent` |
+| 日志提示 `workerPreset` 回落 | 预设 id 只能用小写字母/数字/连字符；改值后彻底重启 |
+| 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制；确实要写仓库外用 `access:'full'` 或 CI |
+| 子任务没有 `cordis_*` 工具 | 确认 `orch-debug` bundle 已装、`workerPreset: orch-debug`、已彻底重启（见 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)） |
+| 台账损坏 | 用 `snapshots/` 最新快照手工替换 |
+| Bot 模式看不到入口 | 用会话头「任务」按钮；侧栏入口只在纯 dsh 表面 |
+
+排障细节（平台缺陷、时序竞态、已知降级）见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
+
+## 更多文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/DETAIL.md](docs/DETAIL.md) | 插件页简介：功能点、工具与面板错误码 |
+| [docs/UI.md](docs/UI.md) | 面板/抽屉布局、`--dsw-*` token 对照、交互清单 |
+| [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | 平台/沙箱/计划/worktree/通知/UI 的完整限制清单 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 内部设计：模块划分、状态机、派发、结算、对账、落盘 |
+| [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md) | `orch-debug` 调试预设的安装、对齐与插件更新流程 |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | 开发、构建、测试策略与发版流程（维护者） |
+| [CHANGELOG.md](CHANGELOG.md) | 每个版本的变化与取舍 |
 
 ## License
 
