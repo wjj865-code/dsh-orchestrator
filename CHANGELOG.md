@@ -3,11 +3,11 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
-## 未发布
+## 0.9.0（2026-11-15）
 
-记忆分层（M1）：done 结果降级为日志层，只有蒸馏后的经验/决策/偏好注入 brief。向后兼容（minor）。
+记忆分层 + 空闲看门狗 + 子会话目标：done 结果降级为日志层只归档，长时间空转主动告警，子任务目标同步到平台 `ctx.goals`。相对 0.8.0 无破坏性变更（minor）。
 
-### 变更
+### 变更（M1 记忆分层）
 
 - **记忆分层**：`task_report done` 不再写 `kind='task-done'`，改为日志层 `task-log`——一行完成任务记录（≤180 字符，不拼产物清单、不贴 verbatim），
   只归档、**不注入 brief**；旧库里的 `task-done` 在打开台账时自动迁到 `task-log` 并重算 hash（幂等）。分层规则见 `src/memory.js` 的 `memoryLayerOf`。
