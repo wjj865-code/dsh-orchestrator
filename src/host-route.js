@@ -52,6 +52,12 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
           // P8：计划模式（列表小标 / 抽屉概览）；非计划任务固定 false + 'none'。
           planFirst: task.plan_first === true,
           planState: typeof task.plan_state === 'string' && task.plan_state !== '' ? task.plan_state : 'none',
+          // P9：worktree 隔离（列表小标 / 抽屉概览 / 决定者）。普通任务固定 'none'。
+          worktreeState: typeof task.worktree_state === 'string' && task.worktree_state !== '' ? task.worktree_state : 'none',
+          worktreeBranch: task.worktree_branch ?? null,
+          worktreePath: task.worktree_path ?? null,
+          worktreeBase: task.worktree_base ?? null,
+          worktreeSource: task.worktree_source ?? 'default',
           retryOf: task.retry_of ?? null,
           groupId: task.group_id ?? null,
           dependsOn: Array.isArray(task.depends_on) ? task.depends_on : [],

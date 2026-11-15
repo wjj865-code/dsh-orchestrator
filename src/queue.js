@@ -6,9 +6,9 @@ import {
 import { promoteDependents } from './deps.js'
 import { renderBrief } from './brief.js'
 import { taskLabel } from './task-label.js'
+import { WORKTREE_DISPATCH_STATES, prepareTaskWorktree } from './worktree.js'
 
-export function createQueue({ db, dispatcher, config = {}, logger, notifier, retryDelaysMs = [2000, 5000, 10000, 30000] }) {
-  const log = (event, fields) => {
+export function createQueue({ db, dispatcher, config = {}, logger, notifier, worktree, cleanupWorktree, retryDelaysMs = [2000, 5000, 10000, 30000] }) {  const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志不能打断派发 */ }
   }
   const ids = []
@@ -74,6 +74,44 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
         // T1：派发提示词就是 brief 本身（任务编号 + task_detail 指引）；详情由子会话读台账，
         // 前置任务/产物也走 task_detail 现读，不再在派发时拼一段快照。
         const rendered = briefText(db, id) ?? renderBrief({ taskId: task.id })
+        // P9：worktree 任务在派发前建检出，子会话 cwd = 检出目录 + 原 target 偏移；普通任务一次 git 都不调。
+        let dispatchCwd = task.target_dir ?? undefined
+        if (worktree !== undefined && WORKTREE_DISPATCH_STATES.includes(task.worktree_state)) {
+          const prepared = await prepareTaskWorktree({ db, task, service: worktree, log })
+          if (prepared.ok !== true) {
+            // 用户显式要的隔离没做成 → 标 failed 并写明原因，不静默降级（产物落回工作树才是灾难）。
+            remove(id)
+            const failure = prepared.failure ?? {}
+            const message = `隔离创建失败（${failure.code ?? 'FAILED'}）：${failure.message ?? '未知原因'}`
+            log('task.spawn.failed', { taskId: id, detail: { error: message, code: failure.code ?? null } })
+            try {
+              transition(db, id, 'failed', { error: message })
+            } catch (error) {
+              log('task.spawn.transition-failed', { taskId: id, detail: { error: error?.message ?? String(error) } })
+            }
+            try {
+              dispatcher.releaseWritableRoots?.(task.session_id ?? task.target)
+            } catch { /* 释放失败不影响失败通知 */ }
+            notifier?.push({
+              taskId: id,
+              title: task.title,
+              displayName: taskLabel(task, { all: listTasks(db) }),
+              readOnly: task.read_only === true,
+              status: 'failed',
+              summary: message,
+              worktree: {
+                state: 'failed',
+                branch: task.worktree_branch ?? null,
+                path: task.worktree_path ?? null,
+                error: failure.message ?? null,
+              },
+              system: true,
+            })
+            try { promoteDependents(db, { enqueue, log }) } catch { /* 传播失败只影响下游，不打断队列 */ }
+            continue
+          }
+          dispatchCwd = prepared.cwd ?? dispatchCwd
+        }
         let member
         try {
           member = await dispatcher.spawn({
@@ -82,7 +120,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
             prompt: rendered,
             signal: abort.signal,
             taskId: id,
-            cwd: task.target_dir ?? undefined,
+            cwd: dispatchCwd,
             readOnly: task.read_only === true,
             // P8：计划任务在派发时就进只读沙箱 + plan mode（见 dispatch.spawn）。
             planFirst: task.plan_first === true,
@@ -121,6 +159,8 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, ret
           try {
             dispatcher.releaseWritableRoots?.(task.session_id ?? task.target)
           } catch { /* 释放失败不影响失败通知 */ }
+          // P9：派发失败也可能已经建了检出 → 按 worktreeCleanup 档位清理（默认 off = 保留）。
+          try { cleanupWorktree?.(getTask(db, id)) } catch { /* 清理失败只影响磁盘，不影响失败通知 */ }
           // 失败必须让主会话看见（不能静默 failed）；sender 缺失时由 index 用主会话自身投递。
           notifier?.push({
             taskId: id,

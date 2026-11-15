@@ -141,6 +141,22 @@ const questionBlock = item => {
   return parts.join('')
 }
 
+// P9：隔离任务的通知必须写明「产物在检出目录里，合并由你决定」——
+// 否则用户会以为文件已经落在自己的工作树（这是本阶段最大的产品级风险，R9/R10）。
+const worktreeBlock = item => {
+  const worktree = item?.worktree
+  if (worktree === null || worktree === undefined) return ''
+  const state = worktree.state
+  if (state === 'created' || state === 'reused' || state === 'cleaned') {
+    const branch = typeof worktree.branch === 'string' && worktree.branch !== '' ? worktree.branch : '未知'
+    const path = typeof worktree.path === 'string' && worktree.path !== '' ? worktree.path : '未知'
+    return `\n  隔离：产物在分支 ${branch} 的检出目录 ${path}，合并到你当前分支由你决定`
+  }
+  if (state === 'degraded') return '\n  隔离：未隔离（目标不是 git 仓库，已降级）；产物落在当前工作树'
+  if (state === 'failed') return `\n  隔离：创建失败（${worktree.error ?? '未知原因'}）`
+  return ''
+}
+
 // 显示名由 tools 算好放进 item.displayName（重名短后缀也在那里算）；没有就回落 title。
 // 只读任务在通知标题里明确标「只读」，避免用户误以为它会写文件。
 const nameOf = item => {
@@ -148,7 +164,7 @@ const nameOf = item => {
   return item.readOnly === true ? `${base}（只读）` : base
 }
 // 合并通知里每条任务只列产物；交付指令在整条消息末尾写一次（避免 N 条任务刷 N 遍指令）。
-const line = item => `- ${nameOf(item)}：${item.summary}${questionBlock(item)}${artifactBlock(item, { hint: false })}`
+const line = item => `- ${nameOf(item)}：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item, { hint: false })}`
 const batchHint = batch => (batch.some(hasDeliverable) ? `\n  ${PRESENT_HINT}` : '')
 
 export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {}, onEvent = () => {} }) {
@@ -252,7 +268,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     if (batch.length === 0) return undefined
     const label = status => DONE_LABEL[status] ?? '完成'
     const text = batch.length === 1
-      ? `任务「${nameOf(batch[0])}」${label(batch[0].status)}：${batch[0].summary}${questionBlock(batch[0])}${artifactBlock(batch[0])}`
+      ? `任务「${nameOf(batch[0])}」${label(batch[0].status)}：${batch[0].summary}${questionBlock(batch[0])}${worktreeBlock(batch[0])}${artifactBlock(batch[0])}`
       : `${batch.length} 个任务${batch.every(item => item.status === 'done') ? '完成' : '状态更新'}：\n${batch.map(line).join('\n')}${batchHint(batch)}`
     return deliver(text, batch)
   }
@@ -262,7 +278,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
       const level = levelOf(item.status)
       if (level === 'silent') return
       if (level === 'interrupt') {
-        void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${questionBlock(item)}${artifactBlock(item)}`, [item])
+        void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item)}`, [item])
         return
       }
       buffer.push(item)

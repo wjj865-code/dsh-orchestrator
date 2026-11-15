@@ -8,6 +8,7 @@
 import { addMessage, findTaskBySession, getTask, setTaskLastMessage, transition } from './ledger.js'
 import { captureLastMessage, messageText, summarizeText } from './last-message.js'
 import { statusLabel } from './state.js'
+import { notifyWorktreeOf } from './worktree-request.js'
 
 /** stopReason → 台账终态与死因。completed 只在「没有只报 progress」时算完成。 */
 export const SETTLE_MAP = {
@@ -77,6 +78,8 @@ export function createSettlementReporter({
         // D5：结算是最常见的收场路径（子会话自然结束 → 自动判 done），通知不带产物
         // 就等于主路径永远拿不到 present 交付候选（reports/t6.1-present.md §5）。
         artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
+        // P9：隔离任务在通知里说明产物在哪个分支/检出目录（结算是最常见的收场路径）。
+        worktree: notifyWorktreeOf(task),
         system: true,
       })
     } catch (error) {

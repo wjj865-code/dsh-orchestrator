@@ -12,6 +12,7 @@ import { statusLabel } from './state.js'
 import { panelFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
 import { approvePlan, approvalNote, isPlanTask, planStateOf } from './plan-mode.js'
+import { retryWorktreeOf } from './worktree.js'
 import { ACTIVE_STATUSES, TERMINAL_STATUSES, canDelete, canFollowup, deleteGate, followupGate } from './panel-gates.js'
 
 const TERMINAL = new Set(TERMINAL_STATUSES)
@@ -85,7 +86,7 @@ const followupFailure = task => {
   }
 }
 
-export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge }) {
+export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge, cleanupWorktree }) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志不能影响 UI 动作 */ }
   }
@@ -126,6 +127,12 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         // P8：计划模式（面板小标 / 抽屉概览/状态行）。
         planFirst: task.plan_first === true,
         planState: planStateOf(task),
+        // P9：worktree 隔离（抽屉概览显示分支/检出/基线/决定者；普通任务 worktreeState='none'）。
+        worktreeState: task.worktree_state ?? 'none',
+        worktreeBranch: task.worktree_branch ?? null,
+        worktreePath: task.worktree_path ?? null,
+        worktreeBase: task.worktree_base ?? null,
+        worktreeSource: task.worktree_source ?? 'default',
         group: task.group_id ?? null,
         priority: task.priority ?? 0,
         dependsOn: task.depends_on,
@@ -261,6 +268,10 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     try { dispatcher.releaseWritableRoots?.(task.session_id ?? task.target) } catch (error) {
       log('ui.stop.release.failed', { taskId: task.id, detail: { error: warn('STOP_RELEASE_FAILED', error) } })
     }
+    // P9：终态按 worktreeCleanup 档位清理（默认 off = 全保留）。
+    try { cleanupWorktree?.(getTask(db, task.id) ?? task) } catch (error) {
+      log('ui.stop.cleanup.failed', { taskId: task.id, detail: { error: warn('STOP_CLEANUP_FAILED', error) } })
+    }
     log('ui.stop', { taskId: task.id })
     try { queue.pump() } catch (error) {
       log('ui.stop.pump.failed', { taskId: task.id, detail: { error: warn('STOP_QUEUE_FAILED', error) } })
@@ -296,15 +307,18 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     // G1：旧尝试进入终态，清掉平台 goal；新任务派发时会重新 create+disarm。
     void goalBridge?.clear?.(task.id, task.session_id)
     let retried
+    // P9：隔离任务重派复用原检出（与工具层 task_retry 同一口径，见 worktree.js retryWorktreeOf）。
+    const retryWorktree = retryWorktreeOf(task)
     try {
       retried = createTask(db, {
         brief: task.brief,
         coordinatorSession: status.id ?? task.coordinator_session,
-        targetDir: task.target_dir,
+        targetDir: retryWorktree === null ? task.target_dir : (task.brief?.target ?? task.target_dir),
         readOnly: task.read_only === true,
         // P8：计划任务重派后重新走计划阶段（新会话要重新探索/批准）。
         planFirst: task.plan_first === true,
         planState: task.plan_first === true ? 'planning' : 'none',
+        worktree: retryWorktree,
         retryOf: task.id,
         dependsOn: depends.ids,
         groupId: task.group_id,
@@ -327,6 +341,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       return panelFailure('RETRY_FAILED', { reason: error?.message ?? String(error) }, { taskId: retried.id })
     }
     if (outcome.task?.status === 'failed') {
+      // P9：重派也可能在建检出之后失败 → 按档位清理（默认 off = 保留）。
+      try { cleanupWorktree?.(outcome.task) } catch { /* 清理失败只影响磁盘 */ }
       return panelFailure('RETRY_FAILED', { reason: outcome.task.error ?? '子会话创建失败' }, { taskId: retried.id })
     }
     return { ok: true, taskId: retried.id, status: outcome.task?.status ?? 'pending' }

@@ -142,6 +142,28 @@ task_create({
 - `planMode` 服务不可用（平台版本没挂 / 子会话预设作用域看不到）时静默降级为「只有只读沙箱」并 warn 一行，派发不受影响。
 - 计划模式不强制模型不写文件——**硬拦只有只读沙箱**；首回合同样有极短可写窗口。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#计划阶段p8)。
 
+### 隔离任务（worktree，默认不隔离）
+
+`task_create({ ..., worktree: true })` 时插件在**宿主进程**里对目标仓库执行 `git worktree add -b <branch> <repo>/.agents/worktrees/<taskId> <base>`，子会话的工作目录换成这份**检出目录**（在检出里写文件、提交），用户的工作树保持干净。分支留在你的仓库里，**合并由你决定**（插件不合并、不 push、不碰远程）。
+
+**声明只有结构化两处，插件不解析任何自然语言**（不读 `AGENTS.md`、不做正则兜底）：
+
+| 层级 | 载体 | 字段 |
+|---|---|---|
+| 用户级默认 | profile 配置 | `worktreePolicy`（`required` / `auto` / `off`，默认 `auto`）、`worktreeBranchPrefix`（默认 `orch/`）、`worktreeRecentDays`（默认 `7`） |
+| 任务级决定 | `task_create` 参数 | `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup` |
+
+职责切分：**DSH 注入指引 → 协调者判断 → 插件执行**。平台 `dsh-agent-instructions` 把用户级 + 工作区级 `AGENTS.md` 注入协调者上下文；协调者据此（再用 `project_context` 读目标仓库 `AGENTS.md`）判断「要不要建 / 基线 / 分支名」，转成上面的结构化字段；插件只做校验 + 建检出 + 设 `target_dir` + 标注 + 清理。
+
+- **要不要建**：`required` 时每个需求都隔离；`auto` 时默认不隔离，只有「目标是 git 仓库 ∧ 同一需求已有任务在执行 ∧ 本次是新需求」三条都满足才建议隔离；`off` 一律不隔离。你在 `AGENTS.md` 里写「每个需求都必须建 worktree」依然有效，生效路径是**注入 → 协调者读懂 → 传 `worktree:true`**；要硬保证就写配置 `worktreePolicy: required`（协调者漏传也会兜底建，返回里标明「按配置兜底」）。
+- **基线**：`worktreeBase` 缺省用仓库默认分支；仓库近 `worktreeRecentDays` 天只有 1 个活跃分支时直接用那条；**≥2 个时插件不建任务**，返回候选让协调者用 `ask_user_question` 问你，拿到答案后带 `worktreeBase` 重调。
+- **分支名**：默认 `orch/<taskId>`；非法或重名**报错不自动改名**（换名或改 `worktreeMode:'continue'` 复用已有检出）。
+- **不是 git 仓库** → 降级普通模式并明确提示（产物落在当前工作树）；**建树失败**（没装 git / 路径已存在 / 分支已存在）→ 任务标失败并写原因，**不静默降级**。
+- **互斥**：`worktree` 与 `readOnly` / `planFirst` 在创建期直接拒绝（只读/计划阶段本来就不写文件）。计划批准后要隔离，重新派发一个带 `worktree:true` 的任务。
+- **`.agents/` 不污染 `.gitignore`**：写进 `.git/info/exclude`（不可写时降级，`git status` 里会看到该目录，见 LIMITATIONS）。
+- **清理默认保留**：`worktreeCleanup:'off'`（默认，检出 + 分支都留）；`'checkout-only'` 只删检出、保留分支（推荐）；`'full'` 连分支一起删（有未合并提交时会提示）。
+- **视图**：`task_status` 有「隔离：」行（分支 / 检出 / 基线 / 决定者），`task_list` 打「·隔离」，通知与面板写「产物在分支 X 的检出目录 Y，合并由你决定」；普通任务零隔离字样。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#worktree-隔离p9)。
+
 ### 目标状态（平台 goal，只读）
 
 每个子任务派发后，插件会把 `task_create.goal` 同步成该子会话的平台 goal，并**立即 disarmed**——goal 只是持久目标状态，不会自动续跑。之后：
@@ -181,7 +203,7 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 
 | 工具 | 作用 |
 |---|---|
-| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` |
+| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `worktree*`（`worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup`） |
 | `task_list` | 活跃任务/历史任务；`group` 过滤看组进度 |
 | `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、最近消息、子会话最新返回（`include: 'full'` 看全文） |
 | `task_message` | 续派消息；排队/等前置任务返回提示 |
@@ -226,6 +248,9 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 | `memoryInject` | `true` | 新任务的经验注入：`task_create` 把命中的事实层记忆（`lesson`/`decision`/`preference`/`note`；`task-log` 不注入）写进 `lessons/` 记忆文件，`task_detail` 给出文件路径（brief 不再内联经验） |
 | `memoryLimit` | `3` | 注入记忆条数（1–10） |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
+| `worktreePolicy` | `auto` | worktree 隔离的用户级默认：`required`（每个需求都隔离）/ `auto`（默认不隔离，三条件满足才建议）/ `off`（一律不隔离）。渲染进协调者 policy，并在 `task_create` 没传 `worktree` 时兜底 |
+| `worktreeBranchPrefix` | `orch/` | 隔离任务分支前缀（默认名 `<prefix><taskId>`） |
+| `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（天，1–90）；≥2 个活跃分支时插件返回候选让协调者问你基线 |
 
 ## 数据与日志
 

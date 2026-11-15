@@ -21,6 +21,7 @@ import { createLogger } from './src/log.js'
 import { startSnapshotLoop } from './src/snapshot.js'
 import { ensureDigest } from './src/digest.js'
 import { createPanelActions } from './src/panel-actions.js'
+import { cleanupTaskWorktree, createWorktreeService } from './src/worktree.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
@@ -41,6 +42,41 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
 - 本回合没有别的事就立即结束回合；通知会开启新回合。
 - 以上规则优先于平台 team policy 的 “The Lead must wait for required teammates” 等默认等待要求。`
+
+/**
+ * P9：worktree 隔离的协调者指引（结构化配置渲染，**不解析自然语言**）。
+ *
+ * 三条职责边界（master-plan §4.0）：
+ * - DSH 负责把用户级 + 工作区级 `AGENTS.md` 注入协调者上下文（`dsh-agent-instructions`）；
+ * - 协调者据此判断「要不要建 / 基线 / 分支名」，转成 `task_create.worktree*` 结构化字段；
+ * - 插件只做校验 + 执行（建检出、设 target、标注、清理），不读文件、不猜基线、不弹问。
+ */
+export function renderWorktreePolicy(config = {}) {
+  const policy = config.worktreePolicy ?? 'auto'
+  const prefix = config.worktreeBranchPrefix ?? 'orch/'
+  const days = Number.isFinite(config.worktreeRecentDays) ? config.worktreeRecentDays : 7
+  return `## worktree 隔离（插件策略，非硬拦截）
+当前配置策略：${policy}（required | auto | off）｜分支前缀：${prefix}｜最近活跃窗口：${days} 天
+- required：每个需求都用 task_create({ worktree: true }) 派发；只读/计划阶段的任务跳过并说明。
+- auto：默认不隔离；目标仓库是 git 仓库、同一需求已有任务在执行、且本次是新需求时，建议隔离。
+- off：一律不隔离。
+- 用户当场表述或 AGENTS.md 里的要求优先于本默认；判断后传结构化字段，不要问「怎么解析文件」。
+判断流程（你做判断，插件只执行）：
+1. 读指引：上下文里 DSH 已注入用户级/工作区级 AGENTS.md；再用 project_context(<target>) 看目标仓库的 AGENTS.md（有就按它，回复里写明来源）。用户当场表述优先于文件。
+2. 拿事实：project_context 看顶层结构是不是 git 仓库；task_list 看同 group / dependsOn 链上有没有在跑的任务。isRepo/defaultBranch/recentBranches 这类仓库事实由插件在 worktree:true 的返回里给，你不要跑 git。
+3. 判要不要建（默认三条件，仅在用户/配置都没说死时用）：A 目标是 git 仓库 ∧ B 同一需求已有任务在执行 ∧ C 本次是新需求 → worktree:true；否则省略或传 false，并在回复里说一句原因（「不是 git 仓库」「续派复用已有检出」…）。
+4. 判基线 + 分支名：用户指定就从哪起（worktreeBase）；没说时插件给事实——近 ${days} 天 0 个活跃分支用默认分支、1 个直接用那条；**≥2 个时插件返回 needsBranchChoice 且不创建任务**，你用 ask_user_question 问用户，拿到答案后带 worktreeBase 重调 task_create。分支名默认 ${prefix}<taskId>，用户/项目有命名约定就传 worktreeBranch（非法/重名会报错，插件不改名）。
+5. 收尾标注：按返回的 worktree 块在回复里写「产物在分支 X 的检出目录 Y，合并由你决定」；hint 非空时一并解释。
+- 隔离任务在检出目录里干活：产物不在用户工作树里，合并/提交由用户决定（插件不合并、不 push、不碰远程）。
+- worktree 与 readOnly / planFirst 互斥（创建期拒绝）；计划批准后要隔离就重新派发一个带 worktree:true 的任务。
+- 同一需求续写用 worktreeMode:'continue' 复用已有检出；同一检出上不要并发两个任务（用 dependsOn 串行）。
+- worktreeCleanup 默认 off（检出+分支都保留）；要清理传 'checkout-only'（只删检出）或 'full'（连分支一起删）。`
+}
+
+/** 协调者系统提示 = 固定规则 + 结构化配置渲染（worktree 策略等）。 */
+export function renderCoordinatorPolicy(config = {}) {
+  return `${COORDINATOR_POLICY}\n\n${renderWorktreePolicy(config)}`
+}
 
 // 协调者只做协调：这些是设计 §10 明令禁止或属于别人职责的工具。
 // present 不在名单里：协调者要把子会话产物（reports 文件）交付给用户，
@@ -73,6 +109,18 @@ export async function apply(ctx, rawConfig = {}) {
     warnings(`dsh-orchestrator: workerPreset=${JSON.stringify(rawWorkerPreset)} 不是合法预设 id（小写字母/数字/连字符），已回落到 ${DEFAULT_WORKER_PRESET}`)
   }
   const logger = createLogger({ stateDir: dir, onWarn: warnings })
+  // P9：宿主侧 git 能力（只在 worktree 任务上被调用；普通任务零 git 调用）。
+  const worktreeLog = (event, fields) => logger.log(event, fields)
+  const worktreeService = createWorktreeService({
+    recentDays: config.worktreeRecentDays,
+    log: worktreeLog,
+  })
+  // 终态清理（默认 off）：只清台账里有记录的那份检出，失败只记日志、不影响任务终态。
+  const cleanupWorktree = task => {
+    if (task === undefined || task === null) return
+    void cleanupTaskWorktree({ db, task, service: worktreeService, log: worktreeLog })
+      .catch(error => warnings(`dsh-orchestrator: worktree 清理失败：${error?.message ?? error}`))
+  }
   // 平台 goal 接入（G1）：能力缺失时桥不可用，所有钩子静默 no-op；不阻塞派发/续派/结算。
   const goalBridge = createGoalBridge({
     db,
@@ -226,7 +274,7 @@ export async function apply(ctx, rawConfig = {}) {
     interpolate: false,
     text: context => {
       const id = resolvedCoordinatorId()
-      return id !== undefined && context?.agent?.id === id ? COORDINATOR_POLICY : ''
+      return id !== undefined && context?.agent?.id === id ? renderCoordinatorPolicy(config) : ''
     },
   })
 
@@ -313,7 +361,7 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
 
-  queue = createQueue({ db, dispatcher, config, logger, notifier })
+  queue = createQueue({ db, dispatcher, config, logger, notifier, worktree: worktreeService, cleanupWorktree })
 
   reconciler = createStartupReconciler({
     db,
@@ -371,6 +419,8 @@ export async function apply(ctx, rawConfig = {}) {
     // G1：结算自动收场时收敛平台 goal：done → complete；其余终态（cancelled/failed/orphaned）→ clear。
     onTerminal: (task, status) => {
       void (status === 'done' ? goalBridge.complete(task.id, task.session_id) : goalBridge.clear(task.id, task.session_id))
+      // P9：终态按 worktreeCleanup 档位清理检出（默认 off = 全保留）；异步、失败只 warn。
+      cleanupWorktree(task)
     },
   })
 
@@ -444,6 +494,9 @@ export async function apply(ctx, rawConfig = {}) {
     goalBridge,
     // L1：经验文件落在插件唯一写入根下的 lessons/，子会话可 read。
     stateDir: dir,
+    // P9：worktree 能力共享同一份服务（recentDays 取配置），终态清理由 index 统一注入。
+    worktree: worktreeService,
+    cleanupWorktree,
   }).map(tool => ctx.tools.register(tool))
 
   // task_report done 所在回合的 workspace/changes 事件在 turn stopping 时才追加：
@@ -483,6 +536,7 @@ export async function apply(ctx, rawConfig = {}) {
     coordinatorStatus,
     logger,
     goalBridge,
+    cleanupWorktree,
   })
 
   // 客户端面板路由：鉴权由 connection 服务统一负责；snapshot 只查台账；

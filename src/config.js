@@ -1,5 +1,6 @@
 // 配置归一化：非法值一律回落默认，不让坏配置把插件带崩。
 import { DEFAULT_WATCHDOG_IDLE_MINUTES, DEFAULT_WATCHDOG_INTERVAL_MINUTES } from './watchdog.js'
+import { DEFAULT_BRANCH_PREFIX, WORKTREE_POLICIES } from './worktree-request.js'
 
 const DEFAULTS = {
   staleMinutes: 30,
@@ -67,5 +68,13 @@ export function loadConfig(raw = {}) {
     ? Math.min(50, Math.max(1, Math.floor(raw.keepAliveMaxRounds)))
     : 8
   config.keepAlivePrompt = nonEmpty(raw?.keepAlivePrompt, '')
+  // P9 worktree 隔离：用户级**结构化**默认（渲染进协调者 policy，并在 task_create 没传 worktree 时兜底）。
+  // required = 每个需求都隔离；auto = 默认不隔离、满足三条件才建议；off = 一律不隔离。
+  config.worktreePolicy = WORKTREE_POLICIES.includes(raw?.worktreePolicy) ? raw.worktreePolicy : 'auto'
+  config.worktreeBranchPrefix = nonEmpty(raw?.worktreeBranchPrefix, DEFAULT_BRANCH_PREFIX)
+  // 「近期活跃分支」窗口（天）：1–90，越界夹到边界，非法回落 7。
+  config.worktreeRecentDays = Number.isFinite(raw?.worktreeRecentDays)
+    ? Math.min(90, Math.max(1, Math.floor(raw.worktreeRecentDays)))
+    : 7
   return config
 }

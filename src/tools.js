@@ -13,7 +13,7 @@ import {
 } from './memory.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages, setMessageDelivery,
-  setTaskArtifacts, setTaskError, touchTask, transition, incrementAttempts,
+  setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
 } from './ledger.js'
 import { collectWorkspaceArtifacts } from './artifact-collect.js'
@@ -23,6 +23,11 @@ import { toolFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
 import { followupGate } from './panel-gates.js'
 import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, planStatusLine } from './plan-mode.js'
+import {
+  branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, findReusableCheckout,
+  notifyWorktreeOf, parseWorktreeRequest, worktreeListMarker, worktreeNoteLines, worktreeStatusLine,
+} from './worktree-request.js'
+import { checkoutPathFor, createWorktreeService, retryWorktreeOf } from './worktree.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
 const str = description => ({ type: 'string', description })
@@ -64,7 +69,7 @@ function lastMessageLines(record, { full = false } = {}) {
 }
 
 function taskLine(db, task, { staleMinutes = 30 } = {}) {
-  const planMarker = planListMarker(task)
+  const planMarker = `${worktreeListMarker(task)}${planListMarker(task)}`
   const parts = [
     `- ${taskLabelWithId(task)}`,
     `${task.read_only ? `${labelOf(task.status)}·只读` : labelOf(task.status)}${planMarker}`,
@@ -87,9 +92,14 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, stateDir }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, stateDir, worktree, cleanupWorktree }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
+  // P9：宿主侧 git 能力（测试注入 fake；生产用 execFile）。普通任务一次都不会调用它。
+  const worktreeService = worktree ?? createWorktreeService({
+    recentDays: config?.worktreeRecentDays ?? 7,
+    log: (event, fields) => { try { logger?.log?.(event, fields) } catch { /* 日志不能打断主流程 */ } },
+  })
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志绝不能打断主流程 */ }
   }
@@ -382,6 +392,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       group: str('可选分组名，如“登录改造”；面板按组汇总进度'),
       writeScopes: strList('可选写域（目录/文件路径）；与活跃任务重叠时给冲突提示（advisory）'),
       priority: { type: 'number', description: '优先级，-10..10，默认 0；高的先派发' },
+      worktree: { type: 'boolean', description: '在目标仓库里新建 git worktree 隔离执行：true=建、false=不建；不传时按配置 worktreePolicy 兜底（required 自动建）；字符串 "true" 不生效；与 readOnly/planFirst 互斥' },
+      worktreeBase: str('隔离基线：分支名或 commit-ish（缺省 "default"=仓库默认分支）；仓库近 N 天有 ≥2 个活跃分支时先问用户，指定后再派'),
+      worktreeBranch: str('新分支名（缺省 orch/<taskId>）；非法或已存在会报错，插件不自动改名'),
+      worktreeMode: str('"new"（默认：新建检出）或 "continue"（复用同 group/dependsOn 的已有检出）'),
+      worktreeCleanup: str('终态后清理档位："off"（默认，检出+分支都保留）｜"checkout-only"（只删检出）｜"full"（连分支一起删）'),
     }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
@@ -460,6 +475,79 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         })
         return `待派发队列已满（${maxQueue} 个），先 task_stop 或等队列消化后再派。`
       }
+      // P9：worktree 结构化请求（零自然语言解析）。步骤里只碰结构化字段 + 插件给的仓库事实：
+      // 「要不要建」由协调者已经判断过；这里只做互斥校验、复用查找、降级、多分支询问与落库。
+      const parsedWorktree = parseWorktreeRequest(args)
+      if (parsedWorktree.ok === false) {
+        log('task.create.rejected', { agentId, detail: { reason: 'worktree-args', message: parsedWorktree.error, callId } })
+        return `${parsedWorktree.error}。`
+      }
+      const wtRequest = parsedWorktree.request
+      const wtIntent = decideWorktreeIntent({
+        request: wtRequest,
+        policy: config?.worktreePolicy ?? 'auto',
+        readOnly,
+        planFirst,
+        existingCheckout: wtRequest.mode === 'continue'
+          ? findReusableCheckout({ tasks: listTasks(db), groupId, dependsOn: depends.ids })
+          : undefined,
+      })
+      if (wtIntent.action === 'reject') {
+        log('task.create.rejected', { agentId, detail: { reason: wtIntent.code, message: wtIntent.error, callId } })
+        return `${wtIntent.error}`
+      }
+      let worktreeRecord
+      let worktreeHint = wtIntent.hint ?? ''
+      if (wtIntent.action === 'none') {
+        worktreeRecord = { state: 'none', source: wtIntent.source }
+      } else if (wtIntent.action === 'reuse') {
+        worktreeRecord = {
+          path: wtIntent.path,
+          branch: wtIntent.branch,
+          repoRoot: wtIntent.repoRoot ?? null,
+          mode: 'continue',
+          source: wtIntent.source,
+          state: 'reused',
+        }
+      } else {
+        // resolve：只有「可能真的建树」时才探测 git（普通任务一次 git 都不调）。
+        // 没传 target 时探测协调者默认目录（指挥舱通常不是仓库 → 降级，行为可解释）。
+        const probeDir = effectiveTarget ?? defaultDir() ?? stateDir
+        const facts = await worktreeService.probeRepo(probeDir)
+        let baseExists
+        if (facts.isRepo === true && typeof wtIntent.base === 'string' && wtIntent.base.trim() !== '') {
+          baseExists = await worktreeService.refExists(facts.repoRoot, wtIntent.base)
+        }
+        // 用户指定分支名时提前校验重名（默认 orch/<taskId> 天然唯一，派发时由 git 再兜一次）。
+        if (facts.isRepo === true && typeof wtIntent.branch === 'string' && wtIntent.branch.trim() !== '') {
+          if (await worktreeService.branchExists(facts.repoRoot, wtIntent.branch)) {
+            log('task.create.rejected', { agentId, detail: { reason: 'BRANCH_EXISTS', branch: wtIntent.branch, callId } })
+            return `worktreeBranch 已存在：${wtIntent.branch}（插件不自动改名：换名或改用 worktreeMode:"continue" 复用）。`
+          }
+        }
+        const decision = decideWorktreeFacts({
+          intent: wtIntent,
+          facts,
+          baseExists,
+          recentDays: config?.worktreeRecentDays ?? 7,
+        })
+        // #10 多分支：**不落库**、不占并发位，把候选交回协调者去 ask_user_question。
+        if (decision.action === 'ask') {
+          log('task.create.worktree.needs-branch', {
+            agentId,
+            detail: { candidates: decision.candidates.length, n: decision.n, callId },
+          })
+          return branchChoiceText({ decision, title, days: config?.worktreeRecentDays ?? 7 })
+        }
+        if (decision.action === 'reject') {
+          log('task.create.rejected', { agentId, detail: { reason: decision.code, message: decision.error, callId } })
+          return `${decision.error}。`
+        }
+        worktreeHint = decision.hint ?? worktreeHint
+        worktreeRecord = decision.action === 'degrade'
+          ? { state: 'degraded', source: decision.source }
+          : { state: 'requested', source: decision.source, repoRoot: facts.repoRoot, base: decision.base, mode: 'new' }
+      }
       // T1：创建详情是台账里的快照，brief 只负责把子会话引到 task_detail。
       // 经验在创建前算好：完整内容写记忆文件（指针进 brief.experience），写不了文件时存内联块；
       // 两种形态都只进 task_detail，不进 brief 提示词，提示词长度因此与经验条数无关。
@@ -493,12 +581,20 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         targetDir: effectiveTarget,
         readOnly,
         planFirst,
+        worktree: worktreeRecord,
         dependsOn: depends.ids,
         groupId,
         writeScopes,
         priority,
         status: initialStatus,
       })
+      // 默认分支名与检出路径要用 taskId 派生（协调者传了 branch 就用它的）。
+      if (worktreeRecord?.state === 'requested') {
+        const branch = branchNameFor(wtRequest, task.id, config?.worktreeBranchPrefix)
+        const checkout = checkoutPathFor(worktreeRecord.repoRoot, task.id)
+        setTaskWorktree(db, task.id, { branch, path: checkout })
+        worktreeRecord = { ...worktreeRecord, branch, path: checkout }
+      }
       log('task.create.created', {
         taskId: task.id,
         agentId,
@@ -514,6 +610,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           writeScopes,
           priority,
           status: initialStatus,
+          worktree: worktreeRecord?.state ?? 'none',
+          worktreeSource: worktreeRecord?.source ?? null,
         },
       })
       const rendered = renderBrief({ taskId: task.id })
@@ -532,7 +630,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         throw new Error(message)
       }
       if (initialStatus === 'waiting_dep') {
-        const notes = [dependencyNote, conflictNote].filter(Boolean).join('\n')
+        const pendingWorktree = worktreeNoteLines({
+          state: worktreeRecord?.state ?? 'none',
+          branch: worktreeRecord?.branch,
+          path: worktreeRecord?.path,
+          base: worktreeRecord?.base,
+          hint: worktreeHint,
+        })
+        const notes = [dependencyNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
         log('task.dep.waiting', { taskId: task.id, detail: { dependsOn: depends.ids, callId } })
         return `任务「${taskLabelWithId(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
       }
@@ -542,7 +647,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const planNote = planFirst
         ? '计划模式：子会话只读探索，探索完用 task_report blocked 上报计划；你转交用户，批准后用 task_message 续派（插件自动切回可写）。'
         : ''
-      const notes = [invalidHint(), inferredNote, planNote, conflictNote, dependencyNote].filter(Boolean).join('\n')
+      // 派发后以台账实际状态为准（created / reused / degraded / failed），不要凭创建期的计划糊弄用户。
+      const worktreeLines = worktreeNoteLines({
+        state: resultTask?.worktree_state ?? worktreeRecord?.state ?? 'none',
+        branch: resultTask?.worktree_branch ?? worktreeRecord?.branch,
+        path: resultTask?.worktree_path ?? worktreeRecord?.path,
+        base: resultTask?.worktree_base ?? worktreeRecord?.base,
+        error: resultTask?.status === 'failed' ? resultTask.error : undefined,
+        hint: worktreeHint,
+      })
+      const notes = [invalidHint(), inferredNote, planNote, ...worktreeLines, conflictNote, dependencyNote]
+        .filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       if (resultTask?.status === 'running') {
         return `任务「${taskLabelWithId(task)}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
@@ -581,11 +696,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const messages = recentMessages(db, task.id, 3)
       const recent = messages.map(row => `- [${row.kind}] ${short(row.rendered, 80)}`).join('\n')
       const planLine = planStatusLine(task)
+      const worktreeLine = worktreeStatusLine(task)
       const lines = [
         `任务「${taskLabelWithId(task)}」`,
         `状态：${labelOf(task.status)}`,
         ...(task.read_only ? ['权限：只读（读正常，写文件/写 shell 被拒绝）'] : []),
         ...(planLine === undefined ? [] : [planLine]),
+        ...(worktreeLine === undefined ? [] : [worktreeLine]),
         ...(task.group_id ? [`分组：${task.group_id}`] : []),
         ...(task.priority !== 0 ? [`优先级：${task.priority}`] : []),
         `子会话：${task.target ?? '-'}`,
@@ -747,6 +864,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         transition(db, task.id, 'cancelled')
         releaseTaskSession(task)
         queue.pump()
+        cleanupWorktree?.(getTask(db, task.id))
         return task.status === 'waiting_dep'
           ? `任务「${labelFor(task)}」已取消（还在等待前置任务）。`
           : `任务「${labelFor(task)}」已取消（还在排队，没有派发出去）。`
@@ -765,6 +883,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       transition(db, task.id, 'cancelled')
       releaseTaskSession(task)
       queue.pump()
+      cleanupWorktree?.(getTask(db, task.id))
       return `任务「${labelFor(task)}」已停止。`
     }),
 
@@ -793,14 +912,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const depState = dependencyState(db, { depends_on: depends.ids })
       // G1：旧尝试的目标到此为止（failed/orphaned），清掉后再建新任务；新子会话派发时重新 create。
       void goalBridge?.clear?.(task.id, task.session_id)
+      // P9：隔离任务重派复用原检出（目录还在就复用，被清理过按原基线重建）；普通任务零变化。
+      const retryWorktree = retryWorktreeOf(task)
       const retried = createTask(db, {
         brief: task.brief,
         coordinatorSession: current.id ?? coordinatorSession,
-        targetDir: task.target_dir,
+        targetDir: retryWorktree === null ? task.target_dir : (task.brief?.target ?? task.target_dir),
         readOnly: task.read_only === true,
         // P8：计划任务重派后重新走一次计划阶段（新会话要重新探索/批准）。
         planFirst: task.plan_first === true,
         planState: task.plan_first === true ? 'planning' : 'none',
+        worktree: retryWorktree,
         retryOf: task.id,
         dependsOn: depends.ids,
         groupId: task.group_id,
@@ -1083,6 +1205,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         options: args.status === 'blocked' || args.status === 'needs_auth' ? options : [],
         artifacts,
         artifactsTruncated: artifactsOmitted,
+        worktree: notifyWorktreeOf(next),
         sender: exec?.agent,
         signal: exec?.signal,
       })

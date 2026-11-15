@@ -5,6 +5,7 @@
 import { statSync } from 'node:fs'
 import { statusLabel } from './state.js'
 import { PLAN_FIRST_DETAIL, isPlanTask, planStateOf, PLAN_STATE_LABEL } from './plan-mode.js'
+import { worktreeDetailLines } from './worktree-request.js'
 
 const text = value => typeof value === 'string' ? value.trim() : ''
 const single = value => text(value).replace(/[\r\n]+/g, ' ')
@@ -68,7 +69,10 @@ const experienceText = experience => {
  */
 export function renderTaskDetail(task = {}, { dependencies = '', experience, artifacts = [] } = {}) {
   const brief = task.brief ?? {}
-  const target = text(brief.target ?? task.target_dir)
+  // P9：隔离任务的「工作目录」是检出目录（派发时 target_dir 已换算成「检出 + 原 target 偏移」），
+  // brief.target 仍是用户原始目录，所以这里优先用 target_dir，否则子会话会去写用户工作树。
+  const checkoutTarget = ['created', 'reused'].includes(task.worktree_state) ? text(task.target_dir) : ''
+  const target = checkoutTarget !== '' ? checkoutTarget : text(brief.target ?? task.target_dir)
   const readOnly = brief.readOnly === true || task.read_only === true
   const planTask = isPlanTask(task)
   const planState = planStateOf(task)
@@ -95,6 +99,9 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
     lines.push(`计划状态：${PLAN_STATE_LABEL[planState] ?? planState}`)
     lines.push(PLAN_FIRST_DETAIL)
   }
+  // P9：隔离任务说明「在哪个检出/分支、产物不在用户工作树、合并由用户决定」。
+  const worktreeLines = worktreeDetailLines(task)
+  if (worktreeLines.length > 0) lines.push(...worktreeLines)
   const acceptance = list(brief.acceptance)
   if (acceptance.length > 0) lines.push(`【验收标准】\n${acceptance.map(item => `- ${single(item)}`).join('\n')}`)
   const constraints = list(brief.constraints)

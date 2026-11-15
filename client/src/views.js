@@ -9,7 +9,7 @@ export function createViews({
   Icon, Badge, Chip, EmptyState, Banner, SkeletonList,
   FILTERS, METRICS, POLL_MS, POLL_BACKOFF_MS,
   STATUS_LABEL, STATUS_TONE, MESSAGE_KIND_LABEL, DELIVERY_LABEL, DELIVERY_TONE,
-  GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL, TONE_COLOR,
+  GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL, WORKTREE_STATE_LABEL, WORKTREE_SOURCE_LABEL, TONE_COLOR,
   displayNameOf, textOf, listOf, timeLabel, shortPath,
   countTasks, matchesFilter, matchesQuery, groupArtifacts,
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
@@ -546,6 +546,10 @@ export function createViews({
           task.planState === 'planning'
             ? h(Badge, { tone: 'info', title: '计划模式：子会话只读探索，用 task_report blocked 上报计划，批准后自动切回可写' }, '计划中')
             : null,
+          // P9：真的隔离了才给小标（产物在检出目录里，合并由用户决定）。
+          ['created', 'reused'].includes(task.worktreeState)
+            ? h(Badge, { tone: 'info', title: `worktree 隔离：产物在分支 ${task.worktreeBranch || '(未知)'} 的检出目录 ${task.worktreePath || '(未知)'}，合并由你决定` }, '隔离')
+            : null,
           h('span', { className: 'orch-card-time', title: '最近事件' }, timeLabel(task.lastEventAt)),
         ),
         h('div', { className: 'orch-card-meta' },
@@ -570,6 +574,12 @@ export function createViews({
               tone: task.planState === 'planning' ? 'info' : 'muted',
               title: '计划模式：plan_state 由台账下发（只读展示）',
             }, `计划·${PLAN_STATE_LABEL[task.planState] || task.planState || '无计划状态'}`)
+            : null,
+          task.worktreeState && task.worktreeState !== 'none'
+            ? h(Chip, {
+              tone: task.worktreeState === 'failed' ? 'bad' : (['created', 'reused'].includes(task.worktreeState) ? 'info' : 'muted'),
+              title: task.worktreePath ? `检出 ${task.worktreePath}` : '未建检出',
+            }, `隔离·${WORKTREE_STATE_LABEL[task.worktreeState] || task.worktreeState}`)
             : null,
           artifacts.length > 0
             ? h('button', {
@@ -813,6 +823,9 @@ export function createViews({
         ['分组', task.group || '（未分组）'],
         ['优先级', `P${task.priority === undefined || task.priority === null ? 0 : task.priority}`],
         ['计划', task.planFirst === true ? (PLAN_STATE_LABEL[task.planState] || task.planState || '无计划状态') : '（不是计划任务）'],
+        ['隔离', task.worktreeState && task.worktreeState !== 'none'
+          ? `${WORKTREE_STATE_LABEL[task.worktreeState] || task.worktreeState}｜分支 ${task.worktreeBranch || '-'}｜检出 ${task.worktreePath || '-'}｜决定 ${WORKTREE_SOURCE_LABEL[task.worktreeSource] || task.worktreeSource || '未知'}`
+          : '（未隔离）'],
         ['写域', Array.isArray(task.writeScopes) && task.writeScopes.length > 0 ? task.writeScopes.join('、') : '（未声明）'],
         ['创建', timeLabel(task.createdAt)],
         ['更新', timeLabel(task.updatedAt)],

@@ -227,6 +227,37 @@
   非计划任务不下发任何计划字样。
 - **互斥**：`planFirst` 与 `readOnly` 在 `task_create` 创建期拒绝（只读任务永远不切回可写）。
 
+## worktree 隔离（P9）
+
+`task_create({ worktree: true })` 时插件在**宿主进程**建检出，子会话在检出目录里干活；不开 `worktree` 的任务行为一字不改（**一次 git 都不调**）。
+
+- **声明只有结构化两处**（v2，零自然语言解析）：profile 配置 `worktreePolicy` / `worktreeBranchPrefix` /
+  `worktreeRecentDays`（用户级默认，渲染进协调者 policy），以及 `task_create.worktree*` 字段（任务级决定）。
+  插件**不读** `AGENTS.md`、**不解析**自然语言、**不缓存**指令文件：「要不要隔离」由协调者判断
+  （DSH 的 `dsh-agent-instructions` 负责把用户级/工作区级指引注入它的上下文）。
+- **模块**：`src/worktree.js` = 宿主侧 git 能力（`probeRepo` / `create` / `remove` / `ensureExcluded` / 分支名校验 /
+  `prepareTaskWorktree` / `cleanupTaskWorktree` / `retryWorktreeOf`）；`src/worktree-request.js` = 结构化请求校验 +
+  机械映射（`parseWorktreeRequest` / `decideWorktreeIntent` / `decideWorktreeFacts`）与全部展示文案（纯函数）。
+- **创建期（`task_create`）**：先做互斥校验（`readOnly` / `planFirst`）与复用查找（`worktreeMode:'continue'` 按同
+  `group` / `dependsOn` 找台账里已建好的检出）；真要建时才 `probeRepo`（普通任务零 git 调用）→ 非仓库 `degrade`；
+  基线：显式 `worktreeBase` 要 `rev-parse --verify` 通过、缺省时 n=0 用默认分支 / n=1 用那条 / **n≥2 返回
+  `needsBranchChoice` 且不落库**（协调者去 `ask_user_question`，拿到答案带 `worktreeBase` 重调）。落库七列
+  （`worktree_path` / `_branch` / `repo_root` / `_base` / `_mode` / `_source` / `_state`），`state='requested'`。
+- **派发期（`queue.pump` → `prepareTaskWorktree`）**：`git worktree add -b <branch> <repo>/.agents/worktrees/<taskId> <base>`
+  ——**永远 -b 新分支**（直接检出已在主工作树检出的基线会被 git 拒绝）；`reused` 不调 git，只换算路径。
+  `target_dir` 换成「检出目录 + 原 target 相对 repoRoot 的偏移」→ 子会话的 target 可写根天然覆盖（既有
+  `ensureWritableRoot` 机制）；检出目录必须在仓库内，否则 `.git/worktrees` 的写入不成立。
+  建树失败标 `failed` 并写原因（**不静默降级**），非仓库才 `degraded`。
+- **`.git/info/exclude`**：建树成功后把 `.agents/` 追加到 `.git/info/exclude`（幂等；不动用户被跟踪的 `.gitignore`；
+  不可写只 warn）。
+- **清理三档**：`worktreeCleanup` 默认 `off`（全部保留）；`checkout-only` 只 `worktree remove`；`full` 连分支一起删
+  （有未合并提交时保留分支并提示）。清理在终态（结算 / `task_stop` / 面板 stop）异步跑，失败只记日志、不改终态。
+- **重派**：`task_retry` / 面板重派在有检出且目录还在时复用（`state='reused'`），被清理过按原基线重建。
+- **产物语义**：产物在检出目录里，**用户工作树没有这些改动**；通知 / `task_status` / 面板 / README 四处标注
+  「分支 X / 检出 Y / 合并由你决定」。平台没有合并工具，插件也不提供。
+- **视图**：`snapshot` / `detail` 下发 `worktreeState/Branch/Path/Base/Source`；任务卡「隔离」小标 + 「隔离·…」chip、
+  抽屉概览「隔离」行；`task_list`「·隔离」、`task_status`「隔离：」行（含决定者 task/config/default）。
+
 ## 目标目录推断
 
 不传 `target` 时，用 `title` + `goal` 匹配 `workspaceRegistry.list()` 的显示名与路径末段：

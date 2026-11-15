@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0,
   question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER,
   goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0,
-  plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT
+  plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT,
+  worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
+  worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -68,6 +70,15 @@ export async function openLedger(stateDir) {
     // P8 计划模式：旧库补两列；历史行 plan_first=0 → taskOf 归一成 false / plan_state='none'。
     if (!taskColumns.includes('plan_first')) db.exec('ALTER TABLE tasks ADD COLUMN plan_first INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('plan_state')) db.exec('ALTER TABLE tasks ADD COLUMN plan_state TEXT')
+    // P9 worktree 隔离：七列（哪份检出 / 哪个分支 / 源仓库 / 基线 / 请求档位 / 谁决定的 / 当前状态）。
+    // `worktree_source` 取 task/config/default（v2：不再有 agents-md 这类来源枚举）。
+    if (!taskColumns.includes('worktree_path')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_path TEXT')
+    if (!taskColumns.includes('worktree_branch')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_branch TEXT')
+    if (!taskColumns.includes('repo_root')) db.exec('ALTER TABLE tasks ADD COLUMN repo_root TEXT')
+    if (!taskColumns.includes('worktree_base')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_base TEXT')
+    if (!taskColumns.includes('worktree_mode')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_mode TEXT')
+    if (!taskColumns.includes('worktree_source')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_source TEXT')
+    if (!taskColumns.includes('worktree_state')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_state TEXT')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -133,6 +144,14 @@ const taskOf = row => row === undefined ? undefined : ({
   // P8：计划模式两列 —— 旧行没有 plan_state（NULL）按 none；plan_first 归一成布尔。
   plan_first: row.plan_first === 1 || row.plan_first === true,
   plan_state: typeof row.plan_state === 'string' && row.plan_state !== '' ? row.plan_state : 'none',
+  // P9：worktree 七列 —— 旧行没有状态按 none；来源按 default（面板要能回答「谁决定的」）。
+  worktree_path: row.worktree_path ?? null,
+  worktree_branch: row.worktree_branch ?? null,
+  repo_root: row.repo_root ?? null,
+  worktree_base: row.worktree_base ?? null,
+  worktree_mode: row.worktree_mode ?? null,
+  worktree_source: typeof row.worktree_source === 'string' && row.worktree_source !== '' ? row.worktree_source : 'default',
+  worktree_state: typeof row.worktree_state === 'string' && row.worktree_state !== '' ? row.worktree_state : 'none',
   brief: JSON.parse(row.brief_json),
   artifacts: parseArtifacts(row.artifacts_json),
   depends_on: parseStringArray(row.depends_json),
@@ -154,6 +173,8 @@ export function createTask(db, {
   readOnly = false,
   planFirst = false,
   planState,
+  // P9：隔离请求/结果快照（path/branch/repoRoot/base/mode/source/state）。
+  worktree = null,
   retryOf = null,
   dependsOn = [],
   groupId = null,
@@ -167,11 +188,13 @@ export function createTask(db, {
   const initialPlanState = typeof planState === 'string' && planState !== ''
     ? planState
     : (plan ? 'planning' : 'none')
+  const wt = worktree !== null && typeof worktree === 'object' ? worktree : {}
   db.prepare(`INSERT INTO tasks
     (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of,
      depends_json, group_id, write_scopes_json, priority, plan_first, plan_state,
+     worktree_path, worktree_branch, repo_root, worktree_base, worktree_mode, worktree_source, worktree_state,
      created_at, updated_at, last_event_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id, String(brief.title), String(brief.goal), JSON.stringify(brief), status,
       String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null,
@@ -179,6 +202,8 @@ export function createTask(db, {
       JSON.stringify(Array.isArray(writeScopes) ? writeScopes : []),
       Number.isFinite(priority) ? Math.trunc(priority) : 0,
       plan ? 1 : 0, initialPlanState,
+      wt.path ?? null, wt.branch ?? null, wt.repoRoot ?? null, wt.base ?? null,
+      wt.mode ?? null, wt.source ?? null, wt.state ?? null,
       now, now, now,
     )
   return getTask(db, id)
@@ -354,6 +379,48 @@ export function setPlanState(db, id, planState) {
   const now = Date.now()
   db.prepare('UPDATE tasks SET plan_state = ?, updated_at = ? WHERE id = ?')
     .run(String(planState), now, id)
+  return getTask(db, id)
+}
+
+// P9：worktree 列 → 入参字段名（只允许这几个键，避免调用方拼错列名）。
+const WORKTREE_FIELDS = {
+  path: 'worktree_path',
+  branch: 'worktree_branch',
+  repoRoot: 'repo_root',
+  base: 'worktree_base',
+  mode: 'worktree_mode',
+  source: 'worktree_source',
+  state: 'worktree_state',
+}
+
+/**
+ * P9：更新隔离快照（创建期写请求、派发期写检出、终态写清理）。
+ * `targetDir` 一并可写：派发时 target_dir 换成「检出目录 + 原 target 偏移」。
+ */
+export function setTaskWorktree(db, id, patch = {}) {
+  const sets = []
+  const values = []
+  for (const [key, column] of Object.entries(WORKTREE_FIELDS)) {
+    if (!Object.hasOwn(patch, key)) continue
+    sets.push(`${column} = ?`)
+    values.push(patch[key] ?? null)
+  }
+  if (Object.hasOwn(patch, 'targetDir')) {
+    sets.push('target_dir = ?')
+    values.push(patch.targetDir ?? null)
+  }
+  if (sets.length === 0) return getTask(db, id)
+  const now = Date.now()
+  sets.push('updated_at = ?')
+  values.push(now)
+  values.push(id)
+  db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+  return getTask(db, id)
+}
+
+/** 只换 target_dir（worktree 派发时把 cwd 指到检出目录里）。 */
+export function setTaskTargetDir(db, id, targetDir) {
+  db.prepare('UPDATE tasks SET target_dir = ?, updated_at = ? WHERE id = ?').run(targetDir ?? null, Date.now(), id)
   return getTask(db, id)
 }
 

@@ -943,3 +943,47 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 不批准直接 `task_stop` | 任务 `cancelled` + `plan_state=rejected`；子会话被中断 |
 | 非计划任务 | 全程无 `planMode` 调用、无「计划」字样、无 exit guard |
 | `planMode` 服务不可用（预设没挂） | 只 warn 一行；计划任务仍只读、仍能 blocked 上报；批准后仍切回可写 |
+
+## 36. P9 worktree 隔离复核矩阵
+
+**判据**：`npm test` 717 条全绿（新增 `test/worktree.test.js` 26 条 + `test/worktree-request.test.js` 19 条）；
+`npm run check:client` 通过；真机矩阵（建分支/检出、降级、多分支询问、清理）逐条勾。
+
+### 36.1 单测（`test/worktree.test.js` / `test/worktree-request.test.js`）
+
+| 项 | 期望 | 用例 |
+| --- | --- | --- |
+| 结构化声明 | `worktree` 只认布尔值（字符串 `'true'` / `'auto'` 拒绝）；`worktreeMode` / `worktreeCleanup` 枚举校验；非法分支名创建期拒绝 | worktree-request 2 条 |
+| 机械映射 #1–#4 | 不传 + auto → 不隔离；不传 + required → 兜底建（来源 config + 提示）；显式 false + required → 不建 + hint；off + 显式 true → 照建 + hint | 映射 3 条 |
+| 互斥 #6/#7 | `readOnly + worktree` / `planFirst + worktree` 创建期拒绝、不建任务 | 映射 + task_create 各 1 条 |
+| 复用 #8/#9 | `worktreeMode:'continue'` 有检出 → 复用（不调 git、cwd 指过去）；没有 → 拒绝并指路 | 映射 + task_create 各 1 条 |
+| 事实分档 | n=0 用默认分支；n=1 用那条；n≥2 → `needsBranchChoice`（**不落库**、不 spawn、候选齐全） | 事实 2 条 + task_create 1 条 |
+| 降级/拒绝 | 非 git 目录 → `degraded` + 可读提示，cwd 仍是原 target；基线不存在 / 分支已存在 → 创建期拒绝 | 事实 1 条 + task_create 2 条 |
+| 建树 | `git worktree add -b` 新分支出现在调用里；失败 7 分类（`BRANCH_EXISTS` / `PATH_EXISTS` / `BASE_NOT_FOUND` / `BRANCH_INVALID` / `GIT_MISSING` / `NOT_A_REPO` / `FAILED`） | worktree 3 条 |
+| exclude | `.agents/` 幂等写 `.git/info/exclude`，不动 `.gitignore` | worktree 1 条 |
+| target 偏移 | 仓库内子目录跟检出走，仓库外不跟 | worktree 1 条 |
+| 台账七列 | 默认 `none`/`default`；`requested→created→cleaned` 落库；旧库逐列 `ALTER` | worktree 2 条 |
+| 派发接线 | 建树成功 → `target_dir`=检出+偏移、`state=created`、写 exclude；建树失败 → `failed`（不静默降级）；复用不建 | worktree 2 条 + task_create 2 条 |
+| 普通任务零 git | 不传 worktree 时 `probeRepo`/`create` 一次都没调，cwd = 原 target，无隔离字样 | task_create 1 条 + 视图 1 条 |
+| 清理三档 | 默认 off 不清理；`checkout-only` 只删检出并落 `cleaned`；清理失败不改终态 | worktree 1 条 |
+| 重派 | 检出还在 → `reused`；被清理/不见了 → 按原基线 `requested` | worktree 1 条 |
+| 视图 | `task_status`「隔离：」行（含决定者 + 合并由你决定）、`task_list`「·隔离」、通知带「合并到你当前分支由你决定」 | 视图 1 条 |
+| 配置/政策 | `worktreePolicy` 默认 auto、非法回落；policy 文本渲染当前策略 + 三条件 + 分支询问 + 合并责任，且不解析文件 | worktree-request 2 条 |
+| 反向验证 | 全仓 `grep`：worktree 相关代码里没有 `AGENTS.md` 解析 / 自然语言兜底正则 / `worktree-policy.js` | 人工 grep + `docs/ARCHITECTURE.md` 约定 |
+
+### 36.2 真机矩阵（装 profile + 重启后逐条勾）
+
+| 场景 | 期望 |
+| --- | --- |
+| 单分支仓库派发 `worktree:true` | 真的建出分支 `orch/<taskId>` 与检出 `<repo>/.agents/worktrees/<taskId>`；子会话在检出里写文件；通知/`task_status` 标「隔离」 |
+| 多分支仓库（近 7 天 ≥2 条）派发 `worktree:true` 且不给基线 | 协调者收到候选并 `ask_user_question`；**任务未创建**；带 `worktreeBase` 重调后建树 |
+| 非 git 目录派发 `worktree:true` | 降级普通模式 + 明确提示「产物落在你当前工作树」；任务不失败 |
+| 宿主无 git / 路径已存在 / 分支重名 | 任务标 `failed` 并写明分类；不静默降级 |
+| 配置 `worktreePolicy:'required'` + 协调者漏传 | 兜底建，返回里写「按配置 worktreePolicy=required 建了隔离（协调者未传参数）」 |
+| 配置 `required` + 协调者显式 `false` | 不建 + hint；面板显示「未隔离（决定 协调者传字段）」 |
+| 项目 `AGENTS.md` 写「每个需求都必须建 worktree」 | DSH 注入 → 协调者读到 → 传 `worktree:true` → 建树；回复写明来源 |
+| `readOnly + worktree` / `planFirst + worktree` | 创建期拒绝 + 可读原因 |
+| `worktreeMode:'continue'` | 复用原检出（不新建分支）；两个任务同检出时必须 `dependsOn` 串行 |
+| `worktreeCleanup:'checkout-only'` | 任务终态后检出被删、分支保留；`full` 连分支删；默认 `off` 什么都不动 |
+| `git status` | 看不到 `.agents/`（`.git/info/exclude` 生效）；普通任务无任何 worktree 字样 |
+| 重派 | 复用原检出（不新建）；检出被清理过后按原基线重建 |

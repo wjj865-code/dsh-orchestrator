@@ -47,6 +47,21 @@ export const GOAL_ACTIVATION_LABEL = { armed: '自动续轮已启用', disarmed:
 export const PLAN_STATE_LABEL = {
   none: '无计划状态', planning: '计划中（等批准）', approved: '已批准执行', rejected: '计划未通过',
 }
+// P9 worktree 隔离：worktreeState 由服务端台账下发（none/requested/created/reused/degraded/rejected/failed/cleaned）。
+export const WORKTREE_STATE_LABEL = {
+  none: '未隔离',
+  requested: '待建检出',
+  created: '已隔离',
+  reused: '复用已有检出',
+  degraded: '已降级（不是 git 仓库）',
+  rejected: '隔离被拒绝',
+  failed: '隔离创建失败',
+  cleaned: '检出已清理',
+}
+// 决定者：task=协调者传字段、config=配置兜底、default=都没说（面板只读展示）。
+export const WORKTREE_SOURCE_LABEL = {
+  task: '协调者传字段', config: '配置兜底', default: '都没说',
+}
 // 语义色只取设计平台 token：旧版用的那组 alias color 变量在宿主 token 表里并不存在，
 // 一直走的是 fallback（深色主题下会脏）。这里换成 state/label 语义 token，深浅色自动跟随。
 export const TONE_COLOR = {

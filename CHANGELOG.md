@@ -3,6 +3,38 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
+## 未发布：P9 子任务 worktree 隔离（结构化声明 + 职责切分）
+
+`task_create({ ..., worktree: true })` 时插件在宿主进程建 `git worktree`，子会话在检出目录
+（`<repo>/.agents/worktrees/<taskId>`）里干活；分支留在你的仓库、**合并由你决定**。不开 `worktree` 的任务行为一字不改
+（一次 git 都不调）。
+
+### worktree 隔离（P9）
+
+- **结构化声明只有两处**（零自然语言解析）：profile 配置 `worktreePolicy` / `worktreeBranchPrefix` /
+  `worktreeRecentDays`，与 `task_create` 的 `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` /
+  `worktreeCleanup`。插件不读 `AGENTS.md`、不解析自然语言、不缓存指令文件（v2 删除 v1 的 `worktree-policy.js` 方案）。
+- **职责切分**：DSH 注入用户级/工作区级指引 → 协调者判断「要不要建 / 基线 / 分支名」（policy 文本里给了三条件引导
+  与 `ask_user_question` 闭环）→ 插件只做校验 + 执行。`AGENTS.md` 里的要求仍有效，路径是「注入 → 协调者读懂 →
+  传 `worktree:true`」；要硬保证就配 `worktreePolicy: 'required'`（漏传也兜底建，来源标 `config`）。
+- **新增 `src/worktree.js`**：宿主侧 git 能力（`probeRepo` / `create` / `remove` / `ensureExcluded` / 分支名校验 /
+  `prepareTaskWorktree` / `cleanupTaskWorktree` / `retryWorktreeOf`），7 类失败分类（`NOT_A_REPO` / `BASE_NOT_FOUND` /
+  `BRANCH_INVALID` / `BRANCH_EXISTS` / `PATH_EXISTS` / `GIT_MISSING` / `FAILED`），全部走 `execFile`（不经 shell）。
+- **新增 `src/worktree-request.js`**：结构化请求校验 + 机械映射（§4.5 全表）+ 全部展示文案（纯函数）。
+  多分支时返回 `needsBranchChoice` 且**不落库**；基线与分支名缺省值由插件填（不算判断）。
+- **台账七列**：`worktree_path` / `worktree_branch` / `repo_root` / `worktree_base` / `worktree_mode` /
+  `worktree_source`（`task`/`config`/`default`）/ `worktree_state`（`none`/`requested`/`created`/`reused`/
+  `degraded`/`rejected`/`failed`/`cleaned`），旧库逐列 `ALTER TABLE`。
+- **派发接线**：`queue.pump` 在 spawn 前建树（或复用），`target_dir` = 检出目录 + 原 target 相对 `repoRoot` 的偏移，
+  可写根天然覆盖；`.agents/` 写进 `.git/info/exclude`；非仓库降级、建树失败标 `failed`（不静默降级）。
+- **清理三档**：`off`（默认全保留）/ `checkout-only`（只删检出）/ `full`（连分支一起删，未合并提交会提示）。
+- **视图**：`task_status`「隔离：」行、`task_list`「·隔离」、通知「产物在分支 X 的检出目录 Y，合并由你决定」、
+  面板「隔离」小标 + 「隔离·…」chip + 抽屉「隔离」行；普通任务零隔离字样。
+- **文档**：README「隔离任务」、`docs/ARCHITECTURE.md`「worktree 隔离（P9）」、`docs/LIMITATIONS.md`
+  「worktree 隔离（P9）」、`docs/qa-checklist.md` §36 复核矩阵。
+- **测试**：新增 `test/worktree.test.js` 26 条 + `test/worktree-request.test.js` 19 条，`npm test` 717 条全绿。
+- 版本号暂留 0.12.0：P6/P7/P8/P9 的发版（0.13.0–0.16.0）统一在发布批次处理，本次只本地提交、不 push。
+
 ## 未发布：P8 子任务计划模式（planFirst）
 
 `task_create({ planFirst: true })` 让子会话以**计划阶段**起步：只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）。

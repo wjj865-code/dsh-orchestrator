@@ -83,6 +83,28 @@
 - **rc 包**：`@deepseek-ai/dsh-plan-mode` 仍是 rc 包，升级 DSH 后要按仓库惯例重跑 `docs/probes/contract-probe-t0.1.mjs`
   复核 `set()` / `get()` / `exit_plan_mode` 契约。
 
+## worktree 隔离（P9）
+
+- **合并责任在用户**：平台没有合并工具，插件也不提供。worktree 任务的产物**不在你的工作树里**；
+  通知 / `task_status` / 面板都写「产物在分支 X 的检出目录 Y，合并由你决定」，但要不要合并、什么时候合并由你决定。
+- **判定权在协调者（模型）**：声明只有结构化两处（配置 `worktreePolicy` + `task_create.worktree*`），插件不解析
+  自然语言。所以「用户写了必须隔离但模型漏传」是真实风险——缓解是配置写 `worktreePolicy: required`（漏传也会兜底建），
+  以及 `task_status` / 面板显示「未隔离（决定 default）」让人能发现。插件不做语义判断，也不替模型拍板。
+- **`needsBranchChoice` 多一次往返**：仓库近 N 天有 ≥2 个活跃分支且没给 `worktreeBase` 时，插件**不建任务**、
+  只返回候选。协调者可能忘记重调 —— 返回文案固定要求「带 worktreeBase 重调」，且任务不落库、不占并发位。
+- **检出目录占磁盘**：默认 `worktreeCleanup:'off'` 全保留，长期会堆积（`.agents/worktrees/<taskId>`）；
+  推荐 `checkout-only`（保留分支、只删检出）。
+- **宿主依赖 git**：宿主没装 git / 不在 PATH 时建树失败 → 任务标 `failed`（`GIT_MISSING`），不自动降级
+  （用户显式要的隔离没做成，静默降级会让产物落回工作树）。
+- **`.agents/` 可能出现在 `git status`**：`.git/info/exclude` 不可写时只 warn，目录会显形；
+  同样原因，`full` 档删分支失败也只记日志。
+- **并发**：同一仓库多个任务各自独立检出、互不干扰；但并发 `git commit` 会争 `.git` 锁（git 自己处理，失败要能读地报出来）。
+  **同一检出上不要并发两个任务**——`worktreeMode:'continue'` 复用同一目录时必须用 `dependsOn` 串行（`writeScopes` 只提示不锁）。
+- **Windows 长路径**：检出目录用「`<repo>/.agents/worktrees/<taskId>`」固定短路径，分支名不进路径；仍建议真机先验一次。
+- **互斥**：`worktree` 与 `readOnly` / `planFirst` 在创建期拒绝；计划批准后要隔离请重新派发。
+- **子会话写范围**：与普通任务同口径（`workspace-write` 根 = 子会话 `header.cwd` + 登记的 target 可写根），
+  worktree 只是把 target 换成检出目录，没有额外收紧。
+
 ## 通知与生命周期
 
 - 通知走 `agent.steer`：空闲唤醒、忙时 next-step 排队；同一 agent 的忙时排队由平台保证。
