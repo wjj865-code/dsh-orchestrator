@@ -7,7 +7,8 @@ import { taskLabel, taskLabelWithId } from './task-label.js'
 import { canTransition, statusLabel } from './state.js'
 import { dependencyState, promoteDependents, validateDepends } from './deps.js'
 import {
-  GLOBAL_PROJECT, addMemory, buildMemoryBlock, memoryTokens, projectKeyOf, remember, searchMemories,
+  GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, TASK_LOG_KIND, addMemory, buildMemoryBlock, distillLessons,
+  distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember, searchMemories, taskLogText,
 } from './memory.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages, setMessageDelivery,
@@ -752,7 +753,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         } catch { /* sessionQuery 不可用就只查插件自己的数据 */ }
       }
       const blocks = []
-      if (memories.length > 0) blocks.push(`【记忆】\n${memories.map(row => `- ${row.text}`).join('\n')}`)
+      if (memories.length > 0) {
+        // 标出层：task-log 是日志层（只归档、不注入 brief），lesson/decision/preference 是事实层。
+        blocks.push(`【记忆】\n${memories.map(row => `- [${memoryKindLabel(row.kind)}] ${row.text}`).join('\n')}`)
+      }
       if (tasks.length > 0) {
         blocks.push(`【历史任务】\n${tasks.map(({ task }) => `- ${taskLabelWithId(task)}｜${labelOf(task.status)}｜${short(task.goal, 80)}${task.artifacts?.length > 0 ? `｜产物 ${task.artifacts.length}` : ''}`).join('\n')}`)
       }
@@ -784,17 +788,18 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return projectContextFor(dir, String(args.query ?? ''))
     }),
 
-    wrap('memory_note', '记住一条跨任务有效的决策/偏好/约束（写进 memories，供之后 history_search 与 brief 自动注入）。', objectSchema({
+    wrap('memory_note', '记住一条跨任务有效的决策/偏好/经验（写进 memories 事实层，供之后 history_search 与 brief 自动注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
       text: str('要记住的内容，一两句话'),
       project: str('可选：项目绝对路径或工作区名；不传记为全局'),
-      kind: { type: 'string', enum: ['note', 'decision', 'preference'], description: '类型，默认 note' },
+      kind: { type: 'string', enum: ['note', 'decision', 'preference', 'lesson'], description: '类型，默认 note' },
     }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
-      const text = String(args.text ?? '').trim()
+      // 写入即蒸馏：去代码块/命令日志并按事实层上限截断，避免长日志混进 brief。
+      const text = distillText(args.text, MAX_FACT_CHARS)
       if (text === '') return '要记的内容不能为空。'
       const hint = resolveProjectHint(args.project)
-      const kind = ['note', 'decision', 'preference'].includes(args.kind) ? args.kind : 'note'
+      const kind = ['note', 'decision', 'preference', LESSON_KIND].includes(args.kind) ? args.kind : 'note'
       const saved = remember(db, {
         text,
         projectKey: hint.key,
@@ -923,16 +928,26 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       if (args.status === 'done') {
         try {
-          const artifactNote = artifacts.length > 0
-            ? `；产物：${artifacts.slice(0, 5).map(item => item.path).join('、')}`
-            : ''
+          // M1 记忆分层：done 摘要只进日志层 task-log（一行、无产物清单、不进 brief）；
+          // 写入即蒸馏——摘要里带经验/教训标记的分句抽成 lesson 原子事实，才允许注入后续 brief。
+          const projectKey = projectKeyOf(next.target_dir)
+          const summary = String(args.summary ?? '')
           addMemory(db, {
-            projectKey: projectKeyOf(next.target_dir),
-            kind: 'task-done',
-            text: `任务「${next.title}」完成：${args.summary ?? ''}${artifactNote}`,
+            projectKey,
+            kind: TASK_LOG_KIND,
+            text: taskLogText(next.title, summary),
             sourceTaskId: next.id,
             sourceSessionId: next.session_id,
           })
+          for (const fact of distillLessons(summary, { max: 2 })) {
+            addMemory(db, {
+              projectKey,
+              kind: LESSON_KIND,
+              text: fact,
+              sourceTaskId: next.id,
+              sourceSessionId: next.session_id,
+            })
+          }
         } catch { /* 记忆沉淀失败不能影响回报 */ }
       }
       const displayName = labelFor(next)

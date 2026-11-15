@@ -1212,3 +1212,85 @@ test('连续 progress 达到 stallRounds 时推一条「可能卡住」通知，
   assert.match(stalled[0].summary, /连续 3 次/)
   assert.equal(getTask(db, task.id).progress_count, 4)
 })
+
+test('M1 分层：done 只沉淀 task-log（一行、无产物清单），不注入下个 brief，history_search 仍能查到', async () => {
+  const { db, dispatcher, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '登录修复', goal: '修复登录' }))
+  const task = listTasks(db).find(item => item.title === '登录修复')
+  // 真实回报常见形态：一句结论 + 一串产物路径 + 一段贴回来的代码。
+  const summary = [
+    '替换了登录校验逻辑。',
+    'C:\\work\\a\\src\\login.js',
+    'C:\\work\\a\\src\\session.js',
+    'C:\\work\\a\\test\\login.test.js',
+    '```js',
+    'console.log("debug dump")',
+    '```',
+  ].join('\n')
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary }, { agent: { id: task.session_id } })
+
+  const rows = db.prepare('SELECT kind, text FROM memories').all()
+  const logs = rows.filter(row => row.kind === 'task-log')
+  assert.equal(logs.length, 1)
+  assert.ok(logs[0].text.length <= 180)
+  assert.equal(rows.some(row => row.kind === 'task-done'), false) // 新写入不再是旧 kind
+  assert.match(logs[0].text, /登录修复/)
+  assert.equal(logs[0].text.includes('login.js'), false) // 不落产物路径清单
+  assert.equal(logs[0].text.includes('console.log'), false) // 不落 verbatim 代码
+  assert.equal(rows.some(row => row.kind === 'lesson'), false) // 没有经验标记就不造 lesson
+
+  // 下个同类任务：task-log 不进 brief
+  await call(tools, 'task_create', sampleBrief({ title: '再修登录', goal: '修复登录' }))
+  const prompts = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').map(callRow => callRow[2])
+  assert.equal(prompts.length, 2)
+  assert.doesNotMatch(prompts[1], /【历史经验】/)
+  assert.doesNotMatch(prompts[1], /替换了登录校验逻辑/)
+
+  // 显式查历史时日志层可见，并标出层
+  const found = await call(tools, 'history_search', { query: '登录校验' })
+  assert.match(found, /【记忆】/)
+  assert.match(found, /\[日志\]/)
+  assert.match(found, /登录修复/)
+})
+
+test('M1 分层：done 摘要里的经验分句蒸馏成 lesson 原子事实并注入后续 brief；verbatim/命令不注入', async () => {
+  const { db, dispatcher, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '登录修复', goal: '修复登录' }))
+  const task = listTasks(db).find(item => item.title === '登录修复')
+  const summary = [
+    '结论：登录模块先查半成品再动手。',
+    '经验：小步提交避免一次改太多。',
+    '> 用户原话：把完整日志贴给我。',
+    '$ npm test -- --watch',
+  ].join('\n')
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary }, { agent: { id: task.session_id } })
+
+  const lessons = db.prepare("SELECT text FROM memories WHERE kind = 'lesson'").all().map(row => row.text)
+  assert.equal(lessons.length, 2)
+  assert.ok(lessons.every(text => text.length <= 160))
+  assert.equal(lessons.some(text => text.includes('先查半成品')), true)
+
+  await call(tools, 'task_create', sampleBrief({ title: '再修登录', goal: '登录异常' }))
+  const prompt = dispatcher.calls.filter(callRow => callRow[0] === 'spawn')[1][2]
+  assert.match(prompt, /【历史经验】/)
+  assert.match(prompt, /先查半成品/)
+  assert.match(prompt, /\[经验\]/)
+  assert.doesNotMatch(prompt, /任务「登录修复」完成/) // 日志层不注入
+  assert.doesNotMatch(prompt, /用户原话：把完整日志贴给我/)
+  assert.doesNotMatch(prompt, /npm test -- --watch/)
+})
+
+test('M1 写入即蒸馏：memory_note 去代码块与命令日志，长文本截断为原子事实', async () => {
+  const { db, tools } = await setup()
+  const raw = '登录统一走 session cookie。\n```js\nconsole.log(1)\n```\n补充：' + '很长的背景'.repeat(60)
+  const noted = await call(tools, 'memory_note', { text: raw, kind: 'lesson' })
+  assert.match(noted, /已记住/)
+  const row = db.prepare('SELECT kind, text FROM memories').all()[0]
+  assert.equal(row.kind, 'lesson')
+  assert.ok(row.text.length <= 160)
+  assert.equal(row.text.includes('console.log'), false)
+  assert.match(row.text, /session cookie/)
+  // 幂等：蒸馏后的同一条不会重复写
+  const again = await call(tools, 'memory_note', { text: raw, kind: 'lesson' })
+  assert.match(again, /已经记过/)
+})

@@ -14,7 +14,7 @@
 | 子任务 | 独立 DSH 子会话，按目标目录运行；可只读、续派、停止、重派 |
 | 依赖编排 | `dependsOn` 前置；完成自动晋升，失败沿依赖链传播 |
 | 分组/写域/优先级 | `group` 分组、`writeScopes` 冲突提示、`priority` 队列排序 |
-| 跨项目记忆 | 完成摘要自动沉淀；`history_search` / `project_context` 补上下文 |
+| 跨项目记忆 | 分层沉淀：done 摘要进 `task-log`（只归档、不注入 brief），经验/决策/偏好蒸馏成原子事实才注入；`history_search` / `project_context` 补上下文 |
 | 收件箱/日报 | `task_inbox` 看待决与卡点；`digestAt` 开每日汇总 |
 | 任务面板 | 侧栏入口 + 会话头面板；详情/停止/重派/追加；产物库按项目/日期分组、可预览/复制 |
 | 产物收集 | done 自动从 `workspaceChanges` 收集改动文件，与显式 `artifacts` 按路径去重合并 |
@@ -133,7 +133,7 @@ npm run preset:debug   # 把随包「创造模式」组合复制成可安装的 
 | `task_inbox` | 收件箱：待决、失败/丢失、长时间没动静 |
 | `history_search` | 查插件记忆、历史任务、平台历史会话 |
 | `project_context` | 只读项目白名单文件、顶层结构、最近任务、相关记忆 |
-| `memory_note` | 记一条跨任务有效的决策/偏好/约束 |
+| `memory_note` | 记一条跨任务有效的决策/偏好/经验（写入即蒸馏为原子事实） |
 
 子任务（1 个）：
 
@@ -158,7 +158,7 @@ npm run preset:debug   # 把随包「创造模式」组合复制成可安装的 
 | `maxQueue` | `50` | `pending` + `waiting_dep` 安全阀 |
 | `autoResumeQueue` | `true` | 重启后自动恢复排队任务 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
-| `memoryInject` | `true` | 新任务 brief 注入历史经验 |
+| `memoryInject` | `true` | 新任务 brief 注入事实层记忆（`lesson`/`decision`/`preference`/`note`；`task-log` 日志不注入） |
 | `memoryLimit` | `3` | 注入记忆条数（1–10） |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
 

@@ -392,3 +392,28 @@ test('setMessageDelivery 只改 meta_json，不新增消息行', async () => {
   assert.throws(() => setMessageDelivery(db, task.id, seq, 'weird'), /未知投递状态/)
   db.close()
 })
+
+test('M1 迁移：旧 kind=task-done 迁到 task-log 并重算 hash，重复打开幂等', async () => {
+  const dir = tempDir()
+  const db = await openLedger(dir)
+  // 模拟旧版本写入的行（kind='task-done'，hash 按旧公式）。
+  db.prepare(`INSERT INTO memories (id, project_key, kind, text, hash, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .run('m-legacy', 'c:/work/legacy', 'task-done', '任务「旧版」完成：改用 cookie', 'legacy-hash', Date.now())
+  db.close()
+
+  const migrated = await openLedger(dir)
+  const row = migrated.prepare("SELECT kind, hash FROM memories WHERE id = 'm-legacy'").get()
+  assert.equal(row.kind, 'task-log')
+  assert.notEqual(row.hash, 'legacy-hash')
+  migrated.close()
+
+  // 再打开一次：不重复迁移、不新增行、hash 稳定。
+  const again = await openLedger(dir)
+  const rows = again.prepare("SELECT kind, hash FROM memories WHERE id = 'm-legacy'").all()
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].kind, 'task-log')
+  assert.equal(rows[0].hash, row.hash)
+  assert.equal(again.prepare("SELECT count(*) AS n FROM memories WHERE kind = 'task-done'").get().n, 0)
+  again.close()
+})

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { nextStatus } from './state.js'
+import { migrateLegacyTaskDone } from './memory.js'
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -58,6 +59,8 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('question_options_json')) db.exec('ALTER TABLE tasks ADD COLUMN question_options_json TEXT')
     if (!taskColumns.includes('progress_count')) db.exec('ALTER TABLE tasks ADD COLUMN progress_count INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('stall_notified_at')) db.exec('ALTER TABLE tasks ADD COLUMN stall_notified_at INTEGER')
+    // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
+    migrateLegacyTaskDone(db)
     return db
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
