@@ -877,3 +877,16 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 7 | 面板/通知/任务流 | 任务显示名；重名带短 id 后缀；通知与面板不出现 `t-xxx` | [ ] |
 
 **已知边界**：启动器点击有一帧「正在打开主会话…」占位（`selectPanel(null)` 在 openSession 后立即执行）；Bot 模式入口不可见（与 §29 同源外部依赖）；`task_create`/`task_list`/`task_status` 仍保留「标题（t-xxxx）」供模型操作，其余对外文案零 id。
+
+## 33. L1 brief 精简复核矩阵（目标指引 + 经验文件指针）
+
+**判据**：`npm test` 全绿；`node --test test/brief.test.js test/memory.test.js test/tools.test.js` 单独全绿；两种目标形态与经验精简/降级各有独立用例（不采信开发输出，独立复跑）。
+
+| 项 | 期望 | 用例 |
+| --- | --- | --- |
+| goal 可用 | `【目标】` = 「先调 `get_goal` 读取完整目标（含「最新指示」）」；紧跟 `【目标兜底】get_goal 不可用时按此执行：` + 目标前 160 字（超长带 `…`）；目标全文不出现 | `brief.test.js` goal 可用/短目标/纯函数；`tools.test.js` L1 goal 可用 |
+| goal 降级 | `【目标】` 内联全文；无 `get_goal`、无 `【目标兜底】`；能力探测抛错按降级 | `brief.test.js` goal 降级；`tools.test.js` L1 goal 降级（无服务 / `available()` 抛错） |
+| 顺序不回退 | `【任务】`→`【目标】`→`【目标兜底】`→`【工作目录】`→`【权限】只读`；target 仍只出现一次 | `brief.test.js` L1 顺序用例 + 既有 target/只读用例 |
+| 经验精简 | 完整事实写 `$DSH_HOME/state/orchestrator/lessons/<项目>-<hash8>.md`（含层标签、日期、`id`、来源、生成时间）；brief = `【历史经验】N 条｜完整内容见经验文件（可 read 全文）` + 每条 ≤64 字摘要 + `完整经验：<路径>`；同项目路径稳定 | `memory.test.js` L1 经验文件；`tools.test.js` L1 经验精简 |
+| 经验降级 | `stateDir` 缺失 / `lessons/` 被同名文件占位 → 退回内联块（含全文、无 `完整经验：`）；无命中 → 不追加小节、不建目录 | `memory.test.js` L1 降级两条 + 无命中；`tools.test.js` L1 经验降级 |
+| 重派同口径 | `task_retry` / 面板重派重渲染的 brief 与 `task_create` 一致（指引形态 + 兜底） | `tools.test.js` L1 重派 |

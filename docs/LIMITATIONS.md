@@ -20,7 +20,9 @@
 - **不是所有环境都有 goal 能力**：`ctx.goals` 缺失、旧版 profile 或服务方法被裁剪时，插件静默降级——不创建 goal、不 warn、不影响派发/续派/停止/结算；台账与面板不显示 goal 状态。
 - **子会话写入限制**：goal 只能由宿主（本插件）对**注册表里的 live agent** 操作。冷恢复/重启后子 agent 还没进注册表时，`attach`/`update` 最多等 3 秒，超时跳过；该轮不会补建目标，下一次 `task_message` 成功后才可能补上。
 - **目标不自动注入子会话**：平台的 `dsh-goal` 只管状态与投影（inject 只有 `agents` / `sessionProjections`），不往系统提示或消息里写 objective；子会话要看到目标必须自己调 `get_goal`。所以 worker 预设挂了 `tool-goal` 行——不挂这行时子会话对目标完全无感（`get_goal` 工具根本不在工具表里）。
-- **子会话只读目标、不能改**：`dsh-orchestrator-worker` 预设的 `tool-goal` 只提供 `get_goal` 的可用路径；`create_goal` / `update_goal` 由平台 `goalToolExecution` + `requireDirectHuman` 校验，要求**顶层 agent 的直接人类回合**，子会话调用必被拒（`GOAL_TOOL_AUTHORITY_REQUIRED`）。只有协调者的 `task_message`（或面板「追加」）会触发 `edit`。目标文本 = `task.goal` + `最新指示：<消息>`，超过 2000 字符截断，只是展示用的持久状态，不改变 brief。
+- **子会话只读目标、不能改**：`dsh-orchestrator-worker` 预设的 `tool-goal` 只提供 `get_goal` 的可用路径；`create_goal` / `update_goal` 由平台 `goalToolExecution` + `requireDirectHuman` 校验，要求**顶层 agent 的直接人类回合**，子会话调用必被拒（`GOAL_TOOL_AUTHORITY_REQUIRED`）。只有协调者的 `task_message`（或面板「追加」）会触发 `edit`。目标文本 = `task.goal` + `最新指示：<消息>`，超过 2000 字符截断，只是展示用的持久状态。
+- **brief 里的目标是指引，不是副本（L1）**：goal 能力可用时 brief 只写「先调 `get_goal` 读完整目标」+ 前 160 字兜底，正文只在平台 goal 里。所以「goal 可用」是派发时刻的能力探测（`ctx.goals` 方法齐全），**不是**「attach 一定成功」：子 agent 3 秒内没进注册表、worker 预设没挂 `tool-goal`、或 `get_goal` 被裁剪时，子会话只能拿到这 160 字兜底；要改目标仍走 `task_message`（会 `edit` 平台 goal，也不会重渲染 brief）。
+- **经验文件是快照，不是台账（L1）**：`lessons/<项目>-<hash>.md` 每次派发覆盖为「本次命中的事实层记忆」；没有历史版本、不参与每日快照、也没有保留期清理。手动删掉文件后 brief 里的指针会短暂指向不存在的路径（下次派发重新生成）；要改记忆请用 `memory_note` / `history_search`，手改文件会被覆盖。写文件失败时 brief 退回内联块（更长，但经验不会丢）。
 - **终态收敛的边界**：`done→complete`；`stop/retry/orphaned/failed→clear`。孤儿/失败时子 agent 往往已不在注册表，平台侧不会真的调用 `clear`（平台 goal 只存在于该会话日志里，进程内也没人再驱动它），插件只把台账镜像标成 `cleared` 供面板显示。
 - **外部重新 arm 的窗口**：插件只在 spawn/续派/终态钩子上保证 `disarmed`。如果其它组件（如用户在子会话里 `/goal resume`，或宿主未来改动）把同一个子会话重新 `arm`，插件不会实时监控，下一次钩子才会再压回 `disarmed`；这中间平台可能自动续轮。
 - **面板只读**：面板与 `task_status` 能看 goal 的 phase/activation/轮次/修订，但没有暂停、恢复、清除 goal 的按钮或工具；要调整目标请直接 `task_message`。

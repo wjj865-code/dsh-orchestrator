@@ -1,10 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { openLedger } from '../src/ledger.js'
 import {
-  GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, MAX_LOG_CHARS, TASK_LOG_KIND, addMemory, buildMemoryBlock,
-  distillFacts, distillLessons, distillText, memoryLayerOf, memoryTokens, projectKeyOf, searchMemories,
-  taskLogText,
+  GLOBAL_PROJECT, LESSONS_DIRNAME, LESSON_KIND, MAX_FACT_CHARS, MAX_LESSON_SUMMARY_CHARS, MAX_LOG_CHARS,
+  TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock, distillFacts, distillLessons, distillText,
+  lessonFilePath, lessonPointerBlock, memoryLayerOf, memoryTokens, projectKeyOf, renderLessonFile, searchMemories,
+  taskLogText, writeLessonFile,
 } from '../src/memory.js'
 import { tempDir } from './helpers.js'
 
@@ -149,4 +152,126 @@ test('M1 写入即蒸馏：addMemory 按层截断，日志层一行、事实层�
   assert.ok(fact.text.length <= MAX_FACT_CHARS)
   assert.ok(fact.text.includes('先查半成品'))
   db.close()
+})
+
+// ---- L1 brief 精简：经验写记忆文件 + brief 短摘要/指针 + 降级 ----
+
+test('L1 经验文件：完整内容写 lessons/，brief 只留短摘要 + 指针，路径稳定', async () => {
+  const db = await openLedger(tempDir())
+  const stateDir = tempDir()
+  const project = projectKeyOf('C:/work/l1')
+  const lesson = '登录模块先查半成品再动手，避免重做'
+  addMemory(db, { projectKey: project, kind: LESSON_KIND, text: lesson, sourceTaskId: 't-12345678' })
+  addMemory(db, { projectKey: project, kind: 'decision', text: '统一走 session cookie' })
+
+  const result = buildLessonBlock(db, { stateDir, projectKey: project, limit: 2 })
+  assert.equal(result.mode, 'pointer')
+  assert.equal(result.count, 2)
+  assert.equal(typeof result.path, 'string')
+  assert.equal(result.path, join(stateDir, LESSONS_DIRNAME, result.path.split(/[\\/]/).pop()))
+  assert.match(result.block, new RegExp(`【历史经验】2 条`))
+  assert.equal(result.block.includes(`完整经验：${result.path}`), true)
+
+  // 文件里是完整内容（brief 里只有摘要），带层标签与来源，子会话 read 就能拿到全文。
+  const body = readFileSync(result.path, 'utf8')
+  assert.equal(body.includes(lesson), true)
+  assert.equal(body.includes('统一走 session cookie'), true)
+  assert.match(body, /\[经验\]/)
+  assert.match(body, /\[决策\]/)
+  assert.match(body, /来源任务：t-12345678/)
+  assert.match(body, /生成时间：/)
+
+  // 同一项目再次派发落到同一个文件；文件内容可重复生成（同一 now 下逐字一致）。
+  const again = buildLessonBlock(db, { stateDir, projectKey: project, limit: 2 })
+  assert.equal(again.path, result.path)
+  assert.equal(writeLessonFile({ stateDir, projectKey: project, rows: [], now: 1 }), undefined)
+  db.close()
+})
+
+test('L1 经验文件：brief 里的摘要被截短，长事实不进 brief', async () => {
+  const db = await openLedger(tempDir())
+  const stateDir = tempDir()
+  const project = projectKeyOf('C:/work/l1-long')
+  const long = `结论：${'很长的经验'.repeat(30)}`
+  addMemory(db, { projectKey: project, kind: LESSON_KIND, text: long })
+  const result = buildLessonBlock(db, { stateDir, projectKey: project })
+  assert.equal(result.mode, 'pointer')
+  const stored = readFileSync(result.path, 'utf8')
+  assert.equal(stored.includes('很长的经验'.repeat(30)), true)
+  // 摘要行最多 MAX_LESSON_SUMMARY_CHARS + 省略号，完整长尾不出现在 brief 块里。
+  const summaryLine = result.block.split('\n').find(line => line.startsWith('- '))
+  assert.ok(summaryLine !== undefined)
+  assert.ok(summaryLine.length <= MAX_LESSON_SUMMARY_CHARS + 24, summaryLine)
+  assert.equal(result.block.includes('很长的经验'.repeat(30)), false)
+  db.close()
+})
+
+test('L1 降级：没有 stateDir → 退回内联记忆块（不丢经验、不写文件）', async () => {
+  const db = await openLedger(tempDir())
+  const project = projectKeyOf('C:/work/l1-inline')
+  addMemory(db, { projectKey: project, kind: LESSON_KIND, text: '登录模块先查半成品再动手' })
+  const result = buildLessonBlock(db, { projectKey: project })
+  assert.equal(result.mode, 'inline')
+  assert.equal(result.path, undefined)
+  assert.match(result.block, /【历史经验】\n/)
+  assert.equal(result.block.includes('先查半成品'), true)
+  assert.equal(result.block.includes('完整经验：'), false)
+  db.close()
+})
+
+test('L1 降级：lessons/ 写不进去（同名文件占位）→ 退回内联块', async () => {
+  const db = await openLedger(tempDir())
+  const stateDir = tempDir()
+  writeFileSync(join(stateDir, LESSONS_DIRNAME), '占位：这不是目录', 'utf8')
+  const project = projectKeyOf('C:/work/l1-eacces')
+  addMemory(db, { projectKey: project, kind: LESSON_KIND, text: '经验：小步提交，避免一次改太多' })
+  const result = buildLessonBlock(db, { stateDir, projectKey: project })
+  assert.equal(result.mode, 'inline')
+  assert.equal(result.path, undefined)
+  assert.equal(result.block.includes('小步提交'), true)
+  db.close()
+})
+
+test('L1 无命中：返回空块，且不创建 lessons/ 目录', async () => {
+  const db = await openLedger(tempDir())
+  const stateDir = tempDir()
+  const result = buildLessonBlock(db, { stateDir, projectKey: projectKeyOf('C:/work/l1-none'), query: '完全不存在的词xyz' })
+  assert.deepEqual({ block: result.block, mode: result.mode, count: result.count }, { block: '', mode: 'inline', count: 0 })
+  assert.equal(existsSync(join(stateDir, LESSONS_DIRNAME)), false)
+  db.close()
+})
+
+test('L1 指针块：超上限先丢摘要行，文件路径行永不截断', () => {
+  const rows = [
+    { id: 'm-1', kind: LESSON_KIND, text: '经验'.repeat(80), createdAt: Date.now() },
+    { id: 'm-2', kind: 'decision', text: '决策'.repeat(80), createdAt: Date.now() },
+  ]
+  const path = join(tempDir(), LESSONS_DIRNAME, 'demo-01234567.md')
+  const block = lessonPointerBlock(rows, path, { maxChars: 120 })
+  assert.equal(block.includes(path), true)
+  assert.ok(block.length <= 120 + path.length)
+  assert.match(block, /完整经验：/)
+  // 空输入/空路径返回空串（调用方据此不追加小节）。
+  assert.equal(lessonPointerBlock([], path), '')
+  assert.equal(lessonPointerBlock(rows, '  '), '')
+})
+
+test('L1 lessonFilePath：项目名可读 + key 短 hash，global 也稳定', () => {
+  const dir = tempDir()
+  const a = lessonFilePath(dir, projectKeyOf('C:/work/Alpha'))
+  const b = lessonFilePath(dir, projectKeyOf('C:/work/Alpha'))
+  const c = lessonFilePath(dir, projectKeyOf('C:/work/Beta'))
+  assert.equal(a, b)
+  assert.notEqual(a.split(/[\\/]/).pop(), c.split(/[\\/]/).pop())
+  assert.match(a.split(/[\\/]/).pop(), /^alpha-[0-9a-f]{8}\.md$/)
+  assert.match(lessonFilePath(dir, GLOBAL_PROJECT).split(/[\\/]/).pop(), /^global-[0-9a-f]{8}\.md$/)
+})
+
+test('L1 renderLessonFile：无行时只有头，行内容逐字保留', () => {
+  const empty = renderLessonFile({ projectKey: 'global', rows: [], now: 0 })
+  assert.match(empty, /# 项目经验：全局（跨项目）/)
+  assert.match(empty, /生成时间：1970-01-01T00:00:00.000Z/)
+  const one = renderLessonFile({ projectKey: GLOBAL_PROJECT, rows: [{ id: 'm-9', kind: 'note', text: '甲\n乙', createdAt: 0 }], now: 0 })
+  assert.equal(one.includes('甲\n乙'), true)
+  assert.match(one, /id：m-9/)
 })

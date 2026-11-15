@@ -417,6 +417,8 @@ export async function apply(ctx, rawConfig = {}) {
     sessions: () => service('sessions'),
     workspaceChanges: () => service('workspaceChanges'),
     goalBridge,
+    // L1：经验文件落在插件唯一写入根下的 lessons/，子会话可 read。
+    stateDir: dir,
   }).map(tool => ctx.tools.register(tool))
 
   // task_report done 所在回合的 workspace/changes 事件在 turn stopping 时才追加：

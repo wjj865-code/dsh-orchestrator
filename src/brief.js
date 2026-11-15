@@ -6,6 +6,12 @@ const text = value => typeof value === 'string' ? value.trim() : ''
 const single = value => text(value).replace(/[\r\n]+/g, ' ')
 const list = value => Array.isArray(value) ? value.map(text).filter(Boolean) : []
 
+// L1 brief 精简：平台 goal 可用时，目标正文只写进平台 goal（子会话用 get_goal 读），
+// brief 里留一句指引 + 一段截断兜底；goal 降级（没有 goals 服务）时仍然内联全文。
+export const MAX_GOAL_FALLBACK_CHARS = 160
+export const GOAL_POINTER_TEXT = `先调 get_goal 读取完整目标（含「最新指示」）；本行不是目标内容，别按它猜任务。`
+export const GOAL_FALLBACK_TEXT = 'get_goal 不可用时按此执行：'
+
 /** 返回错误列表；空数组表示合法。 */
 export function validateBrief(brief = {}) {
   const errors = []
@@ -25,24 +31,39 @@ export function validateTargetDir(target, { isDirectory = value => statSync(valu
   return ok ? undefined : 'target 目录不存在或不是目录'
 }
 
-export function renderBrief(brief = {}) {
-  const lines = [`【任务】${single(brief.title)}`, `【目标】${single(brief.goal)}`]
+/** 【目标】小节：goal 可用时给「指引 + 截断兜底」，降级时内联全文。 */
+export function goalLines(brief = {}, { goalAvailable = false } = {}) {
+  const goal = single(brief.goal)
+  if (goalAvailable !== true || goal === '') return [`【目标】${goal}`]
+  const head = goal.length > MAX_GOAL_FALLBACK_CHARS
+    ? `${goal.slice(0, MAX_GOAL_FALLBACK_CHARS)}…`
+    : goal
+  return [`【目标】${GOAL_POINTER_TEXT}`, `【目标兜底】${GOAL_FALLBACK_TEXT}${head}`]
+}
+
+/**
+ * @param {object} brief
+ * @param {{ goalAvailable?: boolean }} [options] goalAvailable=true 表示平台 goal 已可用（派发时会把目标
+ *   写进子会话 goal，子会话能 get_goal 读到），此时 brief 只留指引 + 兜底；否则内联全文。
+ */
+export function renderBrief(brief = {}, { goalAvailable = false } = {}) {
+  const lines = [`【任务】${single(brief.title)}`, ...goalLines(brief, { goalAvailable })]
   const target = text(brief.target)
   const readOnly = brief.readOnly === true
   // brief 里最多只出现一个目录：就是 target_dir；不要把指挥舱/父会话目录也写进来，否则模型容易被带偏。
   if (target !== '') {
-    lines.splice(2, 0, `【工作目录】${single(target)}`)
+    lines.push(`【工作目录】${single(target)}`)
     if (readOnly) {
       // 只读任务：写提示换成禁令，避免和沙箱行为冲突。
-      lines.splice(3, 0, '【权限】只读')
-      lines.splice(4, 0, '只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。')
+      lines.push('【权限】只读')
+      lines.push('只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。')
     } else {
       // 正向提示（不是硬约束）：worker 不强制 chdir，danger-full-access 下越界绝对路径写得出去。
-      lines.splice(3, 0, '所有产出只写到该目录内，不要写到父会话目录或其他绝对路径；完成后汇报时把文件路径落到该目录下。')
+      lines.push('所有产出只写到该目录内，不要写到父会话目录或其他绝对路径；完成后汇报时把文件路径落到该目录下。')
     }
   } else if (readOnly) {
-    lines.splice(2, 0, '【权限】只读')
-    lines.splice(3, 0, '只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。')
+    lines.push('【权限】只读')
+    lines.push('只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。')
   }
   const constraints = list(brief.constraints)
   if (constraints.length > 0) lines.push(`【约束】${constraints.map(item => `- ${single(item)}`).join('；')}`)

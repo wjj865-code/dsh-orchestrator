@@ -7,12 +7,16 @@
 // - 事实层 lesson / decision / preference / note：蒸馏后的原子事实，才允许注入 brief。
 // 未知 kind 一律按日志层处理（白名单），避免新 kind 意外把长文本带进 brief。
 import { createHash, randomUUID } from 'node:crypto'
-import { resolve } from 'node:path'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 export const GLOBAL_PROJECT = 'global'
 export const MAX_MEMORY_BLOCK = 1200
 export const MAX_FACT_CHARS = 160
 export const MAX_LOG_CHARS = 180
+// L1 brief 精简：brief 只留短摘要，完整经验落在 $DSH_HOME/state/orchestrator/lessons/ 下的记忆文件。
+export const MAX_LESSON_SUMMARY_CHARS = 64
+export const LESSONS_DIRNAME = 'lessons'
 export const TASK_LOG_KIND = 'task-log'
 export const LESSON_KIND = 'lesson'
 export const MEMORY_LAYERS = Object.freeze({ fact: 'fact', log: 'log' })
@@ -266,6 +270,23 @@ export function searchMemories(db, { projectKey = GLOBAL_PROJECT, query = '', li
   }))
 }
 
+const dayOf = createdAt => {
+  const date = new Date(createdAt)
+  return Number.isNaN(date.getTime())
+    ? ''
+    : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} `
+}
+const inlineMemoryLine = row => `- ${dayOf(row.createdAt)}[${memoryKindLabel(row.kind)}] ${clip(row.text, 300)}`
+
+/** 内联记忆块（project_context / 降级路径用）：每条一行，总长受 maxChars 约束。 */
+export function memoryBlockFromRows(rows, { maxChars = MAX_MEMORY_BLOCK } = {}) {
+  const list = Array.isArray(rows) ? rows : []
+  if (list.length === 0) return ''
+  let block = `【历史经验】\n${list.map(inlineMemoryLine).join('\n')}`
+  if (block.length > maxChars) block = `${block.slice(0, maxChars - 1)}…`
+  return block
+}
+
 /**
  * brief 注入用的紧凑块；没有命中返回空串。
  * 只取事实层（lesson/decision/preference/note）：任务日志 task-log 不注入，避免 brief 被完成记录灌水。
@@ -285,15 +306,119 @@ export function buildMemoryBlock(db, {
   } catch {
     return ''
   }
-  if (rows.length === 0) return ''
-  const lines = rows.map(row => {
-    const date = new Date(row.createdAt)
-    const day = Number.isNaN(date.getTime()) ? '' : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} `
-    return `- ${day}[${memoryKindLabel(row.kind)}] ${clip(row.text, 300)}`
+  return memoryBlockFromRows(rows, { maxChars })
+}
+
+// ---- 经验文件（L1 brief 精简） -------------------------------------------------
+// brief 里只放「短摘要 + 文件指针」，完整经验写进 $DSH_HOME/state/orchestrator/lessons/，
+// 子会话用 worker 预设自带的 read 就能读全文，brief 不再背整块记忆。
+
+/** 项目目录名（可读）+ 项目键短 hash（唯一），例如 dsh-orchestrator-1a2b3c4d.md。 */
+const projectSlug = projectKey => {
+  const key = normalizeKey(projectKey)
+  if (key === GLOBAL_PROJECT) return 'global'
+  const base = key.split(/[\\/]+/).filter(Boolean).pop() ?? ''
+  const ascii = base.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return ascii === '' ? 'project' : ascii.slice(0, 32)
+}
+
+/** 记忆文件路径：同一项目始终落到同一个文件（每次派发覆盖为最新快照）。 */
+export function lessonFilePath(stateDir, projectKey = GLOBAL_PROJECT) {
+  const key = normalizeKey(projectKey)
+  return join(resolve(String(stateDir)), LESSONS_DIRNAME, `${projectSlug(key)}-${hashOf(key).slice(0, 8)}.md`)
+}
+
+/** 记忆文件正文：markdown，含完整事实文本与来源，便于子会话直接 read。 */
+export function renderLessonFile({ projectKey = GLOBAL_PROJECT, rows = [], now = Date.now() } = {}) {
+  const key = normalizeKey(projectKey)
+  const generated = new Date(now)
+  const stamp = Number.isNaN(generated.getTime()) ? '' : generated.toISOString()
+  const head = [
+    `# 项目经验：${key === GLOBAL_PROJECT ? '全局（跨项目）' : key}`,
+    '',
+    '> 由 dsh-orchestrator 自动生成（台账 memories 事实层）。brief 里只给摘要和本文件路径，',
+    '> 这里才是完整内容；要改记忆请用 memory_note / history_search，手改会在下次派发时被覆盖。',
+    ...(stamp === '' ? [] : [`> 生成时间：${stamp}`]),
+    '',
+  ]
+  const list = Array.isArray(rows) ? rows : []
+  const body = list.map((row, index) => {
+    const meta = [
+      `id：${row.id ?? '-'}`,
+      row.sourceTaskId === null || row.sourceTaskId === undefined ? '' : `来源任务：${row.sourceTaskId}`,
+      row.sourceSessionId === null || row.sourceSessionId === undefined ? '' : `来源会话：${row.sourceSessionId}`,
+    ].filter(Boolean).join('｜')
+    return [
+      `## ${index + 1}. [${memoryKindLabel(row.kind)}]${dayOf(row.createdAt).trim() === '' ? '' : ` ${dayOf(row.createdAt).trim()}`}`,
+      '',
+      String(row.text ?? ''),
+      '',
+      `- ${meta}`,
+      '',
+    ].join('\n')
   })
-  let block = `【历史经验】\n${lines.join('\n')}`
-  if (block.length > maxChars) block = `${block.slice(0, maxChars - 1)}…`
+  return [...head, ...body].join('\n')
+}
+
+/** 写记忆文件；stateDir 缺失或写失败返回 undefined（调用方退回内联块）。 */
+export function writeLessonFile({ stateDir, projectKey = GLOBAL_PROJECT, rows = [], now = Date.now() } = {}) {
+  if (typeof stateDir !== 'string' || stateDir.trim() === '') return undefined
+  if (!Array.isArray(rows) || rows.length === 0) return undefined
+  try {
+    mkdirSync(resolve(String(stateDir), LESSONS_DIRNAME), { recursive: true })
+    const path = lessonFilePath(stateDir, projectKey)
+    writeFileSync(path, renderLessonFile({ projectKey, rows, now }), 'utf8')
+    return path
+  } catch {
+    return undefined
+  }
+}
+
+/** brief 里的指针块：条数 + 每条一句短摘要 + 文件路径。路径行永不截断。 */
+export function lessonPointerBlock(rows, path, { maxChars = MAX_MEMORY_BLOCK } = {}) {
+  const list = Array.isArray(rows) ? rows : []
+  if (list.length === 0 || typeof path !== 'string' || path.trim() === '') return ''
+  const header = `【历史经验】${list.length} 条｜完整内容见经验文件（可 read 全文）`
+  const pathLine = `完整经验：${path.trim()}`
+  let lines = list.map(row => `- ${dayOf(row.createdAt)}[${memoryKindLabel(row.kind)}] ${clip(row.text, MAX_LESSON_SUMMARY_CHARS)}`)
+  const render = () => [header, ...lines, pathLine].join('\n')
+  let block = render()
+  // 超上限先丢摘要行，路径保留：拿不到摘要还能去文件里看，丢了路径就什么都看不到了。
+  while (block.length > maxChars && lines.length > 0) {
+    lines = lines.slice(0, -1)
+    block = render()
+  }
   return block
+}
+
+/**
+ * brief 用的记忆块（L1）：完整经验写记忆文件，brief 只给短摘要 + 指针。
+ * 降级（mode='inline'）：stateDir 缺失 / 写文件失败 / 无命中时退回旧的内联块或无块。
+ * @returns {{ block: string, path?: string, count: number, mode: 'pointer'|'inline' }}
+ */
+export function buildLessonBlock(db, {
+  stateDir,
+  projectKey = GLOBAL_PROJECT,
+  query = '',
+  limit = 3,
+  maxChars = MAX_MEMORY_BLOCK,
+  kinds = MEMORY_FACT_KINDS,
+  now = Date.now(),
+} = {}) {
+  const injectable = (Array.isArray(kinds) ? kinds : MEMORY_FACT_KINDS).filter(isInjectableKind)
+  if (injectable.length === 0) return { block: '', count: 0, mode: 'inline' }
+  let rows
+  try {
+    rows = searchMemories(db, { projectKey, query, limit, kinds: injectable })
+  } catch {
+    rows = []
+  }
+  if (rows.length === 0) return { block: '', count: 0, mode: 'inline' }
+  const path = writeLessonFile({ stateDir, projectKey, rows, now })
+  if (path === undefined) {
+    return { block: memoryBlockFromRows(rows, { maxChars }), count: rows.length, mode: 'inline' }
+  }
+  return { block: lessonPointerBlock(rows, path, { maxChars }), path, count: rows.length, mode: 'pointer' }
 }
 
 /**

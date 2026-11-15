@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
 import{ join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, transition, setTaskLastMessage } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, recentMessages, transition, setTaskLastMessage } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import { captureLastMessage } from '../src/last-message.js'
@@ -65,6 +66,8 @@ async function setup(options = {}) {
     sessions: options.sessions,
     workspaceChanges: options.workspaceChanges,
     logger: options.logger,
+    goalBridge: options.goalBridge,
+    stateDir: options.stateDir,
   }).map(tool => [tool.name, tool]))
   return { db, dispatcher, queue, notifier, tools }
 }
@@ -1086,6 +1089,91 @@ test('task_create 会把相关历史经验注入 brief，不相关的不注入',
   const prompts = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').map(callRow => callRow[2])
   assert.match(prompts[0], /【历史经验】/)
   assert.doesNotMatch(prompts[1], /【历史经验】/)
+  // 没有 stateDir（降级路径）：走内联记忆块，不出现「完整经验」文件指针。
+  assert.doesNotMatch(prompts[0], /完整经验：/)
+})
+
+// ---- L1 brief 精简：目标指引 + 经验文件指针 ----
+
+const longGoal = '把 brief 精简成指引加指针'.repeat(20)
+
+test('L1 goal 可用：brief 目标改成 get_goal 指引 + 兜底，不再内联目标全文', async () => {
+  const bridge = { available: () => true, clear() {}, complete() {}, update() {} }
+  const { db, dispatcher, tools } = await setup({ goalBridge: bridge })
+  const text = await call(tools, 'task_create', sampleBrief({ title: '精简 brief', goal: longGoal }))
+  assert.match(text, /已派发/)
+  const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
+  assert.match(prompt, /【目标】先调 get_goal 读取完整目标/)
+  assert.match(prompt, /【目标兜底】get_goal 不可用时按此执行：/)
+  assert.equal(prompt.includes(longGoal), false)
+  // 兜底至少带着目标开头，attach 失败时子会话也能开工。
+  assert.equal(prompt.includes(longGoal.slice(0, 40)), true)
+  db.close()
+})
+
+test('L1 goal 降级：没有 goals 服务 / 能力探测抛错时 brief 内联目标全文', async () => {
+  const plain = await setup()
+  await call(plain.tools, 'task_create', sampleBrief({ title: '无 goal 服务', goal: longGoal }))
+  const inlinePrompt = plain.dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
+  assert.equal(inlinePrompt.includes(longGoal), true)
+  assert.equal(inlinePrompt.includes('get_goal'), false)
+  assert.equal(inlinePrompt.includes('【目标兜底】'), false)
+  plain.db.close()
+
+  const throwing = { available() { throw new Error('goals 服务坏了') } }
+  const broken = await setup({ goalBridge: throwing })
+  await call(broken.tools, 'task_create', sampleBrief({ title: '探测抛错', goal: longGoal }))
+  const brokenPrompt = broken.dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
+  assert.equal(brokenPrompt.includes(longGoal), true)
+  assert.equal(brokenPrompt.includes('get_goal'), false)
+  broken.db.close()
+})
+
+test('L1 经验精简：完整经验写记忆文件，brief 只给短摘要 + 指针', async () => {
+  const stateDir = tempDir()
+  const target = tempDir()
+  const { db, dispatcher, tools } = await setup({ stateDir })
+  const lesson = '登录模块先查半成品再动手，避免重做'
+  await call(tools, 'memory_note', { text: lesson, kind: 'lesson' })
+  await call(tools, 'task_create', { ...sampleBrief({ title: '修复登录模块', goal: '登录异常' }), target })
+  const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
+  assert.match(prompt, /【历史经验】1 条｜完整内容见经验文件（可 read 全文）/)
+  assert.equal(prompt.includes('先查半成品'), true)
+  const pointerLine = prompt.split('\n').find(line => line.startsWith('完整经验：'))
+  assert.ok(pointerLine !== undefined, prompt)
+  const path = pointerLine.slice('完整经验：'.length)
+  assert.equal(path.startsWith(join(stateDir, 'lessons')), true)
+  assert.equal(existsSync(path), true)
+  const body = readFileSync(path, 'utf8')
+  assert.equal(body.includes(lesson), true)
+  assert.match(body, /\[经验\]/)
+  db.close()
+})
+
+test('L1 经验降级：stateDir 缺失时 task_create 退回内联块，不产生路径', async () => {
+  const { db, dispatcher, tools } = await setup()
+  await call(tools, 'memory_note', { text: '登录模块统一走 session cookie', kind: 'decision' })
+  await call(tools, 'task_create', sampleBrief({ title: '修复登录模块', goal: '登录异常' }))
+  const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
+  assert.match(prompt, /【历史经验】\n/)
+  assert.equal(prompt.includes('完整经验：'), false)
+  db.close()
+})
+
+test('L1 重派：task_retry 重渲染的 brief 与 task_create 同口径（目标指引）', async () => {
+  const bridge = { available: () => true, clear() {}, complete() {}, update() {} }
+  const { db, dispatcher, tools } = await setup({ goalBridge: bridge })
+  const created = createTask(db, { brief: { ...sampleBrief({ title: '重派目标' }), goal: longGoal }, coordinatorSession: 's-1' })
+  transition(db, created.id, 'failed', { error: '子会话创建失败' })
+  const text = await call(tools, 'task_retry', { task_id: created.id })
+  assert.match(text, /已重派/)
+  const retried = listTasks(db).find(task => task.retry_of === created.id)
+  const rendered = recentMessages(db, retried.id, 1)[0].rendered
+  assert.match(rendered, /【目标】先调 get_goal 读取完整目标/)
+  assert.match(rendered, /【目标兜底】/)
+  assert.equal(rendered.includes(longGoal), false)
+  assert.equal(dispatcher.calls.some(callRow => callRow[0] === 'spawn'), true)
+  db.close()
 })
 
 test('history_search 合并 memories、历史任务与 sessionQuery 结果', async () => {

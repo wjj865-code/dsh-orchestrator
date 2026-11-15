@@ -7,8 +7,8 @@ import { taskLabel, taskLabelWithId } from './task-label.js'
 import { canTransition, statusLabel } from './state.js'
 import { dependencyState, promoteDependents, validateDepends } from './deps.js'
 import {
-  GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, TASK_LOG_KIND, addMemory, buildMemoryBlock, distillLessons,
-  distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember, searchMemories, taskLogText,
+  GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock,
+  distillLessons, distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember, searchMemories, taskLogText,
 } from './memory.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages, setMessageDelivery,
@@ -80,7 +80,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, stateDir }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   const log = (event, fields) => {
@@ -91,6 +91,16 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   const status = typeof coordinatorStatus === 'function'
     ? coordinatorStatus
     : () => ({ id: config?.coordinatorSession, live: true })
+  // L1：平台 goal 可用 → brief 只给「用 get_goal 读目标」的指引 + 兜底；不可用 → 内联全文。
+  const goalAvailable = () => {
+    try {
+      return goalBridge?.available?.() === true
+    } catch {
+      return false
+    }
+  }
+  // 记忆文件目录：插件唯一写入根（$DSH_HOME/state/orchestrator）；没给就退回内联记忆块。
+  const lessonStateDir = stateDir ?? config?.stateDir
   const invalidHint = () => {
     const value = status()
     return value?.id !== undefined && value.live === false
@@ -476,14 +486,16 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       let memoryBlock = ''
       if (config?.memoryInject !== false) {
         try {
-          memoryBlock = buildMemoryBlock(db, {
+          // L1：完整经验写记忆文件，brief 只留短摘要 + 指针；写不了文件时自动退回内联块。
+          memoryBlock = buildLessonBlock(db, {
+            stateDir: lessonStateDir,
             projectKey: projectKeyOf(effectiveTarget),
             query: `${title} ${goal}`,
             limit: config?.memoryLimit ?? 3,
-          })
+          }).block
         } catch { /* 记忆检索失败不能阻止派任务 */ }
       }
-      const rendered = `【任务编号】${task.id}\n${renderBrief(brief)}${memoryBlock === '' ? '' : `\n${memoryBlock}`}`
+      const rendered = `【任务编号】${task.id}\n${renderBrief(brief, { goalAvailable: goalAvailable() })}${memoryBlock === '' ? '' : `\n${memoryBlock}`}`
       addMessage(db, task.id, { kind: 'brief', rendered })
       const conflictNote = conflictsText(conflicts)
       const depNames = depends.ids.map(id => {
@@ -727,7 +739,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         sessionId: current.id,
         detail: { retryOf: task.id, dependsOn: depends.ids, status: retried.status, callId: exec?.callId },
       })
-      addMessage(db, retried.id, { kind: 'brief', rendered: `【任务编号】${retried.id}\n${renderBrief(task.brief)}` })
+      addMessage(db, retried.id, { kind: 'brief', rendered: `【任务编号】${retried.id}\n${renderBrief(task.brief, { goalAvailable: goalAvailable() })}` })
       if (current.live === false) {
         const message = invalidHint() === '' ? toolFailure('MAIN_SESSION_UNAVAILABLE') : invalidHint()
         log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })

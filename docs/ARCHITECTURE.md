@@ -132,6 +132,21 @@
 - **子会话可读**：`dsh-orchestrator-worker` 预设带一行 `tool-goal`（`@deepseek-ai/dsh-tool-goal`）。web-app 层把 host plane 的 `tool-goal` 行 `disabled: true`、改由预设挂载，而 `goals` 服务仍在 host plane（`dsh-base` 的 `goal` / `goal-round-driver` 行），所以子会话拿得到 `get_goal` 读到本任务目标；`create_goal` / `update_goal` 因平台权限校验（`requireDirectHuman`：需要顶层 agent 的**直接人类**回合）在子会话里必然被拒，等于只读。
   平台**不会**把 objective 注入系统提示或消息（`dsh-goal` 的 inject 只有 `agents` / `sessionProjections`），`get_goal` 是子会话看到目标的唯一途径；不挂这行时子会话对目标完全无感。
 
+## brief 精简（L1）
+
+brief 是派发时留给子会话的唯一起步上下文，目标与经验各只保留「够开工」的那一份：
+
+- **目标**：`goalBridge.available()` 为真（`ctx.goals` 的 `get/create/disarm/edit/complete/clear` 齐全）时，`renderBrief(brief, { goalAvailable: true })`
+  把 `【目标】` 渲染成指引「先调 `get_goal` 读取完整目标（含「最新指示」）」+ 一行 `【目标兜底】get_goal 不可用时按此执行：<目标前 160 字>…`；
+  目标正文只在平台 goal 里。能力探测失败（抛错/缺方法）或 `attach` 落空时 brief 内联全文，行为与旧版一致。
+  重派（`task_retry`、面板 `retry`）重渲染 brief 用同一口径，避免同一条任务前后两种形态。
+- **经验**：`task_create` 命中事实层记忆时，`buildLessonBlock` 把完整内容写
+  `$DSH_HOME/state/orchestrator/lessons/<项目目录名>-<key 短 hash>.md`（同项目稳定同名，每次派发覆盖为最新快照；含层标签、日期、`id`、来源任务/会话），
+  brief 里只留「N 条｜完整内容见经验文件（可 read 全文）」+ 每条 ≤64 字摘要 + `完整经验：<路径>`。指针块超 `MAX_MEMORY_BLOCK` 时先丢摘要行、**路径行永不截断**。
+- **降级**：`stateDir` 缺失、`lessons/` 建不出来或写文件失败 → 退回 `buildMemoryBlock` 的内联块（经验不丢，brief 变长）；无命中 → 不追加小节、不建目录。
+- 接线：`index.js` 把插件写入根作为 `createTools({ stateDir })` 传入；`memoryInject:false` 时整段跳过。`project_context` 仍用内联记忆块（协调者读，不走文件）。
+
+
 ## 产物
 
 - `task_report.artifacts: [{path,label?}]`，相对路径按 `target_dir`（无则主会话目录）解析。
@@ -182,6 +197,8 @@ $DSH_HOME/state/orchestrator/
   tasks.sqlite
   snapshots/tasks-YYYY-MM-DD.sqlite
   logs/YYYY-MM-DD.jsonl
+  lessons/<项目>-<short-hash>.md   # brief 经验指针指向的记忆文件（每次派发覆盖）
+  reports/<taskId>.md              # 超 64 KiB 的返回消息全文
   workspace/                 # 指挥舱
 ```
 

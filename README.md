@@ -116,7 +116,7 @@ task_create({
 - 面板列表显示「目标·进行中/已完成…」小标，详情抽屉有「目标状态」只读区块（阶段、续轮、轮次、修订）；
 - 平台没有 goal 服务时静默降级，派发/续派/面板都不受影响。
 
-目标文本只是持久状态，不改变 brief，平台也不会把它注入系统提示或消息；子会话靠 `get_goal` 自己读（worker 预设挂了 `tool-goal`），认不认这个目标由它决定。改目标请走 `task_message`，子会话的 `update_goal` 会被平台权限校验拒绝。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#目标g1)。
+目标文本只是持久状态，平台也不会把它注入系统提示或消息；子会话靠 `get_goal` 自己读（worker 预设挂了 `tool-goal`），认不认这个目标由它决定。goal 可用时 brief 里只留一句「用 `get_goal` 读目标」的指引 + 截断兜底（goal 降级时仍内联全文）。改目标请走 `task_message`，子会话的 `update_goal` 会被平台权限校验拒绝。边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#目标g1)。
 
 ### 调试子会话（`orch-debug`）
 
@@ -174,7 +174,7 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 | `maxQueue` | `50` | `pending` + `waiting_dep` 安全阀 |
 | `autoResumeQueue` | `true` | 重启后自动恢复排队任务 |
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
-| `memoryInject` | `true` | 新任务 brief 注入事实层记忆（`lesson`/`decision`/`preference`/`note`；`task-log` 日志不注入） |
+| `memoryInject` | `true` | 新任务 brief 注入事实层记忆（`lesson`/`decision`/`preference`/`note`；`task-log` 日志不注入）；完整内容写 `lessons/` 记忆文件，brief 只给短摘要 + 指针 |
 | `memoryLimit` | `3` | 注入记忆条数（1–10） |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
 
@@ -186,6 +186,8 @@ node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后先查：已生成�
 tasks.sqlite
 snapshots/tasks-YYYY-MM-DD.sqlite   # 每天一份，保留 7 天
 logs/YYYY-MM-DD.jsonl               # 按天，保留 7 天
+lessons/<项目>-<short-hash>.md      # brief 里经验指针指向的记忆文件（每次派发覆盖为最新快照）
+reports/<taskId>.md                 # 超 64 KiB 的子会话返回消息全文
 workspace/                          # 「指挥舱」工作区
 debug-presets/orch-debug/           # 可选：npm run preset:debug 生成的调试预设 bundle
 ```

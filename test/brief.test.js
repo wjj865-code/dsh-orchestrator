@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { validateBrief, renderBrief, validateTargetDir } from '../src/brief.js'
+import {
+  GOAL_POINTER_TEXT, MAX_GOAL_FALLBACK_CHARS, goalLines, renderBrief, validateBrief, validateTargetDir,
+} from '../src/brief.js'
 
 const valid = {
   title: '修复空数据文案',
@@ -152,4 +154,51 @@ test('renderBrief：只出现一个目录（target），并给出现有目录内
   const without = renderBrief({ title: 't', goal: 'g', acceptance: ['a'] })
   assert.equal(without.includes(hint), false)
   assert.equal(without.includes('【工作目录】'), false)
+})
+
+test('goal 可用：目标改成「用 get_goal 读」的指引 + 截断兜底，不内联全文', () => {
+  const goal = 'G'.repeat(MAX_GOAL_FALLBACK_CHARS) + '这一段不该进 brief'
+  const text = renderBrief({ title: 't', goal, acceptance: ['a'] }, { goalAvailable: true })
+  const goalLine = text.split('\n').find(line => line.startsWith('【目标】'))
+  assert.equal(goalLine, `【目标】${GOAL_POINTER_TEXT}`)
+  assert.match(goalLine, /get_goal/)
+  const fallback = text.split('\n').find(line => line.startsWith('【目标兜底】'))
+  assert.ok(fallback !== undefined, 'goal 可用时必须留兜底，attach 失败时子会话还有目标可看')
+  assert.equal(fallback.endsWith('…'), true)
+  assert.equal(fallback.includes('这一段不该进 brief'), false)
+  // 指引行在前、兜底行紧随其后。
+  const lines = text.split('\n')
+  assert.equal(lines.indexOf(goalLine) + 1, lines.indexOf(fallback))
+})
+
+test('goal 可用但目标本身很短：兜底就是全文，不加省略号', () => {
+  const lines = goalLines({ goal: '修登录' }, { goalAvailable: true })
+  assert.deepEqual(lines, [`【目标】${GOAL_POINTER_TEXT}`, '【目标兜底】get_goal 不可用时按此执行：修登录'])
+})
+
+test('goal 降级（默认）：内联目标全文，不出现 get_goal 指引或兜底小节', () => {
+  const goal = '空窗口时报表给出明确说明\n第二行也要在'
+  const text = renderBrief({ title: 't', goal, acceptance: ['a'] })
+  const goalLine = text.split('\n').find(line => line.startsWith('【目标】'))
+  assert.equal(goalLine, '【目标】空窗口时报表给出明确说明 第二行也要在')
+  assert.equal(text.includes('get_goal'), false)
+  assert.equal(text.includes('【目标兜底】'), false)
+})
+
+test('goal 可用时不影响工作目录/只读的相对顺序', () => {
+  const text = renderBrief(
+    { title: 't', goal: 'g', acceptance: ['a'], target: 'C:/work', readOnly: true },
+    { goalAvailable: true },
+  )
+  const lines = text.split('\n')
+  const goalIndex = lines.findIndex(line => line.startsWith('【目标】'))
+  const fallbackIndex = lines.findIndex(line => line.startsWith('【目标兜底】'))
+  const targetIndex = lines.indexOf('【工作目录】C:/work')
+  assert.ok(goalIndex < fallbackIndex && fallbackIndex < targetIndex)
+  assert.equal(lines[targetIndex + 1], '【权限】只读')
+})
+
+test('goal 指引形态也是纯函数，两次渲染一致', () => {
+  const brief = { title: 't', goal: 'g'.repeat(400), acceptance: ['a'] }
+  assert.equal(renderBrief(brief, { goalAvailable: true }), renderBrief(brief, { goalAvailable: true }))
 })
