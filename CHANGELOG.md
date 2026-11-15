@@ -3,6 +3,19 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
+## 0.13.1（2026-11-16）
+
+### 偏好内置（present 默认交付）
+
+- **`present` 默认交付偏好写进协调者提示**：`index.js` 的 `COORDINATOR_POLICY` 里 present 那条改写成
+  「子任务回报产物路径后，默认用 present 展示 1-4 个最关键的产物（最多 4 个；只列真实存在的文件、写绝对路径），
+  不必等用户点名；没有产物就不提 present；不要自行 stat/read 校验存在性（协调者的 read/glob 已被 deny，
+  插件与子任务负责确认），present 只声明交付、不读文件内容。」
+- **为什么改**：旧句的触发条件是「子任务完成、`reports` 文件确认存在后」，而协调者的 `read` / `glob` 本来就被 deny，
+  它无法自查文件存在性——结果要么漏交付，要么先撞一次被拒的工具调用才肯交付。新句把存在性判断交回插件与子任务，
+  协调者只按回报的产物路径交付。
+- **范围**：只改这一句措辞；工具挂载、`COORDINATOR_DENY`、guard、执行逻辑与面板一律未动，无破坏性变更（patch）。
+
 ## 0.13.0（2026-11-15）
 
 通知与产物回流闭环（T6）+ 客户端源码化与 vite 构建（P7）+ 子任务计划模式（P8）+ 子任务 worktree 隔离（P9），
