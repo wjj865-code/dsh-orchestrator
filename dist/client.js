@@ -167,6 +167,22 @@
     const text = typeof value === "string" ? value : "";
     return text.length > 60 ? `${text.slice(0, 59)}…` : text;
   };
+  const encodeAddressSegment = (segment) => encodeURIComponent(segment).replace(/%3A/gi, ":");
+  const fileAddressOf = (sessionId, path) => {
+    if (fileAddressProblem(sessionId, path) !== null) return "";
+    const normalized = path.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
+    try {
+      const encoded = normalized.split("/").map(encodeAddressSegment).join("/");
+      return `dsh-resource://file/session/${encodeAddressSegment(sessionId)}/${encoded}`;
+    } catch {
+      return "";
+    }
+  };
+  const fileAddressProblem = (sessionId, path) => {
+    if (typeof sessionId !== "string" || sessionId === "") return "no-session";
+    if (typeof path !== "string" || path === "") return "bad-path";
+    return null;
+  };
   const readSnapshot = async (signal) => {
     const response = await fetch(ROUTE, {
       method: "POST",
@@ -490,7 +506,33 @@
   color: var(--dsw-alias-state-error-primary, #ec1313);
 }
 .orch-btn--sm { height: 22px; padding: 0 7px; font-size: 11px; }
-.orch-btn--header { height: 24px; padding: 0 8px; }
+/* 会话头「任务」入口：按面板顶栏 .orch-brand 的语言重做（品牌色方块 + 半粗文字）。
+   尺寸取面板按钮的 26px，与宿主头部 28px 紧凑控件同基线；hover 加悬浮阴影，其余状态继承 .orch-btn。 */
+.orch-btn--entry {
+  height: 26px;
+  padding: 0 10px;
+  gap: 6px;
+  border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  color: var(--dsw-alias-label-primary, #1f1f1f);
+  font-weight: 600;
+}
+.orch-btn--entry:hover {
+  border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12));
+  box-shadow: var(--dsw-shadow-lv1, 0 2px 4px rgba(0, 0, 0, 0.05));
+}
+.orch-entry-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: var(--dsw-radius-xs, 4px);
+  background: var(--dsw-specific-bubble, #eef2ff);
+  color: var(--dsw-alias-state-business-primary, #4d6bfe);
+}
+.orch-entry-label { font-size: 12px; letter-spacing: 0.01em; white-space: nowrap; }
 .orch-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -980,6 +1022,23 @@
   font-family: var(--ds-font-family-code, 'SF Mono', Consolas, monospace);
   font-size: 11px;
 }
+/* 可点开的产物路径：在会话右侧栏打开预览（不再是行内展开）。
+   总是与 .orch-artifact-path 同时挂，字体/尺寸沿用那边，这里只加按钮复位与可点提示。 */
+.orch-artifact-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #55585f);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
+}
+.orch-artifact-open:hover {
+  color: var(--dsw-alias-state-business-primary, #4d6bfe);
+  text-decoration: underline;
+}
+.orch-artifact-open:disabled { cursor: not-allowed; opacity: 0.6; text-decoration: none; }
+.orch-artifact-open:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, #4d6bfe); outline-offset: 2px; }
 .orch-preview {
   display: flex;
   flex-direction: column;
@@ -1098,7 +1157,6 @@
       clock: ["M12 7v5l3 2", "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"],
       stop: ["M8 8h8v8H8z"],
       retry: ["M3 12a9 9 0 1 0 3-6.7", "M3 4v5h5"],
-      message: ["M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-5A8 8 0 1 1 21 12z"],
       trash: ["M4 7h16", "M9 7V5h6v2", "M6 7l1 13h10l1-13", "M10 11v5", "M14 11v5"],
       external: ["M14 4h6v6", "M20 4l-9 9", "M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"],
       folder: ["M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
@@ -1106,6 +1164,8 @@
       goal: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"],
       inbox: ["M3 13h4l1.5 2.5h7L17 13h4", "M5.5 5h13l2.5 8v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4z"],
       sparkle: ["M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"],
+      // 会话头「任务」入口：三条横线（面板顶栏同款图标语言，替代原来的裸字符 ☰）。
+      menu: ["M4 7h16", "M4 12h16", "M4 17h16"],
       dot: ["M12 12h.01"]
     };
     const Icon = ({ name, size = 14, className }) => h("svg", {
@@ -1213,12 +1273,18 @@
     const HeaderButton = ({ openPanel, useMainView }) => {
       const visible = typeof useMainView === "function" ? useMainView((value) => value === true) : false;
       if (visible !== true) return null;
-      return h("button", {
-        type: "button",
-        title: "任务面板",
-        className: "orch-btn orch-btn--ghost orch-btn--header",
-        onClick: openPanel
-      }, "☰ 任务");
+      return h(
+        "button",
+        {
+          type: "button",
+          title: "任务面板",
+          "aria-label": "打开任务面板",
+          className: "orch-btn orch-btn--entry",
+          onClick: openPanel
+        },
+        h("span", { className: "orch-entry-mark" }, h(Icon, { name: "menu", size: 12 })),
+        h("span", { className: "orch-entry-label" }, "任务")
+      );
     };
     const LauncherIcon = () => h("span", { "aria-hidden": true, className: "orch-launcher-icon" }, "◈");
     const LauncherPanel = ({ openMain, openSession, clearPanel }) => {
@@ -1253,7 +1319,7 @@
         error === null ? null : h("div", { style: { width: "min(420px, 100%)" } }, h(Banner, { tone: "error" }, error))
       );
     };
-    const TasksPanel = ({ openSession }) => {
+    const TasksPanel = ({ openSession, openArtifactPreview }) => {
       const [snapshot, setSnapshot] = React.useState(null);
       const [snapshotError, setSnapshotError] = React.useState(null);
       const [actionError, setActionError] = React.useState(null);
@@ -1450,6 +1516,30 @@
           setPreview((current) => current !== null && current.key === key ? { key, loading: false, data: null, error: message } : current);
         }
       };
+      const isRegisteredArtifact = (path) => typeof path === "string" && path !== "" && [
+        ...tasks.flatMap((task) => Array.isArray(task.artifacts) ? task.artifacts : []),
+        ...Array.isArray(artifactData?.items) ? artifactData.items : [],
+        ...Array.isArray(detail?.task?.artifacts) ? detail.task.artifacts : []
+      ].some((item) => item?.path === path);
+      const previewInSidebar = async (taskId, path, inlineFallback = false) => {
+        if (!isRegisteredArtifact(path)) {
+          setActionNotice("这个路径不是本任务的已登记产物，不能预览；先「复制路径」再本地打开");
+          return;
+        }
+        const opened = openArtifactPreview(path);
+        if (opened.ok === true) {
+          setPreview(null);
+          setActionError(null);
+          return;
+        }
+        const why = opened.reason === "sidebar-missing" ? "当前宿主没有右侧栏预览能力" : opened.reason === "no-session" ? "拿不到当前会话，无法定位预览作用域" : opened.reason === "bad-path" ? "这条产物路径不可用" : `宿主拒绝打开${opened.message === void 0 ? "" : `：${opened.message}`}`;
+        if (inlineFallback === true) {
+          setActionNotice(`右侧栏不可用（${why}），已改为行内预览`);
+          await togglePreview(taskId, path);
+          return;
+        }
+        setActionNotice(`右侧栏不可用（${why}）：到「产物」页可看行内预览，或先「复制路径」再本地打开`);
+      };
       const runPanel = async (endpoint, id, extra = {}) => {
         const key = `${endpoint}:${id}`;
         if (inFlight.current.has(key)) return;
@@ -1491,10 +1581,6 @@
           inFlight.current.delete(key);
           setBusy(null);
         }
-      };
-      const sendMessage = (id) => {
-        const text = typeof window.prompt === "function" ? window.prompt("追加一条消息给子会话：") : "";
-        if (typeof text === "string" && text.trim() !== "") void runPanel("message", id, { message: text.trim() });
       };
       const mainSession = snapshot && snapshot.mainSession || { id: null, live: false };
       const tasks = Array.isArray(snapshot && snapshot.tasks) ? snapshot.tasks : [];
@@ -1554,14 +1640,6 @@
         h(Icon, { name: "retry", className: busy === `retry:${task.id}` ? "orch-spin" : void 0 }),
         busy === `retry:${task.id}` ? "重派中…" : "重派"
       ) : null;
-      const messageControl = (task, label = "追加") => task !== null && task !== void 0 && task.canFollowup === true ? h("button", {
-        key: "message",
-        type: "button",
-        className: "orch-btn orch-btn--sm",
-        title: "给子会话追加一条消息",
-        disabled: busy === `message:${task.id}`,
-        onClick: act(() => sendMessage(task.id))
-      }, h(Icon, { name: "message" }), label) : null;
       const closeControl = (task) => {
         if (task === null || task === void 0 || task.canClose !== true) return null;
         if (task.status === "done") return null;
@@ -1814,7 +1892,6 @@
             stopControl(task),
             closeControl(task),
             retryControl(task),
-            messageControl(task),
             openControl(task.childSessionId),
             deleteControl(task)
           ),
@@ -1833,11 +1910,14 @@
                     "div",
                     { key: `${item.path}:${index}`, className: "orch-artifact" },
                     h("span", { className: "orch-dot", style: { background: itemTone, color: itemTone } }),
-                    h(
-                      "span",
-                      { className: "orch-artifact-path", title: item.path },
-                      `${item.path}${item.exists === false ? "（未找到）" : ""}`
-                    ),
+                    // 点路径 = 在会话右侧栏打开预览（与产物库同一个入口）；缺失的文件不给点。
+                    h("button", {
+                      type: "button",
+                      className: "orch-artifact-path orch-artifact-open",
+                      title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
+                      disabled: item.exists === false,
+                      onClick: act(() => void previewInSidebar(task.id, item.path))
+                    }, `${item.path}${item.exists === false ? "（未找到）" : ""}`),
                     item.label ? h("span", { className: "orch-muted" }, item.label) : null
                   );
                 })
@@ -1893,7 +1973,6 @@
       };
       const artifactRow = (item) => {
         const key = `${item.taskId}:${item.path}`;
-        const isPreview = preview !== null && preview.key === key;
         const tone = item.exists === false ? TONE_COLOR2.bad : TONE_COLOR2.good;
         return h(
           "div",
@@ -1907,10 +1986,10 @@
           h("button", {
             type: "button",
             className: "orch-btn orch-btn--sm",
-            "aria-expanded": isPreview,
             disabled: item.exists === false,
-            onClick: () => void togglePreview(item.taskId, item.path)
-          }, isPreview ? "收起预览" : "预览"),
+            // 产物库这一行本身能渲染行内预览，所以右侧栏不可用时退到这里（inlineFallback）。
+            onClick: () => void previewInSidebar(item.taskId, item.path, true)
+          }, "预览"),
           h("button", { type: "button", className: "orch-btn orch-btn--sm", onClick: () => void copyPath(item.path) }, "复制路径"),
           item.childSessionId ? h("button", { type: "button", className: "orch-btn orch-btn--sm", onClick: () => open(item.childSessionId) }, "打开子会话") : null,
           h("button", {
@@ -1918,7 +1997,8 @@
             className: "orch-btn orch-btn--sm",
             onClick: () => void openDetail(item.taskId)
           }, "详情"),
-          isPreview ? previewBlock() : null
+          // 回退：右侧栏不可用时 previewInSidebar 会退到行内预览，这里渲染它的内容。
+          preview !== null && preview.key === key ? previewBlock() : null
         );
       };
       const artifactView = () => {
@@ -2083,7 +2163,7 @@
           ["编号", task.id],
           ["状态", STATUS_LABEL2[task.status] || task.status || "未知"],
           // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）。
-          ...task.deliveredAt ? [["交付", `${timeLabel2(task.deliveredAt)}（待确认：确认交付收成已完成，追加消息即追问原会话）`]] : [],
+          ...task.deliveredAt ? [["交付", `${timeLabel2(task.deliveredAt)}（待确认：确认交付收成已完成；追问由协调者 task_message 续派原会话）`]] : [],
           ...task.closeReason ? [["关闭", task.closeReasonLabel || task.closeReason]] : [],
           ["目标目录", task.targetDir || "（未设置）"],
           ["分组", task.group || "（未分组）"],
@@ -2213,7 +2293,13 @@
               "div",
               { key: `${item.path}:${index}`, className: "orch-artifact" },
               h("span", { className: "orch-dot", style: { background: tone, color: tone } }),
-              h("span", { className: "orch-artifact-path", title: item.path }, item.path),
+              h("button", {
+                type: "button",
+                className: "orch-artifact-path orch-artifact-open",
+                title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
+                disabled: item.exists === false,
+                onClick: act(() => void previewInSidebar(task.id, item.path))
+              }, item.path),
               item.label ? h("span", { className: "orch-muted" }, item.label) : null,
               item.exists === false ? h(Chip, { tone: "bad" }, "（未找到）") : null,
               h("button", { type: "button", className: "orch-btn orch-btn--sm", onClick: () => void copyPath(item.path) }, "复制路径")
@@ -2243,7 +2329,6 @@
           stopControl(detailTask),
           closeControl(detailTask),
           retryControl(detailTask),
-          messageControl(detailTask, "追加消息"),
           detailTask.target ? openControl(detailTask.target, "打开子会话") : null,
           deleteControl(detailTask),
           // 不能删就说清原因：活跃任务先「停止」；终态但还有活跃下游先处理下游。
@@ -2463,10 +2548,30 @@
       } else {
         void mainView.refresh();
       }
+      const openArtifactPreview = (path) => {
+        const sidebar = serviceOf("sidebarRight");
+        if (typeof sidebar?.openResource !== "function") return { ok: false, reason: "sidebar-missing" };
+        const sessionId = readSessionId();
+        const problem = fileAddressProblem(sessionId, path);
+        if (problem !== null) return { ok: false, reason: problem };
+        const address = fileAddressOf(sessionId, path);
+        if (address === "") return { ok: false, reason: "bad-path" };
+        ctx.layout.selectPanel(null);
+        try {
+          sidebar.openResource(address);
+          return { ok: true };
+        } catch (error) {
+          ctx.layout.selectPanel(PANEL_ID);
+          return { ok: false, reason: "host-refused", message: String(error?.message ?? error) };
+        }
+      };
       ctx.slots.inject("main", () => ctx.slots.register({
         name: "main",
         key: PANEL_ID,
-        inject: () => ({ openSession: (id) => ctx.uiWorkspace.openSession(id) })
+        inject: () => ({
+          openSession: (id) => ctx.uiWorkspace.openSession(id),
+          openArtifactPreview
+        })
       }, TasksPanel));
       ctx.slots.inject("main", () => ctx.slots.register({
         name: "main",
@@ -2502,6 +2607,8 @@
         groupArtifacts,
         artifactDate,
         artifactProject,
+        fileAddressOf,
+        fileAddressProblem,
         TONE_COLOR,
         STYLE_TEXT
       }

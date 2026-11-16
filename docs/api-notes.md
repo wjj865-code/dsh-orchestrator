@@ -129,7 +129,7 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 - 客户端入口判定：`/api/orchestrator` 新增只读端点 `session-role`（`{ sessionId }` → `{ ok:true, isMain }`）。
   宿主用 `coordinatorStatus().id`（`config.coordinatorSession` → `settings.main_session_id`）与请求里的 sessionId 走
   `src/session-role.js` 的 `isMainSession` 比较；任一侧缺失/不等都回 `isMain:false`。客户端只在 `isMain:true` 时显示
-  会话头「☰ 任务」，信号不可用时默认隐藏；侧栏「◈ 主会话」入口不经过该判定，始终可见。
+  会话头「任务」入口，信号不可用时默认隐藏；侧栏「◈ 主会话」入口不经过该判定，始终可见。
 
 ## 8. 工作区推断与 artifacts（阶段 3 增量）
 

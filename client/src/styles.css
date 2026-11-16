@@ -128,7 +128,33 @@
   color: var(--dsw-alias-state-error-primary, #ec1313);
 }
 .orch-btn--sm { height: 22px; padding: 0 7px; font-size: 11px; }
-.orch-btn--header { height: 24px; padding: 0 8px; }
+/* 会话头「任务」入口：按面板顶栏 .orch-brand 的语言重做（品牌色方块 + 半粗文字）。
+   尺寸取面板按钮的 26px，与宿主头部 28px 紧凑控件同基线；hover 加悬浮阴影，其余状态继承 .orch-btn。 */
+.orch-btn--entry {
+  height: 26px;
+  padding: 0 10px;
+  gap: 6px;
+  border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  color: var(--dsw-alias-label-primary, #1f1f1f);
+  font-weight: 600;
+}
+.orch-btn--entry:hover {
+  border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12));
+  box-shadow: var(--dsw-shadow-lv1, 0 2px 4px rgba(0, 0, 0, 0.05));
+}
+.orch-entry-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: var(--dsw-radius-xs, 4px);
+  background: var(--dsw-specific-bubble, #eef2ff);
+  color: var(--dsw-alias-state-business-primary, #4d6bfe);
+}
+.orch-entry-label { font-size: 12px; letter-spacing: 0.01em; white-space: nowrap; }
 .orch-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -618,6 +644,23 @@
   font-family: var(--ds-font-family-code, 'SF Mono', Consolas, monospace);
   font-size: 11px;
 }
+/* 可点开的产物路径：在会话右侧栏打开预览（不再是行内展开）。
+   总是与 .orch-artifact-path 同时挂，字体/尺寸沿用那边，这里只加按钮复位与可点提示。 */
+.orch-artifact-open {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #55585f);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
+}
+.orch-artifact-open:hover {
+  color: var(--dsw-alias-state-business-primary, #4d6bfe);
+  text-decoration: underline;
+}
+.orch-artifact-open:disabled { cursor: not-allowed; opacity: 0.6; text-decoration: none; }
+.orch-artifact-open:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, #4d6bfe); outline-offset: 2px; }
 .orch-preview {
   display: flex;
   flex-direction: column;

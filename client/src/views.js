@@ -2,7 +2,7 @@
  * 面板视图（P7 / T7.2 迁入）：三段式任务面板、启动器面板、会话头按钮、侧栏图标。
  *
  * 依赖（React/h、常量、纯逻辑、API、展示组件）全部由 client.js 在 factory 里一次性注入，
- * 本模块不直接 import react，也不读全局 window（除了已有的 window.prompt / addEventListener 行为）。
+ * 本模块不直接 import react，也不读全局 window（除了已有的 window.addEventListener 行为）。
  */
 export function createViews({
   React, h,
@@ -14,14 +14,18 @@ export function createViews({
   countTasks, matchesFilter, matchesQuery, groupArtifacts,
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
 }) {
-  // 会话头「☰ 任务」：仅主会话显示。useMainView 由下面 conversation.header.leading 的 inject
+  // 会话头「任务」入口：仅主会话显示。useMainView 由下面 conversation.header.leading 的 inject
   // 以 hooks.mainView 提供；hook 缺失或未判定（默认 false）时返回 null，入口隐藏。
+  // 视觉按面板顶栏 .orch-brand 的语言：品牌色方块装内联 SVG 图标 + 半粗文字（不再用裸字符 ☰）。
   const HeaderButton = ({ openPanel, useMainView }) => {
     const visible = typeof useMainView === 'function' ? useMainView(value => value === true) : false
     if (visible !== true) return null
     return h('button', {
-      type: 'button', title: '任务面板', className: 'orch-btn orch-btn--ghost orch-btn--header', onClick: openPanel,
-    }, '\u2630 任务')
+      type: 'button', title: '任务面板', 'aria-label': '打开任务面板',
+      className: 'orch-btn orch-btn--entry', onClick: openPanel,
+    },
+      h('span', { className: 'orch-entry-mark' }, h(Icon, { name: 'menu', size: 12 })),
+      h('span', { className: 'orch-entry-label' }, '任务'))
   }
 
   // 侧栏「插件」下方的入口图标（面板行渲染的是这个组件）。
@@ -61,7 +65,7 @@ export function createViews({
     )
   }
 
-  const TasksPanel = ({ openSession }) => {
+  const TasksPanel = ({ openSession, openArtifactPreview }) => {
     // ---- 数据与状态（A3/A4/B1/G1 全部保留）----
     const [snapshot, setSnapshot] = React.useState(null)
     // 快照（轮询/刷新）和动作（打开主会话/打开会话）分开记，避免把动作错误显示成「台账暂不可用」。
@@ -282,6 +286,48 @@ export function createViews({
       }
     }
 
+    // 服务端 preview 端点只读「本任务已登记产物」（panel-actions.js 先查 task.artifacts 再读盘）。
+    // 右侧栏链路是宿主直接读文件、不过这道校验，所以等价校验挪到前端：只允许预览台账下发给面板的产物路径。
+    // 三个来源都是服务端下发的（快照卡片 / 产物库 / 详情抽屉），并起来就是「已登记」的等价集合。
+    const isRegisteredArtifact = path => typeof path === 'string' && path !== '' && [
+      ...tasks.flatMap(task => Array.isArray(task.artifacts) ? task.artifacts : []),
+      ...(Array.isArray(artifactData?.items) ? artifactData.items : []),
+      ...(Array.isArray(detail?.task?.artifacts) ? detail.task.artifacts : []),
+    ].some(item => item?.path === path)
+
+    // 预览：优先在会话右侧栏打开（宿主 dockkit 的 file Tab，Markdown/代码/图片/PDF/Office 都有渲染器）。
+    // 只有「产物库」那一行有就地渲染的位置（inlineFallback=true），能退回旧 preview 端点；
+    // 卡片/抽屉里没有可渲染的位置，只提示并给出手动路径，不假装成功。
+    //
+    // 提示的落点跟着失败路径走（P1-1）：openArtifactPreview 已在返回前把面板切回来（若是它切的），
+    // 所以这里的 setActionNotice 一定落在还活着的面板上；它没切过面板就说明失败发生在切换之前，面板本来就在。
+    const previewInSidebar = async (taskId, path, inlineFallback = false) => {
+      if (!isRegisteredArtifact(path)) {
+        setActionNotice('这个路径不是本任务的已登记产物，不能预览；先「复制路径」再本地打开')
+        return
+      }
+      const opened = openArtifactPreview(path)
+      if (opened.ok === true) {
+        setPreview(null)
+        setActionError(null)
+        return
+      }
+      // 失败原因分四档，提示要能区分：缺侧栏服务 / 没会话 id / 路径非法 / 宿主拒绝（含原始 message）。
+      const why = opened.reason === 'sidebar-missing'
+        ? '当前宿主没有右侧栏预览能力'
+        : opened.reason === 'no-session'
+          ? '拿不到当前会话，无法定位预览作用域'
+          : opened.reason === 'bad-path'
+            ? '这条产物路径不可用'
+            : `宿主拒绝打开${opened.message === undefined ? '' : `：${opened.message}`}`
+      if (inlineFallback === true) {
+        setActionNotice(`右侧栏不可用（${why}），已改为行内预览`)
+        await togglePreview(taskId, path)
+        return
+      }
+      setActionNotice(`右侧栏不可用（${why}）：到「产物」页可看行内预览，或先「复制路径」再本地打开`)
+    }
+
     const runPanel = async (endpoint, id, extra = {}) => {
       const key = `${endpoint}:${id}`
       if (inFlight.current.has(key)) return
@@ -326,11 +372,6 @@ export function createViews({
         inFlight.current.delete(key)
         setBusy(null)
       }
-    }
-
-    const sendMessage = id => {
-      const text = typeof window.prompt === 'function' ? window.prompt('追加一条消息给子会话：') : ''
-      if (typeof text === 'string' && text.trim() !== '') void runPanel('message', id, { message: text.trim() })
     }
 
     const mainSession = (snapshot && snapshot.mainSession) || { id: null, live: false }
@@ -389,17 +430,6 @@ export function createViews({
         onClick: act(() => void runPanel('retry', task.id)),
       }, h(Icon, { name: 'retry', className: busy === `retry:${task.id}` ? 'orch-spin' : undefined }),
       busy === `retry:${task.id}` ? '重派中…' : '重派')
-      : null
-
-    // 追加消息：只给「支持续派」的任务（进行中/等你确认/要授权/待确认，且已有子会话）。
-    // 判定在服务端 panel-gates.js，快照/detail 下发 canFollowup；前端只读，不抄状态表。
-    const messageControl = (task, label = '追加') => (task !== null && task !== undefined && task.canFollowup === true)
-      ? h('button', {
-        key: 'message', type: 'button', className: 'orch-btn orch-btn--sm',
-        title: '给子会话追加一条消息',
-        disabled: busy === `message:${task.id}`,
-        onClick: act(() => sendMessage(task.id)),
-      }, h(Icon, { name: 'message' }), label)
       : null
 
     // 确认交付（delivered → done）：与工具 task_close 同源，服务端 closeGate 下发 canClose。
@@ -636,7 +666,6 @@ export function createViews({
           stopControl(task),
           closeControl(task),
           retryControl(task),
-          messageControl(task),
           openControl(task.childSessionId),
           deleteControl(task),
         ),
@@ -648,8 +677,14 @@ export function createViews({
                   const itemTone = item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good
                   return h('div', { key: `${item.path}:${index}`, className: 'orch-artifact' },
                     h('span', { className: 'orch-dot', style: { background: itemTone, color: itemTone } }),
-                    h('span', { className: 'orch-artifact-path', title: item.path },
-                      `${item.path}${item.exists === false ? '（未找到）' : ''}`),
+                    // 点路径 = 在会话右侧栏打开预览（与产物库同一个入口）；缺失的文件不给点。
+                    h('button', {
+                      type: 'button',
+                      className: 'orch-artifact-path orch-artifact-open',
+                      title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
+                      disabled: item.exists === false,
+                      onClick: act(() => void previewInSidebar(task.id, item.path)),
+                    }, `${item.path}${item.exists === false ? '（未找到）' : ''}`),
                     item.label ? h('span', { className: 'orch-muted' }, item.label) : null,
                   )
                 }),
@@ -698,7 +733,6 @@ export function createViews({
 
     const artifactRow = item => {
       const key = `${item.taskId}:${item.path}`
-      const isPreview = preview !== null && preview.key === key
       const tone = item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good
       return h('div', { key, className: 'orch-artifact' },
         h('span', { className: 'orch-dot', style: { background: tone, color: tone } }),
@@ -709,10 +743,10 @@ export function createViews({
         h('span', { className: 'orch-msg-at' }, timeLabel(item.at)),
         h('button', {
           type: 'button', className: 'orch-btn orch-btn--sm',
-          'aria-expanded': isPreview,
           disabled: item.exists === false,
-          onClick: () => void togglePreview(item.taskId, item.path),
-        }, isPreview ? '收起预览' : '预览'),
+          // 产物库这一行本身能渲染行内预览，所以右侧栏不可用时退到这里（inlineFallback）。
+          onClick: () => void previewInSidebar(item.taskId, item.path, true),
+        }, '预览'),
         h('button', { type: 'button', className: 'orch-btn orch-btn--sm', onClick: () => void copyPath(item.path) }, '复制路径'),
         item.childSessionId
           ? h('button', { type: 'button', className: 'orch-btn orch-btn--sm', onClick: () => open(item.childSessionId) }, '打开子会话')
@@ -721,7 +755,8 @@ export function createViews({
           type: 'button', className: 'orch-btn orch-btn--sm',
           onClick: () => void openDetail(item.taskId),
         }, '详情'),
-        isPreview ? previewBlock() : null,
+        // 回退：右侧栏不可用时 previewInSidebar 会退到行内预览，这里渲染它的内容。
+        preview !== null && preview.key === key ? previewBlock() : null,
       )
     }
 
@@ -858,7 +893,7 @@ export function createViews({
         ['编号', task.id],
         ['状态', STATUS_LABEL[task.status] || task.status || '未知'],
         // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）。
-        ...(task.deliveredAt ? [['交付', `${timeLabel(task.deliveredAt)}（待确认：确认交付收成已完成，追加消息即追问原会话）`]] : []),
+        ...(task.deliveredAt ? [['交付', `${timeLabel(task.deliveredAt)}（待确认：确认交付收成已完成；追问由协调者 task_message 续派原会话）`]] : []),
         ...(task.closeReason ? [['关闭', task.closeReasonLabel || task.closeReason]] : []),
         ['目标目录', task.targetDir || '（未设置）'],
         ['分组', task.group || '（未分组）'],
@@ -987,7 +1022,7 @@ export function createViews({
           : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, dependents.map(depRow)),
       )
 
-      // 7) 产物：路径/标签/存在性，路径可一键复制（浏览器不允许静默打开本地文件）。
+      // 7) 产物：路径/标签/存在性；路径可点开（会话右侧栏预览）也可一键复制。
       const artifacts = Array.isArray(task.artifacts) ? task.artifacts : []
       const artifactBody = artifacts.length === 0
         ? h('div', { className: 'orch-muted' }, '还没有产物。')
@@ -996,7 +1031,13 @@ export function createViews({
             const tone = item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good
             return h('div', { key: `${item.path}:${index}`, className: 'orch-artifact' },
               h('span', { className: 'orch-dot', style: { background: tone, color: tone } }),
-              h('span', { className: 'orch-artifact-path', title: item.path }, item.path),
+              h('button', {
+                type: 'button',
+                className: 'orch-artifact-path orch-artifact-open',
+                title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
+                disabled: item.exists === false,
+                onClick: act(() => void previewInSidebar(task.id, item.path)),
+              }, item.path),
               item.label ? h('span', { className: 'orch-muted' }, item.label) : null,
               item.exists === false ? h(Chip, { tone: 'bad' }, '（未找到）') : null,
               h('button', { type: 'button', className: 'orch-btn orch-btn--sm', onClick: () => void copyPath(item.path) }, '复制路径'),
@@ -1027,7 +1068,6 @@ export function createViews({
         stopControl(detailTask),
         closeControl(detailTask),
         retryControl(detailTask),
-        messageControl(detailTask, '追加消息'),
         detailTask.target ? openControl(detailTask.target, '打开子会话') : null,
         deleteControl(detailTask),
         // 不能删就说清原因：活跃任务先「停止」；终态但还有活跃下游先处理下游。

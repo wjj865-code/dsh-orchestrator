@@ -1,12 +1,14 @@
 # 面板与详情 UI（U2）
 
-任务面板（会话头「☰ 任务」打开的那个 `main` 面板）与详情抽屉的界面规范：
+任务面板（会话头「任务」入口打开的那个 `main` 面板）与详情抽屉的界面规范：
 DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化交互。实现全部在 `client/src/**`（ESM 源码），
 由 vite 构建成 `dist/client.js`；产物是平台要求的 classic script，**不能 `import` CSS**，
 所以样式表以 `?inline` 内联回 JS、运行时注入。
 
 - 代码：`client/src/views.js`（面板 / 抽屉 / 启动器 / 会话头按钮）、`client/src/styles.css`（整张样式表）、
   `client/src/styles.js`（`ensureStyles`）、`client/src/ui.js`（图标 / 徽标 / 空态 / 骨架）
+- 产物预览走宿主的会话右侧栏（`ctx.sidebarRight.openResource` + `dsh-resource://file/session/…`），
+  见 [§7 产物预览](#7-产物预览会话右侧栏)
 - 测试：`test/client.test.js` 的 `U2 …` 用例组（行为断言跑 `dist/client.js`，源码断言读 `client/src/**`）
 - 相关：[ARCHITECTURE.md](ARCHITECTURE.md#面板与详情ui-u2)、[README](../README.md#面板长什么样u2)
 
@@ -79,12 +81,12 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 
 | 交互 | 实现 |
 | --- | --- |
-| hover | `.orch-card:hover`（底色 + 描边 + `--dsw-shadow-lv1`）、`.orch-btn:hover`、`.orch-metric:hover`（上浮 1px）、`.orch-rail-item:hover`、`.orch-section-head:hover`、`.orch-artifact:hover`（全在 `styles.css`） |
+| hover | `.orch-card:hover`（底色 + 描边 + `--dsw-shadow-lv1`）、`.orch-btn:hover`、`.orch-btn--entry:hover`（描边 + `--dsw-shadow-lv1`）、`.orch-metric:hover`（上浮 1px）、`.orch-rail-item:hover`、`.orch-section-head:hover`、`.orch-artifact:hover`、`.orch-artifact-open:hover`（转品牌色 + 下划线，全在 `styles.css`） |
 | 动画/过渡 | 抽屉滑入滑出（`transform` + `--ds-transition-duration-slow`）、展开/折叠 `grid-template-rows: 0fr→1fr`、chevron 旋转、内容入场 `@keyframes orch-slide-in`、骨架 `@keyframes orch-shimmer`、按钮 `transform: scale(.985)` 按下反馈（`styles.css`） |
 | 二次确认 | 「停止」先变成「确认停止？/ 取消」，「确认交付」（`delivered` → `done`，不可逆）与删除同样两步「确认交付完成？/ 取消」「确认删除？/ 取消」（`.orch-confirm`，`views.js` 的 `stopControl` / `closeControl` / `deleteControl`），不再用 `window.confirm`；动作进行中禁用按钮并显示「停止中…/重派中…/确认中…/删除中…」 |
 | 空态 | `.orch-empty` 图标 + 标题 + 提示（无任务 / 无匹配 / 无产物 / 无消息 / 无前置 / 无下游 / 没有 brief / 没有返回消息），`ui.js` 的 `EmptyState` |
-| 加载态 | 首帧 5 张骨架卡（`SkeletonList`，`ui.js`）、产物库 3 张、抽屉骨架；刷新按钮转圈（`.orch-spin`）；抽屉内预览加载占位 |
-| 错误态 | 快照错误「台账暂不可用：…」+ 重试；动作错误带错误码（`失败（CODE）：…`）；产物加载失败 + 重试；抽屉详情失败 + 「重新加载」；预览失败 |
+| 加载态 | 首帧 5 张骨架卡（`SkeletonList`，`ui.js`）、产物库 3 张、抽屉骨架；刷新按钮转圈（`.orch-spin`）；回退行内预览有加载占位 |
+| 错误态 | 快照错误「台账暂不可用：…」+ 重试；动作错误带错误码（`失败（CODE）：…`）；产物加载失败 + 重试；抽屉详情失败 + 「重新加载」；右侧栏不可用时提示「右侧栏不可用（<原因>）…」并（仅产物库行）回退行内预览 |
 | 折叠 | 抽屉每个区块标题都是 `<button>`，`aria-expanded` + `0fr↔1fr` 过渡（`views.js` 的 `detailSection`） |
 | 搜索 | 顶栏搜索框按标题/编号/目录过滤（`matchesQuery`，`logic.js`） |
 | 键盘/无障碍 | `Esc` 关抽屉、`aria-expanded`/`aria-pressed`/`aria-hidden`/`aria-label`、`:focus-visible` 焦点环 |
@@ -102,7 +104,7 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 | 目标状态（G1） | 平台 goal 的 objective/阶段/续轮/轮次/修订，只读、无写操作 | `detail.task.goalState` |
 | 消息 | 最近 20 条；followup 标「待发/已投递/投递失败」 | `detail.messages` |
 | 依赖 | 上游前置 + 下游依赖，各带状态与错误 | `detail.dependencies` / `detail.dependents` |
-| 产物 | 路径/标签/存在性 + 复制路径 | `detail.task.artifacts` |
+| 产物 | 路径/标签/存在性；点路径在会话右侧栏预览，另有「复制路径」 | `detail.task.artifacts` |
 
 > P8 计划模式：任务卡状态旁有「计划中」小标（仅 `planState==='planning'`）、卡片 meta 有「计划·…」chip，
 > 抽屉概览有「计划」行、抽屉副标题有「计划：…」；均来自 `snapshot`/`detail` 的 `planFirst`/`planState`，前端只读。
@@ -111,33 +113,96 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 > 「待你决定」筛选含 `delivered`（`logic.js` 的 `matchesFilter`）；抽屉概览多「交付」（`deliveredAt` + 待确认文案）与
 > 「关闭」（`closeReasonLabel`）两行，列表行与抽屉都带「确认交付」。
 
-底部动作条：停止（二次确认）、重派、追加消息、确认交付（二次确认）、打开子会话、删除（二次确认）。
+底部动作条：停止（二次确认）、重派、确认交付（二次确认）、打开子会话、删除（二次确认）。
 
 按钮可见性由服务端 `src/panel-gates.js` 判定，快照/详情下发 `canFollowup` / `canClose` / `canDelete`，前端只读：
 
-- 「追加消息」只在可续派状态显示（`running` / `waiting_user` / `waiting_auth` / `delivered`，且已有子会话）；终态、等前置、待派发、失败任务都不显示（失败任务改用「重派」）。
+- 面板**不再提供「追加消息」入口**：旧实现点一下走 `window.prompt`，而 Electron 渲染进程把 `window.prompt`
+  替换成抛错桩（`prompt() is not supported.`），从来发不出请求。续派 / 批准计划统一走协调者的
+  `task_message`（服务端 `canFollowup` 仍随快照下发，面板只是不再渲染这个按钮）。
 - 「确认交付」只在 `delivered` 显示（`canClose`，与工具 `task_close` 同源；`done` 的重复确认按幂等提示「任务已完成，无需重复确认」），列表行与抽屉都以「确认交付」按钮 + 两步确认呈现。
 - 「删除」只在终态显示（`done` / `failed` / `cancelled` / `orphaned`）且没有活跃下游依赖；活跃任务不显示删除，抽屉底部给一句「进行中/等派发的任务不能删除：先「停止」再删。」。删除只清台账（任务 + 消息 + 通知），产物文件/记忆不动。
 
-## 5. 验证
+## 5. 会话头入口（任务面板的入口按钮）
+
+注册在 `conversation.header.leading`（单席位、不带 `id`），仅主会话显示（闸门 `client/src/gate.js`，fail-closed）。
+
+视觉与面板顶栏 `.orch-brand` 同一套语言，不再用裸字符 `☰`：
+
+| 部分 | class | 规格 |
+| --- | --- | --- |
+| 按钮 | `.orch-btn.orch-btn--entry` | 高 26px、内边距 0 10px、`--dsw-alias-border-l2` 描边、`--dsw-alias-bg-layer-1` 底、`--dsw-alias-label-primary` 半粗字；hover 换 `--dsw-alias-border-l3` + `--dsw-shadow-lv1` |
+| 图标块 | `.orch-entry-mark` | 18×18、`--dsw-radius-xs` 圆角、`--dsw-specific-bubble` 底、`--dsw-alias-state-business-primary` 前景，内装 `ui.js` 的 `menu` 内联 SVG（三条横线，12px） |
+| 文字 | `.orch-entry-label` | 12px、`letter-spacing: 0.01em`、不换行 |
+
+四个交互状态（hover / active / disabled / focus-visible）全部继承 `.orch-btn`，不重复声明。
+
+## 6. 产物预览（会话右侧栏）
+
+产物预览**不在面板里自建视图**，而是复用宿主的右侧栏 Tab（`@deepseek-ai/dsh-client-ui-sidebar-right` +
+`@deepseek-ai/dsh-client-ui-sidebar-documentpreview`，`kind:'text'`，Markdown / 代码 / 图片 / PDF / Office 都有渲染器）。
+
+调用链：
+
+```
+产物库「预览」按钮 / 任务卡产物路径 / 抽屉产物路径
+  → views.js  previewInSidebar(taskId, path, inlineFallback)
+      ├─ isRegisteredArtifact(path)? 否 → 只提示，不发请求
+      └─ client.js openArtifactPreview(path)     ← 由 main 槽位 inject 注入
+          ├─ 探测：serviceOf('sidebarRight')?.openResource 是函数？（否 → { ok:false, reason:'sidebar-missing' }）
+          ├─ 探测：fileAddressProblem(readSessionId(), path) 为 null？（否 → reason:'no-session' / 'bad-path'）
+          ├─ 面板可见时 ctx.layout.selectPanel(null)   ← 只在探测全通过后才切面板
+          ├─ sidebar.openResource(address)             ← 座位没就绪就让它抛，不猜时序
+          └─ 抛错 → 若刚切过面板则 selectPanel(PANEL_ID) 切回来 → { ok:false, reason:'host-refused', message }
+  → 失败时：产物库行提示「右侧栏不可用（<原因>），已改为行内预览」并走旧 preview 端点；
+    任务卡 / 抽屉里没有可渲染行内预览的位置，只提示可去「产物」页看或复制路径
+```
+
+要点：
+
+- **地址必须带 Session**：`logic.js` 的 `fileAddressOf` 拼 `dsh-resource://file/session/<编码 id>/<逐段编码 path>`
+  （`:` 保持字面以兼容 Windows 盘符，**不 trim** 以保留 POSIX 合法的首尾空格）。文件预览类型只认领
+  `session` 作用域，`absolute` 作用域不会被认领。孤立代理项等非法 UTF-16 会让 `encodeURIComponent`
+  抛 `URIError`，函数内 catch 后按「拼不出地址」返回空串，不让异常冒到事件处理器。
+- **必须先切回会话**：右侧栏按 Session 挂载，任务面板占主栏时 `ctx.sidebarRight.mounted` 为 `undefined`，
+  直接 `openResource` 会抛 `sidebarRight: no session surface is mounted`。
+- **失败提示一定可见**：所有可用性探测都在 `selectPanel(null)` **之前**；只有探测全通过才切面板，
+  切了面板就一定在 `openResource` 抛错时切回 `PANEL_ID` —— 所以 `setActionNotice` 不会落在已卸载的组件上。
+  时序不靠轮询 `mounted` 的宏任务轮数（原先 4 轮 `setTimeout(0)` 已删），座位没就绪就让宿主抛错、如实上报。
+- **不绕开产物登记校验**：服务端 `preview` 端点只读「本任务已登记产物」；右侧栏链路是宿主直接读文件、
+  不过这道校验，所以 `isRegisteredArtifact(path)` 在前端做等价校验（快照卡片 / 产物库 / 详情抽屉三个
+  服务端下发来源的并集），不在台账里的路径一律不预览。
+- **宽度/折叠/多 Tab/窄屏全由宿主负责**：首次打开 45% 视口、之后按 Session 记住像素宽度（上限 70%、保底 300px）、
+  可拖拽；`<768px` 自动全屏；同路径重复点击是「聚焦 + 闪烁高亮」，不同路径各一个 Tab，可分栏。
+- **与 present 一致**：聊天里的交付卡片预览走的是同一条 `ctx.sidebarRight.openResource(fileAddressFor(...))`，
+  所以面板打开的产物 Tab 与交付卡片落在同一个右侧栏，路径语义（`reports/` 等绝对路径）不变。
+- **依赖是软依赖**：`sidebarRight` 不进客户端 `inject`（写了会变成硬依赖、服务缺失时 `apply` 卡住），
+  只用 `serviceOf('sidebarRight')` 现取；`package.json` 的 `dsh.client.inject` 那两条只是加载顺序的预取提示。
+- **回退保留**：`preview` 端点、`togglePreview`、`previewBlock` 都还在，但只有产物库那一行能就地渲染它
+  （`previewInSidebar(..., true)`）；卡片与抽屉只给提示，不假装成功。
+
+## 7. 验证
 
 ```bash
-npm test            # 767 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、续派与确认交付/删除门控、P8 计划模式、两段式终态用例
+npm test            # 793 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、确认交付/删除门控、
+                    # 入口按钮视觉、fileAddressOf 与右侧栏预览（含回退）、P8 计划模式、两段式终态用例
 npm run check:client
+node docs/probes/qa-stage2-slots.mjs dist/client.js   # 槽位/inject 探针（7 条历史漂移与改动前一致）
 ```
 
 手工回归（真实宿主里）：
 
-1. 主会话 → 会话头「☰ 任务」→ 面板出现：顶栏、4 张概览卡、左侧筛选轨、列表（首帧应是骨架）。
+1. 主会话 → 会话头「任务」入口（品牌色方块 + 三横线图标 + 半粗文字）→ 面板出现：顶栏、4 张概览卡、左侧筛选轨、列表（首帧应是骨架）。
 2. 点任务卡或「详情」→ 右侧抽屉滑入，遮罩变暗，`.orch-drawer[data-open=true]`；再点遮罩/关闭/按 `Esc` → 滑出。
 3. 抽屉里逐个点区块标题 → 折叠/展开有过渡；「最新回复」在子会话结算后出现。
 4. 点「停止」→ 出现「确认停止？/ 取消」；确认后按钮变「停止中…」，台账状态变已取消。
-5. 进行中任务只有「追加」没有「删除」；等它 done/failed/cancelled 后刷新，出现「删除」→ 点一下变「确认删除？/ 取消」，确认后卡片消失（消息/通知级联清理，详情抽屉自动收起）。
-5. 切「产物」筛选 → 产物库按项目分组，可切「按日期」、点「预览」看文本（>64 KiB 标注截断）、复制路径。
-6. 切宿主深浅色主题 → 面板颜色跟随，无硬编码残留。
-7. 断网/宿主动作失败 → 出现带「重试」的错误条，而不是空白。
+5. 进行中任务没有「删除」（也没有「追加」）；等它 done/failed/cancelled 后刷新，出现「删除」→ 点一下变「确认删除？/ 取消」，确认后卡片消失（消息/通知级联清理，详情抽屉自动收起）。
+6. 切「产物」筛选 → 产物库按项目分组，可切「按日期」、点「预览」→ **主栏切回会话、右侧栏滑出文件 Tab**；
+   任务卡展开区与抽屉「产物」区块点路径同样在右侧栏打开；复制路径照旧。
+7. 切宿主深浅色主题 → 面板颜色跟随，无硬编码残留。
+8. 断网/宿主动作失败 → 出现带「重试」的错误条，而不是空白。
 
-## 6. 边界
+## 8. 边界
 
 - **样式靠注入**：产物是 classic script，不能 `import` CSS；`styles.css` 构建期以 `?inline` 内联成
   `STYLE_TEXT`，`ensureStyles()` 按 `#dsh-orchestrator-styles` 去重注入；注入失败只丢样式，面板逻辑仍可用（`styles.js`）。

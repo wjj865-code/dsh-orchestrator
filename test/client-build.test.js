@@ -109,7 +109,7 @@ test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dis
   const { loaded } = loadArtifact()
   assert.deepEqual(Object.keys(loaded.__test).sort(), [
     'STYLE_TEXT', 'TONE_COLOR', 'artifactDate', 'artifactProject', 'countTasks',
-    'createMainViewGate', 'groupArtifacts', 'matchesFilter', 'matchesQuery',
+    'createMainViewGate', 'fileAddressOf', 'fileAddressProblem', 'groupArtifacts', 'matchesFilter', 'matchesQuery',
   ])
 })
 

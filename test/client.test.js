@@ -260,11 +260,15 @@ test('产物页：调用 artifacts 端点、按项目/日期分组、预览/复�
   assert.match(source, /按日期/)
   assert.match(source, /artifactProject/)
   assert.match(source, /artifactDate/)
-  // 交互：预览（独立 preview 端点）、复制路径、打开子会话。
+  // 交互：预览走会话右侧栏（previewInSidebar → openArtifactPreview），旧行内预览作为回退保留。
+  assert.match(source, /previewInSidebar/)
+  assert.match(source, /openArtifactPreview/)
+  assert.match(source, /右侧栏不可用（\$\{why\}），已改为行内预览/)
+  // 回退路径仍在：preview 端点 + togglePreview + previewBlock（旧 profile 不回归）。
   assert.match(source, /const readPreview = async/)
   assert.match(source, /endpoint: 'preview'/)
   assert.match(source, /togglePreview/)
-  assert.match(source, /收起预览/)
+  assert.match(source, /const previewBlock = /)
   assert.match(source, /复制路径/)
   assert.match(source, /打开子会话/)
   // 空态和失败态。
@@ -306,7 +310,7 @@ test('详情抽屉四区块：brief/消息/依赖/产物、空态与投递状态
   assert.match(source, /还没有消息/)
 })
 
-// U1：任务入口（会话头「☰ 任务」）只在主会话显示；侧栏「◈ 主会话」跳转入口始终可见。
+// U1：任务入口（会话头「任务」按钮）只在主会话显示；侧栏「◈ 主会话」跳转入口始终可见。
 test('任务入口闸门：默认隐藏；当前会话=主会话才显示；无会话/子会话/请求失败都隐藏', async () => {
   const { loaded } = load()
   const { createMainViewGate } = loaded.__test
@@ -379,7 +383,7 @@ test('任务入口闸门：start 订阅会话变化 + 5 秒兜底轮询，失败
   stop()
 })
 
-test('任务入口渲染：主会话显示「☰ 任务」，切子会话/信号失败隐藏；侧栏「主会话」入口始终注册', async () => {
+test('任务入口渲染：主会话显示「任务」入口（品牌块 + 图标 + 文字），切子会话/信号失败隐藏；侧栏「主会话」入口始终注册', async () => {
   let currentId = 's-main'
   let offline = false
   const fetchCalls = []
@@ -411,7 +415,21 @@ test('任务入口渲染：主会话显示「☰ 任务」，切子会话/信号
   })
   const shown = render(injected.hooks.mainView.getSnapshot())
   assert.equal(shown.type, 'button')
-  assert.equal(shown.children[0], '\u2630 任务')
+  // 入口重做后不再是裸字符「☰ 任务」：品牌色方块装内联 SVG 图标 + 半粗文字。
+  assert.match(shown.props.className, /orch-btn--entry/)
+  assert.equal(shown.props['aria-label'], '打开任务面板')
+  assert.equal(shown.children.length, 2, '入口 = 图标块 + 文字，两段')
+  assert.equal(shown.children[0].props.className, 'orch-entry-mark')
+  // 图标块里是 ui.js 的 Icon 组件（React 垫片把 children 收成数组，不展开函数组件）。
+  const mark = shown.children[0].children[0]
+  assert.equal(typeof mark.type, 'function', '图标块里装的是 Icon 组件，不是字符')
+  assert.equal(mark.props.name, 'menu', '入口图标取 ICON_PATHS.menu（三条横线）')
+  assert.equal(mark.props.size, 12)
+  assert.equal(shown.children[1].props.className, 'orch-entry-label')
+  assert.equal(flattenText(shown.children[1]), '任务')
+  assert.doesNotMatch(flattenText(shown), /\u2630/, '不再用裸字符 ☰')
+  // 图标取自 ui.js 的 ICON_PATHS.menu（三条横线）。
+  assert.match(source, /menu: \['M4 7h16', 'M4 12h16', 'M4 17h16'\]/)
   // 切到子会话：任务入口隐藏（组件返回 null），槽位本身不消失。
   currentId = 'c-child'
   for (const listener of sessionListeners) listener()
@@ -650,9 +668,137 @@ test('U2 纯函数：筛选/计数与产物分组（按项目/日期）', () => 
   }
 })
 
+test('fileAddressOf：拼出宿主右侧栏认领的 dsh-resource://file/session 地址', () => {
+  const { loaded } = load()
+  const { fileAddressOf } = loaded.__test
+  // 与 @deepseek-ai/dsh-util-workspace-path 的 sessionFileAddress 逐条对齐：
+  // 前缀 + 编码后的 sessionId + 逐段编码的 path，`:` 保持字面（Windows 盘符）。
+  assert.equal(fileAddressOf('s-main', '/a/b.md'), 'dsh-resource://file/session/s-main//a/b.md')
+  assert.equal(fileAddressOf('s-main', 'C:\\ws\\a.md'), 'dsh-resource://file/session/s-main/C:/ws/a.md')
+  assert.equal(fileAddressOf('s-main', './rel/a.md'), 'dsh-resource://file/session/s-main/rel/a.md')
+  // 逐段编码：空格、`#`、`?` 都要转义，否则地址被截断或读错文件。
+  assert.equal(fileAddressOf('s-main', '/a b/x#1.md'), 'dsh-resource://file/session/s-main//a%20b/x%231.md')
+  assert.equal(fileAddressOf('s 1', 'a.md'), 'dsh-resource://file/session/s%201/a.md')
+  // 不 trim：POSIX 允许路径首尾带空格，`/tmp/report .md` 与 `/tmp/report.md` 是两个文件。
+  // 宿主 sessionFileAddress 也不 trim，两边必须同口径（否则面板指向的文件与宿主读到的不同）。
+  assert.equal(fileAddressOf('s-main', '/a b/ report.md'), 'dsh-resource://file/session/s-main//a%20b/%20report.md')
+  assert.equal(fileAddressOf(' s-main', 'a.md'), 'dsh-resource://file/session/%20s-main/a.md')
+  // 缺会话 id 或路径 → 空串（调用方据此回退行内预览，不拼半个地址）。
+  assert.equal(fileAddressOf('', 'a.md'), '')
+  assert.equal(fileAddressOf('s-main', ''), '')
+  assert.equal(fileAddressOf(undefined, undefined), '')
+  // 孤立代理项会让 encodeURIComponent 抛 URIError；必须收敛成空串，不能让异常冒到事件处理器。
+  assert.equal(fileAddressOf('s-main', 'a\uD800b.md'), '')
+  // 成因判定：空路径与没会话必须分得开，否则提示会把排查引到错的地方。
+  const { fileAddressProblem } = loaded.__test
+  assert.equal(fileAddressProblem('s-main', '/a.md'), null)
+  assert.equal(fileAddressProblem('', '/a.md'), 'no-session')
+  assert.equal(fileAddressProblem('s-main', ''), 'bad-path')
+  assert.equal(fileAddressProblem(undefined, undefined), 'no-session')
+})
+
+test('产物预览走右侧栏：探测前置、先切回会话再 openResource、失败把面板切回来', () => {
+  // 面板占主栏时 ctx.sidebarRight.mounted 是 undefined，openResource 会抛；
+  // 所以顺序必须是 selectPanel(null) → openResource，且地址带会话 id。
+  const order = []
+  const opened = []
+  const { loaded, ctx, registrations } = load({
+    uiSession: true,
+    currentSessionId: () => 's-main',
+    services: {
+      sidebarRight: {
+        mounted: { getSnapshot: () => undefined },
+        openResource: address => { order.push('open'); opened.push(address) },
+      },
+    },
+  })
+  ctx.layout.selectPanel = id => { order.push(`panel:${String(id)}`) }
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const props = panel.spec.inject()
+  assert.equal(typeof props.openArtifactPreview, 'function')
+  const result = props.openArtifactPreview('/w/reports/a.md')
+  assert.equal(result.ok, true)
+  assert.deepEqual(order, ['panel:null', 'open'], '先切回会话再开右侧栏 Tab')
+  assert.deepEqual(opened, ['dsh-resource://file/session/s-main//w/reports/a.md'])
+
+  // 侧栏服务缺失（旧 profile）→ sidebar-missing，且**不切面板**（探测前置）。
+  const bare = load({ uiSession: true, currentSessionId: () => 's-main' })
+  bare.loaded.apply(bare.ctx)
+  const barePanel = bare.registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const bareResult = barePanel.spec.inject().openArtifactPreview('/w/a.md')
+  assert.equal(bareResult.ok, false)
+  assert.equal(bareResult.reason, 'sidebar-missing')
+  assert.deepEqual(bare.selected, [], '探测失败时不得切走面板（否则提示落在已卸载组件上）')
+
+  // 没有当前会话 id → 拼不出地址，同样在切面板之前返回。
+  const noSession = load({
+    services: { sidebarRight: { mounted: { getSnapshot: () => undefined }, openResource: () => {} } },
+  })
+  noSession.loaded.apply(noSession.ctx)
+  const noSessionPanel = noSession.registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const noSessionResult = noSessionPanel.spec.inject().openArtifactPreview('/w/a.md')
+  assert.equal(noSessionResult.ok, false)
+  assert.equal(noSessionResult.reason, 'no-session')
+  assert.deepEqual(noSession.selected, [], '拼不出地址时不得切走面板')
+
+  // 有会话但路径为空 → bad-path（不能误报成 no-session），同样不切面板。
+  const withSession = load({
+    uiSession: true,
+    currentSessionId: () => 's-main',
+    services: { sidebarRight: { mounted: { getSnapshot: () => undefined }, openResource: () => {} } },
+  })
+  withSession.loaded.apply(withSession.ctx)
+  const withSessionPanel = withSession.registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const badPathResult = withSessionPanel.spec.inject().openArtifactPreview('')
+  assert.equal(badPathResult.ok, false)
+  assert.equal(badPathResult.reason, 'bad-path')
+  assert.deepEqual(withSession.selected, [], '路径非法时不得切走面板')
+
+  // 宿主抛错（座位未就绪 / 地址无类型认领）→ 面板必须切回来，且原始原因要带出去。
+  const throwing = load({
+    uiSession: true,
+    currentSessionId: () => 's-main',
+    services: {
+      sidebarRight: {
+        mounted: { getSnapshot: () => undefined },
+        openResource: () => { throw new Error('sidebarRight: no session surface is mounted') },
+      },
+    },
+  })
+  throwing.loaded.apply(throwing.ctx)
+  const throwingPanel = throwing.registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const throwingResult = throwingPanel.spec.inject().openArtifactPreview('/w/a.md')
+  assert.equal(throwingResult.ok, false)
+  assert.equal(throwingResult.reason, 'host-refused')
+  assert.match(throwingResult.message, /no session surface is mounted/, '原始失败原因不能丢')
+  assert.deepEqual(throwing.selected, [null, 'orchestrator'],
+    '切走了就必须切回面板，否则提示落在已卸载组件上永远看不到')
+
+  // 源码层：三处产物入口都走同一个 previewInSidebar，不再各自 togglePreview。
+  assert.match(source, /const previewInSidebar = async/)
+  assert.match(source, /openArtifactPreview\(path\)/)
+  assert.match(source, /orch-artifact-open/)
+  // 只有产物库那一行能就地渲染行内预览，卡片/抽屉只给提示（不假装打开成功）。
+  assert.match(source, /previewInSidebar\(item\.taskId, item\.path, true\)/)
+  // 提示要按失败原因分档，不能三种失败共用一句话。
+  assert.match(source, /sidebar-missing/)
+  assert.match(source, /no-session/)
+  assert.match(source, /bad-path/)
+  assert.match(source, /host-refused/)
+  // 孤立代理项不能让 encodeURIComponent 的 URIError 冒出去。
+  assert.match(source, /catch \{\s*\n\s*\/\/ 孤立代理项/)
+  // 时序不再靠轮询宏任务猜 mounted 落定（旧的 4 轮 setTimeout(0) 已删）。
+  assert.doesNotMatch(source, /attempt < 4/)
+  assert.doesNotMatch(source, /mounted\?\.getSnapshot/)
+  // 产物登记校验：右侧栏链路不过服务端 preview 的「已登记产物」检查，前端补等价校验。
+  assert.match(source, /const isRegisteredArtifact = /)
+  assert.match(source, /isRegisteredArtifact\(path\)/)
+})
+
 // ---------------------------------------------------------------------------
-// 面板优化：追加消息状态门控 + 删除任务（仅终态、二次确认、台账级联清理）。
-// 按钮可见性只读快照/detail 下发的 canFollowup / canDelete（服务端门控同源），
+// 面板优化：追加消息入口已移除；删除任务（仅终态、二次确认、台账级联清理）。
+// 按钮可见性只读快照/detail 下发的 canDelete（服务端门控同源），
 // 前端不再抄一份状态表——这条用例把「前端只看下发字段」渲染出来验证。
 // ---------------------------------------------------------------------------
 const flattenText = node => {
@@ -693,7 +839,7 @@ const snapshotOf = tasks => ({
   ok: true, at: 0, mainSession: { id: 's-main', live: true }, inboxCount: 0, tasks,
 })
 
-test('按钮门控：追加只给可续派任务，删除只给终态任务（读快照 canFollowup/canDelete）', () => {
+test('按钮门控：「追加」已移除；删除只给终态任务（读快照 canDelete）', () => {
   const { loaded, ctx, registrations, resetHooks, hooks } = load()
   loaded.apply(ctx)
   const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
@@ -718,25 +864,31 @@ test('按钮门控：追加只给可续派任务，删除只给终态任务（�
   const done = labelsOfCard('done', 't-done')
   const doneBlocked = labelsOfCard('done', 't-done-blocked')
   const failed = labelsOfCard('failed', 't-failed')
-  assert.ok(running.includes('追加'), '进行中任务应能追加消息')
+  // 「追加」按钮整体移除：点击走 window.prompt，而 Electron 渲染进程把它替换成抛错桩
+  // （prompt() is not supported.），从来发不出请求。卡片上不该再出现这个文案。
+  for (const [name, labels] of [['进行中', running], ['待派发', pending], ['已完成', done], ['失败', failed]]) {
+    assert.equal(labels.includes('追加'), false, `${name}任务不再有「追加」按钮`)
+  }
   assert.equal(running.includes('删除'), false, '进行中任务不能删除（先停止）')
   assert.ok(pending.includes('停止'))
-  assert.equal(pending.includes('追加'), false, '还没有子会话，不显示追加')
   assert.equal(pending.includes('删除'), false)
-  assert.equal(done.includes('追加'), false, '已完成是终态，不显示追加')
   assert.ok(done.includes('删除'), '终态任务应能删除')
   assert.equal(doneBlocked.includes('删除'), false, '还有活跃下游依赖的终态任务也不能删（服务端 canDelete=false）')
-  assert.equal(failed.includes('追加'), false, '失败任务改用重派，不显示追加')
   assert.ok(failed.includes('重派'))
   assert.ok(failed.includes('删除'))
   // 源码层：显示条件只认下发字段，且复用 stop 的内联二次确认样式。
-  assert.match(source, /task\.canFollowup === true/)
   assert.match(source, /task\.canDelete === true/)
   assert.match(source, /confirmDelete/)
   assert.match(source, /确认删除/)
+  // 追加消息的 UI 路径已删除（window.prompt / messageControl / sendMessage 都不在了）。
+  assert.doesNotMatch(source, /messageControl/)
+  assert.doesNotMatch(source, /const sendMessage/)
+  assert.doesNotMatch(source, /window\.prompt/)
+  // 消息类型文案（服务端数据标签）保留，不受按钮移除影响。
+  assert.match(source, /followup: '追加消息'/)
 })
 
-test('抽屉动作条同源门控：进行中给「追加消息」不给删除；终态给删除并提示先停止才可删', () => {
+test('抽屉动作条同源门控：「追加消息」已移除；进行中不给删除，终态给删除并提示先停止才可删', () => {
   const { loaded, ctx, registrations, resetHooks, hooks } = load()
   loaded.apply(ctx)
   const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
@@ -762,8 +914,10 @@ test('抽屉动作条同源门控：进行中给「追加消息」不给删除�
     return collect(foot, node => node.type === 'button').map(flattenText)
   }
   const running = footLabels(detailOf('t-run', { status: 'running', canFollowup: true, canDelete: false }))
-  assert.ok(running.includes('追加消息'))
+  // 抽屉底部同样不再有「追加消息」（canFollowup 仍由服务端下发，但面板不再提供该入口）。
+  assert.equal(running.includes('追加消息'), false)
   assert.equal(running.includes('删除'), false)
+  assert.ok(running.includes('打开子会话'), '进行中任务仍能跳到子会话')
   const done = footLabels(detailOf('t-done', { status: 'done', canFollowup: false, canDelete: true }))
   assert.equal(done.includes('追加消息'), false)
   assert.ok(done.includes('删除'))

@@ -39,7 +39,7 @@
 
 ### 入口可见性（U1）
 
-- **任务入口（会话头「☰ 任务」）只在主会话显示**：`client/src/gate.js` 的 `createMainViewGate` 判「当前会话是不是主会话」。
+- **任务入口（会话头「任务」按钮）只在主会话显示**：`client/src/gate.js` 的 `createMainViewGate` 判「当前会话是不是主会话」。
   - 当前会话信号：`uiSession.adapter.current.getSnapshot().key`（优先），取不到退 `sessions.list.getSnapshot().byId` 里
     `retainedBy.mainView > 0` 的会话 id（与 ds-bot 的 `shownSession()` 同口径）。
   - 身份判定：POST `/api/orchestrator` 的 `session-role` → `src/host-route.js` 用 `coordinatorStatus().id` 与请求里的 `sessionId`
@@ -339,10 +339,14 @@ target 可写根（`danger-full-access` 下用不上，只当注入失败时的�
 | `preview` | 预览台账里登记的文本产物（前 64 KiB） |
 | `stop` | 停止任务 |
 | `retry` | 重派 failed/orphaned |
-| `message` | 追加消息（仅可续派状态，见 `src/panel-gates.js`） |
+| `message` | 追加消息（仅可续派状态，见 `src/panel-gates.js`；**面板已无「追加」按钮**，只有协调者 `task_message` 在走） |
 | `delete` | 删除终态任务（台账级联清 messages/notifications） |
 
-面板 2s 轮询，连续失败退避 30s；任务卡「详情/停止/重派/追加/删除/打开子会话」，其中「追加」只在可续派状态显示、「删除」只在终态显示（两个布尔值 `canFollowup`/`canDelete` 由服务端判定并随 snapshot/detail 下发，见下节）；「产物」筛选打开产物库（按项目/日期分组，预览/复制/打开子会话/详情）。
+面板 2s 轮询，连续失败退避 30s；任务卡「详情/停止/重派/删除/打开子会话」，「删除」只在终态显示（`canDelete` 由服务端判定并随 snapshot/detail 下发，见下节）；「产物」筛选打开产物库（按项目/日期分组，预览/复制/打开子会话/详情）。
+
+> 面板不再有「追加」按钮：旧实现点击后走 `window.prompt`，而 Electron 渲染进程把 `window.prompt` 换成抛错桩
+> （`prompt() is not supported.`），从来没有真正发出过请求。`canFollowup` 仍随快照下发（服务端门控不变），只是
+> 前端不再渲染这个入口；续派与计划批准统一由协调者 `task_message` 完成。
 
 ## 面板与详情（UI U2）
 
@@ -366,14 +370,48 @@ target 可写根（`danger-full-access` 下用不上，只当注入失败时的�
 - **详情抽屉 7 区块**：概览、**最新回复**（B1，`detail.task.lastMessage`）、**brief**（验收/约束/背景/用户原话，
   结构化列表）、**目标状态**（G1，只读）、**消息**（最近 20 条；`followup` 标待发/已投递/投递失败）、
   **依赖**（上游前置 + 下游依赖本任务，各带状态与错误）、**产物**（路径/标签/存在性，路径可一键复制）。
-  每个区块都可折叠（`aria-expanded` + `0fr↔1fr` 过渡），都有空态。底部动作条：停止（内联二次确认）/重派/追加消息（仅可续派）/打开子会话/删除（仅终态，内联二次确认）。
+  每个区块都可折叠（`aria-expanded` + `0fr↔1fr` 过渡），都有空态。底部动作条：停止（内联二次确认）/重派/打开子会话/删除（仅终态，内联二次确认）。
   投递状态落在 `messages.meta_json.delivery`（pending → delivered/failed，只改 meta 不加行）；A3 之前的旧消息按紧随其后的 `delivery_failed` 行推断。
 - **按钮可见性与动作门控同源**：`src/panel-gates.js` 是唯一判定（`followupGate` / `deleteGate`）。
   服务端面板动作与 `task_message` 工具都先过它；`snapshot`/`detail` 再把 `canFollowup` / `canDelete`
-  下发给客户端，`client/src/views.js` 只读这两个布尔值渲染按钮，不另抄一份状态表——避免「按钮在、点了 409」或反过来的分叉。
+  下发给客户端，`client/src/views.js` 只读这两个布尔值渲染按钮（`canFollowup` 目前没有消费方），不另抄一份状态表——避免「按钮在、点了 409」或反过来的分叉。
   续派 = `running` / `waiting_user` / `waiting_auth` 且已有子会话；删除 = `done` / `failed` / `cancelled` / `orphaned`
   且没有活跃下游依赖。删除只清台账行（任务 + messages + notifications），不删产物文件与 memories（见 LIMITATIONS）。
 
+### 产物预览复用宿主右侧栏（U2.1）
+
+产物预览不自建视图：`client/src/client.js` 的 `openArtifactPreview(path)` 把面板里的点击转成宿主右侧栏的一次
+`ctx.sidebarRight.openResource(address)` 调用，Tab 类型由宿主的 `@deepseek-ai/dsh-client-ui-sidebar-documentpreview`
+（`kind:'text'`）认领，Markdown / 代码 / 图片 / PDF / Office 都有渲染器。
+
+- **地址**：`client/src/logic.js` 的 `fileAddressOf(sessionId, path)` 拼
+  `dsh-resource://file/session/<encodeURIComponent(sessionId)>/<逐段编码 path>`，与
+  `@deepseek-ai/dsh-util-workspace-path` 的 `sessionFileAddress` 逐条对齐（`:` 保持字面以兼容盘符）。
+  预览类型只认领 `session` 作用域（`absolute` 不会被认领），所以地址必须带会话 id。
+- **必须先切回会话**：右侧栏按 Session 挂载；任务面板占主栏时 `ctx.sidebarRight.mounted` 是 `undefined`，
+  直接 `openResource` 会抛 `sidebarRight: no session surface is mounted`。因此顺序固定为
+  `ctx.layout.selectPanel(null)` → `openResource`。
+- **探测前置、失败提示不依赖面板存活**：`openArtifactPreview` 先做完全部可用性探测（侧栏服务是否有
+  `openResource`、地址是否拼得出），只有探测全通过才 `selectPanel(null)`；`openResource` 抛错时若刚切过面板就
+  `selectPanel(PANEL_ID)` 切回来，再返回 `{ ok:false, reason, message }`。时序不靠轮询 `mounted` 的宏任务轮数
+  （早期实现的 4 轮 `setTimeout(0)` 已删）——座位没就绪就让宿主抛错、如实上报，避免静默失败。
+- **降级分四档**：`sidebar-missing`（旧 profile 没装侧栏）/ `no-session`（拿不到当前会话 id）/
+  `bad-path`（路径为空或编码不出地址）/ `host-refused`（宿主抛错，带原始 message）。`views.js` 的 `previewInSidebar` 按 reason 给出可区分的中文提示；
+  产物库行额外回退旧 `preview` 端点 + `previewBlock`（行内预览），任务卡 / 抽屉只提示「到产物页看或复制路径」。
+- **产物登记校验不绕开**：服务端 `preview` 端点只读「本任务已登记产物」（`panel-actions.js` 先查
+  `task.artifacts` 再读盘）；右侧栏链路是宿主直接读文件、不过这道校验，所以 `views.js` 的
+  `isRegisteredArtifact(path)` 在前端做等价校验——只允许快照卡片 / 产物库 / 详情抽屉这三个**服务端下发来源**
+  里出现过的路径。
+- **`fileAddressOf` 不 trim**：宿主 `sessionFileAddress` 也不 trim；POSIX 允许路径首尾带空格，
+  trim 会静默改写调用方的合法路径。
+- **不接管宿主几何**：宽度（首次 45% 视口、按 Session 记忆、上限 70%、保底 300px、可拖拽）、折叠、
+  多 Tab / 分栏、`<768px` 自动全屏都由宿主 `ui-layout` + `ui-sidebar-right` + dockkit 负责，插件不存任何预览状态。
+- **与 present 同源**：聊天交付卡片的预览也走 `ctx.sidebarRight.openResource(fileAddressFor(...))`，
+  面板打开的 Tab 与交付卡片落在同一个右侧栏，`reports/` 等绝对路径语义不变。
+- 依赖声明：`package.json` 的 `dsh.client.inject` 增加 `@deepseek-ai/dsh-client-ui-sidebar-right` 与
+  `@deepseek-ai/dsh-client-ui-sidebar-documentpreview`（**只是预取提示**，见下）；客户端的 `inject` 数组**不加**
+  `sidebarRight`——它用 `serviceOf('sidebarRight')` 现取，与 `uiSession`/`sessions` 同一口径。写进 `inject` 会让 cordis
+  在服务缺失时卡住 `apply`，那就没有「缺侧栏 → 提示 + 产物库行内回退」这条路了。
 
 ## 落盘与日志
 

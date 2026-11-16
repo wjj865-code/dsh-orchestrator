@@ -14,7 +14,7 @@ import {
 } from './constants.js'
 import {
   countTasks, matchesFilter, matchesQuery, groupArtifacts, artifactDate, artifactProject,
-  displayNameOf, textOf, listOf, timeLabel, shortPath,
+  displayNameOf, textOf, listOf, timeLabel, shortPath, fileAddressOf, fileAddressProblem,
 } from './logic.js'
 import {
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
@@ -27,6 +27,8 @@ import { createViews } from './views.js'
 export const createClient = (req) => {
   const React = req('react')
   const h = React.createElement
+  // sidebarRight 不进 inject：它是可选能力，缺了也要能加载面板（预览回退行内）。
+  // 与 uiSession / sessions 同一口径——用 serviceOf 现取，服务晚就绪也能拿到。
   const inject = ['slots', 'layout', 'uiWorkspace']
 
   const { Icon, Badge, Chip, EmptyState, Banner, SkeletonList } = createUi(h)
@@ -154,10 +156,50 @@ export const createClient = (req) => {
       void mainView.refresh()
     }
 
+    // 产物预览：复用宿主的会话右侧栏（ui-sidebar-right 的 file Tab，Markdown/代码/图片/PDF/Office 都有渲染器）。
+    // 两个硬约束：
+    // 1) 侧栏只在会话视图里挂载 —— 面板占主栏时 ctx.sidebarRight.mounted 是 undefined，openResource 会抛；
+    //    所以要先 selectPanel(null) 切回会话。
+    // 2) 侧栏 Tab 只认领 `dsh-resource://file/session/<id>/<path>` 作用域（absolute 不被文件预览类型认领），
+    //    所以地址必须带会话 id，由 fileAddressOf 拼。
+    //
+    // 返回 { ok, reason, message }，不只给 false：四条失败路径（未装插件 / 没会话 id / 路径非法 /
+    // 宿主拒绝）要能分辨，否则真机排查只能看到同一句提示。
+    //
+    // 失败收场不依赖面板存活：切过面板就一定切回 PANEL_ID，让提示落在用户看得见的地方。
+    // 时序不靠猜（不轮询 mounted 的宏任务轮数）：宿主侧栏座位没就绪就让 openResource 抛，
+    // 抛了就把面板切回来如实报「尚未就绪」，而不是静默吞掉。
+    //
+    // 无条件切面板：这个函数只由面板内的按钮调用，此刻主栏一定就是 PANEL_ID，
+    // 不必再去问 layout.panelInfo（少一条可选链，也少一条「探测不到就不切」的分支）。
+    const openArtifactPreview = path => {
+      const sidebar = serviceOf('sidebarRight')
+      // 可用性探测全部前置：任何一条不满足都在切换面板之前返回，面板与提示都还在原位。
+      if (typeof sidebar?.openResource !== 'function') return { ok: false, reason: 'sidebar-missing' }
+      // 成因分开报：路径为空不是「拿不到会话」，混成一句会把排查引到错的地方。
+      // 会话 id 只取一次，探测与拼地址用同一个值（避免两次读取之间切了会话）。
+      const sessionId = readSessionId()
+      const problem = fileAddressProblem(sessionId, path)
+      if (problem !== null) return { ok: false, reason: problem }
+      const address = fileAddressOf(sessionId, path)
+      if (address === '') return { ok: false, reason: 'bad-path' }
+      ctx.layout.selectPanel(null)
+      try {
+        sidebar.openResource(address)
+        return { ok: true }
+      } catch (error) {
+        ctx.layout.selectPanel(PANEL_ID)
+        return { ok: false, reason: 'host-refused', message: String(error?.message ?? error) }
+      }
+    }
+
     // 侧栏底部不再注册入口（用户要求删掉）；任务面板从会话头按钮进入。
     ctx.slots.inject('main', () => ctx.slots.register({
       name: 'main', key: PANEL_ID,
-      inject: () => ({ openSession: id => ctx.uiWorkspace.openSession(id) }),
+      inject: () => ({
+        openSession: id => ctx.uiWorkspace.openSession(id),
+        openArtifactPreview,
+      }),
     }, TasksPanel))
 
     // 侧栏「插件」下方（plugins order 0 / schedules order 10）的启动器入口；main 面板与条目同 id。
@@ -175,7 +217,7 @@ export const createClient = (req) => {
       name: 'sidebar.panellist', id: LAUNCHER_ID, order: 5, label: () => '主会话',
     }, LauncherIcon))
 
-    // 会话头「☰ 任务」：hooks.mainView 是任务入口闸门；false/未判定时组件返回 null。
+    // 会话头「任务」入口：hooks.mainView 是任务入口闸门；false/未判定时组件返回 null。
     ctx.slots.inject('conversation.header.leading', () => ctx.slots.register({
       name: 'conversation.header.leading',
       inject: () => ({
@@ -196,6 +238,8 @@ export const createClient = (req) => {
       groupArtifacts,
       artifactDate,
       artifactProject,
+      fileAddressOf,
+      fileAddressProblem,
       TONE_COLOR,
       STYLE_TEXT,
     },

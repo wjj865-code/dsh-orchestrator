@@ -1,12 +1,12 @@
 /**
  * 任务入口闸门（P7 / T7.2 迁入）：fail-closed 判定「当前会话是不是主会话」。
  *
- * 只有宿主明确回答 isMain === true 才显示「☰ 任务」；拿不到会话 / 请求失败 / 响应不 ok
+ * 只有宿主明确回答 isMain === true 才显示会话头的「任务」入口；拿不到会话 / 请求失败 / 响应不 ok
  * 一律隐藏，失败不缓存，靠会话切换订阅 + 5 秒兜底轮询重试。
  */
 import { MAIN_VIEW_POLL_MS } from './constants.js'
 
-// 任务入口闸门（fail-closed）：只有宿主明确回答「当前会话就是主会话」才显示「☰ 任务」。
+// 任务入口闸门（fail-closed）：只有宿主明确回答「当前会话就是主会话」才显示会话头的「任务」入口。
 // 当前会话信号：uiSession.adapter.current（优先）→ sessions.list 的 retainedBy.mainView（兜底）；
 // 身份判定：POST session-role，宿主用台账 main_session_id 比较（与 task_* 工具同一信号）。
 // 降级：拿不到当前会话 / 请求失败 / 响应不是 ok:true → 一律隐藏；失败不缓存，靠会话切换或

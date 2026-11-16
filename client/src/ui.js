@@ -19,7 +19,6 @@ export function createUi(h) {
     clock: ['M12 7v5l3 2', 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z'],
     stop: ['M8 8h8v8H8z'],
     retry: ['M3 12a9 9 0 1 0 3-6.7', 'M3 4v5h5'],
-    message: ['M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-5A8 8 0 1 1 21 12z'],
     trash: ['M4 7h16', 'M9 7V5h6v2', 'M6 7l1 13h10l1-13', 'M10 11v5', 'M14 11v5'],
     external: ['M14 4h6v6', 'M20 4l-9 9', 'M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4'],
     folder: ['M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
@@ -27,6 +26,8 @@ export function createUi(h) {
     goal: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'],
     inbox: ['M3 13h4l1.5 2.5h7L17 13h4', 'M5.5 5h13l2.5 8v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4z'],
     sparkle: ['M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z'],
+    // 会话头「任务」入口：三条横线（面板顶栏同款图标语言，替代原来的裸字符 ☰）。
+    menu: ['M4 7h16', 'M4 12h16', 'M4 17h16'],
     dot: ['M12 12h.01'],
   }
   const Icon = ({ name, size = 14, className }) => h('svg', {

@@ -94,3 +94,36 @@ export const shortPath = value => {
   const text = typeof value === 'string' ? value : ''
   return text.length > 60 ? `${text.slice(0, 59)}…` : text
 }
+
+// 产物预览走宿主右侧栏：地址语法与 @deepseek-ai/dsh-util-workspace-path 的 sessionFileAddress 逐条对齐。
+// `dsh-resource://file/session/<编码后的 sessionId>/<逐段编码的 path>`；`:` 保持字面（Windows 盘符），
+// 反斜杠归一成 `/`、去掉开头的 `./`。路径可绝对也可相对 workspace 根，由宿主的 Session 文件系统解析。
+// 右侧栏只认领 session 作用域（absolute 作用域不被文件预览 Tab 认领），所以必须带 sessionId。
+//
+// 不 trim：POSIX 允许路径首尾带空格，`/tmp/report .md` 与 `/tmp/report.md` 是两个文件，
+// trim 会静默改写调用方的合法路径。宿主 sessionFileAddress 也不 trim —— 对齐口径优先。
+const encodeAddressSegment = segment => encodeURIComponent(segment).replace(/%3A/gi, ':')
+
+// 空串是「拼不出地址」的统一信号，调用方据此不再发请求；成因（没会话 id / 路径为空 / 编码失败）由
+// fileAddressProblem 分辨，避免把「路径为空」误报成「拿不到会话」。
+export const fileAddressOf = (sessionId, path) => {
+  if (fileAddressProblem(sessionId, path) !== null) return ''
+  const normalized = path.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '')
+  try {
+    const encoded = normalized.split('/').map(encodeAddressSegment).join('/')
+    return `dsh-resource://file/session/${encodeAddressSegment(sessionId)}/${encoded}`
+  } catch {
+    // 孤立代理项等非法 UTF-16 会让 encodeURIComponent 抛 URIError；按「拼不出地址」处理。
+    return ''
+  }
+}
+
+/**
+ * 拼地址前的成因判定，供调用方给出可分辨的失败原因。
+ * @returns {null|'no-session'|'bad-path'} null 表示可以拼地址。
+ */
+export const fileAddressProblem = (sessionId, path) => {
+  if (typeof sessionId !== 'string' || sessionId === '') return 'no-session'
+  if (typeof path !== 'string' || path === '') return 'bad-path'
+  return null
+}

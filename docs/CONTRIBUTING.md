@@ -99,5 +99,5 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
 - 只读/计划/完整访问都靠平台的 `sandbox/mode` 注入；改沙箱逻辑前先读 [LIMITATIONS.md](LIMITATIONS.md) 的「平台 / 沙箱」。
 - 协调者工具面由 `cordis.patch.yml` 的 `preset-tools` allow 名单收窄，执行层还有 `COORDINATOR_DENY` + guard 兜底；两处要一起改。
 - 新增文案先确认受众（协调者 / 子会话 / 用户），`task_report` 的返回是给**子会话**看的，别写只有协调者能做的动作。
-- 会话头「☰ 任务」入口依赖宿主身份信号，默认隐藏；不要把它当安全边界。
+- 会话头「任务」入口依赖宿主身份信号，默认隐藏；不要把它当安全边界。
 - 平台契约会变（rc 包），升级 DSH 后按 `docs/probes/` 重跑探针再动代码。
