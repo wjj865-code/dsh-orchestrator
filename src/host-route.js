@@ -107,6 +107,9 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
         // 不让 handler 抛给 host-webserver（那里只会 warn + 400 空体，客户端看不到原因）。
         return json(panelFailure('OPEN_MAIN_FAILED', { reason: error?.message ?? error }), 500)
       }
+      if (result?.ok === true && result.onboardingError) {
+        return json(panelFailure('OPEN_MAIN_FAILED', { reason: result.onboardingError }), 503)
+      }
       if (result?.ok === true) return json({ ok: true, sessionId: result.sessionId, created: result.created === true }, 200)
       return json(panelFailure('OPEN_MAIN_FAILED', { reason: result?.error ?? '创建主会话失败' }), 500)
     }

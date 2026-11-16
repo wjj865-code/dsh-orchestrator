@@ -8,6 +8,7 @@ import { createSettlementReporter } from './src/settlement.js'
 import { createDeliveredSweeper } from './src/delivered.js'
 import { taskLabel } from './src/task-label.js'
 import { createMainSession } from './src/main-session.js'
+import { createOnboarding } from './src/onboarding.js'
 import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
@@ -235,12 +236,20 @@ export async function apply(ctx, rawConfig = {}) {
     workspaces: () => service('workspaceRegistry'),
     defaultCwd: join(stateDir(), 'workspace'),
     presetFor: agent => service('agentPresets')?.presetForSession?.(agent?.session),
-    selectPreset: (agent, presetId) => service('agentPresets')?.select?.(agent, presetId),
+    selectPreset: (agent, presetId) => {
+      const presets = service('agentPresets')
+      if (typeof presets?.select !== 'function') throw new Error('缺少 agentPresets.select 服务')
+      return presets.select(agent, presetId)
+    },
     workspacePath: join(stateDir(), 'workspace'),
     workspaceName: '指挥舱',
     log: (event, detail) => logger.log(event, { detail }),
   })
 
+  const onboarding = createOnboarding({
+    db, resolveAgent: id => service('agents')?.get?.(id),
+    ensurePreset: agent => mainSession.guardPreset(agent), warn: warnings,
+  })
   const current = resolveCoordinator()
   const ensureDigestFor = async sessionId => {
     const schedule = service('schedule')
@@ -268,7 +277,10 @@ export async function apply(ctx, rawConfig = {}) {
     const id = resolvedCoordinatorId()
     if (agent !== undefined && id !== undefined && agent.id === id) {
       scheduleRestriction(agent)
-      // UI 打开空白主会话可能把预设 rebind 成 default；agent 创建时拉回协调者预设。
+      // UI 可能 rebind default；待欢迎会话由onboarding先等待预设恢复再启动。
+      void onboarding.start(agent.id)
+        .then(result => { if (result.ok === false) warnings(`dsh-orchestrator: ${result.error}`) })
+        .catch(error => warnings(`dsh-orchestrator: 首次介绍启动失败：${error?.message ?? error}`))
       void mainSession.guardPreset?.(agent).catch(error => warnings(`dsh-orchestrator: 主会话预设守护失败：${error?.message ?? error}`))
       // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑，并对一次子会话目录。
       void ensureDigestFor(agent.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
@@ -606,6 +618,8 @@ export async function apply(ctx, rawConfig = {}) {
         if (result?.ok === true && typeof result.sessionId === 'string') {
           const agent = resolveCoordinator()
           if (agent !== undefined && agent.status !== 'running') checkScheduleCapability(agent)
+          const welcome = await onboarding.start(result.sessionId)
+          if (welcome.ok === false) result.onboardingError = welcome.error
           try { await ensureDigestFor(result.sessionId) } catch (error) {
             warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`)
           }

@@ -7,7 +7,8 @@
 // stopReason 取值域来自平台类型：completed / aborted / error / max-tokens / refusal。
 // B1：结算同时把子会话最后一条 assistant 消息落进台账（短内联 / 长写 reports 文件），
 //     主会话用 task_status 就能读到全文，不必再打开子会话历史；delivered/done 上只补消息、不改状态。
-import { addMessage, findTaskBySession, getTask, setTaskLastMessage, transition } from './ledger.js'
+import { addMessage, findTaskBySession, getTask, getSetting, setTaskLastMessage, transition } from './ledger.js'
+import { workspaceIndexSavedKey } from './workspace-index.js'
 import { captureLastMessage, messageText, summarizeText } from './last-message.js'
 import { statusLabel } from './state.js'
 import { notifyWorktreeOf } from './worktree-request.js'
@@ -178,7 +179,11 @@ export function createSettlementReporter({
       log('task.settle.ignored', { taskId: task.id, sessionId: task.session_id ?? sessionId, detail: { status: from, stopReason: stopReason ?? null, source } })
       return { action: 'skipped', reason: 'not-running', taskId: task.id, from }
     }
-    const mapped = mapSettle(stopReason, { progressCount: task.progress_count ?? 0 })
+    const indexIncomplete = stopReason === 'completed' && Array.isArray(task.brief?.workspaceIndexEntries)
+      && getSetting(db, workspaceIndexSavedKey(task.id)) === undefined
+    const mapped = indexIncomplete
+      ? { status: 'failed', reason: '工作区索引未完整持久化（缺少有效 workspace_index 回报），可用 task_retry 重试', stopReason }
+      : mapSettle(stopReason, { progressCount: task.progress_count ?? 0 })
     // 完整正文（不截断）先算出来：摘要给通知/死因，正文进台账或 reports 文件。
     const fullText = typeof lastMessage === 'string' && lastMessage !== '' ? messageText(lastMessage) : messageText(output)
     const summary = summarizeText(fullText)

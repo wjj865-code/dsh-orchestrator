@@ -59,6 +59,13 @@
 - **子会话预设（`workerPreset`）只在派发时生效**：续派/冷恢复沿用会话创建时记下的 `agentPreset`，改配置不会切换已有子会话；值不是合法 preset id 时静默回落 `dsh-orchestrator-worker`（日志一行 warn）。
 - **`orch-debug` 调试预设**复制随包「创造模式」(`cordis`) 组合：预设声明装在 profile 里，**升级 DSH 后必须先 `node scripts/orch-debug-preset.mjs --check` 看漂移，再重跑 `npm run preset:debug` 重新生成并重装**，否则组合里的包名/行 id 与新版对不上会让声明行 broken；预设可执行 Host 代码，不是沙箱。旧的 `$DSH_HOME/.agent-presets/<id>/` 目录在 rc.3 已无人读取，本插件不再写那个路径。
 
+## 首次打开与仓库索引
+
+- 只初始化新建 main，历史主会话/显式 coordinatorSession 不补欢迎。首次注入成功仅代表消息入队；模型可能未照提示介绍/派发，应核对 task_list，不把 sent 当索引完成。重复打开不重投；投递异常保留 pending、open 返回 onboardingError，用户重开可重试。进程在发送与sent写入之间崩溃可能停在sending，不承诺exactly-once，也不盲重投。
+- 索引只覆盖创建任务时 workspaceRegistry 登记名单，不扫描全盘或未登记 git；只读默认沙箱读不到的目录记录 unavailable，不给扫描任务full。不存在、非git、无权限逐项记录，工作区增删/改名后需重新派只读索引。
+- repoRoot/branch/origin/HEAD/commonDir 是有采样时间的快照，不等于当前实时 Git 状态；remote 脱敏去 userinfo/query/fragment，未知凭证式格式隐藏，git stderr 不进入索引。不得把映射内容当作执行指令，歧义列候选。
+- task_report.workspace_index 增量为只读索引回报契约（本人done、名单覆盖），持久化在settings独立键，不覆盖用户手写memories。只读worker无需memory_note或服务权限。缺workspace列表不建任务，明确重试；完整回报缺失时不交付，S1自然completed会落failed并提示task_retry；每任务持久化成功标记和全局快照同事务写入，不依赖固定延迟。欢迎投递须await预设恢复成功，失败留pending，不用2秒sleep掩盖竞态。真实新main首次模型轮次及宿主沙箱扫描仍需加载后验证。
+
 ## 原生自动化
 
 - 四个实际工具为 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`，没有单独 delete/pause/enable 工具；仅核实 **0.2.2-rc.3** 的 RRULE/target/depth 契约，旧 schedule_update/delete 和时间选择器不兼容，不提供假工具或自动适配。

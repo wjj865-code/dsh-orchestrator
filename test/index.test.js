@@ -14,7 +14,7 @@ function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', '
   return {
     id,
     // 真实 agent 一定带 session；dispatch 的就绪检查依赖它。
-    session: { id, header: {} },
+    session: { id, header: { agentPreset: 'dsh-orchestrator-coordinator' } },
     restrictions,
     injected,
     steer(message) { injected.push(message) },
@@ -479,6 +479,58 @@ test('自定义主会话缺原生定义时不崩；running 初始化延到 idle�
   }))
   assert.equal((await response.json()).ok, true)
   assert.equal(f.warnings.filter(message => /当前缺失自动化能力/.test(message)).length, 1)
+}))
+
+test('首次打开启动欢迎模型轮次，正常task_create只读索引回报可持久化', withHome(async home => {
+  const main = makeAgent('s-1')
+  const entries = [{ id: 'ws-1', title: '项目别名', path: home }]
+  const f = fakeCtx({ agent: main, sessionController: { async create() { return { sessionId: 's-1' } }, async rename() {} }, workspaces: { list: () => entries } })
+  await apply(f.ctx, {})
+  const open = () => f.routes[0].fetch(new Request('http://x/api/orchestrator', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: 'open-main' }) }))
+  await Promise.all([open(), open()])
+  await open()
+  assert.equal(main.injected.length, 1)
+  assert.match(main.injected[0].content[0].text, /介绍后立即调用 task_create/)
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  const created = await byName.task_create.execute({ title: '工作区与仓库索引', goal: '索引', readOnly: true, worktree: false, acceptance: ['完整JSON'] }, { agent: main })
+  const id = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const detail = await byName.task_detail.execute({ task_id: id }, { agent: { id: 'm-1' } })
+  assert.match(detail, /项目别名/)
+  assert.match(detail, /workspace-index.mjs/)
+  const payload = JSON.stringify({ entries: [{ ...entries[0], status: 'not_git', sampledAt: new Date().toISOString() }] })
+  assert.match(await byName.task_report.execute({ task_id: id, status: 'done', workspace_index: payload }, { agent: main }), /被拒绝/)
+  assert.match(await byName.task_report.execute({ task_id: id, status: 'done' }, { agent: { id: 'm-1' } }), /必须用 workspace_index/)
+  await byName.task_report.execute({ task_id: id, status: 'done', workspace_index: payload, summary: '索引已扫描' }, { agent: { id: 'm-1' } })
+  const context = await byName.project_context.execute({ workspaces: true }, { agent: main })
+  assert.match(context, /项目别名/)
+  assert.match(context, /采样快照（非实时/)
+  assert.match(context, /not_git/)
+}))
+
+test('首次介绍投递失败可见，重开重试而老主会话不补初始化', withHome(async () => {
+  const main = makeAgent('s-1')
+  const steer = main.steer
+  main.steer = () => { throw new Error('not ready') }
+  const f = fakeCtx({ agent: main, sessionController: { async create() { return { sessionId: 's-1' } }, async rename() {} } })
+  await apply(f.ctx, {})
+  const open = () => f.routes[0].fetch(new Request('http://x/api/orchestrator', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: 'open-main' }) }))
+  const failed = await open()
+  assert.equal(failed.status, 503)
+  assert.match(JSON.stringify(await failed.json()), /首次介绍投递失败/)
+  main.steer = steer
+  assert.equal((await open()).status, 200)
+  assert.equal(main.injected.length, 1)
+}))
+
+test('新主会话为default且缺preset选择服务时拒绝欢迎，不误报恢复成功', withHome(async () => {
+  const main = makeAgent('s-1')
+  main.session.header.agentPreset = 'standard'
+  const f = fakeCtx({ agent: main, sessionController: { async create() { return { sessionId: 's-1' } }, async rename() {} } })
+  await apply(f.ctx, {})
+  const response = await f.routes[0].fetch(new Request('http://x/api/orchestrator', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: 'open-main' }) }))
+  assert.equal(response.status, 503)
+  assert.equal(main.injected.length, 0)
+  assert.match(JSON.stringify(await response.json()), /预设恢复未成功/)
 }))
 
 test('协调者可用 present 交付产物：不在 COORDINATOR_DENY，执行层 guard 放行', withHome(async () => {

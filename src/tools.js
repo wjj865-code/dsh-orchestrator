@@ -3,6 +3,8 @@ import { basename, isAbsolute, join, resolve } from 'node:path'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
+import { INDEX_TITLE, registeredWorkspaces, loadWorkspaceIndex, saveWorkspaceIndex, workspaceIndexText } from './workspace-index.js'
+import { fileURLToPath } from 'node:url'
 import { taskLabel, taskLabelWithId } from './task-label.js'
 import { canTransition, statusLabel } from './state.js'
 import { dependencyState, promoteDependents, upstreamBrief, validateDepends } from './deps.js'
@@ -300,6 +302,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const projectKey = projectKeyOf(dir)
     const title = workspaceForPath(dir)?.title ?? basename(dir)
     const lines = [`【项目】${title}`, `【路径】${dir}`]
+    const index = workspaceIndexText(loadWorkspaceIndex(db), dir)
+    if (index !== '') lines.push(index)
     try {
       const entries = readdirSync(dir, { withFileTypes: true })
         .filter(entry => entry.name !== 'node_modules' && entry.name !== '.git' && !/^\.env/.test(entry.name))
@@ -458,7 +462,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return `${targetError}。`
       }
       // 没传 target 时才推断：唯一命中用它的 path 并落 target_dir；多命中列候选、不建任务；无命中仍回指挥舱。
-      let effectiveTarget = targetText === '' ? undefined : targetText
+      let effectiveTarget = targetText === '' ? (args.title === INDEX_TITLE ? defaultDir() : undefined) : targetText
       let inferred
       if (effectiveTarget === undefined) {
         const match = inferWorkspaceTarget({ title: args.title, goal: args.goal }, workspaceList())
@@ -582,6 +586,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           ? { state: 'degraded', source: decision.source }
           : { state: 'requested', source: decision.source, repoRoot: facts.repoRoot, base: decision.base, mode: 'new' }
       }
+      // 只读索引任务由模型经正常 task_create 创建；名单来自注册服务，worker 不增加服务权限。
+      let workspaceIndexEntries
+      if (title === INDEX_TITLE) {
+        if (!readOnly || planFirst || fullAccess) return '工作区与仓库索引必须是普通只读任务，不使用 full 或计划模式。'
+        try {
+          workspaceIndexEntries = registeredWorkspaces(typeof workspaces === 'function' ? workspaces() : workspaces)
+        } catch { return '工作区名单不可用：没有创建扫描任务，请稍后明确重试。' }
+      }
       // T1：创建详情是台账里的快照，brief 只负责把子会话引到 task_detail。
       // 经验在创建前算好：完整内容写记忆文件（指针进 brief.experience），写不了文件时存内联块；
       // 两种形态都只进 task_detail，不进 brief 提示词，提示词长度因此与经验条数无关。
@@ -609,6 +621,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         ...(planFirst ? { planFirst: true } : {}),
         ...(fullAccess ? { access: 'full' } : {}),
         ...(experience === undefined ? {} : { experience }),
+        workspaceIndexEntries,
+        workspaceIndexScript: workspaceIndexEntries === undefined ? undefined : fileURLToPath(new URL('../scripts/workspace-index.mjs', import.meta.url)),
       }
       const task = createTask(db, {
         brief,
@@ -1085,9 +1099,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     wrap('project_context', '读项目背景（README/AGENTS/package 等白名单文件、顶层结构、最近任务、相关记忆）；只读，不开放任意文件读取。', objectSchema({
       target: str('项目绝对目录；不传则按 query 推断或使用主会话目录'),
       query: str('可选关键词，用于推断项目和匹配记忆'),
+      workspaces: { type: 'boolean', description: 'true 返回已登记工作区与持久化仓库采样索引，不扫描全盘' },
     }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
+      if (args.workspaces === true) {
+        return `【已登记工作区】\n${workspaceList().map(item => JSON.stringify({ id: item.id, title: item.title, path: item.path })).join('\n')}\n${workspaceIndexText(loadWorkspaceIndex(db)) || '尚无仓库索引，派只读工作区与仓库索引任务。'}`
+      }
+      if (typeof args.query === 'string' && !args.target) {
+        const match = inferWorkspaceTarget({ title: args.query, goal: args.query }, workspaceList())
+        if (match.ok === false) return `匹配多个工作区，请确认 target：\n${match.candidates.map(item => `${item.title} → ${item.path}`).join('\n')}`
+      }
       let dir
       if (typeof args.target === 'string' && args.target.trim() !== '') {
         const error = validateTargetDir(args.target)
@@ -1170,6 +1192,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       task_id: str('任务编号，创建时给过'),
       status: { type: 'string', enum: REPORT_STATUS, description: 'progress / done / blocked / needs_auth' },
       summary: str('一句话说明这轮做了什么'),
+      workspace_index: str('只读工作区与仓库索引任务专用：完整扫描JSON，entries含id/path/status/sampledAt和repoRoot/branch/head/origin/commonDir；仅done且本人可持久化'),
       question: str('blocked / needs_auth 时可选：要用户拍板的问题'),
       options: strList('blocked / needs_auth 时可选：给用户的选项，如 ["方案A", "方案B"]'),
       artifacts: {
@@ -1196,6 +1219,15 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (reporter !== undefined && task.session_id !== null && task.session_id !== undefined
         && String(reporterId) !== String(task.session_id)) {
         return `回报被拒绝：任务「${labelFor(task)}」属于子会话 ${task.target ?? task.session_id}，当前回报方不是它。`
+      }
+      if (args.workspace_index !== undefined) {
+        if (args.status !== 'done' || String(reporterId) !== String(task.session_id) || !reporterId) return '索引回报被拒：仅任务自己的子会话 done 可持久化。'
+        try { saveWorkspaceIndex(db, task, args.workspace_index) } catch {
+          return '索引未保存、任务未交付：格式或名单不合法；修正后重新回报。'
+        }
+      }
+      if (args.status === 'done' && Array.isArray(task.brief?.workspaceIndexEntries) && args.workspace_index === undefined) {
+        return '索引任务必须用 workspace_index 回报完整JSON；尚未交付，请补充回报。'
       }
       // 显式产物优先；done 时再用 workspaceChanges 摘要补齐整轮改动文件（同路径去重，显式标签覆盖自动标签）。
       const normalized = normalizeArtifacts(task, args.artifacts)

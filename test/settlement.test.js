@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { openLedger, createTask, getTask, transition, addMessage, recentMessages, recordProgress, setTaskArtifacts } from '../src/ledger.js'
 import { createSettlementReporter, mapSettle, outputSummary, PAUSED_REASON } from '../src/settlement.js'
 import { MAX_INLINE_BYTES, SUMMARY_CHARS } from '../src/last-message.js'
+import { saveWorkspaceIndex } from '../src/workspace-index.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 const setup = async ({ status = 'running', sessionId = 'child-1', progress = 0, beforeNotify, terminal } = {}) => {
@@ -43,6 +44,30 @@ const setup = async ({ status = 'running', sessionId = 'child-1', progress = 0, 
     kinds: () => db.prepare('SELECT kind FROM messages WHERE task_id = ? ORDER BY seq').all(task.id).map(row => row.kind),
   }
 }
+
+test('索引缺完整持久化时自然completed落failed；成功证据按任务保留', async () => {
+  const db = await openLedger(tempDir())
+  const entries = [{ id: 'ws', title: 'alias', path: '/work/repo' }]
+  const make = () => {
+    const task = createTask(db, { brief: sampleBrief({ title: '工作区与仓库索引', workspaceIndexEntries: entries }), readOnly: true, coordinatorSession: 's-1' })
+    return transition(db, task.id, 'running', { sessionId: task.id })
+  }
+  const incomplete = make()
+  const saved = make()
+  const latest = make()
+  const payload = JSON.stringify({ entries: [{ ...entries[0], status: 'not_git', sampledAt: new Date().toISOString() }] })
+  assert.throws(() => saveWorkspaceIndex(db, incomplete, '{broken'))
+  saveWorkspaceIndex(db, saved, payload)
+  saveWorkspaceIndex(db, latest, payload)
+  const pushed = []
+  const reporter = createSettlementReporter({ db, notifier: { push: item => pushed.push(item) } })
+  assert.equal(reporter.report({ taskId: incomplete.id, stopReason: 'completed' }).to, 'failed')
+  assert.match(getTask(db, incomplete.id).error, /task_retry/)
+  assert.equal(reporter.report({ taskId: incomplete.id, stopReason: 'completed' }).action, 'skipped')
+  assert.equal(reporter.report({ taskId: saved.id, stopReason: 'completed' }).to, 'delivered', '全局索引被其他任务覆盖不影响本任务成功标记')
+  assert.deepEqual(pushed.map(item => item.status), ['failed', 'delivered'])
+  db.close()
+})
 
 test('mapSettle：平台五个 stopReason 的映射与死因', () => {
   // 两段式终态：completed 先落「已交付待确认」，确认/超时才 done。

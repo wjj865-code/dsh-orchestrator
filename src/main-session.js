@@ -1,5 +1,7 @@
 // 主会话：唯一协调者。创建/打开/重建都从这里走；不再由 task_create 自动绑定。
 import { mkdir } from 'node:fs/promises'
+import { setSetting } from './ledger.js'
+import { onboardingKey } from './onboarding.js'
 import { getMainSessionId, getMainSessionPreset, setMainSessionId, setMainSessionPreset } from './ledger.js'
 
 export const PRESET_ID = 'dsh-orchestrator-coordinator'
@@ -33,9 +35,9 @@ export function createMainSession({ db, config, agents, sessionController, works
     if (agent === undefined) return false
     const current = sessionPreset(agent)
     if (current === PRESET_ID) return true
-    const select = typeof selectPreset === 'function' ? selectPreset(agent, PRESET_ID) : undefined
+    if (typeof selectPreset !== 'function') return false
     try {
-      await select
+      await selectPreset(agent, PRESET_ID)
       log('main.session.preset-restored', { sessionId: agent.id, from: current ?? null })
       return true
     } catch (error) {
@@ -123,6 +125,7 @@ export function createMainSession({ db, config, agents, sessionController, works
     } catch (error) {
       log('main.session.rename.failed', { sessionId, error: `${error?.message ?? error}` })
     }
+    setSetting(db, onboardingKey(sessionId), 'pending')
     setMainSessionId(db, sessionId)
     setMainSessionPreset(db, typeof created?.agentPreset === 'string' && created.agentPreset !== '' ? created.agentPreset : PRESET_ID)
     log('main.session.created', { sessionId, agentPreset: created?.agentPreset ?? null })

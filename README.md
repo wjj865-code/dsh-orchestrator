@@ -65,6 +65,11 @@ https://github.com/wjj865-code/dsh-orchestrator
 
 侧栏「◈ 主会话」（或面板「打开主会话」）。协调者预设只做协调：没有 `read`/`write`/`bash`，也不会阻塞等待子任务。
 
+首次新建主会话会自动开启介绍轮次：先介绍能做什么及权限边界，再立即派一个只读「工作区与仓库索引」子任务。只扫描 **DSH 已登记**的工作区（标题/路径及 git 根、当前分支、origin、HEAD、commonDir），不全盘搜 git、不 fetch/pull，不写文件；非仓库/不存在/无权限单项记录，remote 去凭证。结果通过 `task_report.workspace_index` 存入插件 settings 的独立采样快照，不覆盖手写记忆。后续 `project_context({workspaces:true})` 查看全部映射，指定项目也会附仓库快照；有歧义列候选、使用前核对实时状态。
+
+- 每个**新建**主会话一次；重复打开/刷新/并发入口不重复，升级后历史主会话不补初始化。介绍/派发由模型执行，不承诺模型一定遵循；投递失败在打开结果显示，重新打开可重试，索引任务失败用 `task_retry`，不盲重派。
+- 索引不需要 `access:full`，仍由默认只读 worker 执行，名单与脚本在 `task_detail` 给出；如果沙箱或权限读不到某工作区，记录 unavailable，不为扫描全盘升权。自动化不开放给 worker。
+
 ### 2. 说需求 = 派单
 
 用自然语言对主会话说需求即可，协调者会调用 `task_create` 拆任务：

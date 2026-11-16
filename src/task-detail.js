@@ -112,6 +112,10 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   // P9：隔离任务说明「在哪个检出/分支、产物不在用户工作树、合并由用户决定」。
   const worktreeLines = worktreeDetailLines(task)
   if (worktreeLines.length > 0) lines.push(...worktreeLines)
+  if (Array.isArray(brief.workspaceIndexEntries)) {
+    lines.push(`【工作区名单】仅扫描这些DSH已登记目录，不全盘递归搜git：\n${JSON.stringify(brief.workspaceIndexEntries)}`)
+    lines.push(`【只读索引脚本】${brief.workspaceIndexScript}\n用 node 脚本路径 + 上述名单JSON作为一个参数执行（正确引用，勿拼shell）；stdout即完整JSON。只读，不fetch/pull、不写文件，单项失败继续，remote去凭证。用 task_report({status:'done',workspace_index:完整JSON字符串,summary:'索引已扫描'}) 回报；宿主验证名单并存settings快照，不允许memory_note越权。采样非实时、歧义列候选。`)
+  }
   const acceptance = list(brief.acceptance)
   if (acceptance.length > 0) lines.push(`【验收标准】\n${acceptance.map(item => `- ${single(item)}`).join('\n')}`)
   const constraints = list(brief.constraints)

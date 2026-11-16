@@ -20,6 +20,14 @@
 
 复用判定以台账 `settings.main_session_preset` 为准；UI 空白会话可能被 rebind 成默认预设，插件会在 `agent/created` 和复用前调用 `agentPresets.select` 拉回，失败只记日志并由 guard 兜底。
 
+### 首次打开与工作区索引
+
+- `main-session.js` 仅新建主会话写 `settings.main_onboarding:<id>=pending`，旧主会话/配置覆盖不会因升级补初始化。复用既有 open in-flight 锁；`onboarding.js` 用 settings CAS pending→sending→sent 防并发重复，注入失败退 pending、打开结果给错误，重开可重试。不在 apply 自动唤醒历史主会话。
+- index 在成功 open/主会话晚加载后由 onboarding **await guardPreset 恢复成功**再CAS投递，缺选择服务/恢复失败留pending并返回可见错误，不用固定2秒延迟猜就绪；复用 `injectNotification`（agent.steer）启动模型轮次；prompt 要求先能力介绍再走现有 task_create 只读任务，不直接替模型扫描或绕过台账。sent 表示消息已入队，不保证模型已介绍/派发；进程在发送和标记之间崩溃有不确定窗口，不盲自动重投。
+- task_create 对「工作区与仓库索引」只读任务捕获 workspaceRegistry.list 的 id/title/path 到 brief，task_detail 提供名单与随包 scripts/workspace-index.mjs。worker 仅扫描登记目录，复用 runGit 的 execFile/timeout，读取 repoRoot/branch/HEAD/origin/commonDir，单项失败继续，不 fetch/pull、不写文件。
+- task_report.workspace_index 仅接受该任务本人 done 的完整 JSON，按创建时名单验证覆盖并使用名单真 title/path，remote 再脱敏，以同SAVEPOINT写既有 settings.workspace_repo_index及workspace_index_saved:<taskId>成功标记，不改 memories 或 workspaceRegistry。S1仅索引completed缺本任务成功标记时落failed（task_retry可重试），防止遗漏/非法回报后自然误交付；普通任务与已交付只补消息路径不变。project_context(workspaces:true) 返回全部注册映射与采样索引；指定项目附快照，歧义列候选、不猜路径。
+- 不新增工具、索引服务、调度服务或数据库迁移，不改变 worker 默认工具/沙箱；索引数据只作采样事实，读取受限记录 unavailable。重新索引通过正常只读任务派发，失败可见且可 task_retry。
+
 ### 原生自动化工具面
 
 - `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，allow 显式保留 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；`preset-tools.js` 仍用增量 deny 补集。`index.js` 的 runtime restrict 与 guard 不再拒绝这四工具，其余文件、shell、团队和子会话专属禁止项不变。
