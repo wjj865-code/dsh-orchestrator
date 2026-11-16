@@ -619,102 +619,149 @@ export function createViews({
     )
 
     // ---- 第一段：顶部命令栏 + 概览卡 ----
-    const topbar = () => h('header', { className: 'orch-topbar' },
-      h('div', { className: 'orch-brand' },
-        h('span', { className: 'orch-brand-mark' }, h(Icon, { name: 'sparkle', size: 14 })),
-        h('span', { className: 'orch-title' }, inboxCount > 0 ? `任务 · 待你决定 ${inboxCount}` : '任务'),
-        h('span', {
-          className: 'orch-status',
-          'data-live': mainSession.live === true ? 'true' : 'false',
-          title: mainSession.id === null ? '还没有主会话' : `主会话编号 ${mainSession.id}`,
-        }, h('span', { className: 'orch-status-dot' }), mainState),
-      ),
-      h('div', { className: 'orch-topbar-actions' },
-        h('label', { className: 'orch-search', title: '按标题 / 编号 / 目录搜索' },
-          h(Icon, { name: 'search', size: 13 }),
-          h('input', {
-            type: 'search', value: query, placeholder: '搜索任务',
-            'aria-label': '搜索任务',
-            onChange: event => setQuery(event.target.value),
-          }),
-        ),
-        h('button', {
-          type: 'button', className: 'orch-btn orch-btn--ghost', title: '重新拉取台账快照',
-          onClick: refresh, disabled: refreshing,
-        }, h(Icon, { name: 'refresh', className: refreshing ? 'orch-spin' : undefined }),
-        refreshing ? '刷新中…' : '刷新'),
-        h('button', {
-          type: 'button', className: 'orch-btn orch-btn--primary', onClick: handleOpenMain, disabled: openingMain,
-        }, h(Icon, { name: 'plus' }), openingMain ? '打开中…' : '打开主会话'),
-      ),
+    const topbar = () => (
+      <header className="orch-topbar">
+        <div className="orch-brand">
+          <span className="orch-brand-mark"><Icon name="sparkle" size={14} /></span>
+          <span className="orch-title">{inboxCount > 0 ? `任务 · 待你决定 ${inboxCount}` : '任务'}</span>
+          <span
+            className="orch-status"
+            data-live={mainSession.live === true ? 'true' : 'false'}
+            title={mainSession.id === null ? '还没有主会话' : `主会话编号 ${mainSession.id}`}
+          ><span className="orch-status-dot" />{mainState}</span>
+        </div>
+        <div className="orch-topbar-actions">
+          <label className="orch-search" title="按标题 / 编号 / 目录搜索">
+            <Icon name="search" size={13} />
+            <input
+              type="search"
+              value={query}
+              placeholder="搜索任务"
+              aria-label="搜索任务"
+              onChange={event => setQuery(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            className="orch-btn orch-btn--ghost"
+            title="重新拉取台账快照"
+            onClick={refresh}
+            disabled={refreshing}
+          >
+            <Icon name="refresh" className={refreshing ? 'orch-spin' : undefined} />
+            {refreshing ? '刷新中…' : '刷新'}
+          </button>
+          <button
+            type="button"
+            className="orch-btn orch-btn--primary"
+            onClick={handleOpenMain}
+            disabled={openingMain}
+          >
+            <Icon name="plus" />
+            {openingMain ? '打开中…' : '打开主会话'}
+          </button>
+        </div>
+      </header>
     )
 
-    const metrics = () => h('div', { className: 'orch-metrics' },
-      METRICS.map(([value, label]) => h('button', {
-        key: value, type: 'button', className: 'orch-metric',
-        'data-active': filter === value ? 'true' : 'false',
-        'data-tone': value === 'failed' ? 'bad' : value === 'done' ? 'good' : value === 'waiting' ? 'warn' : 'info',
-        onClick: () => setFilter(value),
-      },
-        h('span', { className: 'orch-metric-value' }, String(counts[value] || 0)),
-        h('span', { className: 'orch-metric-label' }, label),
-      )),
+    const metrics = () => (
+      <div className="orch-metrics">
+        {METRICS.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            className="orch-metric"
+            data-active={filter === value ? 'true' : 'false'}
+            data-tone={value === 'failed' ? 'bad' : value === 'done' ? 'good' : value === 'waiting' ? 'warn' : 'info'}
+            onClick={() => setFilter(value)}
+          >
+            <span className="orch-metric-value">{String(counts[value] || 0)}</span>
+            <span className="orch-metric-label">{label}</span>
+          </button>
+        ))}
+      </div>
     )
 
     // ---- 第二段：筛选轨 + 列表 ----
-    const rail = () => h('nav', { className: 'orch-rail', 'aria-label': '任务筛选' },
-      FILTERS.map(([value, label]) => h('button', {
-        key: value, type: 'button', className: 'orch-rail-item',
-        'data-active': filter === value ? 'true' : 'false',
-        'aria-pressed': filter === value,
-        onClick: () => setFilter(value),
-      },
-        h(Icon, {
-          name: value === 'artifacts' ? 'folder'
-            : value === 'waiting' ? 'inbox'
-              : value === 'failed' ? 'alert'
-                : value === 'done' ? 'check' : 'clock',
-          size: 13,
-        }),
-        h('span', { className: 'orch-rail-label' }, label),
-        h('span', { className: 'orch-rail-count' }, String(value === 'all' ? counts.all : counts[value] || 0)),
-      )),
+    const rail = () => (
+      <nav className="orch-rail" aria-label="任务筛选">
+        {FILTERS.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            className="orch-rail-item"
+            data-active={filter === value ? 'true' : 'false'}
+            aria-pressed={filter === value}
+            onClick={() => setFilter(value)}
+          >
+            <Icon
+              name={value === 'artifacts' ? 'folder'
+                : value === 'waiting' ? 'inbox'
+                  : value === 'failed' ? 'alert'
+                    : value === 'done' ? 'check' : 'clock'}
+              size={13}
+            />
+            <span className="orch-rail-label">{label}</span>
+            <span className="orch-rail-count">{String(value === 'all' ? counts.all : counts[value] || 0)}</span>
+          </button>
+        ))}
+      </nav>
     )
 
-    const alerts = () => h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-      snapshotError !== null
-        ? h(Banner, {
-          tone: 'error', icon: 'alert',
-          action: h('button', { type: 'button', className: 'orch-btn orch-btn--sm', onClick: refresh }, '重试'),
-        }, `台账暂不可用：${snapshotError}`)
-        : null,
-      actionError !== null
-        ? h(Banner, {
-          tone: 'error', icon: 'alert',
-          action: h('button', { type: 'button', className: 'orch-btn orch-btn--sm', onClick: () => setActionError(null) }, '关闭'),
-        }, actionError)
-        : null,
-      actionNotice !== null
-        ? h(Banner, { tone: 'notice', icon: 'check' }, actionNotice)
-        : null,
-      copyNotice !== null
-        ? h(Banner, { tone: 'info', icon: 'copy' }, copyNotice)
-        : null,
-      inboxCount > 0
-        ? h(Banner, {
-          tone: 'notice', icon: 'inbox',
-          action: h('button', {
-            type: 'button', className: 'orch-btn orch-btn--sm',
-            onClick: () => setFilter('waiting'),
-          }, '查看'),
-        }, `有 ${inboxCount} 个任务等你决定，切到「待你决定」查看。`)
-        : null,
-      openedMain
-        ? h(Banner, { tone: 'info', icon: 'check' }, '主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」。')
-        : null,
-      snapshot !== null && mainSession.id === null
-        ? h(Banner, { tone: 'notice', icon: 'alert' }, '尚未打开主会话：点右上角「打开主会话」，在指挥舱里创建。')
-        : null,
+    const alerts = () => (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {snapshotError !== null
+          ? (
+              <Banner
+                tone="error"
+                icon="alert"
+                action={<button type="button" className="orch-btn orch-btn--sm" onClick={refresh}>{'重试'}</button>}
+              >{`台账暂不可用：${snapshotError}`}</Banner>
+            )
+          : null}
+        {actionError !== null
+          ? (
+              <Banner
+                tone="error"
+                icon="alert"
+                action={(
+                  <button
+                    type="button"
+                    className="orch-btn orch-btn--sm"
+                    onClick={() => setActionError(null)}
+                  >{'关闭'}</button>
+                )}
+              >{actionError}</Banner>
+            )
+          : null}
+        {actionNotice !== null
+          ? <Banner tone="notice" icon="check">{actionNotice}</Banner>
+          : null}
+        {copyNotice !== null
+          ? <Banner tone="info" icon="copy">{copyNotice}</Banner>
+          : null}
+        {inboxCount > 0
+          ? (
+              <Banner
+                tone="notice"
+                icon="inbox"
+                action={(
+                  <button
+                    type="button"
+                    className="orch-btn orch-btn--sm"
+                    onClick={() => setFilter('waiting')}
+                  >{'查看'}</button>
+                )}
+              >{`有 ${inboxCount} 个任务等你决定，切到「待你决定」查看。`}</Banner>
+            )
+          : null}
+        {openedMain
+          ? <Banner tone="info" icon="check">{'主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」。'}</Banner>
+          : null}
+        {snapshot !== null && mainSession.id === null
+          ? <Banner tone="notice" icon="alert">{'尚未打开主会话：点右上角「打开主会话」，在指挥舱里创建。'}</Banner>
+          : null}
+      </div>
     )
 
     const renderTask = (task, all) => {
@@ -722,107 +769,145 @@ export function createViews({
       const isExpanded = expanded.includes(task.id)
       const displayName = displayNameOf(task, all)
       const tone = TONE_COLOR[task.tone] || TONE_COLOR.muted
-      return h('article', {
-        key: task.id, className: 'orch-card',
-        'data-open': detailTaskId === task.id ? 'true' : 'false',
-        'data-status': task.status,
-        onClick: event => {
-          // 卡片整体可点开详情；卡内按钮用 act() 先止住冒泡。
-          if (event !== null && typeof event === 'object') void openDetail(task.id)
-        },
-      },
-        h('div', { className: 'orch-card-top' },
-          h('span', { className: 'orch-dot', style: { background: tone, color: tone } }),
-          h('span', { className: 'orch-card-title', title: displayName }, displayName),
-          statusBadge(task.status),
-          // P8：计划阶段小标（只在「等批准」时出现；批准后正常执行，不占视觉）。
-          task.planState === 'planning'
-            ? h(Badge, { tone: 'info', title: '计划模式：子会话只读探索，用 task_report blocked 上报计划，批准后自动切回可写' }, '计划中')
-            : null,
-          // P9：真的隔离了才给小标（产物在检出目录里，合并由用户决定）。
-          ['created', 'reused'].includes(task.worktreeState)
-            ? h(Badge, { tone: 'info', title: `worktree 隔离：产物在分支 ${task.worktreeBranch || '(未知)'} 的检出目录 ${task.worktreePath || '(未知)'}，合并由你决定` }, '隔离')
-            : null,
-          h('span', { className: 'orch-card-time', title: '最近事件' }, timeLabel(task.lastEventAt)),
-        ),
-        h('div', { className: 'orch-card-meta' },
-          task.targetDir !== null && task.targetDir !== undefined
-            ? h(Chip, { title: task.targetDir }, h(Icon, { name: 'folder', size: 11 }), shortPath(task.targetDir))
-            : null,
-          task.groupId ? h(Chip, { title: '分组' }, `组 ${task.groupId}`) : null,
-          task.priority ? h(Chip, { title: '优先级' }, `P${task.priority}`) : null,
-          task.dependsOn && task.dependsOn.length > 0
-            ? h(Chip, { title: task.dependsOn.join('、') }, `依赖 ${task.dependsOn.length}`)
-            : null,
-          task.queued ? h(Chip, null, '排队中') : null,
-          task.stale ? h(Chip, { tone: 'warn', title: '超过 30 分钟没有新事件' }, '⚠ 可能卡住') : null,
-          task.goalState
-            ? h(Chip, { title: '平台目标状态（只读）' }, h(Icon, { name: 'goal', size: 11 }), `目标·${GOAL_PHASE_LABEL[task.goalState.phase] || task.goalState.phase || '未知'}`)
-            : null,
-          task.readOnly === true
-            ? h(Chip, { tone: 'warn', title: '只读任务：写文件/写 shell 会被沙箱拒绝' }, '只读')
-            : null,
-          task.planFirst === true
-            ? h(Chip, {
-              tone: task.planState === 'planning' ? 'info' : 'muted',
-              title: '计划模式：plan_state 由台账下发（只读展示）',
-            }, `计划·${PLAN_STATE_LABEL[task.planState] || task.planState || '无计划状态'}`)
-            : null,
-          task.worktreeState && task.worktreeState !== 'none'
-            ? h(Chip, {
-              tone: task.worktreeState === 'failed' ? 'bad' : (['created', 'reused'].includes(task.worktreeState) ? 'info' : 'muted'),
-              title: task.worktreePath ? `检出 ${task.worktreePath}` : '未建检出',
-            }, `隔离·${WORKTREE_STATE_LABEL?.[task.worktreeState] || task.worktreeState}`)
-            : null,
-          artifacts.length > 0
-            ? h('button', {
-              type: 'button', className: 'orch-btn orch-btn--sm',
-              'aria-expanded': isExpanded,
-              onClick: act(() => toggleArtifacts(task.id)),
-            },
-              h(Icon, { name: 'chevron', className: 'orch-chevron', 'data-open': isExpanded ? 'true' : 'false' }),
-              `产物 ${artifacts.length}`)
-            : null,
-        ),
-        h('div', { className: 'orch-card-actions' },
-          h('button', {
-            key: 'detail', type: 'button', className: 'orch-btn orch-btn--sm',
-            onClick: act(() => void openDetail(task.id)),
-          }, h(Icon, { name: 'chevron' }), '详情'),
-          stopControl(task),
-          closeControl(task),
-          retryControl(task),
-          openControl(task.childSessionId),
-          deleteControl(task),
-        ),
-        artifacts.length > 0
-          ? h('div', { className: 'orch-expand', 'data-open': isExpanded ? 'true' : 'false' },
-            h('div', null,
-              h('div', { className: 'orch-artifact-list' },
-                artifacts.map((item, index) => {
-                  const itemTone = item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good
-                  return h('div', { key: `${item.path}:${index}`, className: 'orch-artifact' },
-                    h('span', { className: 'orch-dot', style: { background: itemTone, color: itemTone } }),
-                    // 点路径 = 在会话右侧栏打开预览（与产物库同一个入口）；缺失的文件不给点。
-                    h('button', {
-                      type: 'button',
-                      className: 'orch-artifact-path orch-artifact-open',
-                      title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
-                      disabled: item.exists === false,
-                      onClick: act(() => void previewInSidebar(task.id, item.path)),
-                    }, `${item.path}${item.exists === false ? '（未找到）' : ''}`),
-                    item.label ? h('span', { className: 'orch-muted' }, item.label) : null,
-                  )
-                }),
-              ),
-            ),
-          )
-          : null,
-        task.question
-          ? h('div', { className: 'orch-question' },
-            h(Icon, { name: 'alert', size: 13 }),
-            h('span', null, `需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(' / ')}）` : ''}`))
-          : null,
+      return (
+        <article
+          key={task.id}
+          className="orch-card"
+          data-open={detailTaskId === task.id ? 'true' : 'false'}
+          data-status={task.status}
+          onClick={event => {
+            // 卡片整体可点开详情；卡内按钮用 act() 先止住冒泡。
+            if (event !== null && typeof event === 'object') void openDetail(task.id)
+          }}
+        >
+          <div className="orch-card-top">
+            <span className="orch-dot" style={{ background: tone, color: tone }} />
+            <span className="orch-card-title" title={displayName}>{displayName}</span>
+            {statusBadge(task.status)}
+            {/* P8：计划阶段小标（只在「等批准」时出现；批准后正常执行，不占视觉）。 */}
+            {task.planState === 'planning'
+              ? (
+                  <Badge tone="info" title="计划模式：子会话只读探索，用 task_report blocked 上报计划，批准后自动切回可写">
+                    {'计划中'}
+                  </Badge>
+                )
+              : null}
+            {/* P9：真的隔离了才给小标（产物在检出目录里，合并由用户决定）。 */}
+            {['created', 'reused'].includes(task.worktreeState)
+              ? (
+                  <Badge tone="info" title={`worktree 隔离：产物在分支 ${task.worktreeBranch || '(未知)'} 的检出目录 ${task.worktreePath || '(未知)'}，合并由你决定`}>
+                    {'隔离'}
+                  </Badge>
+                )
+              : null}
+            <span className="orch-card-time" title="最近事件">{timeLabel(task.lastEventAt)}</span>
+          </div>
+          <div className="orch-card-meta">
+            {task.targetDir !== null && task.targetDir !== undefined
+              ? (
+                  <Chip title={task.targetDir}>
+                    <Icon name="folder" size={11} />
+                    {shortPath(task.targetDir)}
+                  </Chip>
+                )
+              : null}
+            {task.groupId ? <Chip title="分组">{`组 ${task.groupId}`}</Chip> : null}
+            {task.priority ? <Chip title="优先级">{`P${task.priority}`}</Chip> : null}
+            {task.dependsOn && task.dependsOn.length > 0
+              ? <Chip title={task.dependsOn.join('、')}>{`依赖 ${task.dependsOn.length}`}</Chip>
+              : null}
+            {task.queued ? <Chip>{'排队中'}</Chip> : null}
+            {task.stale ? <Chip tone="warn" title="超过 30 分钟没有新事件">{'⚠ 可能卡住'}</Chip> : null}
+            {task.goalState
+              ? (
+                  <Chip title="平台目标状态（只读）">
+                    <Icon name="goal" size={11} />
+                    {`目标·${GOAL_PHASE_LABEL[task.goalState.phase] || task.goalState.phase || '未知'}`}
+                  </Chip>
+                )
+              : null}
+            {task.readOnly === true
+              ? <Chip tone="warn" title="只读任务：写文件/写 shell 会被沙箱拒绝">{'只读'}</Chip>
+              : null}
+            {task.planFirst === true
+              ? (
+                  <Chip
+                    tone={task.planState === 'planning' ? 'info' : 'muted'}
+                    title="计划模式：plan_state 由台账下发（只读展示）"
+                  >{`计划·${PLAN_STATE_LABEL[task.planState] || task.planState || '无计划状态'}`}</Chip>
+                )
+              : null}
+            {task.worktreeState && task.worktreeState !== 'none'
+              ? (
+                  <Chip
+                    tone={task.worktreeState === 'failed' ? 'bad' : (['created', 'reused'].includes(task.worktreeState) ? 'info' : 'muted')}
+                    title={task.worktreePath ? `检出 ${task.worktreePath}` : '未建检出'}
+                  >{`隔离·${WORKTREE_STATE_LABEL?.[task.worktreeState] || task.worktreeState}`}</Chip>
+                )
+              : null}
+            {artifacts.length > 0
+              ? (
+                  <button
+                    type="button"
+                    className="orch-btn orch-btn--sm"
+                    aria-expanded={isExpanded}
+                    onClick={act(() => toggleArtifacts(task.id))}
+                  >
+                    <Icon name="chevron" className="orch-chevron" data-open={isExpanded ? 'true' : 'false'} />
+                    {`产物 ${artifacts.length}`}
+                  </button>
+                )
+              : null}
+          </div>
+          <div className="orch-card-actions">
+            <button
+              key="detail"
+              type="button"
+              className="orch-btn orch-btn--sm"
+              onClick={act(() => void openDetail(task.id))}
+            ><Icon name="chevron" />{'详情'}</button>
+            {stopControl(task)}
+            {closeControl(task)}
+            {retryControl(task)}
+            {openControl(task.childSessionId)}
+            {deleteControl(task)}
+          </div>
+          {artifacts.length > 0
+            ? (
+                <div className="orch-expand" data-open={isExpanded ? 'true' : 'false'}>
+                  <div>
+                    <div className="orch-artifact-list">
+                      {artifacts.map((item, index) => {
+                        const itemTone = item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good
+                        return (
+                          <div key={`${item.path}:${index}`} className="orch-artifact">
+                            <span className="orch-dot" style={{ background: itemTone, color: itemTone }} />
+                            {/* 点路径 = 在会话右侧栏打开预览（与产物库同一个入口）；缺失的文件不给点。 */}
+                            <button
+                              type="button"
+                              className="orch-artifact-path orch-artifact-open"
+                              title={item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`}
+                              disabled={item.exists === false}
+                              onClick={act(() => void previewInSidebar(task.id, item.path))}
+                            >{`${item.path}${item.exists === false ? '（未找到）' : ''}`}</button>
+                            {item.label ? <span className="orch-muted">{item.label}</span> : null}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )
+            : null}
+          {task.question
+            ? (
+                <div className="orch-question">
+                  <Icon name="alert" size={13} />
+                  <span>{`需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(' / ')}）` : ''}`}</span>
+                </div>
+              )
+            : null}
+        </article>
       )
     }
 
@@ -1015,90 +1100,102 @@ export function createViews({
     }
 
     // ---- 第三段：右侧抽屉详情 ----
-    const drawerLoading = () => h('div', { className: 'orch-drawer-sections' },
-      h('div', { className: 'orch-skeleton-card' },
-        h('div', { className: 'orch-skeleton-row' },
-          h('div', { className: 'orch-skeleton', style: { width: '40%' } }),
-          h('div', { className: 'orch-skeleton', style: { width: 60, marginLeft: 'auto' } }),
-        ),
-        h('div', { className: 'orch-skeleton', style: { width: '86%' } }),
-        h('div', { className: 'orch-skeleton', style: { width: '72%' } }),
-      ),
-      h(SkeletonList, { rows: 2 }),
+    const drawerLoading = () => (
+      <div className="orch-drawer-sections">
+        <div className="orch-skeleton-card">
+          <div className="orch-skeleton-row">
+            <div className="orch-skeleton" style={{ width: '40%' }} />
+            <div className="orch-skeleton" style={{ width: 60, marginLeft: 'auto' }} />
+          </div>
+          <div className="orch-skeleton" style={{ width: '86%' }} />
+          <div className="orch-skeleton" style={{ width: '72%' }} />
+        </div>
+        <SkeletonList rows={2} />
+      </div>
     )
 
-    const drawerError = () => h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-      h(Banner, { tone: 'error', icon: 'alert' }, detailError),
-      h('div', { className: 'orch-card-actions' },
-        h('button', {
-          type: 'button', className: 'orch-btn orch-btn--ghost',
-          onClick: () => { if (detailTaskId !== null) void openDetail(detailTaskId) },
-        }, '重新加载'),
-        h('button', { type: 'button', className: 'orch-btn', onClick: closeDetail }, '关闭'),
-      ),
+    const drawerError = () => (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <Banner tone="error" icon="alert">{detailError}</Banner>
+        <div className="orch-card-actions">
+          <button
+            type="button" className="orch-btn orch-btn--ghost"
+            onClick={() => { if (detailTaskId !== null) void openDetail(detailTaskId) }}
+          >{'重新加载'}</button>
+          <button type="button" className="orch-btn" onClick={closeDetail}>{'关闭'}</button>
+        </div>
+      </div>
     )
 
     // 抽屉里的可折叠区块：标题是 button，带 aria-expanded；0fr↔1fr 过渡。
     const detailSection = (key, title, hint, body) => {
       const isCollapsed = collapsedSections.includes(key)
-      return h('section', { key, className: 'orch-section', 'data-collapsed': isCollapsed ? 'true' : 'false' },
-        h('button', {
-          type: 'button', className: 'orch-section-head',
-          'aria-expanded': !isCollapsed,
-          onClick: () => setCollapsedSections(current => current.includes(key)
-            ? current.filter(item => item !== key)
-            : [...current, key]),
-        },
-          h(Icon, { name: 'chevron', className: 'orch-chevron' }),
-          h('span', { className: 'orch-section-title' }, title),
-          hint ? h('span', { className: 'orch-section-hint' }, hint) : null,
-        ),
-        h('div', { className: 'orch-section-body-wrap' },
-          h('div', { className: 'orch-section-body' },
-            h('div', { className: 'orch-section-inner' }, body),
-          ),
-        ),
+      return (
+        <section key={key} className="orch-section" data-collapsed={isCollapsed ? 'true' : 'false'}>
+          <button
+            type="button" className="orch-section-head"
+            aria-expanded={!isCollapsed}
+            onClick={() => setCollapsedSections(current => current.includes(key)
+              ? current.filter(item => item !== key)
+              : [...current, key])}
+          >
+            <Icon name="chevron" className="orch-chevron" />
+            <span className="orch-section-title">{title}</span>
+            {hint ? <span className="orch-section-hint">{hint}</span> : null}
+          </button>
+          <div className="orch-section-body-wrap">
+            <div className="orch-section-body">
+              <div className="orch-section-inner">{body}</div>
+            </div>
+          </div>
+        </section>
       )
     }
 
     const detailBody = () => {
       const task = detail.task || {}
       // 1) 概览：编号/状态/目录/分组/优先级/写域/时间。
-      const overviewBody = h('div', { className: 'orch-kv' }, [
-        ['编号', task.id],
-        ['状态', STATUS_LABEL[task.status] || task.status || '未知'],
-        // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）。
-        ...(task.deliveredAt ? [['交付', `${timeLabel(task.deliveredAt)}（待确认：确认交付收成已完成；追问由协调者 task_message 续派原会话）`]] : []),
-        ...(task.closeReason ? [['关闭', task.closeReasonLabel || task.closeReason]] : []),
-        ['目标目录', task.targetDir || '（未设置）'],
-        ['分组', task.group || '（未分组）'],
-        ['优先级', `P${task.priority === undefined || task.priority === null ? 0 : task.priority}`],
-        ['计划', task.planFirst === true ? (PLAN_STATE_LABEL[task.planState] || task.planState || '无计划状态') : '（不是计划任务）'],
-        ['隔离', task.worktreeState && task.worktreeState !== 'none'
-          ? `${WORKTREE_STATE_LABEL?.[task.worktreeState] || task.worktreeState}｜分支 ${task.worktreeBranch || '-'}｜检出 ${task.worktreePath || '-'}｜决定 ${WORKTREE_SOURCE_LABEL?.[task.worktreeSource] || task.worktreeSource || '未知'}`
-          : '（未隔离）'],
-        ['写域', Array.isArray(task.writeScopes) && task.writeScopes.length > 0 ? task.writeScopes.join('、') : '（未声明）'],
-        ['创建', timeLabel(task.createdAt)],
-        ['更新', timeLabel(task.updatedAt)],
-      ].flatMap(([key, value]) => [
-        h('span', { key: `${key}:k`, className: 'orch-kv-key' }, key),
-        h('span', { key: `${key}:v`, className: 'orch-kv-val' }, String(value === undefined || value === null ? '' : value)),
-      ]))
+      const overviewBody = (
+        <div className="orch-kv">
+          {[
+            ['编号', task.id],
+            ['状态', STATUS_LABEL[task.status] || task.status || '未知'],
+            // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）。
+            ...(task.deliveredAt ? [['交付', `${timeLabel(task.deliveredAt)}（待确认：确认交付收成已完成；追问由协调者 task_message 续派原会话）`]] : []),
+            ...(task.closeReason ? [['关闭', task.closeReasonLabel || task.closeReason]] : []),
+            ['目标目录', task.targetDir || '（未设置）'],
+            ['分组', task.group || '（未分组）'],
+            ['优先级', `P${task.priority === undefined || task.priority === null ? 0 : task.priority}`],
+            ['计划', task.planFirst === true ? (PLAN_STATE_LABEL[task.planState] || task.planState || '无计划状态') : '（不是计划任务）'],
+            ['隔离', task.worktreeState && task.worktreeState !== 'none'
+              ? `${WORKTREE_STATE_LABEL?.[task.worktreeState] || task.worktreeState}｜分支 ${task.worktreeBranch || '-'}｜检出 ${task.worktreePath || '-'}｜决定 ${WORKTREE_SOURCE_LABEL?.[task.worktreeSource] || task.worktreeSource || '未知'}`
+              : '（未隔离）'],
+            ['写域', Array.isArray(task.writeScopes) && task.writeScopes.length > 0 ? task.writeScopes.join('、') : '（未声明）'],
+            ['创建', timeLabel(task.createdAt)],
+            ['更新', timeLabel(task.updatedAt)],
+          ].flatMap(([key, value]) => [
+            <span key={`${key}:k`} className="orch-kv-key">{key}</span>,
+            <span key={`${key}:v`} className="orch-kv-val">{String(value === undefined || value === null ? '' : value)}</span>,
+          ])}
+        </div>
+      )
 
       // 2) B1 最新回复：结算时落库的最后一条 assistant 消息（内联正文 / 大文件摘要+路径）。
       const lastMessage = task.lastMessage !== null && typeof task.lastMessage === 'object' ? task.lastMessage : null
       const lastMessageBody = lastMessage === null
-        ? h('div', { className: 'orch-muted' }, '还没有返回消息（子会话结算后自动记录最后一条回复）。')
-        : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-          h('div', { className: 'orch-card-meta' },
-            h(Badge, { tone: 'info' }, lastMessage.stored === 'file' ? '全文在报告文件' : '内联正文'),
-            lastMessage.stopReason ? h(Chip, { title: '结束原因' }, lastMessage.stopReason) : null,
-            h('span', { className: 'orch-msg-at' }, timeLabel(lastMessage.at)),
-            typeof lastMessage.chars === 'number' ? h('span', { className: 'orch-msg-at' }, `${lastMessage.chars} 字`) : null,
-          ),
-          h('pre', { className: 'orch-pre' }, lastMessage.stored === 'file'
-            ? `${lastMessage.summary || ''}\n\n全文：${lastMessage.path || '（路径缺失）'}`
-            : String(lastMessage.text || lastMessage.summary || '（空）')),
+        ? <div className="orch-muted">{'还没有返回消息（子会话结算后自动记录最后一条回复）。'}</div>
+        : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div className="orch-card-meta">
+              <Badge tone="info">{lastMessage.stored === 'file' ? '全文在报告文件' : '内联正文'}</Badge>
+              {lastMessage.stopReason ? <Chip title="结束原因">{lastMessage.stopReason}</Chip> : null}
+              <span className="orch-msg-at">{timeLabel(lastMessage.at)}</span>
+              {typeof lastMessage.chars === 'number' ? <span className="orch-msg-at">{`${lastMessage.chars} 字`}</span> : null}
+            </div>
+            <pre className="orch-pre">{lastMessage.stored === 'file'
+              ? `${lastMessage.summary || ''}\n\n全文：${lastMessage.path || '（路径缺失）'}`
+              : String(lastMessage.text || lastMessage.summary || '（空）')}</pre>
+          </div>
         )
 
       // 3) brief：结构化 brief 原样渲染（目标 / 验收 / 约束 / 背景 / 原话）。
@@ -1110,68 +1207,83 @@ export function createViews({
       const verbatim = textOf(brief.user_verbatim)
       const briefEmpty = briefGoal === '' && acceptance.length === 0 && constraints.length === 0
         && refs.length === 0 && verbatim === ''
-      const briefLists = (label, items) => h('div', null,
-        h('div', { className: 'orch-kv-key' }, label),
-        h('ul', { className: 'orch-ul' }, items.map((item, index) => h('li', { key: index }, item))),
+      const briefLists = (label, items) => (
+        <div>
+          <div className="orch-kv-key">{label}</div>
+          <ul className="orch-ul">{items.map((item, index) => <li key={index}>{item}</li>)}</ul>
+        </div>
       )
       const briefBody = briefEmpty
-        ? h('div', { className: 'orch-muted' }, '这条任务没有 brief 信息。')
-        : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-          briefGoal !== '' ? h('div', { className: 'orch-text' }, briefGoal) : null,
-          acceptance.length > 0 ? briefLists('验收标准：', acceptance) : null,
-          constraints.length > 0 ? briefLists('约束：', constraints) : null,
-          refs.length > 0 ? briefLists('背景资料：', refs) : null,
-          verbatim !== '' ? h('div', null,
-            h('div', { className: 'orch-kv-key' }, '用户原话：'),
-            h('blockquote', { className: 'orch-quote' }, verbatim),
-          ) : null,
+        ? <div className="orch-muted">{'这条任务没有 brief 信息。'}</div>
+        : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {briefGoal !== '' ? <div className="orch-text">{briefGoal}</div> : null}
+            {acceptance.length > 0 ? briefLists('验收标准：', acceptance) : null}
+            {constraints.length > 0 ? briefLists('约束：', constraints) : null}
+            {refs.length > 0 ? briefLists('背景资料：', refs) : null}
+            {verbatim !== '' ? (
+              <div>
+                <div className="orch-kv-key">{'用户原话：'}</div>
+                <blockquote className="orch-quote">{verbatim}</blockquote>
+              </div>
+            ) : null}
+          </div>
         )
 
       // 4) 平台 goal（只读）：phase/activation/轮次，插件自动维护；面板没有改目标的按钮。
       const goalState = task.goalState !== null && typeof task.goalState === 'object' ? task.goalState : null
       const goalBody = goalState === null
-        ? h('div', { className: 'orch-muted' }, '没有平台目标状态（goal 服务不可用，或任务尚未派发/已收口）。')
-        : h('div', { className: 'orch-kv' }, [
-          ['目标', textOf(goalState.objective) || '（未记录）'],
-          ['阶段', GOAL_PHASE_LABEL[goalState.phase] || goalState.phase || '未知'],
-          ['续轮', `${GOAL_ACTIVATION_LABEL[goalState.activation] || goalState.activation || '未知'}（插件声明式接入，恒为不自动续轮）`],
-          ['轮次', goalState.roundsStarted === null || goalState.roundsStarted === undefined
-            ? '-'
-            : `${goalState.roundsStarted}/${goalState.maxGoalRounds === null || goalState.maxGoalRounds === undefined ? '?' : goalState.maxGoalRounds}`],
-          ['修订', goalState.revision === null || goalState.revision === undefined ? '-' : String(goalState.revision)],
-        ].flatMap(([key, value]) => [
-          h('span', { key: `${key}:k`, className: 'orch-kv-key' }, key),
-          h('span', { key: `${key}:v`, className: 'orch-kv-val' }, String(value)),
-        ]))
-      const goalNote = h('div', { className: 'orch-muted' },
-        '只读展示：由插件在派发、续派与终态时自动维护；面板不提供暂停/恢复/清除操作。')
+        ? <div className="orch-muted">{'没有平台目标状态（goal 服务不可用，或任务尚未派发/已收口）。'}</div>
+        : (
+          <div className="orch-kv">
+            {[
+              ['目标', textOf(goalState.objective) || '（未记录）'],
+              ['阶段', GOAL_PHASE_LABEL[goalState.phase] || goalState.phase || '未知'],
+              ['续轮', `${GOAL_ACTIVATION_LABEL[goalState.activation] || goalState.activation || '未知'}（插件声明式接入，恒为不自动续轮）`],
+              ['轮次', goalState.roundsStarted === null || goalState.roundsStarted === undefined
+                ? '-'
+                : `${goalState.roundsStarted}/${goalState.maxGoalRounds === null || goalState.maxGoalRounds === undefined ? '?' : goalState.maxGoalRounds}`],
+              ['修订', goalState.revision === null || goalState.revision === undefined ? '-' : String(goalState.revision)],
+            ].flatMap(([key, value]) => [
+              <span key={`${key}:k`} className="orch-kv-key">{key}</span>,
+              <span key={`${key}:v`} className="orch-kv-val">{String(value)}</span>,
+            ])}
+          </div>
+        )
+      const goalNote = (
+        <div className="orch-muted">
+          {'只读展示：由插件在派发、续派与终态时自动维护；面板不提供暂停/恢复/清除操作。'}
+        </div>
+      )
 
       // 5) 消息：最近 20 条；followup 带投递状态（待发/已投递/投递失败）。
       const messages = Array.isArray(detail.messages) ? detail.messages : []
       const shownMessages = messages.slice(-20)
       const messageBody = messages.length === 0
-        ? h('div', { className: 'orch-muted' }, '还没有消息。')
-        : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-          shownMessages.map((row, index) => h('div', {
-            key: row.seq === undefined ? index : row.seq,
-            className: 'orch-msg',
-            'data-kind': row.kind,
-          },
-            h('div', { className: 'orch-msg-head' },
-              h(Badge, { tone: 'muted' }, MESSAGE_KIND_LABEL[row.kind] || row.kind),
-              row.delivery
-                ? h(Badge, {
-                  tone: DELIVERY_TONE[row.delivery] || 'muted',
-                  title: `投递状态：${DELIVERY_LABEL[row.delivery] || row.delivery}`,
-                }, DELIVERY_LABEL[row.delivery] || row.delivery)
-                : null,
-              h('span', { className: 'orch-msg-at' }, timeLabel(row.at)),
-            ),
-            h('div', { className: 'orch-msg-text' }, row.text),
-          )),
-          messages.length > shownMessages.length
-            ? h('div', { className: 'orch-muted' }, `仅显示最近 ${shownMessages.length} 条（共 ${messages.length} 条）。`)
-            : null,
+        ? <div className="orch-muted">{'还没有消息。'}</div>
+        : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {shownMessages.map((row, index) => (
+              <div key={row.seq === undefined ? index : row.seq} className="orch-msg" data-kind={row.kind}>
+                <div className="orch-msg-head">
+                  <Badge tone="muted">{MESSAGE_KIND_LABEL[row.kind] || row.kind}</Badge>
+                  {row.delivery
+                    ? (
+                      <Badge
+                        tone={DELIVERY_TONE[row.delivery] || 'muted'}
+                        title={`投递状态：${DELIVERY_LABEL[row.delivery] || row.delivery}`}
+                      >{DELIVERY_LABEL[row.delivery] || row.delivery}</Badge>
+                    )
+                    : null}
+                  <span className="orch-msg-at">{timeLabel(row.at)}</span>
+                </div>
+                <div className="orch-msg-text">{row.text}</div>
+              </div>
+            ))}
+            {messages.length > shownMessages.length
+              ? <div className="orch-muted">{`仅显示最近 ${shownMessages.length} 条（共 ${messages.length} 条）。`}</div>
+              : null}
+          </div>
         )
 
       // 6) 依赖：上游前置 + 下游依赖本任务，各自带状态和错误提示。
@@ -1179,62 +1291,74 @@ export function createViews({
       const dependents = Array.isArray(detail.dependents) ? detail.dependents : []
       const depRow = row => {
         const tone = TONE_COLOR[STATUS_TONE[row.status]] || TONE_COLOR.muted
-        return h('div', { key: `${row.status}:${row.id}`, className: 'orch-artifact' },
-          h('span', { className: 'orch-dot', style: { background: tone, color: tone } }),
-          h('span', { style: { flex: 1, minWidth: 0, overflowWrap: 'anywhere' }, title: row.error || row.id }, row.title),
-          h(Badge, { tone: STATUS_TONE[row.status] || 'muted' }, STATUS_LABEL[row.status] || row.status || '未知'),
-          row.error ? h(Chip, { tone: 'bad', title: row.error }, '有错误') : null,
+        return (
+          <div key={`${row.status}:${row.id}`} className="orch-artifact">
+            <span className="orch-dot" style={{ background: tone, color: tone }} />
+            <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }} title={row.error || row.id}>{row.title}</span>
+            <Badge tone={STATUS_TONE[row.status] || 'muted'}>{STATUS_LABEL[row.status] || row.status || '未知'}</Badge>
+            {row.error ? <Chip tone="bad" title={row.error}>{'有错误'}</Chip> : null}
+          </div>
         )
       }
-      const depBody = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-        h('div', { className: 'orch-kv-key' }, '上游（前置任务）'),
-        dependencies.length === 0
-          ? h('div', { className: 'orch-muted' }, '没有前置任务。')
-          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, dependencies.map(depRow)),
-        h('div', { className: 'orch-kv-key' }, '下游（依赖本任务）'),
-        dependents.length === 0
-          ? h('div', { className: 'orch-muted' }, '没有下游任务。')
-          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, dependents.map(depRow)),
+      const depBody = (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div className="orch-kv-key">{'上游（前置任务）'}</div>
+          {dependencies.length === 0
+            ? <div className="orch-muted">{'没有前置任务。'}</div>
+            : <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>{dependencies.map(depRow)}</div>}
+          <div className="orch-kv-key">{'下游（依赖本任务）'}</div>
+          {dependents.length === 0
+            ? <div className="orch-muted">{'没有下游任务。'}</div>
+            : <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>{dependents.map(depRow)}</div>}
+        </div>
       )
 
       // 7) 产物：路径/标签/存在性；路径可点开（会话右侧栏预览）也可一键复制。
       const artifacts = Array.isArray(task.artifacts) ? task.artifacts : []
       const artifactBody = artifacts.length === 0
-        ? h('div', { className: 'orch-muted' }, '还没有产物。')
-        : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-          artifacts.map((item, index) => {
-            const tone = item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good
-            return h('div', { key: `${item.path}:${index}`, className: 'orch-artifact' },
-              h('span', { className: 'orch-dot', style: { background: tone, color: tone } }),
-              h('button', {
-                type: 'button',
-                className: 'orch-artifact-path orch-artifact-open',
-                title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
-                disabled: item.exists === false,
-                onClick: act(() => void previewInSidebar(task.id, item.path)),
-              }, item.path),
-              item.label ? h('span', { className: 'orch-muted' }, item.label) : null,
-              item.exists === false ? h(Chip, { tone: 'bad' }, '（未找到）') : null,
-              h('button', { type: 'button', className: 'orch-btn orch-btn--sm', onClick: () => void copyPath(item.path) }, '复制路径'),
-            )
-          }),
+        ? <div className="orch-muted">{'还没有产物。'}</div>
+        : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {artifacts.map((item, index) => {
+              const tone = item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good
+              return (
+                <div key={`${item.path}:${index}`} className="orch-artifact">
+                  <span className="orch-dot" style={{ background: tone, color: tone }} />
+                  <button
+                    type="button"
+                    className="orch-artifact-path orch-artifact-open"
+                    title={item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`}
+                    disabled={item.exists === false}
+                    onClick={act(() => void previewInSidebar(task.id, item.path))}
+                  >{item.path}</button>
+                  {item.label ? <span className="orch-muted">{item.label}</span> : null}
+                  {item.exists === false ? <Chip tone="bad">{'（未找到）'}</Chip> : null}
+                  <button type="button" className="orch-btn orch-btn--sm" onClick={() => void copyPath(item.path)}>{'复制路径'}</button>
+                </div>
+              )
+            })}
+          </div>
         )
 
-      return h('div', { className: 'orch-drawer-sections' },
-        task.question
-          ? h(Banner, {
-            tone: 'notice', icon: 'alert',
-          }, `需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(' / ')}）` : ''}`)
-          : null,
-        task.error ? h(Banner, { tone: 'error', icon: 'alert' }, `错误：${task.error}`) : null,
-        detailSection('概览', '概览', '', overviewBody),
-        detailSection('最新回复', '最新回复', lastMessage === null ? '' : timeLabel(lastMessage.at), lastMessageBody),
-        detailSection('Brief', 'Brief', acceptance.length > 0 ? `验收 ${acceptance.length} 条` : '', briefBody),
-        detailSection('目标状态', '目标状态', goalState === null ? '' : (GOAL_PHASE_LABEL[goalState.phase] || goalState.phase || ''), goalBody),
-        detailSection('消息', '消息', messages.length > 0 ? `${messages.length} 条` : '', messageBody),
-        detailSection('依赖', '依赖', `上游 ${dependencies.length} · 下游 ${dependents.length}`, depBody),
-        detailSection('产物', '产物', artifacts.length > 0 ? `${artifacts.length} 个` : '', artifactBody),
-        goalNote,
+      return (
+        <div className="orch-drawer-sections">
+          {task.question
+            ? (
+              <Banner
+                tone="notice" icon="alert"
+              >{`需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(' / ')}）` : ''}`}</Banner>
+            )
+            : null}
+          {task.error ? <Banner tone="error" icon="alert">{`错误：${task.error}`}</Banner> : null}
+          {detailSection('概览', '概览', '', overviewBody)}
+          {detailSection('最新回复', '最新回复', lastMessage === null ? '' : timeLabel(lastMessage.at), lastMessageBody)}
+          {detailSection('Brief', 'Brief', acceptance.length > 0 ? `验收 ${acceptance.length} 条` : '', briefBody)}
+          {detailSection('目标状态', '目标状态', goalState === null ? '' : (GOAL_PHASE_LABEL[goalState.phase] || goalState.phase || ''), goalBody)}
+          {detailSection('消息', '消息', messages.length > 0 ? `${messages.length} 条` : '', messageBody)}
+          {detailSection('依赖', '依赖', `上游 ${dependencies.length} · 下游 ${dependents.length}`, depBody)}
+          {detailSection('产物', '产物', artifacts.length > 0 ? `${artifacts.length} 个` : '', artifactBody)}
+          {goalNote}
+        </div>
       )
     }
 
@@ -1247,63 +1371,67 @@ export function createViews({
         deleteControl(detailTask),
         // 不能删就说清原因：活跃任务先「停止」；终态但还有活跃下游先处理下游。
         detailTask.canDelete !== true
-          ? h('span', { key: 'delete-hint', className: 'orch-muted' }, '当前不能删除：活跃任务先「停止」；有活跃下游依赖则先处理下游。')
+          ? <span key="delete-hint" className="orch-muted">{'当前不能删除：活跃任务先「停止」；有活跃下游依赖则先处理下游。'}</span>
           : null,
       ].filter(Boolean)
-      return buttons.length === 0 ? null : h('footer', { className: 'orch-drawer-foot' }, buttons)
+      return buttons.length === 0 ? null : <footer className="orch-drawer-foot">{buttons}</footer>
     }
 
-    const drawerContent = () => h('div', { className: 'orch-drawer-content' },
-      h('header', { className: 'orch-drawer-head' },
-        h('div', { className: 'orch-drawer-title-row' },
-          h('span', { className: 'orch-drawer-title', title: drawerTitle }, drawerTitle),
-          detailTask === null ? null : statusBadge(detailTask.status),
-          h('button', {
-            type: 'button', className: 'orch-icon-btn', title: '关闭（Esc）', onClick: closeDetail,
-          }, h(Icon, { name: 'close' })),
-        ),
-        h('div', { className: 'orch-drawer-sub' },
-          detailTask === null ? null : h('span', null, `编号 ${detailTask.id}`),
-          detailTask === null ? null : h('span', null, `更新 ${timeLabel(detailTask.updatedAt)}`),
-          detailTask !== null && detailTask.readOnly === true ? h('span', null, '只读任务') : null,
-          detailTask !== null && detailTask.planFirst === true
-            ? h('span', null, `计划：${PLAN_STATE_LABEL[detailTask.planState] || detailTask.planState || '无计划状态'}`)
-            : null,
-        ),
-      ),
-      h('div', { className: 'orch-drawer-body' },
-        detailLoading ? drawerLoading() : null,
-        detailError !== null ? drawerError() : null,
-        detailTask === null ? null : detailBody(),
-      ),
-      detailTask === null ? null : drawerFoot(),
+    const drawerContent = () => (
+      <div className="orch-drawer-content">
+        <header className="orch-drawer-head">
+          <div className="orch-drawer-title-row">
+            <span className="orch-drawer-title" title={drawerTitle}>{drawerTitle}</span>
+            {detailTask === null ? null : statusBadge(detailTask.status)}
+            <button
+              type="button" className="orch-icon-btn" title="关闭（Esc）" onClick={closeDetail}
+            ><Icon name="close" /></button>
+          </div>
+          <div className="orch-drawer-sub">
+            {detailTask === null ? null : <span>{`编号 ${detailTask.id}`}</span>}
+            {detailTask === null ? null : <span>{`更新 ${timeLabel(detailTask.updatedAt)}`}</span>}
+            {detailTask !== null && detailTask.readOnly === true ? <span>{'只读任务'}</span> : null}
+            {detailTask !== null && detailTask.planFirst === true
+              ? <span>{`计划：${PLAN_STATE_LABEL[detailTask.planState] || detailTask.planState || '无计划状态'}`}</span>
+              : null}
+          </div>
+        </header>
+        <div className="orch-drawer-body">
+          {detailLoading ? drawerLoading() : null}
+          {detailError !== null ? drawerError() : null}
+          {detailTask === null ? null : detailBody()}
+        </div>
+        {detailTask === null ? null : drawerFoot()}
+      </div>
     )
 
-    return h('div', { className: 'orch-shell' },
-      topbar(),
-      metrics(),
-      h('div', { className: 'orch-body' },
-        rail(),
-        h('main', { className: 'orch-main' },
-          alerts(),
-          filter === 'artifacts' ? artifactView() : listView(),
-        ),
-      ),
-      // 第三段：抽屉常驻挂载，靠 data-open 触发 transform 过渡（关闭时滑出而不是瞬移）。
-      h('div', { className: 'orch-layer' },
-        h('div', {
-          className: 'orch-scrim',
-          'data-open': drawerOpen ? 'true' : 'false',
-          'aria-hidden': 'true',
-          onClick: closeDetail,
-        }),
-        h('aside', {
-          className: 'orch-drawer',
-          'data-open': drawerOpen ? 'true' : 'false',
-          'aria-hidden': drawerOpen ? 'false' : 'true',
-          'aria-label': '任务详情',
-        }, drawerOpen ? drawerContent() : null),
-      ),
+    return (
+      <div className="orch-shell">
+        {topbar()}
+        {metrics()}
+        <div className="orch-body">
+          {rail()}
+          <main className="orch-main">
+            {alerts()}
+            {filter === 'artifacts' ? artifactView() : listView()}
+          </main>
+        </div>
+        {/* 第三段：抽屉常驻挂载，靠 data-open 触发 transform 过渡（关闭时滑出而不是瞬移）。 */}
+        <div className="orch-layer">
+          <div
+            className="orch-scrim"
+            data-open={drawerOpen ? 'true' : 'false'}
+            aria-hidden="true"
+            onClick={closeDetail}
+          />
+          <aside
+            className="orch-drawer"
+            data-open={drawerOpen ? 'true' : 'false'}
+            aria-hidden={drawerOpen ? 'false' : 'true'}
+            aria-label="任务详情"
+          >{drawerOpen ? drawerContent() : null}</aside>
+        </div>
+      </div>
     )
   }
   return { HeaderButton, LauncherIcon, LauncherPanel, TasksPanel, TaskChipRow }

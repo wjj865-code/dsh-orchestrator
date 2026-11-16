@@ -2048,126 +2048,126 @@
         /* @__PURE__ */ h(Icon, { name: "external" }),
         label || "打开子会话"
       );
-      const topbar = () => h(
-        "header",
-        { className: "orch-topbar" },
-        h(
-          "div",
-          { className: "orch-brand" },
-          h("span", { className: "orch-brand-mark" }, h(Icon, { name: "sparkle", size: 14 })),
-          h("span", { className: "orch-title" }, inboxCount > 0 ? `任务 · 待你决定 ${inboxCount}` : "任务"),
-          h("span", {
-            className: "orch-status",
-            "data-live": mainSession.live === true ? "true" : "false",
-            title: mainSession.id === null ? "还没有主会话" : `主会话编号 ${mainSession.id}`
-          }, h("span", { className: "orch-status-dot" }), mainState)
+      const topbar = () => /* @__PURE__ */ h("header", { className: "orch-topbar" }, /* @__PURE__ */ h("div", { className: "orch-brand" }, /* @__PURE__ */ h("span", { className: "orch-brand-mark" }, /* @__PURE__ */ h(Icon, { name: "sparkle", size: 14 })), /* @__PURE__ */ h("span", { className: "orch-title" }, inboxCount > 0 ? `任务 · 待你决定 ${inboxCount}` : "任务"), /* @__PURE__ */ h(
+        "span",
+        {
+          className: "orch-status",
+          "data-live": mainSession.live === true ? "true" : "false",
+          title: mainSession.id === null ? "还没有主会话" : `主会话编号 ${mainSession.id}`
+        },
+        /* @__PURE__ */ h("span", { className: "orch-status-dot" }),
+        mainState
+      )), /* @__PURE__ */ h("div", { className: "orch-topbar-actions" }, /* @__PURE__ */ h("label", { className: "orch-search", title: "按标题 / 编号 / 目录搜索" }, /* @__PURE__ */ h(Icon, { name: "search", size: 13 }), /* @__PURE__ */ h(
+        "input",
+        {
+          type: "search",
+          value: query,
+          placeholder: "搜索任务",
+          "aria-label": "搜索任务",
+          onChange: (event) => setQuery(event.target.value)
+        }
+      )), /* @__PURE__ */ h(
+        "button",
+        {
+          type: "button",
+          className: "orch-btn orch-btn--ghost",
+          title: "重新拉取台账快照",
+          onClick: refresh,
+          disabled: refreshing
+        },
+        /* @__PURE__ */ h(Icon, { name: "refresh", className: refreshing ? "orch-spin" : void 0 }),
+        refreshing ? "刷新中…" : "刷新"
+      ), /* @__PURE__ */ h(
+        "button",
+        {
+          type: "button",
+          className: "orch-btn orch-btn--primary",
+          onClick: handleOpenMain,
+          disabled: openingMain
+        },
+        /* @__PURE__ */ h(Icon, { name: "plus" }),
+        openingMain ? "打开中…" : "打开主会话"
+      )));
+      const metrics = () => /* @__PURE__ */ h("div", { className: "orch-metrics" }, METRICS2.map(([value, label]) => /* @__PURE__ */ h(
+        "button",
+        {
+          key: value,
+          type: "button",
+          className: "orch-metric",
+          "data-active": filter === value ? "true" : "false",
+          "data-tone": value === "failed" ? "bad" : value === "done" ? "good" : value === "waiting" ? "warn" : "info",
+          onClick: () => setFilter(value)
+        },
+        /* @__PURE__ */ h("span", { className: "orch-metric-value" }, String(counts[value] || 0)),
+        /* @__PURE__ */ h("span", { className: "orch-metric-label" }, label)
+      )));
+      const rail = () => /* @__PURE__ */ h("nav", { className: "orch-rail", "aria-label": "任务筛选" }, FILTERS2.map(([value, label]) => /* @__PURE__ */ h(
+        "button",
+        {
+          key: value,
+          type: "button",
+          className: "orch-rail-item",
+          "data-active": filter === value ? "true" : "false",
+          "aria-pressed": filter === value,
+          onClick: () => setFilter(value)
+        },
+        /* @__PURE__ */ h(
+          Icon,
+          {
+            name: value === "artifacts" ? "folder" : value === "waiting" ? "inbox" : value === "failed" ? "alert" : value === "done" ? "check" : "clock",
+            size: 13
+          }
         ),
-        h(
-          "div",
-          { className: "orch-topbar-actions" },
-          h(
-            "label",
-            { className: "orch-search", title: "按标题 / 编号 / 目录搜索" },
-            h(Icon, { name: "search", size: 13 }),
-            h("input", {
-              type: "search",
-              value: query,
-              placeholder: "搜索任务",
-              "aria-label": "搜索任务",
-              onChange: (event) => setQuery(event.target.value)
-            })
-          ),
-          h(
+        /* @__PURE__ */ h("span", { className: "orch-rail-label" }, label),
+        /* @__PURE__ */ h("span", { className: "orch-rail-count" }, String(value === "all" ? counts.all : counts[value] || 0))
+      )));
+      const alerts = () => /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, snapshotError !== null ? /* @__PURE__ */ h(
+        Banner,
+        {
+          tone: "error",
+          icon: "alert",
+          action: /* @__PURE__ */ h("button", { type: "button", className: "orch-btn orch-btn--sm", onClick: refresh }, "重试")
+        },
+        `台账暂不可用：${snapshotError}`
+      ) : null, actionError !== null ? /* @__PURE__ */ h(
+        Banner,
+        {
+          tone: "error",
+          icon: "alert",
+          action: /* @__PURE__ */ h(
             "button",
             {
               type: "button",
-              className: "orch-btn orch-btn--ghost",
-              title: "重新拉取台账快照",
-              onClick: refresh,
-              disabled: refreshing
+              className: "orch-btn orch-btn--sm",
+              onClick: () => setActionError(null)
             },
-            h(Icon, { name: "refresh", className: refreshing ? "orch-spin" : void 0 }),
-            refreshing ? "刷新中…" : "刷新"
-          ),
-          h("button", {
-            type: "button",
-            className: "orch-btn orch-btn--primary",
-            onClick: handleOpenMain,
-            disabled: openingMain
-          }, h(Icon, { name: "plus" }), openingMain ? "打开中…" : "打开主会话")
-        )
-      );
-      const metrics = () => h(
-        "div",
-        { className: "orch-metrics" },
-        METRICS2.map(([value, label]) => h(
-          "button",
-          {
-            key: value,
-            type: "button",
-            className: "orch-metric",
-            "data-active": filter === value ? "true" : "false",
-            "data-tone": value === "failed" ? "bad" : value === "done" ? "good" : value === "waiting" ? "warn" : "info",
-            onClick: () => setFilter(value)
-          },
-          h("span", { className: "orch-metric-value" }, String(counts[value] || 0)),
-          h("span", { className: "orch-metric-label" }, label)
-        ))
-      );
-      const rail = () => h(
-        "nav",
-        { className: "orch-rail", "aria-label": "任务筛选" },
-        FILTERS2.map(([value, label]) => h(
-          "button",
-          {
-            key: value,
-            type: "button",
-            className: "orch-rail-item",
-            "data-active": filter === value ? "true" : "false",
-            "aria-pressed": filter === value,
-            onClick: () => setFilter(value)
-          },
-          h(Icon, {
-            name: value === "artifacts" ? "folder" : value === "waiting" ? "inbox" : value === "failed" ? "alert" : value === "done" ? "check" : "clock",
-            size: 13
-          }),
-          h("span", { className: "orch-rail-label" }, label),
-          h("span", { className: "orch-rail-count" }, String(value === "all" ? counts.all : counts[value] || 0))
-        ))
-      );
-      const alerts = () => h(
-        "div",
-        { style: { display: "flex", flexDirection: "column", gap: 8 } },
-        snapshotError !== null ? h(Banner, {
-          tone: "error",
-          icon: "alert",
-          action: h("button", { type: "button", className: "orch-btn orch-btn--sm", onClick: refresh }, "重试")
-        }, `台账暂不可用：${snapshotError}`) : null,
-        actionError !== null ? h(Banner, {
-          tone: "error",
-          icon: "alert",
-          action: h("button", { type: "button", className: "orch-btn orch-btn--sm", onClick: () => setActionError(null) }, "关闭")
-        }, actionError) : null,
-        actionNotice !== null ? h(Banner, { tone: "notice", icon: "check" }, actionNotice) : null,
-        copyNotice !== null ? h(Banner, { tone: "info", icon: "copy" }, copyNotice) : null,
-        inboxCount > 0 ? h(Banner, {
+            "关闭"
+          )
+        },
+        actionError
+      ) : null, actionNotice !== null ? /* @__PURE__ */ h(Banner, { tone: "notice", icon: "check" }, actionNotice) : null, copyNotice !== null ? /* @__PURE__ */ h(Banner, { tone: "info", icon: "copy" }, copyNotice) : null, inboxCount > 0 ? /* @__PURE__ */ h(
+        Banner,
+        {
           tone: "notice",
           icon: "inbox",
-          action: h("button", {
-            type: "button",
-            className: "orch-btn orch-btn--sm",
-            onClick: () => setFilter("waiting")
-          }, "查看")
-        }, `有 ${inboxCount} 个任务等你决定，切到「待你决定」查看。`) : null,
-        openedMain ? h(Banner, { tone: "info", icon: "check" }, "主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」。") : null,
-        snapshot !== null && mainSession.id === null ? h(Banner, { tone: "notice", icon: "alert" }, "尚未打开主会话：点右上角「打开主会话」，在指挥舱里创建。") : null
-      );
+          action: /* @__PURE__ */ h(
+            "button",
+            {
+              type: "button",
+              className: "orch-btn orch-btn--sm",
+              onClick: () => setFilter("waiting")
+            },
+            "查看"
+          )
+        },
+        `有 ${inboxCount} 个任务等你决定，切到「待你决定」查看。`
+      ) : null, openedMain ? /* @__PURE__ */ h(Banner, { tone: "info", icon: "check" }, "主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」。") : null, snapshot !== null && mainSession.id === null ? /* @__PURE__ */ h(Banner, { tone: "notice", icon: "alert" }, "尚未打开主会话：点右上角「打开主会话」，在指挥舱里创建。") : null);
       const renderTask = (task, all) => {
         const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
         const isExpanded = expanded.includes(task.id);
         const displayName = displayNameOf2(task, all);
         const tone = TONE_COLOR2[task.tone] || TONE_COLOR2.muted;
-        return h(
+        return /* @__PURE__ */ h(
           "article",
           {
             key: task.id,
@@ -2178,99 +2178,58 @@
               if (event !== null && typeof event === "object") void openDetail(task.id);
             }
           },
-          h(
-            "div",
-            { className: "orch-card-top" },
-            h("span", { className: "orch-dot", style: { background: tone, color: tone } }),
-            h("span", { className: "orch-card-title", title: displayName }, displayName),
-            statusBadge(task.status),
-            // P8：计划阶段小标（只在「等批准」时出现；批准后正常执行，不占视觉）。
-            task.planState === "planning" ? h(Badge, { tone: "info", title: "计划模式：子会话只读探索，用 task_report blocked 上报计划，批准后自动切回可写" }, "计划中") : null,
-            // P9：真的隔离了才给小标（产物在检出目录里，合并由用户决定）。
-            ["created", "reused"].includes(task.worktreeState) ? h(Badge, { tone: "info", title: `worktree 隔离：产物在分支 ${task.worktreeBranch || "(未知)"} 的检出目录 ${task.worktreePath || "(未知)"}，合并由你决定` }, "隔离") : null,
-            h("span", { className: "orch-card-time", title: "最近事件" }, timeLabel2(task.lastEventAt))
-          ),
-          h(
-            "div",
-            { className: "orch-card-meta" },
-            task.targetDir !== null && task.targetDir !== void 0 ? h(Chip, { title: task.targetDir }, h(Icon, { name: "folder", size: 11 }), shortPath2(task.targetDir)) : null,
-            task.groupId ? h(Chip, { title: "分组" }, `组 ${task.groupId}`) : null,
-            task.priority ? h(Chip, { title: "优先级" }, `P${task.priority}`) : null,
-            task.dependsOn && task.dependsOn.length > 0 ? h(Chip, { title: task.dependsOn.join("、") }, `依赖 ${task.dependsOn.length}`) : null,
-            task.queued ? h(Chip, null, "排队中") : null,
-            task.stale ? h(Chip, { tone: "warn", title: "超过 30 分钟没有新事件" }, "⚠ 可能卡住") : null,
-            task.goalState ? h(Chip, { title: "平台目标状态（只读）" }, h(Icon, { name: "goal", size: 11 }), `目标·${GOAL_PHASE_LABEL2[task.goalState.phase] || task.goalState.phase || "未知"}`) : null,
-            task.readOnly === true ? h(Chip, { tone: "warn", title: "只读任务：写文件/写 shell 会被沙箱拒绝" }, "只读") : null,
-            task.planFirst === true ? h(Chip, {
+          /* @__PURE__ */ h("div", { className: "orch-card-top" }, /* @__PURE__ */ h("span", { className: "orch-dot", style: { background: tone, color: tone } }), /* @__PURE__ */ h("span", { className: "orch-card-title", title: displayName }, displayName), statusBadge(task.status), task.planState === "planning" ? /* @__PURE__ */ h(Badge, { tone: "info", title: "计划模式：子会话只读探索，用 task_report blocked 上报计划，批准后自动切回可写" }, "计划中") : null, ["created", "reused"].includes(task.worktreeState) ? /* @__PURE__ */ h(Badge, { tone: "info", title: `worktree 隔离：产物在分支 ${task.worktreeBranch || "(未知)"} 的检出目录 ${task.worktreePath || "(未知)"}，合并由你决定` }, "隔离") : null, /* @__PURE__ */ h("span", { className: "orch-card-time", title: "最近事件" }, timeLabel2(task.lastEventAt))),
+          /* @__PURE__ */ h("div", { className: "orch-card-meta" }, task.targetDir !== null && task.targetDir !== void 0 ? /* @__PURE__ */ h(Chip, { title: task.targetDir }, /* @__PURE__ */ h(Icon, { name: "folder", size: 11 }), shortPath2(task.targetDir)) : null, task.groupId ? /* @__PURE__ */ h(Chip, { title: "分组" }, `组 ${task.groupId}`) : null, task.priority ? /* @__PURE__ */ h(Chip, { title: "优先级" }, `P${task.priority}`) : null, task.dependsOn && task.dependsOn.length > 0 ? /* @__PURE__ */ h(Chip, { title: task.dependsOn.join("、") }, `依赖 ${task.dependsOn.length}`) : null, task.queued ? /* @__PURE__ */ h(Chip, null, "排队中") : null, task.stale ? /* @__PURE__ */ h(Chip, { tone: "warn", title: "超过 30 分钟没有新事件" }, "⚠ 可能卡住") : null, task.goalState ? /* @__PURE__ */ h(Chip, { title: "平台目标状态（只读）" }, /* @__PURE__ */ h(Icon, { name: "goal", size: 11 }), `目标·${GOAL_PHASE_LABEL2[task.goalState.phase] || task.goalState.phase || "未知"}`) : null, task.readOnly === true ? /* @__PURE__ */ h(Chip, { tone: "warn", title: "只读任务：写文件/写 shell 会被沙箱拒绝" }, "只读") : null, task.planFirst === true ? /* @__PURE__ */ h(
+            Chip,
+            {
               tone: task.planState === "planning" ? "info" : "muted",
               title: "计划模式：plan_state 由台账下发（只读展示）"
-            }, `计划·${PLAN_STATE_LABEL2[task.planState] || task.planState || "无计划状态"}`) : null,
-            task.worktreeState && task.worktreeState !== "none" ? h(Chip, {
+            },
+            `计划·${PLAN_STATE_LABEL2[task.planState] || task.planState || "无计划状态"}`
+          ) : null, task.worktreeState && task.worktreeState !== "none" ? /* @__PURE__ */ h(
+            Chip,
+            {
               tone: task.worktreeState === "failed" ? "bad" : ["created", "reused"].includes(task.worktreeState) ? "info" : "muted",
               title: task.worktreePath ? `检出 ${task.worktreePath}` : "未建检出"
-            }, `隔离·${WORKTREE_STATE_LABEL2?.[task.worktreeState] || task.worktreeState}`) : null,
-            artifacts.length > 0 ? h(
-              "button",
-              {
-                type: "button",
-                className: "orch-btn orch-btn--sm",
-                "aria-expanded": isExpanded,
-                onClick: act(() => toggleArtifacts(task.id))
-              },
-              h(Icon, { name: "chevron", className: "orch-chevron", "data-open": isExpanded ? "true" : "false" }),
-              `产物 ${artifacts.length}`
-            ) : null
-          ),
-          h(
-            "div",
-            { className: "orch-card-actions" },
-            h("button", {
+            },
+            `隔离·${WORKTREE_STATE_LABEL2?.[task.worktreeState] || task.worktreeState}`
+          ) : null, artifacts.length > 0 ? /* @__PURE__ */ h(
+            "button",
+            {
+              type: "button",
+              className: "orch-btn orch-btn--sm",
+              "aria-expanded": isExpanded,
+              onClick: act(() => toggleArtifacts(task.id))
+            },
+            /* @__PURE__ */ h(Icon, { name: "chevron", className: "orch-chevron", "data-open": isExpanded ? "true" : "false" }),
+            `产物 ${artifacts.length}`
+          ) : null),
+          /* @__PURE__ */ h("div", { className: "orch-card-actions" }, /* @__PURE__ */ h(
+            "button",
+            {
               key: "detail",
               type: "button",
               className: "orch-btn orch-btn--sm",
               onClick: act(() => void openDetail(task.id))
-            }, h(Icon, { name: "chevron" }), "详情"),
-            stopControl(task),
-            closeControl(task),
-            retryControl(task),
-            openControl(task.childSessionId),
-            deleteControl(task)
-          ),
-          artifacts.length > 0 ? h(
-            "div",
-            { className: "orch-expand", "data-open": isExpanded ? "true" : "false" },
-            h(
-              "div",
-              null,
-              h(
-                "div",
-                { className: "orch-artifact-list" },
-                artifacts.map((item, index) => {
-                  const itemTone = item.exists === false ? TONE_COLOR2.bad : TONE_COLOR2.good;
-                  return h(
-                    "div",
-                    { key: `${item.path}:${index}`, className: "orch-artifact" },
-                    h("span", { className: "orch-dot", style: { background: itemTone, color: itemTone } }),
-                    // 点路径 = 在会话右侧栏打开预览（与产物库同一个入口）；缺失的文件不给点。
-                    h("button", {
-                      type: "button",
-                      className: "orch-artifact-path orch-artifact-open",
-                      title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
-                      disabled: item.exists === false,
-                      onClick: act(() => void previewInSidebar(task.id, item.path))
-                    }, `${item.path}${item.exists === false ? "（未找到）" : ""}`),
-                    item.label ? h("span", { className: "orch-muted" }, item.label) : null
-                  );
-                })
-              )
-            )
-          ) : null,
-          task.question ? h(
-            "div",
-            { className: "orch-question" },
-            h(Icon, { name: "alert", size: 13 }),
-            h("span", null, `需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(" / ")}）` : ""}`)
-          ) : null
+            },
+            /* @__PURE__ */ h(Icon, { name: "chevron" }),
+            "详情"
+          ), stopControl(task), closeControl(task), retryControl(task), openControl(task.childSessionId), deleteControl(task)),
+          artifacts.length > 0 ? /* @__PURE__ */ h("div", { className: "orch-expand", "data-open": isExpanded ? "true" : "false" }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { className: "orch-artifact-list" }, artifacts.map((item, index) => {
+            const itemTone = item.exists === false ? TONE_COLOR2.bad : TONE_COLOR2.good;
+            return /* @__PURE__ */ h("div", { key: `${item.path}:${index}`, className: "orch-artifact" }, /* @__PURE__ */ h("span", { className: "orch-dot", style: { background: itemTone, color: itemTone } }), /* @__PURE__ */ h(
+              "button",
+              {
+                type: "button",
+                className: "orch-artifact-path orch-artifact-open",
+                title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
+                disabled: item.exists === false,
+                onClick: act(() => void previewInSidebar(task.id, item.path))
+              },
+              `${item.path}${item.exists === false ? "（未找到）" : ""}`
+            ), item.label ? /* @__PURE__ */ h("span", { className: "orch-muted" }, item.label) : null);
+          })))) : null,
+          task.question ? /* @__PURE__ */ h("div", { className: "orch-question" }, /* @__PURE__ */ h(Icon, { name: "alert", size: 13 }), /* @__PURE__ */ h("span", null, `需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(" / ")}）` : ""}`)) : null
         );
       };
       const artifactItems = Array.isArray(artifactData && artifactData.items) ? artifactData.items : [];
@@ -2425,71 +2384,36 @@
         }
         return /* @__PURE__ */ h("div", { className: "orch-list" }, visible.map((task) => renderTask(task, tasks)));
       };
-      const drawerLoading = () => h(
-        "div",
-        { className: "orch-drawer-sections" },
-        h(
-          "div",
-          { className: "orch-skeleton-card" },
-          h(
-            "div",
-            { className: "orch-skeleton-row" },
-            h("div", { className: "orch-skeleton", style: { width: "40%" } }),
-            h("div", { className: "orch-skeleton", style: { width: 60, marginLeft: "auto" } })
-          ),
-          h("div", { className: "orch-skeleton", style: { width: "86%" } }),
-          h("div", { className: "orch-skeleton", style: { width: "72%" } })
-        ),
-        h(SkeletonList, { rows: 2 })
-      );
-      const drawerError = () => h(
-        "div",
-        { style: { display: "flex", flexDirection: "column", gap: 8 } },
-        h(Banner, { tone: "error", icon: "alert" }, detailError),
-        h(
-          "div",
-          { className: "orch-card-actions" },
-          h("button", {
-            type: "button",
-            className: "orch-btn orch-btn--ghost",
-            onClick: () => {
-              if (detailTaskId !== null) void openDetail(detailTaskId);
-            }
-          }, "重新加载"),
-          h("button", { type: "button", className: "orch-btn", onClick: closeDetail }, "关闭")
-        )
-      );
+      const drawerLoading = () => /* @__PURE__ */ h("div", { className: "orch-drawer-sections" }, /* @__PURE__ */ h("div", { className: "orch-skeleton-card" }, /* @__PURE__ */ h("div", { className: "orch-skeleton-row" }, /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: "40%" } }), /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: 60, marginLeft: "auto" } })), /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: "86%" } }), /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: "72%" } })), /* @__PURE__ */ h(SkeletonList, { rows: 2 }));
+      const drawerError = () => /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, /* @__PURE__ */ h(Banner, { tone: "error", icon: "alert" }, detailError), /* @__PURE__ */ h("div", { className: "orch-card-actions" }, /* @__PURE__ */ h(
+        "button",
+        {
+          type: "button",
+          className: "orch-btn orch-btn--ghost",
+          onClick: () => {
+            if (detailTaskId !== null) void openDetail(detailTaskId);
+          }
+        },
+        "重新加载"
+      ), /* @__PURE__ */ h("button", { type: "button", className: "orch-btn", onClick: closeDetail }, "关闭")));
       const detailSection = (key, title, hint, body) => {
         const isCollapsed = collapsedSections.includes(key);
-        return h(
-          "section",
-          { key, className: "orch-section", "data-collapsed": isCollapsed ? "true" : "false" },
-          h(
-            "button",
-            {
-              type: "button",
-              className: "orch-section-head",
-              "aria-expanded": !isCollapsed,
-              onClick: () => setCollapsedSections((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key])
-            },
-            h(Icon, { name: "chevron", className: "orch-chevron" }),
-            h("span", { className: "orch-section-title" }, title),
-            hint ? h("span", { className: "orch-section-hint" }, hint) : null
-          ),
-          h(
-            "div",
-            { className: "orch-section-body-wrap" },
-            h(
-              "div",
-              { className: "orch-section-body" },
-              h("div", { className: "orch-section-inner" }, body)
-            )
-          )
-        );
+        return /* @__PURE__ */ h("section", { key, className: "orch-section", "data-collapsed": isCollapsed ? "true" : "false" }, /* @__PURE__ */ h(
+          "button",
+          {
+            type: "button",
+            className: "orch-section-head",
+            "aria-expanded": !isCollapsed,
+            onClick: () => setCollapsedSections((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key])
+          },
+          /* @__PURE__ */ h(Icon, { name: "chevron", className: "orch-chevron" }),
+          /* @__PURE__ */ h("span", { className: "orch-section-title" }, title),
+          hint ? /* @__PURE__ */ h("span", { className: "orch-section-hint" }, hint) : null
+        ), /* @__PURE__ */ h("div", { className: "orch-section-body-wrap" }, /* @__PURE__ */ h("div", { className: "orch-section-body" }, /* @__PURE__ */ h("div", { className: "orch-section-inner" }, body))));
       };
       const detailBody = () => {
         const task = detail.task || {};
-        const overviewBody = h("div", { className: "orch-kv" }, [
+        const overviewBody = /* @__PURE__ */ h("div", { className: "orch-kv" }, [
           ["编号", task.id],
           ["状态", STATUS_LABEL2[task.status] || task.status || "未知"],
           // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）。
@@ -2504,25 +2428,13 @@
           ["创建", timeLabel2(task.createdAt)],
           ["更新", timeLabel2(task.updatedAt)]
         ].flatMap(([key, value]) => [
-          h("span", { key: `${key}:k`, className: "orch-kv-key" }, key),
-          h("span", { key: `${key}:v`, className: "orch-kv-val" }, String(value === void 0 || value === null ? "" : value))
+          /* @__PURE__ */ h("span", { key: `${key}:k`, className: "orch-kv-key" }, key),
+          /* @__PURE__ */ h("span", { key: `${key}:v`, className: "orch-kv-val" }, String(value === void 0 || value === null ? "" : value))
         ]));
         const lastMessage = task.lastMessage !== null && typeof task.lastMessage === "object" ? task.lastMessage : null;
-        const lastMessageBody = lastMessage === null ? h("div", { className: "orch-muted" }, "还没有返回消息（子会话结算后自动记录最后一条回复）。") : h(
-          "div",
-          { style: { display: "flex", flexDirection: "column", gap: 6 } },
-          h(
-            "div",
-            { className: "orch-card-meta" },
-            h(Badge, { tone: "info" }, lastMessage.stored === "file" ? "全文在报告文件" : "内联正文"),
-            lastMessage.stopReason ? h(Chip, { title: "结束原因" }, lastMessage.stopReason) : null,
-            h("span", { className: "orch-msg-at" }, timeLabel2(lastMessage.at)),
-            typeof lastMessage.chars === "number" ? h("span", { className: "orch-msg-at" }, `${lastMessage.chars} 字`) : null
-          ),
-          h("pre", { className: "orch-pre" }, lastMessage.stored === "file" ? `${lastMessage.summary || ""}
+        const lastMessageBody = lastMessage === null ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "还没有返回消息（子会话结算后自动记录最后一条回复）。") : /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ h("div", { className: "orch-card-meta" }, /* @__PURE__ */ h(Badge, { tone: "info" }, lastMessage.stored === "file" ? "全文在报告文件" : "内联正文"), lastMessage.stopReason ? /* @__PURE__ */ h(Chip, { title: "结束原因" }, lastMessage.stopReason) : null, /* @__PURE__ */ h("span", { className: "orch-msg-at" }, timeLabel2(lastMessage.at)), typeof lastMessage.chars === "number" ? /* @__PURE__ */ h("span", { className: "orch-msg-at" }, `${lastMessage.chars} 字`) : null), /* @__PURE__ */ h("pre", { className: "orch-pre" }, lastMessage.stored === "file" ? `${lastMessage.summary || ""}
 
-全文：${lastMessage.path || "（路径缺失）"}` : String(lastMessage.text || lastMessage.summary || "（空）"))
-        );
+全文：${lastMessage.path || "（路径缺失）"}` : String(lastMessage.text || lastMessage.summary || "（空）")));
         const brief = task.brief !== null && typeof task.brief === "object" && !Array.isArray(task.brief) ? task.brief : {};
         const briefGoal = textOf2(brief.goal) || textOf2(task.goal);
         const acceptance = listOf2(brief.acceptance);
@@ -2530,129 +2442,60 @@
         const refs = listOf2(brief.refs);
         const verbatim = textOf2(brief.user_verbatim);
         const briefEmpty = briefGoal === "" && acceptance.length === 0 && constraints.length === 0 && refs.length === 0 && verbatim === "";
-        const briefLists = (label, items) => h(
-          "div",
-          null,
-          h("div", { className: "orch-kv-key" }, label),
-          h("ul", { className: "orch-ul" }, items.map((item, index) => h("li", { key: index }, item)))
-        );
-        const briefBody = briefEmpty ? h("div", { className: "orch-muted" }, "这条任务没有 brief 信息。") : h(
-          "div",
-          { style: { display: "flex", flexDirection: "column", gap: 8 } },
-          briefGoal !== "" ? h("div", { className: "orch-text" }, briefGoal) : null,
-          acceptance.length > 0 ? briefLists("验收标准：", acceptance) : null,
-          constraints.length > 0 ? briefLists("约束：", constraints) : null,
-          refs.length > 0 ? briefLists("背景资料：", refs) : null,
-          verbatim !== "" ? h(
-            "div",
-            null,
-            h("div", { className: "orch-kv-key" }, "用户原话："),
-            h("blockquote", { className: "orch-quote" }, verbatim)
-          ) : null
-        );
+        const briefLists = (label, items) => /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { className: "orch-kv-key" }, label), /* @__PURE__ */ h("ul", { className: "orch-ul" }, items.map((item, index) => /* @__PURE__ */ h("li", { key: index }, item))));
+        const briefBody = briefEmpty ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "这条任务没有 brief 信息。") : /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, briefGoal !== "" ? /* @__PURE__ */ h("div", { className: "orch-text" }, briefGoal) : null, acceptance.length > 0 ? briefLists("验收标准：", acceptance) : null, constraints.length > 0 ? briefLists("约束：", constraints) : null, refs.length > 0 ? briefLists("背景资料：", refs) : null, verbatim !== "" ? /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { className: "orch-kv-key" }, "用户原话："), /* @__PURE__ */ h("blockquote", { className: "orch-quote" }, verbatim)) : null);
         const goalState = task.goalState !== null && typeof task.goalState === "object" ? task.goalState : null;
-        const goalBody = goalState === null ? h("div", { className: "orch-muted" }, "没有平台目标状态（goal 服务不可用，或任务尚未派发/已收口）。") : h("div", { className: "orch-kv" }, [
+        const goalBody = goalState === null ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "没有平台目标状态（goal 服务不可用，或任务尚未派发/已收口）。") : /* @__PURE__ */ h("div", { className: "orch-kv" }, [
           ["目标", textOf2(goalState.objective) || "（未记录）"],
           ["阶段", GOAL_PHASE_LABEL2[goalState.phase] || goalState.phase || "未知"],
           ["续轮", `${GOAL_ACTIVATION_LABEL2[goalState.activation] || goalState.activation || "未知"}（插件声明式接入，恒为不自动续轮）`],
           ["轮次", goalState.roundsStarted === null || goalState.roundsStarted === void 0 ? "-" : `${goalState.roundsStarted}/${goalState.maxGoalRounds === null || goalState.maxGoalRounds === void 0 ? "?" : goalState.maxGoalRounds}`],
           ["修订", goalState.revision === null || goalState.revision === void 0 ? "-" : String(goalState.revision)]
         ].flatMap(([key, value]) => [
-          h("span", { key: `${key}:k`, className: "orch-kv-key" }, key),
-          h("span", { key: `${key}:v`, className: "orch-kv-val" }, String(value))
+          /* @__PURE__ */ h("span", { key: `${key}:k`, className: "orch-kv-key" }, key),
+          /* @__PURE__ */ h("span", { key: `${key}:v`, className: "orch-kv-val" }, String(value))
         ]));
-        const goalNote = h(
-          "div",
-          { className: "orch-muted" },
-          "只读展示：由插件在派发、续派与终态时自动维护；面板不提供暂停/恢复/清除操作。"
-        );
+        const goalNote = /* @__PURE__ */ h("div", { className: "orch-muted" }, "只读展示：由插件在派发、续派与终态时自动维护；面板不提供暂停/恢复/清除操作。");
         const messages = Array.isArray(detail.messages) ? detail.messages : [];
         const shownMessages = messages.slice(-20);
-        const messageBody = messages.length === 0 ? h("div", { className: "orch-muted" }, "还没有消息。") : h(
-          "div",
-          { style: { display: "flex", flexDirection: "column", gap: 4 } },
-          shownMessages.map((row, index) => h(
-            "div",
-            {
-              key: row.seq === void 0 ? index : row.seq,
-              className: "orch-msg",
-              "data-kind": row.kind
-            },
-            h(
-              "div",
-              { className: "orch-msg-head" },
-              h(Badge, { tone: "muted" }, MESSAGE_KIND_LABEL2[row.kind] || row.kind),
-              row.delivery ? h(Badge, {
-                tone: DELIVERY_TONE2[row.delivery] || "muted",
-                title: `投递状态：${DELIVERY_LABEL2[row.delivery] || row.delivery}`
-              }, DELIVERY_LABEL2[row.delivery] || row.delivery) : null,
-              h("span", { className: "orch-msg-at" }, timeLabel2(row.at))
-            ),
-            h("div", { className: "orch-msg-text" }, row.text)
-          )),
-          messages.length > shownMessages.length ? h("div", { className: "orch-muted" }, `仅显示最近 ${shownMessages.length} 条（共 ${messages.length} 条）。`) : null
-        );
+        const messageBody = messages.length === 0 ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "还没有消息。") : /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, shownMessages.map((row, index) => /* @__PURE__ */ h("div", { key: row.seq === void 0 ? index : row.seq, className: "orch-msg", "data-kind": row.kind }, /* @__PURE__ */ h("div", { className: "orch-msg-head" }, /* @__PURE__ */ h(Badge, { tone: "muted" }, MESSAGE_KIND_LABEL2[row.kind] || row.kind), row.delivery ? /* @__PURE__ */ h(
+          Badge,
+          {
+            tone: DELIVERY_TONE2[row.delivery] || "muted",
+            title: `投递状态：${DELIVERY_LABEL2[row.delivery] || row.delivery}`
+          },
+          DELIVERY_LABEL2[row.delivery] || row.delivery
+        ) : null, /* @__PURE__ */ h("span", { className: "orch-msg-at" }, timeLabel2(row.at))), /* @__PURE__ */ h("div", { className: "orch-msg-text" }, row.text))), messages.length > shownMessages.length ? /* @__PURE__ */ h("div", { className: "orch-muted" }, `仅显示最近 ${shownMessages.length} 条（共 ${messages.length} 条）。`) : null);
         const dependencies = Array.isArray(detail.dependencies) ? detail.dependencies : [];
         const dependents = Array.isArray(detail.dependents) ? detail.dependents : [];
         const depRow = (row) => {
           const tone = TONE_COLOR2[STATUS_TONE2[row.status]] || TONE_COLOR2.muted;
-          return h(
-            "div",
-            { key: `${row.status}:${row.id}`, className: "orch-artifact" },
-            h("span", { className: "orch-dot", style: { background: tone, color: tone } }),
-            h("span", { style: { flex: 1, minWidth: 0, overflowWrap: "anywhere" }, title: row.error || row.id }, row.title),
-            h(Badge, { tone: STATUS_TONE2[row.status] || "muted" }, STATUS_LABEL2[row.status] || row.status || "未知"),
-            row.error ? h(Chip, { tone: "bad", title: row.error }, "有错误") : null
-          );
+          return /* @__PURE__ */ h("div", { key: `${row.status}:${row.id}`, className: "orch-artifact" }, /* @__PURE__ */ h("span", { className: "orch-dot", style: { background: tone, color: tone } }), /* @__PURE__ */ h("span", { style: { flex: 1, minWidth: 0, overflowWrap: "anywhere" }, title: row.error || row.id }, row.title), /* @__PURE__ */ h(Badge, { tone: STATUS_TONE2[row.status] || "muted" }, STATUS_LABEL2[row.status] || row.status || "未知"), row.error ? /* @__PURE__ */ h(Chip, { tone: "bad", title: row.error }, "有错误") : null);
         };
-        const depBody = h(
-          "div",
-          { style: { display: "flex", flexDirection: "column", gap: 4 } },
-          h("div", { className: "orch-kv-key" }, "上游（前置任务）"),
-          dependencies.length === 0 ? h("div", { className: "orch-muted" }, "没有前置任务。") : h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, dependencies.map(depRow)),
-          h("div", { className: "orch-kv-key" }, "下游（依赖本任务）"),
-          dependents.length === 0 ? h("div", { className: "orch-muted" }, "没有下游任务。") : h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, dependents.map(depRow))
-        );
+        const depBody = /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, /* @__PURE__ */ h("div", { className: "orch-kv-key" }, "上游（前置任务）"), dependencies.length === 0 ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "没有前置任务。") : /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, dependencies.map(depRow)), /* @__PURE__ */ h("div", { className: "orch-kv-key" }, "下游（依赖本任务）"), dependents.length === 0 ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "没有下游任务。") : /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, dependents.map(depRow)));
         const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
-        const artifactBody = artifacts.length === 0 ? h("div", { className: "orch-muted" }, "还没有产物。") : h(
-          "div",
-          { style: { display: "flex", flexDirection: "column", gap: 4 } },
-          artifacts.map((item, index) => {
-            const tone = item.exists === false ? TONE_COLOR2.bad : TONE_COLOR2.good;
-            return h(
-              "div",
-              { key: `${item.path}:${index}`, className: "orch-artifact" },
-              h("span", { className: "orch-dot", style: { background: tone, color: tone } }),
-              h("button", {
-                type: "button",
-                className: "orch-artifact-path orch-artifact-open",
-                title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
-                disabled: item.exists === false,
-                onClick: act(() => void previewInSidebar(task.id, item.path))
-              }, item.path),
-              item.label ? h("span", { className: "orch-muted" }, item.label) : null,
-              item.exists === false ? h(Chip, { tone: "bad" }, "（未找到）") : null,
-              h("button", { type: "button", className: "orch-btn orch-btn--sm", onClick: () => void copyPath(item.path) }, "复制路径")
-            );
-          })
-        );
-        return h(
-          "div",
-          { className: "orch-drawer-sections" },
-          task.question ? h(Banner, {
+        const artifactBody = artifacts.length === 0 ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "还没有产物。") : /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, artifacts.map((item, index) => {
+          const tone = item.exists === false ? TONE_COLOR2.bad : TONE_COLOR2.good;
+          return /* @__PURE__ */ h("div", { key: `${item.path}:${index}`, className: "orch-artifact" }, /* @__PURE__ */ h("span", { className: "orch-dot", style: { background: tone, color: tone } }), /* @__PURE__ */ h(
+            "button",
+            {
+              type: "button",
+              className: "orch-artifact-path orch-artifact-open",
+              title: item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`,
+              disabled: item.exists === false,
+              onClick: act(() => void previewInSidebar(task.id, item.path))
+            },
+            item.path
+          ), item.label ? /* @__PURE__ */ h("span", { className: "orch-muted" }, item.label) : null, item.exists === false ? /* @__PURE__ */ h(Chip, { tone: "bad" }, "（未找到）") : null, /* @__PURE__ */ h("button", { type: "button", className: "orch-btn orch-btn--sm", onClick: () => void copyPath(item.path) }, "复制路径"));
+        }));
+        return /* @__PURE__ */ h("div", { className: "orch-drawer-sections" }, task.question ? /* @__PURE__ */ h(
+          Banner,
+          {
             tone: "notice",
             icon: "alert"
-          }, `需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(" / ")}）` : ""}`) : null,
-          task.error ? h(Banner, { tone: "error", icon: "alert" }, `错误：${task.error}`) : null,
-          detailSection("概览", "概览", "", overviewBody),
-          detailSection("最新回复", "最新回复", lastMessage === null ? "" : timeLabel2(lastMessage.at), lastMessageBody),
-          detailSection("Brief", "Brief", acceptance.length > 0 ? `验收 ${acceptance.length} 条` : "", briefBody),
-          detailSection("目标状态", "目标状态", goalState === null ? "" : GOAL_PHASE_LABEL2[goalState.phase] || goalState.phase || "", goalBody),
-          detailSection("消息", "消息", messages.length > 0 ? `${messages.length} 条` : "", messageBody),
-          detailSection("依赖", "依赖", `上游 ${dependencies.length} · 下游 ${dependents.length}`, depBody),
-          detailSection("产物", "产物", artifacts.length > 0 ? `${artifacts.length} 个` : "", artifactBody),
-          goalNote
-        );
+          },
+          `需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(" / ")}）` : ""}`
+        ) : null, task.error ? /* @__PURE__ */ h(Banner, { tone: "error", icon: "alert" }, `错误：${task.error}`) : null, detailSection("概览", "概览", "", overviewBody), detailSection("最新回复", "最新回复", lastMessage === null ? "" : timeLabel2(lastMessage.at), lastMessageBody), detailSection("Brief", "Brief", acceptance.length > 0 ? `验收 ${acceptance.length} 条` : "", briefBody), detailSection("目标状态", "目标状态", goalState === null ? "" : GOAL_PHASE_LABEL2[goalState.phase] || goalState.phase || "", goalBody), detailSection("消息", "消息", messages.length > 0 ? `${messages.length} 条` : "", messageBody), detailSection("依赖", "依赖", `上游 ${dependencies.length} · 下游 ${dependents.length}`, depBody), detailSection("产物", "产物", artifacts.length > 0 ? `${artifacts.length} 个` : "", artifactBody), goalNote);
       };
       const drawerFoot = () => {
         const buttons = [
@@ -2662,80 +2505,38 @@
           detailTask.target ? openControl(detailTask.target, "打开子会话") : null,
           deleteControl(detailTask),
           // 不能删就说清原因：活跃任务先「停止」；终态但还有活跃下游先处理下游。
-          detailTask.canDelete !== true ? h("span", { key: "delete-hint", className: "orch-muted" }, "当前不能删除：活跃任务先「停止」；有活跃下游依赖则先处理下游。") : null
+          detailTask.canDelete !== true ? /* @__PURE__ */ h("span", { key: "delete-hint", className: "orch-muted" }, "当前不能删除：活跃任务先「停止」；有活跃下游依赖则先处理下游。") : null
         ].filter(Boolean);
-        return buttons.length === 0 ? null : h("footer", { className: "orch-drawer-foot" }, buttons);
+        return buttons.length === 0 ? null : /* @__PURE__ */ h("footer", { className: "orch-drawer-foot" }, buttons);
       };
-      const drawerContent = () => h(
+      const drawerContent = () => /* @__PURE__ */ h("div", { className: "orch-drawer-content" }, /* @__PURE__ */ h("header", { className: "orch-drawer-head" }, /* @__PURE__ */ h("div", { className: "orch-drawer-title-row" }, /* @__PURE__ */ h("span", { className: "orch-drawer-title", title: drawerTitle }, drawerTitle), detailTask === null ? null : statusBadge(detailTask.status), /* @__PURE__ */ h(
+        "button",
+        {
+          type: "button",
+          className: "orch-icon-btn",
+          title: "关闭（Esc）",
+          onClick: closeDetail
+        },
+        /* @__PURE__ */ h(Icon, { name: "close" })
+      )), /* @__PURE__ */ h("div", { className: "orch-drawer-sub" }, detailTask === null ? null : /* @__PURE__ */ h("span", null, `编号 ${detailTask.id}`), detailTask === null ? null : /* @__PURE__ */ h("span", null, `更新 ${timeLabel2(detailTask.updatedAt)}`), detailTask !== null && detailTask.readOnly === true ? /* @__PURE__ */ h("span", null, "只读任务") : null, detailTask !== null && detailTask.planFirst === true ? /* @__PURE__ */ h("span", null, `计划：${PLAN_STATE_LABEL2[detailTask.planState] || detailTask.planState || "无计划状态"}`) : null)), /* @__PURE__ */ h("div", { className: "orch-drawer-body" }, detailLoading ? drawerLoading() : null, detailError !== null ? drawerError() : null, detailTask === null ? null : detailBody()), detailTask === null ? null : drawerFoot());
+      return /* @__PURE__ */ h("div", { className: "orch-shell" }, topbar(), metrics(), /* @__PURE__ */ h("div", { className: "orch-body" }, rail(), /* @__PURE__ */ h("main", { className: "orch-main" }, alerts(), filter === "artifacts" ? artifactView() : listView())), /* @__PURE__ */ h("div", { className: "orch-layer" }, /* @__PURE__ */ h(
         "div",
-        { className: "orch-drawer-content" },
-        h(
-          "header",
-          { className: "orch-drawer-head" },
-          h(
-            "div",
-            { className: "orch-drawer-title-row" },
-            h("span", { className: "orch-drawer-title", title: drawerTitle }, drawerTitle),
-            detailTask === null ? null : statusBadge(detailTask.status),
-            h("button", {
-              type: "button",
-              className: "orch-icon-btn",
-              title: "关闭（Esc）",
-              onClick: closeDetail
-            }, h(Icon, { name: "close" }))
-          ),
-          h(
-            "div",
-            { className: "orch-drawer-sub" },
-            detailTask === null ? null : h("span", null, `编号 ${detailTask.id}`),
-            detailTask === null ? null : h("span", null, `更新 ${timeLabel2(detailTask.updatedAt)}`),
-            detailTask !== null && detailTask.readOnly === true ? h("span", null, "只读任务") : null,
-            detailTask !== null && detailTask.planFirst === true ? h("span", null, `计划：${PLAN_STATE_LABEL2[detailTask.planState] || detailTask.planState || "无计划状态"}`) : null
-          )
-        ),
-        h(
-          "div",
-          { className: "orch-drawer-body" },
-          detailLoading ? drawerLoading() : null,
-          detailError !== null ? drawerError() : null,
-          detailTask === null ? null : detailBody()
-        ),
-        detailTask === null ? null : drawerFoot()
-      );
-      return h(
-        "div",
-        { className: "orch-shell" },
-        topbar(),
-        metrics(),
-        h(
-          "div",
-          { className: "orch-body" },
-          rail(),
-          h(
-            "main",
-            { className: "orch-main" },
-            alerts(),
-            filter === "artifacts" ? artifactView() : listView()
-          )
-        ),
-        // 第三段：抽屉常驻挂载，靠 data-open 触发 transform 过渡（关闭时滑出而不是瞬移）。
-        h(
-          "div",
-          { className: "orch-layer" },
-          h("div", {
-            className: "orch-scrim",
-            "data-open": drawerOpen ? "true" : "false",
-            "aria-hidden": "true",
-            onClick: closeDetail
-          }),
-          h("aside", {
-            className: "orch-drawer",
-            "data-open": drawerOpen ? "true" : "false",
-            "aria-hidden": drawerOpen ? "false" : "true",
-            "aria-label": "任务详情"
-          }, drawerOpen ? drawerContent() : null)
-        )
-      );
+        {
+          className: "orch-scrim",
+          "data-open": drawerOpen ? "true" : "false",
+          "aria-hidden": "true",
+          onClick: closeDetail
+        }
+      ), /* @__PURE__ */ h(
+        "aside",
+        {
+          className: "orch-drawer",
+          "data-open": drawerOpen ? "true" : "false",
+          "aria-hidden": drawerOpen ? "false" : "true",
+          "aria-label": "任务详情"
+        },
+        drawerOpen ? drawerContent() : null
+      )));
     };
     return { HeaderButton, LauncherIcon, LauncherPanel, TasksPanel, TaskChipRow };
   }

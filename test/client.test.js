@@ -610,7 +610,8 @@ test('U2 三段式布局：顶部命令栏 / 中部列表（筛选轨+任务卡�
     assert.ok(source.includes(cls), `缺少布局 class ${cls}`)
   }
   // 抽屉用 data-open 驱动 transform 过渡（关闭时仍挂载，才能滑出而不是瞬移）。
-  assert.match(source, /'data-open': drawerOpen \? 'true' : 'false'/)
+  // 形态跟随源码（S7 尾部迁 JSX）：属性名仍是 data-open、取值仍是字符串三元 'true' / 'false'。
+  assert.match(source, /data-open=\{drawerOpen \? 'true' : 'false'\}/)
   assert.match(source, /const STYLE_ID = 'dsh-orchestrator-styles'/)
   assert.match(source, /const ensureStyles = \(\) =>/)
   assert.match(source, /style\.id = STYLE_ID/)
@@ -663,8 +664,9 @@ test('U2 交互：hover / 过渡动画 / 骨架加载态 / 空态 / 错误态 / 
   assert.match(source, /confirmStop/)
   assert.match(source, /确认停止/)
   assert.match(source, /取消/)
-  // 折叠展开：区块标题是 button，带 aria-expanded
-  assert.match(source, /'aria-expanded': !isCollapsed/)
+  // 折叠展开：区块标题是 button，带 aria-expanded（S6：detailSection 迁成 JSX，断言跟着源码形态走；
+  // 仍然是布尔 `!isCollapsed`，只是属性写法从对象键变成 JSX attribute——形状跟随，不是放宽）。
+  assert.match(source, /aria-expanded=\{!isCollapsed\}/)
   // 抽屉按 Esc 关闭
   assert.match(source, /event\.key === 'Escape'/)
   // 右抽屉里的四区块与 B1 最新回复、G1 目标状态都还在
