@@ -3,6 +3,62 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
+## 0.16.0（2026-11-16）
+
+这一版全是**面板与入口的 UI 改造**：会话头入口按面板设计语言重做、删掉一个从来发不出请求的「追加」按钮、
+产物预览改为复用宿主的会话右侧栏。相对 0.15.0 是 **minor**：没有破坏性变更——台账结构、工具入参、
+状态迁移、门控判定（`canFollowup`/`canClose`/`canDelete`）与后端接口都没动，`preview` 端点也保留作回退。
+
+### 会话头「任务」入口重做（feat(ui)）
+
+- **视觉与面板顶栏 `.orch-brand` 同一套语言**：品牌色方块（`.orch-entry-mark`，18×18、`--dsw-radius-xs` 圆角、
+  `--dsw-specific-bubble` 底、`--dsw-alias-state-business-primary` 前景）内装 `ui.js` 新增的 `menu` 内联 SVG
+  （三条横线），右侧半粗文字（`.orch-entry-label`，12px）；不再用裸字符 `☰`。
+- **按钮规格**：`.orch-btn--entry` 高 26px、`padding: 0 10px`、`--dsw-alias-border-l2` 描边、
+  `--dsw-alias-bg-layer-1` 底、`--dsw-alias-label-primary` 半粗字；hover 换 `--dsw-alias-border-l3` + `--dsw-shadow-lv1`。
+  hover/active/disabled/focus-visible 四态继承 `.orch-btn`，不重复声明。补 `aria-label="打开任务面板"`。
+- 闸门不变：仍由 `client/src/gate.js` 的 fail-closed 判定控制「只在主会话显示」。
+
+### 移除面板「追加消息」（fix(ui)）
+
+- 旧「追加」按钮点击走 `window.prompt`，而 Electron 渲染进程把 `window.prompt` 换成抛错桩
+  （`prompt() is not supported.`）——**这个入口从来没有真正发出过请求**。任务卡、抽屉底部动作条与 `messageControl`
+  一并删除，`ui.js` 的 `message` 图标随之移除。
+- **续派与计划批准统一走协调者 `task_message`**；服务端 `canFollowup` 门控与 `message` 端点都保留
+  （快照仍下发该布尔值，只是前端不再消费）。README / ARCHITECTURE / UI 里「面板追加」的说法同步改掉。
+
+### 产物预览复用宿主右侧栏（feat(ui)）
+
+- **不自建预览视图**：产物库「预览」、任务卡产物路径、抽屉「产物」区块的路径，统一走
+  `client.js` 的 `openArtifactPreview(path)` → `ctx.sidebarRight.openResource(address)`，由宿主的
+  `@deepseek-ai/dsh-client-ui-sidebar-documentpreview`（`kind:'text'`）渲染 Markdown / 代码 / 图片 / PDF / Office。
+- **地址拼装对齐宿主**：`logic.js` 新增 `fileAddressOf` / `fileAddressProblem`，拼
+  `dsh-resource://file/session/<编码 id>/<逐段编码 path>`，与 `@deepseek-ai/dsh-util-workspace-path` 的
+  `sessionFileAddress` 逐条对齐（`:` 保持字面以兼容盘符、**不 trim** 以保留 POSIX 合法首尾空格、
+  非法 UTF-16 收敛成空串不让 `URIError` 冒到事件处理器）。文件预览类型只认领 `session` 作用域，所以必须带会话 id。
+- **必须先切回会话**：右侧栏按 Session 挂载，面板占主栏时 `ctx.sidebarRight.mounted` 是 `undefined`，
+  直接 `openResource` 会抛。顺序固定为 `selectPanel(null)` → `openResource`；**全部可用性探测都前置在切面板之前**，
+  `openResource` 抛错时切回 `PANEL_ID` 再报错，保证提示落在还活着的面板上。时序不靠轮询 `mounted` 的宏任务轮数
+  （早期实现的 4 轮 `setTimeout(0)` 已删）——座位没就绪就让宿主抛错、如实上报。
+- **失败分四档**：`sidebar-missing`（宿主没装侧栏）/ `no-session`（拿不到当前会话 id）/ `bad-path`（路径为空或编码不出地址）/
+  `host-refused`（宿主抛错，带原始 message）。**只有产物库那一行**能就地回退旧 `preview` 端点 + `previewBlock` 行内预览，
+  任务卡与抽屉只提示「到产物页看或复制路径」，不假装成功。
+- **不绕开「已登记产物」校验**：服务端 `preview` 端点只读本任务已登记产物，而右侧栏链路是宿主直接读文件；
+  因此 `views.js` 的 `isRegisteredArtifact(path)` 在前端做等价校验，只允许快照卡片 / 产物库 / 详情抽屉三个
+  服务端下发来源里出现过的路径。
+- **依赖是软依赖**：`package.json` 的 `dsh.client.inject` 增加 `@deepseek-ai/dsh-client-ui-sidebar-right` 与
+  `@deepseek-ai/dsh-client-ui-sidebar-documentpreview`（只是加载顺序的预取提示）；客户端 `inject` 数组**不加**
+  `sidebarRight`——用 `serviceOf('sidebarRight')` 现取，写进 `inject` 会变成硬依赖、服务缺失时卡住 `apply`，
+  那就没有「缺侧栏 → 提示 + 行内回退」这条路了。宽度/折叠/多 Tab/窄屏全屏由宿主负责，插件不存预览状态。
+
+### 升级提示
+
+- 装 0.16.0 仍要**彻底退出 DSH 再启动**；刷新页面只重载前端，不会换服务端代码。
+- 产物右侧栏预览需要宿主装了 `ui-sidebar-right` 与 `ui-sidebar-documentpreview`；缺了会在产物库那一行提示
+  「右侧栏不可用（<原因>），已改为行内预览」，其余位置提示去「产物」页看或复制路径。
+- **本版 UI 未经真机视觉验证**：只过了 `vite build`、`npm test`（793 条）、`npm run check:client`、槽位探针与静态核对。
+  入口按钮的实际观感、右侧栏 Tab 的真实滑出与几何、深浅色主题下的观感都需要在真实宿主里手工确认（见 [docs/UI.md](docs/UI.md) §7）。
+
 ## 0.15.0（2026-11-16）
 
 这一版给协调者接上**宿主原生自动化**（不再只是派任务），并让新建主会话**首次打开时自报能力、顺手把已登记工作区的仓库映射存下来**。
