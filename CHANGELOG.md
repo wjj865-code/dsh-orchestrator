@@ -3,6 +3,49 @@
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
+## 0.15.0（2026-11-16）
+
+这一版给协调者接上**宿主原生自动化**（不再只是派任务），并让新建主会话**首次打开时自报能力、顺手把已登记工作区的仓库映射存下来**。
+相对 0.14.1 是 **minor**：新增能力与一个只读回报契约，没有破坏性变更——台账结构、既有工具入参、状态迁移、默认 worker 工具面都没动。
+
+### 主会话原生自动化（feat(schedule)）
+
+- **协调者预设挂宿主 `@deepseek-ai/dsh-tool-schedule`**：`cordis.patch.yml` 只给 coordinator 加一行，allow 显式保留
+  `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；worker 预设不挂、不新增 allow。不另造调度器。
+- **`index.js` 白名单同步**：`COORDINATOR_DENY` 删掉三个 schedule deny 名（原本是「缺失能力就当危险工具拦掉」的旧口径），
+  文件/shell/团队/子任务专属禁止项一律不变；执行层 guard 对四工具放行。
+- **协调者 policy 补真实契约**：四个工具的真实入参（`schedule_create` 必填 `title`/`prompt`/`rrule`/`target`；
+  `schedule_edit` 用 `action:'update'|'delete'`，暂停/恢复用 `active:false|true`，没有独立 delete/pause 工具）、
+  **Host-wide** 可见性、写操作需用户明确授权、`target:'this_session'` 自动编排边界、
+  `new`/`new_once` 不是唯一主会话所以不能直接 `task_create`、`expectedUpdatedAt` 冲突保护、默认 worker 不开放、`access:full` 不增加工具。
+- **缺能力诊断**：`checkScheduleCapability` 只在唯一主会话、打开/非 running 创建/idle/每轮 policy 渲染时检查
+  `ctx.schedule` 与 `tools.get(name, agent)`；缺失去重 warning + policy 提示，恢复后自动消失，不改运行回合工具表、不调真实自动化 API。
+  四个工具不进入 `createTools`，**插件全局工具数仍为 14**。
+- **文档**：README「主会话原生自动化」、`docs/ARCHITECTURE.md`「原生自动化工具面」、`docs/LIMITATIONS.md`「原生自动化」。
+- **测试**：预设挂载、preset-tools 初始/晚注册保留、白名单与诊断边界、口径一致性各一组。
+
+### 首次打开介绍 + 工作区仓库索引（feat(onboarding)）
+
+- **新建主会话启动一次模型轮次**：先介绍能力与权限边界，再立即派一个只读「工作区与仓库索引」子任务；
+  `settings.main_onboarding:<id>` 用 CAS `pending→sending→sent` 防并发重复，**await 预设恢复成功再投递**，
+  注入失败退 `pending` 并让 open 返回 `onboardingError`（HTTP 503 可见、重开可重试）。老主会话与 `coordinatorSession` 覆盖不补初始化。
+- **新增 `src/workspace-index.js` + 随包 `scripts/workspace-index.mjs`**：只读扫描 **DSH 已登记**工作区，
+  复用 `runGit`（`execFile`/timeout）读 `repoRoot`/`branch`/`HEAD`/`origin`/`commonDir`；remote 去 userinfo/query/fragment，
+  非仓库/不存在/无权限逐项记录，**不 fetch/pull、不写文件、不新增依赖**。
+- **回报契约 `task_report.workspace_index`**：仅接受该任务本人 `done` 的完整 JSON，按创建时名单校验覆盖并用名单真 title/path，
+  与每任务成功标记同 `SAVEPOINT` 写入 settings 独立快照，**不覆盖手写 memories**；`project_context({workspaces:true})` 可查映射与采样快照。
+- **结算兜底**：索引任务 `completed` 但缺本任务成功标记时落 `failed` 并提示 `task_retry`，防止遗漏/非法回报被自然误交付；
+  普通任务与已交付只补消息的路径不变。
+- **文档**：README「打开主会话」、`docs/ARCHITECTURE.md`「首次打开与工作区索引」、`docs/LIMITATIONS.md` 同名章节。
+- **测试**：新增 `test/workspace-index.test.js`（扫描/脱敏/校验/回滚），并补首次打开、并发一次、投递失败重试、名单持久化回归。
+
+### 升级提示
+
+- 装 0.15.0 仍要**彻底退出 DSH 再启动**；刷新页面只重载前端，不会换服务端代码。
+- 自动化四工具依赖宿主 `@deepseek-ai/dsh-tool-schedule`（契约核实于 DSH **0.2.2-rc.3**）；宿主缺该包时主会话会收到能力缺失提示，
+  现有编排照常可用。升级宿主后请复核契约。
+- 首次打开的介绍轮次**只在新建主会话时跑一次**，升级后历史主会话不会补跑；需要索引就自己派一个只读「工作区与仓库索引」任务。
+
 ## 0.14.1（2026-11-16）
 
 这一版只改「怎么说」和「怎么读」：README 按**只服务使用者**重写（维护者内容移到 `docs/CONTRIBUTING.md`），
