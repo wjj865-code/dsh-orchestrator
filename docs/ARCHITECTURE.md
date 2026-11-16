@@ -115,7 +115,8 @@
 - `main.session.rotated`：轮换成功（old/new/triggers/renamed/archived/marker/audit）。
 - 失败/降级：`main.rotation.failed`、`pointer-failed`、`commit.failed`、`onboarding.failed`、`audit.failed`、`marker.failed`、`marker.clear.failed`、`rename.ok|failed`、`archive`、`discard`、`metrics.degraded`、`recovered-complete|abandoned|invalid|failed`。
 
-冒烟（隔离台账 + 桩平台动作，不碰真实主会话）：[`docs/probes/main-rotation-smoke.mjs`](probes/main-rotation-smoke.mjs)，记录见 [`docs/probes/main-rotation-smoke.md`](probes/main-rotation-smoke.md)。
+冒烟（临时台账 + 桩平台动作，不碰真实主会话）：13 项矩阵覆盖 not-due 零副作用、open-main 命中路径、create 失败零处置、
+指针写失败、只退役不归档、60s 窗口、崩溃恢复 complete/abandoned、配置归一化与纯判定契约；探针脚本是一次性验证件，不入库。
 
 ## 队列与并发
 

@@ -1,14 +1,14 @@
 # Changelog
 
-## 0.18.0（未发布）
+## 0.18.0（2026-11-17）
 
 这一版给主会话加**轮换**：协调者跑久了（默认 10 天 / 120 个子任务 / 会话日志 6 MiB / 上下文 15 万 token /
 指挥舱日志总占用 512 MiB 等六个因子任一命中）会在**你下一次打开主会话**时换一个干净的新会话，
 旧会话改名「主会话（已退役 …）」并按配置归档。判定是纯函数 + 只读采集，动作有 marker 崩溃锚点与启动恢复；
 默认阈值都在「跑很久」量级，正常使用不会触发，`mainRotation: 'off'` 可完全关闭。
 
-相对 0.17.1 是 **minor**（`package.json` 版本号与 `vX.Y.Z` tag 由发版任务统一处理，本条目先占位）：
-工具入参、台账结构、既有状态机都没动；新增 11 个配置键、4 个 settings 键与一组 `main.rotation.*` 日志。
+相对 0.17.1 是 **minor**：工具入参、台账结构、既有状态机都没动；新增 11 个配置键、4 个 settings 键
+与一组 `main.rotation.*` 日志。
 
 ### 主会话轮换（feat(main-rotation)）
 
@@ -35,9 +35,9 @@
 
 ### 冒烟与验证
 
-- 新增隔离冒烟 `docs/probes/main-rotation-smoke.mjs`（临时台账 + 桩平台动作，**不碰真实主会话**）与记录
-  `docs/probes/main-rotation-smoke.md`：13 项矩阵——隔离自检、not-due 零副作用（×2）、off 模式、open-main 命中路径、
-  create 失败零处置、指针写失败 F3、只退役不归档、60s 窗口、崩溃恢复 complete/abandoned、配置归一化、纯判定契约。
+- 隔离冒烟（临时台账 + 桩平台动作，**不碰真实主会话**）跑通 13 项矩阵：隔离自检、not-due 零副作用（×2）、off 模式、
+  open-main 命中路径、create 失败零处置、指针写失败 F3、只退役不归档、60s 窗口、崩溃恢复 complete/abandoned、
+  配置归一化、纯判定契约。探针脚本是一次性验证件，不进仓库。
 - `pnpm test`（`pretest` 自动构建）**892 passed / 0 failed**；`pnpm run check:client` exit 0；`pnpm run build` 通过。
 
 ### 升级提示
