@@ -1133,7 +1133,12 @@
   const ensureStyles = () => {
     try {
       if (typeof document === "undefined" || document === null) return false;
-      if (document.getElementById(STYLE_ID) !== null) return false;
+      const existing = document.getElementById(STYLE_ID);
+      if (existing !== null && existing !== void 0) {
+        if (existing.textContent === STYLE_TEXT) return false;
+        existing.textContent = STYLE_TEXT;
+        return true;
+      }
       const host = document.head || document.documentElement;
       if (host === null || typeof host.appendChild !== "function") return false;
       const style = document.createElement("style");

@@ -82,6 +82,8 @@ const load = (options = {}) => {
   }
   // 只有显式给了 fetch 的用例才注入；默认（老用例）走「信号不可用 → 默认隐藏」的降级路径。
   if (options.fetch !== undefined) sandbox.fetch = options.fetch
+  // 样式注入用例：假 document 让 ensureStyles 能跑到「已有 <style>」的分支。
+  if (options.document !== undefined) sandbox.document = options.document
   vm.runInNewContext(artifact, sandbox)
   return { loaded, ctx, registrations, selected, opened, loadedIds, cleanups, sessionListeners, resetHooks, hooks }
 }
@@ -449,6 +451,60 @@ test('任务入口渲染：主会话显示「任务」入口（品牌块 + 图�
   await injected.hooks.mainView.refresh()
   assert.equal(injected.hooks.mainView.getSnapshot(), false)
   assert.equal(render(injected.hooks.mainView.getSnapshot()), null)
+})
+
+// 实机回归（0.17.0 升级后）：桌面端升级插件包时，客户端插件会被热替换，页面不重载，
+// 上一代构建注入的 <style id="dsh-orchestrator-styles"> 还留在 head 里。旧实现按 id 去重直接
+// return，于是「新 JS + 旧 CSS」并存：新标记 .orch-entry-mark / .orch-entry-label 一条规则都匹配
+// 不到，会话头「任务」入口的 12px 内联 SVG 便裸坐在 18px 行盒的基线上，比文字高约 2px——
+// 同排其他宿主 chip 有自己的样式，所以只有它偏。文本不一致时就地覆盖，热替换后立即自愈。
+test('样式注入：旧 <style> 与当前构建不一致时就地刷新，一致时不重复写（热替换混合态回归）', () => {
+  let writes = 0
+  const stale = {
+    id: 'dsh-orchestrator-styles',
+    _text: '/* 0.14.1 时代的旧样式：没有 .orch-entry-* 规则 */',
+    get textContent() { return this._text },
+    set textContent(value) { writes += 1; this._text = value },
+  }
+  const appended = []
+  const fakeDocument = {
+    head: { appendChild: node => appended.push(node) },
+    getElementById: id => (id === 'dsh-orchestrator-styles' ? stale : null),
+    createElement: () => ({ id: '', textContent: '' }),
+  }
+  const { loaded, ctx } = load({ document: fakeDocument })
+  loaded.apply(ctx)
+  assert.equal(appended.length, 0, '同 id 的 <style> 已存在时不重复插入')
+  assert.equal(stale.textContent, loaded.__test.STYLE_TEXT, '旧样式应被当前构建的 CSS 整段覆盖')
+  assert.match(stale.textContent, /\.orch-entry-mark/, '刷新后的样式必须带上入口图标块规则')
+  assert.match(stale.textContent, /\.orch-entry-label/, '刷新后的样式必须带上入口文字规则')
+  // 第二次 apply（同一构建）：内容一致，不再白写一遍 DOM。
+  loaded.apply(ctx)
+  assert.equal(writes, 1, '内容一致的重复 apply 不应重写样式')
+})
+
+// 对齐验收：入口的图标块与文字各自固定盒，按钮/图标块都走 flex 居中，字号与间距钉死；
+// 断样式表而不是只断 JSX —— 这条链路正是上面混合态里丢掉的那一半。
+test('任务入口对齐：按钮与图标块 flex 居中、字号/间距固定（.orch-entry-* 规则不丢）', () => {
+  const { loaded } = load()
+  const css = loaded.__test.STYLE_TEXT
+  const block = selector => {
+    const index = css.indexOf(selector)
+    assert.ok(index !== -1, `样式表缺少 ${selector}`)
+    const end = css.indexOf('}', index)
+    return css.slice(index, end === -1 ? css.length : end)
+  }
+  const entry = block('.orch-btn--entry {')
+  assert.match(entry, /gap: 6px/, '图标与文字间距固定 6px')
+  assert.match(entry, /height: 26px/, '入口高度与宿主头部紧凑控件一致')
+  assert.match(block('.orch-btn {'), /align-items: center/, '按钮基线：flex 纵向居中')
+  const mark = block('.orch-entry-mark {')
+  assert.match(mark, /display: inline-flex/)
+  assert.match(mark, /align-items: center/, '图标块自身纵向居中')
+  assert.match(mark, /justify-content: center/)
+  assert.match(mark, /width: 18px/)
+  assert.match(mark, /height: 18px/)
+  assert.match(block('.orch-entry-label {'), /font-size: 12px/, '文字字号与 12px 图标同级')
 })
 
 test('任务入口闸门源码：session-role 端点 + uiSession/sessions 信号 + 默认隐藏', () => {

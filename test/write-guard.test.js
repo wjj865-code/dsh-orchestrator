@@ -21,7 +21,11 @@ import { tempDir, sampleBrief } from './helpers.js'
 // —— 一、纯函数 ——
 
 test('路径归一与包含判定：相等/父子目录算重叠，兄弟目录不算；Windows 大小写不敏感', () => {
-  assert.equal(normalizePath('/a/b/'), '/a/b')
+  // 归一的口径是「去掉尾部分隔符」，不是「一定得到 POSIX 形式」：Windows 上 resolve('/a/b/')
+  // 会补盘符（c:\a\b），钉死字面量只在 macOS/Linux 成立。这里断不变量：两种写法归一后相等，
+  // 且结果不带尾部分隔符（大小写不敏感由 win32 分支保证，见下方跨平台用例）。
+  assert.equal(normalizePath('/a/b/'), normalizePath('/a/b'))
+  assert.doesNotMatch(normalizePath('/a/b/'), /[\\/]$/)
   assert.equal(pathsOverlap('/a/b', '/a/b'), true)
   assert.equal(pathsOverlap('/a/b', '/a/b/c'), true)
   assert.equal(pathsOverlap('/a/b/c', '/a/b'), true)
