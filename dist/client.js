@@ -1912,40 +1912,44 @@
         if (event !== null && typeof event === "object" && typeof event.stopPropagation === "function") event.stopPropagation();
         handler(event);
       };
-      const statusBadge = (status) => h(Badge, {
-        tone: STATUS_TONE2[status] || "muted",
-        title: STATUS_LABEL2[status] || status
-      }, STATUS_LABEL2[status] || status || "未知");
+      const statusBadge = (status) => /* @__PURE__ */ h(Badge, { tone: STATUS_TONE2[status] || "muted", title: STATUS_LABEL2[status] || status }, STATUS_LABEL2[status] || status || "未知");
       const stopControl = (task) => {
         if (task.status === "done" || task.status === "cancelled" || task.status === "orphaned") return null;
         if (confirmStop === task.id) {
-          return h(
-            "span",
-            { key: "stop-confirm", className: "orch-confirm" },
-            h("span", null, "确认停止？"),
-            h("button", {
+          return /* @__PURE__ */ h("span", { key: "stop-confirm", className: "orch-confirm" }, /* @__PURE__ */ h("span", null, "确认停止？"), /* @__PURE__ */ h(
+            "button",
+            {
               type: "button",
               className: "orch-btn orch-btn--sm orch-btn--danger",
               disabled: busy === `stop:${task.id}`,
               onClick: act(() => void runPanel("stop", task.id))
-            }, "确认停止"),
-            h("button", {
+            },
+            "确认停止"
+          ), /* @__PURE__ */ h(
+            "button",
+            {
               type: "button",
               className: "orch-btn orch-btn--sm",
               onClick: act(() => setConfirmStop(null))
-            }, "取消")
-          );
+            },
+            "取消"
+          ));
         }
-        return h("button", {
-          key: "stop",
-          type: "button",
-          className: "orch-btn orch-btn--sm orch-btn--danger",
-          title: "停止子会话（需要二次确认）",
-          disabled: busy === `stop:${task.id}`,
-          onClick: act(() => setConfirmStop(task.id))
-        }, h(Icon, { name: "stop" }), busy === `stop:${task.id}` ? "停止中…" : "停止");
+        return /* @__PURE__ */ h(
+          "button",
+          {
+            key: "stop",
+            type: "button",
+            className: "orch-btn orch-btn--sm orch-btn--danger",
+            title: "停止子会话（需要二次确认）",
+            disabled: busy === `stop:${task.id}`,
+            onClick: act(() => setConfirmStop(task.id))
+          },
+          /* @__PURE__ */ h(Icon, { name: "stop" }),
+          busy === `stop:${task.id}` ? "停止中…" : "停止"
+        );
       };
-      const retryControl = (task) => task.status === "failed" || task.status === "orphaned" ? h(
+      const retryControl = (task) => task.status === "failed" || task.status === "orphaned" ? /* @__PURE__ */ h(
         "button",
         {
           key: "retry",
@@ -1955,76 +1959,95 @@
           disabled: busy === `retry:${task.id}`,
           onClick: act(() => void runPanel("retry", task.id))
         },
-        h(Icon, { name: "retry", className: busy === `retry:${task.id}` ? "orch-spin" : void 0 }),
+        /* @__PURE__ */ h(Icon, { name: "retry", className: busy === `retry:${task.id}` ? "orch-spin" : void 0 }),
         busy === `retry:${task.id}` ? "重派中…" : "重派"
       ) : null;
       const closeControl = (task) => {
         if (task === null || task === void 0 || task.canClose !== true) return null;
         if (task.status === "done") return null;
         if (confirmClose === task.id) {
-          return h(
-            "span",
-            { key: "close-confirm", className: "orch-confirm" },
-            h("span", null, "确认交付完成？"),
-            h("button", {
+          return /* @__PURE__ */ h("span", { key: "close-confirm", className: "orch-confirm" }, /* @__PURE__ */ h("span", null, "确认交付完成？"), /* @__PURE__ */ h(
+            "button",
+            {
               type: "button",
               className: "orch-btn orch-btn--sm",
               disabled: busy === `close:${task.id}`,
               onClick: act(() => void runPanel("close", task.id))
-            }, busy === `close:${task.id}` ? "确认中…" : "确认"),
-            h("button", {
+            },
+            busy === `close:${task.id}` ? "确认中…" : "确认"
+          ), /* @__PURE__ */ h(
+            "button",
+            {
               type: "button",
               className: "orch-btn orch-btn--sm",
               onClick: act(() => setConfirmClose(null))
-            }, "取消")
-          );
+            },
+            "取消"
+          ));
         }
-        return h("button", {
-          key: "close",
-          type: "button",
-          className: "orch-btn orch-btn--sm",
-          title: "确认这条已交付任务完成（done，不可逆）",
-          disabled: busy === `close:${task.id}`,
-          onClick: act(() => setConfirmClose(task.id))
-        }, h(Icon, { name: "check" }), "确认交付");
+        return /* @__PURE__ */ h(
+          "button",
+          {
+            key: "close",
+            type: "button",
+            className: "orch-btn orch-btn--sm",
+            title: "确认这条已交付任务完成（done，不可逆）",
+            disabled: busy === `close:${task.id}`,
+            onClick: act(() => setConfirmClose(task.id))
+          },
+          /* @__PURE__ */ h(Icon, { name: "check" }),
+          "确认交付"
+        );
       };
       const deleteControl = (task) => {
         const deletable = task !== null && task !== void 0 && task.canDelete === true;
         if (!deletable) return null;
         if (confirmDelete === task.id) {
-          return h(
-            "span",
-            { key: "delete-confirm", className: "orch-confirm" },
-            h("span", null, "确认删除？"),
-            h("button", {
+          return /* @__PURE__ */ h("span", { key: "delete-confirm", className: "orch-confirm" }, /* @__PURE__ */ h("span", null, "确认删除？"), /* @__PURE__ */ h(
+            "button",
+            {
               type: "button",
               className: "orch-btn orch-btn--sm orch-btn--danger",
               disabled: busy === `delete:${task.id}`,
               onClick: act(() => void runPanel("delete", task.id))
-            }, busy === `delete:${task.id}` ? "删除中…" : "确认删除"),
-            h("button", {
+            },
+            busy === `delete:${task.id}` ? "删除中…" : "确认删除"
+          ), /* @__PURE__ */ h(
+            "button",
+            {
               type: "button",
               className: "orch-btn orch-btn--sm",
               onClick: act(() => setConfirmDelete(null))
-            }, "取消")
-          );
+            },
+            "取消"
+          ));
         }
-        return h("button", {
-          key: "delete",
-          type: "button",
-          className: "orch-btn orch-btn--sm orch-btn--danger",
-          title: "从台账删除这条任务与它的消息/通知（需要二次确认）",
-          disabled: busy === `delete:${task.id}`,
-          onClick: act(() => setConfirmDelete(task.id))
-        }, h(Icon, { name: "trash" }), "删除");
+        return /* @__PURE__ */ h(
+          "button",
+          {
+            key: "delete",
+            type: "button",
+            className: "orch-btn orch-btn--sm orch-btn--danger",
+            title: "从台账删除这条任务与它的消息/通知（需要二次确认）",
+            disabled: busy === `delete:${task.id}`,
+            onClick: act(() => setConfirmDelete(task.id))
+          },
+          /* @__PURE__ */ h(Icon, { name: "trash" }),
+          "删除"
+        );
       };
-      const openControl = (sessionId, label) => h("button", {
-        key: `open:${label || "child"}`,
-        type: "button",
-        className: "orch-btn orch-btn--sm",
-        disabled: sessionId === null || sessionId === void 0,
-        onClick: act(() => open(sessionId))
-      }, h(Icon, { name: "external" }), label || "打开子会话");
+      const openControl = (sessionId, label) => /* @__PURE__ */ h(
+        "button",
+        {
+          key: `open:${label || "child"}`,
+          type: "button",
+          className: "orch-btn orch-btn--sm",
+          disabled: sessionId === null || sessionId === void 0,
+          onClick: act(() => open(sessionId))
+        },
+        /* @__PURE__ */ h(Icon, { name: "external" }),
+        label || "打开子会话"
+      );
       const topbar = () => h(
         "header",
         { className: "orch-topbar" },

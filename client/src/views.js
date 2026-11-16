@@ -486,43 +486,57 @@ export function createViews({
       handler(event)
     }
 
-    const statusBadge = status => h(Badge, {
-      tone: STATUS_TONE[status] || 'muted', title: STATUS_LABEL[status] || status,
-    }, STATUS_LABEL[status] || status || '未知')
+    // props 键序/键名与迁移前一致（快照按 props 序列化顺序比对）。
+    const statusBadge = status => (
+      <Badge tone={STATUS_TONE[status] || 'muted'} title={STATUS_LABEL[status] || status}>
+        {STATUS_LABEL[status] || status || '未知'}
+      </Badge>
+    )
 
     // 停止：先转成「确认停止 / 取消」，二次确认后才发请求。
     const stopControl = task => {
       if (task.status === 'done' || task.status === 'cancelled' || task.status === 'orphaned') return null
       if (confirmStop === task.id) {
-        return h('span', { key: 'stop-confirm', className: 'orch-confirm' },
-          h('span', null, '确认停止？'),
-          h('button', {
-            type: 'button', className: 'orch-btn orch-btn--sm orch-btn--danger',
-            disabled: busy === `stop:${task.id}`,
-            onClick: act(() => void runPanel('stop', task.id)),
-          }, '确认停止'),
-          h('button', {
-            type: 'button', className: 'orch-btn orch-btn--sm',
-            onClick: act(() => setConfirmStop(null)),
-          }, '取消'),
+        return (
+          <span key="stop-confirm" className="orch-confirm">
+            <span>{'确认停止？'}</span>
+            <button
+              type="button" className="orch-btn orch-btn--sm orch-btn--danger"
+              disabled={busy === `stop:${task.id}`}
+              onClick={act(() => void runPanel('stop', task.id))}
+            >{'确认停止'}</button>
+            <button
+              type="button" className="orch-btn orch-btn--sm"
+              onClick={act(() => setConfirmStop(null))}
+            >{'取消'}</button>
+          </span>
         )
       }
-      return h('button', {
-        key: 'stop', type: 'button', className: 'orch-btn orch-btn--sm orch-btn--danger',
-        title: '停止子会话（需要二次确认）',
-        disabled: busy === `stop:${task.id}`,
-        onClick: act(() => setConfirmStop(task.id)),
-      }, h(Icon, { name: 'stop' }), busy === `stop:${task.id}` ? '停止中…' : '停止')
+      return (
+        <button
+          key="stop" type="button" className="orch-btn orch-btn--sm orch-btn--danger"
+          title="停止子会话（需要二次确认）"
+          disabled={busy === `stop:${task.id}`}
+          onClick={act(() => setConfirmStop(task.id))}
+        >
+          <Icon name="stop" />
+          {busy === `stop:${task.id}` ? '停止中…' : '停止'}
+        </button>
+      )
     }
 
     const retryControl = task => (task.status === 'failed' || task.status === 'orphaned')
-      ? h('button', {
-        key: 'retry', type: 'button', className: 'orch-btn orch-btn--sm',
-        title: '用同一份 brief 重派',
-        disabled: busy === `retry:${task.id}`,
-        onClick: act(() => void runPanel('retry', task.id)),
-      }, h(Icon, { name: 'retry', className: busy === `retry:${task.id}` ? 'orch-spin' : undefined }),
-      busy === `retry:${task.id}` ? '重派中…' : '重派')
+      ? (
+        <button
+          key="retry" type="button" className="orch-btn orch-btn--sm"
+          title="用同一份 brief 重派"
+          disabled={busy === `retry:${task.id}`}
+          onClick={act(() => void runPanel('retry', task.id))}
+        >
+          <Icon name="retry" className={busy === `retry:${task.id}` ? 'orch-spin' : undefined} />
+          {busy === `retry:${task.id}` ? '重派中…' : '重派'}
+        </button>
+      )
       : null
 
     // 确认交付（delivered → done）：与工具 task_close 同源，服务端 closeGate 下发 canClose。
@@ -531,25 +545,32 @@ export function createViews({
       if (task === null || task === undefined || task.canClose !== true) return null
       if (task.status === 'done') return null
       if (confirmClose === task.id) {
-        return h('span', { key: 'close-confirm', className: 'orch-confirm' },
-          h('span', null, '确认交付完成？'),
-          h('button', {
-            type: 'button', className: 'orch-btn orch-btn--sm',
-            disabled: busy === `close:${task.id}`,
-            onClick: act(() => void runPanel('close', task.id)),
-          }, busy === `close:${task.id}` ? '确认中…' : '确认'),
-          h('button', {
-            type: 'button', className: 'orch-btn orch-btn--sm',
-            onClick: act(() => setConfirmClose(null)),
-          }, '取消'),
+        return (
+          <span key="close-confirm" className="orch-confirm">
+            <span>{'确认交付完成？'}</span>
+            <button
+              type="button" className="orch-btn orch-btn--sm"
+              disabled={busy === `close:${task.id}`}
+              onClick={act(() => void runPanel('close', task.id))}
+            >{busy === `close:${task.id}` ? '确认中…' : '确认'}</button>
+            <button
+              type="button" className="orch-btn orch-btn--sm"
+              onClick={act(() => setConfirmClose(null))}
+            >{'取消'}</button>
+          </span>
         )
       }
-      return h('button', {
-        key: 'close', type: 'button', className: 'orch-btn orch-btn--sm',
-        title: '确认这条已交付任务完成（done，不可逆）',
-        disabled: busy === `close:${task.id}`,
-        onClick: act(() => setConfirmClose(task.id)),
-      }, h(Icon, { name: 'check' }), '确认交付')
+      return (
+        <button
+          key="close" type="button" className="orch-btn orch-btn--sm"
+          title="确认这条已交付任务完成（done，不可逆）"
+          disabled={busy === `close:${task.id}`}
+          onClick={act(() => setConfirmClose(task.id))}
+        >
+          <Icon name="check" />
+          {'确认交付'}
+        </button>
+      )
     }
 
     // 删除任务（连同 messages/notifications 级联清理）：只有终态任务显示（canDelete 由服务端判定）。
@@ -558,32 +579,44 @@ export function createViews({
       const deletable = task !== null && task !== undefined && task.canDelete === true
       if (!deletable) return null
       if (confirmDelete === task.id) {
-        return h('span', { key: 'delete-confirm', className: 'orch-confirm' },
-          h('span', null, '确认删除？'),
-          h('button', {
-            type: 'button', className: 'orch-btn orch-btn--sm orch-btn--danger',
-            disabled: busy === `delete:${task.id}`,
-            onClick: act(() => void runPanel('delete', task.id)),
-          }, busy === `delete:${task.id}` ? '删除中…' : '确认删除'),
-          h('button', {
-            type: 'button', className: 'orch-btn orch-btn--sm',
-            onClick: act(() => setConfirmDelete(null)),
-          }, '取消'),
+        return (
+          <span key="delete-confirm" className="orch-confirm">
+            <span>{'确认删除？'}</span>
+            <button
+              type="button" className="orch-btn orch-btn--sm orch-btn--danger"
+              disabled={busy === `delete:${task.id}`}
+              onClick={act(() => void runPanel('delete', task.id))}
+            >{busy === `delete:${task.id}` ? '删除中…' : '确认删除'}</button>
+            <button
+              type="button" className="orch-btn orch-btn--sm"
+              onClick={act(() => setConfirmDelete(null))}
+            >{'取消'}</button>
+          </span>
         )
       }
-      return h('button', {
-        key: 'delete', type: 'button', className: 'orch-btn orch-btn--sm orch-btn--danger',
-        title: '从台账删除这条任务与它的消息/通知（需要二次确认）',
-        disabled: busy === `delete:${task.id}`,
-        onClick: act(() => setConfirmDelete(task.id)),
-      }, h(Icon, { name: 'trash' }), '删除')
+      return (
+        <button
+          key="delete" type="button" className="orch-btn orch-btn--sm orch-btn--danger"
+          title="从台账删除这条任务与它的消息/通知（需要二次确认）"
+          disabled={busy === `delete:${task.id}`}
+          onClick={act(() => setConfirmDelete(task.id))}
+        >
+          <Icon name="trash" />
+          {'删除'}
+        </button>
+      )
     }
 
-    const openControl = (sessionId, label) => h('button', {
-      key: `open:${label || 'child'}`, type: 'button', className: 'orch-btn orch-btn--sm',
-      disabled: sessionId === null || sessionId === undefined,
-      onClick: act(() => open(sessionId)),
-    }, h(Icon, { name: 'external' }), label || '打开子会话')
+    const openControl = (sessionId, label) => (
+      <button
+        key={`open:${label || 'child'}`} type="button" className="orch-btn orch-btn--sm"
+        disabled={sessionId === null || sessionId === undefined}
+        onClick={act(() => open(sessionId))}
+      >
+        <Icon name="external" />
+        {label || '打开子会话'}
+      </button>
+    )
 
     // ---- 第一段：顶部命令栏 + 概览卡 ----
     const topbar = () => h('header', { className: 'orch-topbar' },
