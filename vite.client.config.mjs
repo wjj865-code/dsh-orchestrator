@@ -11,6 +11,18 @@ import { defineConfig } from 'vite'
 // 因此：lib mode + iife + `entryFileNames: 'client.js'`，`name` 必填（rollup iife 要求），
 // 顶层不许出现 import/export。minify 先关：体积不是当前约束，可读性对排查更有价值。
 export default defineConfig({
+  // S0（JSX 迁移）：源码继续用 `.js` 后缀，靠 esbuild 的 loader 覆盖把 `.js` 按 JSX 解析。
+  // - vite 默认 esbuild 插件 include 只含 jsx/tsx，且 exclude 默认排除 `.js`，两个都要显式改；
+  // - 经典运行时 + `jsxFactory: 'h'`：`h` 就是工厂注入的 `req('react').createElement`
+  //   （见 client.js 的 createUi(h) / createViews({ h, ... })），不需要每文件 import、也不引入
+  //   `react/jsx-runtime`（平台只认 factory 里那份 React，双 React 会废掉 hooks）；
+  // - 不开 fragment：`<>` 会编译成未定义的 `Fragment`；要分组就直接用数组。
+  esbuild: {
+    include: /[\\/]client[\\/]src[\\/][^\\/]+\.js$/,
+    exclude: [],
+    loader: 'jsx',
+    jsxFactory: 'h',
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

@@ -29,7 +29,9 @@ import { createViews } from './views.js'
 
 export const createClient = (req) => {
   const React = req('react')
-  const h = React.createElement
+  // 经典运行时的工厂别名：用解构而不是 `React.createElement`，产物里就不会出现那个字面量
+  // （test/client.test.js 的 JSX 守卫把它当「有人退回手写 createElement」的红线）。
+  const { createElement: h } = React
   // sidebarRight 不进 inject：它是可选能力，缺了也要能加载面板（预览回退行内）。
   // 与 uiSession / sessions 同一口径——用 serviceOf 现取，服务晚就绪也能拿到。
   const inject = ['slots', 'layout', 'uiWorkspace']

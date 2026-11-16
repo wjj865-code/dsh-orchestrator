@@ -122,6 +122,32 @@ test('经典脚本：能被 <script> 解析，无顶层 import/export，id 等�
   }
 })
 
+// S0/S1（JSX 迁移）：构建链切到经典运行时 `jsxFactory: 'h'`，`.js` 源码里可以直接写 JSX，
+// 编译结果必须是工厂注入的 h(...)。产物里**一个** `React.createElement` 都不许有：
+// 那意味着有人退回了手写 createElement，或把 JSX 运行时改成了自动运行时（双 React 会废 hooks）。
+// 这条守卫同时钉三件事：构建配置没被改回去、ui.js 真的是 JSX、源码后缀仍是 .js。
+test('JSX 迁移：构建链用经典运行时 h，产物不得出现 React.createElement', () => {
+  const uiFile = readFileSync(new URL('../client/src/ui.js', import.meta.url), 'utf8')
+  // ui.js 全部展示件已写成 JSX（有标签，不再有 h('div') 这种手写调用）。
+  assert.match(uiFile, /export function createUi\(h\)/, 'h 仍从工厂参数拿，源码不许 import react')
+  assert.match(uiFile, /<svg[\s\S]*?<\/svg>/, 'Icon 应写成 JSX')
+  assert.match(uiFile, /<span className="orch-badge"/, 'Badge 应写成 JSX')
+  assert.doesNotMatch(uiFile, /\bh\(\s*['"`]/, 'ui.js 不应再有 h(\'div\') 这类手写调用（JSX 已接管）')
+  // 构建链：`.js` 按 JSX 解析 + 经典运行时工厂 h；源码后缀保持不变（不引入 .jsx 文件）。
+  const viteConfig = readFileSync(new URL('../vite.client.config.mjs', import.meta.url), 'utf8')
+  assert.match(viteConfig, /loader: 'jsx'/, 'esbuild 必须把 .js 当 JSX 解析')
+  assert.match(viteConfig, /jsxFactory: 'h'/, 'JSX 必须编译成 h(...)，不是 React.createElement')
+  const files = readdirSync(new URL('../client/src/', import.meta.url), { recursive: true }).map(String)
+  assert.equal(files.some(file => file.endsWith('.jsx')), false, 'JSX 迁移保留 .js 后缀，不新增 .jsx 文件')
+  // 产物：JSX 编译结果走 h(...)，整份产物里没有 React.createElement（连别名赋值都不许）。
+  assert.doesNotMatch(
+    artifact,
+    /React\.createElement/,
+    'dist/client.js 出现 React.createElement：JSX 运行时配置被改回去了（应走 jsxFactory h）',
+  )
+  assert.match(artifact, /h\("span", \{ className: "orch-badge"/, 'ui.js 的 Badge 应编译成 h(...) 调用')
+})
+
 test('apply 不再注册侧栏底部入口；注册任务面板、启动器面板、侧栏入口与会话回复 chip', () => {
   const { loaded, ctx, registrations } = load()
   loaded.apply(ctx)

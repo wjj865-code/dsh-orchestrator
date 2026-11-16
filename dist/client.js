@@ -1455,66 +1455,28 @@
       dash: ["M6 12h12"],
       dot: ["M12 12h.01"]
     };
-    const Icon = ({ name, size = 14, className }) => h("svg", {
-      viewBox: "0 0 24 24",
-      width: size,
-      height: size,
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: 1.8,
-      strokeLinecap: "round",
-      strokeLinejoin: "round",
-      className: className === void 0 ? "orch-icon" : `orch-icon ${className}`,
-      "aria-hidden": "true",
-      focusable: "false"
-    }, (ICON_PATHS[name] || ICON_PATHS.dot).map((d, index) => h("path", { key: index, d })));
-    const Badge = ({ tone, children, title }) => h("span", {
-      className: "orch-badge",
-      title,
-      style: { color: TONE_COLOR[tone] || TONE_COLOR.muted }
-    }, children);
-    const Chip = ({ tone, title, children }) => h("span", {
-      className: tone === void 0 ? "orch-chip" : `orch-chip orch-chip--${tone}`,
-      title
-    }, children);
-    const EmptyState = ({ icon = "inbox", title, hint, action }) => h(
-      "div",
-      { className: "orch-empty" },
-      h("span", { className: "orch-empty-icon" }, h(Icon, { name: icon, size: 20 })),
-      title ? h("div", { className: "orch-empty-title" }, title) : null,
-      hint ? h("div", { className: "orch-empty-hint" }, hint) : null,
-      action === void 0 ? null : action
-    );
-    const Banner = ({ tone = "info", icon = "alert", action, children }) => h(
-      "div",
+    const Icon = ({ name, size = 14, className }) => /* @__PURE__ */ h(
+      "svg",
       {
-        className: `orch-banner orch-banner--${tone}`
+        viewBox: "0 0 24 24",
+        width: size,
+        height: size,
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: 1.8,
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+        className: className === void 0 ? "orch-icon" : `orch-icon ${className}`,
+        "aria-hidden": "true",
+        focusable: "false"
       },
-      h("span", { className: "orch-banner-icon" }, h(Icon, { name: icon, size: 14 })),
-      h("span", { className: "orch-banner-text" }, children),
-      action === void 0 ? null : action
+      (ICON_PATHS[name] || ICON_PATHS.dot).map((d, index) => /* @__PURE__ */ h("path", { key: index, d }))
     );
-    const SkeletonList = ({ rows = 4 }) => h(
-      "div",
-      { className: "orch-list", "aria-hidden": "true" },
-      Array.from({ length: rows }, (_, index) => h(
-        "div",
-        { key: index, className: "orch-skeleton-card" },
-        h(
-          "div",
-          { className: "orch-skeleton-row" },
-          h("div", { className: "orch-skeleton", style: { width: 10, height: 10, borderRadius: 5 } }),
-          h("div", { className: "orch-skeleton", style: { width: index % 2 === 0 ? "46%" : "62%" } }),
-          h("div", { className: "orch-skeleton", style: { width: 40, marginLeft: "auto" } })
-        ),
-        h(
-          "div",
-          { className: "orch-skeleton-row" },
-          h("div", { className: "orch-skeleton", style: { width: 68 } }),
-          h("div", { className: "orch-skeleton", style: { width: 88 } })
-        )
-      ))
-    );
+    const Badge = ({ tone, children, title }) => /* @__PURE__ */ h("span", { className: "orch-badge", title, style: { color: TONE_COLOR[tone] || TONE_COLOR.muted } }, children);
+    const Chip = ({ tone, title, children }) => /* @__PURE__ */ h("span", { className: tone === void 0 ? "orch-chip" : `orch-chip orch-chip--${tone}`, title }, children);
+    const EmptyState = ({ icon = "inbox", title, hint, action }) => /* @__PURE__ */ h("div", { className: "orch-empty" }, /* @__PURE__ */ h("span", { className: "orch-empty-icon" }, /* @__PURE__ */ h(Icon, { name: icon, size: 20 })), title ? /* @__PURE__ */ h("div", { className: "orch-empty-title" }, title) : null, hint ? /* @__PURE__ */ h("div", { className: "orch-empty-hint" }, hint) : null, action === void 0 ? null : action);
+    const Banner = ({ tone = "info", icon = "alert", action, children }) => /* @__PURE__ */ h("div", { className: `orch-banner orch-banner--${tone}` }, /* @__PURE__ */ h("span", { className: "orch-banner-icon" }, /* @__PURE__ */ h(Icon, { name: icon, size: 14 })), /* @__PURE__ */ h("span", { className: "orch-banner-text" }, children), action === void 0 ? null : action);
+    const SkeletonList = ({ rows = 4 }) => /* @__PURE__ */ h("div", { className: "orch-list", "aria-hidden": "true" }, Array.from({ length: rows }, (_, index) => /* @__PURE__ */ h("div", { key: index, className: "orch-skeleton-card" }, /* @__PURE__ */ h("div", { className: "orch-skeleton-row" }, /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: 10, height: 10, borderRadius: 5 } }), /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: index % 2 === 0 ? "46%" : "62%" } }), /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: 40, marginLeft: "auto" } })), /* @__PURE__ */ h("div", { className: "orch-skeleton-row" }, /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: 68 } }), /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: 88 } })))));
     return { Icon, Badge, Chip, EmptyState, Banner, SkeletonList };
   }
   function createViews({
@@ -2764,7 +2726,7 @@
   }
   const createClient = (req) => {
     const React = req("react");
-    const h = React.createElement;
+    const { createElement: h } = React;
     const inject = ["slots", "layout", "uiWorkspace"];
     const { Icon, Badge, Chip, EmptyState, Banner, SkeletonList } = createUi(h);
     const focusRequest = createFocusRequest();

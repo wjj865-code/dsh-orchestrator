@@ -3,6 +3,9 @@
  *
  * 都只吃 props，不碰 ctx / fetch；颜色走 constants.TONE_COLOR 的语义 token。
  * 工厂参数 h 来自 factory 里的 req('react').createElement（源码不许 import react）。
+ *
+ * S1（JSX 迁移）：组件体用 JSX 写，构建期由 esbuild 按经典运行时编译成 `h(type, props, ...children)`
+ * （见 vite.client.config.mjs 的 `jsxFactory: 'h'`）；文件后缀仍是 `.js`，`h` 依旧从参数拿。
  */
 import { TONE_COLOR } from './constants.js'
 
@@ -35,49 +38,60 @@ export function createUi(h) {
     dash: ['M6 12h12'],
     dot: ['M12 12h.01'],
   }
-  const Icon = ({ name, size = 14, className }) => h('svg', {
-    viewBox: '0 0 24 24', width: size, height: size, fill: 'none', stroke: 'currentColor',
-    strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round',
-    className: className === undefined ? 'orch-icon' : `orch-icon ${className}`,
-    'aria-hidden': 'true', focusable: 'false',
-  }, (ICON_PATHS[name] || ICON_PATHS.dot).map((d, index) => h('path', { key: index, d })))
-
-  // 状态徽标：颜色走 TONE_COLOR（语义 token），边框/底色用 currentColor 混出来。
-  const Badge = ({ tone, children, title }) => h('span', {
-    className: 'orch-badge', title, style: { color: TONE_COLOR[tone] || TONE_COLOR.muted },
-  }, children)
-
-  const Chip = ({ tone, title, children }) => h('span', {
-    className: tone === undefined ? 'orch-chip' : `orch-chip orch-chip--${tone}`, title,
-  }, children)
-
-  const EmptyState = ({ icon = 'inbox', title, hint, action }) => h('div', { className: 'orch-empty' },
-    h('span', { className: 'orch-empty-icon' }, h(Icon, { name: icon, size: 20 })),
-    title ? h('div', { className: 'orch-empty-title' }, title) : null,
-    hint ? h('div', { className: 'orch-empty-hint' }, hint) : null,
-    action === undefined ? null : action,
+  const Icon = ({ name, size = 14, className }) => (
+    <svg
+      viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"
+      className={className === undefined ? 'orch-icon' : `orch-icon ${className}`}
+      aria-hidden="true" focusable="false"
+    >
+      {(ICON_PATHS[name] || ICON_PATHS.dot).map((d, index) => <path key={index} d={d} />)}
+    </svg>
   )
 
-  const Banner = ({ tone = 'info', icon = 'alert', action, children }) => h('div', {
-    className: `orch-banner orch-banner--${tone}`,
-  },
-    h('span', { className: 'orch-banner-icon' }, h(Icon, { name: icon, size: 14 })),
-    h('span', { className: 'orch-banner-text' }, children),
-    action === undefined ? null : action,
+  // 状态徽标：颜色走 TONE_COLOR（语义 token），边框/底色用 currentColor 混出来。
+  const Badge = ({ tone, children, title }) => (
+    <span className="orch-badge" title={title} style={{ color: TONE_COLOR[tone] || TONE_COLOR.muted }}>{children}</span>
+  )
+
+  const Chip = ({ tone, title, children }) => (
+    <span className={tone === undefined ? 'orch-chip' : `orch-chip orch-chip--${tone}`} title={title}>{children}</span>
+  )
+
+  const EmptyState = ({ icon = 'inbox', title, hint, action }) => (
+    <div className="orch-empty">
+      <span className="orch-empty-icon"><Icon name={icon} size={20} /></span>
+      {title ? <div className="orch-empty-title">{title}</div> : null}
+      {hint ? <div className="orch-empty-hint">{hint}</div> : null}
+      {action === undefined ? null : action}
+    </div>
+  )
+
+  const Banner = ({ tone = 'info', icon = 'alert', action, children }) => (
+    <div className={`orch-banner orch-banner--${tone}`}>
+      <span className="orch-banner-icon"><Icon name={icon} size={14} /></span>
+      <span className="orch-banner-text">{children}</span>
+      {action === undefined ? null : action}
+    </div>
   )
 
   // 加载态：闪动的骨架卡（列表 / 产物库 / 抽屉共用）。
-  const SkeletonList = ({ rows = 4 }) => h('div', { className: 'orch-list', 'aria-hidden': 'true' },
-    Array.from({ length: rows }, (_, index) => h('div', { key: index, className: 'orch-skeleton-card' },
-      h('div', { className: 'orch-skeleton-row' },
-        h('div', { className: 'orch-skeleton', style: { width: 10, height: 10, borderRadius: 5 } }),
-        h('div', { className: 'orch-skeleton', style: { width: index % 2 === 0 ? '46%' : '62%' } }),
-        h('div', { className: 'orch-skeleton', style: { width: 40, marginLeft: 'auto' } }),
-      ),
-      h('div', { className: 'orch-skeleton-row' },
-        h('div', { className: 'orch-skeleton', style: { width: 68 } }),
-        h('div', { className: 'orch-skeleton', style: { width: 88 } }),
-      ),
-    )))
+  const SkeletonList = ({ rows = 4 }) => (
+    <div className="orch-list" aria-hidden="true">
+      {Array.from({ length: rows }, (_, index) => (
+        <div key={index} className="orch-skeleton-card">
+          <div className="orch-skeleton-row">
+            <div className="orch-skeleton" style={{ width: 10, height: 10, borderRadius: 5 }} />
+            <div className="orch-skeleton" style={{ width: index % 2 === 0 ? '46%' : '62%' }} />
+            <div className="orch-skeleton" style={{ width: 40, marginLeft: 'auto' }} />
+          </div>
+          <div className="orch-skeleton-row">
+            <div className="orch-skeleton" style={{ width: 68 }} />
+            <div className="orch-skeleton" style={{ width: 88 }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
   return { Icon, Badge, Chip, EmptyState, Banner, SkeletonList }
 }
