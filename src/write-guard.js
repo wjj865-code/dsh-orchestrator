@@ -13,7 +13,9 @@
 // - 三条显式出路（都不是「硬拒」）：`allowConcurrent:true`、`worktree:true` 隔离、先 `task_close` 旧任务。
 // - 只读任务（readOnly）永远不写文件，不参与判定（既不算冲突方，也不被拦）；
 //   `planFirst` 计划阶段虽然当下只读，但批准后会转可写，所以照常参与判定（否则批准那刻就撞了）。
-// - 隔离任务（created/reused）在各自检出目录里跑，不算冲突方。
+// - 隔离任务（`requested`/`created`/`reused`）在各自检出目录里跑，不算冲突方；
+//   `requested` 是派发时才建检出的待建状态，任务注定在检出里跑、不碰原目录，同样不算。
+//   `degraded`（目标不是 git 仓库）降级后仍在原工作树写，必须继续占目录。
 // - 只对活跃任务判定：done/cancelled/failed/orphaned 都已释放目录。
 //
 // 本模块只做纯计算与文案，不读库、不跑 git，便于单测（台账遍历在 tools.js）。
@@ -61,8 +63,23 @@ export function scopesOverlap(left, right) {
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
 }
 
+/**
+ * 「已隔离」状态：这些任务在独立检出目录里跑，不写原目录，因此既不算冲突方、也不该被拦。
+ *
+ * - `requested`：派发时才建检出。此时 target_dir 还没换算成检出目录（换算发生在
+ *   `prepareTaskWorktree`），但任务**注定**在检出里跑，不会碰原目录。因 dependsOn 停在
+ *   `waiting_dep` 的任务也停在这个状态——把它当成占用原目录会误拦同目录的合法任务。
+ * - `created` / `reused`：检出已建好 / 复用既有检出。
+ *
+ * 注意 `degraded`（目标不是 git 仓库）**不在**此列：它降级后仍在原工作树里写，必须继续占目录。
+ *
+ * 这份列表是唯一事实来源：`tools.js` 判定「新任务自己是否隔离」也引用它，
+ * 避免两处各写一套、口径漂移（曾因两处列表不一致导致 P1 误拦）。
+ */
+export const ISOLATED_WORKTREE_STATES = Object.freeze(['requested', 'created', 'reused'])
+
 /** 隔离任务：在独立检出目录里跑，不算同写域。 */
-export const isolatedTask = task => ['created', 'reused'].includes(task?.worktree_state)
+export const isolatedTask = task => ISOLATED_WORKTREE_STATES.includes(task?.worktree_state)
 
 /** 只读任务不写文件（永远不写），不占写域。计划阶段虽然只读，但批准后会转可写，所以照常占。 */
 export const readOnlyTask = task => task?.read_only === true
@@ -142,16 +159,22 @@ export function scopeConflicts(tasks, { scopes = [], excludeId, skipTaskIds = []
   return conflicts
 }
 
-/** 冲突任务名 + 状态：文案里要能直接认人（「写域A（t-1a2b3c4d）（进行中）」）。 */
-const conflictLine = ({ task, target }) =>
-  `- 「${taskLabelWithId(task)}」（${statusLabel(task.status)}）：${trim(target) || '目标目录未记录'}`
+/**
+ * 冲突任务名 + 状态：文案里要能直接认人（「写域A（t-1a2b3c4d）（进行中）」）。
+ * 降级任务（不是 git 仓库）额外标注——它看起来像开了隔离，实际仍在原工作树里写，
+ * 不标出来用户会困惑「我明明传了 worktree:true」。
+ */
+const conflictLine = ({ task, target }) => {
+  const degraded = task?.worktree_state === 'degraded' ? '｜隔离已降级：目标不是 git 仓库，仍在原工作树写' : ''
+  return `- 「${taskLabelWithId(task)}」（${statusLabel(task.status)}）：${trim(target) || '目标目录未记录'}${degraded}`
+}
 
 /** 同 target 拒绝文案：说清「为什么被拒 + 三条出路」，并照顾 delivered（待确认）场景。 */
 export function sameDirRejection({ target, conflicts = [] } = {}) {
   const delivered = conflicts.some(({ task }) => task.status === 'delivered')
   const lines = [
     `未创建任务：目标目录 ${trim(target) || '(未指定)'} 与活跃任务相同或互相包含，且新任务没有 worktree 隔离——两个子会话会同时写同一份工作树。`,
-    '冲突任务：',
+    '冲突任务（已在独立检出里跑的任务不在此列，它们不写这个目录）：',
     ...conflicts.map(conflictLine),
     '三种做法（任选其一）：',
     '1. 先 task_close 关闭旧任务（或 task_stop 取消），再重派；',

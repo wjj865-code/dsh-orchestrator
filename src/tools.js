@@ -32,7 +32,7 @@ import {
   notifyWorktreeOf, parseWorktreeRequest, worktreeListMarker, worktreeNoteLines, worktreeStatusLine,
 } from './worktree-request.js'
 import { checkoutPathFor, createWorktreeService, retryWorktreeOf } from './worktree.js'
-import { decideWriteGuard } from './write-guard.js'
+import { ISOLATED_WORKTREE_STATES, decideWriteGuard } from './write-guard.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
 const str = description => ({ type: 'string', description })
@@ -628,10 +628,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       // 同写域并发防护：与活跃未隔离任务的 target 相同/互相包含，或写域重叠 → 按 config.sameDirGuard 处理。
       // 与去重/容量同理，「判定 + createTask」必须是同一个同步段（中间没有 await）：并发调用不会一起通过。
-      // 新任务自己要被隔离（worktree 已定 requested/created/reused）或只读时不判：前者在独立检出里跑，后者不写文件。
+      // 新任务自己要被隔离或只读时不判：前者在独立检出里跑，后者不写文件。
+      // 隔离状态列表与 write-guard 共用 ISOLATED_WORKTREE_STATES，不在这里另写一份。
       // 计划任务照常判：计划阶段虽然只读，但批准后会转可写，放过去等于把冲突推迟到批准那一刻。
       // allowConcurrent:true 是唯一的显式放行开关。
-      const newTaskIsolated = ['requested', 'created', 'reused'].includes(worktreeRecord?.state)
+      const newTaskIsolated = ISOLATED_WORKTREE_STATES.includes(worktreeRecord?.state)
       const guard = decideWriteGuard({
         tasks: listTasks(db, { active: true }),
         target: effectiveTarget,

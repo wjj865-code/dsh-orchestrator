@@ -11,7 +11,7 @@ import { openLedger, createTask, getTask, listTasks, transition } from '../src/l
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import {
-  DEFAULT_SAME_DIR_GUARD, SAME_DIR_GUARD_MODES, decideWriteGuard, guardModeOf, normalizePath, pathsOverlap,
+  DEFAULT_SAME_DIR_GUARD, ISOLATED_WORKTREE_STATES, SAME_DIR_GUARD_MODES, decideWriteGuard, guardModeOf, isolatedTask, normalizePath, pathsOverlap,
   sameDirRejection, scopeRejection, scopesOverlap, serializedIdsOf, taskTargetDir, occupiesTarget,
 } from '../src/write-guard.js'
 import { loadConfig } from '../src/config.js'
@@ -45,6 +45,34 @@ test('占用判定：只读任务与隔离任务不占写域；计划任务照�
   assert.equal(occupiesTarget({ read_only: false, worktree_state: 'created' }), false)
   assert.equal(occupiesTarget({ read_only: false, worktree_state: 'reused' }), false)
   assert.equal(occupiesTarget({ read_only: false, plan_first: true, worktree_state: 'none' }), true)
+})
+
+// 回归（P1）：requested 是「派发时建检出」的待建状态，target_dir 还没换算成检出目录，
+// 但任务注定在检出里跑、不碰原目录。曾因 isolatedTask 只认 created/reused 而误拦同目录合法任务。
+test('占用判定：requested（待建检出）也算已隔离，不占原目录；degraded 仍占（降级后仍在原工作树写）', () => {
+  assert.deepEqual([...ISOLATED_WORKTREE_STATES], ['requested', 'created', 'reused'])
+  for (const state of ISOLATED_WORKTREE_STATES) {
+    assert.equal(isolatedTask({ worktree_state: state }), true, `${state} 应算已隔离`)
+    assert.equal(occupiesTarget({ read_only: false, worktree_state: state }), false, `${state} 不应占原目录`)
+  }
+  // degraded 看起来像开了隔离，实际降级后仍在原工作树写 —— 必须继续占目录。
+  assert.equal(isolatedTask({ worktree_state: 'degraded' }), false)
+  assert.equal(occupiesTarget({ read_only: false, worktree_state: 'degraded' }), true)
+  // 未隔离（none）与异常态照常占目录。
+  for (const state of ['none', 'failed', 'cleaned', undefined]) {
+    assert.equal(occupiesTarget({ read_only: false, worktree_state: state }), true, `${state} 应占目录`)
+  }
+})
+
+test('判定：requested 的隔离任务不算冲突方，同目录新任务放行（含 waiting_dep 的待建检出）', () => {
+  // 隔离任务因 dependsOn 停在 waiting_dep，worktree_state 仍是 requested，target_dir 还是原目录。
+  const tasks = [{ id: 't-iso', title: '隔离任务', status: 'waiting_dep', target_dir: '/repo', worktree_state: 'requested' }]
+  const result = decideWriteGuard({ tasks, target: '/repo' })
+  assert.equal(result.action, 'pass')
+  assert.deepEqual(result.targetConflicts, [])
+  // 同一份台账里若换成未隔离任务，仍必须拒绝（确认放行只针对隔离状态）。
+  const plain = decideWriteGuard({ tasks: [{ ...tasks[0], worktree_state: 'none' }], target: '/repo' })
+  assert.equal(plain.action, 'reject')
 })
 
 test('target 取值：优先 target_dir（隔离任务已换算成检出目录），退回 brief.target', () => {
@@ -293,6 +321,59 @@ test('worktree 隔离任务放行：新任务隔离、或旧任务已在检出�
   const plain = await second.call('task_create', { ...sampleBrief({ title: '普通任务2', goal: 'g2' }), target: dir })
   assert.match(plain, /已派发/)
   second.db.close()
+})
+
+// 回归（P1）：隔离任务因 dependsOn 停在 waiting_dep 时 worktree_state 仍是 requested、
+// target_dir 还是原目录。它注定在检出里跑，不该阻塞同目录的普通任务。
+test('回归：worktree:true + waiting_dep（worktree_state=requested）的隔离任务不阻塞同目录普通任务', async () => {
+  const service = {
+    async probeRepo() {
+      return { isRepo: true, repoRoot: '/repo', defaultBranch: 'main', head: 'abc', n: 1, recentBranches: [{ name: 'main' }], suggestedBase: 'main', needsBranchChoice: false }
+    },
+    async refExists() { return true },
+    async branchExists() { return false },
+    async create(args) { return { ok: true, path: args.path, branch: args.branch, base: args.base } },
+    async ensureExcluded() { return { ok: true, added: true } },
+    async remove() { return { ok: true } },
+  }
+  const { db, call } = await setup({ worktree: service })
+  const target = tempDir()
+  // 前置任务占着另一个目录，用来把隔离任务卡在 waiting_dep。
+  const depDir = tempDir()
+  await call('task_create', { ...sampleBrief({ title: '前置', goal: 'g0' }), target: depDir })
+  const dep = listTasks(db, { active: true })[0]
+
+  const isolated = await call('task_create', {
+    ...sampleBrief({ title: '隔离任务', goal: 'g1' }), target, worktree: true, worktreeBase: 'main', dependsOn: [dep.id],
+  })
+  assert.match(isolated, /等待前置任务完成/)
+  const iso = listTasks(db, { active: true }).find(task => task.title === '隔离任务')
+  assert.equal(iso.status, 'waiting_dep')
+  assert.equal(iso.worktree_state, 'requested', '待建检出的隔离任务应停在 requested')
+  assert.equal(iso.target_dir, target, 'requested 阶段 target_dir 还没换算成检出目录')
+
+  // 同目录普通任务不该被这个隔离任务拦住。
+  const plain = await call('task_create', { ...sampleBrief({ title: '同目录普通任务', goal: 'g2' }), target })
+  assert.match(plain, /已派发/)
+  assert.doesNotMatch(plain, /未创建任务/)
+  assert.equal(listTasks(db, { active: true }).length, 3)
+  db.close()
+})
+
+test('回归：degraded（隔离降级）仍占原目录，同目录新任务被拒且文案说明降级原因', async () => {
+  const { db, call } = await setup()
+  const target = tempDir()
+  // 目标不是 git 仓库时 worktree 会降级 —— 任务实际仍在原工作树里写。
+  await call('task_create', { ...sampleBrief({ title: '降级任务', goal: 'g1' }), target })
+  const degraded = listTasks(db, { active: true })[0]
+  // 直接改台账状态模拟降级（正常路径需要真 git 仓库，这里只验证判定与文案）。
+  db.prepare('UPDATE tasks SET worktree_state = ? WHERE id = ?').run('degraded', degraded.id)
+
+  const blocked = await call('task_create', { ...sampleBrief({ title: '同目录新任务', goal: 'g2' }), target })
+  assert.match(blocked, /未创建任务/)
+  assert.match(blocked, /降级/)
+  assert.match(blocked, /仍在原工作树写/)
+  db.close()
 })
 
 test('计划任务照常参与：计划阶段只读，但批准后会转可写，不能把冲突推迟到那一刻', async () => {

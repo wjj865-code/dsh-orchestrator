@@ -74,7 +74,8 @@
 - **同写域并发防护**（`src/write-guard.js`，默认拒绝）：`task_create` 在「去重 / 容量 / worktree 决定」之后、`createTask` 之前的**同一个同步段**里判定——
   新任务 target 与活跃未隔离任务的 target 相同或互相包含，或两者 `writeScopes` 重叠 → 按 `config.sameDirGuard` 处理：
   `require`（默认）拒绝并返回可操作错误、`warn` 只给强警告、`off` 关闭（`writeScopes` 退回一行 advisory）。
-  不参与判定：`readOnly` 任务（不写文件）、`created`/`reused` 隔离任务（各自检出）、`dependsOn` 链上祖先（等它们 `done` 才派发）、终态任务。
+  不参与判定：`readOnly` 任务（不写文件）、`requested`/`created`/`reused` 隔离任务（各自检出；`requested` 是派发时建检出的待建状态，`target_dir` 还没换算但任务注定在检出里跑）、`dependsOn` 链上祖先（等它们 `done` 才派发）、终态任务。
+  例外是 `degraded`（目标不是 git 仓库而降级）：它仍在原工作树里写，必须继续占目录。
   `delivered` 算活跃（还占目录）；唯一显式放行开关是 `task_create.allowConcurrent:true`，放行时返回带「并发风险」并记 `task.create.concurrent-write`。
   拒绝对应 `task.create.rejected`（`reason: same-dir | write-scope`）。
 

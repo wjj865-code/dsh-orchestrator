@@ -174,7 +174,7 @@ task_create({
 ```
 
 - **三条出路**，都不是「不可绕过」：`task_close` / `task_stop` 旧任务、`worktree:true` 隔离、或显式 `allowConcurrent:true`（放行时返回里标注「并发风险」，并记 `task.create.concurrent-write` 日志）。
-- **不算冲突**（既有用法不受影响）：不同 target、worktree 隔离任务（在各自检出里跑）、`dependsOn` 链上的前置任务（等它们 `done` 才派发，不会同时跑）、`readOnly` 只读任务（不写文件，既不占目录也不被拦）、已完成/已取消/失败/丢失的任务（已释放目录）。
+- **不算冲突**（既有用法不受影响）：不同 target、worktree 隔离任务（在各自检出里跑——含 `requested` 待建检出状态，即因 `dependsOn` 停在等前置的隔离任务）、`dependsOn` 链上的前置任务（等它们 `done` 才派发，不会同时跑）、`readOnly` 只读任务（不写文件，既不占目录也不被拦）、已完成/已取消/失败/丢失的任务（已释放目录）。反过来，`degraded`（目标不是 git 仓库、隔离降级）仍在原工作树里写，**照常占目录**。
 - **`planFirst` 计划任务照常参与判定**：计划阶段当下是只读沙箱，但批准后会切回可写——放过去等于把冲突推迟到批准那一刻。
 - **`delivered`（待确认）算活跃**：它还占着目录。要接着改就用 `task_message` 追问原会话，不要新建同目录任务——拒绝文案也会提示这一点。
 - **配置降级**：`sameDirGuard: 'warn'` 只给强警告照常创建，`'off'` 完全关闭（`writeScopes` 退回旧的一行提示）。**默认 `'require'`**，非法值（含拼错）一律回落 `'require'`——默认必须安全。
