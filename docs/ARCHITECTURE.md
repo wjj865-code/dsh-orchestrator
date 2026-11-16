@@ -50,6 +50,73 @@
 - **侧栏「◈ 主会话」跳转入口始终注册/可见**，不参与主会话判定：它是首次创建主会话的引导入口，不能因为「还没有主会话」而消失。
 - 面板主体仍然注册为 `main` keyed 槽位（`key:'orchestrator'`）；入口隐藏不等于面板消失，`selectPanel('orchestrator')` 仍可用（供其他入口/排障）。
 
+## 主会话轮换（G1）
+
+主会话是唯一协调者，跑久了上下文与日志只会更大。轮换 = 把旧主会话退役、换一个干净会话继续当协调者；台账、任务、记忆、产物都不搬。**判定与动作严格分离**，且判定只有一个调用点：`main-session.openOnce()`。
+
+### 模块与接线
+
+| 位置 | 职责 |
+|---|---|
+| `src/main-rotation.js` | 全部轮换逻辑：S1 纯判定 `evaluateRotation`；S2 采集 `collectRotationMetrics` + settings 键读写 + `inspectRotationPending` 只读判定；S3 动作面 `createRotationService`（marker / 时间戳 / 审计 / 旧会话处置 / `recoverPendingRotation`） |
+| `src/config.js` | `loadConfig` 直接 `Object.assign(config, normalizeRotationConfig(raw))`，11 个键的默认值/区间/回落都在 S1 |
+| `src/main-session.js` | `openOnce()` 是**唯一**判定点：`rotation.evaluate({ mainSessionId, liveAgent, source:'open' })` → `decision.due === true` 才 `rotateMain()`，否则照旧走复用分支 |
+| `index.js` | 装配 `createRotationService`（平台服务全是**惰性 getter**：`sessionPersistence` / `tokenMeter` / `catalog` / `sessionController.rename` / `workspaceRegistry.archiveSession`）；`apply()` 启动时调一次 `rotation.recoverPending({ pointer })` 补完上次崩溃的轮换；`open-main` 响应里对新 id 跑 `ensureDigestFor` |
+
+判定**不在**启动、`agent/created`、面板轮询里跑，也没有定时器；settings 里不存任何判定结论，`snapshot` 不下发「建议轮换」（S4 曾接过这三处，已按「判定收敛到打开那一次」回退）。
+
+### 判定
+
+`evaluateRotation(input)` 是纯函数（不读库、不读盘、不看时钟，`now` 由调用方给），输入 = 台账快照 + 配置 + 时间：
+
+- 判定只在旧主会话 **live** 时做：`openOnce` 里 `live === undefined` 走既有「隐式重建」路径，不做判定，`agent/created` 也不补判——所以重启后第一次打开是重建，不是轮换。
+
+- **触发因子（M1→M6，顺序固定）**：`tasks`（自 since 新增子任务）→ `sessions`（新增子会话，按 `header.cwd` 过滤指挥舱）→ `main-log`（主会话日志 MiB）→ `context-tokens`（live 会话的 `tokenMeter.measure().totalTokens`）→ `age`（`since` 起算小时）→ `disk`（指挥舱全部会话日志合计 MiB）。任一 `value >= threshold` 进 `triggers`/`reasons`。
+- **保护规则（12 个 code，`ROTATION_BLOCKS` 定优先级，`blockedBy[0]` 即首要原因）**：`mode-off`、`coordinator-override`、`spawn-provider`、`active-tasks`（`waiting_dep`/`pending`/`running`/`waiting_user`/`waiting_auth`）、`delivered-pending`、`delivered-artifacts`、`agent-running`、`recent-activity`（`logMtimeAt` 距今 < `rotateIdleMinutes`）、`active-children`（catalog 里 `activity==='active'`）、`min-age`、`cooldown`（距 `main_rotation_at` < `rotateCooldownHours`；从未轮换视为满足）、`metrics-degraded`（**六项全缺**才 fail-closed，缺一两项只记 `degraded`）。
+- **结论**：`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；龄/冷却/闲置一律由时间戳现算，不信任调用方传小时数。
+
+采集（S2）只读：一次 `persistence.listSnapshots()` 供 M2/M6 共用，`locate`+`stat` 拿 M3 体积与 mtime（顺带给 P4）；每项独立 `try/catch`，失败记 `degraded` 并给 `null`（**未知 ≠ 0**，0 会被当成「很干净」而漏判）。`since` 先读 `settings.main_session_created_at`，退 `header.createdAt`，都拿不到时 M1/M2/M5 一起降级。判定整体异常 → `evaluate` 返回 `null`（调用方视为「本次不换」，打开主会话照常）。
+
+### 动作时序（顺序即回退边界，改顺序前先读 `src/main-rotation.js` 顶部注释）
+
+1. `ensureWorkspace()`（指挥舱工作区）+ `sessionController.create({ workspaceId, agentPreset: 协调者预设 })`。**失败 = 零处置**（F2）：不写 marker、不动指针、不碰旧会话，`open()` 返回可读错误。
+2. `beginRotationMarker` 写 `main_rotation_pending = {newId, oldId, at, reasons}`：**先 marker、后切指针**，它是崩溃后区分「空白残留」与「指针已切、只差处置」的唯一锚点。写不进只记 `main.rotation.marker.failed`，不放弃这次轮换。
+3. `setMainSessionId(newId)` 切指针（单条 UPSERT）。失败 = 轮换没发生（F3）：`discard` 尽力归档空白新会话 + 清 marker，返回「轮换失败，旧主会话仍可用」。**指针切换后不再回滚**——回滚等于把人踢回旧会话又换了一次主会话。
+4. `setMainSessionPreset` + `markRotationTimes` 写 `main_session_created_at` / `main_rotation_at`；失败只记 `main.rotation.commit.failed`（少了防抖时间戳，轮换已成立）。
+5. `settings.main_onboarding:<newId> = 'sent'`：跳过首次介绍与「工作区与仓库索引」任务，避免每次轮换多派一个重复索引任务。
+6. `sessionController.rename(newId, '主会话')`；失败只记日志。
+7. `disposeOldMainSession`：先 `rename(oldId, '主会话（已退役 YYYY-MM-DD HH:MM）')`，再 `archive(oldId)`（`rotateArchiveOld:false` 时 `archiveOld=undefined`，只改名）。两步各自降级：rename 失败不影响归档，archive 失败只留「旧会话还在列表里」，轮换仍成立。
+8. `recordRotation` 写审计 `main_rotation_last`（`old/new/at/triggers/reasons/metrics/renamed/archived/recovered`）并清 marker；写失败则 marker 留着，下次启动幂等补完（rename 是覆盖标题、archive 幂等）。
+9. 记 `freshMain = {sessionId, at}`：新会话还没 live 的 **60 秒窗口**内再点「打开主会话」直接交回同一个 id，不给「不 live 就新建」留双建。
+
+并发：`open()` 的 in-flight Promise 复用保证多个入口只建一次；`evaluate` 本身只读。**判定与动作之间不复查**（保护规则挡的是判定时刻的状态）。
+
+### 崩溃恢复（`recoverPendingRotation`，`apply()` 启动时跑一次，永不抛）
+
+| marker 状态 | 条件 | 处理 |
+|---|---|---|
+| `none` / `unknown` | 没有 marker / 启动早期还没有指针 | 无事可做 |
+| `invalid` | `newId` 不是非空字符串 | 只告警 + 清 marker，**绝不猜 id 去归档**（不可逆） |
+| `abandoned` | `marker.newId !== 指针` | 死在切指针之前：旧指针一直有效，新会话是空白残留 → 尽力归档 + 清 marker，不回滚指针 |
+| `complete` | `marker.newId === 指针` | 指针已切：补缺失的时间戳（按 `marker.at`）、补 `onboarding=sent`、对旧会话补「改名 + 归档」、写审计 `recovered:true`、清 marker（幂等） |
+
+### settings 键（只存事实，不存结论）
+
+| 键 | 语义 |
+|---|---|
+| `main_session_created_at` | 当前主会话起点（M1/M2/M5 的 `since`） |
+| `main_rotation_at` | 上次轮换时刻（冷却期起点；从未轮换 = 无键） |
+| `main_rotation_last` | 审计记录（事后排查唯一入口：换了谁、为什么、改名/归档成没成、是否恢复补完） |
+| `main_rotation_pending` | 崩溃锚点（转瞬即逝，收尾清掉） |
+
+### 日志（`logs/YYYY-MM-DD.jsonl`）
+
+- `main.rotation.decided`：每次判定都写（`source`、`due`、`triggers`、`blockedBy`、`degraded`、指标、`since`/`sinceSource`/`scanned`）——复盘「为什么换 / 为什么没换」。
+- `main.session.rotated`：轮换成功（old/new/triggers/renamed/archived/marker/audit）。
+- 失败/降级：`main.rotation.failed`、`pointer-failed`、`commit.failed`、`onboarding.failed`、`audit.failed`、`marker.failed`、`marker.clear.failed`、`rename.ok|failed`、`archive`、`discard`、`metrics.degraded`、`recovered-complete|abandoned|invalid|failed`。
+
+冒烟（隔离台账 + 桩平台动作，不碰真实主会话）：[`docs/probes/main-rotation-smoke.mjs`](probes/main-rotation-smoke.mjs)，记录见 [`docs/probes/main-rotation-smoke.md`](probes/main-rotation-smoke.md)。
+
 ## 队列与并发
 
 平台有 `maxActiveSubagents` 上限（默认 8），满了抛 `ACTIVATION_LIMIT_REACHED` 且平台不排队。插件自己维护队列：

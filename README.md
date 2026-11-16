@@ -76,6 +76,7 @@ https://github.com/wjj865-code/dsh-orchestrator
 
 - 每个**新建**主会话一次；重复打开/刷新/并发入口不重复，升级后历史主会话不补初始化。介绍/派发由模型执行，不承诺模型一定遵循；投递失败在打开结果显示，重新打开可重试，索引任务失败用 `task_retry`，不盲重派。
 - 索引不需要 `access:full`，仍由默认只读 worker 执行，名单与脚本在 `task_detail` 给出；如果沙箱或权限读不到某工作区，记录 unavailable，不为扫描全盘升权。自动化不开放给 worker。
+- 主会话跑久了（默认 10 天 / 120 个子任务 / 上下文 15 万 token 等任一命中）会在**这次打开时**判定是否换一个干净的新会话，见[主会话轮换](#主会话轮换把长到拖不动的协调者换掉)。默认不会频繁触发；想彻底关掉配 `mainRotation: 'off'`。
 
 ### 2. 说需求 = 派单
 
@@ -258,6 +259,36 @@ task_create({
 - 日报默认关闭；profile 配 `digestAt: '09:00'`（`digestTimeZone` 可选）后，打开主会话自动挂 schedule，到点汇总完成/在跑/待决定/失败/产物。
 - 空闲看门狗默认开：`running` 长时间无心跳/消息/状态变化时告警一次，只告警、不改状态、不 kill。
 
+### 主会话轮换：把长到拖不动的协调者换掉
+
+主会话是唯一的协调者：所有子任务回报、确认、追问都落在它身上。跑久了上下文变大、会话日志变长，打开它越来越慢。**主会话轮换**就是把旧主会话退役、换一个干净的新会话接着当协调者——台账、任务、经验、产物都留在原处，只有「当前协调者是哪个会话」变了。
+
+它**没有定时器、没有后台巡检、也没有面板按钮**：判定只在**你打开主会话那一次**发生（面板「打开主会话」或侧栏「◈ 主会话」，且旧主会话当前是活的）。打开时先采集指标再判定；只有 `due === true` 才真的换，否则照旧复用，连一个 settings 键都不写。
+
+**六个触发因子（任一命中即「该换」）**
+
+| 因子 | 默认阈值 | 含义 |
+|---|---|---|
+| 子任务数 | `rotateAfterTasks: 120` | 自当前主会话建立（上次轮换）以来新增的子任务 |
+| 子会话数 | `rotateAfterSessions: 80` | 同上，新增的子会话（只算指挥舱目录） |
+| 主会话日志 | `rotateAfterMainLogMiB: 6` | 主会话日志体积（MiB，压缩后） |
+| 上下文 | `rotateAfterContextTokens: 150000` | 当前主会话上下文 token（要 live 会话才采得到） |
+| 龄 | `rotateAfterDays: 10` | 主会话已运行天数 |
+| 日志总占用 | `rotateAfterDiskMiB: 512` | 指挥舱所有会话日志合计（MiB） |
+
+**十二条保护（任一命中就不换，宁可不动）**：`mainRotation: 'off'`、配置了 `coordinatorSession` 覆盖、`spawnProvider != spawn`、还有活跃任务（等前置/待派发/进行中/等待回复）、还有「已交付待确认」、待确认任务带未读产物、主会话正在跑回合、`rotateIdleMinutes`（默认 10 分钟）内有交互、子会话目录里还有活跃子代理、未到最小龄 `rotateMinAgeHours`（默认 12 小时）、冷却期 `rotateCooldownHours`（默认 48 小时）、所有触发指标都拿不到（fail-closed）。采不到的指标记「未知」并按降级处理，**不按 0 算**。
+
+**默认策略与关闭方法**：`mainRotation` 默认 `auto`（判定 + 动作）；最小龄 12 小时 + 冷却 48 小时，加上六个阈值都在「跑很久」的量级，日常打开主会话不会被换。想彻底关掉就配 `mainRotation: 'off'`：仍会检测、日志里能看到「为什么没换」（`blockedBy: ['mode-off']`）、`due` 恒为 false，但**绝不动作**。只想保留旧会话回看入口就配 `rotateArchiveOld: false`（只改名不归档）。
+
+**怎么手动触发一次**：没有「强制轮换」按钮。要现在就换，先把阈值调低（例：`rotateAfterDays: 1`、`rotateMinAgeHours: 1`、`rotateCooldownHours: 1`、`rotateIdleMinutes: 1`），把活跃/待确认任务收掉，再打开主会话。判定结论写进 `main.rotation.decided` 日志（`due` / `triggers` / `blockedBy` / 指标），事后能复盘「这次为什么换 / 为什么没换」。
+
+**风险（开之前先看）**
+
+- **归档不可逆**：默认 `rotateArchiveOld: true`，轮换会把旧主会话改名成「主会话（已退役 YYYY-MM-DD HH:MM）」并**交给平台归档**（从会话列表隐藏）。平台没有 unarchive，归档后在 UI 里**无法恢复**。只想留个回看入口就配 `rotateArchiveOld: false`，那时只改名不归档。
+- **换的是协调者身份，不搬历史**：活跃任务、待确认任务都会挡住轮换，但轮换之后旧会话里没处理完的追问不会再自动回来；跟进用面板 / `task_list` / `task_inbox`。
+- **崩溃可能留中间态**：插件启动时会按 `settings.main_rotation_pending` 补完或清理（补处置旧会话 / 归档空白残留），失败只告警、下次启动重试；极端情况下旧会话可能还留在列表里。
+- **只有打开主会话才判定**：一直不打开就永远不换；反过来说，重启 DSH、刷新页面、面板 2 秒轮询都不会触发轮换。
+
 ### 主会话原生自动化
 
 协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 14 个工具。当前契约核实于 DSH **0.2.2-rc.3**，升级宿主需复核，不能据此保证未来版本兼容。
@@ -346,6 +377,17 @@ task_create({
 | `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，漏传时兜底 |
 | `worktreeBranchPrefix` | `orch/` | 隔离任务分支前缀（默认名 `<prefix><taskId>`） |
 | `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（1–90） |
+| `mainRotation` | `auto` | 主会话轮换总开关：`auto`（判定 + 动作）/ `off`（只检测不动作）；拼错回落 `auto` |
+| `rotateAfterTasks` | `120` | 自上次轮换以来新增子任务数（1–10000） |
+| `rotateAfterSessions` | `80` | 同上，新增子会话数（1–10000） |
+| `rotateAfterMainLogMiB` | `6` | 主会话日志体积 MiB（0.5–4096） |
+| `rotateAfterContextTokens` | `150000` | 当前上下文 token（1000–2000000） |
+| `rotateAfterDays` | `10` | 主会话运行天数（1–365） |
+| `rotateAfterDiskMiB` | `512` | 指挥舱会话日志总占用 MiB（16–1048576） |
+| `rotateCooldownHours` | `48` | 两次轮换之间的冷却期（1–720） |
+| `rotateMinAgeHours` | `12` | 最小龄，防抖（1–720） |
+| `rotateIdleMinutes` | `10` | 多久没交互才算「空下来」（1–1440） |
+| `rotateArchiveOld` | `true` | 轮换后是否归档旧主会话（**不可逆**）；`false` = 只改名退役 |
 
 ## 状态与数据
 
@@ -374,6 +416,15 @@ task_create({
 - 「最后一条回复」可能缺：插件在结算事件到达前被卸载/进程被杀时拿不到。
 - 主会话工具表可能残留团队工具（agent-scope 自注册，`restrict` 遮不到），执行层 guard 会拦。
 
+**主会话轮换**
+
+- **归档不可逆**：默认 `rotateArchiveOld: true`，旧主会话改名「已退役」并归档后，平台没有 unarchive，UI 里无法恢复；要保留回看入口就配 `false`。
+- **没有手动强制换**：只在「打开主会话」时判定一次，重启/刷新/面板轮询都不判定，也没有按钮、工具或配置能绕过保护规则强制换。
+- **判定是快照，动作前不复查**：判定与动作之间若刚好来了新任务/新消息，可能仍按旧结论执行（保护规则挡的是判定时刻的状态）；并发打开只有一次生效。
+- **指标缺就保守**：token 只有 live 会话采得到，`sessionPersistence` 缺失时子会话数/日志体积/日志总占用降级；六项全拿不到时 fail-closed 不换。
+- **不搬历史**：轮换不迁移旧会话的上下文、未处理追问或平台侧状态；新会话照常跳过首次介绍与工作区索引任务，日报 schedule 按新主会话重建。
+- 判定结论只在日志 `main.rotation.decided` 与 `open-main` 返回里可见，面板不展示「建议轮换」提示。
+
 **worktree / 计划 / 视图**
 
 - worktree 需宿主有 `git`；未合并的产物不在你的工作树里，合并责任在用户；默认不清理会占磁盘。
@@ -393,6 +444,9 @@ task_create({
 | 点产物「预览」没有右侧栏 | 宿主要装 `ui-sidebar-right` 与 `ui-sidebar-documentpreview`；缺了会提示「右侧栏不可用（原因）…」，产物库那一行会退回面板内预览，任务卡/抽屉只提示去产物页看或复制路径 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页与 `logs/` |
 | 提示「尚未打开主会话」 | 面板点「打开主会话」 |
+| 主会话突然变成新的、旧会话变成「主会话（已退役 …）」 | 主会话轮换命中：旧会话已归档（**不可逆**）。不想再自动换就配 `mainRotation: 'off'` 并彻底重启 DSH；只想保留回看入口配 `rotateArchiveOld: false` |
+| 打开主会话后什么都没换 | 正常：看日志 `main.rotation.decided` 的 `blockedBy` 第一条（`min-age` / `cooldown` / `active-tasks` / `delivered-pending` / `mode-off`…）；采不到的指标在 `degraded` 里 |
+| 想马上换一次主会话 | 没有强制按钮：调低 `rotateAfterDays` / `rotateMinAgeHours` / `rotateCooldownHours` / `rotateIdleMinutes`，收掉活跃任务后再打开主会话 |
 | 子任务报 done 后一直「待确认」 | 正常：默认保持待确认等用户拍板；要收尾就 `task_close`，或等 `deliveredTimeoutMinutes` 超时自动完成 |
 | 任务停在「会话丢失」 | 子会话只在没报过 progress 时自动交付；上报过 progress 的回合异常结束落 `orphaned`。先用 `task_status` 看进展，需要接着做就 `task_retry` |
 | 提示「team 后端不可用」 | `backend` 改回 `subagent` |

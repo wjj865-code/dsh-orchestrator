@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.18.0（未发布）
+
+这一版给主会话加**轮换**：协调者跑久了（默认 10 天 / 120 个子任务 / 会话日志 6 MiB / 上下文 15 万 token /
+指挥舱日志总占用 512 MiB 等六个因子任一命中）会在**你下一次打开主会话**时换一个干净的新会话，
+旧会话改名「主会话（已退役 …）」并按配置归档。判定是纯函数 + 只读采集，动作有 marker 崩溃锚点与启动恢复；
+默认阈值都在「跑很久」量级，正常使用不会触发，`mainRotation: 'off'` 可完全关闭。
+
+相对 0.17.1 是 **minor**（`package.json` 版本号与 `vX.Y.Z` tag 由发版任务统一处理，本条目先占位）：
+工具入参、台账结构、既有状态机都没动；新增 11 个配置键、4 个 settings 键与一组 `main.rotation.*` 日志。
+
+### 主会话轮换（feat(main-rotation)）
+
+- **判定**：`src/main-rotation.js` 的 `evaluateRotation` 纯函数——M1–M6 六个触发因子（子任务数/子会话数/主会话日志/
+  上下文 token/龄/日志总占用）+ 12 条保护（`active-tasks`、`delivered-pending`、`agent-running`、`recent-activity`、
+  `min-age`、`cooldown`、`mode-off` 等）+ 冷却/最小龄；指标采不到按「未知」降级、六项全缺才 fail-closed；
+  结论只进日志，不写任何 settings。
+- **单点判定**：只在「打开主会话」时算一次（`main-session.openOnce` → `createRotationService.evaluate`），
+  `due === true` 才动作；启动、`agent/created`、面板轮询都不判定（S4 的三处检测已回退）。
+- **动作时序**：create → 写 marker → 切指针 → 写时间戳/跳过 onboarding → 新会话改名 → 旧会话改名+归档 →
+  写审计+清 marker；create 失败 **零处置**、切指针失败旧会话仍可用（空白新会话归档）、后续每步只降级不回滚；
+  启动时按 marker 幂等恢复（complete 补完 / abandoned 归档残留 / invalid 只清不猜）。
+- **安全阀**：`rotateArchiveOld:false` 只改名退役不归档（**归档不可逆，平台无 unarchive**）；判定与动作之间不复查；
+  并发 `open()` 单飞；轮换后新会话未 live 的 60 秒窗口内再打开直接交回同一 id，不重复建。
+- **配置**：`mainRotation`（默认 `auto`，只认 `'off'` 关闭）+ 六个阈值 + 冷却/最小龄/闲置 + `rotateArchiveOld`，
+  非法值回落默认、越界夹边界（见 README 配置表）。
+
+### 文档
+
+- README 增「主会话轮换」用户向说明（触发因子与阈值、十二条保护、默认策略与关闭方法、如何手动触发、归档不可逆等风险）、
+  配置表 11 行、故障排查三条、已知限制一组。
+- ARCHITECTURE 补模块分工、判定与保护、动作时序与回退边界、崩溃恢复四态、settings 键与日志事件。
+- LIMITATIONS 补「主会话轮换」边界，重点写明**归档不可逆**、判定快照与动作之间不复查、采集降级口径、恢复的不可逆操作。
+
+### 冒烟与验证
+
+- 新增隔离冒烟 `docs/probes/main-rotation-smoke.mjs`（临时台账 + 桩平台动作，**不碰真实主会话**）与记录
+  `docs/probes/main-rotation-smoke.md`：13 项矩阵——隔离自检、not-due 零副作用（×2）、off 模式、open-main 命中路径、
+  create 失败零处置、指针写失败 F3、只退役不归档、60s 窗口、崩溃恢复 complete/abandoned、配置归一化、纯判定契约。
+- `pnpm test`（`pretest` 自动构建）**892 passed / 0 failed**；`pnpm run check:client` exit 0；`pnpm run build` 通过。
+
+### 升级提示
+
+- 装新版仍要**彻底退出 DSH 再启动**（插件宿主侧代码在启动时加载，刷新页面不会换版本）。
+- 升级后第一次打开主会话会**正常判定一次**：龄不到 12 小时、没有活跃任务时不会换；不想要这套机制就配
+  `mainRotation: 'off'`，只想留旧会话入口就配 `rotateArchiveOld: false`。
+- 旧主会话升级后不会被补做轮换，也不会补首次介绍/工作区索引任务。
+
 ## 0.17.1（2026-11-17）
 
 这一版是**纯修复**：会话头「任务」入口的图标与文字没对齐。根因不在 flex、字号或间距算错，而是那套样式

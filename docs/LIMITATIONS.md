@@ -63,6 +63,20 @@
 - **子会话预设（`workerPreset`）只在派发时生效**：续派/冷恢复沿用会话创建时记下的 `agentPreset`，改配置不会切换已有子会话；值不是合法 preset id 时静默回落 `dsh-orchestrator-worker`（日志一行 warn）。
 - **`orch-debug` 调试预设**复制随包「创造模式」(`cordis`) 组合：预设声明装在 profile 里，**升级 DSH 后必须先 `node scripts/orch-debug-preset.mjs --check` 看漂移，再重跑 `pnpm run preset:debug` 重新生成并重装**，否则组合里的包名/行 id 与新版对不上会让声明行 broken；预设可执行 Host 代码，不是沙箱。旧的 `$DSH_HOME/.agent-presets/<id>/` 目录在 rc.3 已无人读取，本插件不再写那个路径。
 
+## 主会话轮换（G1）
+
+- **归档不可逆，这是本功能最硬的边界**：`rotateArchiveOld` 默认 `true`，轮换收尾会把旧主会话改名成「主会话（已退役 YYYY-MM-DD HH:MM）」再 `workspaceRegistry.archiveSession()` 归档（从会话列表隐藏）。平台**没有 unarchive API**，归档后在 UI 里没有恢复入口，插件也不提供「恢复旧主会话」；能选的只有事前配置：`rotateArchiveOld: false`（只改名不归档）或 `mainRotation: 'off'`（完全不换）。归档动作本身幂等（重复归档不报新错），但「已归档」这个状态不可撤销。
+- **判定只有一个调用点**：`main-session.openOnce()` 在**旧主会话 live**时算一次。启动、`agent/created`、面板 2 秒轮询、刷新页面都不判定；旧主会话不 live 时走的是既有「隐式重建」路径，不做轮换判定。没有强制轮换的按钮、工具、端点或配置——想「马上换」只能调低阈值再打开。
+- **判定是快照，动作前不复查**：`evaluate → rotateMain` 之间若刚好有新任务/新消息/新回合，仍会按判定时的结论执行。保护规则挡的是判定时刻的 `active-tasks` / `delivered` / `agent-running` / `recent-activity`；并发打开只生效一次（in-flight Promise 复用），轮换后新会话未 live 的 **60 秒窗口**内再打开会直接交回同一个 id（避免一次轮换变两次 + 空白残留），窗口过期后回到「不 live 就重建」的旧行为。
+- **指标口径与降级**：`context-tokens` 只有 live 会话采得到（重启/冷会话时缺席）；`sessions` / `disk` / `main-log` 依赖 `sessionPersistence.listSnapshots` + `locate`，缺服务或 `stat` 失败按「未知」处理（`degraded`，disk 为下界），**不按 0 算**；`since` 先读 `settings.main_session_created_at`，退 `header.createdAt`，都拿不到时任务数/会话数/龄一起降级。只有当**六个因子全部拿不到**时才 fail-closed 不轮换（`metrics-degraded`）。`main-log` 是压缩后日志文件大小，不等于上下文占用；`sessions` 按 `header.cwd` 过滤指挥舱，换过指挥舱目录后旧会话不计入。
+- **保护规则的边角**：`active-tasks` 只算 `waiting_dep`/`pending`/`running`/`waiting_user`/`waiting_auth`，**不含 `delivered`**（待确认由 `delivered-pending` 单独挡，避免重复计数）；`delivered-artifacts` 是 `delivered-pending` 的子集（单独记一条便于解释「交付物还没看」）；`recent-activity` 只看主会话日志 mtime，日志定位失败时该保护缺席；`active-children` 依赖 `dispatcher.catalog()`，读不到就按「无法判断」（不挡、也不误挡）；`coordinator-override` 与 `spawn-provider` 命中时**连采集都不做**。
+- **崩溃中间态**：marker（`main_rotation_pending`）写失败只记日志、轮换继续，但之后崩溃就**无法自动恢复**（旧会话可能没改名/没归档）；marker 形状坏掉（`invalid`）时只清 marker + 告警，**绝不猜 id 去归档**；`abandoned` 恢复会把空白残留会话归档（同样不可逆）；`complete` 恢复幂等（rename 覆盖标题、archive 幂等），但审计 `main_rotation_last` 只保留**最近一条**（覆盖写），没有轮换历史列表。
+- **标题被覆盖**：旧会话标题被改成「主会话（已退役 …）」，原标题不保留、平台也没有标题历史，改名后无法还原。
+- **配置写错的表现**：`mainRotation` 只认 `'off'`，`'OFF'`/`'false'`/拼错一律回落 `auto`（默认安全 = 保持既有行为，而不是静默关闭）；数值键越界夹到边界、非正数/非数字回落默认；`rotateArchiveOld` 只认显式 `false`。所以「我配了关闭但它还在换」先查拼写。
+- **不迁移任何状态**：旧会话的上下文、未处理追问、平台侧 goal/automation 状态都不搬；新会话直接 `onboarding=sent`（不补首次介绍与工作区索引任务）；日报 schedule 在 `open-main` 响应里按新 id 重建，那一步失败只 warn，需要自己核对一份 schedule 是否落在新会话上。
+- **视图边界**：判定结论只写日志 `main.rotation.decided` 和 `open-main` 返回体；面板不下发「建议轮换」，`task_list` / `task_status` 也不显示轮换历史；旧会话在归档前仍是普通会话（仍可打开，但已不是协调者）。
+- **平台服务缺失的降级**：缺 `sessionController.rename` → 旧会话只归档（或只保留）；缺 `workspaceRegistry.archiveSession` → 只改名 + warn；缺 `sessionController.create` → `open-main` 返回可读错误、**零处置**。都不抛异常到宿主。
+
 ## 首次打开与仓库索引
 
 - 只初始化新建 main，历史主会话/显式 coordinatorSession 不补欢迎。首次注入成功仅代表消息入队；模型可能未照提示介绍/派发，应核对 task_list，不把 sent 当索引完成。重复打开不重投；投递异常保留 pending、open 返回 onboardingError，用户重开可重试。进程在发送与sent写入之间崩溃可能停在sending，不承诺exactly-once，也不盲重投。
