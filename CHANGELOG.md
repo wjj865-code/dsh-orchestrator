@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.17.0（2026-11-17）
+
+这一版补上**同写域并发防护**：修掉一个真实事故的缺口——协调者在**同一个目标目录**并发派了两个都没开 worktree 的任务，
+两个子会话同时写同一份工作树、改动互相覆盖。此前 `task_create` 的检查里 `target_dir` **从不参与冲突判定**，
+`writeScopes` 只是 advisory 提示，`worktreePolicy=auto` 也没有代码分支。
+
+相对 0.16.0 是 **minor，但含行为变更**：台账结构、状态迁移、既有工具入参都没动，但**同目录并发派任务默认被拒**——
+这是本次要修的问题本身，不是顺带收紧。放宽方式见下「升级提示」。
+
+### 同写域并发防护（feat(guard)）
+
+- **默认拒绝**：新任务 target 与某个**活跃且未隔离**任务的 target 相同或互相包含（或两者 `writeScopes` 重叠）时，`task_create` 不创建任务，
+  返回可操作错误并列出冲突任务名 + 目录。三条出路：先 `task_close`/`task_stop` 旧任务、传 `worktree:true` 隔离、或显式 `allowConcurrent:true`。
+- **新增参数 `task_create.allowConcurrent`**（布尔，默认不传）：唯一显式放行开关；放行时返回里标注「并发风险」并记 `task.create.concurrent-write` 日志。
+- **新增配置 `sameDirGuard`**：`require`（默认，拒绝）/ `warn`（只强警告）/ `off`（关闭，退回旧的 advisory）；非法值一律回落 `require`。
+- **不受影响**：不同 target、worktree 隔离任务（`requested` 待建检出 / `created` / `reused` 都算隔离，含因 `dependsOn` 停在等前置的）、`dependsOn` 链上的前置任务、`readOnly` 任务、终态任务；`delivered`（待确认）算活跃，拒绝文案会提示改用 `task_message` 追问。
+  例外：`degraded`（目标不是 git 仓库、隔离降级）仍在原工作树里写，照常占目录，拒绝文案会标注降级原因。
+- **协调者 policy** 新增「同写域并发防护」段（含三条出路），避免被拒后原样重试。
+- **文档**：README「同写域并发防护」+ 配置表、`docs/ARCHITECTURE.md`、`docs/LIMITATIONS.md`、`docs/DETAIL.md`。
+- **测试**：新增 `test/write-guard.test.js`（纯函数 + task_create 集成：同目录被拒、父子目录、`allowConcurrent` 放行、隔离放行、只读不参与、
+  `dependsOn` 不拦、写域重叠被拒、`warn`/`off` 降级、`task_close` 后可再派、日志留痕；隔离状态口径含
+  `requested` 不占原目录、`degraded` 仍占、`worktree:true` + `waiting_dep` 不阻塞同目录任务）；`test/tools.test.js` 的写域 advisory 用例改为显式 `sameDirGuard:'off'`。
+
+### 升级提示
+
+- **行为变更（需要你确认一遍既有用法）**：以前「同一个目标目录并发派多个任务」是可以的（`writeScopes` 只打一行提示），
+  现在默认**被拒**并返回可操作错误。三条放宽路径：改成 `worktree:true`（推荐，两个任务各在独立检出里跑）、
+  先 `task_close`/`task_stop` 旧任务再派、或显式传 `allowConcurrent:true`（放行后返回里标注「并发风险」，冲突自负）。
+  想整体退回旧行为就把配置改成 `sameDirGuard:'warn'`（只警告）或 `'off'`（完全关闭）。
+- **`delivered`（待确认）也占目录**：它还占着目标目录，要接着改就用 `task_message` 追问原会话，不要新建同目录任务。
+- 装 0.17.0 仍要**彻底退出 DSH 再启动**；刷新页面只重载前端，不会换服务端代码。
+
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)；版本号以 `package.json` 为唯一真源，
 推 `vX.Y.Z` tag 触发 `.github/workflows/release.yml` 发布到 npm。
 
