@@ -275,7 +275,26 @@ test('snapshot 带 mainSession 与 targetDir；open-main 只建主会话', async
   assert.equal(opened.status, 200)
   assert.equal(body.sessionId, 'session-main')
   assert.equal(body.created, false)
+  // S4：形状固定的轮换字段（未轮换时 false/null，客户端不用判 undefined）。
+  assert.equal(body.rotated, false)
+  assert.equal(body.replaced, null)
   assert.deepEqual(calls, ['open'])
+  db.close()
+})
+
+test('S4 open-main 透传 rotated/replaced：轮换时给出旧主会话 id，非字符串 replaced 归一为 null', async () => {
+  const db = await openLedger(tempDir())
+  const rotated = createHostRoute({
+    db,
+    openMain: async () => ({ ok: true, sessionId: 'session-new', created: true, rotated: true, replaced: 'session-old' }),
+  })
+  const body = await (await rotated(request({ endpoint: 'open-main' }))).json()
+  assert.deepEqual(body, { ok: true, sessionId: 'session-new', created: true, rotated: true, replaced: 'session-old' })
+
+  // 客户端契约：字段永远出现，未轮换/false 值不得变成 undefined 或旧 id 残留。
+  const reused = createHostRoute({ db, openMain: async () => ({ ok: true, sessionId: 's', created: true, replaced: undefined }) })
+  const reusedBody = await (await reused(request({ endpoint: 'open-main' }))).json()
+  assert.deepEqual(reusedBody, { ok: true, sessionId: 's', created: true, rotated: false, replaced: null })
   db.close()
 })
 

@@ -932,3 +932,39 @@ test('S3 恢复：marker 坏了只清不清账、无 marker/无指针是 no-op�
   assert.match(brokenWarns[0], /主会话轮换恢复失败/)
 })
 
+// ---------------------------------------------------------------------------
+// G1 S4：动作面的 evaluate 契约「任何异常 → null」（异常发生在 evaluateAndMarkRotation 之外时）
+// ---------------------------------------------------------------------------
+test('S4 createRotationService.evaluate：平台服务取用抛错也只 warn + 返回 null，不写 due、不 reject', async () => {
+  const db = await openTestLedger()
+  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - 30 * 24 * HOUR))
+  const warns = []
+  const logs = []
+  const service = createRotationService({
+    db,
+    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
+    // 惰性 getter：cordis 并发加载期 ctx.get 可能抛，而这行代码在 evaluateAndMarkRotation 的 try 之外。
+    persistence: () => { throw new Error('service boom') },
+    workspaceCwd: 'C:/ws',
+    now: () => NOW,
+    log: (event, detail) => logs.push([event, detail]),
+    onWarn: message => warns.push(message),
+  })
+  assert.equal(await service.evaluate({ mainSessionId: 'session-old', source: 'startup' }), null)
+  assert.equal(warns.length, 1)
+  assert.match(warns[0], /主会话轮换检测失败/)
+  assert.ok(logs.some(([event, detail]) => event === 'main.rotation.failed' && detail.detail.source === 'startup'))
+  // 没有写成 due：面板继续显示「未知」，而不是一条假的「不需要轮换」。
+  assert.equal(readRotationState(db).due, null)
+  // 之后的正常调用照常可用（失败不缓存、不留毒）。
+  const healthy = createRotationService({
+    db,
+    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
+    workspaceCwd: 'C:/ws',
+    now: () => NOW,
+  })
+  const decision = await healthy.evaluate({ mainSessionId: 'session-old', source: 'manual' })
+  assert.equal(decision.due, true)
+  db.close()
+})
+

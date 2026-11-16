@@ -340,11 +340,14 @@ export async function apply(ctx, rawConfig = {}) {
       void ensureDigestFor(agent.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
       queue?.pump()
       // 协调者晚加载：再对一次账，并补发启动时没送出去的孤儿汇总。
+      // S2 检测点② / S4：主会话加载后 **先 reconcile、后刷新 due**（顺序不能反：判定要读对账后的台账）。
+      // 对账失败也照跑检测：一次对账异常不该让 due 永远停在启动时的旧值；两者都只 warn，绝不 reject。
       reconciler?.reconcile({ coordinatorSessionId: id })
+        .catch(error => warnings(`dsh-orchestrator: 重启对账失败：${error?.message ?? error}`))
         .then(() => queue?.pump())
         // S2 检测点②：主会话加载后（reconcile 之后）刷新 due；live 时补测 token/日志体积。
         .then(() => evaluateRotationNow('agent-created', id, agent))
-        .catch(error => warnings(`dsh-orchestrator: 重启对账失败：${error?.message ?? error}`))
+        .catch(error => warnings(`dsh-orchestrator: 主会话加载后处理失败：${error?.message ?? error}`))
     }
   })
   ctx.on?.('agent/status', ({ agent, status }) => {
@@ -482,11 +485,14 @@ export async function apply(ctx, rawConfig = {}) {
   // G1 S2/S3：主会话轮换的「只读采集 + 纯判定 + 写 due 标记」调用点（启动 / 主会话加载）。
   // 检测与动作严格分开：这里只检测，不建会话、不改指针（动作在 mainSession.open() 命中 due 时执行）。
   // 采集失败按「未知」降级（degraded），整体异常 fail-closed；永不 reject，绝不阻断插件加载。
+  // S4：失败只留一条结构化审计日志（main.rotation.failed）+ warn，返回值里的 ok:false 表示「这次没判成」。
   const evaluateRotationNow = async (source, mainSessionId, liveAgent) => {
     try {
       return { ok: true, decision: await rotation.evaluate({ mainSessionId, liveAgent, source }) }
     } catch (error) {
-      warnings(`dsh-orchestrator: 主会话轮换检测失败（本次不轮换）：${error?.message ?? error}`)
+      const reason = `${error?.message ?? error}`
+      warnings(`dsh-orchestrator: 主会话轮换检测失败（本次不轮换）：${reason}`)
+      logger.log('main.rotation.failed', { detail: { source, error: reason } })
       return { ok: false, decision: null }
     }
   }
@@ -606,7 +612,14 @@ export async function apply(ctx, rawConfig = {}) {
   await reconciler.reconcile({ coordinatorSessionId: resolvedCoordinatorId() })
   // G1 S3：启动先把上次崩溃中断的轮换补完（F6 归档空白残留 / F7 补处置旧会话），再检测。
   // 失败只 warn、绝不阻断加载；marker 留着的话下次启动幂等重试（rename 覆盖标题、archive 幂等）。
-  await rotation.recoverPending({ pointer: resolvedCoordinatorId() })
+  // S4：这一层 try/catch 是「失败不阻断主流程」的最后一道——recoverPending 自身不抛，但它不该
+  // 有能力把插件加载卡死（服务取用/时钟/未来改动都在这里兜住）。
+  try {
+    await rotation.recoverPending({ pointer: resolvedCoordinatorId() })
+  } catch (error) {
+    warnings(`dsh-orchestrator: 主会话轮换恢复失败（下次启动重试）：${error?.message ?? error}`)
+    logger.log('main.rotation.recovered.failed', { detail: { error: `${error?.message ?? error}` } })
+  }
   // S2 检测点①：启动对账之后做一次只读采集与判定，把结果写进 settings.main_rotation_due，
   // 让用户「打开主会话之前」就能在面板看到「建议轮换（原因…）」。启动阶段只检测，不建会话。
   await evaluateRotationNow('startup', resolvedCoordinatorId(), resolveCoordinator())

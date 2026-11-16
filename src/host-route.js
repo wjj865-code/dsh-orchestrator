@@ -129,7 +129,18 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
       if (result?.ok === true && result.onboardingError) {
         return json(panelFailure('OPEN_MAIN_FAILED', { reason: result.onboardingError }), 503)
       }
-      if (result?.ok === true) return json({ ok: true, sessionId: result.sessionId, created: result.created === true }, 200)
+      // G1 S4：把「这次打开是不是一次轮换」透传给客户端（S5 的「主会话已轮换」提示直接消费）。
+      // 未轮换时字段固定给出 `rotated:false` / `replaced:null`，客户端不必判 undefined；
+      // 轮换后的「新会话尚未 live」窗口（main-session 的 loading 分支）同样是 rotated:false。
+      if (result?.ok === true) {
+        return json({
+          ok: true,
+          sessionId: result.sessionId,
+          created: result.created === true,
+          rotated: result.rotated === true,
+          replaced: typeof result.replaced === 'string' && result.replaced !== '' ? result.replaced : null,
+        }, 200)
+      }
       return json(panelFailure('OPEN_MAIN_FAILED', { reason: result?.error ?? '创建主会话失败' }), 500)
     }
     if (endpoint === 'session-role') {

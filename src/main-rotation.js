@@ -1046,24 +1046,36 @@ export function createRotationService({
   const resolve = value => (typeof value === 'function' ? value() : value)
   const warn = message => { if (typeof onWarn === 'function') onWarn(message) }
 
-  /** 采集 + 判定 + 写 due（S2 的 evaluateAndMarkRotation），返回 decision；任何异常 → null（调用方视为不轮换）。 */
+  /**
+   * 采集 + 判定 + 写 due（S2 的 evaluateAndMarkRotation），返回 decision；任何异常 → null（调用方视为不轮换）。
+   *
+   * S4：try/catch 是契约的一部分，不是保险丝。平台服务是**惰性 getter**（`ctx.get` 在 cordis 并发加载期
+   * 可能抛或返回奇怪东西），那一步发生在 evaluateAndMarkRotation 之外；漏在这里抛，就会让「打开主会话」
+   * 或启动对账后的检测变成一个用户可见的失败。判定失败的语义只有一个：本次不轮换，主流程照常。
+   */
   const evaluate = async ({ mainSessionId, liveAgent, source = 'open' } = {}) => {
-    const result = await evaluateAndMarkRotation({
-      db,
-      config,
-      persistence: resolve(persistence),
-      tokenMeter: resolve(tokenMeter),
-      mainSessionId,
-      liveAgent,
-      catalog,
-      workspaceCwd: resolve(workspaceCwd),
-      source,
-      now: now(),
-      statFile,
-      log,
-      onWarn: warn,
-    })
-    return result?.decision ?? null
+    try {
+      const result = await evaluateAndMarkRotation({
+        db,
+        config,
+        persistence: resolve(persistence),
+        tokenMeter: resolve(tokenMeter),
+        mainSessionId,
+        liveAgent,
+        catalog,
+        workspaceCwd: resolve(workspaceCwd),
+        source,
+        now: now(),
+        statFile,
+        log,
+        onWarn: warn,
+      })
+      return result?.decision ?? null
+    } catch (error) {
+      warn(`dsh-orchestrator: 主会话轮换检测失败（本次不轮换）：${errorText(error)}`)
+      log('main.rotation.failed', { detail: { source, error: errorText(error) } })
+      return null
+    }
   }
 
   const begin = ({ oldId, newId, at, decision } = {}) =>

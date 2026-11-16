@@ -53,7 +53,7 @@ function fakeGoalService() {
   }
 }
 
-function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, connection, sessionController, workspaces, goals, sessions, workspaceChanges } = {}) {
+function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, connection, sessionController, workspaces, goals, sessions, workspaceChanges, persistence, tokenMeter } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
   const routes = []
@@ -96,6 +96,9 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       if (name === 'sessions') return sessions
       if (name === 'workspaceChanges') return workspaceChanges
       if (name === 'goals') return goals
+      // G1 S4：轮换检测的平台服务（采集层惰性取；缺省 undefined = 降级为「未知」）。
+      if (name === 'sessionPersistence') return persistence
+      if (name === 'tokenMeter') return tokenMeter
       return undefined
     },
     ...(withInject
@@ -1595,6 +1598,158 @@ test('S3：启动 recoverPending 补完上次崩溃中断的轮换（F7：指针
   assert.equal(renamed[0].sessionId, 'session-old')
   assert.match(renamed[0].title, /已退役/)
   db.close()
+  await f.disposers.at(-1)?.()
+}))
+
+// ---------------------------------------------------------------------------
+// G1 S4：启动 / 主会话加载的检测接线
+//   ① 顺序：reconcile 之后才检测（判定读到的是对账后的台账）；
+//   ② 失败不阻断：采集/判定异常只 warn + degraded，插件照常加载、open-main 照常可用；
+//   ③ 打开即轮换：open-main 命中 due → 真轮换（桩替换 sessionController/registry），响应透传 rotated/replaced。
+// ---------------------------------------------------------------------------
+const readSetting = async (dbPath, key) => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const probe = new DatabaseSync(dbPath)
+  try {
+    return probe.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value
+  } finally {
+    probe.close()
+  }
+}
+
+test('S4 接线顺序：启动与 agent/created 都先 reconcile 再检测（判定看到的是已对账的台账）', withHome(async home => {
+  const { openLedger, createTask, transition, setSetting } = await import('../src/ledger.js')
+  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const ghost = createTask(ledger, { brief: { title: '幽灵', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  transition(ledger, ghost.id, 'running', { sessionId: 'c-run', target: 'c-run' })
+  setSetting(ledger, 'main_session_id', 's-1')
+  setSetting(ledger, 'main_session_created_at', String(Date.now() - 30 * 24 * 3_600_000))
+  ledger.close()
+
+  // 采集探针：listSnapshots 是 evaluateAndMarkRotation 里最早的外部调用之一，
+  // 在那一刻读台账 = 「这次判定看到的台账快照」，用它证明 reconcile 已经跑在检测前面
+  // （若顺序颠倒，探针会读到 running 并留下证据）。
+  const statusAtCollect = []
+  const persistence = {
+    async listSnapshots() {
+      const { DatabaseSync } = await import('node:sqlite')
+      const probe = new DatabaseSync(dbPath)
+      try {
+        probe.exec('PRAGMA busy_timeout = 5000')
+        statusAtCollect.push(probe.prepare('SELECT status FROM tasks WHERE id = ?').get(ghost.id)?.status ?? null)
+      } finally {
+        probe.close()
+      }
+      return []
+    },
+    locate: () => ({ path: join(home, 'state', 'orchestrator', 'missing.log') }),
+  }
+  const s1 = makeAgent('s-1')
+  // 平台 tokenMeter：agent/created 时主会话是 live 的，M4 应该真的量到 token（不是降级为 null）。
+  const tokenMeter = { async measure() { return { totalTokens: 123_456 } } }
+  const f = fakeCtx({ agents: [s1], persistence, tokenMeter })
+  await apply(f.ctx, {})
+  assert.deepEqual(statusAtCollect, ['orphaned'], '启动检测必须在 reconcile 标 orphaned 之后跑')
+  const startupDue = JSON.parse(await readSetting(dbPath, 'main_rotation_due'))
+  assert.equal(startupDue.source, 'startup')
+  assert.equal(startupDue.due, true)
+
+  // 检测点②：主会话加载 → 先 reconcile、后刷新 due（来源从 startup 变 agent-created，且带上 token 指标）。
+  f.listeners.get('agent/created')({ agent: s1 })
+  await wait(200)
+  assert.deepEqual(statusAtCollect, ['orphaned', 'orphaned'], 'agent/created 的检测同样在对账之后')
+  const refreshed = JSON.parse(await readSetting(dbPath, 'main_rotation_due'))
+  assert.equal(refreshed.source, 'agent-created')
+  assert.equal(refreshed.due, true)
+  assert.equal(refreshed.metrics.contextTokens, 123_456, 'live 主会话要补测上下文 token')
+  await f.disposers.at(-1)?.()
+}))
+
+test('S4 失败不阻断：轮换检测抛错只 warn（degraded），插件照常加载、open-main 照常 200/rotated:false', withHome(async home => {
+  const { openLedger, setSetting } = await import('../src/ledger.js')
+  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  setSetting(ledger, 'main_session_id', 's-1')
+  ledger.close()
+
+  const s1 = makeAgent('s-1')
+  const f = fakeCtx({ agents: [s1] })
+  // 平台服务取用直接抛：模拟 cordis 并发加载期 ctx.get 抖动（这一行在 evaluateAndMarkRotation 的 try 之外）。
+  const originalGet = f.ctx.get.bind(f.ctx)
+  f.ctx.get = name => {
+    if (name === 'sessionPersistence') throw new Error('persistence boom')
+    return originalGet(name)
+  }
+  await assert.doesNotReject(() => apply(f.ctx, {}), '检测异常不能阻断插件加载')
+  assert.equal(f.registered.length, 14, '工具注册不受影响')
+  assert.ok(f.warnings.some(message => /主会话轮换检测失败/.test(message)), f.warnings.join(' | '))
+  assert.equal(await readSetting(dbPath, 'main_rotation_due'), undefined, '失败不写 due（面板保持「未知」）')
+
+  // open-main：判定再次抛错 → 当「不轮换」，复用现有 live 主会话，响应字段形状不变。
+  const response = await f.routes[0].fetch(new Request('http://x/api/orchestrator', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: 'open-main' }),
+  }))
+  const body = await response.json()
+  assert.equal(response.status, 200)
+  assert.equal(body.ok, true)
+  assert.equal(body.sessionId, 's-1')
+  assert.equal(body.rotated, false)
+  assert.equal(body.replaced, null)
+  assert.ok(f.warnings.filter(message => /主会话轮换检测失败/.test(message)).length >= 2, '启动 + 打开各降级一次')
+  await f.disposers.at(-1)?.()
+}))
+
+test('S4 打开即轮换：open-main 命中 due → 新建主会话/旧会话退役归档，响应透传 rotated/replaced', withHome(async home => {
+  const { openLedger, setSetting } = await import('../src/ledger.js')
+  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  setSetting(ledger, 'main_session_id', 's-1')
+  setSetting(ledger, 'main_session_created_at', String(Date.now() - 30 * 24 * 3_600_000))
+  ledger.close()
+
+  const created = []
+  const renamed = []
+  const archived = []
+  const sessionController = {
+    async create(request) { created.push(request); return { sessionId: 'session-main-2' } },
+    async rename(request) { renamed.push(request) },
+  }
+  const workspaces = {
+    resolveByPath: async () => ({ id: 'ws-1' }),
+    async create() { return { id: 'ws-1' } },
+    async archiveSession(id) { archived.push(id) },
+  }
+  const s1 = makeAgent('s-1')
+  const f = fakeCtx({ agents: [s1], sessionController, workspaces })
+  await apply(f.ctx, {})
+  assert.equal(created.length, 0, '启动只检测：不建会话')
+  assert.equal(await readSetting(dbPath, 'main_session_id'), 's-1', '启动不改指针')
+
+  const response = await f.routes[0].fetch(new Request('http://x/api/orchestrator', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: 'open-main' }),
+  }))
+  const body = await response.json()
+  assert.equal(response.status, 200)
+  assert.deepEqual(body, { ok: true, sessionId: 'session-main-2', created: true, rotated: true, replaced: 's-1' })
+  // 轮换动作：只建一个、新会话叫「主会话」、旧会话改名「已退役 …」并从列表归档。
+  assert.equal(created.length, 1)
+  assert.equal(created[0].agentPreset, 'dsh-orchestrator-coordinator')
+  assert.equal(created[0].workspaceId, 'ws-1')
+  assert.deepEqual(renamed[0], { sessionId: 'session-main-2', title: '主会话' })
+  assert.equal(renamed[1].sessionId, 's-1')
+  assert.match(renamed[1].title, /^主会话（已退役 \d{4}-\d{2}-\d{2} \d{2}:\d{2}）$/)
+  assert.deepEqual(archived, ['s-1'])
+  // 台账收口：指针切到新会话、due 清掉、审计落盘、跳过首介绍。
+  assert.equal(await readSetting(dbPath, 'main_session_id'), 'session-main-2')
+  assert.equal(await readSetting(dbPath, 'main_rotation_due'), undefined)
+  assert.equal(await readSetting(dbPath, 'main_rotation_pending'), undefined)
+  assert.equal(await readSetting(dbPath, 'main_onboarding:session-main-2'), 'sent')
+  const last = JSON.parse(await readSetting(dbPath, 'main_rotation_last'))
+  assert.equal(last.old, 's-1')
+  assert.equal(last.new, 'session-main-2')
+  assert.equal(last.archived, true)
+  assert.deepEqual(last.triggers, ['age'])
   await f.disposers.at(-1)?.()
 }))
 

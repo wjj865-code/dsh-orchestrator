@@ -663,3 +663,30 @@ test('S3 轮换后新会话尚未 live：窗口内再 open 不重复建（不给
   clock += 61_000
   db.close()
 })
+
+// ---------------------------------------------------------------------------
+// G1 S4：接线层「判定异常不阻断打开」
+// ---------------------------------------------------------------------------
+test('S4 判定异常不阻断打开：rotation.evaluate 抛错时当「本次不轮换」，照旧复用原主会话', async () => {
+  const db = await ledger()
+  setMainSessionId(db, 'session-old')
+  setMainSessionPreset(db, PRESET_ID)
+  const f = fake({ live: new Set(['session-old']) })
+  const logs = []
+  const main = createMainSession({
+    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
+    // 判定链路整体抛错（服务取用/台账抖动/未来改动）：open() 不能因此失败。
+    rotation: { async evaluate() { throw new Error('evaluate boom') } },
+    workspacePath: 'C:/ws',
+    log: (event, detail) => logs.push([event, detail]),
+  })
+  const result = await main.open()
+  assert.equal(result.ok, true, '判定异常不是「打开失败」')
+  assert.equal(result.created, false)
+  assert.equal(result.sessionId, 'session-old')
+  assert.equal(result.rotated, undefined)
+  assert.equal(f.created.length, 0, '异常路径不建新会话')
+  assert.deepEqual(f.renamed, [])
+  assert.ok(logs.some(([event, detail]) => event === 'main.rotation.failed' && detail.stage === 'evaluate'))
+  db.close()
+})

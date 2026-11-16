@@ -185,8 +185,14 @@ export function createMainSession({ db, config, agents, sessionController, works
     }
     // G1 S3：命不命中轮换由纯判定决定（S1）+ 采集（S2）；这里只负责「due 就跳过复用、走轮换动作」。
     // 旧主会话不 live 时不做判定：那条路本来就只是隐式重建（计划 §0「重启时算不算已覆盖」）。
+    // S4：判定异常只当「本次不轮换」——一次采集/台账抖动绝不能把「打开主会话」变成失败（下面照走复用分支）。
     if (live !== undefined) {
-      const decision = await resolveRotation()?.evaluate?.({ mainSessionId: id, liveAgent: live, source: 'open' })
+      let decision = null
+      try {
+        decision = await resolveRotation()?.evaluate?.({ mainSessionId: id, liveAgent: live, source: 'open' })
+      } catch (error) {
+        log('main.rotation.failed', { stage: 'evaluate', sessionId: id, error: `${error?.message ?? error}` })
+      }
       if (decision?.due === true) return rotateMain({ oldId: id, decision })
     }
     if (live !== undefined) {
