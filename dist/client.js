@@ -1527,7 +1527,7 @@
     const HeaderButton = ({ openPanel, useMainView }) => {
       const visible = typeof useMainView === "function" ? useMainView((value) => value === true) : false;
       if (visible !== true) return null;
-      return h(
+      return /* @__PURE__ */ h(
         "button",
         {
           type: "button",
@@ -1536,11 +1536,11 @@
           className: "orch-btn orch-btn--entry",
           onClick: openPanel
         },
-        h("span", { className: "orch-entry-mark" }, h(Icon, { name: "menu", size: 12 })),
-        h("span", { className: "orch-entry-label" }, "任务")
+        /* @__PURE__ */ h("span", { className: "orch-entry-mark" }, /* @__PURE__ */ h(Icon, { name: "menu", size: 12 })),
+        /* @__PURE__ */ h("span", { className: "orch-entry-label" }, "任务")
       );
     };
-    const LauncherIcon = () => h("span", { "aria-hidden": true, className: "orch-launcher-icon" }, "◈");
+    const LauncherIcon = () => /* @__PURE__ */ h("span", { "aria-hidden": true, className: "orch-launcher-icon" }, "◈");
     const TaskChipRow = ({ turn, sessionId, useMainView, useChat, chips, openTask, openPanel }) => {
       const isMain = typeof useMainView === "function" ? useMainView((value) => value === true) : false;
       const latest = typeof useChat === "function" ? useChat((snapshot2) => isLatestTurn2(snapshot2, turn)) : false;
@@ -1557,7 +1557,7 @@
       const chipNode = (task) => {
         const visual = chipViewOf2(task.status);
         const tooltip = chipTooltipOf2(task);
-        return h(
+        return /* @__PURE__ */ h(
           "button",
           {
             key: `chip-${task.id}`,
@@ -1569,31 +1569,46 @@
             "aria-label": tooltip,
             onClick: typeof openTask === "function" && typeof task.id === "string" && task.id !== "" ? () => openTask(task.id) : void 0
           },
-          h("span", {
-            className: "orch-taskchip-mark",
-            style: { color: TONE_COLOR2[visual.tone] || TONE_COLOR2.muted },
-            "aria-hidden": "true"
-          }, h(Icon, {
-            name: visual.icon,
-            size: 12,
-            className: visual.className === "" ? void 0 : visual.className
-          })),
-          h("span", { className: "orch-taskchip-title" }, chipVisibleTitle2(task.title))
+          /* @__PURE__ */ h(
+            "span",
+            {
+              className: "orch-taskchip-mark",
+              style: { color: TONE_COLOR2[visual.tone] || TONE_COLOR2.muted },
+              "aria-hidden": "true"
+            },
+            /* @__PURE__ */ h(
+              Icon,
+              {
+                name: visual.icon,
+                size: 12,
+                className: visual.className === "" ? void 0 : visual.className
+              }
+            )
+          ),
+          /* @__PURE__ */ h("span", { className: "orch-taskchip-title" }, chipVisibleTitle2(task.title))
         );
       };
-      const more = view.rest > 0 ? h("button", {
-        key: "chip-more",
-        type: "button",
-        className: "orch-taskchip orch-taskchip--more",
-        title: `还有 ${view.rest} 个关联任务`,
-        "aria-label": `还有 ${view.rest} 个关联任务`,
-        onClick: typeof openPanel === "function" ? openPanel : void 0
-      }, `+${view.rest}`) : null;
-      return h("div", {
-        className: "orch-chips",
-        "data-orch-chip-row": "true",
-        "data-orch-chip-total": String(view.total)
-      }, [...view.chips.map(chipNode), more]);
+      const more = view.rest > 0 ? /* @__PURE__ */ h(
+        "button",
+        {
+          key: "chip-more",
+          type: "button",
+          className: "orch-taskchip orch-taskchip--more",
+          title: `还有 ${view.rest} 个关联任务`,
+          "aria-label": `还有 ${view.rest} 个关联任务`,
+          onClick: typeof openPanel === "function" ? openPanel : void 0
+        },
+        `+${view.rest}`
+      ) : null;
+      return /* @__PURE__ */ h(
+        "div",
+        {
+          className: "orch-chips",
+          "data-orch-chip-row": "true",
+          "data-orch-chip-total": String(view.total)
+        },
+        [...view.chips.map(chipNode), more]
+      );
     };
     const LauncherPanel = ({ openMain, openSession, clearPanel }) => {
       const [error, setError] = React.useState(null);
@@ -1613,19 +1628,7 @@
         started.current = true;
         void run();
       }, [run]);
-      return h(
-        "div",
-        { className: "orch-shell orch-launcher" },
-        h(
-          "div",
-          { className: "orch-launcher-card" },
-          h("span", { className: "orch-brand-mark" }, h(Icon, { name: "sparkle", size: 14 })),
-          h("div", { className: "orch-title" }, error === null ? "正在打开主会话…" : "打开主会话失败"),
-          error === null ? h("div", { className: "orch-skeleton", style: { width: 120 } }) : null,
-          error === null ? null : h("button", { type: "button", className: "orch-btn orch-btn--primary", onClick: run }, "重试")
-        ),
-        error === null ? null : h("div", { style: { width: "min(420px, 100%)" } }, h(Banner, { tone: "error" }, error))
-      );
+      return /* @__PURE__ */ h("div", { className: "orch-shell orch-launcher" }, /* @__PURE__ */ h("div", { className: "orch-launcher-card" }, /* @__PURE__ */ h("span", { className: "orch-brand-mark" }, /* @__PURE__ */ h(Icon, { name: "sparkle", size: 14 })), /* @__PURE__ */ h("div", { className: "orch-title" }, error === null ? "正在打开主会话…" : "打开主会话失败"), error === null ? /* @__PURE__ */ h("div", { className: "orch-skeleton", style: { width: 120 } }) : null, error === null ? null : /* @__PURE__ */ h("button", { type: "button", className: "orch-btn orch-btn--primary", onClick: run }, "重试")), error === null ? null : /* @__PURE__ */ h("div", { style: { width: "min(420px, 100%)" } }, /* @__PURE__ */ h(Banner, { tone: "error" }, error)));
     };
     const TasksPanel = ({ openSession, openArtifactPreview, focus }) => {
       const [snapshot, setSnapshot] = React.useState(null);

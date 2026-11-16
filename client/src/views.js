@@ -21,16 +21,20 @@ export function createViews({
   const HeaderButton = ({ openPanel, useMainView }) => {
     const visible = typeof useMainView === 'function' ? useMainView(value => value === true) : false
     if (visible !== true) return null
-    return h('button', {
-      type: 'button', title: '任务面板', 'aria-label': '打开任务面板',
-      className: 'orch-btn orch-btn--entry', onClick: openPanel,
-    },
-      h('span', { className: 'orch-entry-mark' }, h(Icon, { name: 'menu', size: 12 })),
-      h('span', { className: 'orch-entry-label' }, '任务'))
+    // props 键序/键名与迁移前一致（快照按 props 序列化顺序比对）。
+    return (
+      <button
+        type="button" title="任务面板" aria-label="打开任务面板"
+        className="orch-btn orch-btn--entry" onClick={openPanel}
+      >
+        <span className="orch-entry-mark"><Icon name="menu" size={12} /></span>
+        <span className="orch-entry-label">{'任务'}</span>
+      </button>
+    )
   }
 
   // 侧栏「插件」下方的入口图标（面板行渲染的是这个组件）。
-  const LauncherIcon = () => h('span', { 'aria-hidden': true, className: 'orch-launcher-icon' }, '\u25C8')
+  const LauncherIcon = () => <span aria-hidden={true} className="orch-launcher-icon">{'\u25C8'}</span>
 
   // 回复底部「关联任务」chip 行：挂在 ui-chat 官方 conversation.chat.turnTail 列表槽位里，
   // 只在「主会话 + 最新一轮已完成回复」尾部渲染（历史回复不带 chip，子会话一个也收不到）。
@@ -57,45 +61,55 @@ export function createViews({
     const chipNode = task => {
       const visual = chipViewOf(task.status)
       const tooltip = chipTooltipOf(task)
-      return h('button', {
-        key: `chip-${task.id}`,
-        type: 'button',
-        className: 'orch-taskchip',
-        'data-state': visual.state,
-        'data-task-id': task.id,
-        title: tooltip,
-        'aria-label': tooltip,
-        onClick: typeof openTask === 'function' && typeof task.id === 'string' && task.id !== ''
-          ? () => openTask(task.id)
-          : undefined,
-      },
-        h('span', {
-          className: 'orch-taskchip-mark',
-          style: { color: TONE_COLOR[visual.tone] || TONE_COLOR.muted },
-          'aria-hidden': 'true',
-        }, h(Icon, {
-          name: visual.icon,
-          size: 12,
-          className: visual.className === '' ? undefined : visual.className,
-        })),
-        h('span', { className: 'orch-taskchip-title' }, chipVisibleTitle(task.title)),
+      return (
+        <button
+          key={`chip-${task.id}`}
+          type="button"
+          className="orch-taskchip"
+          data-state={visual.state}
+          data-task-id={task.id}
+          title={tooltip}
+          aria-label={tooltip}
+          onClick={typeof openTask === 'function' && typeof task.id === 'string' && task.id !== ''
+            ? () => openTask(task.id)
+            : undefined}
+        >
+          <span
+            className="orch-taskchip-mark"
+            style={{ color: TONE_COLOR[visual.tone] || TONE_COLOR.muted }}
+            aria-hidden="true"
+          >
+            <Icon
+              name={visual.icon}
+              size={12}
+              className={visual.className === '' ? undefined : visual.className}
+            />
+          </span>
+          <span className="orch-taskchip-title">{chipVisibleTitle(task.title)}</span>
+        </button>
       )
     }
     const more = view.rest > 0
-      ? h('button', {
-        key: 'chip-more',
-        type: 'button',
-        className: 'orch-taskchip orch-taskchip--more',
-        title: `还有 ${view.rest} 个关联任务`,
-        'aria-label': `还有 ${view.rest} 个关联任务`,
-        onClick: typeof openPanel === 'function' ? openPanel : undefined,
-      }, `+${view.rest}`)
+      ? (
+          <button
+            key="chip-more"
+            type="button"
+            className="orch-taskchip orch-taskchip--more"
+            title={`还有 ${view.rest} 个关联任务`}
+            aria-label={`还有 ${view.rest} 个关联任务`}
+            onClick={typeof openPanel === 'function' ? openPanel : undefined}
+          >{`+${view.rest}`}
+          </button>
+        )
       : null
-    return h('div', {
-      className: 'orch-chips',
-      'data-orch-chip-row': 'true',
-      'data-orch-chip-total': String(view.total),
-    }, [...view.chips.map(chipNode), more])
+    return (
+      <div
+        className="orch-chips"
+        data-orch-chip-row="true"
+        data-orch-chip-total={String(view.total)}
+      >{[...view.chips.map(chipNode), more]}
+      </div>
+    )
   }
 
   // 启动器面板：侧栏条目点击 → 选到这个面板 → 挂载即跑现有 open-main → 跳到主会话 → 清空面板回对话。
@@ -117,18 +131,20 @@ export function createViews({
       started.current = true
       void run()
     }, [run])
-    return h('div', { className: 'orch-shell orch-launcher' },
-      h('div', { className: 'orch-launcher-card' },
-        h('span', { className: 'orch-brand-mark' }, h(Icon, { name: 'sparkle', size: 14 })),
-        h('div', { className: 'orch-title' }, error === null ? '正在打开主会话…' : '打开主会话失败'),
-        error === null
-          ? h('div', { className: 'orch-skeleton', style: { width: 120 } })
-          : null,
-        error === null
-          ? null
-          : h('button', { type: 'button', className: 'orch-btn orch-btn--primary', onClick: run }, '重试'),
-      ),
-      error === null ? null : h('div', { style: { width: 'min(420px, 100%)' } }, h(Banner, { tone: 'error' }, error)),
+    return (
+      <div className="orch-shell orch-launcher">
+        <div className="orch-launcher-card">
+          <span className="orch-brand-mark"><Icon name="sparkle" size={14} /></span>
+          <div className="orch-title">{error === null ? '正在打开主会话…' : '打开主会话失败'}</div>
+          {error === null ? <div className="orch-skeleton" style={{ width: 120 }} /> : null}
+          {error === null ? null : (
+            <button type="button" className="orch-btn orch-btn--primary" onClick={run}>{'重试'}</button>
+          )}
+        </div>
+        {error === null ? null : (
+          <div style={{ width: 'min(420px, 100%)' }}><Banner tone="error">{error}</Banner></div>
+        )}
+      </div>
     )
   }
 
