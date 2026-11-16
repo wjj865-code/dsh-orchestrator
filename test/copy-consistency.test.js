@@ -45,6 +45,30 @@ test('协调者 policy：done 后默认保持待确认，不主动 task_close', 
   assertNoConflicts('COORDINATOR_POLICY', policy)
 })
 
+test('协调者 policy：待确认要主动 ask_user_question 问用户（任务名 + 要点 + 确认 / 要改）', () => {
+  const policy = renderCoordinatorPolicy({})
+  assert.match(policy, /ask_user_question/)
+  assert.match(policy, /待确认要主动问用户，不许只挂台账/)
+  assert.match(policy, /任务名/)
+  assert.match(policy, /一句结果要点/)
+  assert.match(policy, /确认 \/ 要改？/)
+  // 多个待确认合并成一条清单，而不是连发多条或只报数量。
+  assert.match(policy, /合并成一条清单一次问/)
+  // 不许等用户自己去翻面板 / 台账。
+  assert.match(policy, /不要等用户自己去翻面板或 task_list/)
+})
+
+test('协调者 policy：主动提问与「默认保持待确认、不主动关闭」不矛盾', () => {
+  const policy = renderCoordinatorPolicy({})
+  assert.match(policy, /提问不等于关闭/)
+  assert.match(policy, /问完任务依旧是待确认，默认不 task_close/)
+  // 两段口径必须能同时读到：保持待确认那条还在。
+  assert.match(policy, /默认\*\*保持待确认、不要主动 task_close\*\*/)
+  // 提问不是替用户拍板：没回答就走超时，不做默认确认。
+  assert.match(policy, /不要替用户默认确认/)
+  assertNoConflicts('COORDINATOR_POLICY', policy)
+})
+
 test('task_detail 对子会话讲清：done 只是交付，不是任务结束', () => {
   const detail = renderTaskDetail({
     id: 't-1',
