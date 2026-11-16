@@ -831,138 +831,187 @@ export function createViews({
     const previewBlock = () => {
       if (preview === null) return null
       if (preview.loading === true) {
-        return h('div', { className: 'orch-preview' },
-          h('div', { className: 'orch-muted' }, '加载预览…'),
-          h('div', { className: 'orch-skeleton', style: { width: '72%' } }),
+        return (
+          <div className="orch-preview">
+            <div className="orch-muted">{'加载预览…'}</div>
+            <div className="orch-skeleton" style={{ width: '72%' }} />
+          </div>
         )
       }
       if (preview.error !== null) {
-        return h('div', { className: 'orch-preview' }, h(Banner, { tone: 'error' }, `预览失败：${preview.error}`))
+        return (
+          <div className="orch-preview">
+            <Banner tone="error">{`预览失败：${preview.error}`}</Banner>
+          </div>
+        )
       }
       const data = preview.data || {}
       if (data.kind === 'text') {
-        return h('div', { className: 'orch-preview' },
-          h('div', { className: 'orch-muted' }, `${data.size ?? 0} 字节${data.truncated === true ? '（仅显示前 64 KiB）' : ''}`),
-          h('pre', { className: 'orch-pre' }, data.text === '' ? '（空文件）' : data.text),
+        return (
+          <div className="orch-preview">
+            <div className="orch-muted">{`${data.size ?? 0} 字节${data.truncated === true ? '（仅显示前 64 KiB）' : ''}`}</div>
+            <pre className="orch-pre">{data.text === '' ? '（空文件）' : data.text}</pre>
+          </div>
         )
       }
       if (data.kind === 'directory') {
-        return h('div', { className: 'orch-preview' },
-          h(Banner, { tone: 'notice', icon: 'folder' }, '这是目录，不能预览内容；复制路径后在文件管理器打开。'))
+        return (
+          <div className="orch-preview">
+            <Banner tone="notice" icon="folder">{'这是目录，不能预览内容；复制路径后在文件管理器打开。'}</Banner>
+          </div>
+        )
       }
       if (data.kind === 'binary') {
-        return h('div', { className: 'orch-preview' },
-          h(Banner, { tone: 'notice', icon: 'alert' }, '二进制文件，不能按文本预览；复制路径后在本地打开。'))
+        return (
+          <div className="orch-preview">
+            <Banner tone="notice" icon="alert">{'二进制文件，不能按文本预览；复制路径后在本地打开。'}</Banner>
+          </div>
+        )
       }
-      return h('div', { className: 'orch-preview' }, h('div', { className: 'orch-muted' }, '没有可预览的内容。'))
+      return (
+        <div className="orch-preview">
+          <div className="orch-muted">{'没有可预览的内容。'}</div>
+        </div>
+      )
     }
 
     const artifactRow = item => {
       const key = `${item.taskId}:${item.path}`
       const tone = item.exists === false ? TONE_COLOR.bad : TONE_COLOR.good
-      return h('div', { key, className: 'orch-artifact' },
-        h('span', { className: 'orch-dot', style: { background: tone, color: tone } }),
-        h('span', { className: 'orch-artifact-path', title: item.path }, item.path),
-        item.label ? h('span', { className: 'orch-muted' }, item.label) : null,
-        item.exists === false ? h(Chip, { tone: 'bad' }, '（未找到）') : null,
-        h(Chip, { title: '来源任务' }, `${item.title || item.taskId}${item.status ? ` · ${STATUS_LABEL[item.status] || item.status}` : ''}`),
-        h('span', { className: 'orch-msg-at' }, timeLabel(item.at)),
-        h('button', {
-          type: 'button', className: 'orch-btn orch-btn--sm',
-          disabled: item.exists === false,
-          // 产物库这一行本身能渲染行内预览，所以右侧栏不可用时退到这里（inlineFallback）。
-          onClick: () => void previewInSidebar(item.taskId, item.path, true),
-        }, '预览'),
-        h('button', { type: 'button', className: 'orch-btn orch-btn--sm', onClick: () => void copyPath(item.path) }, '复制路径'),
-        item.childSessionId
-          ? h('button', { type: 'button', className: 'orch-btn orch-btn--sm', onClick: () => open(item.childSessionId) }, '打开子会话')
-          : null,
-        h('button', {
-          type: 'button', className: 'orch-btn orch-btn--sm',
-          onClick: () => void openDetail(item.taskId),
-        }, '详情'),
-        // 回退：右侧栏不可用时 previewInSidebar 会退到行内预览，这里渲染它的内容。
-        preview !== null && preview.key === key ? previewBlock() : null,
+      return (
+        <div key={key} className="orch-artifact">
+          <span className="orch-dot" style={{ background: tone, color: tone }} />
+          <span className="orch-artifact-path" title={item.path}>{item.path}</span>
+          {item.label ? <span className="orch-muted">{item.label}</span> : null}
+          {item.exists === false ? <Chip tone="bad">{'（未找到）'}</Chip> : null}
+          <Chip title="来源任务">{`${item.title || item.taskId}${item.status ? ` · ${STATUS_LABEL[item.status] || item.status}` : ''}`}</Chip>
+          <span className="orch-msg-at">{timeLabel(item.at)}</span>
+          {/* 产物库这一行本身能渲染行内预览，所以右侧栏不可用时退到这里（inlineFallback）。 */}
+          <button
+            type="button" className="orch-btn orch-btn--sm"
+            disabled={item.exists === false}
+            onClick={() => void previewInSidebar(item.taskId, item.path, true)}
+          >{'预览'}</button>
+          <button
+            type="button" className="orch-btn orch-btn--sm"
+            onClick={() => void copyPath(item.path)}
+          >{'复制路径'}</button>
+          {item.childSessionId
+            ? (
+                <button
+                  type="button" className="orch-btn orch-btn--sm"
+                  onClick={() => open(item.childSessionId)}
+                >{'打开子会话'}</button>
+              )
+            : null}
+          <button
+            type="button" className="orch-btn orch-btn--sm"
+            onClick={() => void openDetail(item.taskId)}
+          >{'详情'}</button>
+          {/* 回退：右侧栏不可用时 previewInSidebar 会退到行内预览，这里渲染它的内容。 */}
+          {preview !== null && preview.key === key ? previewBlock() : null}
+        </div>
       )
     }
 
     const artifactView = () => {
       if (artifactData === null) {
         if (artifactError !== null) {
-          return h(Banner, {
-            tone: 'error', icon: 'alert',
-            action: h('button', { type: 'button', className: 'orch-btn orch-btn--sm', onClick: () => void loadArtifacts(undefined) }, '重新加载'),
-          }, `产物加载失败：${artifactError}`)
+          return (
+            <Banner
+              tone="error" icon="alert"
+              action={
+                <button
+                  type="button" className="orch-btn orch-btn--sm"
+                  onClick={() => void loadArtifacts(undefined)}
+                >{'重新加载'}</button>
+              }
+            >{`产物加载失败：${artifactError}`}</Banner>
+          )
         }
         return artifactLoading
-          ? h(SkeletonList, { rows: 3 })
-          : h(EmptyState, { icon: 'folder', title: '产物库还没加载', hint: '点「刷新」重新拉取产物库。' })
+          ? <SkeletonList rows={3} />
+          : <EmptyState icon="folder" title="产物库还没加载" hint="点「刷新」重新拉取产物库。" />
       }
-      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        h('div', { className: 'orch-card-meta' },
-          h('span', { className: 'orch-muted' },
-            `共 ${artifactItems.length} 个产物${artifactError !== null ? '（刷新失败，显示上次结果）' : ''}`),
-          h('div', { className: 'orch-seg' },
-            h('button', {
-              type: 'button', className: 'orch-seg-item',
-              'data-active': artifactGroup === 'project' ? 'true' : 'false',
-              onClick: () => setArtifactGroup('project'),
-            }, '按项目'),
-            h('button', {
-              type: 'button', className: 'orch-seg-item',
-              'data-active': artifactGroup === 'date' ? 'true' : 'false',
-              onClick: () => setArtifactGroup('date'),
-            }, '按日期'),
-          ),
-        ),
-        artifactError !== null ? h(Banner, { tone: 'error', icon: 'alert' }, `产物加载失败：${artifactError}`) : null,
-        artifactItems.length === 0
-          ? h(EmptyState, {
-            icon: 'folder',
-            title: '还没有产物',
-            hint: '还没有产物。任务 done 时会自动收集改动文件；也可以显式传 task_report.artifacts。',
-          })
-          : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
-            groupArtifacts(artifactItems, artifactGroup).map(([name, rows]) => h('section', {
-              key: `${artifactGroup}:${name}`, className: 'orch-group',
-            },
-              h('div', { className: 'orch-group-head' },
-                h('span', { className: 'orch-group-title' }, name),
-                h('span', { className: 'orch-muted' }, `${rows.length} 个`),
-              ),
-              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, rows.map(artifactRow)),
-            ))),
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="orch-card-meta">
+            <span className="orch-muted">{`共 ${artifactItems.length} 个产物${artifactError !== null ? '（刷新失败，显示上次结果）' : ''}`}</span>
+            <div className="orch-seg">
+              <button
+                type="button" className="orch-seg-item"
+                data-active={artifactGroup === 'project' ? 'true' : 'false'}
+                onClick={() => setArtifactGroup('project')}
+              >{'按项目'}</button>
+              <button
+                type="button" className="orch-seg-item"
+                data-active={artifactGroup === 'date' ? 'true' : 'false'}
+                onClick={() => setArtifactGroup('date')}
+              >{'按日期'}</button>
+            </div>
+          </div>
+          {artifactError !== null ? <Banner tone="error" icon="alert">{`产物加载失败：${artifactError}`}</Banner> : null}
+          {artifactItems.length === 0
+            ? (
+                <EmptyState
+                  icon="folder"
+                  title="还没有产物"
+                  hint="还没有产物。任务 done 时会自动收集改动文件；也可以显式传 task_report.artifacts。"
+                />
+              )
+            : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {groupArtifacts(artifactItems, artifactGroup).map(([name, rows]) => (
+                    <section key={`${artifactGroup}:${name}`} className="orch-group">
+                      <div className="orch-group-head">
+                        <span className="orch-group-title">{name}</span>
+                        <span className="orch-muted">{`${rows.length} 个`}</span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>{rows.map(artifactRow)}</div>
+                    </section>
+                  ))}
+                </div>
+              )}
+        </div>
       )
     }
 
     // 列表区：骨架（首帧）→ 空态 → 任务卡。
     const listView = () => {
       if (snapshot === null) {
-        if (snapshotError === null) return h(SkeletonList, { rows: 5 })
-        return h(EmptyState, {
-          icon: 'alert',
-          title: '台账还没就绪',
-          hint: '快照请求失败，点上面的「重试」重新拉取；也可以直接「打开主会话」进去看看。',
-        })
+        if (snapshotError === null) return <SkeletonList rows={5} />
+        return (
+          <EmptyState
+            icon="alert"
+            title="台账还没就绪"
+            hint="快照请求失败，点上面的「重试」重新拉取；也可以直接「打开主会话」进去看看。"
+          />
+        )
       }
       if (visible.length === 0) {
         return tasks.length === 0
-          ? h(EmptyState, {
-            icon: 'inbox',
-            title: '还没有任务',
-            hint: '在主会话里用 task_create 建第一个任务；面板会实时同步状态、依赖和产物。',
-          })
-          : h(EmptyState, {
-            icon: 'search',
-            title: '没有匹配的任务',
-            hint: '换个筛选项，或清空搜索框再试。',
-            action: h('button', {
-              type: 'button', className: 'orch-btn orch-btn--ghost orch-btn--sm',
-              onClick: () => { setFilter('all'); setQuery('') },
-            }, '清空筛选'),
-          })
+          ? (
+              <EmptyState
+                icon="inbox"
+                title="还没有任务"
+                hint="在主会话里用 task_create 建第一个任务；面板会实时同步状态、依赖和产物。"
+              />
+            )
+          : (
+              <EmptyState
+                icon="search"
+                title="没有匹配的任务"
+                hint="换个筛选项，或清空搜索框再试。"
+                action={
+                  <button
+                    type="button" className="orch-btn orch-btn--ghost orch-btn--sm"
+                    onClick={() => { setFilter('all'); setQuery('') }}
+                  >{'清空筛选'}</button>
+                }
+              />
+            )
       }
-      return h('div', { className: 'orch-list' }, visible.map(task => renderTask(task, tasks)))
+      return <div className="orch-list">{visible.map(task => renderTask(task, tasks))}</div>
     }
 
     // ---- 第三段：右侧抽屉详情 ----
