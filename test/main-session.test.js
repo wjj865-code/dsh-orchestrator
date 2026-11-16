@@ -424,12 +424,11 @@ test('S3 轮换：命中 due 时 create → 切指针 → 跳过 onboarding → 
   // 跳过首次介绍 + 工作区索引任务：落 sent，而不是 create 分支的 pending。
   assert.equal(getSetting(db, onboardingKey('session-main-new')), 'sent')
   assert.equal(getSetting(db, onboardingKey('session-old')), undefined)
-  // 时间戳 / 审计 / marker / due 收口
+  // 时间戳 / 审计 / marker 收口
   const state = readRotationState(db)
   assert.ok(state.createdAt > Date.now() - 10_000, 'main_session_created_at 指向新会话起点')
   assert.ok(state.rotatedAt > Date.now() - 10_000, 'main_rotation_at 用于冷却期')
   assert.equal(state.pending, null, 'marker 已清')
-  assert.equal(state.due, null, '触发这次轮换的 due 已兑现，banner 不该继续挂')
   assert.equal(state.last.old, 'session-old')
   assert.equal(state.last.new, 'session-main-new')
   assert.equal(state.last.renamed, true)
@@ -460,7 +459,7 @@ test('S3 未命中 due：健康主会话直接复用，不 create、不改名、
   assert.equal(f.created.length, 0)
   assert.deepEqual(f.renamed, [])
   assert.deepEqual(archived, [])
-  // 判定结果照样落 due（仅供面板解释「为什么没换」），动作面零变化。
+  // 判定只在打开时算一次、且只读：不留审计、不留 marker。
   assert.equal(readRotationState(db).last, null)
   assert.equal(readRotationState(db).pending, null)
   db.close()
@@ -474,7 +473,8 @@ test('S3 保护沿用 S1：龄命中但有活跃任务时不轮换，照旧复�
   createTask(db, { brief: { title: '活跃任务', goal: 'g', acceptance: ['a'] }, coordinatorSession: 'session-old' })
   const f = fake({ live: new Set(['session-old']) })
   const archived = []
-  const rotation = rotationFor(db, f, { archived })
+  const logs = []
+  const rotation = rotationFor(db, f, { archived, log: (event, detail) => logs.push([event, detail]) })
   const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation, workspacePath: 'C:/ws' })
   const result = await main.open()
   assert.equal(result.ok, true)
@@ -483,8 +483,10 @@ test('S3 保护沿用 S1：龄命中但有活跃任务时不轮换，照旧复�
   assert.equal(f.created.length, 0)
   assert.deepEqual(f.renamed, [])
   assert.deepEqual(archived, [])
-  // 判定结果看得见「为什么没换」：活跃任务。
-  assert.deepEqual(readRotationState(db).due.blockedBy.map(item => item.code), ['active-tasks'])
+  // 判定结果看得见「为什么没换」：活跃任务（main.rotation.decided 审计日志）。
+  const decided = logs.find(([event]) => event === 'main.rotation.decided')
+  assert.deepEqual(decided[1].detail.blockedBy, ['active-tasks'])
+  assert.equal(decided[1].detail.due, false)
   db.close()
 })
 
@@ -661,32 +663,5 @@ test('S3 轮换后新会话尚未 live：窗口内再 open 不重复建（不给
   assert.deepEqual(archived, ['session-old'])
   // 窗口过期后回到既有行为（不 live 就重建），这里只断言窗口内的保护。
   clock += 61_000
-  db.close()
-})
-
-// ---------------------------------------------------------------------------
-// G1 S4：接线层「判定异常不阻断打开」
-// ---------------------------------------------------------------------------
-test('S4 判定异常不阻断打开：rotation.evaluate 抛错时当「本次不轮换」，照旧复用原主会话', async () => {
-  const db = await ledger()
-  setMainSessionId(db, 'session-old')
-  setMainSessionPreset(db, PRESET_ID)
-  const f = fake({ live: new Set(['session-old']) })
-  const logs = []
-  const main = createMainSession({
-    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
-    // 判定链路整体抛错（服务取用/台账抖动/未来改动）：open() 不能因此失败。
-    rotation: { async evaluate() { throw new Error('evaluate boom') } },
-    workspacePath: 'C:/ws',
-    log: (event, detail) => logs.push([event, detail]),
-  })
-  const result = await main.open()
-  assert.equal(result.ok, true, '判定异常不是「打开失败」')
-  assert.equal(result.created, false)
-  assert.equal(result.sessionId, 'session-old')
-  assert.equal(result.rotated, undefined)
-  assert.equal(f.created.length, 0, '异常路径不建新会话')
-  assert.deepEqual(f.renamed, [])
-  assert.ok(logs.some(([event, detail]) => event === 'main.rotation.failed' && detail.stage === 'evaluate'))
   db.close()
 })

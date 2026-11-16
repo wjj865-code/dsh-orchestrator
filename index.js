@@ -14,7 +14,7 @@ import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
 import { createQueue } from './src/queue.js'
 import { createStartupReconciler } from './src/reconcile.js'
-import { createRotationService, rotationStatus as readRotationStatus } from './src/main-rotation.js'
+import { createRotationService } from './src/main-rotation.js'
 import { createIdleWatchdog } from './src/watchdog.js'
 import { createGoalBridge } from './src/goal.js'
 import { createKeepAlive } from './src/keepalive.js'
@@ -340,14 +340,9 @@ export async function apply(ctx, rawConfig = {}) {
       void ensureDigestFor(agent.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
       queue?.pump()
       // 协调者晚加载：再对一次账，并补发启动时没送出去的孤儿汇总。
-      // S2 检测点② / S4：主会话加载后 **先 reconcile、后刷新 due**（顺序不能反：判定要读对账后的台账）。
-      // 对账失败也照跑检测：一次对账异常不该让 due 永远停在启动时的旧值；两者都只 warn，绝不 reject。
       reconciler?.reconcile({ coordinatorSessionId: id })
-        .catch(error => warnings(`dsh-orchestrator: 重启对账失败：${error?.message ?? error}`))
         .then(() => queue?.pump())
-        // S2 检测点②：主会话加载后（reconcile 之后）刷新 due；live 时补测 token/日志体积。
-        .then(() => evaluateRotationNow('agent-created', id, agent))
-        .catch(error => warnings(`dsh-orchestrator: 主会话加载后处理失败：${error?.message ?? error}`))
+        .catch(error => warnings(`dsh-orchestrator: 重启对账失败：${error?.message ?? error}`))
     }
   })
   ctx.on?.('agent/status', ({ agent, status }) => {
@@ -482,21 +477,6 @@ export async function apply(ctx, rawConfig = {}) {
     onOrphaned: task => { void goalBridge.clear(task.id, task.session_id) },
   })
 
-  // G1 S2/S3：主会话轮换的「只读采集 + 纯判定 + 写 due 标记」调用点（启动 / 主会话加载）。
-  // 检测与动作严格分开：这里只检测，不建会话、不改指针（动作在 mainSession.open() 命中 due 时执行）。
-  // 采集失败按「未知」降级（degraded），整体异常 fail-closed；永不 reject，绝不阻断插件加载。
-  // S4：失败只留一条结构化审计日志（main.rotation.failed）+ warn，返回值里的 ok:false 表示「这次没判成」。
-  const evaluateRotationNow = async (source, mainSessionId, liveAgent) => {
-    try {
-      return { ok: true, decision: await rotation.evaluate({ mainSessionId, liveAgent, source }) }
-    } catch (error) {
-      const reason = `${error?.message ?? error}`
-      warnings(`dsh-orchestrator: 主会话轮换检测失败（本次不轮换）：${reason}`)
-      logger.log('main.rotation.failed', { detail: { source, error: reason } })
-      return { ok: false, decision: null }
-    }
-  }
-
   // 自动 done 的产物补齐（D5）：必须在结算通知发出**之前**跑完，否则「子会话自然结束 → 结算自动判 done」
   // 这条最常见收场路径的通知里永远没有产物，也就没有 present 交付指令（reports/t6.1-present.md §5）。
   // 返回补齐后的台账行给通知渲染；收集失败只告警，不影响已落库的终态。
@@ -610,19 +590,10 @@ export async function apply(ctx, rawConfig = {}) {
   // 启动对账（S2）：running 无活跃子会话 / catalog 查不到 → orphaned，并汇总上报一次；
   // 此时协调者可能还没加载，汇总会保留到 agent/created 再补发。
   await reconciler.reconcile({ coordinatorSessionId: resolvedCoordinatorId() })
-  // G1 S3：启动先把上次崩溃中断的轮换补完（F6 归档空白残留 / F7 补处置旧会话），再检测。
+  // G1 S3：启动先把上次崩溃中断的轮换补完（F6 归档空白残留 / F7 补处置旧会话）。
   // 失败只 warn、绝不阻断加载；marker 留着的话下次启动幂等重试（rename 覆盖标题、archive 幂等）。
-  // S4：这一层 try/catch 是「失败不阻断主流程」的最后一道——recoverPending 自身不抛，但它不该
-  // 有能力把插件加载卡死（服务取用/时钟/未来改动都在这里兜住）。
-  try {
-    await rotation.recoverPending({ pointer: resolvedCoordinatorId() })
-  } catch (error) {
-    warnings(`dsh-orchestrator: 主会话轮换恢复失败（下次启动重试）：${error?.message ?? error}`)
-    logger.log('main.rotation.recovered.failed', { detail: { error: `${error?.message ?? error}` } })
-  }
-  // S2 检测点①：启动对账之后做一次只读采集与判定，把结果写进 settings.main_rotation_due，
-  // 让用户「打开主会话之前」就能在面板看到「建议轮换（原因…）」。启动阶段只检测，不建会话。
-  await evaluateRotationNow('startup', resolvedCoordinatorId(), resolveCoordinator())
+  // 判定不在这里做：该不该换只在用户「打开主会话」那一次算（main-session → rotation.evaluate）。
+  await rotation.recoverPending({ pointer: resolvedCoordinatorId() })
 
   // 看门狗放在启动对账之后：先让 S2 把「进程重启后没人在跑」的 running 标 orphaned，
   // 剩下的 running 才交给看门狗判断是否空闲（避免同一任务既报丢失又报卡住）。
@@ -700,8 +671,6 @@ export async function apply(ctx, rawConfig = {}) {
       db,
       coordinatorStatus,
       panel,
-      // S2：面板只读看到轮换判定结果（读 settings.main_rotation_due），不触发任何采集/写入。
-      rotationStatus: () => readRotationStatus(db),
       openMain: async () => {
         const result = await mainSession.open()
         if (result?.ok === true && typeof result.sessionId === 'string') {

@@ -36,7 +36,7 @@ test('snapshot 返回任务安全字段与协调者状态', async () => {
   assert.equal(response.status, 200)
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.deepEqual(body.mainSession, { id: 's-1', live: true, rotation: null })
+  assert.deepEqual(body.mainSession, { id: 's-1', live: true })
   assert.equal(body.tasks.length, 1)
   const row = body.tasks[0]
   assert.equal(row.id, task.id)
@@ -267,7 +267,7 @@ test('snapshot 带 mainSession 与 targetDir；open-main 只建主会话', async
   })
   const before = counts(db)
   const snapshot = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  assert.deepEqual(snapshot.mainSession, { id: 's', live: true, rotation: null })
+  assert.deepEqual(snapshot.mainSession, { id: 's', live: true })
   assert.equal(snapshot.tasks[0].targetDir, 'C:/work')
   assert.deepEqual(counts(db), before, 'snapshot 不应写库')
   const opened = await handler(request({ endpoint: 'open-main' }))
@@ -275,75 +275,7 @@ test('snapshot 带 mainSession 与 targetDir；open-main 只建主会话', async
   assert.equal(opened.status, 200)
   assert.equal(body.sessionId, 'session-main')
   assert.equal(body.created, false)
-  // S4：形状固定的轮换字段（未轮换时 false/null，客户端不用判 undefined）。
-  assert.equal(body.rotated, false)
-  assert.equal(body.replaced, null)
   assert.deepEqual(calls, ['open'])
-  db.close()
-})
-
-test('S4 open-main 透传 rotated/replaced：轮换时给出旧主会话 id，非字符串 replaced 归一为 null', async () => {
-  const db = await openLedger(tempDir())
-  const rotated = createHostRoute({
-    db,
-    openMain: async () => ({ ok: true, sessionId: 'session-new', created: true, rotated: true, replaced: 'session-old' }),
-  })
-  const body = await (await rotated(request({ endpoint: 'open-main' }))).json()
-  assert.deepEqual(body, { ok: true, sessionId: 'session-new', created: true, rotated: true, replaced: 'session-old' })
-
-  // 客户端契约：字段永远出现，未轮换/false 值不得变成 undefined 或旧 id 残留。
-  const reused = createHostRoute({ db, openMain: async () => ({ ok: true, sessionId: 's', created: true, replaced: undefined }) })
-  const reusedBody = await (await reused(request({ endpoint: 'open-main' }))).json()
-  assert.deepEqual(reusedBody, { ok: true, sessionId: 's', created: true, rotated: false, replaced: null })
-  db.close()
-})
-
-test('S2 snapshot 暴露 mainSession.rotation：只读注入、零采集、零写入', async () => {
-  const db = await openLedger(tempDir())
-  let calls = 0
-  const rotation = {
-    due: true,
-    reasons: [{ code: 'tasks', text: '自上次轮换以来新增子任务 120 个（阈值 120）', value: 120, threshold: 120 }],
-    metrics: {
-      tasksSince: 120, sessionsSince: null, mainLogMiB: null,
-      contextTokens: null, ageHours: 40, diskMiB: null, hoursSinceRotation: null, idleMinutes: null,
-    },
-    evaluatedAt: 1_760_000_000_000,
-    lastRotatedAt: null,
-  }
-  const handler = createHostRoute({
-    db,
-    coordinatorStatus: () => ({ id: 's', live: true }),
-    // 注入读取器：路由只允许调它（点查 settings），不允许在 2s 轮询路径上采集磁盘/token。
-    rotationStatus: () => { calls += 1; return rotation },
-  })
-  const before = counts(db)
-  const first = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  const second = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  assert.deepEqual(first.mainSession.rotation, rotation)
-  assert.deepEqual(second.mainSession.rotation, rotation)
-  assert.deepEqual(Object.keys(first.mainSession).sort(), ['id', 'live', 'rotation'])
-  assert.equal(calls, 2, '每次快照只读一次，不触发采集')
-  assert.deepEqual(counts(db), before, 'snapshot 仍零写入')
-  db.close()
-})
-
-test('S2 rotationStatus 抛错/返回 undefined 时降级为 null，不拖垮 snapshot', async () => {
-  const db = await openLedger(tempDir())
-  const throwing = createHostRoute({
-    db,
-    coordinatorStatus: () => ({ id: 's', live: true }),
-    rotationStatus: () => { throw new Error('settings boom') },
-  })
-  const body = await (await throwing(request({ endpoint: 'snapshot' }))).json()
-  assert.equal(body.ok, true)
-  assert.equal(body.mainSession.rotation, null)
-  const empty = createHostRoute({
-    db,
-    coordinatorStatus: () => ({ id: 's', live: true }),
-    rotationStatus: () => undefined,
-  })
-  assert.equal((await (await empty(request({ endpoint: 'snapshot' }))).json()).mainSession.rotation, null)
   db.close()
 })
 

@@ -1,16 +1,16 @@
 // S1 判定内核单测：11 个配置键 + evaluateRotation 纯函数（M1–M6 因子、P1–P10 保护、冷却/最小龄）。
-// S2 采集层单测：M1–M6 采集/降级、settings 键读写、due 标记、snapshot 只读形状、pending 只读判定。
+// S2 采集层单测：M1–M6 采集/降级、settings 键读写、pending 只读判定。
 // S3 动作台账面单测：marker/时间戳/审计/旧会话处置 + 崩溃恢复（F6/F7）；平台动作一律以函数注入，
-// 真正的「open() 里建会话 + 切指针」在 test/main-session.test.js，启动接线在 test/index.test.js。
+// 真正的「open() 里建会话 + 切指针」在 test/main-session.test.js。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  MAIN_ROTATION_AT_KEY, MAIN_ROTATION_DUE_KEY, MAIN_ROTATION_LAST_KEY, MAIN_ROTATION_PENDING_KEY,
+  MAIN_ROTATION_AT_KEY, MAIN_ROTATION_LAST_KEY, MAIN_ROTATION_PENDING_KEY,
   MAIN_SESSION_CREATED_AT_KEY, ROTATION_BLOCKS, ROTATION_DEFAULTS, ROTATION_LIMITS, ROTATION_TRIGGERS,
   beginRotationMarker, clearRotationMarker, collectRotationMetrics, createRotationService, disposeOldMainSession,
-  evaluateAndMarkRotation, evaluateRotation, inspectRotationPending, markRotationTimes,
+  evaluateRotation, inspectRotationPending, markRotationTimes,
   normalizeRotationConfig, readRotationState, recordRotation, recoverPendingRotation, retiredMainSessionTitle,
-  rotationHeadline, rotationStatus, writeRotationDue, writeRotationState,
+  rotationHeadline, writeRotationState,
 } from '../src/main-rotation.js'
 import { createTask, getSetting, openLedger, setSetting } from '../src/ledger.js'
 import { onboardingKey } from '../src/onboarding.js'
@@ -379,19 +379,17 @@ test('配置键契约：11 个键、默认值、区间与 loadConfig 接线一�
   assert.deepEqual(normalizeRotationConfig(config), { ...ROTATION_DEFAULTS })
 })
 
-test('settings 键名固定（S2 写入 / S3 读取的契约）', () => {
+test('settings 键名固定（S3 的动作与恢复读写这四个键）', () => {
   assert.deepEqual(
     {
       created: MAIN_SESSION_CREATED_AT_KEY,
       rotatedAt: MAIN_ROTATION_AT_KEY,
-      due: MAIN_ROTATION_DUE_KEY,
       last: MAIN_ROTATION_LAST_KEY,
       pending: MAIN_ROTATION_PENDING_KEY,
     },
     {
       created: 'main_session_created_at',
       rotatedAt: 'main_rotation_at',
-      due: 'main_rotation_due',
       last: 'main_rotation_last',
       pending: 'main_rotation_pending',
     },
@@ -621,103 +619,79 @@ test('S2 采集：measure 返回不含 totalTokens 时按未知处理', async ()
   db.close()
 })
 
-test('S2 evaluateAndMarkRotation：采集+判定后写 main_rotation_due，指针/审计/marker 都不动', async () => {
+test('S2 evaluate：采集 + 纯判定，只读（不写 settings、不建会话、不留 marker）', async () => {
   const db = await openTestLedger()
   const since = NOW - 30 * HOUR
   setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(since))
   const mainHeader = headerOf('s-1', 'C:/ws', since)
   const events = []
-  const result = await evaluateAndMarkRotation({
+  const rotation = createRotationService({
     db,
     config: { mainRotation: 'auto', spawnProvider: 'spawn' },
     persistence: fakePersistence({ headers: [mainHeader] }),
-    mainSessionId: 's-1',
-    liveAgent: { status: 'idle', session: { header: mainHeader } },
     workspaceCwd: 'C:/ws',
-    source: 'startup',
-    now: NOW,
+    now: () => NOW,
     statFile: statFrom({ 'C:/sessions/s-1.jsonl': 8 * MIB }),
     log: (event, fields) => events.push([event, fields]),
   })
-  assert.equal(result.ok, true)
-  assert.equal(result.decision.due, true)
-  assert.deepEqual(result.decision.triggers, ['main-log'])
-  assert.equal(result.record.due, true)
-  assert.equal(result.pending.state, 'none')
-  const due = JSON.parse(getSetting(db, MAIN_ROTATION_DUE_KEY))
-  assert.equal(due.due, true)
-  assert.equal(due.source, 'startup')
-  assert.equal(due.mainSessionId, 's-1')
-  assert.equal(due.since, since)
-  assert.deepEqual(due.triggers, ['main-log'])
-  assert.equal(due.evaluatedAt, NOW)
-  // 只写 due 一个键：S3 的指针/冷却/审计/marker 一律没碰。
+  // 唯一判定入口：打开主会话时调一次（source:'open'）。
+  const decision = await rotation.evaluate({
+    mainSessionId: 's-1',
+    liveAgent: { status: 'idle', session: { header: mainHeader } },
+    source: 'open',
+  })
+  assert.equal(decision.due, true)
+  assert.deepEqual(decision.triggers, ['main-log'])
+  // 判定只读：动作面的四个键一个都没写（没有 due 之类的派生状态）。
   assert.equal(getSetting(db, 'main_session_id'), undefined)
   assert.equal(getSetting(db, MAIN_ROTATION_AT_KEY), undefined)
   assert.equal(getSetting(db, MAIN_ROTATION_LAST_KEY), undefined)
   assert.equal(getSetting(db, MAIN_ROTATION_PENDING_KEY), undefined)
-  // 决策日志（事后复盘入口）带 reasons/blockedBy/metrics。
+  // 决策日志（事后复盘入口）带 triggers/blockedBy/metrics。
   const decided = events.find(([event]) => event === 'main.rotation.decided')
   assert.ok(decided, '应写 main.rotation.decided')
   assert.equal(decided[1].detail.due, true)
   assert.deepEqual(decided[1].detail.triggers, ['main-log'])
-  assert.equal(decided[1].detail.source, 'startup')
+  assert.equal(decided[1].detail.source, 'open')
   db.close()
 })
 
-test('S2 evaluateAndMarkRotation：配置覆盖/未打开主会话都不检测、不写 due', async () => {
+test('S2 evaluate：配置覆盖 / 未打开主会话都短路为 null，零采集', async () => {
   const db = await openTestLedger()
-  const overridden = await evaluateAndMarkRotation({
-    db, config: { coordinatorSession: 's-override' }, mainSessionId: 's-override', now: NOW,
-  })
-  assert.deepEqual(overridden, { ok: true, skipped: 'coordinator-override' })
-  const none = await evaluateAndMarkRotation({ db, config: {}, mainSessionId: undefined, now: NOW })
-  assert.deepEqual(none, { ok: true, skipped: 'no-main-session' })
-  assert.equal(getSetting(db, MAIN_ROTATION_DUE_KEY), undefined)
+  const events = []
+  let listed = 0
+  const persistence = {
+    listSnapshots: async () => { listed += 1; return [] },
+    locate: () => ({ path: 'C:/sessions/x.jsonl' }),
+  }
+  const options = { db, persistence, workspaceCwd: 'C:/ws', now: () => NOW, log: (event, fields) => events.push([event, fields]) }
+  assert.equal(await createRotationService({ ...options, config: { coordinatorSession: 's-override' } }).evaluate({ mainSessionId: 's-override' }), null)
+  assert.equal(await createRotationService({ ...options, config: {} }).evaluate({ mainSessionId: undefined }), null)
+  assert.equal(listed, 0, '两条短路都不该走到采集')
+  assert.equal(events.length, 0, '没判定就不该有判定日志')
   db.close()
 })
 
-test('S2 evaluateAndMarkRotation：整体异常 fail-closed（不写、不抛，只 warn）', async () => {
+test('S2 evaluate：整体异常 fail-closed（返回 null、不抛，只 warn + 审计日志）', async () => {
   const warnings = []
+  const events = []
   const brokenDb = { prepare() { throw new Error('db boom') } }
-  const result = await evaluateAndMarkRotation({
-    db: brokenDb, config: {}, mainSessionId: 's-1', source: 'startup', now: NOW,
+  const decision = await createRotationService({
+    db: brokenDb,
+    config: {},
+    now: () => NOW,
     onWarn: message => warnings.push(message),
-  })
-  assert.equal(result.ok, false)
-  assert.equal(result.decision, null)
+    log: (event, fields) => events.push([event, fields]),
+  }).evaluate({ mainSessionId: 's-1', source: 'open' })
+  assert.equal(decision, null)
   assert.equal(warnings.length, 1)
   assert.match(warnings[0], /主会话轮换检测失败/)
-})
-
-test('S2 rotationStatus：字段形状固定，未判定/坏值按未知，读取零写入零采集', async () => {
-  const db = await openTestLedger()
-  const unknownShape = { due: null, reasons: [], metrics: null, evaluatedAt: null, lastRotatedAt: null }
-  assert.deepEqual(rotationStatus(db), unknownShape)
-  const before = rowCounts(db)
-  rotationStatus(db)
-  assert.deepEqual(rowCounts(db), before, 'rotationStatus 只读')
-
-  // 坏 JSON 不抛，落回未知。
-  setSetting(db, MAIN_ROTATION_DUE_KEY, '{not json')
-  assert.deepEqual(rotationStatus(db), unknownShape)
-
-  const decision = evaluateRotation(allTriggersInput())
-  writeRotationDue(db, decision, { source: 'startup', mainSessionId: 's-1', since: NOW - 240 * HOUR })
-  setSetting(db, MAIN_ROTATION_AT_KEY, String(NOW - 1 * HOUR))
-  const status = rotationStatus(db)
-  assert.deepEqual(Object.keys(status).sort(), ['due', 'evaluatedAt', 'lastRotatedAt', 'metrics', 'reasons'])
-  assert.equal(status.due, true)
-  assert.deepEqual(status.reasons.map(reason => reason.code), ROTATION_TRIGGERS)
-  assert.deepEqual(status.metrics, decision.metrics)
-  assert.equal(status.evaluatedAt, NOW)
-  assert.equal(status.lastRotatedAt, NOW - 1 * HOUR)
-  db.close()
+  assert.equal(events[0][0], 'main.rotation.failed')
 })
 
 test('S2 settings 键读写与 pending marker 只读判定（S2 只算不执行）', async () => {
   const db = await openTestLedger()
-  assert.deepEqual(readRotationState(db), { createdAt: null, rotatedAt: null, due: null, last: null, pending: null })
+  assert.deepEqual(readRotationState(db), { createdAt: null, rotatedAt: null, last: null, pending: null })
   setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - HOUR))
   setSetting(db, MAIN_ROTATION_AT_KEY, String(NOW - MINUTE))
   setSetting(db, MAIN_ROTATION_LAST_KEY, JSON.stringify({ old: 'a', new: 'b', at: NOW }))
@@ -740,21 +714,18 @@ test('S2 settings 键读写与 pending marker 只读判定（S2 只算不执行�
   db.close()
 })
 
-test('S2 writeRotationState：五个键统一写入口，null 删键、对象存 JSON、undefined 不动', async () => {
+test('S2 writeRotationState：四个键统一写入口，null 删键、对象存 JSON、undefined 不动', async () => {
   const db = await openTestLedger()
   const written = writeRotationState(db, {
     createdAt: NOW - HOUR,
     rotatedAt: NOW - MINUTE,
-    due: { due: false, source: 'manual' },
     last: { old: 'a', new: 'b', at: NOW },
     pending: { newId: 'new-1', oldId: 'a', at: NOW },
   })
   assert.equal(written.createdAt, String(NOW - HOUR))
-  assert.equal(written.due, JSON.stringify({ due: false, source: 'manual' }))
   const state = readRotationState(db)
   assert.equal(state.createdAt, NOW - HOUR)
   assert.equal(state.rotatedAt, NOW - MINUTE)
-  assert.deepEqual(state.due, { due: false, source: 'manual' })
   assert.deepEqual(state.last, { old: 'a', new: 'b', at: NOW })
   assert.deepEqual(state.pending, { newId: 'new-1', oldId: 'a', at: NOW })
   // null 删键；没提到的键保持原样。
@@ -777,7 +748,7 @@ test('S3 退役标题：本地时间 YYYY-MM-DD HH:mm，形状固定', () => {
   assert.match(retiredMainSessionTitle(Number.NaN), /^主会话（已退役 /)
 })
 
-test('S3 marker/时间戳/审计：键形状、降级与一次收口（due+marker 一起清）', async () => {
+test('S3 marker/时间戳/审计：键形状、降级与一次收口（marker 清掉）', async () => {
   const db = await openTestLedger()
   const marker = beginRotationMarker({ db, oldId: 'old-1', newId: 'new-1', at: NOW, reasons: [{ code: 'age' }, 'tasks', { nope: true }] })
   assert.deepEqual(marker, { newId: 'new-1', oldId: 'old-1', at: NOW, reasons: ['age', 'tasks'] })
@@ -796,7 +767,6 @@ test('S3 marker/时间戳/审计：键形状、降级与一次收口（due+marke
     oldId: 'old-1', at: NOW, rename: async () => {}, archive: async () => {}, log: () => {}, onWarn: () => {},
   })
   assert.deepEqual(disposal, { renamed: true, archived: true })
-  setSetting(db, MAIN_ROTATION_DUE_KEY, JSON.stringify({ due: true, source: 'open' }))
   const record = recordRotation(db, { oldId: 'old-1', newId: 'new-1', at: NOW, decision: evaluateRotation(allTriggersInput()), disposal })
   assert.equal(record.old, 'old-1')
   assert.equal(record.new, 'new-1')
@@ -809,7 +779,6 @@ test('S3 marker/时间戳/审计：键形状、降级与一次收口（due+marke
   const state = readRotationState(db)
   assert.deepEqual(state.last, record, '审计是事后排查唯一入口')
   assert.equal(state.pending, null, 'marker 清掉')
-  assert.equal(state.due, null, 'due 兑现后清掉，面板 banner 不该继续挂')
 
   // 旧会话处置两步各自失败只降级，永不抛：rename 失败仍尝试归档，archive 失败只留下「仍在列表里」。
   const warns = []
@@ -930,41 +899,5 @@ test('S3 恢复：marker 坏了只清不清账、无 marker/无指针是 no-op�
   assert.equal(broken.ok, false)
   assert.equal(broken.state, 'error')
   assert.match(brokenWarns[0], /主会话轮换恢复失败/)
-})
-
-// ---------------------------------------------------------------------------
-// G1 S4：动作面的 evaluate 契约「任何异常 → null」（异常发生在 evaluateAndMarkRotation 之外时）
-// ---------------------------------------------------------------------------
-test('S4 createRotationService.evaluate：平台服务取用抛错也只 warn + 返回 null，不写 due、不 reject', async () => {
-  const db = await openTestLedger()
-  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - 30 * 24 * HOUR))
-  const warns = []
-  const logs = []
-  const service = createRotationService({
-    db,
-    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    // 惰性 getter：cordis 并发加载期 ctx.get 可能抛，而这行代码在 evaluateAndMarkRotation 的 try 之外。
-    persistence: () => { throw new Error('service boom') },
-    workspaceCwd: 'C:/ws',
-    now: () => NOW,
-    log: (event, detail) => logs.push([event, detail]),
-    onWarn: message => warns.push(message),
-  })
-  assert.equal(await service.evaluate({ mainSessionId: 'session-old', source: 'startup' }), null)
-  assert.equal(warns.length, 1)
-  assert.match(warns[0], /主会话轮换检测失败/)
-  assert.ok(logs.some(([event, detail]) => event === 'main.rotation.failed' && detail.detail.source === 'startup'))
-  // 没有写成 due：面板继续显示「未知」，而不是一条假的「不需要轮换」。
-  assert.equal(readRotationState(db).due, null)
-  // 之后的正常调用照常可用（失败不缓存、不留毒）。
-  const healthy = createRotationService({
-    db,
-    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    workspaceCwd: 'C:/ws',
-    now: () => NOW,
-  })
-  const decision = await healthy.evaluate({ mainSessionId: 'session-old', source: 'manual' })
-  assert.equal(decision.due, true)
-  db.close()
 })
 

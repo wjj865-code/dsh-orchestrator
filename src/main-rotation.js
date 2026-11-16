@@ -9,10 +9,12 @@
 //   - S1：11 个配置键的默认值、合法区间与归一化（config.js 的 loadConfig 直接复用 normalizeRotationConfig）；
 //     evaluateRotation()：M1–M6 六个触发因子 + P1–P10 十条保护 + 冷却/最小龄 + 原因文案
 //   - S2：指标采集层（collectRotationMetrics：台账/persistence/tokenMeter/stat，每项 try/catch，
-//     拿不到就是「未知」而不是 0）、settings 键读写（readRotationState / writeRotationDue）、
-//     evaluateAndMarkRotation()（采集 + 纯判定 + 写 main_rotation_due 标记）、
-//     rotationStatus()（snapshot 只读可见性）、inspectRotationPending()（崩溃恢复 marker 的只读判定）
-// 仍不建会话、不改指针：真正轮换（S3）与启动/加载接线（S4）在读这些结果的基础上做。
+//     拿不到就是「未知」而不是 0）、settings 键读写（readRotationState / writeRotationState）、
+//     inspectRotationPending()（崩溃恢复 marker 的只读判定）
+//   - S3：轮换动作面（createRotationService：采集 + 判定 + 动作 + 崩溃恢复，平台服务由调用方注入）
+//
+// 判定只在「打开主会话」时发生一次（main-session 的 openOnce → createRotationService.evaluate）：
+// 不写 due 标记、不在启动/加载时后台检测、面板也不暴露判定结果——省掉一整套派生状态与展示链路。
 import { stat } from 'node:fs/promises'
 import { deleteSetting, getSetting, listTasks, setSetting } from './ledger.js'
 import { onboardingKey } from './onboarding.js'
@@ -61,11 +63,10 @@ export const MAIN_ROTATION_MODES = Object.freeze(['auto', 'off'])
 
 /**
  * settings 键名（与台账 settings 表共用）。
- * S1 只声明；S2 负责读写与 mainSession.rotation 只读可见性，S3 负责真正切指针/收口。
+ * 只存「起点 / 冷却 / 审计 / 崩溃锚点」四个事实，不存任何判定结论（判定每次打开主会话时现算）。
  */
 export const MAIN_SESSION_CREATED_AT_KEY = 'main_session_created_at'
 export const MAIN_ROTATION_AT_KEY = 'main_rotation_at'
-export const MAIN_ROTATION_DUE_KEY = 'main_rotation_due'
 export const MAIN_ROTATION_LAST_KEY = 'main_rotation_last'
 export const MAIN_ROTATION_PENDING_KEY = 'main_rotation_pending'
 
@@ -322,12 +323,12 @@ export function rotationHeadline(decision) {
 }
 
 // ---------------------------------------------------------------------------
-// S2：指标采集 + settings 键读写 + 只读可见性
+// S2：指标采集 + settings 键读写
 //
 // 三条硬约束（计划 §13 S2 / §3.1）：
-//   1. 采集只读：不写台账、不写 settings、不建会话、不动指针（写 due 标记是 evaluateAndMarkRotation 的事）；
+//   1. 采集只读：不写台账、不写 settings、不建会话、不动指针（写 settings 是轮换动作的事）；
 //   2. 失败降级为「未知」：任一服务缺失/抛错只记 degraded，不填 0——0 会被当成「很干净」而漏判；
-//   3. 面板 2s 轮询路径不得触发采集：snapshot 只调 rotationStatus（读 settings），不 stat 磁盘、不 listSnapshots。
+//   3. 采集只在「打开主会话」那一次跑：不进面板 2s 轮询、不加定时器。
 // ---------------------------------------------------------------------------
 
 const millisOf = value => {
@@ -360,24 +361,22 @@ const defaultStatFile = async path => {
 }
 
 /**
- * 读五个 settings 键（只读）。缺键/坏值一律为 null，由调用方按「未知」处理。
- * @returns {{createdAt:number|null, rotatedAt:number|null, due:object|null, last:object|null, pending:object|null}}
+ * 读四个 settings 键（只读）。缺键/坏值一律为 null，由调用方按「未知」处理。
+ * @returns {{createdAt:number|null, rotatedAt:number|null, last:object|null, pending:object|null}}
  */
 export function readRotationState(db) {
   return {
     createdAt: millisOf(getSetting(db, MAIN_SESSION_CREATED_AT_KEY)),
     rotatedAt: millisOf(getSetting(db, MAIN_ROTATION_AT_KEY)),
-    due: objectOf(getSetting(db, MAIN_ROTATION_DUE_KEY)),
     last: objectOf(getSetting(db, MAIN_ROTATION_LAST_KEY)),
     pending: objectOf(getSetting(db, MAIN_ROTATION_PENDING_KEY)),
   }
 }
 
-/** 五个键的一一对应（写入口共用；读侧按值类型分别解码）。 */
+/** 四个键的一一对应（写入口共用；读侧按值类型分别解码）。 */
 const ROTATION_SETTING_KEYS = Object.freeze({
   createdAt: MAIN_SESSION_CREATED_AT_KEY,
   rotatedAt: MAIN_ROTATION_AT_KEY,
-  due: MAIN_ROTATION_DUE_KEY,
   last: MAIN_ROTATION_LAST_KEY,
   pending: MAIN_ROTATION_PENDING_KEY,
 })
@@ -406,31 +405,6 @@ export function writeRotationState(db, patch = {}) {
 }
 
 /**
- * 把本次判定结果写进 `main_rotation_due`（面板 banner 与事后复盘的唯一入口）。
- * 只写这一个键：指针、冷却、审计、marker 都留给 S3 的轮换动作。
- * @returns {object} 实际落库的记录（字段顺序固定，便于日志/单测对比）
- */
-export function writeRotationDue(db, decision, { source = 'manual', mainSessionId = null, since = null } = {}) {
-  if (decision === null || typeof decision !== 'object') return null
-  const record = {
-    due: decision.due === true,
-    mode: decision.mode ?? 'auto',
-    triggers: Array.isArray(decision.triggers) ? decision.triggers : [],
-    reasons: Array.isArray(decision.reasons) ? decision.reasons : [],
-    blockedBy: Array.isArray(decision.blockedBy) ? decision.blockedBy : [],
-    metrics: decision.metrics !== null && typeof decision.metrics === 'object' ? decision.metrics : {},
-    degraded: Array.isArray(decision.degraded) ? decision.degraded : [],
-    evaluatedAt: millisOf(decision.evaluatedAt),
-    lastRotatedAt: millisOf(decision.lastRotatedAt),
-    since: millisOf(since),
-    mainSessionId: typeof mainSessionId === 'string' && mainSessionId !== '' ? mainSessionId : null,
-    source,
-  }
-  writeRotationState(db, { due: record })
-  return record
-}
-
-/**
  * 崩溃恢复 marker 的**只读**判定（S2 只算不执行；S3 的 recoverPending 才归档/清理）：
  *   none      没有 marker
  *   invalid   marker 形状不对（宁可不动，交人工看日志）
@@ -449,7 +423,7 @@ export function inspectRotationPending(state, pointer) {
 
 /**
  * 采集 M1–M6 六项指标。每项独立 try/catch：失败记 degraded，值给 null（未知，不是 0）。
- * 只读：不写台账/settings/磁盘；调用方负责决定是否把结果写进 due 标记。
+ * 只读：不写台账/settings/磁盘；结果只交给判定函数，不落任何 settings 键。
  *
  * @param {object} opts
  * @param {object} opts.db 台账
@@ -642,140 +616,6 @@ export async function collectRotationMetrics({
   }
 }
 
-/**
- * 采集 + 纯判定 + 写 `main_rotation_due`。**不建会话、不切指针**（那是 S3）。
- * 永不 reject：采集/判定整体异常 → fail-closed（不轮换）+ warn，绝不阻断插件加载或主会话打开。
- *
- * @param {object} opts
- * @param {object} opts.db 台账
- * @param {object} [opts.config] loadConfig 结果
- * @param {object} [opts.persistence] sessionPersistence 服务
- * @param {object} [opts.tokenMeter] tokenMeter 服务
- * @param {string} [opts.mainSessionId] 指针主会话
- * @param {object} [opts.liveAgent] 指针主会话的 live agent（有就量 token / 判 P3）
- * @param {object|Function} [opts.catalog] 子会话目录（dispatcher.catalog()）；函数形式会被 await
- * @param {string} [opts.workspaceCwd] 指挥舱目录
- * @param {string} [opts.source] 'startup' | 'agent-created' | 'manual'（写进 due 标记便于复盘）
- * @param {number} [opts.now] 判定时刻
- * @param {Function} [opts.statFile] stat 注入（单测用）
- * @param {Function} [opts.log] 结构化日志
- * @param {Function} [opts.onWarn] 告警（插件 logger.warn 口径）
- * @returns {Promise<{ok:boolean, skipped?:string, decision?:object, collected?:object, record?:object, pending?:object}>}
- */
-export async function evaluateAndMarkRotation({
-  db,
-  config = {},
-  persistence,
-  tokenMeter,
-  mainSessionId,
-  liveAgent,
-  catalog,
-  workspaceCwd,
-  source = 'manual',
-  now = Date.now(),
-  statFile = defaultStatFile,
-  log = () => {},
-  onWarn,
-} = {}) {
-  const warn = typeof onWarn === 'function' ? onWarn : () => {}
-  try {
-    // P6：配置覆盖的会话不具备轮换语义（解析顺序会直接无视指针）→ 连检测都不做、不写 due。
-    if (config?.coordinatorSession !== undefined) return { ok: true, skipped: 'coordinator-override' }
-    if (typeof mainSessionId !== 'string' || mainSessionId === '') return { ok: true, skipped: 'no-main-session' }
-    const state = readRotationState(db)
-    const collected = await collectRotationMetrics({
-      db,
-      persistence,
-      tokenMeter,
-      mainSessionId,
-      mainSession: liveAgent?.session,
-      workspaceCwd,
-      now,
-      statFile,
-      log,
-    })
-    let tasks = []
-    try {
-      tasks = listTasks(db)
-    } catch (error) {
-      warn(`dsh-orchestrator: 主会话轮换读取台账失败（按无任务处理）：${errorText(error)}`)
-    }
-    let catalogEntries
-    if (typeof catalog === 'function') {
-      try {
-        catalogEntries = await catalog()
-      } catch {
-        // P8 读不到目录只代表「无法判断」，不能当成「有活跃子代理」也不能当成没有。
-        catalogEntries = undefined
-      }
-    } else {
-      catalogEntries = catalog
-    }
-    const pending = inspectRotationPending(state, mainSessionId)
-    const decision = evaluateRotation({
-      now,
-      config,
-      since: collected.since ?? undefined,
-      lastRotatedAt: state.rotatedAt ?? undefined,
-      metrics: collected.metrics,
-      tasks,
-      agentStatus: liveAgent?.status,
-      logMtimeAt: collected.logMtimeAt ?? undefined,
-      catalog: catalogEntries,
-      degraded: collected.degraded,
-    })
-    const record = writeRotationDue(db, decision, { source, mainSessionId, since: collected.since })
-    log('main.rotation.decided', {
-      detail: {
-        source,
-        due: decision.due,
-        triggers: decision.triggers,
-        blockedBy: decision.blockedBy.map(item => item.code),
-        degraded: decision.degraded,
-        metrics: decision.metrics,
-        since: collected.since,
-        sinceSource: collected.sinceSource,
-        scanned: collected.scanned,
-        pending: pending.state,
-      },
-    })
-    if (pending.state === 'abandoned' || pending.state === 'complete' || pending.state === 'invalid') {
-      // S2 只记录，不处置：恢复动作（归档空白残留/补归档旧会话）在 S3 的 recoverPending。
-      log('main.rotation.pending.detected', { detail: { state: pending.state, newId: pending.marker?.newId ?? null } })
-    }
-    return { ok: true, decision, collected, record, pending }
-  } catch (error) {
-    warn(`dsh-orchestrator: 主会话轮换检测失败（本次不轮换）：${errorText(error)}`)
-    log('main.rotation.failed', { detail: { source, error: errorText(error) } })
-    return { ok: false, decision: null }
-  }
-}
-
-/**
- * snapshot 的只读字段 `mainSession.rotation`：只读 settings（5 次点查），不采集、不写库。
- * 所以放进 2s 面板轮询是安全的（计划 §3.1「采集不进轮询」）。
- *
- * 形状契约（S5 面板直接消费）：{due, reasons, metrics, evaluatedAt, lastRotatedAt}
- * 还没判定过 / 读不到 → due/metrics 为 null（未知，不是 false/0），reasons 为空数组。
- */
-export function rotationStatus(db) {
-  let state
-  try {
-    state = readRotationState(db)
-  } catch {
-    return null
-  }
-  const record = state.due
-  const metrics = record?.metrics
-  return {
-    due: typeof record?.due === 'boolean' ? record.due : null,
-    reasons: Array.isArray(record?.reasons) ? record.reasons : [],
-    metrics: metrics !== null && typeof metrics === 'object' ? metrics : null,
-    evaluatedAt: millisOf(record?.evaluatedAt),
-    lastRotatedAt: state.rotatedAt ?? millisOf(record?.lastRotatedAt),
-  }
-}
-
 // ---------------------------------------------------------------------------
 // S3：轮换动作（marker / 指针时间戳 / 审计 / 旧会话处置 / 崩溃恢复）
 //
@@ -784,7 +624,7 @@ export function rotationStatus(db) {
 //   2. marker 是指针切换前唯一的崩溃锚点：**先 marker、后切指针**；
 //   3. **先切指针、后处置旧会话**：rename/archive 失败最多留下「旧会话还在列表里」，
 //      不会出现「新指针不可用、旧指针已退役」的悬空态；
-//   4. 审计（main_rotation_last）+ 清 marker + 清 due 放在最后：崩溃在这之前，下次启动按 marker 补完；
+//   4. 审计（main_rotation_last）+ 清 marker 放在最后：崩溃在这之前，下次启动按 marker 补完；
 //   5. 旧会话处置**不可逆**（平台没有 unarchive，见 docs/LIMITATIONS.md）：默认改名 + 归档，
 //      归档失败只降级为「只改名」——轮换本身仍然成立。
 //
@@ -840,9 +680,8 @@ export function markRotationTimes(db, at) {
 }
 
 /**
- * 收尾：写审计 `main_rotation_last`（事后排查唯一入口），并**清掉** marker 与 due 标记。
- *   - 清 due：触发这次轮换的那份判定已经兑现，面板 banner 不该继续挂着「建议轮换」；
- *   - 写不进去会抛，marker 保留 → 下次启动 recoverPendingRotation 幂等补完（rename 覆盖标题、archive 幂等）。
+ * 收尾：写审计 `main_rotation_last`（事后排查唯一入口），并**清掉** marker。
+ *   写不进去会抛，marker 保留 → 下次启动 recoverPendingRotation 幂等补完（rename 覆盖标题、archive 幂等）。
  * @returns {object} 审计记录
  */
 export function recordRotation(db, { oldId, newId, at, decision, disposal, recovered = false } = {}) {
@@ -857,8 +696,8 @@ export function recordRotation(db, { oldId, newId, at, decision, disposal, recov
     archived: disposal?.archived === true,
     recovered: recovered === true,
   }
-  // 三个键各一条 UPSERT/DELETE：任一失败都会抛，marker 没清掉就还能下次补。
-  writeRotationState(db, { last: record, pending: null, due: null })
+  // 两个键各一条 UPSERT/DELETE：任一失败都会抛，marker 没清掉就还能下次补。
+  writeRotationState(db, { last: record, pending: null })
   return record
 }
 
@@ -1023,11 +862,11 @@ export async function recoverPendingRotation({ db, pointer, rename, archive, arc
  * 轮换动作面（S3）：把「台账读写 + 可注入的平台动作」绑成一个服务给 main-session / index 用。
  *
  * 分工（计划 §5.1）：
- *   - main-session.openOnce() 调 evaluate → due 时自己 create，再依次 begin / commitTimes / disposeOld / finish；
+ *   - main-session.openOnce() 调 evaluate（采集 + 纯判定）→ due 时自己 create，再依次 begin / commitTimes / disposeOld / finish；
  *   - index 启动时调 recoverPending（补完上次崩溃）；
  *   - 平台服务（persistence/tokenMeter/rename/archive）一律**惰性**取：cordis 并发加载时 apply 早期可能还没有。
  *
- * 所有方法都不做判定（判定在纯函数里），也不建会话（create 归 main-session，权限与错误文案都留在那儿）。
+ * evaluate 只读（判定纯函数是 evaluateRotation），也不建会话（create 归 main-session，权限与错误文案都留在那儿）。
  */
 export function createRotationService({
   db,
@@ -1047,30 +886,75 @@ export function createRotationService({
   const warn = message => { if (typeof onWarn === 'function') onWarn(message) }
 
   /**
-   * 采集 + 判定 + 写 due（S2 的 evaluateAndMarkRotation），返回 decision；任何异常 → null（调用方视为不轮换）。
+   * 采集 + 判定，返回 decision；任何异常 → null（调用方视为「本次不轮换」）。
    *
-   * S4：try/catch 是契约的一部分，不是保险丝。平台服务是**惰性 getter**（`ctx.get` 在 cordis 并发加载期
-   * 可能抛或返回奇怪东西），那一步发生在 evaluateAndMarkRotation 之外；漏在这里抛，就会让「打开主会话」
-   * 或启动对账后的检测变成一个用户可见的失败。判定失败的语义只有一个：本次不轮换，主流程照常。
+   * 这是**唯一**的判定入口（main-session.openOnce 在「打开主会话」时调一次）：
+   * 只读，不写 settings、不建会话、不改指针、不留 due 标记；动作用下面的 begin/commitTimes/disposeOld/finish。
+   * 平台服务是**惰性 getter**（cordis 并发加载期 `ctx.get` 可能抛），所以 try/catch 是契约的一部分，
+   * 不是保险丝：判定失败只有一个语义——这次不换，打开主会话照常走复用分支。
    */
   const evaluate = async ({ mainSessionId, liveAgent, source = 'open' } = {}) => {
     try {
-      const result = await evaluateAndMarkRotation({
+      // P6：配置覆盖的会话不具备轮换语义（解析顺序会直接无视指针）→ 连检测都不做。
+      if (config?.coordinatorSession !== undefined) return null
+      if (typeof mainSessionId !== 'string' || mainSessionId === '') return null
+      const at = now()
+      const state = readRotationState(db)
+      const collected = await collectRotationMetrics({
         db,
-        config,
         persistence: resolve(persistence),
         tokenMeter: resolve(tokenMeter),
         mainSessionId,
-        liveAgent,
-        catalog,
+        mainSession: liveAgent?.session,
         workspaceCwd: resolve(workspaceCwd),
-        source,
-        now: now(),
+        now: at,
         statFile,
         log,
-        onWarn: warn,
       })
-      return result?.decision ?? null
+      let tasks = []
+      try {
+        tasks = listTasks(db)
+      } catch (error) {
+        warn(`dsh-orchestrator: 主会话轮换读取台账失败（按无任务处理）：${errorText(error)}`)
+      }
+      let catalogEntries
+      if (typeof catalog === 'function') {
+        try {
+          catalogEntries = await catalog()
+        } catch {
+          // P8 读不到目录只代表「无法判断」，不能当成「有活跃子代理」也不能当成没有。
+          catalogEntries = undefined
+        }
+      } else {
+        catalogEntries = catalog
+      }
+      const decision = evaluateRotation({
+        now: at,
+        config,
+        since: collected.since ?? undefined,
+        lastRotatedAt: state.rotatedAt ?? undefined,
+        metrics: collected.metrics,
+        tasks,
+        agentStatus: liveAgent?.status,
+        logMtimeAt: collected.logMtimeAt ?? undefined,
+        catalog: catalogEntries,
+        degraded: collected.degraded,
+      })
+      // 判定结论只进审计日志（事后复盘「为什么换 / 为什么没换」），不落任何 settings 键。
+      log('main.rotation.decided', {
+        detail: {
+          source,
+          due: decision.due,
+          triggers: decision.triggers,
+          blockedBy: decision.blockedBy.map(item => item.code),
+          degraded: decision.degraded,
+          metrics: decision.metrics,
+          since: collected.since,
+          sinceSource: collected.sinceSource,
+          scanned: collected.scanned,
+        },
+      })
+      return decision
     } catch (error) {
       warn(`dsh-orchestrator: 主会话轮换检测失败（本次不轮换）：${errorText(error)}`)
       log('main.rotation.failed', { detail: { source, error: errorText(error) } })
