@@ -84,7 +84,7 @@ task_create({
 })
 ```
 
-有先后关系用 `dependsOn`，同一需求用 `group`，会改同一批文件用 `writeScopes`，紧急的给 `priority`：
+有先后关系用 `dependsOn`，同一需求用 `group`，会改同一批文件用 `writeScopes`（与活跃未隔离任务重叠会被拒，见「同写域并发防护」），紧急的给 `priority`：
 
 ```js
 task_create({ title: '改接口', goal: '...', acceptance: ['...'], group: '登录改造' })
@@ -154,8 +154,31 @@ task_create({
 
 - `dependsOn`：前置没完成 → `waiting_dep`；全部 `done` → 自动 `pending`；任一失败 → 下游自动 `failed`（写清原因）。创建后不可编辑，也不允许指向未来 id。
 - `group`：分组，面板按组汇总进度（`task_list({ group })` 看「已完成/待确认」）。
-- `writeScopes`：写域，**只做冲突提示**，不是文件锁。
+- `writeScopes`：写域，与活跃未隔离任务重叠时**默认拒绝创建**（见下「同写域并发防护」），不是文件锁。
 - `priority`：`-10..10`，高的先派。
+
+### 同写域并发防护（默认拒绝，可显式放宽）
+
+**这是行为变更**：以前同一个目标目录可以并发派多个任务（`writeScopes` 只打一行提示），两个子会话会同时写同一份工作树、互相覆盖。现在默认拒绝。
+
+`task_create` 时，若新任务的目标目录与某个**活跃且未隔离**任务的目录相同或互相包含（或两者 `writeScopes` 重叠），且新任务没有 worktree 隔离，默认**不创建任务**并返回可操作错误：
+
+```
+未创建任务：目标目录 /path/to/repo 与活跃任务相同或互相包含，且新任务没有 worktree 隔离——两个子会话会同时写同一份工作树。
+冲突任务：
+- 「旧任务（t-1a2b3c4d）」（进行中）：/path/to/repo
+三种做法（任选其一）：
+1. 先 task_close 关闭旧任务（或 task_stop 取消），再重派；
+2. 传 worktree:true 让新任务在独立检出里跑（推荐：两个任务可并行，合并由你决定）；
+3. 确认确实要并发写同一目录时，显式传 allowConcurrent:true 放行（冲突风险自负）。
+```
+
+- **三条出路**，都不是「不可绕过」：`task_close` / `task_stop` 旧任务、`worktree:true` 隔离、或显式 `allowConcurrent:true`（放行时返回里标注「并发风险」，并记 `task.create.concurrent-write` 日志）。
+- **不算冲突**（既有用法不受影响）：不同 target、worktree 隔离任务（在各自检出里跑）、`dependsOn` 链上的前置任务（等它们 `done` 才派发，不会同时跑）、`readOnly` 只读任务（不写文件，既不占目录也不被拦）、已完成/已取消/失败/丢失的任务（已释放目录）。
+- **`planFirst` 计划任务照常参与判定**：计划阶段当下是只读沙箱，但批准后会切回可写——放过去等于把冲突推迟到批准那一刻。
+- **`delivered`（待确认）算活跃**：它还占着目录。要接着改就用 `task_message` 追问原会话，不要新建同目录任务——拒绝文案也会提示这一点。
+- **配置降级**：`sameDirGuard: 'warn'` 只给强警告照常创建，`'off'` 完全关闭（`writeScopes` 退回旧的一行提示）。**默认 `'require'`**，非法值（含拼错）一律回落 `'require'`——默认必须安全。
+- 被拒与放行都落日志：`task.create.rejected`（`reason: 'same-dir' | 'write-scope'`，带冲突任务 id）与 `task.create.concurrent-write`（`mode` / `allowed`）。
 
 ### 交付口径：`present`
 
@@ -262,7 +285,7 @@ task_create({
 
 | 工具 | 作用 |
 |---|---|
-| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` |
+| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent`（显式放行同写域并发） |
 | `task_list` | 活跃任务/历史任务；`group` 过滤看组进度 |
 | `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、最近消息、最新返回（`include:'full'` 看全文） |
 | `task_message` | 续派消息（含「待确认」上的追问，复用原会话）；排队/等前置会返回提示 |
@@ -312,6 +335,7 @@ task_create({
 | `memoryInject` | `true` | 新任务是否注入事实层记忆 |
 | `memoryLimit` | `3` | 注入记忆条数（1–10） |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
+| `sameDirGuard` | `require` | 同写域并发防护：`require`（默认，拒绝）/ `warn`（只警告）/ `off`（关闭）；见「同写域并发防护」 |
 | `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，漏传时兜底 |
 | `worktreeBranchPrefix` | `orch/` | 隔离任务分支前缀（默认名 `<prefix><taskId>`） |
 | `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（1–90） |
@@ -337,7 +361,7 @@ task_create({
 
 **编排**
 
-- `writeScopes` 只做冲突提示；`dependsOn` 创建后不可编辑。
+- 同目录/同写域并发默认拒绝（`sameDirGuard`，见「同写域并发防护」）；`dependsOn` 创建后不可编辑。
 - `done` 不可逆、无 reopen；要改交付物用追问窗口，要新工作新派/重派。
 - 结算自动收场只覆盖「一次 activation」；上报过 progress 的回合异常结束会落 `orphaned`。
 - 「最后一条回复」可能缺：插件在结算事件到达前被卸载/进程被杀时拿不到。

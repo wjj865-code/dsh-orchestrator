@@ -1,4 +1,4 @@
-﻿import test from 'node:test'
+import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import{ join } from 'node:path'
@@ -1379,8 +1379,10 @@ test('优先级：高优先级任务先派发', async () => {
   assert.match(prompts.at(-1), new RegExp(`【任务编号】${highTask.id}`))
 })
 
-test('写域冲突只提示不阻断；同组任务可按 group 过滤看进度', async () => {
-  const { db, tools } = await setup()
+// 行为变更（0.16）：写域重叠默认按 sameDirGuard=require 拒绝，不再只是 advisory。
+// 这里锁住 off 档的旧口径（显式关掉防护时仍只提示），新的默认行为在 test/write-guard.test.js。
+test('写域冲突在 sameDirGuard=off 时退回 advisory 提示；同组任务可按 group 过滤看进度', async () => {
+  const { db, tools } = await setup({ config: { sameDirGuard: 'off' } })
   await call(tools, 'task_create', { ...sampleBrief({ title: '写域A' }), writeScopes: ['src/api'], group: 'G' })
   const second = await call(tools, 'task_create', { ...sampleBrief({ title: '写域B' }), writeScopes: ['src'], group: 'G' })
   assert.match(second, /已派发/)

@@ -7,7 +7,7 @@
 - **协调者主会话**：固定入口，只做拆任务/派活/看回报，不读写文件、不执行命令。
 - **子任务**：独立 DSH 子会话，按目标目录运行；支持只读沙箱、续派、停止、重派。
 - **依赖编排**：`dependsOn` 支持前置关系；依赖未完成不派发，完成自动晋升，失败向下游传播。
-- **分组/写域/优先级**：`group` 归组看进度，`writeScopes` 冲突提示，`priority` 高优先级先派。
+- **分组/写域/优先级**：`group` 归组看进度，`priority` 高优先级先派；`writeScopes` 与目标目录一起参与**同写域并发防护**（默认拒绝同目录/同写域的未隔离并发任务，可用 `allowConcurrent:true` 或配置 `sameDirGuard` 放宽）。
 - **跨项目记忆**：分层沉淀——done 摘要只进 `task-log` 日志层（不进任务详情），经验/决策/偏好蒸馏成原子事实才随 `task_detail` 注入；`history_search` 检索历史，`project_context` 读项目白名单背景。
 - **两段式交付**：子会话 `task_report done` 先落 `delivered`（已交付待确认），默认保持待确认，等用户确认（`task_close`）或用 `task_message` 追问（复用同一个子会话）；超过 `deliveredTimeoutMinutes`（默认 60 分钟）自动完成。`done` 是不可逆终态。
 - **brief 纯指引**：派发给子会话的 brief 只有任务编号 + 「先调 `task_detail` 读详情」，目标/验收/经验/前置任务/产物都由子会话按需现取。

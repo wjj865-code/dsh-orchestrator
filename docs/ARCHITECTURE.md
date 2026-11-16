@@ -70,8 +70,13 @@
   - 晋升是循环的，失败会沿依赖链传播。
 - 前置任务摘要与产物不在派发时预渲染：子会话用 `task_detail` 按**当前**台账现读（依赖可能在创建之后才完成），见下文「brief 纯指引（T1）」。
 - `group` 只用于展示/过滤，`task_list({group})` 给出完成数。
-- `writeScopes` 是 advisory 冲突提示，不是文件锁。
 - `priority` 为 `-10..10`，只影响队列顺序。
+- **同写域并发防护**（`src/write-guard.js`，默认拒绝）：`task_create` 在「去重 / 容量 / worktree 决定」之后、`createTask` 之前的**同一个同步段**里判定——
+  新任务 target 与活跃未隔离任务的 target 相同或互相包含，或两者 `writeScopes` 重叠 → 按 `config.sameDirGuard` 处理：
+  `require`（默认）拒绝并返回可操作错误、`warn` 只给强警告、`off` 关闭（`writeScopes` 退回一行 advisory）。
+  不参与判定：`readOnly` 任务（不写文件）、`created`/`reused` 隔离任务（各自检出）、`dependsOn` 链上祖先（等它们 `done` 才派发）、终态任务。
+  `delivered` 算活跃（还占目录）；唯一显式放行开关是 `task_create.allowConcurrent:true`，放行时返回带「并发风险」并记 `task.create.concurrent-write`。
+  拒绝对应 `task.create.rejected`（`reason: same-dir | write-scope`）。
 
 ## 回报、通知、收件箱、日报
 

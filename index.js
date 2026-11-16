@@ -42,7 +42,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 编辑时用最新结果的 updatedAt 作为 expectedUpdatedAt（可用时）；schedule_conflict 先 schedule_view 重读，不强行覆盖。Host 必须运行；崩溃可能重复投递，删除不撤回已排队消息，不承诺 exactly-once。
 - 默认 worker 不开放自动化；自定义预设即使露出 schema，宿主仍拒绝 delegated subagent（subagent_session）。access:full 只改变单个子会话沙箱，不增加工具、不绕过宿主委派校验或审批。缺服务/工具时明确报告当前能力缺失，不能模拟成功。
 - 派任务前可用 history_search 查跨项目记忆与历史任务，用 project_context 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
-- 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域；紧急任务用 priority（-10..10）。
+- 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域（与活跃未隔离任务重叠会被拒，见下「同写域并发防护」）；紧急任务用 priority（-10..10）。
 - 子任务回报产物路径后，默认用 present 展示 1-4 个最关键的产物（最多 4 个；只列真实存在的文件、写绝对路径），不必等用户点名；没有产物就不提 present；不要自行 stat/read 校验存在性（协调者的 read/glob 已被 deny，插件与子任务负责确认），present 只声明交付、不读文件内容。
 - 需要先看方案再动手（大改、跨文件、范围不确定）时用 task_create({ planFirst: true })：子会话只读探索后先 plan_save 把计划落盘到主会话工作区的 reports/plans/<taskId>.md，再用 task_report blocked 只上报摘要 + 计划文档绝对路径 + 待拍板问题，你连路径一起转交用户；用户批准后用 task_message 续派（插件自动把沙箱切回可写）。planFirst 与 readOnly 互斥。
 - 只有构建/发版这类**确实需要越过文件沙箱**（写仓库外、跑不受沙箱限制的 bash/pwsh）的任务才传 task_create({ access: 'full' })：该子会话单独跑在 danger-full-access，**默认策略与其他任务一律不动**；access 只接受 'full'，且与 readOnly / planFirst 互斥；没有这种需求就不要传，也别因为用户说「不限制 bash」就顺手给所有任务加上。access 属于单个任务，插件不往孙任务传，也不写进任何默认配置。
@@ -84,9 +84,34 @@ export function renderWorktreePolicy(config = {}) {
 - worktreeCleanup 默认 off（检出+分支都保留）；要清理传 'checkout-only'（只删检出）或 'full'（连分支一起删）。`
 }
 
+/**
+ * 同写域并发防护的协调者指引（结构化配置渲染，默认 require）。
+ *
+ * 默认档是**拒绝**（不再是 advisory），但不是不可绕过：三条出路都在这里讲清楚
+ * （task_close/task_stop 旧任务、worktree:true 隔离、显式 allowConcurrent:true），
+ * 否则协调者被拒后会反复重试同一个调用。
+ */
+export function renderWriteGuardPolicy(config = {}) {
+  const mode = config.sameDirGuard ?? 'require'
+  const behavior = mode === 'require'
+    ? '默认拒绝：目标目录（相同或互相包含）或写域与活跃未隔离任务重叠时 task_create 直接报错、不建任务。'
+    : (mode === 'warn'
+      ? '只警告：同样冲突时照常建任务，但返回里带「并发风险」警告（两个子会话可能同时改同一批文件）。'
+      : '已关闭：不判目标目录/写域（writeScopes 退回一行 advisory 提示）。')
+  return `## 同写域并发防护
+当前配置：sameDirGuard=${mode}（require | warn | off）｜${behavior}
+- 判定对象：同一 target 目录（含父子目录）或 writeScopes 重叠的**活跃未隔离**任务；只读任务、worktree 隔离任务、dependsOn 链上的前置任务都不算冲突。
+- 被拒时按顺序选一条，不要原样重试同一个调用：
+  1. 该目录确实只该有一个任务在写 → 先 task_close（待确认）或 task_stop（还在跑），再重派；
+  2. 两个任务要并行 → 传 worktree:true 让新任务在独立检出里跑（推荐，产物合并由你/用户决定）；
+  3. 用户明确要求并发写同一目录 → 显式传 allowConcurrent:true，并把返回里的「并发风险」原话转告用户。
+- 不要为了绕过这条把任务改成 readOnly/planFirst（那会让子会话写不了文件），也不要自己改配置。
+- 已交付待确认（delivered）也占目录：要接着改就用 task_message 追问原会话，不要新建同目录任务。`
+}
+
 /** 协调者系统提示 = 固定规则 + 结构化配置渲染（worktree 策略等）。 */
 export function renderCoordinatorPolicy(config = {}) {
-  return `${COORDINATOR_POLICY}\n\n${renderWorktreePolicy(config)}`
+  return `${COORDINATOR_POLICY}\n\n${renderWorktreePolicy(config)}\n\n${renderWriteGuardPolicy(config)}`
 }
 
 // 协调者只做协调：这些是设计 §10 明令禁止或属于别人职责的工具。

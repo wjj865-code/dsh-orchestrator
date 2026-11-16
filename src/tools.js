@@ -32,6 +32,7 @@ import {
   notifyWorktreeOf, parseWorktreeRequest, worktreeListMarker, worktreeNoteLines, worktreeStatusLine,
 } from './worktree-request.js'
 import { checkoutPathFor, createWorktreeService, retryWorktreeOf } from './worktree.js'
+import { decideWriteGuard } from './write-guard.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
 const str = description => ({ type: 'string', description })
@@ -161,6 +162,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   const sameScope = (left, right) => left === right
     || left.startsWith(`${right}/`)
     || right.startsWith(`${left}/`)
+  // 旧的 advisory 口径（sameDirGuard=off 时保持原样）：只报写域重叠，不拦。
   const writeScopeConflicts = (scopes, excludeId) => {
     if (scopes.length === 0) return []
     const conflicts = []
@@ -407,8 +409,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       },
       dependsOn: strList('前置任务编号数组；依赖全部完成后才派发；任一前置失败则本任务失败'),
       group: str('可选分组名，如“登录改造”；面板按组汇总进度'),
-      writeScopes: strList('可选写域（目录/文件路径）；与活跃任务重叠时给冲突提示（advisory）'),
+      writeScopes: strList('可选写域（目录/文件路径）；与活跃未隔离任务重叠时按配置 sameDirGuard 拒绝或警告（不是文件锁）'),
       priority: { type: 'number', description: '优先级，-10..10，默认 0；高的先派发' },
+      allowConcurrent: { type: 'boolean', description: '显式放行同写域并发：默认不传时，目标目录（或写域）与活跃未隔离任务冲突会被拒绝；只在用户明确要求并发写同一目录时传 true，放行后返回里会标注并发风险' },
       worktree: { type: 'boolean', description: '在目标仓库里新建 git worktree 隔离执行：true=建、false=不建；不传时按配置 worktreePolicy 兜底（required 自动建）；字符串 "true" 不生效；与 readOnly/planFirst 互斥' },
       worktreeBase: str('隔离基线：分支名或 commit-ish（缺省 "default"=仓库默认分支）；仓库近 N 天有 ≥2 个活跃分支时先问用户，指定后再派'),
       worktreeBranch: str('新分支名（缺省 orch/<taskId>）；非法或已存在会报错，插件不自动改名'),
@@ -494,7 +497,6 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const priority = normalizePriority(args.priority)
       const depState = dependencyState(db, { depends_on: depends.ids })
       const initialStatus = depState.ready ? 'pending' : 'waiting_dep'
-      const conflicts = writeScopeConflicts(writeScopes)
       const duplicate = listTasks(db, { active: true })
         .find(task => task.title.trim() === title && task.goal.trim() === goal)
       if (duplicate !== undefined) {
@@ -624,6 +626,46 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         workspaceIndexEntries,
         workspaceIndexScript: workspaceIndexEntries === undefined ? undefined : fileURLToPath(new URL('../scripts/workspace-index.mjs', import.meta.url)),
       }
+      // 同写域并发防护：与活跃未隔离任务的 target 相同/互相包含，或写域重叠 → 按 config.sameDirGuard 处理。
+      // 与去重/容量同理，「判定 + createTask」必须是同一个同步段（中间没有 await）：并发调用不会一起通过。
+      // 新任务自己要被隔离（worktree 已定 requested/created/reused）或只读时不判：前者在独立检出里跑，后者不写文件。
+      // 计划任务照常判：计划阶段虽然只读，但批准后会转可写，放过去等于把冲突推迟到批准那一刻。
+      // allowConcurrent:true 是唯一的显式放行开关。
+      const newTaskIsolated = ['requested', 'created', 'reused'].includes(worktreeRecord?.state)
+      const guard = decideWriteGuard({
+        tasks: listTasks(db, { active: true }),
+        target: effectiveTarget,
+        scopes: writeScopes,
+        dependsOn: depends.ids,
+        mode: config?.sameDirGuard,
+        allowConcurrent: args.allowConcurrent === true,
+        skipChecks: newTaskIsolated || readOnly,
+      })
+      if (guard.action === 'reject') {
+        log('task.create.rejected', {
+          agentId,
+          detail: {
+            reason: guard.targetConflicts.length > 0 ? 'same-dir' : 'write-scope',
+            mode: guard.mode,
+            targetDir: effectiveTarget ?? null,
+            conflicts: [...guard.targetConflicts, ...guard.scopeConflicts].map(({ task }) => task.id),
+            callId,
+          },
+        })
+        return guard.text
+      }
+      if (guard.note !== '') {
+        log('task.create.concurrent-write', {
+          agentId,
+          detail: {
+            mode: guard.mode,
+            allowed: args.allowConcurrent === true,
+            targetDir: effectiveTarget ?? null,
+            conflicts: [...guard.targetConflicts, ...guard.scopeConflicts].map(({ task }) => task.id),
+            callId,
+          },
+        })
+      }
       const task = createTask(db, {
         brief,
         coordinatorSession: current.id ?? coordinatorSession,
@@ -667,7 +709,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       })
       const rendered = renderBrief({ taskId: task.id, access: fullAccess ? 'full' : undefined })
       addMessage(db, task.id, { kind: 'brief', rendered })
-      const conflictNote = conflictsText(conflicts)
+      // 并发风险提示：require 档被 allowConcurrent 放行、warn 档照常创建时由 guard 给；
+      // off 档退回旧的 advisory 一行（保持历史行为，不静默消失）。
+      const conflictNote = guard.note !== ''
+        ? guard.note
+        : (guard.mode === 'off' ? conflictsText(writeScopeConflicts(writeScopes)) : '')
       const depNames = depends.ids.map(id => {
         const dep = getTask(db, id)
         return dep === undefined ? id : `「${dep.title}」（${labelOf(dep.status)}）`
