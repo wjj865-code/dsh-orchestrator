@@ -6,7 +6,7 @@
       config:
         id: dsh-orchestrator-coordinator
         name: 协调者
-        description: 只做协调：拆任务、派子会话、看回报、交付产物；不读写文件、不执行命令。
+        description: 协调与原生自动化管理：拆任务、派子会话、看回报、交付产物；不读写文件、不执行命令。
         order: 80
         plugins:
           - id: persona
@@ -21,6 +21,8 @@
             name: '@deepseek-ai/dsh-time-context'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           # 交付：协调者用 present 把子会话产物（reports 文件）声明给客户端。
           # 与标准预设（dsh-web-app/presets/cordis.patch.yml）和 worker 预设同形。
           # present 在 web/desktop 由本预设行自己注册（own 工具，deny 补集遮不到）；
@@ -51,6 +53,10 @@
               # 这样 SDK 等把 present 注册成全局工具的 profile 也不会被 deny 掉。
               allow:
                 - present
+                - schedule_create
+                - schedule_list
+                - schedule_view
+                - schedule_edit
                 - task_create
                 - task_list
                 - task_status

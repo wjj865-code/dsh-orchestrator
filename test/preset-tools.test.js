@@ -106,6 +106,21 @@ test('allow 名单里的工具即使后注册也不会被 deny', () => {
   assert.deepEqual(ctx.calls, [{ deny: ['task_status'] }])
 })
 
+test('四个原生自动化工具初始及晚注册均保留，未知工具继续 deny', () => {
+  const schedule = ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']
+  for (const initial of [schedule, []]) {
+    const ctx = makeCtx([...initial, 'read', 'bash', 'task_report', 'spawn_teammate'])
+    applyIsolated(ctx, { allow: ['task_create', ...schedule] })
+    ctx.setGlobals([...schedule, 'task_create', 'read', 'bash', 'task_report', 'spawn_teammate', 'schedule_future'])
+    ctx.fire()
+    assert.deepEqual(ctx.visible(), [...schedule, 'task_create'].sort())
+    assert.deepEqual(ctx.calls.flatMap(call => call.deny), ['read', 'bash', 'task_report', 'spawn_teammate', 'schedule_future'])
+    ctx.cleanup()
+    assert.equal(ctx.listenerCount(), 0)
+    assert.ok(ctx.lifts.every(lift => lift.called))
+  }
+})
+
 test('run_code 不可 deny，跳过', () => {
   const ctx = makeCtx(['run_code', 'read'])
   applyIsolated(ctx, { allow: ['task_create'] })

@@ -20,6 +20,15 @@
 
 复用判定以台账 `settings.main_session_preset` 为准；UI 空白会话可能被 rebind 成默认预设，插件会在 `agent/created` 和复用前调用 `agentPresets.select` 拉回，失败只记日志并由 guard 兜底。
 
+### 原生自动化工具面
+
+- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，allow 显式保留 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；`preset-tools.js` 仍用增量 deny 补集。`index.js` 的 runtime restrict 与 guard 不再拒绝这四工具，其余文件、shell、团队和子会话专属禁止项不变。
+- 这四工具由原生包在预设 scope 等待 Schedule 服务后注册，不进入 `createTools`，插件全局工具数仍为 14。default worker 不新增挂载，不新增 host global plane 工具或 schema 包装。
+- 缺能力诊断仅针对唯一主会话：打开/非 running 创建/idle/下一轮 policy 渲染检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule` 服务。缺失状态去重 warning + policy 提示，边界重新检查可恢复；不等待 Loader preset list、不改运行回合工具表，也不调用真实自动化 API。
+- 本次自动编排只支持 `target:this_session`，Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new/new_once` 创建 ordinary root Session（当前 cwd/composed preset），不是委托 worker，也不是第二协调者；非唯一主 id 被现有 `requireMain` 拒绝，不改变 main_session_id。
+- 沿用原生 Host-wide 管理与用户明确授权提示、RRULE、updatedAt/expectedUpdatedAt 冲突保护；审批提示是模型约束，不是新增硬门禁。委托 depth 校验仍由宿主负责，`access:full` 不增加工具或解除 `subagent_session`。
+- 使用方法和失败恢复见 [README 原生自动化](../README.md#主会话原生自动化)，契约与宿主验证边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。不修改日报、dispatch、ledger、默认沙箱或 UI。
+
 ### 入口可见性（U1）
 
 - **任务入口（会话头「☰ 任务」）只在主会话显示**：`client/src/gate.js` 的 `createMainViewGate` 判「当前会话是不是主会话」。

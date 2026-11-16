@@ -1,4 +1,4 @@
-﻿import test from 'node:test'
+import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -256,7 +256,7 @@ test('open-main 动作端点创建主会话并写 settings', withHome(async home
     resolveByPath: () => undefined,
     async create(path, title) { return { id: 'ws-1', path, title } },
   }
-  const { ctx, routes } = fakeCtx({ sessionController, workspaces })
+  const { ctx, routes } = fakeCtx({ agents: [makeAgent('session-main')], sessionController, workspaces })
   await apply(ctx, {})
   const route = routes[0].fetch
   const response = await route(new Request('http://x/api/orchestrator', {
@@ -401,6 +401,84 @@ test('协调者白名单：只 deny 已知的危险工具，保留 ask_user/show
   assert.equal(deny.includes('ask_user'), false)
   assert.equal(deny.includes('show_view'), false)
   assert.equal(deny.includes('present'), false)
+}))
+
+test('主会话保留四个原生自动化工具，文件/团队/子任务 guard 不变', withHome(async () => {
+  const schedule = ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']
+  const blocked = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'pwsh', 'skill', 'wait_agent', 'spawn_teammate', 'send_message', 'team_task_create', 'task_report', 'task_detail', 'plan_save']
+  const main = makeAgent('s-1', { knownTools: [...schedule, ...blocked] })
+  const otherRoot = makeAgent('scheduled-new-root')
+  const f = fakeCtx({ agents: [main, otherRoot] })
+  await apply(f.ctx, { coordinatorSession: 's-1' })
+  assert.deepEqual(main.restrictions[0].deny, COORDINATOR_DENY.filter(name => blocked.includes(name)))
+  for (const name of schedule) {
+    assert.equal(COORDINATOR_DENY.includes(name), false)
+    assert.equal(f.guards[0]({ name, agent: main }), undefined)
+  }
+  for (const name of blocked) {
+    assert.equal(typeof f.guards[0]({ name, agent: main }), 'string')
+    assert.equal(f.guards[0]({ name, agent: otherRoot }), undefined)
+  }
+  const create = f.registered.find(tool => tool.name === 'task_create')
+  assert.match(await create.execute({ title: 'new/new_once', goal: 'g', acceptance: ['a'] }, { agent: otherRoot }), /主会话/)
+  assert.equal(f.registered.length, 14, '不在 host plane 注册自动化包装')
+}))
+
+test('自动化诊断在边界重查、warning 去重、恢复可见且不污染其他会话', withHome(async () => {
+  const names = new Set(['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit'])
+  const main = makeAgent('s-1')
+  const other = makeAgent('s-2')
+  let schedule
+  let lookups = 0
+  main.ctx.tools.get = (name, agent) => {
+    assert.equal(agent, main)
+    lookups += 1
+    return names.has(name) ? { name } : undefined
+  }
+  const f = fakeCtx({ agents: [main, other] })
+  const get = f.ctx.get
+  f.ctx.get = name => name === 'schedule' ? schedule : get(name)
+  await apply(f.ctx, { coordinatorSession: 's-1' })
+  const prompt = f.promptContexts[0].text
+  const diagnosticWarnings = () => f.warnings.filter(message => /当前缺失自动化能力/.test(message))
+  assert.match(prompt({ agent: main }), /当前缺失自动化能力：schedule 服务/)
+  assert.equal(diagnosticWarnings().length, 1)
+  const before = lookups
+  f.listeners.get('agent/status')({ agent: other, status: 'idle' })
+  assert.equal(prompt({ agent: other }), '')
+  assert.equal(lookups, before)
+  schedule = {}
+  names.delete('schedule_view')
+  f.listeners.get('agent/status')({ agent: main, status: 'idle' })
+  assert.match(prompt({ agent: main }), /当前缺失自动化能力：schedule_view/)
+  assert.equal(diagnosticWarnings().length, 2)
+  names.add('schedule_view')
+  f.listeners.get('agent/status')({ agent: main, status: 'idle' })
+  assert.doesNotMatch(prompt({ agent: main }), /当前缺失自动化能力：/)
+  assert.equal(main.restrictions.length, 1, '检查不更改工具表')
+  names.delete('schedule_view')
+  assert.match(prompt({ agent: main }), /当前缺失自动化能力：schedule_view/)
+  assert.equal(diagnosticWarnings().length, 3, '恢复后再次缺失可以告警')
+  main.ctx.tools.get = () => { throw new Error('late loader') }
+  assert.doesNotThrow(() => prompt({ agent: main }))
+  assert.match(prompt({ agent: main }), /能力检查失败/)
+}))
+
+test('自定义主会话缺原生定义时不崩；running 初始化延到 idle，打开也检查', withHome(async () => {
+  const main = makeAgent('s-1')
+  main.status = 'running'
+  const sessionController = { async rename() {} }
+  const f = fakeCtx({ agent: main, sessionController })
+  await apply(f.ctx, { coordinatorSession: 's-1' })
+  assert.equal(f.warnings.some(message => /当前缺失自动化能力/.test(message)), false)
+  f.listeners.get('agent/status')({ agent: main, status: 'idle' })
+  main.status = 'idle'
+  assert.match(f.promptContexts[0].text({ agent: main }), /当前缺失自动化能力：schedule 服务、schedule_create、schedule_list、schedule_view、schedule_edit/)
+  const response = await f.routes[0].fetch(new Request('http://x/api/orchestrator', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: 'open-main' }),
+  }))
+  assert.equal((await response.json()).ok, true)
+  assert.equal(f.warnings.filter(message => /当前缺失自动化能力/.test(message)).length, 1)
 }))
 
 test('协调者可用 present 交付产物：不在 COORDINATOR_DENY，执行层 guard 放行', withHome(async () => {

@@ -88,6 +88,22 @@ test('README 与预设同口径：默认保持待确认、工具数 14、升级�
   assertNoConflicts('README', readme)
 })
 
+test('原生自动化 policy 与文档锁住真实工具、授权及会话边界', () => {
+  const texts = [renderCoordinatorPolicy({}), ...['README.md', 'docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md']
+    .map(file => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))]
+  for (const text of texts) {
+    for (const name of ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']) assert.ok(text.includes(name))
+    assert.match(text, /Host-wide/)
+    assert.match(text, /明确授权/)
+    assert.match(text, /this_session/)
+    assert.match(text, /new.*new_once/)
+    assert.match(text, /非唯一主/)
+    assert.match(text, /(?:默认|default) worker 不(?:开放|新增)/)
+    assert.match(text, /full.*不增加工具/)
+    assert.match(text, /expectedUpdatedAt/)
+  }
+})
+
 test('README 只服务使用者：维护者内容放 docs/，仅留链接', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
   // 维护者章节（发布/CI/内部架构/开发命令）不该再回到 README。

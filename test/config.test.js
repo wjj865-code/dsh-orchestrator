@@ -225,6 +225,22 @@ test('协调者预设挂 present 交付工具：主会话可交付子会话产�
   assert.equal((source.match(/id: present/g) ?? []).length, 2, '整份补丁应有协调者、worker 两行 present')
 })
 
+test('原生自动化只挂协调者预设，四工具显式保留', () => {
+  const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
+  const worker = presetPlugins(source, 'dsh-orchestrator-worker')
+  const rows = coordinator.rows.filter(row => row.id === 'tool-schedule')
+  assert.equal(rows.length, 1)
+  assert.match(rows[0].lines.join('\n'), /name:\s*'@deepseek-ai\/dsh-tool-schedule'/)
+  assert.doesNotMatch(rows[0].lines.join('\n'), /^\s+(config|disabled):/m)
+  assert.equal(worker.rows.some(row => row.id === 'tool-schedule'), false)
+  assert.equal((source.match(/name: '@deepseek-ai\/dsh-tool-schedule'/g) ?? []).length, 1)
+  for (const name of ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']) {
+    assert.match(coordinator.text, new RegExp(`^\\s+- ${name}\\s*$`, 'm'))
+    assert.doesNotMatch(worker.text, new RegExp(`^\\s+- ${name}\\s*$`, 'm'))
+  }
+})
+
 test('package.json 导出 preset-tools', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(pkg.name, '@wjj865-code/dsh-orchestrator')

@@ -49,7 +49,7 @@ https://github.com/wjj865-code/dsh-orchestrator
 ### 装好后的自检
 
 1. 插件页能看到「任务编排」标题、图标和详情页。
-2. 侧栏「主会话」能打开；协调者工具表 11 个工具，子会话另有 3 个（全局共 14 个）。
+2. 侧栏「主会话」能打开；插件全局共 14 个工具（协调者 11 个、子会话专属 3 个），此外协调者预设提供 `present`、提问及原生自动化四工具；默认 worker 不新增自动化。
 3. 派一条任务，子会话 `task_report done` 后主会话收到「已交付待确认」通知；`task_close` 能确认成「已完成」。
 4. 会话头「☰ 任务」只在主会话显示，切到子会话后自动隐藏。
 
@@ -220,6 +220,27 @@ task_create({
 - `blocked` / `needs_auth` 可带 `question` + `options`，显示在通知、详情与面板。
 - 日报默认关闭；profile 配 `digestAt: '09:00'`（`digestTimeZone` 可选）后，打开主会话自动挂 schedule，到点汇总完成/在跑/待决定/失败/产物。
 - 空闲看门狗默认开：`running` 长时间无心跳/消息/状态变化时告警一次，只告警、不改状态、不 kill。
+
+### 主会话原生自动化
+
+协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 14 个工具。当前契约核实于 DSH **0.2.2-rc.3**，升级宿主需复核，不能据此保证未来版本兼容。
+
+| 原生工具 | 用法 |
+|---|---|
+| `schedule_create` | 必填 `title` / `prompt` / `rrule` / `target` |
+| `schedule_list` | `active?` / `limit?` / `offset?` 分页查询 |
+| `schedule_view` | `id` 查看最新任务 |
+| `schedule_edit` | `id` + `action:'update'|'delete'`；暂停 `active:false`，恢复 `active:true`；编辑携带最新 `updatedAt` 为 `expectedUpdatedAt`（可用时） |
+
+- **Host-wide**：能看到、按 id 管理其他会话创建的任务，不是只管理本主会话的任务。创建/修改/暂停/恢复/删除需用户明确授权；先确认目标，冲突 `schedule_conflict` 先重读，不强行覆盖。不主动清理现有自动化。授权提示是模型行为约束，不是人工审批硬门禁；日期/时间/时区不明确先问。
+- **本次自动编排只支持 `target:'this_session'`**：到期唤醒唯一主会话，按已授权 prompt 调 `task_list` 核对后再 `task_create`。`new` / `new_once` 仍是原生选项，但创建普通 root 会话、继承当前目录/预设，非唯一主 id 无法直接 `task_create`，不提供第二协调者/转发桥。
+- 默认 worker 不挂自动化包；自定义 worker 即使已有 schema，宿主仍返回 `subagent_session`。`access:full` 只改变沙箱，不增加工具、不绕过委派校验或审批。
+- Host 必须运行；投递成功不等于子任务完成，崩溃可能重复投递，删除不会撤回已排队消息，不承诺 exactly-once。已有授权只在原范围内有效。
+- 缺服务/工具时主会话会收到能力缺失提示，现有编排继续；不能模拟成功或用 shell/HTTP 绕过。缺包使预设 broken 时看 Loader 诊断并修正宿主版本/配置。安装或升级后须彻底退出再启动 DSH，刷新页面不保证生效；回滚插件不会自动暂停/删除已有原生自动化。
+
+自然语言示例（只是请求范例，不会自行创建）：
+
+> 请创建每天北京时间 09:00 的自动化，投递到本主会话：先查 task_list，已有同组任务在跑就只报告；否则派一个明确授权的只读检查任务。不修改已有自动化。
 
 ### 可选能力：平台 goal 与回合间 keep-alive
 

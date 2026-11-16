@@ -28,12 +28,18 @@ export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
 
 const COORDINATOR_INVALID_HINT = '主会话已失效，请从面板「打开主会话」重建。'
+const SCHEDULE_TOOLS = ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']
 const WAIT_AGENT_DENIAL = '协调者禁止阻塞等待：不要调用 wait_agent；查看进度用 task_list / task_status，本回合没有别的事就立即结束回合。'
 const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则（优先于平台默认的 Team Lead 等待要求）：
 - 禁止使用 wait_agent 或任何阻塞等待、轮询；不要 sleep，不要反复查询来等子任务。
 - 禁止调用 spawn_teammate / send_message / list_agents / interrupt_agent / team_task_create / team_task_get / team_task_list / team_task_update：派活只能走 task_create，查进度只能 task_list / task_status，不要直接派队友或操作团队任务板。
 - 工具表里可能仍列出这些团队工具（agent-scope 自注册，预设层删不掉），看到也不要调用；执行层会直接拒绝并返回原因。
 - 查看进度只用 task_list / task_status。
+- 原生自动化管理用 schedule_create / schedule_list / schedule_view / schedule_edit；不造调度器，不用文件、shell 或 HTTP 绕过缺失能力。schedule_create 必填 title/prompt/rrule/target；schedule_list 用 active/limit/offset 分页；schedule_view 用 id；schedule_edit 用 id 与 action:update|delete，暂停/恢复用 active:false|true，不存在独立 schedule_delete/pause 工具。
+- 自动化是 Host-wide，可见并可按 id 管理其他会话创建的任务：创建、修改、暂停、恢复、删除必须有用户明确授权，修改前确认目标，不能主动迁移或清理现有任务；既有自动化的授权只在原范围内有效。宿主授权提示是模型行为约束，不是人工审批硬门禁。时间、日期或时区不明确先问。
+- 本次自动编排只支持 target:this_session：到期唤醒唯一主会话，再走 task_create。new/new_once 创建普通 root 会话并继承当前目录/预设，但非唯一主会话，不能直接 task_create；不得篡改 main_session_id、认领第二协调者或加转发桥。自动化投递成功不等于子任务完成；重复触发先用 task_list 核对，不反复重派。
+- 编辑时用最新结果的 updatedAt 作为 expectedUpdatedAt（可用时）；schedule_conflict 先 schedule_view 重读，不强行覆盖。Host 必须运行；崩溃可能重复投递，删除不撤回已排队消息，不承诺 exactly-once。
+- 默认 worker 不开放自动化；自定义预设即使露出 schema，宿主仍拒绝 delegated subagent（subagent_session）。access:full 只改变单个子会话沙箱，不增加工具、不绕过宿主委派校验或审批。缺服务/工具时明确报告当前能力缺失，不能模拟成功。
 - 派任务前可用 history_search 查跨项目记忆与历史任务，用 project_context 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
 - 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域；紧急任务用 priority（-10..10）。
 - 子任务回报产物路径后，默认用 present 展示 1-4 个最关键的产物（最多 4 个；只列真实存在的文件、写绝对路径），不必等用户点名；没有产物就不提 present；不要自行 stat/read 校验存在性（协调者的 read/glob 已被 deny，插件与子任务负责确认），present 只声明交付、不读文件内容。
@@ -90,7 +96,6 @@ export const COORDINATOR_DENY = [
   'bash', 'pwsh', 'web_search', 'web_fetch', 'read_browser',
   'plugin_manager', 'skill',
   'job_list', 'job_output', 'job_kill',
-  'schedule_create', 'schedule_edit', 'schedule_list',
   'request_secret', 'request_connector',
   'list_bots', 'message_bot', 'post_to_group',
   'create_bot', 'create_group', 'delete_group', 'update_group', 'update_bot',
@@ -161,6 +166,26 @@ export async function apply(ctx, rawConfig = {}) {
     return { id, live: id !== undefined && resolveCoordinator() !== undefined }
   }
 
+  // 只检查定义/服务，不执行自动化；回合边界重查，晚加载或恢复后不永久缓存 unavailable。
+  const scheduleCapability = new WeakMap()
+  const checkScheduleCapability = agent => {
+    if (agent === undefined || agent.id !== resolvedCoordinatorId()) return ''
+    const missing = []
+    try {
+      if ((ctx.get?.('schedule') ?? ctx.schedule) === undefined) missing.push('schedule 服务')
+      const tools = agent.ctx?.tools ?? ctx.tools
+      for (const name of SCHEDULE_TOOLS) {
+        if (typeof tools?.get !== 'function' || tools.get(name, agent) === undefined) missing.push(name)
+      }
+    } catch {
+      missing.push('能力检查失败')
+    }
+    const hint = missing.length === 0 ? '' : `当前缺失自动化能力：${missing.join('、')}。不能模拟成功或绕过；检查宿主支持版本、预设挂载与 Loader broken 诊断，配置修正后彻底重启 DSH。现有任务编排仍可使用。`
+    if (hint !== '' && scheduleCapability.get(agent) !== hint) warnings(`dsh-orchestrator: ${hint}`)
+    scheduleCapability.set(agent, hint)
+    return hint
+  }
+
   const restrictCoordinator = agent => {
     if (agent === undefined || restrictedAgents.has(agent)) return agent !== undefined
     const tools = agent?.ctx?.tools
@@ -195,6 +220,7 @@ export async function apply(ctx, rawConfig = {}) {
       pendingRestrictions.add(agent)
       return false
     }
+    checkScheduleCapability(agent)
     return restrictCoordinator(agent)
   }
 
@@ -254,9 +280,12 @@ export async function apply(ctx, rawConfig = {}) {
     }
   })
   ctx.on?.('agent/status', ({ agent, status }) => {
-    if (agent === undefined || status !== 'idle' || !pendingRestrictions.has(agent)) return
-    pendingRestrictions.delete(agent)
-    restrictCoordinator(agent)
+    if (agent === undefined || status !== 'idle' || agent.id !== resolvedCoordinatorId()) return
+    checkScheduleCapability(agent)
+    if (pendingRestrictions.has(agent)) {
+      pendingRestrictions.delete(agent)
+      restrictCoordinator(agent)
+    }
   })
 
   // 白名单去不掉 agent scope 注册的 wait_agent，所以在执行层再拦一道。
@@ -279,7 +308,9 @@ export async function apply(ctx, rawConfig = {}) {
     interpolate: false,
     text: context => {
       const id = resolvedCoordinatorId()
-      return id !== undefined && context?.agent?.id === id ? renderCoordinatorPolicy(config) : ''
+      if (id === undefined || context?.agent?.id !== id) return ''
+      const capability = checkScheduleCapability(context.agent)
+      return `${renderCoordinatorPolicy(config)}${capability === '' ? '' : `\n\n${capability}`}`
     },
   })
 
@@ -573,6 +604,8 @@ export async function apply(ctx, rawConfig = {}) {
       openMain: async () => {
         const result = await mainSession.open()
         if (result?.ok === true && typeof result.sessionId === 'string') {
+          const agent = resolveCoordinator()
+          if (agent !== undefined && agent.status !== 'running') checkScheduleCapability(agent)
           try { await ensureDigestFor(result.sessionId) } catch (error) {
             warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`)
           }

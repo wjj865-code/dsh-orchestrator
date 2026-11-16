@@ -59,6 +59,17 @@
 - **子会话预设（`workerPreset`）只在派发时生效**：续派/冷恢复沿用会话创建时记下的 `agentPreset`，改配置不会切换已有子会话；值不是合法 preset id 时静默回落 `dsh-orchestrator-worker`（日志一行 warn）。
 - **`orch-debug` 调试预设**复制随包「创造模式」(`cordis`) 组合：预设声明装在 profile 里，**升级 DSH 后必须先 `node scripts/orch-debug-preset.mjs --check` 看漂移，再重跑 `npm run preset:debug` 重新生成并重装**，否则组合里的包名/行 id 与新版对不上会让声明行 broken；预设可执行 Host 代码，不是沙箱。旧的 `$DSH_HOME/.agent-presets/<id>/` 目录在 rc.3 已无人读取，本插件不再写那个路径。
 
+## 原生自动化
+
+- 四个实际工具为 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`，没有单独 delete/pause/enable 工具；仅核实 **0.2.2-rc.3** 的 RRULE/target/depth 契约，旧 schedule_update/delete 和时间选择器不兼容，不提供假工具或自动适配。
+- **Host-wide**：可管理其他会话创建的任务。写操作必须用户明确授权，确认目标与范围，日期/时间/时区不明先问；宿主提示不是对用户意图的硬验证。编辑用最新 `updatedAt` 为 `expectedUpdatedAt`（可用时），冲突先重读。
+- **本次自动编排只支持 `this_session`**。`new/new_once` 是普通 root 会话，继承当前 cwd/composed preset，但非唯一主 id 不能 `task_create`；不认领第二协调者、不转发、不篡改 main_session_id。需要新会话直接编排须另立需求，不靠 `access:full` 解决。
+- **默认 worker 不开放**，`access:full` 不增加工具、不绕过委派校验或审批。自定义组合可能有 schema，但宿主委托 depth 校验仍返回 `subagent_session`（冷恢复/full 也不能绕过）。标准 root / 其他插件会话维持原行为，不新增全局 guard。
+- `coordinatorSession` 自定义组合不强行换预设：仅已有原生工具才可用。缺 Schedule 服务/定义在主会话边界给去重 warning 与能力缺失 policy，恢复后再检查；编排继续，不能模拟自动化成功。缺包造成预设 broken 需看 Loader 诊断并修正支持版本/配置，不硬编码安装路径或降级旧 schema。
+- Host 必须在运行；回执只代表投递，不代表模型/子任务完成。崩溃可能重复投递，停机/忙时沿用原生合并语义，删除不撤回已排队消息，不承诺 exactly-once。按授权 prompt 先 task_list 核对重复任务，业务副作用沿用已有幂等/人工核对。
+- 本地模块测试不是已安装插件/当前 GUI 验证。安装/加载与彻底重启另需授权（刷新页面不足）；真实临时自动化写入、到期 task_create→worker→task_report 与 new/new_once 独立 Host 探针另行验收。回滚插件不会自动清除已授权的原生自动化。
+- 契约来源：宿主 `@deepseek-ai/dsh-tool-schedule/src/index.ts` 的 registerScheduleTools/runForCaller/targetFor、同包 README.zh.md，以及宿主 `docs/subsystems/schedule.zh.md`（0.2.2-rc.3）；可复跑 [真实 scope 探针](probes/preset-scope-restrict.mjs)，不修改用户现有任务。
+
 ## 平台 / 沙箱
 
 - `backend:'team'` 在 rc.3 不可用：`agentTeams` 成员 API 被移除，只剩任务板；插件会加载但派发返回可读错误，建议 `backend:'subagent'`。
