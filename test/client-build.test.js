@@ -91,7 +91,9 @@ test('产物工厂形状：factory 返回 { inject, apply }，inject 覆盖三�
   }
   assert.doesNotThrow(() => loaded.apply(ctx))
   const slots = registered.map(row => row.spec.name)
-  assert.deepEqual(slots, ['main', 'main', 'sidebar.panellist', 'conversation.header.leading'])
+  assert.deepEqual(slots, [
+    'main', 'main', 'sidebar.panellist', 'conversation.header.leading', 'conversation.chat.turnTail',
+  ])
   assert.deepEqual(registered.filter(row => row.spec.name === 'main').map(row => row.spec.key).sort(),
     ['orchestrator', 'orchestrator-launcher'])
 })
@@ -108,8 +110,10 @@ test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dis
   // __test 出口保留（T7.2 验收点：单测经它验纯逻辑与闸门）。
   const { loaded } = loadArtifact()
   assert.deepEqual(Object.keys(loaded.__test).sort(), [
-    'STYLE_TEXT', 'TONE_COLOR', 'artifactDate', 'artifactProject', 'countTasks',
-    'createMainViewGate', 'fileAddressOf', 'fileAddressProblem', 'groupArtifacts', 'matchesFilter', 'matchesQuery',
+    'STYLE_TEXT', 'TONE_COLOR', 'artifactDate', 'artifactProject', 'chipStateOf', 'chipTooltipOf',
+    'chipViewOf', 'chipVisibleTitle', 'countTasks', 'createFocusRequest', 'createMainViewGate',
+    'createTaskFeed', 'fileAddressOf', 'fileAddressProblem', 'groupArtifacts', 'isLatestTurn',
+    'matchesFilter', 'matchesQuery', 'selectTaskChips',
   ])
 })
 

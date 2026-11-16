@@ -14,6 +14,36 @@ export const POLL_MS = 2000
 export const POLL_BACKOFF_MS = 30000
 // 任务入口闸门的兜底轮询：会话切换走订阅即时判定；这里只负责「首帧没判出来 / 请求失败」的重试。
 export const MAIN_VIEW_POLL_MS = 5000
+// 回复底部关联任务 chip（conversation.chat.turnTail 槽位）：
+// - CHIP_ID 是 list 槽位的定址 id；同一 id 复注册表示「替换」而不是新增。
+// - chip 只挂在最新一轮回复上，所以轮询只在这一行挂载时进行：有活跃任务 3s，全是终态 15s，
+//   失败退避 30s（与面板同口径）；没有订阅者立刻停表。
+export const CHIP_ID = 'orchestrator-task-chips'
+export const CHIP_MAX = 2
+export const CHIP_RECENT_MS = 30 * 60 * 1000
+export const CHIP_POLL_MS = 3000
+export const CHIP_IDLE_MS = 15000
+// 入选 chip 的「活跃」状态：等前置/待派发 也算活跃（用户原话：等前置不是取消）。
+// feed 用它决定轮询节奏，逻辑用它决定入选；两处同源。
+export const CHIP_ACTIVE_STATUSES = ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered']
+// 视觉状态：把台账的 10 个状态压成 5 个图标态（运行中 / 等前置 / 待确认 / 完成 / 失败 / 取消）。
+export const CHIP_STATE_OF = {
+  running: 'running',
+  pending: 'waiting', waiting_dep: 'waiting',
+  waiting_user: 'confirming', waiting_auth: 'confirming', delivered: 'confirming',
+  done: 'done',
+  failed: 'failed', orphaned: 'failed', missing: 'failed',
+  cancelled: 'cancelled',
+}
+// 图标 + 文案。半色/脉冲由 confirming 态承担；等待态用虚线静圈，不跟运行中抢动效。
+export const CHIP_STATE_VIEW = {
+  running: { icon: 'ring', className: 'orch-taskchip-spin', tone: 'info' },
+  waiting: { icon: 'dashed', className: 'orch-taskchip-dashed', tone: 'muted' },
+  confirming: { icon: 'dashed', className: 'orch-taskchip-dashed', tone: 'warn' },
+  done: { icon: 'check', className: '', tone: 'good' },
+  failed: { icon: 'close', className: '', tone: 'bad' },
+  cancelled: { icon: 'dash', className: '', tone: 'muted' },
+}
 // 注入的 <style> id：HMR/重复 apply 时按 id 去重，避免样式表被插两遍。
 export const STYLE_ID = 'dsh-orchestrator-styles'
 export const FILTERS = [

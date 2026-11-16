@@ -48,6 +48,9 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
           label: card.label,
           tone: card.tone,
           childSessionId: task.session_id ?? null,
+          // 会话归属：客户端「回复底部 chip」按这个字段判断任务是不是当前会话派出的。
+          // 只下发 id（不是敏感数据），与 mainSession.id 同源（settings.main_session_id）。
+          coordinatorSession: task.coordinator_session ?? null,
           targetDir: task.target_dir ?? null,
           readOnly: task.read_only === true,
           // P8：计划模式（列表小标 / 抽屉概览）；非计划任务固定 false + 'none'。

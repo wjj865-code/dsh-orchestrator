@@ -6,7 +6,7 @@
  * apply(ctx) 负责：注入样式 → 起任务入口闸门 → 注册 main 面板 / 启动器 / 侧栏入口 / 会话头按钮。
  */
 import {
-  PANEL_ID, LAUNCHER_ID, ROUTE, TONE_COLOR,
+  PANEL_ID, LAUNCHER_ID, ROUTE, TONE_COLOR, CHIP_ID,
   FILTERS, METRICS, POLL_MS, POLL_BACKOFF_MS,
   STATUS_LABEL, STATUS_TONE, MESSAGE_KIND_LABEL, DELIVERY_LABEL, DELIVERY_TONE,
   GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL,
@@ -15,10 +15,13 @@ import {
 import {
   countTasks, matchesFilter, matchesQuery, groupArtifacts, artifactDate, artifactProject,
   displayNameOf, textOf, listOf, timeLabel, shortPath, fileAddressOf, fileAddressProblem,
+  createFocusRequest, selectTaskChips, chipStateOf, chipViewOf, chipTooltipOf, chipVisibleTitle,
+  isLatestTurn,
 } from './logic.js'
 import {
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
 } from './api.js'
+import { createTaskFeed } from './feed.js'
 import { createMainViewGate } from './gate.js'
 import { ensureStyles, STYLE_TEXT } from './styles.js'
 import { createUi } from './ui.js'
@@ -32,8 +35,10 @@ export const createClient = (req) => {
   const inject = ['slots', 'layout', 'uiWorkspace']
 
   const { Icon, Badge, Chip, EmptyState, Banner, SkeletonList } = createUi(h)
+  // chip 的「打开并定位」请求：chip 只记任务 id，真正开抽屉的是面板自己（面板挂载时 take 一次）。
+  const focusRequest = createFocusRequest()
   const {
-    HeaderButton, LauncherIcon, LauncherPanel, TasksPanel,
+    HeaderButton, LauncherIcon, LauncherPanel, TasksPanel, TaskChipRow,
   } = createViews({
     React,
     h,
@@ -73,6 +78,11 @@ export const createClient = (req) => {
     readPreview,
     panelAction,
     openMainOnce,
+    selectTaskChips,
+    chipViewOf,
+    chipTooltipOf,
+    chipVisibleTitle,
+    isLatestTurn,
   })
 
   function apply(ctx) {
@@ -156,6 +166,13 @@ export const createClient = (req) => {
       void mainView.refresh()
     }
 
+    // 关联任务 chip 的共享数据源：只在 chip 行订阅时轮询（见 feed.js）。
+    // 卸载时停表，避免插件热替换后还留着一个自排程定时器。
+    const chipFeed = createTaskFeed({ readSnapshot: () => readSnapshot() })
+    if (typeof ctx.effect === 'function') {
+      ctx.effect(() => () => chipFeed.stop(), 'dsh-orchestrator: task chip feed')
+    }
+
     // 产物预览：复用宿主的会话右侧栏（ui-sidebar-right 的 file Tab，Markdown/代码/图片/PDF/Office 都有渲染器）。
     // 两个硬约束：
     // 1) 侧栏只在会话视图里挂载 —— 面板占主栏时 ctx.sidebarRight.mounted 是 undefined，openResource 会抛；
@@ -199,6 +216,8 @@ export const createClient = (req) => {
       inject: () => ({
         openSession: id => ctx.uiWorkspace.openSession(id),
         openArtifactPreview,
+        // chip 的「打开并定位」请求交给面板自己消费（挂载时 take 一次，取走即清空）。
+        focus: focusRequest,
       }),
     }, TasksPanel))
 
@@ -225,6 +244,24 @@ export const createClient = (req) => {
         hooks: { mainView },
       }),
     }, HeaderButton))
+
+    // 回复底部「关联任务」chip：官方 chat 槽位 conversation.chat.turnTail（每轮已完成回复的尾部、
+    // 动作行之上），只追加一个带新 id 的 list 条目 —— 不碰宿主时钟、不注入 DOM、不抢别人的条目。
+    // 组件只在「主会话 + 最新一轮」时订阅共享 feed；点击 = 记下任务 id + 打开面板，
+    // 面板挂载时 take() 到 id 就直接开该任务的详情抽屉（定位）。
+    ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+      name: 'conversation.chat.turnTail',
+      id: CHIP_ID,
+      order: 20,
+      inject: () => ({
+        openTask: id => {
+          if (focusRequest.request(id)) ctx.layout.selectPanel(PANEL_ID)
+        },
+        openPanel: () => ctx.layout.selectPanel(PANEL_ID),
+        hooks: { mainView },
+        chips: chipFeed,
+      }),
+    }, TaskChipRow))
   }
 
   return {
@@ -240,6 +277,14 @@ export const createClient = (req) => {
       artifactProject,
       fileAddressOf,
       fileAddressProblem,
+      selectTaskChips,
+      chipStateOf,
+      chipViewOf,
+      chipTooltipOf,
+      chipVisibleTitle,
+      isLatestTurn,
+      createFocusRequest,
+      createTaskFeed,
       TONE_COLOR,
       STYLE_TEXT,
     },

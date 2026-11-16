@@ -13,6 +13,7 @@ export function createViews({
   displayNameOf, textOf, listOf, timeLabel, shortPath,
   countTasks, matchesFilter, matchesQuery, groupArtifacts,
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
+  selectTaskChips, chipViewOf, chipTooltipOf, chipVisibleTitle, isLatestTurn,
 }) {
   // 会话头「任务」入口：仅主会话显示。useMainView 由下面 conversation.header.leading 的 inject
   // 以 hooks.mainView 提供；hook 缺失或未判定（默认 false）时返回 null，入口隐藏。
@@ -30,6 +31,72 @@ export function createViews({
 
   // 侧栏「插件」下方的入口图标（面板行渲染的是这个组件）。
   const LauncherIcon = () => h('span', { 'aria-hidden': true, className: 'orch-launcher-icon' }, '\u25C8')
+
+  // 回复底部「关联任务」chip 行：挂在 ui-chat 官方 conversation.chat.turnTail 列表槽位里，
+  // 只在「主会话 + 最新一轮已完成回复」尾部渲染（历史回复不带 chip，子会话一个也收不到）。
+  // 数据来自共享 feed（client.js 注入的 chips 可观测源），这里只在需要时订阅：
+  // 非最新轮次 / 非主会话不订阅 → 没有 chip 的会话开着一个轮询都没有。
+  // 关联规则、状态映射与截断都是 logic.js 的纯函数，组件只做装配（单测直接断言纯函数 + 首帧结构）。
+  const TaskChipRow = ({ turn, sessionId, useMainView, useChat, chips, openTask, openPanel }) => {
+    const isMain = typeof useMainView === 'function' ? useMainView(value => value === true) : false
+    const latest = typeof useChat === 'function' ? useChat(snapshot => isLatestTurn(snapshot, turn)) : false
+    const enabled = isMain === true && latest === true
+    // 订阅只为「数据变了要重渲染」这一个信号；值本身不参与渲染（渲染直接读 getSnapshot）。
+    const [, setRevision] = React.useState(0)
+    React.useEffect(() => {
+      if (!enabled || chips === undefined || chips === null || typeof chips.subscribe !== 'function') return undefined
+      return chips.subscribe(() => setRevision(value => value + 1))
+    }, [enabled, chips])
+    if (!enabled) return null
+    const snapshot = chips !== undefined && chips !== null && typeof chips.getSnapshot === 'function'
+      ? chips.getSnapshot()
+      : null
+    // 空状态：没有关联任务就整行不渲染（不占位、不出骨架、不报错）。
+    const view = snapshot === null ? null : selectTaskChips(snapshot.tasks, { sessionId, now: Date.now() })
+    if (view === null) return null
+    const chipNode = task => {
+      const visual = chipViewOf(task.status)
+      const tooltip = chipTooltipOf(task)
+      return h('button', {
+        key: `chip-${task.id}`,
+        type: 'button',
+        className: 'orch-taskchip',
+        'data-state': visual.state,
+        'data-task-id': task.id,
+        title: tooltip,
+        'aria-label': tooltip,
+        onClick: typeof openTask === 'function' && typeof task.id === 'string' && task.id !== ''
+          ? () => openTask(task.id)
+          : undefined,
+      },
+        h('span', {
+          className: 'orch-taskchip-mark',
+          style: { color: TONE_COLOR[visual.tone] || TONE_COLOR.muted },
+          'aria-hidden': 'true',
+        }, h(Icon, {
+          name: visual.icon,
+          size: 12,
+          className: visual.className === '' ? undefined : visual.className,
+        })),
+        h('span', { className: 'orch-taskchip-title' }, chipVisibleTitle(task.title)),
+      )
+    }
+    const more = view.rest > 0
+      ? h('button', {
+        key: 'chip-more',
+        type: 'button',
+        className: 'orch-taskchip orch-taskchip--more',
+        title: `还有 ${view.rest} 个关联任务`,
+        'aria-label': `还有 ${view.rest} 个关联任务`,
+        onClick: typeof openPanel === 'function' ? openPanel : undefined,
+      }, `+${view.rest}`)
+      : null
+    return h('div', {
+      className: 'orch-chips',
+      'data-orch-chip-row': 'true',
+      'data-orch-chip-total': String(view.total),
+    }, [...view.chips.map(chipNode), more])
+  }
 
   // 启动器面板：侧栏条目点击 → 选到这个面板 → 挂载即跑现有 open-main → 跳到主会话 → 清空面板回对话。
   const LauncherPanel = ({ openMain, openSession, clearPanel }) => {
@@ -65,7 +132,7 @@ export function createViews({
     )
   }
 
-  const TasksPanel = ({ openSession, openArtifactPreview }) => {
+  const TasksPanel = ({ openSession, openArtifactPreview, focus }) => {
     // ---- 数据与状态（A3/A4/B1/G1 全部保留）----
     const [snapshot, setSnapshot] = React.useState(null)
     // 快照（轮询/刷新）和动作（打开主会话/打开会话）分开记，避免把动作错误显示成「台账暂不可用」。
@@ -238,6 +305,16 @@ export function createViews({
         try { window.removeEventListener('keydown', onKeyDown) } catch { /* 卸载期清理失败不阻断 */ }
       }
     }, [drawerOpen])
+
+    // 关联任务 chip 的「打开并定位」：chip 点击时记下一次任务 id，面板挂载时取走并直接开详情抽屉。
+    // 只在挂载时消费一次（take 语义即清空），所以之后用户手动打开面板不会被旧请求弹抽屉。
+    const focusConsumed = React.useRef(false)
+    React.useEffect(() => {
+      if (focusConsumed.current || focus === undefined || focus === null || typeof focus.take !== 'function') return
+      focusConsumed.current = true
+      const id = focus.take()
+      if (typeof id === 'string' && id !== '') void openDetail(id)
+    }, [focus])
 
     // 产物路径复制：优先 Clipboard API，老宿主退回 textarea + execCommand；都不行就报可读错误。
     const copyPath = async path => {
@@ -1131,5 +1208,5 @@ export function createViews({
       ),
     )
   }
-  return { HeaderButton, LauncherIcon, LauncherPanel, TasksPanel }
+  return { HeaderButton, LauncherIcon, LauncherPanel, TasksPanel, TaskChipRow }
 }

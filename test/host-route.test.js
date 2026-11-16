@@ -45,6 +45,8 @@ test('snapshot 返回任务安全字段与协调者状态', async () => {
   assert.equal(row.label, '进行中')
   assert.equal(row.tone, 'info')
   assert.equal(row.childSessionId, 'c-1')
+  // 会话归属：客户端回复底部 chip 靠这个字段判断「任务是不是当前会话派出去的」。
+  assert.equal(row.coordinatorSession, 's-1')
   assert.equal(row.queued, false)
   assert.equal(row.readOnly, false)
   const readOnlyTask = createTask(db, { brief: sampleBrief({ title: '只读', goal: 'g' }), coordinatorSession: 's-1', readOnly: true })

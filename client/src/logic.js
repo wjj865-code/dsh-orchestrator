@@ -3,6 +3,9 @@
  *
  * 全部是无副作用的纯函数，单测经 __test 直接断言（test/client.test.js 的「U2 纯函数」用例）。
  */
+import {
+  CHIP_ACTIVE_STATUSES, CHIP_MAX, CHIP_RECENT_MS, CHIP_STATE_OF, CHIP_STATE_VIEW, STATUS_LABEL,
+} from './constants.js'
 // 面板对外只用显示名：重名才附短 id 后缀（与工具层同口径，取 t-xxx 后 4 位）。
 export const shortId = id => String(id || '').replace(/^t-/, '').slice(0, 4)
 export const displayNameOf = (task, all) => {
@@ -127,3 +130,107 @@ export const fileAddressProblem = (sessionId, path) => {
   if (typeof path !== 'string' || path === '') return 'bad-path'
   return null
 }
+
+// ---------------------------------------------------------------------------
+// 回复底部「关联任务 chip」（conversation.chat.turnTail）
+//
+// 关联规则（写进报告；改这里必须同步 test/client.test.js 的 chip 用例）：
+// R1 会话绑定：只收 task.coordinatorSession === 当前会话 id 的任务 —— 会话不是派任务的协调者时
+//    一个都收不到，于是整行不渲染（无关联 = 不渲染）。
+// R2 轮次：组件只在「最新一轮已完成回复」的尾部渲染（见 views.js 的 isLatestTurn），历史回复不带 chip。
+// R3 入选：活跃状态（等前置/待派发/进行中/等你确认/要授权/待确认）全收；终态（完成/失败/取消/丢失）
+//    只在 lastEventAt 落在最近 CHIP_RECENT_MS 内时收 —— 「刚跑完」要能看到，昨天的旧任务不翻旧账。
+// R4 排序与截断：lastEventAt ↓ → updatedAt ↓ → id ↑，取前 CHIP_MAX 个出 chip，其余折成「+N」。
+// ---------------------------------------------------------------------------
+const CHIP_ACTIVE = new Set(CHIP_ACTIVE_STATUSES)
+
+/** 台账状态 → 5 个视觉态之一（未知状态按「等前置」的静圈处理，不谎报成功/失败）。 */
+export const chipStateOf = status => (
+  Object.hasOwn(CHIP_STATE_OF, status) ? CHIP_STATE_OF[status] : 'waiting'
+)
+
+/** 视觉态对应的图标 / 动效 class / 语义色。 */
+export const chipViewOf = status => {
+  const state = chipStateOf(status)
+  return { state, ...CHIP_STATE_VIEW[state] }
+}
+
+export const chipNameOf = task => {
+  const title = textOf(task === null || task === undefined ? undefined : task.title)
+  if (title !== '') return title
+  const id = textOf(task === null || task === undefined ? undefined : task.id)
+  return id === '' ? '任务' : `任务 ${id}`
+}
+
+/** 悬浮提示：任务名 + 状态（标题截断后仍能看到全名与状态）。 */
+export const chipTooltipOf = task => {
+  const status = task === null || task === undefined ? undefined : task.status
+  const label = Object.hasOwn(STATUS_LABEL, status) ? STATUS_LABEL[status] : '状态未知'
+  return `${chipNameOf(task)}｜${label}`
+}
+
+export const CHIP_TITLE_MAX = 24
+
+/** 视觉标题按码点截断（emoji 不被切成半个），像素级省略由 CSS ellipsis 兜住。 */
+export const chipVisibleTitle = (title, max = CHIP_TITLE_MAX) => {
+  const text = textOf(title)
+  if (text === '') return '任务'
+  const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : CHIP_TITLE_MAX
+  const chars = [...text]
+  return chars.length > limit ? `${chars.slice(0, limit - 1).join('')}…` : text
+}
+
+/**
+ * 从快照里挑出「本轮回复该挂的任务」。
+ * @param tasks - 快照 tasks（只有 id/title/status/coordinatorSession/lastEventAt/updatedAt 被读）。
+ * @param options.sessionId - 当前会话 id（turnTail 的标准 prop）。
+ * @param options.now - 判定「最近结束」的时钟（默认 Date.now；测试注入）。
+ * @returns {{chips: object[], rest: number, total: number}|null} 无关联时 null（调用方不渲染）。
+ */
+export const selectTaskChips = (tasks, { sessionId, now = Date.now(), max = CHIP_MAX, recentMs = CHIP_RECENT_MS } = {}) => {
+  if (typeof sessionId !== 'string' || sessionId === '') return null
+  const list = (Array.isArray(tasks) ? tasks : [])
+    .filter(task => task !== null && typeof task === 'object')
+    .filter(task => task.coordinatorSession === sessionId)
+    .filter(task => {
+      if (CHIP_ACTIVE.has(task.status)) return true
+      const at = task.lastEventAt
+      return typeof at === 'number' && Number.isFinite(at) && now - at <= recentMs
+    })
+    .sort((left, right) => (right.lastEventAt ?? 0) - (left.lastEventAt ?? 0)
+      || (right.updatedAt ?? 0) - (left.updatedAt ?? 0)
+      || String(left.id ?? '').localeCompare(String(right.id ?? '')))
+  if (list.length === 0) return null
+  const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : 0
+  const chips = list.slice(0, limit)
+  return { chips, rest: list.length - chips.length, total: list.length }
+}
+
+/** 这一轮是不是「最新一轮」（chat 时间线末位）；turnTail 的 owner.turn 是 TurnLocation。 */
+export const isLatestTurn = (snapshot, turn) => {
+  const order = snapshot === null || snapshot === undefined ? undefined : snapshot.timeline?.turnOrder
+  return Array.isArray(order) && order.length > 0 && order[order.length - 1] === turn
+}
+
+/**
+ * 面板「打开并定位」的一次性请求：chip 点击时记下任务 id，面板下次挂载时取走并直接开详情抽屉。
+ * 取走即清空 —— 用户自己点开面板时不会被上一次的残留弹窗打扰。
+ */
+export const createFocusRequest = () => {
+  let pending = null
+  return {
+    request: id => {
+      const value = textOf(id)
+      if (value === '') return false
+      pending = value
+      return true
+    },
+    take: () => {
+      const value = pending
+      pending = null
+      return value
+    },
+    peek: () => pending,
+  }
+}
+

@@ -56,8 +56,9 @@ const load = (options = {}) => {
   }
   // React 垫片：只够「渲染一次」用（面板首帧冒烟）。hook 顺序按调用序号记录，
   // 不重渲染也就没有依赖数组/清理逻辑——真实行为归浏览器，这里只保证首帧不崩、结构正确。
-  const hooks = { cursor: 0, slots: [] }
-  const resetHooks = () => { hooks.cursor = 0; hooks.slots.length = 0 }
+  // effects 收集 useEffect 回调：chip 的「挂载才订阅」这类时序用例需要手动跑一次 effect。
+  const hooks = { cursor: 0, slots: [], effects: [] }
+  const resetHooks = () => { hooks.cursor = 0; hooks.slots.length = 0; hooks.effects.length = 0 }
   const requireFn = () => ({
     createElement: (type, props, ...children) => ({ type, props, children }),
     useState: initial => {
@@ -71,7 +72,7 @@ const load = (options = {}) => {
       return hooks.slots[index]
     },
     useCallback: (fn) => { hooks.cursor += 1; return fn },
-    useEffect: () => { hooks.cursor += 1 },
+    useEffect: effect => { hooks.cursor += 1; hooks.effects.push(effect) },
   })
   const sandbox = {
     window: {
@@ -121,11 +122,13 @@ test('经典脚本：能被 <script> 解析，无顶层 import/export，id 等�
   }
 })
 
-test('apply 不再注册侧栏底部入口；注册任务面板、启动器面板与侧栏入口', () => {
+test('apply 不再注册侧栏底部入口；注册任务面板、启动器面板、侧栏入口与会话回复 chip', () => {
   const { loaded, ctx, registrations } = load()
   loaded.apply(ctx)
   const names = registrations.map(row => row.spec.name)
-  assert.deepEqual(names, ['main', 'main', 'sidebar.panellist', 'conversation.header.leading'])
+  assert.deepEqual(names, [
+    'main', 'main', 'sidebar.panellist', 'conversation.header.leading', 'conversation.chat.turnTail',
+  ])
   assert.equal(names.includes('sidebar.footer.action'), false)
 })
 
@@ -655,7 +658,7 @@ test('U2 样式表自检：括号成对 + 组件用到的 class 都有样式规�
   assert.doesNotMatch(STYLE_TEXT, /\$\{/, '样式表里不应残留模板占位符')
   // 组件里出现的 orch-* class 名必须在样式表里有对应规则：防止改名只改一半。
   // 前缀 `--orch-*` 是 CSS 自定义属性（如 --orch-tone），不是 class，用 [^\w-] 排除掉。
-  const keyframes = new Set(['orch-rotate', 'orch-shimmer', 'orch-slide-in'])
+  const keyframes = new Set(['orch-rotate', 'orch-shimmer', 'orch-slide-in', 'orch-chip-pulse'])
   const used = new Set()
   for (const match of source.matchAll(/(?:^|[^\w-])(orch-[a-z0-9-]+)/g)) used.add(match[1])
   const missing = [...used].filter(name => !keyframes.has(name) && !STYLE_TEXT.includes(`.${name}`))
@@ -1053,4 +1056,407 @@ test('F4 回归：worktree 任务渲染「隔离」小标，状态表缺失/未�
   hooks.slots[13] = 't-wt'
   const drawerText = flattenText(panel.component({ openSession: () => {} }))
   assert.match(drawerText, /已隔离｜分支 task\/t9-demo｜检出 C:\/repo\/\.agents\/worktrees\/t-demo｜决定 协调者传字段/)
+})
+
+// ---------------------------------------------------------------------------
+// 回复底部「关联任务」chip（官方 conversation.chat.turnTail 列表槽位）
+//
+// 关联规则（与 client/src/logic.js 的注释一一对应）：
+//   R1 会话绑定：只收 coordinatorSession === 当前会话 id 的任务；
+//   R2 轮次：只挂最新一轮已完成回复的尾部；
+//   R3 入选：活跃状态全收，终态只收最近 30 分钟内有动静的；
+//   R4 排序：lastEventAt ↓ → updatedAt ↓ → id ↑，最多 2 个 + 「+N」。
+// ---------------------------------------------------------------------------
+const chipTask = (id, status, extra = {}) => ({
+  id,
+  title: id,
+  status,
+  coordinatorSession: 's-main',
+  lastEventAt: 1_000,
+  updatedAt: 1_000,
+  ...extra,
+})
+const chipIds = rows => Array.from(rows, task => task.id)
+
+test('chip 关联规则：只收本会话派出的任务；活跃全收、终态只看最近 30 分钟', () => {
+  const { loaded } = load()
+  const { selectTaskChips } = loaded.__test
+  const now = 1_000_000_000
+  const recent = at => ({ lastEventAt: now - at, updatedAt: now - at })
+
+  // 无关联一律 null（不渲染）：别的会话 / 没会话 id / 没有任务 / 数据缺失。
+  assert.equal(selectTaskChips([chipTask('t-other', 'running', { coordinatorSession: 's-other' })], { sessionId: 's-main', now }), null)
+  assert.equal(selectTaskChips([chipTask('t-1', 'running')], { sessionId: '', now }), null)
+  assert.equal(selectTaskChips([], { sessionId: 's-main', now }), null)
+  assert.equal(selectTaskChips(undefined, { sessionId: 's-main', now }), null)
+
+  // 活跃状态全收（等前置不是取消，是活跃），按最近动静倒序。
+  const active = selectTaskChips([
+    chipTask('t-old', 'running', recent(5000)),
+    chipTask('t-dep', 'waiting_dep', recent(1000)),
+  ], { sessionId: 's-main', now })
+  assert.deepEqual(chipIds(active.chips), ['t-dep', 't-old'])
+  assert.equal(active.rest, 0)
+  assert.equal(active.total, 2)
+
+  // 终态：30 分钟内刚结束的收（给「刚跑完」一个交代），更早的不翻旧账。
+  assert.deepEqual(
+    chipIds(selectTaskChips([chipTask('t-done', 'done', recent(60_000))], { sessionId: 's-main', now }).chips),
+    ['t-done'],
+  )
+  assert.equal(selectTaskChips([chipTask('t-done', 'done', recent(31 * 60_000))], { sessionId: 's-main', now }), null)
+
+  // 多个：最多 2 个出 chip，其余折成「+N」。
+  const many = selectTaskChips([
+    chipTask('t-1', 'running', recent(100)),
+    chipTask('t-2', 'waiting_user', recent(200)),
+    chipTask('t-3', 'delivered', recent(300)),
+    chipTask('t-4', 'waiting_dep', recent(400)),
+  ], { sessionId: 's-main', now })
+  assert.deepEqual(chipIds(many.chips), ['t-1', 't-2'])
+  assert.equal(many.rest, 2)
+  assert.equal(many.total, 4)
+
+  // 同刻按 updatedAt、再按 id 兜底，排序确定（不吃实现细节）。
+  const tie = selectTaskChips([
+    chipTask('t-b', 'running', { lastEventAt: now - 100, updatedAt: now - 100 }),
+    chipTask('t-a', 'running', { lastEventAt: now - 100, updatedAt: now - 100 }),
+  ], { sessionId: 's-main', now })
+  assert.deepEqual(chipIds(tie.chips), ['t-a', 't-b'])
+})
+
+test('chip 状态映射：旋转圆环 / 虚线静圈 / 脉冲半色 / ✓ / ✗ / —；悬浮写任务名+状态', () => {
+  const { loaded } = load()
+  const { chipStateOf, chipViewOf, chipTooltipOf, chipVisibleTitle } = loaded.__test
+  const mapping = [
+    ['running', 'running'], ['pending', 'waiting'], ['waiting_dep', 'waiting'],
+    ['waiting_user', 'confirming'], ['waiting_auth', 'confirming'], ['delivered', 'confirming'],
+    ['done', 'done'], ['failed', 'failed'], ['orphaned', 'failed'], ['missing', 'failed'],
+    ['cancelled', 'cancelled'],
+  ]
+  for (const [status, state] of mapping) assert.equal(chipStateOf(status), state, status)
+  assert.equal(chipStateOf('weird-status'), 'waiting', '未知状态不许谎报成功/失败')
+
+  assert.deepEqual(
+    { icon: chipViewOf('running').icon, className: chipViewOf('running').className, tone: chipViewOf('running').tone },
+    { icon: 'ring', className: 'orch-taskchip-spin', tone: 'info' },
+  )
+  assert.equal(chipViewOf('waiting_dep').state, 'waiting')
+  assert.equal(chipViewOf('waiting_dep').className, 'orch-taskchip-dashed')
+  assert.deepEqual(
+    { state: chipViewOf('delivered').state, className: chipViewOf('delivered').className, tone: chipViewOf('delivered').tone },
+    { state: 'confirming', className: 'orch-taskchip-dashed', tone: 'warn' },
+  )
+  assert.equal(chipViewOf('done').icon, 'check')
+  assert.equal(chipViewOf('failed').icon, 'close')
+  assert.equal(chipViewOf('cancelled').icon, 'dash')
+
+  // 悬浮提示 = 任务名 + 状态；没有标题时退化成「任务 t-xxx」。
+  assert.equal(chipTooltipOf(chipTask('t-1', 'waiting_dep', { title: '修发版' })), '修发版｜等前置')
+  assert.equal(chipTooltipOf({ id: 't-2', status: 'done' }), '任务 t-2｜已完成')
+  // 长标题按码点截断（emoji 不被切成半个），像素级省略交给 CSS。
+  const cut = chipVisibleTitle('很长的任务标题'.repeat(6))
+  assert.ok(Array.from(cut).length <= 24, `截断后长度 ${Array.from(cut).length}`)
+  assert.ok(cut.endsWith('…'))
+  assert.equal(chipVisibleTitle('短标题'), '短标题')
+  assert.equal(chipVisibleTitle('😀'.repeat(40)).length > 0, true)
+})
+
+// 渲染 chip 行：走真实注册项（turnTail），只喂假 props。
+const renderChipRow = (options = {}) => {
+  const env = load()
+  const { loaded, ctx, registrations, resetHooks, hooks } = env
+  loaded.apply(ctx)
+  const row = registrations.find(item => item.spec.name === 'conversation.chat.turnTail')
+  const panel = registrations.find(item => item.spec.name === 'main' && item.spec.key === 'orchestrator')
+  const baseChips = options.chips === undefined
+    ? { getSnapshot: () => null, subscribe: () => () => {} }
+    : options.chips
+  // 包一层计数：断言「什么时候订阅、退订了没有」，不依赖组件内部实现。
+  const counts = { subscribe: 0, unsubscribe: 0 }
+  const chips = {
+    getSnapshot: baseChips.getSnapshot,
+    subscribe: listener => {
+      counts.subscribe += 1
+      const off = baseChips.subscribe(listener)
+      return () => {
+        counts.unsubscribe += 1
+        if (typeof off === 'function') off()
+      }
+    },
+  }
+  const injected = row.spec.inject()
+  resetHooks()
+  const turn = options.turn === undefined ? 7 : options.turn
+  const tree = row.component({
+    turn,
+    sessionId: options.sessionId === undefined ? 's-main' : options.sessionId,
+    useMainView: options.useMainView === undefined ? selector => selector(true) : options.useMainView,
+    useChat: options.useChat === undefined
+      ? selector => selector({ timeline: { turnOrder: options.turnOrder === undefined ? [5, 6, 7] : options.turnOrder } })
+      : options.useChat,
+    chips,
+    openTask: injected.openTask,
+    openPanel: injected.openPanel,
+  })
+  return { ...env, row, panel, injected, tree, turn, counts }
+}
+
+test('chip 渲染与空状态：无关联/非主会话/非最新一轮都不渲染；有关联才出行', () => {
+  // 快照还没到（null）→ 不渲染，也不出骨架。
+  assert.equal(renderChipRow().tree, null)
+  // 快照有任务但都不属于本会话 → 不渲染。
+  const foreign = { ok: true, tasks: [chipTask('t-other', 'running', { coordinatorSession: 's-other' })] }
+  assert.equal(renderChipRow({ chips: { getSnapshot: () => foreign, subscribe: () => () => {} } }).tree, null)
+  // 子会话（mainView 闸门 false）不渲染。
+  assert.equal(renderChipRow({
+    useMainView: selector => selector(false),
+    chips: { getSnapshot: () => ({ tasks: [chipTask('t-1', 'running')] }), subscribe: () => () => {} },
+  }).tree, null)
+  // 历史轮次（不是最新一轮）不渲染：chip 只说明「这一轮回复之后任务在干什么」。
+  assert.equal(renderChipRow({
+    turnOrder: [5, 6, 7, 8],
+    chips: { getSnapshot: () => ({ tasks: [chipTask('t-1', 'running')] }), subscribe: () => () => {} },
+  }).tree, null)
+
+  // 有关联：2 个 chip + 「+2」，结构与宿主动作行的 chip 语言一致。
+  const now = Date.now()
+  const snapshot = {
+    tasks: [
+      chipTask('t-run', 'running', { title: '修发版 0.17.1', lastEventAt: now - 100, updatedAt: now - 100 }),
+      chipTask('t-dep', 'waiting_dep', { title: '回复底部 chip', lastEventAt: now - 200, updatedAt: now - 200 }),
+      chipTask('t-wait', 'waiting_user', { title: '等你确认', lastEventAt: now - 300, updatedAt: now - 300 }),
+      chipTask('t-done', 'done', { title: '刚跑完', lastEventAt: now - 400, updatedAt: now - 400 }),
+    ],
+  }
+  const { tree } = renderChipRow({ chips: { getSnapshot: () => snapshot, subscribe: () => () => {} } })
+  assert.equal(tree.type, 'div')
+  assert.equal(tree.props.className, 'orch-chips')
+  assert.equal(tree.props['data-orch-chip-row'], 'true')
+  assert.equal(tree.props['data-orch-chip-total'], '4')
+  const buttons = collect(tree, node => node.type === 'button')
+  assert.equal(buttons.length, 3, '2 个 chip + 1 个「+N」')
+  const [running, waiting, more] = buttons
+  assert.equal(running.props['data-task-id'], 't-run')
+  assert.equal(running.props['data-state'], 'running')
+  assert.equal(running.props.title, '修发版 0.17.1｜进行中')
+  assert.equal(running.props['aria-label'], running.props.title)
+  assert.equal(waiting.props['data-state'], 'waiting')
+  assert.equal(waiting.props.title, '回复底部 chip｜等前置')
+  // 运行中的 SVG 挂着旋转 class（虚线静圈只给等前置/待确认）。
+  assert.match(collect(running, node => node.type === 'svg')[0].props.className, /orch-taskchip-spin/)
+  assert.match(collect(waiting, node => node.type === 'svg')[0].props.className, /orch-taskchip-dashed/)
+  // 图标颜色走语义 token（TONE_COLOR），不是硬编码色值。
+  const mark = collect(running, node => node.type === 'span' && node.props.className === 'orch-taskchip-mark')[0]
+  assert.equal(mark.props.style.color, 'var(--dsw-alias-state-business-primary, #4d6bfe)')
+  const titleSpan = collect(running, node => node.type === 'span' && node.props.className === 'orch-taskchip-title')[0]
+  assert.equal(flattenText(titleSpan), '修发版 0.17.1')
+  // 「+N」说明还有几个任务。
+  assert.equal(flattenText(more), '+2')
+  assert.equal(more.props['aria-label'], '还有 2 个关联任务')
+})
+
+test('chip 交互：点击打开面板并定位到该任务（一次性 focus 请求），不点就不吞', () => {
+  const now = Date.now()
+  const snapshot = { tasks: [chipTask('t-run', 'running', { title: '跑测试', lastEventAt: now, updatedAt: now })] }
+  const env = renderChipRow({ chips: { getSnapshot: () => snapshot, subscribe: () => () => {} } })
+  const buttons = collect(env.tree, node => node.type === 'button')
+  assert.equal(buttons.length, 1)
+  assert.equal(typeof buttons[0].props.onClick, 'function')
+  buttons[0].props.onClick()
+  assert.deepEqual(env.selected, ['orchestrator'], '点击 chip 先切到任务面板')
+  // 面板拿到的是同一份 focus 请求：取走即清空（第二次 take 为 null，用户自己再开面板不会弹旧抽屉）。
+  const focus = env.panel.spec.inject().focus
+  assert.equal(focus.take(), 't-run')
+  assert.equal(focus.take(), null)
+  // 「+N」也能打开面板（第二个 chip 行带 rest 的情况）。
+  const many = renderChipRow({
+    chips: {
+      getSnapshot: () => ({ tasks: [
+        chipTask('t-1', 'running', { lastEventAt: now, updatedAt: now }),
+        chipTask('t-2', 'running', { lastEventAt: now - 1, updatedAt: now - 1 }),
+        chipTask('t-3', 'running', { lastEventAt: now - 2, updatedAt: now - 2 }),
+      ] }),
+      subscribe: () => () => {},
+    },
+  })
+  const more = collect(many.tree, node => node.type === 'button').at(-1)
+  assert.equal(flattenText(more), '+1')
+  more.props.onClick()
+  assert.deepEqual(many.selected, ['orchestrator'])
+})
+
+test('chip 订阅时序：只有「主会话 + 最新一轮」才订阅共享 feed，退订即停', () => {
+  const snapshot = { tasks: [chipTask('t-1', 'running')] }
+  // 非最新轮次：effect 跑了也不订阅（没有 chip 的会话一个轮询都没有）。
+  const history = renderChipRow({
+    turnOrder: [5, 6, 7, 8],
+    chips: { getSnapshot: () => snapshot, subscribe: () => { throw new Error('不该订阅') } },
+  })
+  for (const effect of history.hooks.effects) effect()
+  assert.equal(history.counts.subscribe, 0)
+
+  // 子会话同样不订阅。
+  const child = renderChipRow({
+    useMainView: selector => selector(false),
+    chips: { getSnapshot: () => snapshot, subscribe: () => { throw new Error('不该订阅') } },
+  })
+  for (const effect of child.hooks.effects) effect()
+  assert.equal(child.counts.subscribe, 0)
+
+  // 最新一轮 + 主会话：订阅一次；组件卸载（effect cleanup）退订一次。
+  const live = renderChipRow({ chips: { getSnapshot: () => snapshot, subscribe: () => () => {} } })
+  const cleanups = []
+  for (const effect of live.hooks.effects) {
+    const cleanup = effect()
+    if (typeof cleanup === 'function') cleanups.push(cleanup)
+  }
+  assert.equal(live.counts.subscribe, 1, '挂载时订阅共享 feed')
+  for (const cleanup of cleanups) cleanup()
+  assert.equal(live.counts.unsubscribe, 1, '卸载时退订，feed 停表')
+})
+
+test('chip feed：没订阅者不建表；内容不变复用快照；节奏 3s/15s，失败退避 30s', async () => {
+  const { loaded } = load()
+  const { createTaskFeed } = loaded.__test
+  const makeTimers = () => {
+    const list = []
+    const setTimer = (run, ms) => { const timer = { run, ms, cleared: false }; list.push(timer); return timer }
+    const clearTimer = timer => { timer.cleared = true }
+    return { list, setTimer, clearTimer }
+  }
+  const clock = makeTimers()
+  let calls = 0
+  let payload = {
+    ok: true,
+    tasks: [{
+      id: 't-1', title: '跑测试', status: 'running', coordinatorSession: 's-main', lastEventAt: 5, updatedAt: 5,
+    }],
+  }
+  let notified = 0
+  const feed = createTaskFeed({
+    readSnapshot: async () => { calls += 1; return payload },
+    now: () => 500,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  })
+  // 没订阅者：一份快照都不拉、一个定时器都不建。
+  assert.equal(feed.getSnapshot(), null)
+  assert.equal(clock.list.length, 0)
+
+  const off = feed.subscribe(() => { notified += 1 })
+  assert.equal(clock.list.length, 1)
+  assert.equal(clock.list[0].ms, 0, '首个订阅者立即拉一次')
+
+  await clock.list[0].run()
+  assert.equal(calls, 1)
+  assert.equal(notified, 1)
+  const first = feed.getSnapshot()
+  assert.equal(first.tasks.length, 1)
+  assert.equal(first.at, 500)
+  assert.equal(clock.list[1].ms, 3000, '有活跃任务 → 3s')
+
+  // 内容没变（新响应但同签名）：不通知、快照身份不变（React 不白重渲染）。
+  await clock.list[1].run()
+  assert.equal(calls, 2)
+  assert.equal(notified, 1)
+  assert.equal(feed.getSnapshot(), first)
+  assert.equal(clock.list[2].ms, 3000)
+
+  // 全部终态：降到 15s。
+  payload = { ok: true, tasks: [{ ...payload.tasks[0], status: 'done', lastEventAt: 6, updatedAt: 6 }] }
+  await clock.list[2].run()
+  assert.equal(notified, 2)
+  assert.equal(clock.list[3].ms, 15000)
+
+  // 退订：最后一个订阅者走了就停表（已排的定时器被清掉，迟到的 run 也不再拉）。
+  off()
+  assert.equal(clock.list[3].cleared, true)
+  const before = calls
+  await clock.list[3].run()
+  assert.equal(calls, before, '退订后不再请求')
+
+  // 失败：退避 30s，且保留上一份快照（chip 不闪没）。
+  const failing = makeTimers()
+  const broken = createTaskFeed({
+    readSnapshot: async () => { throw new Error('boom') },
+    setTimer: failing.setTimer,
+    clearTimer: failing.clearTimer,
+  })
+  const offBroken = broken.subscribe(() => {})
+  await failing.list[0].run()
+  assert.equal(broken.getSnapshot(), null)
+  assert.equal(failing.list[1].ms, 30000, '失败退避 30s')
+  offBroken()
+})
+
+test('chip feed：终态跨过 30 分钟线时签名变一次（chip 自己消失），活跃任务不因时钟发通知', async () => {
+  const { loaded } = load()
+  const { createTaskFeed } = loaded.__test
+  const makeTimers = () => {
+    const list = []
+    const setTimer = (run, ms) => { const timer = { run, ms, cleared: false }; list.push(timer); return timer }
+    const clearTimer = timer => { timer.cleared = true }
+    return { list, setTimer, clearTimer }
+  }
+  const clock = makeTimers()
+  // 可推进的假时钟：一个 done 任务 + 一个 running 任务。
+  let at = 1_000_000_000
+  let notified = 0
+  const payload = {
+    ok: true,
+    tasks: [
+      { id: 't-done', title: '刚跑完', status: 'done', coordinatorSession: 's-main', lastEventAt: at - 1000, updatedAt: at - 1000 },
+      { id: 't-run', title: '在跑', status: 'running', coordinatorSession: 's-main', lastEventAt: at - 999_000, updatedAt: at - 999_000 },
+    ],
+  }
+  const feed = createTaskFeed({
+    readSnapshot: async () => payload,
+    now: () => at,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  })
+  const off = feed.subscribe(() => { notified += 1 })
+  await clock.list[0].run()
+  assert.equal(notified, 1)
+  const first = feed.getSnapshot()
+
+  // 同一时刻再拉一次：没有变化，不通知、快照身份不变。
+  await clock.list[1].run()
+  assert.equal(notified, 1)
+  assert.equal(feed.getSnapshot(), first)
+
+  // 时钟走过 30 分钟线（done 任务的 lastEventAt 掉出窗口）：签名变化 → 发一次通知。
+  at += 31 * 60 * 1000
+  await clock.list[2].run()
+  assert.equal(notified, 2, '终态过期要通知一次，chip 才能自己消失')
+  assert.equal(feed.getSnapshot().at, at)
+
+  // 再过一会儿：活跃任务即使 lastEventAt 很老也不会反复触发（活跃 = 恒在窗口内）。
+  at += 60 * 60 * 1000
+  await clock.list[3].run()
+  assert.equal(notified, 2, '活跃任务不因时钟变化重复通知')
+  off()
+})
+
+test('chip 只走官方 turnTail 槽位：不注入 DOM、不抢动作行/时钟，样式自带动效降级', () => {
+  // 官方槽位 + 项目自己的 id/order：list 槽位按新 id 追加，不覆盖宿主条目。
+  assert.match(source, /name: 'conversation\.chat\.turnTail'/)
+  assert.match(source, /id: CHIP_ID/)
+  assert.match(source, /order: 20/)
+  // 没有 DOM 注入/查询，也不往宿主动作行或时钟位置塞节点。
+  assert.doesNotMatch(source, /querySelector|insertAdjacentHTML|createPortal/)
+  assert.doesNotMatch(source, /conversation\.chat\.assistant-actions/)
+
+  const { STYLE_TEXT } = load().loaded.__test
+  assert.match(STYLE_TEXT, /\.orch-chips \{[\s\S]*?display: flex/)
+  assert.match(STYLE_TEXT, /\.orch-taskchip-spin \{\s*animation: orch-rotate 1s linear infinite/)
+  assert.match(STYLE_TEXT, /\.orch-taskchip-dashed \{ stroke-dasharray: 3 2\.4; \}/)
+  assert.match(STYLE_TEXT, /\.orch-taskchip\[data-state='confirming'\] \{\s*opacity: 0\.72;\s*animation: orch-chip-pulse/)
+  assert.match(STYLE_TEXT, /\.orch-taskchip-title \{[\s\S]*?text-overflow: ellipsis/)
+  // 宿主的 reduced-motion 规则只作用在 .orch-shell 内，chip 在会话流里，必须自带一份。
+  assert.match(
+    STYLE_TEXT,
+    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.orch-taskchip-spin \{ animation: none; \}[\s\S]*?\.orch-taskchip\[data-state='confirming'\] \{ animation: none; opacity: 0\.6; \}/,
+  )
 })

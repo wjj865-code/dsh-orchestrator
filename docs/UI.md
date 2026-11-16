@@ -5,10 +5,11 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 由 vite 构建成 `dist/client.js`；产物是平台要求的 classic script，**不能 `import` CSS**，
 所以样式表以 `?inline` 内联回 JS、运行时注入。
 
-- 代码：`client/src/views.js`（面板 / 抽屉 / 启动器 / 会话头按钮）、`client/src/styles.css`（整张样式表）、
-  `client/src/styles.js`（`ensureStyles`）、`client/src/ui.js`（图标 / 徽标 / 空态 / 骨架）
+- 代码：`client/src/views.js`（面板 / 抽屉 / 启动器 / 会话头按钮 / 回复底部 chip）、`client/src/styles.css`（整张样式表）、
+  `client/src/styles.js`（`ensureStyles`）、`client/src/ui.js`（图标 / 徽标 / 空态 / 骨架）、`client/src/feed.js`（chip 的共享快照源）
 - 产物预览走宿主的会话右侧栏（`ctx.sidebarRight.openResource` + `dsh-resource://file/session/…`），
-  见 [§7 产物预览](#7-产物预览会话右侧栏)
+  见 [§6 产物预览](#6-产物预览会话右侧栏)
+- 回复底部「关联任务」chip 走宿主的 `conversation.chat.turnTail` 槽位，见 [§7 回复底部关联任务 chip](#7-回复底部关联任务-chip官方-turntail-槽位)
 - 测试：`test/client.test.js` 的 `U2 …` 用例组（行为断言跑 `dist/client.js`，源码断言读 `client/src/**`）
 - 相关：[ARCHITECTURE.md](ARCHITECTURE.md#面板与详情ui-u2)、[README](../README.md#面板长什么样u2)
 
@@ -181,13 +182,85 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 - **回退保留**：`preview` 端点、`togglePreview`、`previewBlock` 都还在，但只有产物库那一行能就地渲染它
   （`previewInSidebar(..., true)`）；卡片与抽屉只给提示，不假装成功。
 
-## 7. 验证
+## 7. 回复底部关联任务 chip（官方 turnTail 槽位）
+
+协调者每轮回复的底部（动作行**之上**）挂一行关联任务 chip：状态图标 + 任务标题，点一下就打开面板并定位到该任务。
+它显示的是「这一轮回复之后，我这几个任务在干什么」，因此不是面板的镜像，也不进会话头。
+
+### 7.1 挂载点与槽位契约
+
+- **槽位**：`conversation.chat.turnTail`（`kind:'list'`、`scope:'session'`）。宿主 `TurnTailNodeView` 的渲染顺序是
+  `renderSlot('conversation.chat.turnTail', { turn, seq, openFile })` → `MessageIconActions`（复制/分支/时钟），
+  所以 chip 天然落在动作行上方、聊天内容下方，**不碰时钟右侧、不做 DOM 注入**。
+- **注册点**：`client/src/client.js:252` 起（`id: CHIP_ID`、`order: 20` —— 用本项目自己的 id 追加一条，
+  同 id 复注册才是替换，不会顶掉宿主的其它条目）。
+- **标准 props**：`sessionId` 与 `useChat` 由槽位作用域自带（`ScopeStandardProps<'session'>`），
+  组件不自己造 hook；`inject` 只给三样：`openTask` / `openPanel` / `chips`（共享数据源）与 `hooks:{ mainView }`。
+
+### 7.2 关联规则（可解释、可断言）
+
+| 规则 | 内容 | 判据 |
+| --- | --- | --- |
+| R1 会话绑定 | 只收 `coordinatorSession === 当前 sessionId` 的任务（服务端 `src/host-route.js:51` 随快照下发） | 子会话 / 别的协调者一个都收不到 |
+| R2 轮次 | 只挂在**最新一轮**已完成回复的尾部（`isLatestTurn`：`snapshot.timeline.turnOrder` 末位 === `turn`） | 历史回复不带 chip |
+| R3 入选 | 活跃状态（`waiting_dep`/`pending`/`running`/`waiting_user`/`waiting_auth`/`delivered`）全收；终态只在 `lastEventAt` 落在最近 30 分钟内时收 | 「刚跑完」看得见，昨天的旧任务不翻旧账 |
+| R4 排序截断 | `lastEventAt ↓` → `updatedAt ↓` → `id ↑`，取前 2 个出 chip，其余折成「+N」 | 顺序确定，不受快照数组顺序影响 |
+
+**空状态 = 不渲染整行**：没关联、快照没到、非主会话、历史轮次都返回 `null`（不占位、不出骨架、不报错）。
+
+> 「等前置」是活跃，不是取消：`waiting_dep` 走 `waiting`（虚线静圈），不会画成 `cancelled`（一横）。
+
+### 7.3 状态图标
+
+台账 10 个状态压成 6 个视觉态（`client/src/constants.js` 的 `CHIP_STATE_OF` / `CHIP_STATE_VIEW`）：
+
+| 视觉态 | 台账状态 | 图标 | 动效 | 语义色 |
+| --- | --- | --- | --- | --- |
+| `running` | `running` | 留缺口的圆环 | 自转 1s 线性无限（`orch-taskchip-spin`） | `info`（business） |
+| `waiting` | `pending`、`waiting_dep` | 虚线圆（`stroke-dasharray:3 2.4`） | 无（不跟运行中抢动效） | `muted` |
+| `confirming` | `waiting_user`、`waiting_auth`、`delivered` | 虚线圆 | 半色 `opacity .72` + 脉冲 1.6s | `warn` |
+| `done` | `done` | ✓ | 无 | `good` |
+| `failed` | `failed`、`orphaned`、`missing` | ✗ | 无 | `bad` |
+| `cancelled` | `cancelled` | 一横 | 无 | `muted` |
+
+颜色全部走 `TONE_COLOR` 的 `--dsw-alias-*` token（内联 `style.color`），不写死色值；
+`prefers-reduced-motion: reduce` 下停转、停脉冲，但保留形状与颜色（信息不丢）——宿主那份 reduced-motion
+规则只作用于 `.orch-shell` 内，chip 在会话流里，必须自带一份（`client/src/styles.css` 的 `@media` 块）。
+
+### 7.4 交互
+
+- **点击 chip**：`openTask(id)` → 记一条一次性 focus 请求 → `ctx.layout.selectPanel(PANEL_ID)`；面板挂载时
+  `focus.take()` 取走 id 并直接开该任务详情抽屉（`views.js` 的 `openDetail`）。取走即清空，之后用户自己开面板
+  不会被上一次的残留弹窗打扰。
+- **点击「+N」**：只打开面板（不定位到某一单 —— 没被展示的那几单没有「就该是它」的理由）。
+- **悬浮**：`title` 与 `aria-label` 同为「任务名｜状态」，标题被截断时仍能看到全名与状态。
+- **长标题**：先按码点截 24 字（emoji 不被切半，`chipVisibleTitle`），再由 CSS `text-overflow: ellipsis` 按像素兜底；
+  chip 自身 `max-width: 260px`，不撑破动作行。
+
+### 7.5 订阅与性能
+
+- **单实例 feed**（`client/src/feed.js`）：一个 `createTaskFeed` 由 `apply` 创建、经 `inject` 下发给槽位；
+  一条历史会话里有 N 个 turn-tail 组件，但只有「主会话 + 最新一轮」那一行会订阅，不会 N 份轮询。
+- **只在有订阅者时轮询**：首个订阅者立即拉一次，之后自排程 `setTimeout`（不用 `setInterval`）；最后一个订阅者
+  退订立刻清表；插件卸载（`ctx.effect`）兜底 `stop()`，热替换不会留下野定时器。
+- **节奏自适应**：有活跃任务 3s，全是终态 15s，请求失败退避 30s 且保留上一份快照（chip 不闪没）。
+- **快照身份稳定**：响应先剪成 chip 要用的 6 个字段并算签名，内容没变就复用上一份对象 —— `useSyncExternalStore`
+  式的比较不会因为「同内容新对象」白重渲染。签名里还带一位「终态任务是否仍在 30 分钟窗口内」，任务跨过这条线时
+  签名变一次、发一次通知，chip 自己消失，不必等台账再动一下；活跃任务恒为在窗口内，不会按时钟反复触发。
+- **不订阅就没有请求**：切到子会话 / 滚动到历史回复时那一行不渲染，也就没有任何轮询。
+
+## 8. 验证
 
 ```bash
-npm test            # 793 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、确认交付/删除门控、
-                    # 入口按钮视觉、fileAddressOf 与右侧栏预览（含回退）、P8 计划模式、两段式终态用例
+npm test            # 836 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、确认交付/删除门控、
+                    # 入口按钮视觉、fileAddressOf 与右侧栏预览（含回退）、P8 计划模式、两段式终态用例、
+                    # 回复底部 chip（关联规则/状态映射/空状态/点击回调/订阅时序/feed 退避）
 npm run check:client
-node docs/probes/qa-stage2-slots.mjs dist/client.js   # 槽位/inject 探针（7 条历史漂移与改动前一致）
+node docs/probes/qa-stage2-slots.mjs dist/client.js   # 槽位/inject 探针（ALLOWED 已含 conversation.chat.turnTail）
+node docs/probes/qa-taskchip-dom.mjs dist/client.js   # chip 的 DOM 证据页（产物 dist 在 vm 里真实渲染）
+# 截图（Chrome/Edge headless，产物在 workspace/reports/）：
+#   chrome --headless=new --window-size=1150,400 --screenshot=taskchip-turn-tail.png \
+#          --virtual-time-budget=2500 file:///<repo>/workspace/reports/taskchip-dom.html
 ```
 
 手工回归（真实宿主里）：
@@ -201,8 +274,10 @@ node docs/probes/qa-stage2-slots.mjs dist/client.js   # 槽位/inject 探针（7
    任务卡展开区与抽屉「产物」区块点路径同样在右侧栏打开；复制路径照旧。
 7. 切宿主深浅色主题 → 面板颜色跟随，无硬编码残留。
 8. 断网/宿主动作失败 → 出现带「重试」的错误条，而不是空白。
+9. 让协调者派 2 个任务后回一轮话 → 回复底部动作行**上方**出现 chip 行（运行中圆环在转、等前置虚线静圈）；
+   点 chip → 任务面板打开并直接弹出该任务详情；悬浮看「任务名｜状态」；滚动到历史回复 → 那一轮没有 chip。
 
-## 8. 边界
+## 9. 边界
 
 - **样式靠注入**：产物是 classic script，不能 `import` CSS；`styles.css` 构建期以 `?inline` 内联成
   `STYLE_TEXT`，`ensureStyles()` 按 `#dsh-orchestrator-styles` 去重注入；注入失败只丢样式，面板逻辑仍可用（`styles.js`）。

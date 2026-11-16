@@ -155,7 +155,7 @@ check('apply 执行不抛异常', true)
 const byName = (name) => regs.filter((r) => r.spec?.name === name)
 // 阶段 4：删掉侧栏底部的「任务」入口（用户要求）；侧栏入口改到「插件」下方的启动器面板（Task 3），
 // 任务面板保留在 conversation.header.leading 会话头按钮。
-const ALLOWED = new Set(['sidebar.panellist', 'main', 'conversation.header.leading', 'shell.overlay'])
+const ALLOWED = new Set(['sidebar.panellist', 'main', 'conversation.header.leading', 'conversation.chat.turnTail', 'shell.overlay'])
 const FORBIDDEN = ['sidebar.workspaces', 'sidebar.brand.mark', 'sidebar.brand.name',
   'conversation.session.header', 'conversation.session.header.actions',
   'conversation.session.header.views.actions']

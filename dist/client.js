@@ -7,6 +7,33 @@
   const POLL_MS = 2e3;
   const POLL_BACKOFF_MS = 3e4;
   const MAIN_VIEW_POLL_MS = 5e3;
+  const CHIP_ID = "orchestrator-task-chips";
+  const CHIP_MAX = 2;
+  const CHIP_RECENT_MS = 30 * 60 * 1e3;
+  const CHIP_POLL_MS = 3e3;
+  const CHIP_IDLE_MS = 15e3;
+  const CHIP_ACTIVE_STATUSES = ["waiting_dep", "pending", "running", "waiting_user", "waiting_auth", "delivered"];
+  const CHIP_STATE_OF = {
+    running: "running",
+    pending: "waiting",
+    waiting_dep: "waiting",
+    waiting_user: "confirming",
+    waiting_auth: "confirming",
+    delivered: "confirming",
+    done: "done",
+    failed: "failed",
+    orphaned: "failed",
+    missing: "failed",
+    cancelled: "cancelled"
+  };
+  const CHIP_STATE_VIEW = {
+    running: { icon: "ring", className: "orch-taskchip-spin", tone: "info" },
+    waiting: { icon: "dashed", className: "orch-taskchip-dashed", tone: "muted" },
+    confirming: { icon: "dashed", className: "orch-taskchip-dashed", tone: "warn" },
+    done: { icon: "check", className: "", tone: "good" },
+    failed: { icon: "close", className: "", tone: "bad" },
+    cancelled: { icon: "dash", className: "", tone: "muted" }
+  };
   const STYLE_ID = "dsh-orchestrator-styles";
   const FILTERS = [
     ["all", "全部"],
@@ -183,6 +210,64 @@
     if (typeof path !== "string" || path === "") return "bad-path";
     return null;
   };
+  const CHIP_ACTIVE$1 = new Set(CHIP_ACTIVE_STATUSES);
+  const chipStateOf = (status) => Object.hasOwn(CHIP_STATE_OF, status) ? CHIP_STATE_OF[status] : "waiting";
+  const chipViewOf = (status) => {
+    const state = chipStateOf(status);
+    return { state, ...CHIP_STATE_VIEW[state] };
+  };
+  const chipNameOf = (task) => {
+    const title = textOf(task === null || task === void 0 ? void 0 : task.title);
+    if (title !== "") return title;
+    const id = textOf(task === null || task === void 0 ? void 0 : task.id);
+    return id === "" ? "任务" : `任务 ${id}`;
+  };
+  const chipTooltipOf = (task) => {
+    const status = task === null || task === void 0 ? void 0 : task.status;
+    const label = Object.hasOwn(STATUS_LABEL, status) ? STATUS_LABEL[status] : "状态未知";
+    return `${chipNameOf(task)}｜${label}`;
+  };
+  const CHIP_TITLE_MAX = 24;
+  const chipVisibleTitle = (title, max = CHIP_TITLE_MAX) => {
+    const text = textOf(title);
+    if (text === "") return "任务";
+    const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : CHIP_TITLE_MAX;
+    const chars = [...text];
+    return chars.length > limit ? `${chars.slice(0, limit - 1).join("")}…` : text;
+  };
+  const selectTaskChips = (tasks, { sessionId, now = Date.now(), max = CHIP_MAX, recentMs = CHIP_RECENT_MS } = {}) => {
+    if (typeof sessionId !== "string" || sessionId === "") return null;
+    const list = (Array.isArray(tasks) ? tasks : []).filter((task) => task !== null && typeof task === "object").filter((task) => task.coordinatorSession === sessionId).filter((task) => {
+      if (CHIP_ACTIVE$1.has(task.status)) return true;
+      const at = task.lastEventAt;
+      return typeof at === "number" && Number.isFinite(at) && now - at <= recentMs;
+    }).sort((left, right) => (right.lastEventAt ?? 0) - (left.lastEventAt ?? 0) || (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || String(left.id ?? "").localeCompare(String(right.id ?? "")));
+    if (list.length === 0) return null;
+    const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : 0;
+    const chips = list.slice(0, limit);
+    return { chips, rest: list.length - chips.length, total: list.length };
+  };
+  const isLatestTurn = (snapshot, turn) => {
+    const order = snapshot === null || snapshot === void 0 ? void 0 : snapshot.timeline?.turnOrder;
+    return Array.isArray(order) && order.length > 0 && order[order.length - 1] === turn;
+  };
+  const createFocusRequest = () => {
+    let pending = null;
+    return {
+      request: (id) => {
+        const value = textOf(id);
+        if (value === "") return false;
+        pending = value;
+        return true;
+      },
+      take: () => {
+        const value = pending;
+        pending = null;
+        return value;
+      },
+      peek: () => pending
+    };
+  };
   const readSnapshot = async (signal) => {
     const response = await fetch(ROUTE, {
       method: "POST",
@@ -271,6 +356,115 @@
     };
     run.then(clear, clear);
     return run;
+  };
+  const CHIP_ACTIVE = new Set(CHIP_ACTIVE_STATUSES);
+  const slimTask = (task) => ({
+    id: typeof task.id === "string" ? task.id : "",
+    title: typeof task.title === "string" ? task.title : "",
+    status: typeof task.status === "string" ? task.status : "",
+    coordinatorSession: typeof task.coordinatorSession === "string" ? task.coordinatorSession : null,
+    lastEventAt: typeof task.lastEventAt === "number" ? task.lastEventAt : null,
+    updatedAt: typeof task.updatedAt === "number" ? task.updatedAt : null
+  });
+  const recencyOf = (task, at) => {
+    if (CHIP_ACTIVE.has(task.status)) return "active";
+    if (typeof task.lastEventAt !== "number") return "stale";
+    return at - task.lastEventAt <= CHIP_RECENT_MS ? "recent" : "stale";
+  };
+  const signatureOf = (tasks, at) => {
+    let text = "";
+    for (const task of tasks) {
+      text += `${task.id}${task.status}${task.title}${task.coordinatorSession ?? ""}${task.lastEventAt ?? ""}${task.updatedAt ?? ""}${recencyOf(task, at)}`;
+    }
+    return text;
+  };
+  const normalizeFeedSnapshot = (body, at = Date.now()) => {
+    if (body === null || typeof body !== "object" || body.ok !== true) return null;
+    const tasks = (Array.isArray(body.tasks) ? body.tasks : []).filter((task) => task !== null && typeof task === "object").map(slimTask);
+    return { tasks, signature: signatureOf(tasks, at) };
+  };
+  const hasActive = (snapshot) => snapshot !== null && snapshot.tasks.some((task) => CHIP_ACTIVE.has(task.status));
+  const createTaskFeed = ({
+    readSnapshot: readSnapshot2,
+    now = () => Date.now(),
+    setTimer = (run, ms) => setTimeout(run, ms),
+    clearTimer = (handle) => clearTimeout(handle),
+    activeMs = CHIP_POLL_MS,
+    idleMs = CHIP_IDLE_MS,
+    backoffMs = POLL_BACKOFF_MS
+  }) => {
+    let snapshot = null;
+    let handle = null;
+    let stopped = true;
+    let running = false;
+    const listeners = /* @__PURE__ */ new Set();
+    const emit = () => {
+      for (const listener of [...listeners]) {
+        try {
+          listener();
+        } catch {
+        }
+      }
+    };
+    const stop = () => {
+      stopped = true;
+      if (handle !== null) {
+        clearTimer(handle);
+        handle = null;
+      }
+    };
+    const schedule = (ms) => {
+      if (stopped) return;
+      if (handle !== null) {
+        clearTimer(handle);
+        handle = null;
+      }
+      handle = setTimer(() => {
+        handle = null;
+        return step();
+      }, ms);
+    };
+    const poll = async () => {
+      if (running) return false;
+      running = true;
+      let next = null;
+      let ok = false;
+      const at = now();
+      try {
+        next = normalizeFeedSnapshot(await readSnapshot2(), at);
+        ok = next !== null;
+      } catch {
+        ok = false;
+      }
+      running = false;
+      if (ok && (snapshot === null || next.signature !== snapshot.signature)) {
+        snapshot = { tasks: next.tasks, signature: next.signature, at };
+        emit();
+      }
+      return ok;
+    };
+    const step = async () => {
+      if (stopped || running) return;
+      const ok = await poll();
+      if (stopped) return;
+      schedule(ok ? hasActive(snapshot) ? activeMs : idleMs : backoffMs);
+    };
+    return {
+      getSnapshot: () => snapshot,
+      subscribe: (listener) => {
+        listeners.add(listener);
+        if (stopped) {
+          stopped = false;
+          schedule(0);
+        }
+        return () => {
+          listeners.delete(listener);
+          if (listeners.size === 0) stop();
+        };
+      },
+      poll,
+      stop
+    };
   };
   const createMainViewGate = ({
     readSessionId,
@@ -1087,6 +1281,89 @@
   font-size: 11px;
 }
 
+/* ---------- 回复底部「关联任务」chip（conversation.chat.turnTail 槽位） ----------
+ * 挂在宿主会话流里（不在 .orch-shell 里），所以颜色全部走设计平台 token，并自带
+ * prefers-reduced-motion 降级：宿主那份 reduced-motion 规则只作用在 .orch-shell 内。
+ * 状态：运行中=旋转圆环；等前置/待确认=虚线静圈（待确认再加脉冲 + 半色）；
+ *       完成=✓；失败=✗；取消=—。图标颜色走 TONE_COLOR 的语义 token（内联 style 下发）。 */
+.orch-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.orch-taskchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  height: 24px;
+  padding: 0 9px 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  color: var(--dsw-alias-label-secondary, #55585f);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
+    border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
+}
+.orch-taskchip:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06));
+  border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12));
+}
+.orch-taskchip:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4d6bfe));
+  outline-offset: 1px;
+}
+.orch-taskchip-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+/* 长标题：先按码点截断（chipVisibleTitle），再由 CSS 按像素补省略号；宽度不撑破动作行。 */
+.orch-taskchip-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 「+N」：同一行里最弱的一枚，点击打开任务面板。 */
+.orch-taskchip--more {
+  color: var(--dsw-alias-label-tertiary, #8a8f99);
+  font-variant-numeric: tabular-nums;
+}
+/* 运行中：圆环自转（留了缺口才看得出在转）。 */
+.orch-taskchip-spin {
+  animation: orch-rotate 1s linear infinite;
+  transform-origin: 50% 50%;
+}
+/* 等前置 / 待确认：虚线静圈，不跟运行中抢动效。 */
+.orch-taskchip-dashed { stroke-dasharray: 3 2.4; }
+/* 待确认：半色 + 脉冲（呼吸），提示「等你/协调者拍板」。 */
+.orch-taskchip[data-state='confirming'] {
+  opacity: 0.72;
+  animation: orch-chip-pulse 1.6s ease-in-out infinite;
+}
+@keyframes orch-chip-pulse {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 0.4; }
+}
+/* 尊重系统「减少动态效果」：停转、停脉冲，但保留状态色与图标形状（信息不丢）。 */
+@media (prefers-reduced-motion: reduce) {
+  .orch-taskchip-spin { animation: none; }
+  .orch-taskchip[data-state='confirming'] { animation: none; opacity: 0.6; }
+  .orch-taskchip { transition: none; }
+}
+
 /* 启动器面板（侧栏「◈ 主会话」选中后一闪而过） */
 .orch-launcher { align-items: center; justify-content: center; gap: 10px; padding: 32px; }
 .orch-launcher-card {
@@ -1171,6 +1448,11 @@
       sparkle: ["M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"],
       // 会话头「任务」入口：三条横线（面板顶栏同款图标语言，替代原来的裸字符 ☰）。
       menu: ["M4 7h16", "M4 12h16", "M4 17h16"],
+      // 回复底部 chip 的状态图标：运行中用一个留缺口的圆环（旋转时看得见在动），
+      // 等前置/待确认用整圆（虚线由样式加），取消用一横。
+      ring: ["M12 3a9 9 0 1 1-6.36 2.64"],
+      dashed: ["M12 3a9 9 0 1 1 0 18a9 9 0 1 1 0-18"],
+      dash: ["M6 12h12"],
       dot: ["M12 12h.01"]
     };
     const Icon = ({ name, size = 14, className }) => h("svg", {
@@ -1273,7 +1555,12 @@
     readDetail: readDetail2,
     readPreview: readPreview2,
     panelAction: panelAction2,
-    openMainOnce: openMainOnce2
+    openMainOnce: openMainOnce2,
+    selectTaskChips: selectTaskChips2,
+    chipViewOf: chipViewOf2,
+    chipTooltipOf: chipTooltipOf2,
+    chipVisibleTitle: chipVisibleTitle2,
+    isLatestTurn: isLatestTurn2
   }) {
     const HeaderButton = ({ openPanel, useMainView }) => {
       const visible = typeof useMainView === "function" ? useMainView((value) => value === true) : false;
@@ -1292,6 +1579,60 @@
       );
     };
     const LauncherIcon = () => h("span", { "aria-hidden": true, className: "orch-launcher-icon" }, "◈");
+    const TaskChipRow = ({ turn, sessionId, useMainView, useChat, chips, openTask, openPanel }) => {
+      const isMain = typeof useMainView === "function" ? useMainView((value) => value === true) : false;
+      const latest = typeof useChat === "function" ? useChat((snapshot2) => isLatestTurn2(snapshot2, turn)) : false;
+      const enabled = isMain === true && latest === true;
+      const [, setRevision] = React.useState(0);
+      React.useEffect(() => {
+        if (!enabled || chips === void 0 || chips === null || typeof chips.subscribe !== "function") return void 0;
+        return chips.subscribe(() => setRevision((value) => value + 1));
+      }, [enabled, chips]);
+      if (!enabled) return null;
+      const snapshot = chips !== void 0 && chips !== null && typeof chips.getSnapshot === "function" ? chips.getSnapshot() : null;
+      const view = snapshot === null ? null : selectTaskChips2(snapshot.tasks, { sessionId, now: Date.now() });
+      if (view === null) return null;
+      const chipNode = (task) => {
+        const visual = chipViewOf2(task.status);
+        const tooltip = chipTooltipOf2(task);
+        return h(
+          "button",
+          {
+            key: `chip-${task.id}`,
+            type: "button",
+            className: "orch-taskchip",
+            "data-state": visual.state,
+            "data-task-id": task.id,
+            title: tooltip,
+            "aria-label": tooltip,
+            onClick: typeof openTask === "function" && typeof task.id === "string" && task.id !== "" ? () => openTask(task.id) : void 0
+          },
+          h("span", {
+            className: "orch-taskchip-mark",
+            style: { color: TONE_COLOR2[visual.tone] || TONE_COLOR2.muted },
+            "aria-hidden": "true"
+          }, h(Icon, {
+            name: visual.icon,
+            size: 12,
+            className: visual.className === "" ? void 0 : visual.className
+          })),
+          h("span", { className: "orch-taskchip-title" }, chipVisibleTitle2(task.title))
+        );
+      };
+      const more = view.rest > 0 ? h("button", {
+        key: "chip-more",
+        type: "button",
+        className: "orch-taskchip orch-taskchip--more",
+        title: `还有 ${view.rest} 个关联任务`,
+        "aria-label": `还有 ${view.rest} 个关联任务`,
+        onClick: typeof openPanel === "function" ? openPanel : void 0
+      }, `+${view.rest}`) : null;
+      return h("div", {
+        className: "orch-chips",
+        "data-orch-chip-row": "true",
+        "data-orch-chip-total": String(view.total)
+      }, [...view.chips.map(chipNode), more]);
+    };
     const LauncherPanel = ({ openMain, openSession, clearPanel }) => {
       const [error, setError] = React.useState(null);
       const started = React.useRef(false);
@@ -1324,7 +1665,7 @@
         error === null ? null : h("div", { style: { width: "min(420px, 100%)" } }, h(Banner, { tone: "error" }, error))
       );
     };
-    const TasksPanel = ({ openSession, openArtifactPreview }) => {
+    const TasksPanel = ({ openSession, openArtifactPreview, focus }) => {
       const [snapshot, setSnapshot] = React.useState(null);
       const [snapshotError, setSnapshotError] = React.useState(null);
       const [actionError, setActionError] = React.useState(null);
@@ -1478,6 +1819,13 @@
           }
         };
       }, [drawerOpen]);
+      const focusConsumed = React.useRef(false);
+      React.useEffect(() => {
+        if (focusConsumed.current || focus === void 0 || focus === null || typeof focus.take !== "function") return;
+        focusConsumed.current = true;
+        const id = focus.take();
+        if (typeof id === "string" && id !== "") void openDetail(id);
+      }, [focus]);
       const copyPath = async (path) => {
         const value = String(path ?? "");
         if (value === "") return;
@@ -2412,18 +2760,20 @@
         )
       );
     };
-    return { HeaderButton, LauncherIcon, LauncherPanel, TasksPanel };
+    return { HeaderButton, LauncherIcon, LauncherPanel, TasksPanel, TaskChipRow };
   }
   const createClient = (req) => {
     const React = req("react");
     const h = React.createElement;
     const inject = ["slots", "layout", "uiWorkspace"];
     const { Icon, Badge, Chip, EmptyState, Banner, SkeletonList } = createUi(h);
+    const focusRequest = createFocusRequest();
     const {
       HeaderButton,
       LauncherIcon,
       LauncherPanel,
-      TasksPanel
+      TasksPanel,
+      TaskChipRow
     } = createViews({
       React,
       h,
@@ -2462,7 +2812,12 @@
       readDetail,
       readPreview,
       panelAction,
-      openMainOnce
+      openMainOnce,
+      selectTaskChips,
+      chipViewOf,
+      chipTooltipOf,
+      chipVisibleTitle,
+      isLatestTurn
     });
     function apply(ctx) {
       ensureStyles();
@@ -2553,6 +2908,10 @@
       } else {
         void mainView.refresh();
       }
+      const chipFeed = createTaskFeed({ readSnapshot: () => readSnapshot() });
+      if (typeof ctx.effect === "function") {
+        ctx.effect(() => () => chipFeed.stop(), "dsh-orchestrator: task chip feed");
+      }
       const openArtifactPreview = (path) => {
         const sidebar = serviceOf("sidebarRight");
         if (typeof sidebar?.openResource !== "function") return { ok: false, reason: "sidebar-missing" };
@@ -2575,7 +2934,9 @@
         key: PANEL_ID,
         inject: () => ({
           openSession: (id) => ctx.uiWorkspace.openSession(id),
-          openArtifactPreview
+          openArtifactPreview,
+          // chip 的「打开并定位」请求交给面板自己消费（挂载时 take 一次，取走即清空）。
+          focus: focusRequest
         })
       }, TasksPanel));
       ctx.slots.inject("main", () => ctx.slots.register({
@@ -2600,6 +2961,19 @@
           hooks: { mainView }
         })
       }, HeaderButton));
+      ctx.slots.inject("conversation.chat.turnTail", () => ctx.slots.register({
+        name: "conversation.chat.turnTail",
+        id: CHIP_ID,
+        order: 20,
+        inject: () => ({
+          openTask: (id) => {
+            if (focusRequest.request(id)) ctx.layout.selectPanel(PANEL_ID);
+          },
+          openPanel: () => ctx.layout.selectPanel(PANEL_ID),
+          hooks: { mainView },
+          chips: chipFeed
+        })
+      }, TaskChipRow));
     }
     return {
       inject,
@@ -2614,6 +2988,14 @@
         artifactProject,
         fileAddressOf,
         fileAddressProblem,
+        selectTaskChips,
+        chipStateOf,
+        chipViewOf,
+        chipTooltipOf,
+        chipVisibleTitle,
+        isLatestTurn,
+        createFocusRequest,
+        createTaskFeed,
         TONE_COLOR,
         STYLE_TEXT
       }
