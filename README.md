@@ -46,6 +46,10 @@ https://github.com/wjj865-code/dsh-orchestrator
 
 装完同样要彻底重启；升级时先卸载旧版再装新版。
 
+从源码开发/自行构建：见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)。仓库用 **pnpm**（版本钉在 `package.json` 的
+`packageManager`，锁文件 `pnpm-lock.yaml` 入库）：检出目录、尤其是 **git worktree 里第一步都要先 `pnpm install`**，
+`node_modules/` 不会跟着检出。
+
 ### 装好后的自检
 
 1. 插件页能看到「任务编排」标题、图标和详情页。

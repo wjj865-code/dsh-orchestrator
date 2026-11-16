@@ -362,8 +362,8 @@ target 可写根（`danger-full-access` 下用不上，只当注入失败时的�
   构建成 `dist/client.js`（iife classic script，配 `dist/client.js.map`），**产物入库**。平台 `clientExportOf()` 读
   `package.json` 的 `exports["./client"]`，把那个文件**原样** serve 成 `/plugins/<id>/client.js`；路由只服务
   这一个 JS（+ 同名 `.map`），`.css` 一律 404 → 样式必须 `?inline` 回 JS。当前 `exports["./client"]` 已指向
-  **`./dist/client.js`**（`files` 含 `dist/`），根目录不再有手写 `client.js`；改 UI = 改 `client/src/` + `npm run build`
-  （`npm test` 经 `pretest` 自动构建）。源码分模块：`index.js`（只注册 factory）→ `client.js`（装配 + `apply` +
+  **`./dist/client.js`**（`files` 含 `dist/`），根目录不再有手写 `client.js`；改 UI = 改 `client/src/` + `pnpm run build`
+  （`pnpm test` 经 `pretest` 自动构建）。源码分模块：`index.js`（只注册 factory）→ `client.js`（装配 + `apply` +
   `__test`）→ `views.js`（面板/抽屉/启动器）→ `ui.js`（展示件）、`styles.css`（样式表）、`logic.js`（纯函数）、
   `api.js`（宿主 HTTP 契约）、`gate.js`（任务入口闸门）、`constants.js`（文案/常量）。
 - **样式表怎么进来的**：产物是 classic script（不能 `import` CSS），所以 `styles.css` 在构建期被 `?inline`

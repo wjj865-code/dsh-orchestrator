@@ -252,10 +252,10 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 ## 8. 验证
 
 ```bash
-npm test            # 836 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、确认交付/删除门控、
+pnpm test           # 840 条：含 U2 布局/token/交互/纯函数/样式表自检/首帧渲染、确认交付/删除门控、
                     # 入口按钮视觉、fileAddressOf 与右侧栏预览（含回退）、P8 计划模式、两段式终态用例、
                     # 回复底部 chip（关联规则/状态映射/空状态/点击回调/订阅时序/feed 退避）
-npm run check:client
+pnpm run check:client
 node docs/probes/qa-stage2-slots.mjs dist/client.js   # 槽位/inject 探针（ALLOWED 已含 conversation.chat.turnTail）
 node docs/probes/qa-taskchip-dom.mjs dist/client.js   # chip 的 DOM 证据页（产物 dist 在 vm 里真实渲染）
 # 截图（Chrome/Edge headless，产物在 workspace/reports/）：

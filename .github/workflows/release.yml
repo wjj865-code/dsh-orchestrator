@@ -14,13 +14,15 @@ name: release
 #      npmjs.com → 包 → Settings → Trusted publishing → 绑定 GitHub 仓库
 #      工作流文件名填 release.yml；然后在 Publish 步骤里删掉下面三行 env。
 #
+# 包管理器：pnpm（见 package.json 的 packageManager / pnpm-lock.yaml）。
+#
 # 发布流程（版本号是唯一真源）：
-#   npm version patch          # 或 minor / major，同时改 package.json 并建 tag
+#   pnpm version patch        # 或 minor / major，同时改 package.json 并建 tag
 #   git push --follow-tags     # 推提交 + 推 tag vX.Y.Z → 本工作流接管
 #   首次对已有版本补 tag：git tag v0.3.1 && git push origin v0.3.1（版本已在 npm 上会被下面「已在 npm 上」的步骤拦下）
 #
 # 发布后镜像同步：最后一步会主动 PUT npmmirror 的 syncs 接口并轮询约 3 分钟。
-#   该步 continue-on-error，超时只出 warning；手动补做：npm run mirror:sync（查状态：npm run mirror:check）。
+#   该步 continue-on-error，超时只出 warning；手动补做：pnpm run mirror:sync（查状态：pnpm run mirror:check）。
 #   国内用户默认走 registry.npmmirror.com，镜像没刷出来时 npm i @latest 还拿旧版。
 on:
   push:
@@ -42,24 +44,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        # 不传 version：pnpm/action-setup@v4 读 package.json 的 packageManager（pnpm@x.y.z）。
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+          cache: pnpm
 
       - name: Install dependencies
-        # npm test 先跑 pretest → `vite build`（vite 是 devDependency），不装依赖会 `vite: not found`（exit 127）。
-        # 仓库不提交 package-lock.json（vite 已 pin 精确版本），所以用 npm install 而不是 npm ci。
+        # pnpm test 先跑 pretest → `vite build`（vite 是 devDependency），不装依赖会 `vite: not found`（exit 127）。
+        # 锁文件已入库，用 --frozen-lockfile：发布必须装出与仓库完全一致的依赖树。
         shell: bash
-        run: npm install --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
 
       - name: Tag 必须等于 package.json version
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
           if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} 与 package.json version ${version} 不一致：先 npm version 再打 tag"
+            echo "::error::tag ${GITHUB_REF_NAME} 与 package.json version ${version} 不一致：先 pnpm version 再打 tag"
             exit 1
           fi
 
@@ -69,16 +76,18 @@ jobs:
           name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
           if npm view "${name}@${version}" version >/dev/null 2>&1; then
-            echo "::error::${name}@${version} 已发布过：先 npm version patch 再打新 tag（npm 不允许覆盖已发布版本）"
+            echo "::error::${name}@${version} 已发布过：先 pnpm version patch 再打新 tag（npm 不允许覆盖已发布版本）"
             exit 1
           fi
 
       - name: Test
         run: |
-          npm test
-          npm run check:client
+          pnpm test
+          pnpm run check:client
 
       - name: Publish
+        # 发布仍走 npm CLI：provenance（OIDC）与 --ignore-scripts 的语义在 npm 上最稳，
+        # 且 publish 只读 package.json 的 version/files，不依赖包管理器类型。
         # prepublishOnly 会再跑一次测试，这里已经显式跑过，跳过重复生命周期。
         run: npm publish --provenance --access public --ignore-scripts
         env:
@@ -106,4 +115,4 @@ jobs:
             echo "  第 ${attempt} 次轮询：镜像 latest = ${latest:-未就绪}"
             sleep 10
           done
-          echo "::warning::镜像尚未出现 ${name}@${version}，npmmirror 会继续后台同步；稍后用 npm run mirror:check 复查（或 node scripts/mirror-sync.mjs）"
+          echo "::warning::镜像尚未出现 ${name}@${version}，npmmirror 会继续后台同步；稍后用 pnpm run mirror:check 复查（或 node scripts/mirror-sync.mjs）"

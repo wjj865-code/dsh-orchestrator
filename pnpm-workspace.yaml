@@ -1,0 +1,9 @@
+# pnpm 11 起，项目级设置只从本文件（或 .npmrc 的 auth/registry 部分）读取；
+# package.json 的 "pnpm" 字段已不再被读取，旧版的 onlyBuiltDependencies 也已由 allowBuilds 取代。
+#
+# 本仓库只有一个根包，没有 workspace 子包，这个文件存在的唯一目的是 allowBuilds。
+# 未列出的依赖一律视为「未审查」，安装会以 ERR_PNPM_IGNORED_BUILDS 失败（strictDepBuilds 默认 true）。
+
+allowBuilds:
+  # vite 的构建链依赖 esbuild，esbuild 装包时要跑 postinstall 校验/落二进制。
+  esbuild: true

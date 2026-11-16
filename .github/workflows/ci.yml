@@ -15,23 +15,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        # 不传 version：pnpm/action-setup@v4 会读 package.json 的 packageManager（pnpm@x.y.z），
+        # 让「本地跑的 pnpm 版本」与 CI 保持同一个真源，避免两处版本号漂移。
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          # 缓存 pnpm 的 content-addressable store（cache key 由 pnpm-lock.yaml 哈希决定）。
+          # 需要 pnpm 先上 PATH，所以必须排在 Setup pnpm 之后。
+          cache: pnpm
 
       - name: Install dependencies
-        # npm test 先跑 pretest → `vite build`（vite 是 devDependency），不装依赖会 `vite: not found`（exit 127）。
-        # 仓库不提交 package-lock.json（vite 已 pin 精确版本），所以用 npm install 而不是 npm ci。
+        # pnpm test 先跑 pretest → `vite build`（vite 是 devDependency），不装依赖会 `vite: not found`（exit 127）。
+        # 仓库提交 pnpm-lock.yaml，所以用 --frozen-lockfile：锁文件与 package.json 不一致时直接失败，CI 里不悄悄改依赖树。
         shell: bash
-        run: npm install --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
 
       - name: Test
         shell: bash
         run: |
           set -o pipefail
-          npm test 2>&1 | tee test-output.txt
-          npm run check:client
+          pnpm test 2>&1 | tee test-output.txt
+          pnpm run check:client
 
       - name: Report test failures
         if: failure()

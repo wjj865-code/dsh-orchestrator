@@ -41,12 +41,20 @@ const loadArtifact = () => {
 test('构建脚本：vite 是 pin 住的 devDependency，build/pretest/check:client 都指向产物', () => {
   assert.match(pkg.devDependencies?.vite ?? '', /^\d+\.\d+\.\d+$/, 'vite 必须 pin 精确版本（不用 ^ / ~），避免产物漂移')
   assert.equal(pkg.scripts.build, 'vite build --config vite.client.config.mjs')
-  assert.equal(pkg.scripts.pretest, 'npm run build', 'npm test 前必须自动构建（否则契约测试读的是旧产物）')
+  assert.equal(pkg.scripts.pretest, 'pnpm run build', 'pnpm test 前必须自动构建（否则契约测试读的是旧产物）')
   assert.equal(pkg.scripts['check:client'], 'node --check dist/client.js')
 })
 
+test('包管理器：固定 pnpm 版本，提交 pnpm 锁文件且不再有 package-lock.json', () => {
+  // 迁移 npm → pnpm 的契约：packageManager 是唯一真源（corepack / pnpm/action-setup 都读它），
+  // 必须 pin 精确版本，否则不同机器装出不同依赖树。
+  assert.match(pkg.packageManager ?? '', /^pnpm@\d+\.\d+\.\d+$/, 'packageManager 必须是 pnpm@<精确版本>')
+  assert.ok(existsSync(new URL('../pnpm-lock.yaml', import.meta.url)), 'pnpm-lock.yaml 必须入库（CI 用 --frozen-lockfile）')
+  assert.ok(!existsSync(new URL('../package-lock.json', import.meta.url)), 'package-lock.json 已废弃，不要再提交')
+})
+
 test('产物落盘：dist/client.js 与 dist/client.js.map 都存在且非空', () => {
-  assert.ok(existsSync(distPath), 'dist/client.js 不存在：先跑 npm run build')
+  assert.ok(existsSync(distPath), 'dist/client.js 不存在：先跑 pnpm run build')
   assert.ok(existsSync(mapPath), 'dist/client.js.map 不存在：sourcemap 必须成对产出')
   assert.ok(statSync(distPath).size > 0)
   assert.ok(statSync(mapPath).size > 0)

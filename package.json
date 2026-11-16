@@ -32,6 +32,7 @@
   "engines": {
     "node": ">=22.15"
   },
+  "packageManager": "pnpm@11.22.0",
   "publishConfig": {
     "access": "public"
   },
@@ -45,14 +46,14 @@
   },
   "scripts": {
     "build": "vite build --config vite.client.config.mjs",
-    "pretest": "npm run build",
+    "pretest": "pnpm run build",
     "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"",
     "check:client": "node --check dist/client.js",
     "preset:debug": "node scripts/orch-debug-preset.mjs",
     "preset:debug:check": "node scripts/orch-debug-preset.mjs --check",
     "mirror:sync": "node scripts/mirror-sync.mjs",
     "mirror:check": "node scripts/mirror-sync.mjs --check",
-    "prepublishOnly": "npm test && npm run check:client"
+    "prepublishOnly": "pnpm test && pnpm run check:client"
   },
   "dsh": {
     "bundle": {

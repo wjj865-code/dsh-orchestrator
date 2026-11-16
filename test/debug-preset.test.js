@@ -446,7 +446,7 @@ test('checkDebugPreset：刚生成时对齐，组合漂移时给出逐行差异'
   assert.equal(broken.ok, false)
   assert.equal(broken.reason, 'drift')
   assert.ok(broken.differences.some(d => d.kind === 'extra' && d.id === 'tool-extra'), JSON.stringify(broken.differences))
-  assert.match(broken.hint, /重新跑 npm run preset:debug/)
+  assert.match(broken.hint, /重新跑 pnpm run preset:debug/)
 
   const absent = checkDebugPreset({ outDir: join(dir, 'nope'), source, env: {}, platform: 'linux' })
   assert.equal(absent.ok, false)

@@ -452,7 +452,7 @@ export function checkDebugPreset({ outDir, source, env = process.env, platform =
   const dir = resolve(outDir)
   const patchPath = join(dir, 'cordis.patch.yml')
   if (!existsSync(patchPath)) {
-    return { ok: false, reason: 'missing-bundle', hint: `没找到 ${patchPath}：先跑一次 npm run preset:debug 生成并安装` }
+    return { ok: false, reason: 'missing-bundle', hint: `没找到 ${patchPath}：先跑一次 pnpm run preset:debug 生成并安装` }
   }
   let existingText
   try {
@@ -489,7 +489,7 @@ export function checkDebugPreset({ outDir, source, env = process.env, platform =
       source: sourceInfo,
       skills,
       differences: comparison.differences,
-      hint: 'bundle 与当前随包 cordis 组合不一致：重新跑 npm run preset:debug，再重装 bundle 并彻底重启 DSH。',
+      hint: 'bundle 与当前随包 cordis 组合不一致：重新跑 pnpm run preset:debug，再重装 bundle 并彻底重启 DSH。',
     }
   }
   return { ok: true, path: patchPath, source: sourceInfo, plugins: comparison.generatedRows, skills }

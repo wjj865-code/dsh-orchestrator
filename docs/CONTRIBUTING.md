@@ -5,9 +5,9 @@
 
 ## 环境
 
-- Node `>= 22.15`（`package.json` 的 `engines`），npm（仓库不依赖 pnpm）。
+- Node `>= 22.15`（`package.json` 的 `engines`），包管理器是 **pnpm**（`packageManager` 固定版本，锁文件 `pnpm-lock.yaml` 入库）。
 - 唯一 devDependency 是 `vite`（构建 `client/src/**` → `dist/client.js`）。
-- 仓库约定：`*.js` 一律 LF（`.gitattributes`）；`dist/` **入库**，由 `npm run build` 重建，不手改。
+- 仓库约定：`*.js` 一律 LF（`.gitattributes`）；`dist/` **入库**，由 `pnpm run build` 重建，不手改。
 
 ## 仓库结构
 
@@ -36,19 +36,27 @@ docs/                ARCHITECTURE / LIMITATIONS / UI / DETAIL / DEBUG-PRESET / p
 ## 本地开发
 
 ```bash
-npm install
-npm test                 # pretest 会先 npm run build，再跑 node --test
-npm run build            # client/src/** --vite--> dist/client.js（+ .map）
-npm run check:client     # node --check dist/client.js
-npm run preset:debug     # 把随包「创造模式」组合复制成可安装的 orch-debug 预设
+pnpm install             # 装依赖（按 pnpm-lock.yaml；CI 用 pnpm install --frozen-lockfile）
+pnpm test                # pretest 会先 pnpm run build，再跑 node --test
+pnpm run build           # client/src/** --vite--> dist/client.js（+ .map）
+pnpm run check:client    # node --check dist/client.js
+pnpm run preset:debug    # 把随包「创造模式」组合复制成可安装的 orch-debug 预设
 node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后查预设漂移
 node scripts/verify-access-full.mjs          # 离线核对 access:'full' 整条链（台账→brief→派发→沙箱事件→通知）
 node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 docs/probes/ 逐条重跑）
 ```
 
-- 改面板/详情 = 改 `client/src/**` 再 `npm run build`；`dist/` 的改动要一起提交。
+- **没有 pnpm？** `corepack enable pnpm`（多数 Node 发行版自带 corepack，会按 `packageManager` 取对版本），
+  或 `npm i -g pnpm@11`。CI 的 `pnpm/action-setup@v4` 也读 `package.json` 的 `packageManager`，
+  本地 / CI / 文档只有这一个版本真源。
+- **worktree 或新克隆里第一步先 `pnpm install`**：`node_modules/` 不入库，git worktree 检出的目录是空的，
+  不装就直接 `pnpm test` 会 `vite: not found`，或读到别处留下的旧产物。pnpm 的全局 store 跨目录共享，
+  同一个 store 已经被暖过时，第二个 worktree 装依赖通常 1–2 秒。
+- 改面板/详情 = 改 `client/src/**` 再 `pnpm run build`；`dist/` 的改动要一起提交。
 - **沙箱里跑不了完整构建**：`vite build` 要写 `dist/` 并 spawn 子进程，在 DSH 子会话的默认沙箱里可能被拒。
   用 `access:'full'` 的子任务跑构建，或交给 CI / 本地终端。
+- 装依赖报 `ERR_PNPM_IGNORED_BUILDS` 时：有包想跑构建脚本而没被审过。在 `pnpm-workspace.yaml` 的
+  `allowBuilds` 里显式写 `true`（`esbuild` 已经写好）或 `false` 再重装；不要用 `dangerouslyAllowAllBuilds` 一把放开。
 - 本地 link 安装（开发用）：profile 的 `package.json` 加
   `"@wjj865-code/dsh-orchestrator": "link:C:/Users/72489/Documents/dsh-orchestrator"`，
   并把包名加入 `dsh.profile.bundles`，重启 profile。
@@ -59,7 +67,7 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
 - 新增/修改行为：先补一条会红的用例，再改实现；涉及台账的用例用临时 `DSH_HOME`（见 `test/helpers.js`）。
 - 文案口径由 `test/copy-consistency.test.js` 统一锁：`done` 不是终态、协调者默认不主动 `task_close`、
   present 1-4 个、brief 不越权定义交付语义。改这些文案先跑它。
-- 全量门槛：`npm test` 全绿 + `npm run check:client` 通过（`prepublishOnly` 也是这两个）。
+- 全量门槛：`pnpm test` 全绿 + `pnpm run check:client` 通过（`prepublishOnly` 也是这两个）。
 
 ## 发版
 
@@ -67,11 +75,11 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
 
 1. 更新 `CHANGELOG.md`（新版本一节）与 `package.json` 的 `version`。
 2. 发版前清仓库：任务产物（`reports/`、`workspace/`、`.agents/`）不进提交；只提交代码/测试/文档/版本文件。
-   `dist/client.js` 由 `npm run build` 重建后一起提交。
+   `dist/client.js` 由 `pnpm run build` 重建后一起提交。
 3. 本地全绿后打 tag：
 
    ```powershell
-   npm version patch --no-git-tag-version
+   pnpm version patch --no-git-tag-version
    git add package.json CHANGELOG.md
    git commit -m "release: vX.Y.Z"
    git tag -a vX.Y.Z -m "vX.Y.Z"
@@ -79,15 +87,17 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
    ```
 
 4. `.github/workflows/ci.yml`（push main / PR）跑测试；`.github/workflows/release.yml`（推 `v*` tag）：
-   校验 tag 与 `package.json` 一致 → 该版本未发布过 → `npm test` + `npm run check:client` →
-   `npm publish --provenance --access public --ignore-scripts` → 触发 npmmirror 镜像同步。
+   两个工作流都用 `pnpm/action-setup@v4`（版本取自 `packageManager`）+ `actions/setup-node` 的 pnpm 缓存 +
+   `pnpm install --frozen-lockfile`。发布工作流还会校验 tag 与 `package.json` 一致 → 该版本未发布过 →
+   `pnpm test` + `pnpm run check:client` → `npm publish --provenance --access public --ignore-scripts`
+   （发布这一步仍走 npm CLI，provenance/`--ignore-scripts` 语义最稳）→ 触发 npmmirror 镜像同步。
    仓库 Secrets 需要 `NPM_TOKEN`（npm Granular Token，Read and write，Bypass 2FA）；长期可换 Trusted Publishing（OIDC）。
 5. **补镜像同步**：`registry.npmmirror.com` 是独立的库，新版本常延迟出现，国内用户装不到新版。
    `release.yml` 会自动 `PUT /-/package/<name>/syncs` 并轮询；失败或手动发版时：
 
    ```powershell
-   npm run mirror:check   # 只看镜像 latest 是不是 package.json 的版本
-   npm run mirror:sync    # 触发同步并轮询（--no-wait 只触发，--timeout 600 多等会儿）
+   pnpm run mirror:check  # 只看镜像 latest 是不是 package.json 的版本
+   pnpm run mirror:sync   # 触发同步并轮询（--no-wait 只触发，--timeout 600 多等会儿）
    ```
 
    本地 `npm view` 有缓存，怀疑时加 `--prefer-online`；`mirror:check` 每次发真请求。
