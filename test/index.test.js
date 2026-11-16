@@ -1285,7 +1285,12 @@ test('注册 /api/orchestrator 只读路由：POST + buffered + snapshot', withH
   assert.equal(response.status, 200)
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.deepEqual(body.mainSession, { id: 's-1', live: true })
+  assert.deepEqual(body.mainSession, {
+    id: 's-1',
+    live: true,
+    // S2：路由注入了 rotationStatus，未判定过时是「未知」形状而不是 null。
+    rotation: { due: null, reasons: [], metrics: null, evaluatedAt: null, lastRotatedAt: null },
+  })
 }))
 
 test('connection 晚于插件加载：ctx.inject 就绪后仍注册只读路由', withHome(async () => {
@@ -1509,6 +1514,50 @@ test('G1：没有 goals 服务时 apply 与派发静默降级（不 warn、不�
   const task = listTasks(check).find(item => item.title === '无 goals')
   assert.equal(task.goal_state, null)
   check.close()
+  await f.disposers.at(-1)?.()
+}))
+
+test('S2：启动 reconcile 之后写 main_rotation_due（只检测，不建会话、不改指针），agent/created 刷新来源', withHome(async home => {
+  const { openLedger, createTask, transition, setSetting } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const ghost = createTask(ledger, { brief: { title: '幽灵', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
+  transition(ledger, ghost.id, 'running', { sessionId: 'c-run', target: 'c-run' })
+  const since = Date.now() - 30 * 24 * 3600 * 1000
+  setSetting(ledger, 'main_session_id', 's-1')
+  setSetting(ledger, 'main_session_created_at', String(since))
+  ledger.close()
+
+  const s1 = makeAgent('s-1')
+  const f = fakeCtx({ agents: [s1] })
+  // 指针存在但 coordinatorSession 未配置 → 启动检测照跑（配置覆盖才跳过）。
+  await apply(f.ctx, {})
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
+  const db = new DatabaseSync(dbPath)
+  const read = key => db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value
+  const due = JSON.parse(read('main_rotation_due'))
+  assert.equal(due.source, 'startup')
+  assert.equal(due.mainSessionId, 's-1')
+  // 30 天龄命中 M5（默认 10 天）；其余因子未到阈值 / 服务缺失只记 degraded。
+  assert.equal(due.due, true)
+  assert.deepEqual(due.triggers, ['age'])
+  assert.ok(Array.isArray(due.degraded))
+  // 只写 due：指针、冷却、审计、marker 都没动；没有新建会话。
+  assert.equal(read('main_session_id'), 's-1')
+  assert.equal(read('main_rotation_at'), undefined)
+  assert.equal(read('main_rotation_last'), undefined)
+  assert.equal(read('main_rotation_pending'), undefined)
+  assert.equal(read('main_session_created_at'), String(since))
+  db.close()
+
+  // 检测点②：主会话加载（agent/created）后重新判定并刷新 due 来源。
+  f.listeners.get('agent/created')({ agent: s1 })
+  await wait(80)
+  const after = new DatabaseSync(dbPath)
+  const refreshed = JSON.parse(after.prepare('SELECT value FROM settings WHERE key = ?').get('main_rotation_due').value)
+  assert.equal(refreshed.source, 'agent-created')
+  assert.equal(refreshed.due, true)
+  after.close()
   await f.disposers.at(-1)?.()
 }))
 

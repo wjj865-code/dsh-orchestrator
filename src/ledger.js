@@ -581,6 +581,11 @@ export function setSetting(db, key, value) {
   return value
 }
 
+/** 删除 settings 键（轮换 marker 收尾等一次性状态用）：键不存在也算成功。 */
+export function deleteSetting(db, key) {
+  db.prepare('DELETE FROM settings WHERE key = ?').run(String(key))
+}
+
 /** 首次绑定：只在 key 不存在时写入，返回最终值（并发时先到先得）。 */
 export function bindSettingOnce(db, key, value) {
   db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING')

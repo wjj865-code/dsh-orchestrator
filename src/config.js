@@ -3,6 +3,7 @@ import { DEFAULT_WATCHDOG_IDLE_MINUTES, DEFAULT_WATCHDOG_INTERVAL_MINUTES } from
 import { DEFAULT_BRANCH_PREFIX, WORKTREE_POLICIES } from './worktree-request.js'
 import { guardModeOf } from './write-guard.js'
 import { DELIVERED_TIMEOUT_MINUTES } from './delivered.js'
+import { normalizeRotationConfig } from './main-rotation.js'
 
 const DEFAULTS = {
   staleMinutes: 30,
@@ -85,5 +86,9 @@ export function loadConfig(raw = {}) {
   config.worktreeRecentDays = Number.isFinite(raw?.worktreeRecentDays)
     ? Math.min(90, Math.max(1, Math.floor(raw.worktreeRecentDays)))
     : 7
+  // 主会话轮换（G1 S1）：11 个键（总开关 + 六个因子阈值 + 冷却/最小龄/闲置 + 归档开关）
+  // 的默认值、合法区间与非法回落都在 src/main-rotation.js 的 normalizeRotationConfig 里，
+  // 这里只负责挂到 config 上；S1 不接任何调用点，因此行为零变化。
+  Object.assign(config, normalizeRotationConfig(raw))
   return config
 }

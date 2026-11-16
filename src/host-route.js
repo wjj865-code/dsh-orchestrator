@@ -17,9 +17,19 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleMinutes = 30, limit = 200, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleMinutes = 30, limit = 200, now = Date.now, rotationStatus }) {
   // message 请求级幂等：按 (taskId, clientRequestId) 去重，只在进程内（重启失效，见 request-dedupe.js）。
   const dedupe = createRequestDedupe({ max: 200 })
+  // G1 S2：轮换状态是**注入的只读读取器**（index 传 rotationStatus(db)）。
+  // 不在路由里做指标采集：2s 面板轮询只允许点查 settings，绝不允许 listSnapshots/stat 磁盘。
+  const readRotation = () => {
+    if (typeof rotationStatus !== 'function') return null
+    try {
+      return rotationStatus() ?? null
+    } catch {
+      return null
+    }
+  }
   const snapshot = () => {
     const status = coordinatorStatus?.() ?? {}
     const at = now()
@@ -36,7 +46,13 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
     return {
       ok: true,
       at,
-      mainSession: { id: status.id ?? null, live: status.live === true },
+      mainSession: {
+        id: status.id ?? null,
+        live: status.live === true,
+        // 轮换只读可见性（S2）：形状 {due, reasons, metrics, evaluatedAt, lastRotatedAt}；
+        // 未装配/读不到时为 null（客户端按「未知」处理，不按「不需要轮换」）。
+        rotation: readRotation(),
+      },
       // 「待你决定」计数：等你确认/要授权/已交付待确认——三种都需要人（或协调者）拍板。
       inboxCount: tasks.filter(task => task.status === 'waiting_user' || task.status === 'waiting_auth' || task.status === 'delivered').length,
       tasks: tasks.map(task => {

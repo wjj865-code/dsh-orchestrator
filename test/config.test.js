@@ -128,6 +128,100 @@ test('空闲看门狗：非法分钟数回落默认，超界夹到 1–1440', ()
   assert.equal(clamped.watchdogIdleMinutes, 1)
 })
 
+test('主会话轮换：11 个键默认值（G1 S1 判定内核）', () => {
+  const config = loadConfig({})
+  assert.equal(config.mainRotation, 'auto')
+  assert.equal(config.rotateAfterTasks, 120)
+  assert.equal(config.rotateAfterSessions, 80)
+  assert.equal(config.rotateAfterMainLogMiB, 6)
+  assert.equal(config.rotateAfterContextTokens, 150000)
+  assert.equal(config.rotateAfterDays, 10)
+  assert.equal(config.rotateAfterDiskMiB, 512)
+  assert.equal(config.rotateCooldownHours, 48)
+  assert.equal(config.rotateMinAgeHours, 12)
+  assert.equal(config.rotateIdleMinutes, 10)
+  assert.equal(config.rotateArchiveOld, true)
+})
+
+test('主会话轮换：合法覆盖生效，总开关只认 off/auto', () => {
+  const config = loadConfig({
+    mainRotation: 'off',
+    rotateAfterTasks: 60,
+    rotateAfterSessions: 40,
+    rotateAfterMainLogMiB: 3,
+    rotateAfterContextTokens: 100000,
+    rotateAfterDays: 7,
+    rotateAfterDiskMiB: 256,
+    rotateCooldownHours: 24,
+    rotateMinAgeHours: 6,
+    rotateIdleMinutes: 5,
+    rotateArchiveOld: false,
+  })
+  assert.equal(config.mainRotation, 'off')
+  assert.equal(config.rotateAfterTasks, 60)
+  assert.equal(config.rotateAfterSessions, 40)
+  assert.equal(config.rotateAfterMainLogMiB, 3)
+  assert.equal(config.rotateAfterContextTokens, 100000)
+  assert.equal(config.rotateAfterDays, 7)
+  assert.equal(config.rotateAfterDiskMiB, 256)
+  assert.equal(config.rotateCooldownHours, 24)
+  assert.equal(config.rotateMinAgeHours, 6)
+  assert.equal(config.rotateIdleMinutes, 5)
+  assert.equal(config.rotateArchiveOld, false)
+  // 拼错/其它值回落 auto：默认必须安全，不能因为写错就永久关闭轮换。
+  for (const bad of ['OFF', 'manual', 'on', 0, true, null]) {
+    assert.equal(loadConfig({ mainRotation: bad }).mainRotation, 'auto', String(bad))
+  }
+  // 归档开关与其它布尔项同口径：只有显式 false 才关。
+  assert.equal(loadConfig({ rotateArchiveOld: 'no' }).rotateArchiveOld, true)
+  assert.equal(loadConfig({ rotateArchiveOld: 0 }).rotateArchiveOld, true)
+})
+
+test('主会话轮换：越界夹到边界，非数字/非正数回落默认', () => {
+  const clamped = loadConfig({
+    rotateAfterTasks: 99999,
+    rotateAfterSessions: 0.2,
+    rotateAfterMainLogMiB: 1e9,
+    rotateAfterContextTokens: 1,
+    rotateAfterDays: 999,
+    rotateAfterDiskMiB: 1,
+    rotateCooldownHours: 0.5,
+    rotateMinAgeHours: 1e6,
+    rotateIdleMinutes: 99999,
+  })
+  assert.equal(clamped.rotateAfterTasks, 10000)
+  assert.equal(clamped.rotateAfterSessions, 1)
+  assert.equal(clamped.rotateAfterMainLogMiB, 4096)
+  assert.equal(clamped.rotateAfterContextTokens, 1000)
+  assert.equal(clamped.rotateAfterDays, 365)
+  assert.equal(clamped.rotateAfterDiskMiB, 16)
+  assert.equal(clamped.rotateCooldownHours, 1)
+  assert.equal(clamped.rotateMinAgeHours, 720)
+  assert.equal(clamped.rotateIdleMinutes, 1440)
+
+  const bad = loadConfig({
+    rotateAfterTasks: 0,
+    rotateAfterSessions: Number.NaN,
+    rotateAfterMainLogMiB: '6',
+    rotateAfterContextTokens: Infinity,
+    rotateAfterDays: -10,
+    rotateAfterDiskMiB: null,
+    rotateCooldownHours: undefined,
+    rotateMinAgeHours: 0.5,
+    rotateIdleMinutes: 1e9,
+  })
+  // 非正数/非数字一律回落默认（0.5 是正数，会夹到区间下界而不是回落）。
+  assert.equal(bad.rotateAfterTasks, 120)
+  assert.equal(bad.rotateAfterSessions, 80)
+  assert.equal(bad.rotateAfterMainLogMiB, 6)
+  assert.equal(bad.rotateAfterContextTokens, 150000)
+  assert.equal(bad.rotateAfterDays, 10)
+  assert.equal(bad.rotateAfterDiskMiB, 512)
+  assert.equal(bad.rotateCooldownHours, 48)
+  assert.equal(bad.rotateMinAgeHours, 1)
+  assert.equal(bad.rotateIdleMinutes, 1440)
+})
+
 test('不泄漏未声明的原始键', () => {
   const config = loadConfig({ foo: 1, coordinatorSession: 's-1' })
   assert.equal('foo' in config, false)
