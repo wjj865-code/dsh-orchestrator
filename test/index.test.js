@@ -1561,3 +1561,40 @@ test('S2：启动 reconcile 之后写 main_rotation_due（只检测，不建会�
   await f.disposers.at(-1)?.()
 }))
 
+test('S3：启动 recoverPending 补完上次崩溃中断的轮换（F7：指针已切 → 补处置旧会话）', withHome(async home => {
+  const { openLedger, setSetting } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const at = Date.now() - 60_000
+  setSetting(ledger, 'main_session_id', 'session-new')
+  setSetting(ledger, 'main_rotation_pending', JSON.stringify({ newId: 'session-new', oldId: 'session-old', at, reasons: ['age'] }))
+  ledger.close()
+
+  const archived = []
+  const renamed = []
+  const s1 = makeAgent('session-new')
+  const f = fakeCtx({
+    agents: [s1],
+    workspaces: { archiveSession: async id => archived.push(id) },
+    sessionController: { rename: async request => renamed.push(request) },
+  })
+  await apply(f.ctx, {})
+
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const read = key => db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value
+  assert.equal(read('main_session_id'), 'session-new', '指针不回退')
+  assert.equal(read('main_rotation_pending'), undefined, 'marker 补完后清掉')
+  const last = JSON.parse(read('main_rotation_last'))
+  assert.equal(last.old, 'session-old')
+  assert.equal(last.new, 'session-new')
+  assert.equal(last.recovered, true)
+  assert.equal(last.archived, true)
+  assert.equal(read('main_onboarding:session-new'), 'sent', '恢复也跳过首次介绍')
+  assert.deepEqual(archived, ['session-old'])
+  assert.equal(renamed.length, 1)
+  assert.equal(renamed[0].sessionId, 'session-old')
+  assert.match(renamed[0].title, /已退役/)
+  db.close()
+  await f.disposers.at(-1)?.()
+}))
+

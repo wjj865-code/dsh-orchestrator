@@ -14,7 +14,7 @@ import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
 import { createQueue } from './src/queue.js'
 import { createStartupReconciler } from './src/reconcile.js'
-import { evaluateAndMarkRotation, rotationStatus as readRotationStatus } from './src/main-rotation.js'
+import { createRotationService, rotationStatus as readRotationStatus } from './src/main-rotation.js'
 import { createIdleWatchdog } from './src/watchdog.js'
 import { createGoalBridge } from './src/goal.js'
 import { createKeepAlive } from './src/keepalive.js'
@@ -256,9 +256,35 @@ export async function apply(ctx, rawConfig = {}) {
   // 主会话：固定入口创建/打开唯一协调者会话；不再由 task_create 自动绑定。
   // 服务用 getter 惰性取：cordis 并发加载条目，apply 时服务可能还没就绪（同上 connection）。
   const service = name => ctx.get?.(name)
+  // G1 S3：轮换**动作面**（marker / 指针时间戳 / 审计 / 旧会话改名+归档 / 启动恢复）。
+  // 判定仍是 src/main-rotation.js 的纯函数与采集层；这里只把「台账 + 平台动作」绑成服务，
+  // 且平台服务一律惰性取（cordis 并发加载，apply 早期 get 可能还是 undefined）。
+  // 归档不可逆（平台无 unarchive）：是否归档由 config.rotateArchiveOld 决定，这里只执行。
+  const rotation = createRotationService({
+    db,
+    config,
+    persistence: () => service('sessionPersistence'),
+    tokenMeter: () => service('tokenMeter'),
+    // P8 的活跃子代理兜底：读不到就是「无法判断」，不阻塞判定。
+    catalog: () => dispatcher?.catalog?.(),
+    workspaceCwd: () => join(dir, 'workspace'),
+    rename: (sessionId, title) => {
+      const sessions = service('sessionController')
+      if (typeof sessions?.rename !== 'function') throw new Error('缺少 sessionController.rename 服务')
+      return sessions.rename({ sessionId, title })
+    },
+    archive: sessionId => {
+      const workspaces = service('workspaceRegistry')
+      if (typeof workspaces?.archiveSession !== 'function') throw new Error('缺少 workspaceRegistry.archiveSession 服务')
+      return workspaces.archiveSession(sessionId)
+    },
+    log: (event, detail) => logger.log(event, { detail }),
+    onWarn: warnings,
+  })
   const mainSession = createMainSession({
     db,
     config,
+    rotation,
     agents: () => service('agents'),
     sessionController: () => service('sessionController'),
     workspaces: () => service('workspaceRegistry'),
@@ -453,25 +479,12 @@ export async function apply(ctx, rawConfig = {}) {
     onOrphaned: task => { void goalBridge.clear(task.id, task.session_id) },
   })
 
-  // G1 S2：主会话轮换的「只读采集 + 纯判定 + 写 due 标记」。
-  // 三件事都严格分开：这里只检测，不建会话、不改指针（动作在 S3 的 mainSession.open()）。
+  // G1 S2/S3：主会话轮换的「只读采集 + 纯判定 + 写 due 标记」调用点（启动 / 主会话加载）。
+  // 检测与动作严格分开：这里只检测，不建会话、不改指针（动作在 mainSession.open() 命中 due 时执行）。
   // 采集失败按「未知」降级（degraded），整体异常 fail-closed；永不 reject，绝不阻断插件加载。
   const evaluateRotationNow = async (source, mainSessionId, liveAgent) => {
     try {
-      return await evaluateAndMarkRotation({
-        db,
-        config,
-        persistence: service('sessionPersistence'),
-        tokenMeter: service('tokenMeter'),
-        mainSessionId,
-        liveAgent,
-        // 子会话目录只用于 P8（防孤儿子代理）；读不到就是「无法判断」，不阻塞判定。
-        catalog: () => dispatcher?.catalog?.(),
-        workspaceCwd: join(dir, 'workspace'),
-        source,
-        log: (event, fields) => logger.log(event, fields),
-        onWarn: warnings,
-      })
+      return { ok: true, decision: await rotation.evaluate({ mainSessionId, liveAgent, source }) }
     } catch (error) {
       warnings(`dsh-orchestrator: 主会话轮换检测失败（本次不轮换）：${error?.message ?? error}`)
       return { ok: false, decision: null }
@@ -591,6 +604,9 @@ export async function apply(ctx, rawConfig = {}) {
   // 启动对账（S2）：running 无活跃子会话 / catalog 查不到 → orphaned，并汇总上报一次；
   // 此时协调者可能还没加载，汇总会保留到 agent/created 再补发。
   await reconciler.reconcile({ coordinatorSessionId: resolvedCoordinatorId() })
+  // G1 S3：启动先把上次崩溃中断的轮换补完（F6 归档空白残留 / F7 补处置旧会话），再检测。
+  // 失败只 warn、绝不阻断加载；marker 留着的话下次启动幂等重试（rename 覆盖标题、archive 幂等）。
+  await rotation.recoverPending({ pointer: resolvedCoordinatorId() })
   // S2 检测点①：启动对账之后做一次只读采集与判定，把结果写进 settings.main_rotation_due，
   // 让用户「打开主会话之前」就能在面板看到「建议轮换（原因…）」。启动阶段只检测，不建会话。
   await evaluateRotationNow('startup', resolvedCoordinatorId(), resolveCoordinator())

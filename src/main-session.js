@@ -8,11 +8,18 @@ export const PRESET_ID = 'dsh-orchestrator-coordinator'
 export const WORKER_PRESET_ID = 'dsh-orchestrator-worker'
 export const MAIN_SESSION_HINT = '尚未打开主会话，请先从面板「打开主会话」。'
 
-export function createMainSession({ db, config, agents, sessionController, workspaces, presetFor, selectPreset, workspacePath, workspaceName = '指挥舱', log = () => {} }) {
+export function createMainSession({ db, config, agents, sessionController, workspaces, presetFor, selectPreset, workspacePath, workspaceName = '指挥舱', rotation, now = () => Date.now(), log = () => {} }) {
   // 服务既可以直接传对象（测试/同步场景），也可以传 getter（index 惰性取，等 cordis 服务就绪）。
   const resolveAgents = () => typeof agents === 'function' ? agents() : agents
   const resolveSessionController = () => typeof sessionController === 'function' ? sessionController() : sessionController
   const resolveWorkspaces = () => typeof workspaces === 'function' ? workspaces() : workspaces
+  // G1 S3：轮换动作面（src/main-rotation.js 的 createRotationService）。允许传 getter：
+  // 服务在 index 里是「先建、晚装配」，getter 形式能让调用方在 apply 早期就先挂上引用。
+  const resolveRotation = () => typeof rotation === 'function' ? rotation() : rotation
+  // 刚轮换出来的新会话在平台异步起 agent 之前不 live；这段时间里再点「打开主会话」不能再建一个
+  // （openOnce 的「不 live 就新建」会把一次轮换变成两次 + 一个空白残留）。窗口只拦这一条路，过期后照旧重建。
+  const FRESH_MAIN_LOAD_GRACE_MS = 60_000
+  let freshMain
   const liveAgent = id => resolveAgents()?.get?.(id)
   const currentId = () => config?.coordinatorSession ?? getMainSessionId(db)
   // worker 预设只认 spawn provider（fork 不满足 capabilities.agentPreset）；不静默降级、不改用户配置。
@@ -64,6 +71,102 @@ export function createMainSession({ db, config, agents, sessionController, works
     return created?.id
   }
 
+  const createdPreset = created =>
+    typeof created?.agentPreset === 'string' && created.agentPreset !== '' ? created.agentPreset : PRESET_ID
+
+  /**
+   * G1 S3：命中轮换（计划 §5.1）。这里的**顺序就是回退边界**：
+   *   create 失败 = 零处置 → 写 marker → 切指针 → 写时间戳/跳过 onboarding → 新会话标题
+   *   → 旧会话改名「已退役」+ 归档 → 审计 + 清 marker。
+   * 指针切换前失败 = 什么都没发生（旧主会话照常可用）；指针切换后失败 = 轮换成立，最多旧会话没处置干净。
+   * 归档不可逆（平台无 unarchive）：`rotateArchiveOld=false` 时只改名。
+   */
+  const rotateMain = async ({ oldId, decision }) => {
+    const rot = resolveRotation()
+    const sessions = resolveSessionController()
+    if (sessions?.create === undefined) return { ok: false, error: '创建主会话失败：缺少 sessionController 服务（平台尚未就绪）' }
+    const at = now()
+    let workspaceId
+    try { workspaceId = await ensureWorkspace() } catch (error) {
+      return { ok: false, error: `指挥舱工作区不可用：${error?.message ?? error}` }
+    }
+    // F2：create 失败必须**零处置**。此刻 marker 还没写、指针没动、旧会话没碰。
+    let created
+    try {
+      created = await sessions.create({ workspaceId, agentPreset: PRESET_ID })
+    } catch (error) {
+      log('main.rotation.failed', { stage: 'create', oldId: oldId ?? null, error: `${error?.message ?? error}` })
+      return { ok: false, error: `创建主会话失败：${error?.message ?? error}` }
+    }
+    const sessionId = created?.sessionId
+    if (typeof sessionId !== 'string' || sessionId === '') {
+      log('main.rotation.failed', { stage: 'create', oldId: oldId ?? null, reason: 'no-session-id' })
+      return { ok: false, error: '创建主会话失败：没有返回 sessionId' }
+    }
+    // F6 锚点：先落 marker（新会话还不是主会话；崩溃 → 下次启动把这块空白归档）。
+    const marker = rot?.begin?.({ oldId, newId: sessionId, at, decision })
+    // 切指针：单条 UPSERT。失败 = 轮换没发生（F3）：旧指针原样可用，空白新会话归档隐藏。
+    try {
+      setMainSessionId(db, sessionId)
+    } catch (error) {
+      const discarded = (await rot?.discard?.({ sessionId })) === true
+      log('main.rotation.pointer-failed', {
+        oldId: oldId ?? null, newId: sessionId, error: `${error?.message ?? error}`, discarded,
+      })
+      return { ok: false, error: `轮换失败，旧主会话仍可用：${error?.message ?? error}`, rotated: false }
+    }
+    // 指针已切：以下每一步失败都只降级，**不回滚指针**（回滚等于把人踢回旧会话又换了主会话）。
+    try {
+      setMainSessionPreset(db, createdPreset(created))
+      rot?.commitTimes?.(at)
+    } catch (error) {
+      log('main.rotation.commit.failed', { newId: sessionId, error: `${error?.message ?? error}` })
+    }
+    // 跳过首次介绍 + 工作区索引任务：status 直接落 'sent'（否则每轮换一次多派一个重复索引任务）。
+    try {
+      setSetting(db, onboardingKey(sessionId), 'sent')
+    } catch (error) {
+      log('main.rotation.onboarding.failed', { newId: sessionId, error: `${error?.message ?? error}` })
+    }
+    try {
+      await sessions.rename?.({ sessionId, title: '主会话' })
+    } catch (error) {
+      log('main.session.rename.failed', { sessionId, error: `${error?.message ?? error}` })
+    }
+    // 旧会话处置（不可逆）：改名「已退役」+ 归档；rename/archive 各自失败只降级，轮换仍成立。
+    const disposal = (await rot?.disposeOld?.({ oldId, at })) ?? { renamed: false, archived: false }
+    let audit = null
+    try {
+      audit = rot?.finish?.({ oldId, newId: sessionId, at, decision, disposal }) ?? null
+    } catch (error) {
+      // 审计/清 marker 写不进 → marker 还在，下次启动幂等补完。
+      log('main.rotation.audit.failed', { newId: sessionId, error: `${error?.message ?? error}` })
+    }
+    freshMain = { sessionId, at }
+    log('main.session.rotated', {
+      old: oldId ?? null,
+      new: sessionId,
+      triggers: Array.isArray(decision?.triggers) ? decision.triggers : [],
+      renamed: disposal.renamed === true,
+      archived: disposal.archived === true,
+      marker: marker !== null && marker !== undefined,
+      audit: audit !== null,
+    })
+    return {
+      ok: true,
+      sessionId,
+      created: true,
+      rotated: true,
+      replaced: oldId ?? null,
+      agentPreset: created?.agentPreset,
+      rotation: {
+        reasons: Array.isArray(decision?.reasons) ? decision.reasons : [],
+        metrics: decision?.metrics !== null && typeof decision?.metrics === 'object' ? decision.metrics : {},
+        at,
+      },
+    }
+  }
+
   const openOnce = async () => {
     const override = config?.coordinatorSession
     if (override !== undefined) {
@@ -75,6 +178,17 @@ export function createMainSession({ db, config, agents, sessionController, works
     }
     const id = getMainSessionId(db)
     const live = id === undefined ? undefined : liveAgent(id)
+    // 刚轮换出来的新会话还没 live（平台异步起 agent）：别再建一个，直接把同一个 id 交回去。
+    if (live === undefined && id !== undefined && freshMain !== undefined
+      && freshMain.sessionId === id && now() - freshMain.at < FRESH_MAIN_LOAD_GRACE_MS) {
+      return { ok: true, sessionId: id, created: true, rotated: false, loading: true, agentPreset: getMainSessionPreset(db) }
+    }
+    // G1 S3：命不命中轮换由纯判定决定（S1）+ 采集（S2）；这里只负责「due 就跳过复用、走轮换动作」。
+    // 旧主会话不 live 时不做判定：那条路本来就只是隐式重建（计划 §0「重启时算不算已覆盖」）。
+    if (live !== undefined) {
+      const decision = await resolveRotation()?.evaluate?.({ mainSessionId: id, liveAgent: live, source: 'open' })
+      if (decision?.due === true) return rotateMain({ oldId: id, decision })
+    }
     if (live !== undefined) {
       const marker = getMainSessionPreset(db)
       const preset = sessionPreset(live)
@@ -127,7 +241,7 @@ export function createMainSession({ db, config, agents, sessionController, works
     }
     setSetting(db, onboardingKey(sessionId), 'pending')
     setMainSessionId(db, sessionId)
-    setMainSessionPreset(db, typeof created?.agentPreset === 'string' && created.agentPreset !== '' ? created.agentPreset : PRESET_ID)
+    setMainSessionPreset(db, createdPreset(created))
     log('main.session.created', { sessionId, agentPreset: created?.agentPreset ?? null })
     return { ok: true, sessionId, created: true, agentPreset: created?.agentPreset }
   }

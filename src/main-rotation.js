@@ -15,6 +15,7 @@
 // 仍不建会话、不改指针：真正轮换（S3）与启动/加载接线（S4）在读这些结果的基础上做。
 import { stat } from 'node:fs/promises'
 import { deleteSetting, getSetting, listTasks, setSetting } from './ledger.js'
+import { onboardingKey } from './onboarding.js'
 
 const MINUTE_MS = 60_000
 const HOUR_MS = 3_600_000
@@ -773,4 +774,327 @@ export function rotationStatus(db) {
     evaluatedAt: millisOf(record?.evaluatedAt),
     lastRotatedAt: state.rotatedAt ?? millisOf(record?.lastRotatedAt),
   }
+}
+
+// ---------------------------------------------------------------------------
+// S3：轮换动作（marker / 指针时间戳 / 审计 / 旧会话处置 / 崩溃恢复）
+//
+// 五条顺序原则（计划 §5.1 / §6，改顺序前先读这里）：
+//   1. create 失败 = **零处置**：不写 marker、不动指针、不碰旧会话（回调方负责，本文件不猜）；
+//   2. marker 是指针切换前唯一的崩溃锚点：**先 marker、后切指针**；
+//   3. **先切指针、后处置旧会话**：rename/archive 失败最多留下「旧会话还在列表里」，
+//      不会出现「新指针不可用、旧指针已退役」的悬空态；
+//   4. 审计（main_rotation_last）+ 清 marker + 清 due 放在最后：崩溃在这之前，下次启动按 marker 补完；
+//   5. 旧会话处置**不可逆**（平台没有 unarchive，见 docs/LIMITATIONS.md）：默认改名 + 归档，
+//      归档失败只降级为「只改名」——轮换本身仍然成立。
+//
+// 本文件只做「台账 + settings + 可注入的平台动作」，平台服务一律由调用方以函数注入
+// （main-session 用它自己的惰性服务解析，index 在启动时注入恢复用的 rename/archive）。
+// ---------------------------------------------------------------------------
+
+/** 旧主会话退役标题：`主会话（已退役 2026-11-17 07:05）`（本地时区，人读优先）。 */
+export function retiredMainSessionTitle(at) {
+  const date = new Date(Number.isFinite(at) ? at : Date.now())
+  const pad = value => String(value).padStart(2, '0')
+  return `主会话（已退役 ${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}）`
+}
+
+const codesOfReasons = reasons => (Array.isArray(reasons) ? reasons : [])
+  .map(item => (typeof item === 'string' ? item : item?.code))
+  .filter(code => typeof code === 'string' && code !== '')
+
+/**
+ * 写崩溃恢复锚点（计划 §5.1 第 7 步）。**必须在切指针之前调用**：
+ * 崩溃后 recoverPendingRotation 靠它区分「新会话是空白残留（归档）」与「指针已切、只差旧会话处置（补完）」。
+ *
+ * 永不抛：marker 写不进去只代表「崩溃后无法自动恢复」，不该因此放弃一次已经 create 成功的轮换。
+ * @returns {object|null} 落库的 marker（形状 {newId, oldId, at, reasons}），写失败返回 null
+ */
+export function beginRotationMarker({ db, oldId, newId, at, reasons, log = () => {} } = {}) {
+  const marker = {
+    newId,
+    oldId: typeof oldId === 'string' && oldId !== '' ? oldId : null,
+    at: Number.isFinite(at) ? at : Date.now(),
+    // marker 只存因子 code（几百字节）：完整 reasons/metrics 进审计，避免 marker 自己也变成大对象。
+    reasons: codesOfReasons(reasons),
+  }
+  try {
+    writeRotationState(db, { pending: marker })
+    return marker
+  } catch (error) {
+    log('main.rotation.marker.failed', { detail: { newId, oldId: marker.oldId, error: errorText(error) } })
+    return null
+  }
+}
+
+/**
+ * 指针切换后写两个时间戳（计划 §5.1 第 8 步）：
+ *   main_session_created_at = 新会话起点（M1/M2/M5 的 since）
+ *   main_rotation_at        = 冷却期起点
+ * 会抛（台账异常交调用方决定是否降级）；抛出不回滚指针——轮换已成立，只是少了防抖时间戳。
+ */
+export function markRotationTimes(db, at) {
+  const value = Number.isFinite(at) ? at : Date.now()
+  return writeRotationState(db, { createdAt: value, rotatedAt: value })
+}
+
+/**
+ * 收尾：写审计 `main_rotation_last`（事后排查唯一入口），并**清掉** marker 与 due 标记。
+ *   - 清 due：触发这次轮换的那份判定已经兑现，面板 banner 不该继续挂着「建议轮换」；
+ *   - 写不进去会抛，marker 保留 → 下次启动 recoverPendingRotation 幂等补完（rename 覆盖标题、archive 幂等）。
+ * @returns {object} 审计记录
+ */
+export function recordRotation(db, { oldId, newId, at, decision, disposal, recovered = false } = {}) {
+  const record = {
+    old: typeof oldId === 'string' && oldId !== '' ? oldId : null,
+    new: newId,
+    at: Number.isFinite(at) ? at : Date.now(),
+    triggers: codesOfReasons(decision?.triggers ?? decision?.reasons),
+    reasons: Array.isArray(decision?.reasons) ? decision.reasons.filter(reason => reason !== null && typeof reason === 'object') : [],
+    metrics: decision?.metrics !== null && typeof decision?.metrics === 'object' ? decision.metrics : {},
+    renamed: disposal?.renamed === true,
+    archived: disposal?.archived === true,
+    recovered: recovered === true,
+  }
+  // 三个键各一条 UPSERT/DELETE：任一失败都会抛，marker 没清掉就还能下次补。
+  writeRotationState(db, { last: record, pending: null, due: null })
+  return record
+}
+
+/** 清 marker（没有就是 no-op）。指针已经可用、旧会话处置不了时用它止血，避免每次启动重复尝试。 */
+export function clearRotationMarker(db) {
+  return writeRotationState(db, { pending: null })
+}
+
+/** 归档一个会话：失败只记日志 + 告警，永不抛（归档是「隐藏入口」，不是轮换成立的前提）。 */
+async function archiveSessionQuietly(sessionId, { archive, log, onWarn, event }) {
+  if (typeof archive !== 'function') {
+    onWarn?.(`dsh-orchestrator: 缺少工作区归档能力，会话 ${sessionId} 未归档（仍在会话列表里）`)
+    log(event, { detail: { sessionId, archived: false, reason: 'missing-archive-service' } })
+    return false
+  }
+  try {
+    await archive(sessionId)
+    log(event, { detail: { sessionId, archived: true } })
+    return true
+  } catch (error) {
+    onWarn?.(`dsh-orchestrator: 归档会话 ${sessionId} 失败（旧会话仍可见）：${errorText(error)}`)
+    log(event, { detail: { sessionId, archived: false, error: errorText(error) } })
+    return false
+  }
+}
+
+/**
+ * 处置旧主会话（计划 §5.1 第 11–12 步）：先改名「已退役」，再归档。
+ * 两步各自 try/catch：rename 失败不影响归档，archive 失败降级为「只改名」，两者都失败也只是「旧会话还在列表里」。
+ * rename 是**覆盖**标题，所以重复调用幂等（恢复路径可能再跑一次）。
+ * @returns {Promise<{renamed:boolean, archived:boolean}>}
+ */
+export async function disposeOldMainSession({ oldId, at, rename, archive, log = () => {}, onWarn } = {}) {
+  const result = { renamed: false, archived: false }
+  if (typeof oldId !== 'string' || oldId === '') return result
+  const title = retiredMainSessionTitle(at)
+  if (typeof rename === 'function') {
+    try {
+      await rename(oldId, title)
+      result.renamed = true
+      log('main.rotation.rename.ok', { detail: { sessionId: oldId, title } })
+    } catch (error) {
+      onWarn?.(`dsh-orchestrator: 旧主会话改名失败（轮换仍成立）：${errorText(error)}`)
+      log('main.rotation.rename.failed', { detail: { sessionId: oldId, title, error: errorText(error) } })
+    }
+  } else {
+    log('main.rotation.rename.failed', { detail: { sessionId: oldId, error: 'missing-rename-service' } })
+  }
+  result.archived = await archiveSessionQuietly(oldId, {
+    archive,
+    log,
+    onWarn,
+    event: 'main.rotation.archive',
+  })
+  return result
+}
+
+/**
+ * 启动恢复（计划 §6 F6/F7）：把上次崩溃中断的轮换补完或回滚。**永不抛**，失败只 warn（下次启动重试）。
+ *
+ *   abandoned（marker.newId ≠ 指针）：死在切指针之前。旧指针一直有效，新会话是空白残留
+ *     → 尽力归档该空白会话（从列表隐藏）+ 清 marker，**不回滚指针**（本来就没动过）。
+ *   complete（marker.newId === 指针）：指针已切。补写缺失的时间戳、跳过 onboarding、
+ *     对旧会话补「改名 + 归档」、写审计 + 清 marker（幂等）。
+ *   invalid：marker 形状坏了（不知道谁是谁）→ 只告警 + 清 marker，绝不猜。
+ *   none / unknown：无事可做（unknown = 启动早期还没有指针可比对，留给下次）。
+ *
+ * @param {object} opts
+ * @param {object} opts.db 台账
+ * @param {string} [opts.pointer] 当前台账主会话指针（resolvedCoordinatorId）
+ * @param {Function} [opts.rename] async (sessionId, title) => void
+ * @param {Function} [opts.archive] async sessionId => void
+ * @param {Function} [opts.archiveOld] 旧主会话的归档动作（`rotateArchiveOld=false` 时为 undefined）
+ * @param {number} [opts.now]
+ * @param {Function} [opts.log] 结构化日志
+ * @param {Function} [opts.onWarn] 告警
+ * @returns {Promise<{ok:boolean, state:string, newId?:string, oldId?:string|null, archived?:boolean, renamed?:boolean, error?:string}>}
+ */
+export async function recoverPendingRotation({ db, pointer, rename, archive, archiveOld, now = Date.now(), log = () => {}, onWarn } = {}) {
+  const warn = message => { if (typeof onWarn === 'function') onWarn(message) }
+  try {
+    const state = readRotationState(db)
+    const pending = inspectRotationPending(state, pointer)
+    if (pending.state === 'none' || pending.state === 'unknown') return { ok: true, state: pending.state }
+    const marker = pending.marker
+    const at = millisOf(marker.at) ?? now
+
+    if (pending.state === 'invalid') {
+      // 形状坏了就不知道该归档谁：宁可什么都不做，也不能拿一个猜出来的 id 去归档（不可逆）。
+      clearRotationMarker(db)
+      warn('dsh-orchestrator: 主会话轮换 marker 形状不合法，已清除（未做任何归档），请检查 logs 里的 main.rotation.pending.detected')
+      log('main.rotation.recovered-invalid', { detail: { marker } })
+      return { ok: true, state: 'invalid' }
+    }
+
+    if (pending.state === 'abandoned') {
+      // F6：create 成功但指针没切 → 新会话是空白残留，归档它（隐藏），旧指针原样可用。
+      const archived = await archiveSessionQuietly(marker.newId, {
+        archive,
+        log,
+        onWarn: warn,
+        event: 'main.rotation.recovered-abandoned',
+      })
+      clearRotationMarker(db)
+      log('main.rotation.recovered-abandoned', {
+        detail: { newId: marker.newId, oldId: marker.oldId ?? null, archived },
+      })
+      return { ok: true, state: 'abandoned', newId: marker.newId, oldId: marker.oldId ?? null, archived }
+    }
+
+    // F7：指针已切 → 只差「跳过 onboarding、处置旧会话、写审计」。
+    // 时间戳缺失按 marker.at 补：不补的话冷却期失效，一次崩溃可能让下次打开立刻再轮换一次。
+    try {
+      const patch = {}
+      if (state.createdAt === null) patch.createdAt = at
+      if (state.rotatedAt === null) patch.rotatedAt = at
+      if (Object.keys(patch).length > 0) writeRotationState(db, patch)
+    } catch (error) {
+      warn(`dsh-orchestrator: 主会话轮换恢复写时间戳失败（继续处置旧会话）：${errorText(error)}`)
+    }
+    try {
+      // 崩溃可能落在跳过 onboarding 之前：这里补上，避免恢复后再派一次「工作区与仓库索引」。
+      setSetting(db, onboardingKey(marker.newId), 'sent')
+    } catch (error) {
+      warn(`dsh-orchestrator: 主会话轮换恢复写 onboarding 标记失败：${errorText(error)}`)
+    }
+    const disposal = await disposeOldMainSession({ oldId: marker.oldId, at, rename, archive: archiveOld, log, onWarn: warn })
+    let audit = null
+    try {
+      audit = recordRotation(db, {
+        oldId: marker.oldId,
+        newId: marker.newId,
+        at,
+        decision: { triggers: marker.reasons, reasons: [], metrics: {} },
+        disposal,
+        recovered: true,
+      })
+    } catch (error) {
+      // 审计写不进 → marker 还在 → 下次启动再补（rename/archive 幂等）。
+      warn(`dsh-orchestrator: 主会话轮换恢复写审计失败（下次启动重试）：${errorText(error)}`)
+    }
+    log('main.rotation.recovered-complete', {
+      detail: { newId: marker.newId, oldId: marker.oldId ?? null, archived: disposal.archived, renamed: disposal.renamed },
+    })
+    return {
+      ok: true,
+      state: 'complete',
+      newId: marker.newId,
+      oldId: marker.oldId ?? null,
+      archived: disposal.archived,
+      renamed: disposal.renamed,
+      audit,
+    }
+  } catch (error) {
+    warn(`dsh-orchestrator: 主会话轮换恢复失败（下次启动重试）：${errorText(error)}`)
+    log('main.rotation.recovered.failed', { detail: { error: errorText(error) } })
+    return { ok: false, state: 'error', error: errorText(error) }
+  }
+}
+
+/**
+ * 轮换动作面（S3）：把「台账读写 + 可注入的平台动作」绑成一个服务给 main-session / index 用。
+ *
+ * 分工（计划 §5.1）：
+ *   - main-session.openOnce() 调 evaluate → due 时自己 create，再依次 begin / commitTimes / disposeOld / finish；
+ *   - index 启动时调 recoverPending（补完上次崩溃）；
+ *   - 平台服务（persistence/tokenMeter/rename/archive）一律**惰性**取：cordis 并发加载时 apply 早期可能还没有。
+ *
+ * 所有方法都不做判定（判定在纯函数里），也不建会话（create 归 main-session，权限与错误文案都留在那儿）。
+ */
+export function createRotationService({
+  db,
+  config = {},
+  persistence,
+  tokenMeter,
+  catalog,
+  workspaceCwd,
+  rename,
+  archive,
+  now = () => Date.now(),
+  statFile = defaultStatFile,
+  log = () => {},
+  onWarn,
+} = {}) {
+  const resolve = value => (typeof value === 'function' ? value() : value)
+  const warn = message => { if (typeof onWarn === 'function') onWarn(message) }
+
+  /** 采集 + 判定 + 写 due（S2 的 evaluateAndMarkRotation），返回 decision；任何异常 → null（调用方视为不轮换）。 */
+  const evaluate = async ({ mainSessionId, liveAgent, source = 'open' } = {}) => {
+    const result = await evaluateAndMarkRotation({
+      db,
+      config,
+      persistence: resolve(persistence),
+      tokenMeter: resolve(tokenMeter),
+      mainSessionId,
+      liveAgent,
+      catalog,
+      workspaceCwd: resolve(workspaceCwd),
+      source,
+      now: now(),
+      statFile,
+      log,
+      onWarn: warn,
+    })
+    return result?.decision ?? null
+  }
+
+  const begin = ({ oldId, newId, at, decision } = {}) =>
+    beginRotationMarker({ db, oldId, newId, at, reasons: decision?.reasons, log })
+
+  const commitTimes = at => markRotationTimes(db, at)
+
+  /** F3：指针没切成功时把空白新会话隐藏掉（归档失败也无所谓：它从来不是主会话）。 */
+  const discard = async ({ sessionId } = {}) => {
+    const archived = typeof sessionId === 'string' && sessionId !== ''
+      ? await archiveSessionQuietly(sessionId, { archive, log, onWarn: warn, event: 'main.rotation.discard' })
+      : false
+    try {
+      clearRotationMarker(db)
+    } catch (error) {
+      log('main.rotation.marker.clear.failed', { detail: { error: errorText(error) } })
+    }
+    return archived
+  }
+
+  const finish = ({ oldId, newId, at, decision, disposal } = {}) =>
+    recordRotation(db, { oldId, newId, at, decision, disposal })
+
+  // 注意：rename / archive 是**动作函数**，不是惰性 getter——直接传下去，不要 resolve()（那会当场调用它）。
+  // `rotateArchiveOld=false` 时只改名不归档：归档不可逆（平台无 unarchive），留成用户可选的止血档位。
+  const archiveOld = config?.rotateArchiveOld === false ? undefined : archive
+  const disposeOld = ({ oldId, at } = {}) =>
+    disposeOldMainSession({ oldId, at, rename, archive: archiveOld, log, onWarn: warn })
+
+  const recoverPending = ({ pointer } = {}) =>
+    recoverPendingRotation({ db, pointer, rename, archive, archiveOld, now: now(), log, onWarn: warn })
+
+  return { evaluate, begin, commitTimes, discard, finish, disposeOld, recoverPending }
 }

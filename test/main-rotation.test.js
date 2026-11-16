@@ -1,16 +1,19 @@
 // S1 判定内核单测：11 个配置键 + evaluateRotation 纯函数（M1–M6 因子、P1–P10 保护、冷却/最小龄）。
 // S2 采集层单测：M1–M6 采集/降级、settings 键读写、due 标记、snapshot 只读形状、pending 只读判定。
-// 口径：本文件只测「怎么判/怎么采」，不碰轮换动作——轮换动作（S3）与真机接线（S4）另有测试。
+// S3 动作台账面单测：marker/时间戳/审计/旧会话处置 + 崩溃恢复（F6/F7）；平台动作一律以函数注入，
+// 真正的「open() 里建会话 + 切指针」在 test/main-session.test.js，启动接线在 test/index.test.js。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   MAIN_ROTATION_AT_KEY, MAIN_ROTATION_DUE_KEY, MAIN_ROTATION_LAST_KEY, MAIN_ROTATION_PENDING_KEY,
   MAIN_SESSION_CREATED_AT_KEY, ROTATION_BLOCKS, ROTATION_DEFAULTS, ROTATION_LIMITS, ROTATION_TRIGGERS,
-  collectRotationMetrics, evaluateAndMarkRotation, evaluateRotation, inspectRotationPending,
-  normalizeRotationConfig, readRotationState, rotationHeadline, rotationStatus, writeRotationDue,
-  writeRotationState,
+  beginRotationMarker, clearRotationMarker, collectRotationMetrics, createRotationService, disposeOldMainSession,
+  evaluateAndMarkRotation, evaluateRotation, inspectRotationPending, markRotationTimes,
+  normalizeRotationConfig, readRotationState, recordRotation, recoverPendingRotation, retiredMainSessionTitle,
+  rotationHeadline, rotationStatus, writeRotationDue, writeRotationState,
 } from '../src/main-rotation.js'
 import { createTask, getSetting, openLedger, setSetting } from '../src/ledger.js'
+import { onboardingKey } from '../src/onboarding.js'
 import { loadConfig } from '../src/config.js'
 import { tempDir } from './helpers.js'
 
@@ -761,3 +764,171 @@ test('S2 writeRotationState：五个键统一写入口，null 删键、对象存
   assert.equal(readRotationState(db).pending, null)
   db.close()
 })
+
+// ---------------------------------------------------------------------------
+// S3 轮换动作的台账面：marker / 时间戳 / 审计 / 旧会话处置 / 崩溃恢复（F6、F7）
+// 平台动作（rename/archive）一律以函数注入——这里只测「台账该写什么、动作该被怎么调」。
+// ---------------------------------------------------------------------------
+
+test('S3 退役标题：本地时间 YYYY-MM-DD HH:mm，形状固定', () => {
+  const title = retiredMainSessionTitle(Date.UTC(2026, 10, 17, 7, 5))
+  assert.match(title, /^主会话（已退役 \d{4}-\d{2}-\d{2} \d{2}:\d{2}）$/)
+  // 坏时间戳退到「现在」，同样不抛。
+  assert.match(retiredMainSessionTitle(Number.NaN), /^主会话（已退役 /)
+})
+
+test('S3 marker/时间戳/审计：键形状、降级与一次收口（due+marker 一起清）', async () => {
+  const db = await openTestLedger()
+  const marker = beginRotationMarker({ db, oldId: 'old-1', newId: 'new-1', at: NOW, reasons: [{ code: 'age' }, 'tasks', { nope: true }] })
+  assert.deepEqual(marker, { newId: 'new-1', oldId: 'old-1', at: NOW, reasons: ['age', 'tasks'] })
+  assert.deepEqual(readRotationState(db).pending, marker)
+  // marker 写不进去只记日志、不抛（崩溃恢复锚点缺失，但轮换本身不该因此放弃）。
+  const events = []
+  const brokenDb = { prepare() { throw new Error('disk full') } }
+  assert.equal(beginRotationMarker({ db: brokenDb, oldId: 'a', newId: 'b', at: NOW, log: (event, detail) => events.push([event, detail]) }), null)
+  assert.equal(events[0][0], 'main.rotation.marker.failed')
+
+  markRotationTimes(db, NOW - MINUTE)
+  assert.equal(readRotationState(db).createdAt, NOW - MINUTE)
+  assert.equal(readRotationState(db).rotatedAt, NOW - MINUTE)
+
+  const disposal = await disposeOldMainSession({
+    oldId: 'old-1', at: NOW, rename: async () => {}, archive: async () => {}, log: () => {}, onWarn: () => {},
+  })
+  assert.deepEqual(disposal, { renamed: true, archived: true })
+  setSetting(db, MAIN_ROTATION_DUE_KEY, JSON.stringify({ due: true, source: 'open' }))
+  const record = recordRotation(db, { oldId: 'old-1', newId: 'new-1', at: NOW, decision: evaluateRotation(allTriggersInput()), disposal })
+  assert.equal(record.old, 'old-1')
+  assert.equal(record.new, 'new-1')
+  assert.equal(record.at, NOW)
+  assert.deepEqual(record.triggers, ROTATION_TRIGGERS)
+  assert.equal(record.reasons.length, ROTATION_TRIGGERS.length)
+  assert.equal(record.renamed, true)
+  assert.equal(record.archived, true)
+  assert.equal(record.recovered, false)
+  const state = readRotationState(db)
+  assert.deepEqual(state.last, record, '审计是事后排查唯一入口')
+  assert.equal(state.pending, null, 'marker 清掉')
+  assert.equal(state.due, null, 'due 兑现后清掉，面板 banner 不该继续挂')
+
+  // 旧会话处置两步各自失败只降级，永不抛：rename 失败仍尝试归档，archive 失败只留下「仍在列表里」。
+  const warns = []
+  const failed = await disposeOldMainSession({
+    oldId: 'old-1', at: NOW,
+    rename: async () => { throw new Error('rename boom') },
+    archive: async () => { throw new Error('archive boom') },
+    log: () => {}, onWarn: message => warns.push(message),
+  })
+  assert.deepEqual(failed, { renamed: false, archived: false })
+  assert.equal(warns.length, 2)
+  // 没有平台动作（服务缺失）也只是 false + 日志，不抛。
+  assert.deepEqual(await disposeOldMainSession({ oldId: 'old-1', at: NOW }), { renamed: false, archived: false })
+  assert.deepEqual(await disposeOldMainSession({ oldId: undefined, at: NOW }), { renamed: false, archived: false })
+  db.close()
+})
+
+test('S3 恢复 F6（abandoned）：死在切指针之前 → 归档空白新会话、清 marker、旧指针与旧会话都不动', async () => {
+  const db = await openTestLedger()
+  setSetting(db, 'main_session_id', 'session-old')
+  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - 30 * HOUR))
+  setSetting(db, MAIN_ROTATION_PENDING_KEY, JSON.stringify({ newId: 'session-new', oldId: 'session-old', at: NOW - MINUTE, reasons: ['age'] }))
+  const archived = []
+  const renamed = []
+  const events = []
+  const result = await recoverPendingRotation({
+    db,
+    pointer: 'session-old',
+    archive: async id => archived.push(id),
+    rename: async (id, title) => renamed.push([id, title]),
+    now: NOW,
+    log: (event, detail) => events.push([event, detail]),
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.state, 'abandoned')
+  assert.equal(result.newId, 'session-new')
+  assert.equal(result.archived, true)
+  assert.deepEqual(archived, ['session-new'], '只归档那块空白残留')
+  assert.deepEqual(renamed, [], '旧指针会话不改名（轮换没发生过）')
+  assert.equal(getSetting(db, 'main_session_id'), 'session-old', '指针不回滚也不需要回滚：本来就没切')
+  assert.equal(getSetting(db, MAIN_SESSION_CREATED_AT_KEY), String(NOW - 30 * HOUR), '起点时间戳不补（新会话从没当家）')
+  assert.equal(getSetting(db, MAIN_ROTATION_PENDING_KEY), undefined)
+  assert.equal(getSetting(db, MAIN_ROTATION_LAST_KEY), undefined, '没发生的轮换不写审计')
+  assert.equal(getSetting(db, onboardingKey('session-new')), undefined)
+  assert.ok(events.some(([event]) => event === 'main.rotation.recovered-abandoned'))
+  db.close()
+})
+
+test('S3 恢复 F7（complete）：指针已切 → 补时间戳/跳过 onboarding/补处置旧会话/写审计/清 marker，且可重复执行', async () => {
+  const db = await openTestLedger()
+  setSetting(db, 'main_session_id', 'session-new')
+  setSetting(db, MAIN_ROTATION_PENDING_KEY, JSON.stringify({ newId: 'session-new', oldId: 'session-old', at: NOW - MINUTE, reasons: ['main-log'] }))
+  const archived = []
+  const renamed = []
+  const events = []
+  const result = await recoverPendingRotation({
+    db,
+    pointer: 'session-new',
+    archive: async id => archived.push(id),
+    archiveOld: async id => archived.push(id),
+    rename: async (id, title) => renamed.push([id, title]),
+    now: NOW,
+    log: (event, detail) => events.push([event, detail]),
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.state, 'complete')
+  assert.equal(result.newId, 'session-new')
+  assert.deepEqual(archived, ['session-old'])
+  assert.equal(renamed.length, 1)
+  assert.equal(renamed[0][0], 'session-old')
+  assert.equal(renamed[0][1], retiredMainSessionTitle(NOW - MINUTE))
+  assert.equal(getSetting(db, onboardingKey('session-new')), 'sent', '补跳过首次介绍')
+  const state = readRotationState(db)
+  // 时间戳按 marker.at 补（不补的话冷却期失效，崩溃后可能立刻再轮换一次）。
+  assert.equal(state.createdAt, NOW - MINUTE)
+  assert.equal(state.rotatedAt, NOW - MINUTE)
+  assert.equal(state.pending, null)
+  assert.equal(state.last.recovered, true)
+  assert.equal(state.last.old, 'session-old')
+  assert.equal(state.last.new, 'session-new')
+  assert.equal(state.last.renamed, true)
+  assert.equal(state.last.archived, true)
+  assert.deepEqual(state.last.triggers, ['main-log'], 'marker 只留因子 code，审计照样能复述')
+  assert.ok(events.some(([event]) => event === 'main.rotation.recovered-complete'))
+
+  // 幂等：marker 已清，再跑一次什么都不做（不会二次归档/二次改名）。
+  const again = await recoverPendingRotation({
+    db, pointer: 'session-new', archiveOld: async id => archived.push(id),
+    rename: async (id, title) => renamed.push([id, title]), now: NOW + HOUR,
+  })
+  assert.equal(again.state, 'none')
+  assert.deepEqual(archived, ['session-old'])
+  assert.equal(renamed.length, 1)
+  assert.equal(readRotationState(db).createdAt, NOW - MINUTE, '已有时间戳不被覆盖')
+  db.close()
+})
+
+test('S3 恢复：marker 坏了只清不清账、无 marker/无指针是 no-op、台账异常只 warn', async () => {
+  const db = await openTestLedger()
+  assert.deepEqual(await recoverPendingRotation({ db, pointer: 'a', now: NOW }), { ok: true, state: 'none' })
+  const warns = []
+  setSetting(db, MAIN_ROTATION_PENDING_KEY, JSON.stringify({ oldId: 'o' }))
+  const invalid = await recoverPendingRotation({ db, pointer: 'a', now: NOW, onWarn: message => warns.push(message) })
+  assert.equal(invalid.state, 'invalid')
+  assert.equal(getSetting(db, MAIN_ROTATION_PENDING_KEY), undefined, '形状坏了就清掉，绝不猜着归档')
+  assert.equal(warns.length, 1)
+  // unknown：启动早期还没有指针 → 不动 marker，留给下次。
+  setSetting(db, MAIN_ROTATION_PENDING_KEY, JSON.stringify({ newId: 'n', oldId: 'o', at: NOW }))
+  assert.equal((await recoverPendingRotation({ db, pointer: undefined, now: NOW })).state, 'unknown')
+  assert.ok(getSetting(db, MAIN_ROTATION_PENDING_KEY), 'marker 保留')
+  db.close()
+
+  // 台账读写异常：ok:false + warn，绝不抛（启动恢复不能阻断插件加载）。
+  const brokenWarns = []
+  const broken = await recoverPendingRotation({
+    db: { prepare() { throw new Error('db boom') } }, pointer: 'a', now: NOW, onWarn: message => brokenWarns.push(message),
+  })
+  assert.equal(broken.ok, false)
+  assert.equal(broken.state, 'error')
+  assert.match(brokenWarns[0], /主会话轮换恢复失败/)
+})
+
