@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.19.0（2026-11-17）
+
+这一版给**协调者**加了一只受控的手：新增 `read_workspace`，主会话终于能直接「看一眼」子会话落在工作区的
+产物正文（报告、调研、评审、`diag/` 快照），不必再派一个子任务或靠 `task_status include:'full'` 读最后一条
+返回消息；同时**派发 brief 多了三段提示**，把「执行中遇阻怎么上报、交付时怎么给选项、worktree 里可以装依赖」
+从口头约定变成子会话一开始就看得到的话。
+
+相对 0.18.2 是 **minor**：新增 1 个工具（协调者 11 → 12 个，全局 14 → 15 个）、brief 行数与文案变化；
+台账结构、状态机、配置键、派发/沙箱/通知链路都没动。
+
+### 协调者受控读工作区产物（feat(coordinator)）
+
+- 新工具 `read_workspace({ path, offset?, limit? })`，**只对主会话开放**（`requireMain`）。读的是
+  `$DSH_HOME/state/orchestrator/workspace` 之下（`reports/`、`diag/`、`backups/` 等），不是全盘。
+- **为什么不开放原生 `read`/`glob`**：平台的文件工具没有读路径白名单——`dsh-fs-sandbox` 只给写操作加栅栏
+  （`Reads pass through untouched: every mode permits reading.`），`LocalFileSystem` 的 `cwd` 只是相对路径基准
+  而非包含性边界，`glob` 直接 spawn ripgrep 用 `--no-ignore --hidden` 全树枚举。给协调者开原生 `read`
+  等于给它一个**全盘可读**的宿主进程读者（`~/.dsh/.credentials.yaml` 也在射程内）。所以自建一条只读工作区的入口。
+- **三道闸**：① 形状（空路径 / 含 NUL / `~` 开头拒绝，不做家目录展开）；② `realpathSync` 真实路径包含性
+  （挡符号链接逃逸，含中间目录是链接的情况）；③ 真实路径解析失败时退回词法包含性，把「越界」与「不存在」分开报。
+- **体积与截断**：单文件 > 4 MB 直接拒绝（不整块读入）；正文按行窗口返回（默认 400 行 / 上限 2000 行、
+  单次 ≤ 64 K 字符），截断给 `nextOffset` 续读；单行本身超上限时只返回该行前 64 K 字符并标 `truncatedLine`，
+  `nextOffset` 仍指向**下一行**。目录只列一层、最多 200 项，指向工作区外或断链的符号链接条目标 `readable:false`。
+- **入参宽容**：`offset`/`limit` 收数字也收字符串（先 `Number()` 再判有限），非法值回落默认，不静默忽略。
+- **审计**：`workspace.read`（只记路径/类型/体积，不记正文）、`workspace.read.rejected`。
+- **不用于校验存在性**：存在性仍由插件（通知路径已 `lstat`）与子任务保证，`present` 只列真实文件。
+
+### brief 三段提示（feat(brief)）
+
+派发 brief 从「任务编号 + 先调 `task_detail`」两行，扩成含两段固定提示的四行（完整访问多一行【访问级别】，
+隔离任务再多一行【worktree 依赖】）：
+
+- **【执行中待确认】`blocked` 上报**：执行中遇到需要用户拍板的事（业务取舍、范围变更、不可逆操作、方案歧义），
+  用 `task_report` 的 `blocked` 上报「问题 + 选项建议」，由协调者 `ask_user_question` 问用户后经 `task_message`
+  续派再继续；不自行假设用户意图、不阻塞等待、不因等不到回复就跳过。**`blocked` 只是上报，不等于已获授权。**
+- **【确认方式】交付时给选项**：`done` 会清空 `question`/`options`，所以待确认要点必须写进 `summary`；
+  子会话直接调 `ask_user_question` 会被平台以 `DELEGATED_CALLER` 拒绝（`assertLiveRoot` 见到
+  `origin === 'subagent'` 就抛），问用户始终由协调者带选项做——brief 因此不写「你去调 ask_user_question」。
+- **【worktree 依赖】隔离任务可装依赖**：检出目录是全新目录，`node_modules/`/虚拟环境不在库里，
+  子会话可执行安装命令（`pnpm install` / `npm install` / `uv sync` 等），**只安装不升级**（不改依赖声明与版本）。
+  只在 `requested`/`created`/`reused`（`ISOLATED_WORKTREE_STATES`）出现；`none`/`degraded` 仍在原工作树、依赖齐全，不给这行。
+- 字段映射收敛到 `renderBriefForTask(task)`（`src/brief.js`）：`tasks.access` / `tasks.worktree_state` 是唯一真相，
+  `task_create` / `task_retry` / 面板 retry / 队列兜底四个入口共用，不再各自拼一遍参数。
+
+### 行为说明（升级者注意）
+
+- **协调者获得了读工作区文件的能力**：这是本版最实质的变化。范围被限制在主会话工作区，越界/`../` 穿越/
+  符号链接逃逸都会被拒并留审计日志，但「工作区里本来就有的文件」都能读——包括子会话写进去的产物正文。
+- **IM 外发风险（残余风险，不可配置）**：若 profile 开了 IM 双向同步（如 `@xmanrui/dsh-im`），协调者读进上下文的
+  正文可能随「最终助手文字」同步到外部渠道且**不可撤回**。涉密产物不要用 `read_workspace` 读进主会话。
+- **子会话在 target 目录里写的产物仍读不到**：`read_workspace` 只能读主会话工作区；仓库里的改动、worktree
+  检出里的文件要子会话回报路径，或把摘要写进工作区产物。这是「只开一个受控入口」的直接代价。
+- **brief 变长但不含详情**：新增的都是固定提示行，目标/验收/经验/前置/产物仍不内联，仍靠 `task_detail` 现取。
+- **不需要迁移**：没有台账结构、配置键、状态机变化；升级后新派发的任务才带新 brief，已存在的任务不受影响。
+
+### 文档
+
+- README 增「读工作区产物（`read_workspace`）」一节（含边界表、截断口径与 IM 外发提示）、工具清单 11 → 12 /
+  14 → 15、brief 三段提示说明与自检口径；四处版本号同步到 `0.19.0`。
+- ARCHITECTURE 补 `read_workspace` 的分层（`src/read-workspace.js` 纯逻辑 + `src/tools.js` 身份校验/审计）与三道闸。
+- LIMITATIONS 补「协调者读工作区产物」与「子会话不能直接问用户」两组边界，写明 IM 外发与只读主会话工作区的代价。
+- DETAIL / qa-checklist 同步 brief 形态（两行 → 四行）与提示触发条件。
+
+### 验证
+
+- `pnpm test`（`pretest` 自动构建）**940 passed / 0 failed**；`pnpm run check:client` exit 0。
+
 ## 0.18.2（2026-11-17）
 
 这一版是**一处交互补齐的 patch**：主会话回复底部那排「关联任务」chip，点下去以前只会开任务面板再弹详情抽屉，
