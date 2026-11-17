@@ -303,8 +303,26 @@
 
 派发给子会话的 brief 只回答「你是谁、去哪读详情」，创建详情全部留在台账、由子会话用 `task_detail` 现取：
 
-- **brief 形态**：`renderBrief({ taskId })` 只输出两行——`【任务编号】t-xxxxxxxx` + `【任务详情】先调 task_detail（参数 task_id 填上面的任务编号）读取完整任务详情：…`。
-  目标、验收、约束、背景、用户原话、工作目录/权限、经验、前置任务、产物都不再内联；也不再有「`get_goal` 不可用」的兜底文本。
+- **brief 形态**：`renderBrief({ taskId, access, worktreeState })` 输出四行（完整访问任务多一行【访问级别】，隔离任务多一行【worktree 依赖】）——
+  `【任务编号】t-xxxxxxxx` + `【任务详情】先调 task_detail（参数 task_id 填上面的任务编号）读取完整任务详情：…`
+  + `【执行中待确认】…` + `【确认方式】…`。
+  目标、验收、约束、背景、用户原话、工作目录/权限、经验/前置任务/产物都不再内联；也不再有「`get_goal` 不可用」的兜底文本。
+- **三段常驻提示**（都不越权改交付口径，措辞只讲「怎么做」；都明确「不等于已获授权」，不给绕过推送前双审查的口子）：
+  - `BLOCKED_HINT`（【执行中待确认】，**所有任务都有**）：执行中遇到需要用户拍板的决策点（业务取舍、范围变更、不可逆操作、方案歧义等）
+    用 `task_report blocked` 上报「问题 + 选项建议」，协调者用 `ask_user_question` 问用户、拿到答复后 `task_message` 续派；
+    明确三种不许（不自行假设用户意图、不阻塞等待、不等不到回复就跳过）。它排在【确认方式】之前——
+    这条是**执行期**就要用的，不能只出现在交付环节。
+  - `CONFIRM_HINT`（【确认方式】，所有任务都有）：**交付时**不要只在正文里问——把待确认要点写进 `summary`。
+    **不能**让子会话去调 `ask_user_question`——平台的 `assertLiveRoot` 对 `session.header.origin === 'subagent'`
+    直接抛 `DELEGATED_CALLER`（human interaction is unavailable while the calling agent is owned by another live agent），
+    子会话是 `subagents.startActivation({ parent })` 起的 subagent，必然撞墙。
+    注意 `done` 会清掉 `question`/`options`（`task_report` 里 `progress`/`done` 都走 `clearTaskQuestion`），
+    所以交付阶段的要点只能走 `summary`；要结构化选项就得在执行中走 `blocked`/`needs_auth`（提示三）。
+    问用户始终由协调者带同一批选项做；待确认/关闭语义仍只在 `task_detail` 与协调者 policy 里定义。
+  - `WORKTREE_INSTALL_HINT`（【worktree 依赖】，只有隔离任务有）：检出目录没有 `node_modules`/虚拟环境，可以执行安装命令
+    （`pnpm install` / `npm install` / `uv sync` 等），**只安装不升级**（不改依赖声明与版本）。
+    触发条件是台账 `worktree_state ∈ ISOLATED_WORKTREE_STATES`（`requested` / `created` / `reused`，与同写域防护共用同一份列表）；
+    `none` / `degraded`（不是 git 仓库，仍在原工作树里跑）不给——那里依赖齐全，加了只是噪音。
   目标正文仍在平台 goal（G1 `attach`）里，子会话也可以 `get_goal` 读；`task_detail` 读的是创建时 `brief_json` 快照，两条路互不依赖。
 - **task_detail（只读）**：`src/task-detail.js` 的 `renderTaskDetail` 渲染
   任务编号/标题/状态 → 目标全文（保留换行）→ 工作目录 + 可写/只读提示 → `【验收标准】`/`【约束】`/`【背景资料】`/`【用户原话】`

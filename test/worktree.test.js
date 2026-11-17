@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, setTaskWorktree, transition } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, recentMessages, setTaskWorktree, transition } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import { createNotifier } from '../src/notify.js'
@@ -456,6 +456,62 @@ test('P9 task_create：worktree:true 建分支 + 检出，spawn cwd 是检出目
   assert.equal(task.worktree_branch, `orch/${task.id}`)
   const spawn = dispatcher.calls.find(item => item[0] === 'spawn')
   assert.equal(spawn[1].cwd, checkoutPathFor(repoRoot, task.id))
+  db.close()
+})
+
+test('P9 brief：隔离任务的 brief 带「可装依赖、只装不升」提示，普通任务不带', async () => {
+  const repoRoot = tempDir()
+  const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot, n: 1, suggestedBase: 'main' }) })
+  const briefOf = taskId => recentMessages(db, taskId, 1)[0].rendered
+
+  // 隔离任务（worktree_state=created）→ 有装依赖提示。
+  await call(tools, 'task_create', sampleBrief({ title: '隔离装依赖', goal: 'g', target: repoRoot, worktree: true }), {})
+  const isolated = listTasks(db, { active: true }).find(task => task.title === '隔离装依赖')
+  assert.equal(isolated.worktree_state, 'created')
+  const isolatedBrief = briefOf(isolated.id)
+  assert.match(isolatedBrief, /【worktree 依赖】/)
+  assert.match(isolatedBrief, /pnpm install/)
+  assert.match(isolatedBrief, /只安装不升级/)
+  // 确认方式提示对所有任务都在（交付待确认场景）。
+  assert.match(isolatedBrief, /【确认方式】/)
+
+  // 普通任务（worktree_state=none）→ 没有装依赖提示。
+  await call(tools, 'task_create', sampleBrief({ title: '普通任务', goal: 'g', target: repoRoot }), {})
+  const plain = listTasks(db, { active: true }).find(task => task.title === '普通任务')
+  assert.equal(plain.worktree_state, 'none')
+  assert.equal(briefOf(plain.id).includes('【worktree 依赖】'), false)
+  assert.match(briefOf(plain.id), /【确认方式】/)
+  db.close()
+})
+
+test('P9 brief：隔离降级（不是 git 仓库）不给装依赖提示——仍在原工作树里跑', async () => {
+  const target = tempDir()
+  const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ isRepo: false, reason: 'NOT_A_REPO' }) })
+  await call(tools, 'task_create', sampleBrief({ title: '降级任务', goal: 'g', target, worktree: true }), {})
+  const [task] = listTasks(db, { active: true })
+  assert.equal(task.worktree_state, 'degraded')
+  assert.equal(recentMessages(db, task.id, 1)[0].rendered.includes('【worktree 依赖】'), false)
+  db.close()
+})
+
+test('P9 brief：重派隔离任务时重渲染的 brief 也带装依赖提示（复用检出）', async () => {
+  const repoRoot = tempDir()
+  const checkout = checkoutPathFor(repoRoot, 't-old')
+  const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot }) })
+  const old = createTask(db, {
+    brief: sampleBrief({ title: '旧隔离任务', target: repoRoot }),
+    coordinatorSession: 's-1',
+    targetDir: checkout,
+    worktree: { state: 'created', source: 'task', repoRoot, path: checkout, branch: 'orch/t-old', base: 'main', mode: 'new' },
+  })
+  transition(db, old.id, 'failed', { error: 'boom' })
+  await call(tools, 'task_retry', { task_id: old.id })
+  const retried = listTasks(db).find(task => task.retry_of === old.id)
+  // 检出目录已不在 → 按原基线重建（requested → 派发后 created），仍是隔离任务。
+  assert.ok(['requested', 'created', 'reused'].includes(retried.worktree_state), retried.worktree_state)
+  const rendered = recentMessages(db, retried.id, 1)[0].rendered
+  assert.match(rendered, /【worktree 依赖】/)
+  assert.match(rendered, /【确认方式】/)
   db.close()
 })
 

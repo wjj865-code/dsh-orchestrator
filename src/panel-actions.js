@@ -1,7 +1,7 @@
 // 面板动作：/api/orchestrator 的 stop/retry/message/delete/detail/artifacts/preview。
 // 与工具层共享同一台账/队列/派发器；鉴权由连接层 owner-only 负责。
 import { closeSync, openSync, readSync, statSync } from 'node:fs'
-import { renderBrief } from './brief.js'
+import { renderBriefForTask } from './brief.js'
 import {
   addMessage, clearTaskQuestion, createTask, deleteTask, findRecentDeliveredFollowup, getTask, listTasks,
   recentMessages, setMessageDelivery, setTaskError, transition, touchTask, incrementAttempts,
@@ -337,7 +337,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         status: depState.ready ? 'pending' : 'waiting_dep',
       })
       // T1：面板重派与 task_create 同口径——brief 只留任务编号 + task_detail 指引。
-      addMessage(db, retried.id, { kind: 'brief', rendered: renderBrief({ taskId: retried.id, access: retried.access === 'full' ? 'full' : undefined }) })
+      addMessage(db, retried.id, { kind: 'brief', rendered: renderBriefForTask(retried) })
     } catch (error) {
       return panelFailure('RETRY_FAILED', { reason: error?.message ?? String(error) })
     }

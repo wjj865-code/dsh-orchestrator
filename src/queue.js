@@ -4,7 +4,7 @@ import {
   briefText, clearQueued, countPending, getTask, listPendingQueue, listTasks, markQueued, transition,
 } from './ledger.js'
 import { promoteDependents } from './deps.js'
-import { renderBrief } from './brief.js'
+import { renderBriefForTask } from './brief.js'
 import { taskLabel } from './task-label.js'
 import { WORKTREE_DISPATCH_STATES, prepareTaskWorktree } from './worktree.js'
 
@@ -73,8 +73,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
         }
         // T1：派发提示词就是 brief 本身（任务编号 + task_detail 指引）；详情由子会话读台账，
         // 前置任务/产物也走 task_detail 现读，不再在派发时拼一段快照。
-        const rendered = briefText(db, id)
-          ?? renderBrief({ taskId: task.id, access: task.access === 'full' ? 'full' : undefined })
+        const rendered = briefText(db, id) ?? renderBriefForTask(task)
         // P9：worktree 任务在派发前建检出，子会话 cwd = 检出目录 + 原 target 偏移；普通任务一次 git 都不调。
         let dispatchCwd = task.target_dir ?? undefined
         if (worktree !== undefined && WORKTREE_DISPATCH_STATES.includes(task.worktree_state)) {

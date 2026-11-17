@@ -386,7 +386,11 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 - 15 个工具**全局注册**，worker 预设不做工具收窄，子会话直接继承。
 - `task_close` / `task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调；`task_detail` / `task_report` / `plan_save` 只对任务自己的子会话开放（`plan_save` 还要求任务是计划任务）。
-- 派发给子会话的 **brief 是纯指引**（任务编号 + 「先调 `task_detail`」），目标全文、验收、经验、前置、产物都不内联进提示词。
+- 派发给子会话的 **brief 是纯指引**（任务编号 + 「先调 `task_detail`」+「执行中待确认用 blocked 上报」+「交付时给选项」），目标全文、验收、经验、前置、产物都不内联进提示词。
+  - **执行中**遇到要用户拍板的事：`task_report blocked` 上报「问题 + 选项建议」，协调者用 `ask_user_question` 问用户后 `task_message` 续派；不自行假设、不阻塞等待。
+  - **交付时**：待确认要点写进 `summary`（`done` 会清空 `question`/`options`，所以选项要在执行中就用 `blocked` 给出）。
+  - 子会话直接调 `ask_user_question` 会被平台以 `DELEGATED_CALLER` 拒绝，问用户始终由协调者带选项做。
+  worktree 隔离任务额外多一行：检出目录没有依赖，可以执行安装命令（`pnpm install` / `npm install` / `uv sync` 等），**只安装不升级**。
 
 ## 配置
 

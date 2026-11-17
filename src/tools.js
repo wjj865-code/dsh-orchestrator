@@ -1,7 +1,7 @@
 // 工具层：只做参数校验、编排与可读文案；规则都在 brief / ledger / state / notify。
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { validateBrief, renderBrief, validateTargetDir } from './brief.js'
+import { validateBrief, renderBriefForTask, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
 import { INDEX_TITLE, registeredWorkspaces, loadWorkspaceIndex, saveWorkspaceIndex, workspaceIndexText } from './workspace-index.js'
 import { fileURLToPath } from 'node:url'
@@ -709,7 +709,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           worktreeSource: worktreeRecord?.source ?? null,
         },
       })
-      const rendered = renderBrief({ taskId: task.id, access: fullAccess ? 'full' : undefined })
+      const rendered = renderBriefForTask(task)
       addMessage(db, task.id, { kind: 'brief', rendered })
       // 并发风险提示：require 档被 allowConcurrent 放行、warn 档照常创建时由 guard 给；
       // off 档退回旧的 advisory 一行（保持历史行为，不静默消失）。
@@ -1070,7 +1070,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         sessionId: current.id,
         detail: { retryOf: task.id, dependsOn: depends.ids, status: retried.status, access: retried.access ?? null, callId: exec?.callId },
       })
-      addMessage(db, retried.id, { kind: 'brief', rendered: renderBrief({ taskId: retried.id, access: retried.access === 'full' ? 'full' : undefined }) })
+      addMessage(db, retried.id, { kind: 'brief', rendered: renderBriefForTask(retried) })
       if (current.live === false) {
         const message = invalidHint() === '' ? toolFailure('MAIN_SESSION_UNAVAILABLE') : invalidHint()
         log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })

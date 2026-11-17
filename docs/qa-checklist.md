@@ -899,7 +899,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 | 项 | 期望 | 用例 |
 | --- | --- | --- |
-| brief 形态 | 只有 `【任务编号】t-…` + `【任务详情】先调 task_detail…` 两行；无目标/验收/经验/兜底/get_goal | `brief.test.js` 两行形态 + 小节缺席；`tools.test.js` T1 brief 纯指引（prompt 恰好两行） |
+| brief 形态 | `【任务编号】t-…` + `【任务详情】先调 task_detail…` + `【执行中待确认】blocked 上报「问题 + 选项建议」` + `【确认方式】交付时给结构化选项` 四行（完整访问多一行【访问级别】，隔离任务多一行【worktree 依赖】）；无目标/验收/经验/兜底/get_goal | `brief.test.js` 三行形态 + 两处提示的触发条件；`tools.test.js` T1 brief 纯指引（prompt 恰好三行）；`worktree.test.js` 隔离/降级/重派的 brief |
 | task_detail 字段 | 编号/标题/状态/目标全文（保留换行）/工作目录+权限/验收/约束/背景/原话/编排/前置任务/经验文件/已有产物/完成口径 | `task-detail.test.js` 纯渲染三条 + 工具读取 |
 | 只读 | 不写消息、不改 `status`/`updated_at`/`last_event_at`/`progress_count`；经验文件只 `stat` | `task-detail.test.js`「只读——不写消息、不动任务行」 |
 | 越权拒绝 | 主会话、别的子会话、未派发任务都拒绝；提示改用 `task_status`；不落消息 | `task-detail.test.js` 越权/未派发；`index.test.js` 全局注册 + 越权 |
