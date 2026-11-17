@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.18.2（2026-11-17）
+
+这一版是**一处交互补齐的 patch**：主会话回复底部那排「关联任务」chip，点下去以前只会开任务面板再弹详情抽屉，
+用户以为它能跳会话。现在**有子会话的任务点一下就跳进那个子会话**（与面板行「打开子会话」走同一个宿主入口）；
+**没子会话**（待派发 / 等前置 / 台账里没有 `session_id`）仍降级打开任务详情，并把「点下去会发生什么」写进
+tooltip。相对 0.18.1 没有工具入参、台账结构、配置项、服务端行为变化，只有客户端 chip 的点击语义。
+
+### chip 点击跳转子会话（feat(client)）
+
+- 新增 `chipOpenTargetOf(task)`（`client/src/logic.js`）：`childSessionId` 有值 → `{ kind: 'session', sessionId }`，
+  否则 → `{ kind: 'detail' }`。点击目标只由这一个纯函数决定，视图与 tooltip 都读它，不会再各写一份而分叉。
+- 快照裁剪 `slimTask` 补上 `childSessionId` 并计入身份签名（`client/src/feed.js`）——子会话一变就触发重渲染，
+  不必等台账再动一下。
+- 跳转走宿主唯一官方入口 `ctx.uiWorkspace.openSession(sessionId)`，抽成 `openChildSession`；
+  面板行的「打开子会话」、详情抽屉、主会话启动器与 chip 四处同一实现（`client/src/client.js`）。
+- **降级两条路**：① 任务本身没有子会话 → 老行为（一次性 focus 请求 + 开面板 + 弹详情抽屉）；
+  ② 宿主不认这个 id（会话已归档 / 目录已清理 / 宿主无该能力）——`openSession` 同步抛
+  `sessions.retain: unknown session <id>`，客户端 try/catch 兜住后同样开面板定位，并在抽屉顶部显示一条提示：
+  「子会话已打不开（原因），已改为展示任务详情」。
+- **不假装能跳**：`chipTooltipOf` 追加「点击打开子会话 / 无子会话，点击打开任务详情」；`data-orch-chip-open`
+  落在按钮上（测试的稳定观察点）；无子会话的 chip 用 `cursor: default`，不给「可跳转」的手感误导。
+- **提示生命周期**：`createFocusRequest` 增加 `takeNotice()`——与 `take()` 同样「取走即清空」，而 `take()` 的
+  返回值仍是任务 id 字符串（老契约不变）；抽屉关闭时清空，不残留到下一次打开面板。
+- **测试**：点击目标判定、tooltip/cursor 分化、无子会话降级、`openSession` 抛错降级 + 提示、签名含
+  `childSessionId`、chip 首帧结构（`test/client.test.js`）；`dist/` 重建（`pnpm run build` 产物随源码提交）。
+
+### 文档
+
+- README 四处版本号同步到 `0.18.2`（当前版本、安装命令、故障排查「确认装的是」、镜像未同步时的显式版本）。
+- `docs/UI.md` §7 仍写着「点 chip 打开面板并定位」，与本次新行为不一致；本版按「发版提交只含版本文件」不动文档，
+  已记为待办（另开文档单统一口径）。
+
+### 验证
+
+- `pnpm test`（`pretest` 自动构建）**905 passed / 0 failed**；`pnpm run check:client` exit 0；`pnpm run build` 通过；
+  干净树里重跑 `pnpm run build` 后 `git status --short dist/` 为空（已入库产物与源码同源）。
+
 ## 0.18.1（2026-11-17）
 
 这一版是**两处收尾的 patch**：会话头部底部那排 chip 在真实宿主里**根本不渲染**（判「最新一轮」时把
