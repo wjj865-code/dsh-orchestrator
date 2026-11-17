@@ -25,7 +25,7 @@ import { artifactLines } from './notify.js'
 import { CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered, closeReasonLabel } from './delivered.js'
 import { toolFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
-import { followupGate } from './panel-gates.js'
+import { followupGate, stopIsIdempotent } from './panel-gates.js'
 import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, planStatusLine } from './plan-mode.js'
 import { MAX_PLAN_CHARS, isSafePlanTaskId, planSavedNote, writePlanDocument } from './plan-doc.js'
 import {
@@ -989,7 +989,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
-      if (TERMINAL_STATUS.has(task.status)) {
+      // 「已收尾」判据与面板 stop 同源（stopIsIdempotent）：done/failed/cancelled/orphaned 都不该再迁一次。
+      // 0.19.x 这里用的是不含 failed 的「流程终态」，于是对失败任务执行停止会把它改成「已取消」，
+      // 抹掉失败信息（审计 §2.3.2 第 3 条）。
+      if (stopIsIdempotent(task)) {
         return toolFailure('STOP_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
       }
       if (task.status === 'pending' || task.status === 'waiting_dep') {

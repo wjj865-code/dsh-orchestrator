@@ -13,7 +13,10 @@ import { panelFailure } from './action-errors.js'
 import { objectiveForMessage } from './goal.js'
 import { approvePlan, approvalNote, isPlanTask, planStateOf } from './plan-mode.js'
 import { retryWorktreeOf } from './worktree.js'
-import { ACTIVE_STATUSES, TERMINAL_STATUSES, canClose, canDelete, canFollowup, closeGate, deleteGate, followupGate } from './panel-gates.js'
+import {
+  ACTIVE_STATUSES, TERMINAL_STATUSES, canClose, canDelete, canFollowup, closeGate, deleteGate,
+  followupGate, stopIsIdempotent,
+} from './panel-gates.js'
 import { CLOSE_REASONS, closeDelivered, closeReasonLabel } from './delivered.js'
 
 const TERMINAL = new Set(TERMINAL_STATUSES)
@@ -243,8 +246,11 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
   const stop = async taskId => {
     const task = getTask(db, String(taskId ?? ''))
     if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
-    // 幂等：已取消/已完成/已丢失都按成功返回（already:true），面板显示「已是该状态」而不是报错。
-    if (TERMINAL.has(task.status)) {
+    // 幂等：已收尾（done/failed/cancelled/orphaned）都按成功返回（already:true），
+    // 面板显示「已是该状态」而不是报错。
+    // 判据是 `stopIsIdempotent`（已收尾），不是 `TERMINAL`（流程终态，不含 failed）：
+    // 用后者会让对失败任务点「停止」走 failed → cancelled，把「失败」抹成「已取消」（审计 §2.3.2 第 3 条）。
+    if (stopIsIdempotent(task)) {
       return { ok: true, taskId: task.id, status: task.status, already: true }
     }
     const warnings = []

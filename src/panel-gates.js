@@ -89,3 +89,31 @@ export function deleteGate(task, { activeDependents = 0 } = {}) {
 }
 
 export const canDelete = (task, context) => deleteGate(task, context).ok
+
+/**
+ * 停止门控的**幂等**判定：这个状态已经「收尾」了，再点「停止」应当直接返回 `already:true`，
+ * 而不是再迁一次状态。
+ *
+ * 修的是审计 §2.3.2 第 3 条（可触发的真实缺陷）：面板 stop 原先用 `TERMINAL_STATUSES`（不含 failed）
+ * 做这个判定，于是对**失败任务**再点「停止」会走 `failed → cancelled`（转移表允许），
+ * 把「失败」抹成「已取消」——用户再也看不出它是失败。
+ *
+ * 判据是「已收尾」而不是「流程终态」：done / failed / cancelled / orphaned 都已经收尾（要释放可写根
+ * 与平台 goal），而 failed 只是还能重派，并不等于「没结束」。这两件事在 0.20.0 会分别落到
+ * `releases` 与 `terminal` 两个能力字段上；本版先就地修正判据，不引入状态事实源。
+ */
+export const stopIsIdempotent = task => {
+  const status = statusOf(task)
+  return status === 'done' || status === 'failed' || status === 'cancelled' || status === 'orphaned'
+}
+
+/**
+ * 停止门控：正在跑/排队/等人都能停；已经收尾的状态按幂等成功处理。
+ * @returns {{ok: boolean, already: boolean, reason: null|'not_found'}}
+ */
+export function stopGate(task) {
+  if (task === undefined || task === null) return { ok: false, already: false, reason: 'not_found' }
+  return { ok: true, already: stopIsIdempotent(task), reason: null }
+}
+
+export const canStop = task => stopGate(task).ok

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.19.2（2026-11-17）
+
+修一个**可触发的真实缺陷**：对**失败任务**点「停止」（面板按钮或 `task_stop`），任务会被改成「已取消」，
+「失败」这个信息就丢了——用户再也看不出它是失败，也看不出该重派还是该放弃。
+
+相对 0.19.1 是 **patch**：只改一处判据（「已收尾」vs「流程终态」），不动台账结构、工具入参、状态机与沙箱。
+
+### 停止失败任务不再抹掉「失败」（fix(state)）
+
+- **根因**：面板 `stop` 与工具 `task_stop` 的幂等判定用的是 `TERMINAL_STATUSES`（`done`/`cancelled`/`orphaned`，
+  **不含 `failed`**——因为 `failed` 还能重派）。于是失败任务走不到幂等分支，直接落到 `transition(failed → cancelled)`；
+  转移表允许这条边（「停止」确实可以从失败态发起），但语义上等于把「失败」降级成「主动取消」。
+- **修法**：新增 `stopIsIdempotent(task)`（`src/panel-gates.js`）——判据是「**已收尾**」（`done`/`failed`/`cancelled`/`orphaned`），
+  不是「流程终态」。面板与工具两个通道都用它：失败任务再点停止返回 `already:true`，状态保持 `failed`。
+- **两个通道一起修**：`src/panel-actions.js` 与 `src/tools.js` 的 `task_stop` 是两份平行实现（审计 §4.1.2），
+  只修一侧会让「面板点一下」和「协调者调一次」结果不同——这正是审计指出的分叉风险。
+- **兼容性**：对失败任务点「停止」从「改成已取消」变为「幂等成功」。若有人依赖旧行为把失败洗成取消，
+  现在要显式 `task_retry`（重派）或面板「删除」。
+- **不做的事**：本版**不**引入状态事实源（`status-facts.js`）、不改 `RESUME_STATUS` 里的死分支、
+  不删三条不可达边——那些是 0.20.0 的结构收敛，属 minor，不塞进 patch。
+
+### 测试
+
+新增 3 条用例（总数 941 → 944，全绿）：
+
+- `test/status-facts.test.js` 的前身断言暂时放在 `test/panel-gates.test.js`：`stopIsIdempotent` 对
+  `failed`/`orphaned`/`done`/`cancelled` 为 true，对 `running`/`delivered` 为 false。
+- 端到端：面板 `stop` 与工具 `task_stop` 对失败任务各一条，断言返回 `already:true`/「已结束」且台账 `status` 仍是 `failed`。
+
 ## 0.19.1（2026-11-17）
 
 修一个视觉不统一的小问题：主会话会话头左上角的「任务」入口按钮原本带 1px 描边 + 不透明白底 +

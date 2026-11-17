@@ -5,6 +5,8 @@ import {
   setTaskArtifacts, setTaskLastMessage,
 } from '../src/ledger.js'
 import { createPanelActions } from '../src/panel-actions.js'
+import { createTools } from '../src/tools.js'
+import { createQueue } from '../src/queue.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 function setup(options = {}) {
@@ -847,5 +849,46 @@ test('delivered 追问失败：保持 delivered 只记原因，不降级', async
   const after = getTask(db, task.id)
   assert.equal(after.status, 'delivered')
   assert.match(after.error, /投递超时/)
+  db.close()
+})
+
+test('0.19.2 回归：面板 stop 对失败任务是幂等成功，不把 failed 改成 cancelled', async () => {
+  const env = setup()
+  const { db, actions, calls } = await env.init()
+  const failed = createTask(db, { brief: sampleBrief({ title: '失败的' }), coordinatorSession: 's-1' })
+  transition(db, failed.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  transition(db, failed.id, 'failed', { error: '子会话异常结束' })
+
+  const result = await actions.stop(failed.id)
+  assert.equal(result.ok, true)
+  assert.equal(result.already, true)
+  assert.equal(result.status, 'failed')
+  // 关键：状态仍是 failed（0.19.1 会变成 cancelled），失败原因还在。
+  assert.equal(getTask(db, failed.id).status, 'failed')
+  assert.equal(getTask(db, failed.id).error, '子会话异常结束')
+  // 也不该去调 dispatcher.stop（已经收尾，没有可停的东西）。
+  assert.deepEqual(calls.stop, [])
+  db.close()
+})
+
+test('0.19.2 回归：工具 task_stop 对失败任务给「已结束」，状态不变', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief({ title: '失败的' }), coordinatorSession: 's-1' })
+  transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  transition(db, task.id, 'failed', { error: '子会话异常结束' })
+  const queue = createQueue({ db, dispatcher: {}, config: {} })
+  const tools = Object.fromEntries(createTools({
+    db,
+    dispatcher: { async stop() { throw new Error('不该调 dispatcher.stop') } },
+    queue,
+    notifier: { push() {} },
+    config: {},
+    coordinatorStatus: () => ({ id: 's-1', live: true }),
+    logger: { log() {} },
+  }).map(tool => [tool.name, tool]))
+  const text = await tools.task_stop.execute({ task_id: task.id }, { agent: { id: 's-1' } })
+  assert.match(text, /已结束/)
+  assert.match(text, /失败/)
+  assert.equal(getTask(db, task.id).status, 'failed')
   db.close()
 })

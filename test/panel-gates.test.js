@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   ACTIVE_STATUSES, TERMINAL_STATUSES, FOLLOWUP_STATUSES, DELETABLE_STATUSES, CLOSABLE_STATUSES,
   followupGate, canFollowup, closeGate, canClose, deleteGate, canDelete,
+  canStop, stopGate, stopIsIdempotent,
 } from '../src/panel-gates.js'
 
 // 面板按钮的显示与后端动作的接受必须是同一判定（前后端同源）：
@@ -75,4 +76,23 @@ test('门控状态集合与台账口径一致（活跃 6 个 / 终态 3 个 / �
   assert.deepEqual([...FOLLOWUP_STATUSES], ['running', 'waiting_user', 'waiting_auth', 'delivered'])
   assert.deepEqual([...CLOSABLE_STATUSES], ['delivered'])
   assert.deepEqual([...DELETABLE_STATUSES], ['done', 'failed', 'cancelled', 'orphaned'])
+})
+
+test('停止幂等判据是「已收尾」而不是「流程终态」：失败任务再点停止不改状态（0.19.2 修复）', () => {
+  // 已收尾的四种状态：再点「停止」应当直接 already:true，不再迁一次。
+  for (const status of ['done', 'failed', 'cancelled', 'orphaned']) {
+    assert.equal(stopIsIdempotent(task(status)), true, `${status} 应视为已收尾`)
+    assert.deepEqual({ ...stopGate(task(status)) }, { ok: true, already: true, reason: null }, status)
+  }
+  // 还在跑/等人/待确认：不能算已收尾（点停止要真的停）。
+  for (const status of ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered']) {
+    assert.equal(stopIsIdempotent(task(status)), false, `${status} 不该算已收尾`)
+    assert.deepEqual({ ...stopGate(task(status)) }, { ok: true, already: false, reason: null }, status)
+  }
+  // 关键差异：TERMINAL_STATUSES 不含 failed，而 stopIsIdempotent 含——
+  // 这正是 0.19.x 把失败任务改成「已取消」的根因，两者必须分开表达。
+  assert.equal(TERMINAL_STATUSES.includes('failed'), false)
+  assert.equal(stopIsIdempotent(task('failed')), true)
+  assert.equal(canStop(undefined), false)
+  assert.deepEqual({ ...stopGate(undefined) }, { ok: false, already: false, reason: 'not_found' })
 })
