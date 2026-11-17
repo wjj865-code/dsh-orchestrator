@@ -665,3 +665,47 @@ test('S3 轮换后新会话尚未 live：窗口内再 open 不重复建（不给
   clock += 61_000
   db.close()
 })
+
+test('G1 检查节流：距上次检查不足间隔不再判定（打开只复用，不建会话不改名不归档）', async () => {
+  // 同一份「该换」的台账（龄 30 天），只把上次检查时间挪到 1 小时前：打开必须什么都不做。
+  const throttled = await ledger()
+  await agedMain(throttled)
+  setMainSessionPreset(throttled, PRESET_ID)
+  setSetting(throttled, 'main_rotation_checked_at', String(Date.now() - 3_600_000))
+  const f = fake({ live: new Set(['session-old']) })
+  const archived = []
+  const logs = []
+  const rotation = rotationFor(throttled, f, { archived, log: (event, detail) => logs.push([event, detail]) })
+  const main = createMainSession({
+    db: throttled, config: {}, agents: f.agents, sessionController: f.sessionController,
+    workspaces: f.workspaces, rotation, workspacePath: 'C:/ws', log: (event, detail) => logs.push([event, detail]),
+  })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.equal(result.sessionId, 'session-old', '节流内照旧复用当前主会话')
+  assert.equal(result.rotated, undefined, '节流内不轮换')
+  assert.equal(f.created.length, 0, '一次会话都不建')
+  assert.deepEqual(f.renamed, [])
+  assert.deepEqual(archived, [])
+  assert.ok(logs.some(([event]) => event === 'main.rotation.check.skipped'), '跳过要留日志（事后能解释为什么没查）')
+  assert.equal(logs.some(([event]) => event === 'main.rotation.decided'), false, '跳过 = 不判定')
+  throttled.close()
+
+  // 到点（25 小时前检查过）→ 真的判定并轮换：节流只是「查的频率」，不是「不换」。
+  const dueDb = await ledger()
+  await agedMain(dueDb)
+  setMainSessionPreset(dueDb, PRESET_ID)
+  setSetting(dueDb, 'main_rotation_checked_at', String(Date.now() - 25 * 3_600_000))
+  const f2 = fake({ live: new Set(['session-old']) })
+  const archived2 = []
+  const rotation2 = rotationFor(dueDb, f2, { archived: archived2 })
+  const main2 = createMainSession({
+    db: dueDb, config: {}, agents: f2.agents, sessionController: f2.sessionController,
+    workspaces: f2.workspaces, rotation: rotation2, workspacePath: 'C:/ws',
+  })
+  const rotated = await main2.open()
+  assert.equal(rotated.rotated, true)
+  assert.equal(rotated.sessionId, 'session-main-new')
+  assert.deepEqual(archived2, ['session-old'])
+  dueDb.close()
+})

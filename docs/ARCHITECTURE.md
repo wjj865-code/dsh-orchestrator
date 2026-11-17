@@ -58,9 +58,9 @@
 
 | 位置 | 职责 |
 |---|---|
-| `src/main-rotation.js` | 全部轮换逻辑：S1 纯判定 `evaluateRotation`；S2 采集 `collectRotationMetrics` + settings 键读写 + `inspectRotationPending` 只读判定；S3 动作面 `createRotationService`（marker / 时间戳 / 审计 / 旧会话处置 / `recoverPendingRotation`） |
-| `src/config.js` | `loadConfig` 直接 `Object.assign(config, normalizeRotationConfig(raw))`，11 个键的默认值/区间/回落都在 S1 |
-| `src/main-session.js` | `openOnce()` 是**唯一**判定点：`rotation.evaluate({ mainSessionId, liveAgent, source:'open' })` → `decision.due === true` 才 `rotateMain()`，否则照旧走复用分支 |
+| `src/main-rotation.js` | 全部轮换逻辑：S1 纯判定 `evaluateRotation`；S2 采集 `collectRotationMetrics` + settings 键读写 + `inspectRotationPending` 只读判定；S3 动作面 `createRotationService`（marker / 时间戳 / 审计 / 旧会话处置 / `recoverPendingRotation`）；S7 检查节流 `rotationCheckWindow`（纯函数）+ 在 `evaluate` 采集之前的那道闸门 |
+| `src/config.js` | `loadConfig` 直接 `Object.assign(config, normalizeRotationConfig(raw))`，12 个键的默认值/区间/回落都在 S1 |
+| `src/main-session.js` | `openOnce()` 是**唯一**判定点：`rotation.evaluate({ mainSessionId, liveAgent, source:'open' })` → `decision.due === true` 才 `rotateMain()`，否则照旧走复用分支（`decision.skipped === true` 时什么都不用做） |
 | `index.js` | 装配 `createRotationService`（平台服务全是**惰性 getter**：`sessionPersistence` / `tokenMeter` / `catalog` / `sessionController.rename` / `workspaceRegistry.archiveSession`）；`apply()` 启动时调一次 `rotation.recoverPending({ pointer })` 补完上次崩溃的轮换；`open-main` 响应里对新 id 跑 `ensureDigestFor` |
 
 判定**不在**启动、`agent/created`、面板轮询里跑，也没有定时器；settings 里不存任何判定结论，`snapshot` 不下发「建议轮换」（S4 曾接过这三处，已按「判定收敛到打开那一次」回退）。
@@ -76,6 +76,27 @@
 - **结论**：`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；龄/冷却/闲置一律由时间戳现算，不信任调用方传小时数。
 
 采集（S2）只读：一次 `persistence.listSnapshots()` 供 M2/M6 共用，`locate`+`stat` 拿 M3 体积与 mtime（顺带给 P4）；每项独立 `try/catch`，失败记 `degraded` 并给 `null`（**未知 ≠ 0**，0 会被当成「很干净」而漏判）。`since` 先读 `settings.main_session_created_at`，退 `header.createdAt`，都拿不到时 M1/M2/M5 一起降级。判定整体异常 → `evaluate` 返回 `null`（调用方视为「本次不换」，打开主会话照常）。
+
+### 检查节流（S7：`rotateCheckIntervalHours` / `main_rotation_checked_at`）
+
+采集要读台账 + `listSnapshots()` + 逐个 `stat` 会话日志，随手一开主会话就查一次很浪费。所以 `createRotationService.evaluate` 的顺序是：
+
+1. 配置覆盖 `coordinatorSession` / 没有主会话 id → 直接 `null`（连检查都不做）；
+2. **检查节流闸门**：读 `settings.main_rotation_checked_at`，交给纯函数 `rotationCheckWindow({ now, lastCheckedAt, intervalHours })`；
+   - `shouldCheck === false`（距上次检查 < `rotateCheckIntervalHours`）→ 返回 `{ due:false, skipped:true, skipReason:'check-interval', check:{…} }`，
+     **不采集、不读台账、不判定、不碰平台服务**，只写一条 `main.rotation.check.skipped` 日志；
+   - 没有记录（首次 / 升级后第一次打开）或到点（`elapsed >= 间隔`，`>=` 口径）→ 继续；
+   - 记录时间在未来（时钟回拨）→ 不信任，按「该检查」处理，检查完用当前时间覆盖，避免把检查冻结到时钟追上来；
+3. 采集 + 判定，**结论为「不需要换」时**才写 `main_rotation_checked_at = now`（写失败只记 `main.rotation.check.record-failed`，不影响本次判定）；
+   `due === true` **不写**——动作（create / 切指针）还在后面，失败或崩溃后下一次打开要能重试，不能被自己刚记的时间戳挡一个间隔；
+   检查整体异常（`evaluate` 落 `catch`）同样**不写**时间戳 → 下次打开重试。
+
+口径边界（三个时间参数各管一件事，别混）：
+- `rotateCheckIntervalHours`（默认 24，1–168）——**查不查**：这次打开要不要花开销做检查；
+- `rotateCooldownHours`（默认 48）——**换不换**：距上次轮换不足冷却就挡 `cooldown`，但检查照做；
+- `rotateMinAgeHours`（默认 12）——**换不换**：主会话跑得不够久就挡 `min-age`，同样不拦检查。
+
+`skipped` 的返回**不是判定结论**（`triggers`/`blockedBy` 都是空），所以它也不会把上一次的 blocks 重算一遍；要看「为什么没换」得看真正检查那次的 `main.rotation.decided`。轮换动作之后的下一次打开会再检查一次（因为 `due` 那次没记时间戳），那之后才按间隔节流——这是「失败/崩溃能重试」的代价，换来节流不会被一次没做完的检查消费。
 
 ### 动作时序（顺序即回退边界，改顺序前先读 `src/main-rotation.js` 顶部注释）
 
@@ -108,15 +129,21 @@
 | `main_rotation_at` | 上次轮换时刻（冷却期起点；从未轮换 = 无键） |
 | `main_rotation_last` | 审计记录（事后排查唯一入口：换了谁、为什么、改名/归档成没成、是否恢复补完） |
 | `main_rotation_pending` | 崩溃锚点（转瞬即逝，收尾清掉） |
+| `main_rotation_checked_at` | 上次真正做过「采集 + 判定」的时刻（S7 检查节流；不是判定结论，也不代表轮换过） |
+
+五个键统一走 `readRotationState` / `writeRotationState`（`null` 删键、对象存 JSON、`undefined` 不动）。
 
 ### 日志（`logs/YYYY-MM-DD.jsonl`）
 
-- `main.rotation.decided`：每次判定都写（`source`、`due`、`triggers`、`blockedBy`、`degraded`、指标、`since`/`sinceSource`/`scanned`）——复盘「为什么换 / 为什么没换」。
+- `main.rotation.decided`：每次**真正检查**都写（`source`、`due`、`triggers`、`blockedBy`、`degraded`、指标、`since`/`sinceSource`/`scanned`、`checkedAt`、`checkRecorded`）——复盘「为什么换 / 为什么没换」，以及这次检查有没有消费节流。
+- `main.rotation.check.skipped`：检查节流跳过（`intervalHours`、`checkedAt`、`nextCheckAt`、`elapsedHours`）——复盘「这次打开为什么没查」；跳过不写 `decided`。
 - `main.session.rotated`：轮换成功（old/new/triggers/renamed/archived/marker/audit）。
-- 失败/降级：`main.rotation.failed`、`pointer-failed`、`commit.failed`、`onboarding.failed`、`audit.failed`、`marker.failed`、`marker.clear.failed`、`rename.ok|failed`、`archive`、`discard`、`metrics.degraded`、`recovered-complete|abandoned|invalid|failed`。
+- 失败/降级：`main.rotation.failed`、`check.record-failed`（节流时间戳写不进，只降级）、`pointer-failed`、`commit.failed`、`onboarding.failed`、`audit.failed`、`marker.failed`、`marker.clear.failed`、`rename.ok|failed`、`archive`、`discard`、`metrics.degraded`、`recovered-complete|abandoned|invalid|failed`。
 
 冒烟（临时台账 + 桩平台动作，不碰真实主会话）：13 项矩阵覆盖 not-due 零副作用、open-main 命中路径、create 失败零处置、
-指针写失败、只退役不归档、60s 窗口、崩溃恢复 complete/abandoned、配置归一化与纯判定契约；探针脚本是一次性验证件，不入库。
+指针写失败、只退役不归档、60s 窗口、崩溃恢复 complete/abandoned、配置归一化与纯判定契约；S7 检查节流的跳过/首检/到点/
+越界夹取/与冷却叠加在 `test/main-rotation.test.js` 的 S7 用例组与 `test/main-session.test.js` 的「检查节流」用例里；
+探针脚本是一次性验证件，不入库。
 
 ## 队列与并发
 

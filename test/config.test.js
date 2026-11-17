@@ -128,7 +128,7 @@ test('空闲看门狗：非法分钟数回落默认，超界夹到 1–1440', ()
   assert.equal(clamped.watchdogIdleMinutes, 1)
 })
 
-test('主会话轮换：11 个键默认值（G1 S1 判定内核）', () => {
+test('主会话轮换：12 个键默认值（G1 S1 判定内核 + S7 检查节流）', () => {
   const config = loadConfig({})
   assert.equal(config.mainRotation, 'auto')
   assert.equal(config.rotateAfterTasks, 120)
@@ -140,6 +140,8 @@ test('主会话轮换：11 个键默认值（G1 S1 判定内核）', () => {
   assert.equal(config.rotateCooldownHours, 48)
   assert.equal(config.rotateMinAgeHours, 12)
   assert.equal(config.rotateIdleMinutes, 10)
+  // 检查节流（S7）：默认一天最多检查一次（与上面的冷却/最小龄不是一回事）。
+  assert.equal(config.rotateCheckIntervalHours, 24)
   assert.equal(config.rotateArchiveOld, true)
 })
 
@@ -155,6 +157,7 @@ test('主会话轮换：合法覆盖生效，总开关只认 off/auto', () => {
     rotateCooldownHours: 24,
     rotateMinAgeHours: 6,
     rotateIdleMinutes: 5,
+    rotateCheckIntervalHours: 4,
     rotateArchiveOld: false,
   })
   assert.equal(config.mainRotation, 'off')
@@ -167,6 +170,7 @@ test('主会话轮换：合法覆盖生效，总开关只认 off/auto', () => {
   assert.equal(config.rotateCooldownHours, 24)
   assert.equal(config.rotateMinAgeHours, 6)
   assert.equal(config.rotateIdleMinutes, 5)
+  assert.equal(config.rotateCheckIntervalHours, 4)
   assert.equal(config.rotateArchiveOld, false)
   // 拼错/其它值回落 auto：默认必须安全，不能因为写错就永久关闭轮换。
   for (const bad of ['OFF', 'manual', 'on', 0, true, null]) {
@@ -188,6 +192,7 @@ test('主会话轮换：越界夹到边界，非数字/非正数回落默认', (
     rotateCooldownHours: 0.5,
     rotateMinAgeHours: 1e6,
     rotateIdleMinutes: 99999,
+    rotateCheckIntervalHours: 1e6,
   })
   assert.equal(clamped.rotateAfterTasks, 10000)
   assert.equal(clamped.rotateAfterSessions, 1)
@@ -198,6 +203,7 @@ test('主会话轮换：越界夹到边界，非数字/非正数回落默认', (
   assert.equal(clamped.rotateCooldownHours, 1)
   assert.equal(clamped.rotateMinAgeHours, 720)
   assert.equal(clamped.rotateIdleMinutes, 1440)
+  assert.equal(clamped.rotateCheckIntervalHours, 168)
 
   const bad = loadConfig({
     rotateAfterTasks: 0,
@@ -209,6 +215,7 @@ test('主会话轮换：越界夹到边界，非数字/非正数回落默认', (
     rotateCooldownHours: undefined,
     rotateMinAgeHours: 0.5,
     rotateIdleMinutes: 1e9,
+    rotateCheckIntervalHours: '24',
   })
   // 非正数/非数字一律回落默认（0.5 是正数，会夹到区间下界而不是回落）。
   assert.equal(bad.rotateAfterTasks, 120)
@@ -220,6 +227,7 @@ test('主会话轮换：越界夹到边界，非数字/非正数回落默认', (
   assert.equal(bad.rotateCooldownHours, 48)
   assert.equal(bad.rotateMinAgeHours, 1)
   assert.equal(bad.rotateIdleMinutes, 1440)
+  assert.equal(bad.rotateCheckIntervalHours, 24)
 })
 
 test('不泄漏未声明的原始键', () => {
