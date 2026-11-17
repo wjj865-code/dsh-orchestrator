@@ -247,9 +247,16 @@
     const chips = list.slice(0, limit);
     return { chips, rest: list.length - chips.length, total: list.length };
   };
+  const turnNumberOf = (turn) => {
+    if (typeof turn === "number") return Number.isFinite(turn) ? turn : null;
+    if (turn === null || typeof turn !== "object") return null;
+    const value = turn.turn;
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  };
   const isLatestTurn = (snapshot, turn) => {
     const order = snapshot === null || snapshot === void 0 ? void 0 : snapshot.timeline?.turnOrder;
-    return Array.isArray(order) && order.length > 0 && order[order.length - 1] === turn;
+    const current = turnNumberOf(turn);
+    return Array.isArray(order) && order.length > 0 && current !== null && order[order.length - 1] === current;
   };
   const createFocusRequest = () => {
     let pending = null;

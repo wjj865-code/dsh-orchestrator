@@ -1106,6 +1106,36 @@ const chipTask = (id, status, extra = {}) => ({
 })
 const chipIds = rows => Array.from(rows, task => task.id)
 
+// 真实 TurnLocation 形状（@deepseek-ai/dsh-client-ui-conversation 的 contract/conversation.d.ts）：
+// { turn: number, start, end, status, steps, data }。conversation.chat.turnTail 槽位的 owner.turn
+// 就是这个对象，不是裸数字 —— 旧用例统一传数字，正是「对象 === 数字恒假」的 bug 测不出来的原因。
+const turnLocationOf = (turn, extra = {}) => ({
+  turn,
+  start: { type: 'turn/start', seq: turn * 100 },
+  end: { type: 'turn/end', seq: turn * 100 + 1 },
+  status: 'closed',
+  steps: [],
+  // ConversationLocationDataStore：get(key) / source(key)（不是 getSnapshot/subscribe）。
+  data: {
+    get: () => undefined,
+    source: () => ({ getSnapshot: () => undefined, subscribe: () => () => {} }),
+  },
+  ...extra,
+})
+
+// ChatSnapshot 的最小真实形状：timeline.turnOrder 是 number[]，timeline.turns 是 Map<number, TurnLocation>。
+const chatSnapshotOf = turnOrder => ({
+  order: [],
+  nodes: {},
+  locations: {},
+  navigation: {},
+  legacy: {},
+  timeline: {
+    turnOrder,
+    turns: new Map(turnOrder.map(turn => [turn, turnLocationOf(turn)])),
+  },
+})
+
 test('chip 关联规则：只收本会话派出的任务；活跃全收、终态只看最近 30 分钟', () => {
   const { loaded } = load()
   const { selectTaskChips } = loaded.__test
@@ -1215,13 +1245,14 @@ const renderChipRow = (options = {}) => {
   }
   const injected = row.spec.inject()
   resetHooks()
-  const turn = options.turn === undefined ? 7 : options.turn
+  // 默认传真实形状（TurnLocation 对象）；要测裸数字/别的显式形状时用 options.turn 覆盖。
+  const turn = options.turn === undefined ? turnLocationOf(7) : options.turn
   const tree = row.component({
     turn,
     sessionId: options.sessionId === undefined ? 's-main' : options.sessionId,
     useMainView: options.useMainView === undefined ? selector => selector(true) : options.useMainView,
     useChat: options.useChat === undefined
-      ? selector => selector({ timeline: { turnOrder: options.turnOrder === undefined ? [5, 6, 7] : options.turnOrder } })
+      ? selector => selector(chatSnapshotOf(options.turnOrder === undefined ? [5, 6, 7] : options.turnOrder))
       : options.useChat,
     chips,
     openTask: injected.openTask,
@@ -1229,6 +1260,30 @@ const renderChipRow = (options = {}) => {
   })
   return { ...env, row, panel, injected, tree, turn, counts }
 }
+
+test('回归：isLatestTurn 按 TurnLocation 的真实形状比较（对象 === 数字恒假的旧 bug）', () => {
+  // 根因：turnOrder 是 number[]，而 turnTail 的 owner.turn 是 TurnLocation 对象；
+  // 旧实现直接 `order[order.length - 1] === turn`，永远 false → chip 在真实宿主里永不渲染。
+  // 这条用例用真实形状构造，防止有人把比较改回「整对象比较」。
+  const { loaded } = load()
+  const { isLatestTurn } = loaded.__test
+  const snapshot = chatSnapshotOf([5, 6, 7])
+
+  assert.equal(isLatestTurn(snapshot, turnLocationOf(7)), true, '最新一轮（TurnLocation 对象）必须判为 true')
+  assert.equal(isLatestTurn(snapshot, turnLocationOf(6)), false, '历史轮次必须判为 false')
+  // 多一层字段也不影响：比较只看 TurnLocation.turn。
+  assert.equal(isLatestTurn(snapshot, turnLocationOf(7, { status: 'open', steps: [{}] })), true)
+
+  // 坏入参/空时间线：不抛、不误判成最新。
+  assert.equal(isLatestTurn(null, turnLocationOf(7)), false)
+  assert.equal(isLatestTurn({}, turnLocationOf(7)), false)
+  assert.equal(isLatestTurn(chatSnapshotOf([]), turnLocationOf(7)), false)
+  assert.equal(isLatestTurn(snapshot, null), false)
+  assert.equal(isLatestTurn(snapshot, { turn: '7' }), false)
+
+  // 历史兼容：裸 number 入参（**非真实形状**，真实宿主永远传 TurnLocation 对象）。
+  assert.equal(isLatestTurn(snapshot, 7), true)
+})
 
 test('chip 渲染与空状态：无关联/非主会话/非最新一轮都不渲染；有关联才出行', () => {
   // 快照还没到（null）→ 不渲染，也不出骨架。
@@ -1246,6 +1301,20 @@ test('chip 渲染与空状态：无关联/非主会话/非最新一轮都不渲�
     turnOrder: [5, 6, 7, 8],
     chips: { getSnapshot: () => ({ tasks: [chipTask('t-1', 'running')] }), subscribe: () => () => {} },
   }).tree, null)
+  // 真实形状（TurnLocation 对象）+ 最新一轮：必须出行。旧 bug 在这里返回 null（chip 永不渲染）。
+  const realShape = renderChipRow({
+    turn: turnLocationOf(7),
+    turnOrder: [5, 6, 7],
+    chips: { getSnapshot: () => ({ tasks: [chipTask('t-1', 'running')] }), subscribe: () => () => {} },
+  }).tree
+  assert.equal(realShape.type, 'div')
+  assert.equal(realShape.props.className, 'orch-chips')
+  assert.equal(realShape.props['data-orch-chip-row'], 'true')
+  // 历史兼容：裸数字入参（**非真实形状**，真实宿主传的是上面的 TurnLocation 对象）。
+  assert.equal(renderChipRow({
+    turn: 7,
+    chips: { getSnapshot: () => ({ tasks: [chipTask('t-1', 'running')] }), subscribe: () => () => {} },
+  }).tree.props.className, 'orch-chips')
 
   // 有关联：2 个 chip + 「+2」，结构与宿主动作行的 chip 语言一致。
   const now = Date.now()

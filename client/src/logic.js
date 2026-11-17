@@ -206,10 +206,30 @@ export const selectTaskChips = (tasks, { sessionId, now = Date.now(), max = CHIP
   return { chips, rest: list.length - chips.length, total: list.length }
 }
 
-/** 这一轮是不是「最新一轮」（chat 时间线末位）；turnTail 的 owner.turn 是 TurnLocation。 */
+/**
+ * 取出「第几轮」这个数字。
+ *
+ * turnTail 的 owner.turn 真实形状是 TurnLocation（`@deepseek-ai/dsh-client-ui-conversation` 的
+ * `TurnLocation`：`{ turn: number, start, end, status, steps, data }`），不是裸数字；
+ * ChatSnapshot 的 `timeline.turnOrder` 才是 `readonly number[]`。
+ * 裸 number 只是早期实现/旧测试遗留的入参形状（非真实形状），这里保留兼容，新代码不要这样传。
+ */
+const turnNumberOf = turn => {
+  if (typeof turn === 'number') return Number.isFinite(turn) ? turn : null
+  if (turn === null || typeof turn !== 'object') return null
+  const value = turn.turn
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * 这一轮是不是「最新一轮」（chat 时间线末位）。
+ * 回归：曾经直接拿 `order[order.length - 1] === turn` 比较 —— 左边是数字、右边是 TurnLocation
+ * 对象，恒为 false，于是 chip 在真实宿主里永远不渲染（单测传裸数字才「绿」）。现在取字段比较。
+ */
 export const isLatestTurn = (snapshot, turn) => {
   const order = snapshot === null || snapshot === undefined ? undefined : snapshot.timeline?.turnOrder
-  return Array.isArray(order) && order.length > 0 && order[order.length - 1] === turn
+  const current = turnNumberOf(turn)
+  return Array.isArray(order) && order.length > 0 && current !== null && order[order.length - 1] === current
 }
 
 /**
