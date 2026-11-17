@@ -723,20 +723,17 @@
   color: var(--dsw-alias-state-error-primary, #ec1313);
 }
 .orch-btn--sm { height: 22px; padding: 0 7px; font-size: 11px; }
-/* 会话头「任务」入口：按面板顶栏 .orch-brand 的语言重做（品牌色方块 + 半粗文字）。
-   尺寸取面板按钮的 26px，与宿主头部 28px 紧凑控件同基线；hover 加悬浮阴影，其余状态继承 .orch-btn。 */
+/* 会话头「任务」入口：按面板顶栏 .orch-brand 的语言（品牌色方块 + 半粗文字）。
+   不画外框，与同排的协调者预设标签、子智能体计数一致——那两个都是无描边、透明底、
+   hover 只换交互底色的 chip。所以这里只覆盖尺寸/字重：描边与底色一律沿用 .orch-btn 的
+   border: 1px solid transparent + background: transparent，不重复声明；也不再有自己
+   的 hover 覆盖（否则 hover 会冒出描边与悬浮阴影，又把它从同排里顶出来）。 */
 .orch-btn--entry {
   height: 26px;
-  padding: 0 10px;
+  padding: 0 4px;
   gap: 6px;
-  border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
-  background: var(--dsw-alias-bg-layer-1, #fff);
   color: var(--dsw-alias-label-primary, #1f1f1f);
   font-weight: 600;
-}
-.orch-btn--entry:hover {
-  border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12));
-  box-shadow: var(--dsw-shadow-lv1, 0 2px 4px rgba(0, 0, 0, 0.05));
 }
 .orch-entry-mark {
   display: inline-flex;

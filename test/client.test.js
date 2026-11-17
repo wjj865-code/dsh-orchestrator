@@ -102,6 +102,15 @@ const load = (options = {}) => {
 
 const flush = async () => { await new Promise(resolve => setImmediate(resolve)) }
 
+// 从内联样式表里切出某个选择器的规则块（到第一个 `}` 为止）：断言 .orch-entry-* 这类
+// 单层规则时够用，也避免每条用例各写一份同样的切片逻辑。
+const cssBlock = (css, selector) => {
+  const index = css.indexOf(selector)
+  assert.ok(index !== -1, `样式表缺少 ${selector}`)
+  const end = css.indexOf('}', index)
+  return css.slice(index, end === -1 ? css.length : end)
+}
+
 // 回归：0.3.0 那次 npm 包名改成 @wjj865-code/dsh-orchestrator 后，client.js 仍注册
 // 无 scope 的 'dsh-orchestrator'，DSH client-modules 按包名索引 → 客户端半静默不加载
 // （侧栏入口和面板全没了，服务端日志还一切正常）。这条用例把「模块 id == package.json
@@ -528,12 +537,7 @@ test('样式注入：旧 <style> 与当前构建不一致时就地刷新，一�
 test('任务入口对齐：按钮与图标块 flex 居中、字号/间距固定（.orch-entry-* 规则不丢）', () => {
   const { loaded } = load()
   const css = loaded.__test.STYLE_TEXT
-  const block = selector => {
-    const index = css.indexOf(selector)
-    assert.ok(index !== -1, `样式表缺少 ${selector}`)
-    const end = css.indexOf('}', index)
-    return css.slice(index, end === -1 ? css.length : end)
-  }
+  const block = selector => cssBlock(css, selector)
   const entry = block('.orch-btn--entry {')
   assert.match(entry, /gap: 6px/, '图标与文字间距固定 6px')
   assert.match(entry, /height: 26px/, '入口高度与宿主头部紧凑控件一致')
@@ -545,6 +549,24 @@ test('任务入口对齐：按钮与图标块 flex 居中、字号/间距固定�
   assert.match(mark, /width: 18px/)
   assert.match(mark, /height: 18px/)
   assert.match(block('.orch-entry-label {'), /font-size: 12px/, '文字字号与 12px 图标同级')
+})
+
+// 视觉统一：同排其他元素（协调者预设标签、子智能体计数）都是无描边、透明底的 chip，
+// 只有入口按钮带 1px 描边 + 白底 + hover 悬浮阴影时它会「凸」出来。这里把「不画外框」钉死，
+// 防止以后有人按面板按钮的习惯把描边/底色/阴影加回来。
+test('任务入口无外框：与同排协调者标签/子智能体计数一致（无描边、透明底、无悬浮阴影）', () => {
+  const { loaded } = load()
+  const css = loaded.__test.STYLE_TEXT
+  const entry = cssBlock(css, '.orch-btn--entry {')
+  assert.doesNotMatch(entry, /border(-color|-width|-top|-right|-bottom|-left)?\s*:/, '入口不自己声明描边，继承 .orch-btn 的 1px transparent')
+  assert.doesNotMatch(entry, /box-shadow/, '常驻态不带阴影')
+  assert.doesNotMatch(entry, /--dsw-alias-border-l2|--dsw-alias-border-l3/, '不再引用描边色 token')
+  // 入口不再有自己的 hover 覆盖：hover/active/disabled 全部继承 .orch-btn 的交互底色。
+  assert.equal(css.includes('.orch-btn--entry:hover'), false, '入口不单独声明 hover（否则又会加回描边/阴影）')
+  // 内边距收窄到与相邻 chip 同级（原来 0 10px 是给描边按钮留的）。
+  assert.match(entry, /padding: 0 4px/, '左右内边距与同排 chip 同级')
+  // 不重复声明底色：透明底来自 .orch-btn。
+  assert.doesNotMatch(entry, /background(-color)?\s*:/, '底色继承 .orch-btn 的 transparent，不重复声明')
 })
 
 test('任务入口闸门源码：session-role 端点 + uiSession/sessions 信号 + 默认隐藏', () => {

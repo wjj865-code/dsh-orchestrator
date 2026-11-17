@@ -82,7 +82,7 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 
 | 交互 | 实现 |
 | --- | --- |
-| hover | `.orch-card:hover`（底色 + 描边 + `--dsw-shadow-lv1`）、`.orch-btn:hover`、`.orch-btn--entry:hover`（描边 + `--dsw-shadow-lv1`）、`.orch-metric:hover`（上浮 1px）、`.orch-rail-item:hover`、`.orch-section-head:hover`、`.orch-artifact:hover`、`.orch-artifact-open:hover`（转品牌色 + 下划线，全在 `styles.css`） |
+| hover | `.orch-card:hover`（底色 + 描边 + `--dsw-shadow-lv1`）、`.orch-btn:hover`（含会话头「任务」入口，无描边无阴影）、`.orch-metric:hover`（上浮 1px）、`.orch-rail-item:hover`、`.orch-section-head:hover`、`.orch-artifact:hover`、`.orch-artifact-open:hover`（转品牌色 + 下划线，全在 `styles.css`） |
 | 动画/过渡 | 抽屉滑入滑出（`transform` + `--ds-transition-duration-slow`）、展开/折叠 `grid-template-rows: 0fr→1fr`、chevron 旋转、内容入场 `@keyframes orch-slide-in`、骨架 `@keyframes orch-shimmer`、按钮 `transform: scale(.985)` 按下反馈（`styles.css`） |
 | 二次确认 | 「停止」先变成「确认停止？/ 取消」，「确认交付」（`delivered` → `done`，不可逆）与删除同样两步「确认交付完成？/ 取消」「确认删除？/ 取消」（`.orch-confirm`，`views.js` 的 `stopControl` / `closeControl` / `deleteControl`），不再用 `window.confirm`；动作进行中禁用按钮并显示「停止中…/重派中…/确认中…/删除中…」 |
 | 空态 | `.orch-empty` 图标 + 标题 + 提示（无任务 / 无匹配 / 无产物 / 无消息 / 无前置 / 无下游 / 没有 brief / 没有返回消息），`ui.js` 的 `EmptyState` |
@@ -128,15 +128,19 @@ DeepSeek 设计平台风格、三段式布局、右侧抽屉详情、现代化�
 
 注册在 `conversation.header.leading`（单席位、不带 `id`），仅主会话显示（闸门 `client/src/gate.js`，fail-closed）。
 
-视觉与面板顶栏 `.orch-brand` 同一套语言，不再用裸字符 `☰`：
+视觉与面板顶栏 `.orch-brand` 同一套语言，不再用裸字符 `☰`；**按钮本身不画外框**，
+与同排的协调者预设标签（宿主 `AgentPresetLabel`）和子智能体计数（宿主 `SubagentHeaderLineage` 的
+trigger）一致：三者都是无描边、透明底的 chip，hover 只换 `--dsw-alias-interactive-bg-hover`。
 
 | 部分 | class | 规格 |
 | --- | --- | --- |
-| 按钮 | `.orch-btn.orch-btn--entry` | 高 26px、内边距 0 10px、`--dsw-alias-border-l2` 描边、`--dsw-alias-bg-layer-1` 底、`--dsw-alias-label-primary` 半粗字；hover 换 `--dsw-alias-border-l3` + `--dsw-shadow-lv1` |
+| 按钮 | `.orch-btn.orch-btn--entry` | 高 26px、内边距 0 4px、描边 `transparent`（只占 `.orch-btn` 的 1px 盒模型，不画出来）、底色 `transparent`、`--dsw-alias-label-primary` 半粗字；不再有 hover 阴影与描边色切换 |
 | 图标块 | `.orch-entry-mark` | 18×18、`--dsw-radius-xs` 圆角、`--dsw-specific-bubble` 底、`--dsw-alias-state-business-primary` 前景，内装 `ui.js` 的 `menu` 内联 SVG（三条横线，12px） |
 | 文字 | `.orch-entry-label` | 12px、`letter-spacing: 0.01em`、不换行 |
 
-四个交互状态（hover / active / disabled / focus-visible）全部继承 `.orch-btn`，不重复声明。
+四个交互状态（hover / active / disabled / focus-visible）全部继承 `.orch-btn`，不重复声明：
+hover 是交互底色 + 文字转 `--dsw-alias-label-primary`，active 再加 `transform: scale(.985)`，
+disabled 降到 `opacity: .45`，focus-visible 走焦点环——都没有描边。
 
 ## 6. 产物预览（会话右侧栏）
 
