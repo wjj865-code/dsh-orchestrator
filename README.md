@@ -2,7 +2,7 @@
 
 > **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目标目录里把活干完，进度与结论落进持久台账，浏览器里有任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.18.0`）
+- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.18.1`）
 - 仓库：<https://github.com/wjj865-code/dsh-orchestrator>
 - License：MIT｜Node `>= 22.15`（`engines`），DSH rc.3+ 实测（Web 表面为主，Desktop 同构）
 
@@ -25,7 +25,7 @@
 1. DSH → 插件 → **添加插件**，粘贴：
 
    ```text
-   @wjj865-code/dsh-orchestrator@0.18.0
+   @wjj865-code/dsh-orchestrator@0.18.1
    ```
 
 2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）。
@@ -447,8 +447,8 @@ task_create({
 
 | 现象 | 处理 |
 |---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.18.0`；**彻底退出 DSH 再启动**（刷新页面无效） |
-| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.18.0` 显式版本；维护者侧可主动同步镜像（见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#发版)） |
+| 侧栏没有「主会话」 | 确认装的是 `0.18.1`；**彻底退出 DSH 再启动**（刷新页面无效） |
+| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.18.1` 显式版本；维护者侧可主动同步镜像（见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#发版)） |
 | 会话头没有「任务」入口 | 只在主会话显示：确认当前会话就是侧栏「主会话」打开的；没建就点「打开主会话」 |
 | 点产物「预览」没有右侧栏 | 宿主要装 `ui-sidebar-right` 与 `ui-sidebar-documentpreview`；缺了会提示「右侧栏不可用（原因）…」，产物库那一行会退回面板内预览，任务卡/抽屉只提示去产物页看或复制路径 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页与 `logs/` |

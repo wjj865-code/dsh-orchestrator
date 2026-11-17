@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.18.1（2026-11-17）
+
+这一版是**两处收尾的 patch**：会话头部底部那排 chip 在真实宿主里**根本不渲染**（判「最新一轮」时把
+`TurnLocation` 对象当数字比），以及主会话轮换的检查**每次打开都做一遍**（读台账 + `listSnapshots` +
+`stat` 会话日志）把打开拖慢——现在默认**一天最多查一次**。相对 0.18.0 没有工具入参、台账结构、既有状态机
+变化；轮换只新增 1 个配置键 `rotateCheckIntervalHours`（默认 24h）。
+
+### chip 渲染修复（fix(client)）
+
+- **根因**：turnTail 槽位的 `owner.turn` 是 `TurnLocation` 对象（`{turn,start,end,status,steps,data}`），
+  而 `snapshot.timeline.turnOrder` 是 `number[]`；旧实现直接 `order[last] === turn`，对象与数字恒不相等 →
+  `isLatestTurn` 在真实宿主里永远 `false`，底部 chip 永不渲染。单测只传裸数字，正好绕过了这个 bug。
+- **修法**：新增 `turnNumberOf`（`TurnLocation` 取 `.turn`，裸 number 保留兼容），`isLatestTurn` 改为字段比较；
+  非法入参、空时间线不误判。
+- **测试**：改用真实 `TurnLocation` + `ChatSnapshot` 形状，并加回归用例锁死「整对象比较」这一类错误；
+  `dist/` 重建（`pnpm run build` 产物随源码提交）。
+
+### 检查节流（feat(main-rotation)）
+
+- 打开主会话的判定前先看 `settings.main_rotation_checked_at`：距上次真正检查不足 `rotateCheckIntervalHours`
+  （默认 24，区间 1–168）就**整段跳过**——零采集、零判定，只留一条 `main.rotation.check.skipped` 日志；这次打开
+  的固定开销从「读台账 + `listSnapshots` + `stat` 会话日志」压成一次 settings 读。
+- `rotationCheckWindow()` 纯函数：首次检查 / 时钟回拨按「该检查」，到点用 `>=` 口径；间隔复用
+  `normalizeRotationConfig` 归一化（非法值回落 24、越界夹到 1–168）。
+- **只在「不需要换」时写检查时间戳**：`due = true` 不写（动作失败或进程崩了，下次打开还能重试），检查整体
+  异常也不写。
+- **三个时间参数分工别混**：`rotateCheckIntervalHours` 管「查不查」，`rotateCooldownHours`（48h）/
+  `rotateMinAgeHours`（12h）仍管「换不换」——冷却期内检查照做，只是不换。
+- `readRotationState` / `writeRotationState` 扩到五个键。
+
+### 文档
+
+- README 增「检查节流」小节（开关口径、三个时间参数分工、如何回到「每次打开都检查」、手动验证时先清
+  `main_rotation_checked_at`），配置表补 `rotateCheckIntervalHours` 一行、故障排查与「已知限制」同步口径。
+- ARCHITECTURE 补检查节流的执行顺序（节流 → 采集 → 判定 → 动作）、跳过日志字段与「只在 not-due 时写时间戳」
+  的理由；LIMITATIONS 写明「调低阈值后可能先被节流挡一次」。
+
+### 验证
+
+- `pnpm test`（`pretest` 自动构建）**901 passed / 0 failed**；`pnpm run check:client` exit 0；`pnpm run build`
+  通过；干净树里重跑 `pnpm run build` 后 `git status --short dist/` 为空（已入库产物与源码同源）。
+- `chip` 回归用例覆盖：真实 `TurnLocation` 形状、`turnOrder` 尾项比较、空/非法入参；`rotationCheckWindow`
+  覆盖：首次、未到点、到点边界、时钟回拨、间隔归一化，以及「due 不写时间戳」与「跳过零采集」。
+
 ## 0.18.0（2026-11-17）
 
 这一版给主会话加**轮换**：协调者跑久了（默认 10 天 / 120 个子任务 / 会话日志 6 MiB / 上下文 15 万 token /
