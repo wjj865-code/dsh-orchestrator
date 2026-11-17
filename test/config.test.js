@@ -241,9 +241,12 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   assert.match(source, /dsh-orchestrator-coordinator/)
   assert.match(source, /dsh-orchestrator-worker/)
   assert.match(source, /@wjj865-code\/dsh-orchestrator\/preset-tools/)
-  for (const tool of ['task_retry', 'task_inbox', 'history_search', 'project_context', 'memory_note']) {
+  for (const tool of ['task_retry', 'task_inbox', 'history_search', 'project_context', 'memory_note', 'read_workspace']) {
     assert.match(source, new RegExp(`- ${tool}`), `协调者 allow 名单应包含 ${tool}`)
   }
+  // 受控读只能走 read_workspace：原生 read/glob 不挂行、也不进 allow（它们没有读路径白名单）。
+  assert.doesNotMatch(source, /^\s+- read\s*$/m, '协调者 allow 不得包含原生 read')
+  assert.doesNotMatch(source, /^\s+- glob\s*$/m, '协调者 allow 不得包含原生 glob')
   assert.match(source, /'@deepseek-ai\/dsh-tool-present'/)
   assert.equal((source.match(/'@deepseek-ai\/dsh-tool-present'/g) ?? []).length, 2, '协调者与 worker 预设各挂一行 present')
   assert.doesNotMatch(source, /dsh-present/)

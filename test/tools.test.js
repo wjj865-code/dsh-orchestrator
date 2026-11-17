@@ -75,17 +75,17 @@ async function setup(options = {}) {
 // 主会话工具默认以主会话身份调用；task_report 归子会话，保持调用方身份。
 const MAIN_TOOLS = new Set([
   'task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_close', 'task_retry', 'task_inbox',
-  'history_search', 'project_context', 'memory_note',
+  'history_search', 'project_context', 'memory_note', 'read_workspace',
 ])
 const call = (tools, name, args, exec) => {
   const resolved = MAIN_TOOLS.has(name) ? { agent: { id: 's-1' }, ...(exec ?? {}) } : exec
   return tools[name].execute(args, resolved)
 }
 
-test('注册 14 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
+test('注册 15 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
   const { db, tools } = await setup()
   assert.deepEqual(Object.keys(tools).sort(),
-    ['history_search', 'memory_note', 'plan_save', 'project_context', 'task_close', 'task_create', 'task_detail', 'task_inbox', 'task_list',
+    ['history_search', 'memory_note', 'plan_save', 'project_context', 'read_workspace', 'task_close', 'task_create', 'task_detail', 'task_inbox', 'task_list',
       'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
   const walk = (value, path) => {
     if (value === null || typeof value !== 'object') return

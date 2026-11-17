@@ -53,7 +53,7 @@ https://github.com/wjj865-code/dsh-orchestrator
 ### 装好后的自检
 
 1. 插件页能看到「任务编排」标题、图标和详情页。
-2. 侧栏「主会话」能打开；插件全局共 14 个工具（协调者 11 个、子会话专属 3 个），此外协调者预设提供 `present`、提问及原生自动化四工具；默认 worker 不新增自动化。
+2. 侧栏「主会话」能打开；插件全局共 15 个工具（协调者 12 个、子会话专属 3 个），此外协调者预设提供 `present`、提问及原生自动化四工具；默认 worker 不新增自动化。
 3. 派一条任务，子会话 `task_report done` 后主会话收到「已交付待确认」通知；`task_close` 能确认成「已完成」。
 4. 会话头「任务」入口只在主会话显示，切到子会话后自动隐藏。
 
@@ -70,7 +70,7 @@ https://github.com/wjj865-code/dsh-orchestrator
 
 ### 1. 打开主会话
 
-侧栏「◈ 主会话」（或面板「打开主会话」）。协调者预设只做协调：没有 `read`/`write`/`bash`，也不会阻塞等待子任务。
+侧栏「◈ 主会话」（或面板「打开主会话」）。协调者预设只做协调：没有 `read`/`write`/`bash`，也不会阻塞等待子任务。要读子会话落在工作区的产物，用受控的 `read_workspace`（只能读主会话工作区内，越界被拒，见「读工作区产物（`read_workspace`）」）。
 
 首次新建主会话会自动开启介绍轮次：先介绍能做什么及权限边界，再立即派一个只读「工作区与仓库索引」子任务。只扫描 **DSH 已登记**的工作区（标题/路径及 git 根、当前分支、origin、HEAD、commonDir），不全盘搜 git、不 fetch/pull，不写文件；非仓库/不存在/无权限单项记录，remote 去凭证。结果通过 `task_report.workspace_index` 存入插件 settings 的独立采样快照，不覆盖手写记忆。后续 `project_context({workspaces:true})` 查看全部映射，指定项目也会附仓库快照；有歧义列候选、使用前核对实时状态。
 
@@ -190,10 +190,42 @@ task_create({
 
 ### 交付口径：`present`
 
-- 协调者不读写文件（`read`/`write`/`glob`/`grep`/`bash` 都被拒），交付只靠 `present`。
+- 协调者不写文件、不执行命令（`write`/`edit`/`bash`/`pwsh`/`glob`/`grep` 与原生 `read` 都被拒），交付靠 `present`，看产物正文靠受控的 `read_workspace`（只能读主会话工作区内）。
 - 默认用 `present` 展示 **1–4 个最关键的产物（最多 4 个）**：只列真实存在的普通文件、写绝对路径，不必等用户点名；没有产物就不提 `present`。
 - 存在性由插件与子任务负责（通知里的路径已 `lstat` 校验）；`present` 只声明交付、不读文件内容。
 - 子任务 `done` 时还会从 `workspaceChanges` 自动收集本轮改动文件，与显式 `artifacts` 按路径去重合并。
+
+### 读工作区产物（`read_workspace`）
+
+子会话的产物（报告、调研、评审、`diag/` 快照）常落在**主会话工作区**（`$DSH_HOME/state/orchestrator/workspace/`，如 `reports/`）。
+以前协调者要「看一眼产物」只能再派一个子任务或靠 `task_status include:'full'` 读最后一条返回消息；现在可以直接读：
+
+```js
+read_workspace({ path: 'reports/p10-coordinator-read-glob-eval.md' })   // 相对工作区
+read_workspace({ path: 'reports/review-ui-1794827205/' })               // 目录：只列条目，不递归
+read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续读行窗口
+```
+
+**为什么自建而不是开放原生 `read`/`glob`**：平台的文件工具没有读路径白名单——`dsh-fs-sandbox` 只给写操作加栅栏（`Reads pass through untouched: every mode permits reading.`），
+`LocalFileSystem` 的 `cwd` 只是相对路径基准、不是包含性边界（`a resolution default, NOT a containment boundary`），`glob` 直接 spawn ripgrep 用 `--no-ignore --hidden` 全树枚举。
+给协调者开原生 `read` 就等于给它一个**全盘可读**的宿主进程读者（`~/.dsh/.credentials.yaml` 也在射程内），且本机桥接了 IM 双向同步，读进上下文的内容可能随回复出站。
+
+**边界（`src/read-workspace.js`）**：
+
+| 闸 | 挡什么 |
+|---|---|
+| 形状 | 空路径、含 NUL、`~` 开头（不做家目录展开） |
+| 词法包含性 | `resolve()` 归一后 `relative()` 判定：`../` 穿越、工作区外的绝对路径 |
+| 真实路径包含性 | `realpathSync` 解析整条链后再判一次：**符号链接逃逸**（含中间目录是链接） |
+
+- 只读：没有写/删/改名参数，也不递归枚举（目录只列一层、最多 200 项）。
+- 体积：单文件超过 4 MB 直接拒绝（不整块读入），提示让子会话把摘要写进产物。
+- 截断：正文按行窗口返回（默认 400 行 / 上限 2000 行，且单次不超过 64 K 字符），截断时给 `nextOffset` 续读——截断不是失败。单行本身超 64 K 字符时只返回该行前 64 K 字符并标 `truncatedLine`，续读 `offset` 照给（指向下一行）。
+- 入参：`offset`/`limit` 收数字也收字符串（`offset: '401'` 等价于 `401`），非法值回落默认，不静默忽略。
+- 二进制只报类型不返回内容；越界/穿越/逃逸都会写 `workspace.read.rejected` 审计日志。
+- **不用于校验存在性**：存在性仍由插件与子任务保证，`present` 只列真实文件。
+
+> ⚠️ **IM 外发提示**：若本机开启了 IM 双向同步（如 `@xmanrui/dsh-im`），协调者读进上下文的正文可能随「最终助手文字」同步到外部渠道且不可撤回。涉密产物不要用 `read_workspace` 读进主会话。
 
 ### 计划任务：`planFirst` + `plan_save`
 
@@ -299,7 +331,7 @@ task_create({
 
 ### 主会话原生自动化
 
-协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 14 个工具。当前契约核实于 DSH **0.2.2-rc.3**，升级宿主需复核，不能据此保证未来版本兼容。
+协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 15 个工具。当前契约核实于 DSH **0.2.2-rc.3**，升级宿主需复核，不能据此保证未来版本兼容。
 
 | 原生工具 | 用法 |
 |---|---|
@@ -327,7 +359,7 @@ task_create({
 
 ## 工具清单
 
-协调者（11 个）：
+协调者（12 个）：
 
 | 工具 | 作用 |
 |---|---|
@@ -342,6 +374,7 @@ task_create({
 | `history_search` | 查插件记忆、历史任务、平台历史会话 |
 | `project_context` | 只读项目白名单文件、顶层结构、最近任务、相关记忆 |
 | `memory_note` | 记一条跨任务有效的决策/偏好/经验 |
+| `read_workspace` | 读**主会话工作区内**的文件/目录（子会话产物）；越界、`../` 穿越、符号链接逃逸被拒；大文件按行窗口截断给续读 `offset` |
 
 子任务（3 个）：
 
@@ -351,7 +384,7 @@ task_create({
 | `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物；越权会被拒 |
 | `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为产物（计划阶段唯一写入口） |
 
-- 14 个工具**全局注册**，worker 预设不做工具收窄，子会话直接继承。
+- 15 个工具**全局注册**，worker 预设不做工具收窄，子会话直接继承。
 - `task_close` / `task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调；`task_detail` / `task_report` / `plan_save` 只对任务自己的子会话开放（`plan_save` 还要求任务是计划任务）。
 - 派发给子会话的 **brief 是纯指引**（任务编号 + 「先调 `task_detail`」），目标全文、验收、经验、前置、产物都不内联进提示词。
 

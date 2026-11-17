@@ -102,10 +102,10 @@ test('keep-alive 提示不把 done 说成任务结束', () => {
   assertNoConflicts('keep-alive prompt', DEFAULT_KEEPALIVE_PROMPT)
 })
 
-test('README 与预设同口径：默认保持待确认、工具数 14、升级要重启', () => {
+test('README 与预设同口径：默认保持待确认、工具数 15、升级要重启', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
   assert.match(readme, /默认保持待确认/)
-  assert.match(readme, /14 个/)
+  assert.match(readme, /15 个/)
   assert.match(readme, /刷新页面不会换版本/)
   assert.doesNotMatch(readme, /默认立刻 `?task_close/)
   assert.doesNotMatch(readme, /13 个工具/)

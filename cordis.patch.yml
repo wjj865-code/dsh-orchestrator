@@ -68,6 +68,7 @@
                 - history_search
                 - project_context
                 - memory_note
+                - read_workspace
     - id: orchestrator-worker-preset
       name: '@deepseek-ai/dsh-agent-preset'
       config:

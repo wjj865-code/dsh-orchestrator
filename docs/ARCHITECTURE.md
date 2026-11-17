@@ -334,6 +334,21 @@
 - 当前回合的摘要要等 turn stopping 才追加，`index.js` 监听 `session/event` 的 `workspace/changes`，在摘要服务登记后（微任务）把新增路径补进已 done 的任务；没有 `workspaceChanges` 服务或会话已释放时自动收集为空，不影响显式产物。
 - 面板「产物」筛选调用 `artifacts` 端点并打开产物库：可按项目（目标目录末段）或日期分组，复制路径、文本预览（前 64 KiB）、打开子会话/详情；详情抽屉显示路径/标签/存在性。
 
+### 协调者读工作区产物（`read_workspace`）
+
+子会话产物落在**主会话工作区**（`$DSH_HOME/state/orchestrator/workspace`，如 `reports/`、`diag/`），协调者要看正文不必再派子任务。
+
+- **为什么不开放原生 `read`/`glob`**：平台读路径没有白名单——`dsh-fs-sandbox` 只给写操作加栅栏（`Reads pass through untouched: every mode permits reading.`），
+  `dsh-fs-local` 的 `cwd` 只是相对路径基准（`a resolution default, NOT a containment boundary`），`glob` 直接 spawn ripgrep 用 `--no-ignore --hidden` 全树枚举。
+  给协调者开原生 `read` = 给它全盘可读的宿主进程读者（含 `~/.dsh/.credentials.yaml`），叠加 IM 双向同步还会外发。所以自建一条只读工作区的入口。
+- **实现分层**：`src/read-workspace.js` 是纯函数 + 一次有界读（路径判定、行窗口切分、目录列条目、二进制识别、文案渲染）；
+  `src/tools.js` 的 `read_workspace` 只做 `requireMain` 身份校验、调用、审计日志（`workspace.read` / `workspace.read.rejected`）。
+- **三道闸**（`resolveWorkspaceTarget`）：① 形状（空 / NUL / `~` 拒绝，不做家目录展开）；② `realpathSync` 真实路径包含性（挡符号链接逃逸，含中间目录是链接；同时吃掉工作区根自身在符号链接下的差异，如 macOS `/var` → `/private/var`）；
+  ③ 真实路径解析失败时退回词法包含性，把「越界」与「不存在」分开报，不把安全边界说成普通错误。
+- **体积与截断**：单文件 > 4 MB 直接拒绝（不整块读入，提示让子会话写摘要）；正文按行窗口返回（默认 400 行 / 上限 2000 行，单次 ≤ 64 K 字符），
+  截断给 `nextOffset` 续读；单行本身超上限时截断该行并标 `truncatedLine`，`nextOffset` 仍指向**下一行**（截断的是这一行，不是读不下去；返回 null 会被误读成文件到头）。目录只列一层、最多 200 项，指向工作区外或断链的符号链接条目标 `readable:false`。
+- **不用于校验存在性**：存在性仍由插件与子任务保证，`present` 只列真实文件；`read_workspace` 是「看内容」的入口，不是 stat 替身。
+
 ## 只读子任务
 
 `readOnly:true`（只认显式 true）会在 `agent/created` 一到就给子会话 append `sandbox/mode {mode:'read-only'}`，激活后再幂等补一次；续派/重启会再补。只读任务不注册 target 可写根。`backend:'team'` 没有会话级只读通道，会返回可读错误。

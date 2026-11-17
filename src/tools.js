@@ -20,6 +20,7 @@ import {
 } from './ledger.js'
 import { collectWorkspaceArtifacts } from './artifact-collect.js'
 import { formatBytes, PREVIEW_CHARS, readLastMessage } from './last-message.js'
+import { DEFAULT_LINES, MAX_LINES, readWorkspaceFile, renderWorkspaceRead } from './read-workspace.js'
 import { artifactLines } from './notify.js'
 import { CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered, closeReasonLabel } from './delivered.js'
 import { toolFailure } from './action-errors.js'
@@ -1089,6 +1090,34 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       const ahead = Math.max(outcome.position - 1, 0)
       return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，前面还有 ${ahead} 个任务在排队。${notes}`
+    }),
+
+    // 受控读（协调者读工作区产物）：平台的文件工具没有读路径白名单（沙箱只管写、cwd 不是边界、
+    // glob 直接 ripgrep 全树枚举），所以不开放原生 read/glob，而是自建一条只能读**主会话工作区内**
+    // 的入口。路径校验（词法 + 真实路径两道包含性判定）全在 src/read-workspace.js。
+    wrap('read_workspace', '读主会话工作区内的文件或目录（子会话产物常落在 reports/ 等目录）：路径限制在工作区内，越界/符号链接逃逸/路径穿越一律拒绝；大文件按行窗口截断并给续读 offset。', objectSchema({
+      path: str('主会话工作区内的相对路径（如 reports/t-1a2b3c4d.md、diag/）或工作区内的绝对路径'),
+      offset: { type: 'number', description: '起始行号（1 起），默认 1' },
+      limit: { type: 'number', description: `最多返回多少行，默认 ${DEFAULT_LINES}，上限 ${MAX_LINES}` },
+    }), async (args, exec) => {
+      const denied = requireMain(exec)
+      if (denied !== undefined) return denied
+      const root = defaultDir()
+      if (root === undefined) return '读取失败：没有主会话工作区可用（主会话尚未打开），请先从面板「打开主会话」。'
+      const result = readWorkspaceFile({ root, path: args.path, offset: args.offset, limit: args.limit })
+      if (result.ok !== true) {
+        // 越界/穿越/符号链接逃逸都要留痕：这是安全边界上的拒绝，出问题要能查。
+        log('workspace.read.rejected', {
+          agentId: exec?.agent?.id,
+          detail: { path: typeof args.path === 'string' ? args.path.slice(0, 400) : null, error: result.error, callId: exec?.callId },
+        })
+        return `读取失败：${result.error}`
+      }
+      log('workspace.read', {
+        agentId: exec?.agent?.id,
+        detail: { path: result.path, kind: result.kind, bytes: result.size ?? null, callId: exec?.callId },
+      })
+      return renderWorkspaceRead(result)
     }),
 
     wrap('history_search', '查跨项目历史：本插件记忆、历史任务、平台历史会话。新任务开始前用它补上下文；结果只作参考，不作状态断言。', objectSchema({
