@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.19.1（2026-11-17）
+
+修一个视觉不统一的小问题：主会话会话头左上角的「任务」入口按钮原本带 1px 描边 + 不透明白底 +
+hover 悬浮阴影，而同一排的**协调者预设标签**和**子智能体计数**都是无描边、透明底的 chip，
+于是它一个人在同排里「凸」出来。
+
+相对 0.19.0 是 **patch**：只改一条 CSS 规则（加删一条 hover 规则），不动逻辑、结构、槽位注册与台账。
+
+### 任务入口去掉外边框（fix(ui)）
+
+- `.orch-btn--entry` 不再自己声明 `border-color` 与 `background`，改为沿用基类 `.orch-btn` 的
+  `border: 1px solid transparent` + `background: transparent`。保留 1px 透明描边是为了**不改盒模型**：
+  按钮高度仍是 26px，与宿主头部 28px 紧凑控件同基线（`<button>` 默认 `border-box`）。
+- 删掉 `.orch-btn--entry:hover`（原来换描边色 + 加 `--dsw-shadow-lv1`）。hover / active / disabled /
+  focus-visible 四态全部继承 `.orch-btn`：hover 只换 `--dsw-alias-interactive-bg-hover` 并转文字色，
+  active 再加 `scale(.985)`，disabled 降到 `opacity: .45`，focus-visible 走焦点环——都不出现描边或阴影。
+- 内边距 `0 10px` → `0 4px`：10px 是给描边按钮留的呼吸位，收窄后与相邻 chip 同级（协调者标签 0/2px、
+  子智能体计数 2/2px）。品牌色方块（`.orch-entry-mark`）与文字（`.orch-entry-label`）未动。
+- 新增一条测试守住「不画外框」：断言该规则块里没有 `border*` / `background*` / `box-shadow` 声明、
+  不再引用描边色 token、样式表里不存在 `.orch-btn--entry:hover`、内边距是 `0 4px`。反向验证过：
+  把描边加回去这条用例立刻失败。
+
 ## 0.19.0（2026-11-17）
 
 这一版给**协调者**加了一只受控的手：新增 `read_workspace`，主会话终于能直接「看一眼」子会话落在工作区的
