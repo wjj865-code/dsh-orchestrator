@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts, setTaskLastMessage } from '../src/ledger.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
   const dir = tempDir()
@@ -53,7 +53,7 @@ test('listTasks 活跃集合覆盖四种状态', async () => {
   transition(db, ids.waiting_auth, 'running')
   transition(db, ids.waiting_auth, 'waiting_auth')
   transition(db, ids.done, 'running')
-  transition(db, ids.done, 'done')
+  markDone(db, ids.done)
   transition(db, ids.cancelled, 'cancelled')
   assert.deepEqual(listTasks(db, { active: true }).map(t => t.title).sort(), ['pending', 'running', 'waiting_auth', 'waiting_user'])
   db.close()
@@ -92,7 +92,7 @@ test('非法状态迁移被拒绝且不落库', async () => {
   const db = await openLedger(tempDir())
   const task = createTask(db, { brief: sampleBrief(), coordinatorSession: 's-1' })
   transition(db, task.id, 'running')
-  transition(db, task.id, 'done')
+  markDone(db, task.id)
   const before = getTask(db, task.id)
   assert.throws(() => transition(db, task.id, 'running'), /不允许/)
   const after = getTask(db, task.id)
@@ -492,7 +492,7 @@ test('deleteTask：删任务行并级联 messages/notifications，返回删除�
   const db = await openLedger(tempDir())
   const task = createTask(db, { brief: sampleBrief({ title: '待删' }), coordinatorSession: 's-1' })
   transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
-  transition(db, task.id, 'done')
+  markDone(db, task.id)
   addMessage(db, task.id, { kind: 'brief', rendered: '简报' })
   addMessage(db, task.id, { kind: 'report', rendered: '结果' })
   addNotification(db, { taskId: task.id, level: 'info' })

@@ -128,6 +128,23 @@ test('原生自动化 policy 与文档锁住真实工具、授权及会话边界
   }
 })
 
+test('文档工具数一致：docs 与 README 都说 15 个（审计 §3.1/§3.2 的漏检）', () => {
+  // 0.19.x 的 copy-consistency 只断言 README 的「15 个」，不检查 docs/ARCHITECTURE.md 的「14」，
+  // 于是这条漂移长期没被发现。现在把 docs 也纳入同一断言。
+  const docs = ['README.md', 'docs/ARCHITECTURE.md', 'docs/DETAIL.md']
+    .map(file => [file, readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')])
+  for (const [file, text] of docs) {
+    // 任何「N 个工具」的说法都必须与实现一致（15 个全局工具：12 协调者 + 3 子会话专属）。
+    for (const match of text.matchAll(/(\d+)\s*个(?:全局)?工具/g)) {
+      assert.equal(match[1], '15', `${file} 的工具数写成 ${match[1]}，实现是 15 个`)
+    }
+    assert.doesNotMatch(text, /仍为\s*14|工具数\s*14/, `${file} 还写着 14 个工具`)
+  }
+  // DETAIL.md 的「常用工具」清单必须含 read_workspace（审计 §3.2）。
+  const detail = readFileSync(new URL('../docs/DETAIL.md', import.meta.url), 'utf8')
+  assert.match(detail, /常用工具[^\n]*read_workspace/)
+})
+
 test('README 只服务使用者：维护者内容放 docs/，仅留链接', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
   // 维护者章节（发布/CI/内部架构/开发命令）不该再回到 README。

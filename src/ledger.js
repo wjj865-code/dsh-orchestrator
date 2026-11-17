@@ -3,7 +3,10 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
-import { nextStatus } from './state.js'
+import { ACTIVE_STATUSES, nextStatus } from './state.js'
+import { statusesWith } from './status-facts.js'
+// 从叶子模块取（worktree-facts 不 import 任何东西）：避免 ledger → worktree-request → worktree → ledger 的环。
+import { nextWorktreeState } from './worktree-facts.js'
 import { migrateLegacyTaskDone } from './memory.js'
 
 const SCHEMA = `
@@ -237,9 +240,13 @@ export function findTaskBySession(db, sessionId, { status } = {}) {
   return taskOf(row)
 }
 
+// 活跃状态写进 SQL 时由常量生成，不再手抄字面量（0.19.x 这里有两处硬编码，新增状态必漏）。
+// 值是冻结常量（STATUS_CAPS 的 key 派生），不含用户输入，没有注入面。
+const ACTIVE_SQL = ACTIVE_STATUSES.map(status => `'${status}'`).join(',')
+
 export function listTasks(db, { active = false } = {}) {
   const sql = active
-    ? "SELECT * FROM tasks WHERE status IN ('waiting_dep','pending','running','waiting_user','waiting_auth','delivered') ORDER BY created_at DESC, rowid DESC"
+    ? `SELECT * FROM tasks WHERE status IN (${ACTIVE_SQL}) ORDER BY created_at DESC, rowid DESC`
     : 'SELECT * FROM tasks ORDER BY created_at DESC, rowid DESC'
   return db.prepare(sql).all().map(taskOf)
 }
@@ -247,7 +254,7 @@ export function listTasks(db, { active = false } = {}) {
 /** 终态历史：按创建时间倒序取最多 limit 条（面板快照用，避免把活跃任务挤掉）。 */
 export function listHistoryTasks(db, limit = 200) {
   return db.prepare(`SELECT * FROM tasks
-    WHERE status NOT IN ('waiting_dep','pending','running','waiting_user','waiting_auth','delivered')
+    WHERE status NOT IN (${ACTIVE_SQL})
     ORDER BY created_at DESC, rowid DESC LIMIT ?`)
     .all(Math.max(0, Math.floor(limit))).map(taskOf)
 }
@@ -282,7 +289,8 @@ export function briefText(db, id) {
   return row?.rendered
 }
 
-const TERMINAL_PLAN_STATUSES = new Set(['done', 'failed', 'cancelled', 'orphaned', 'delivered'])
+// 计划收口口径来自 status-facts 的 `planSettled` 能力（done/failed/cancelled/orphaned/delivered）。
+const TERMINAL_PLAN_STATUSES = new Set(statusesWith('planSettled'))
 
 /**
  * 计划任务进终态时收口 `plan_state`：还在「等批准」（planning）就结束的，按「未批准」记；
@@ -297,10 +305,35 @@ const nextPlanStateOnTransition = (task, to) => {
   return 'rejected'
 }
 
+// 状态迁移的审计观察者：`transition` 是**全部**状态变化的唯一入口（19 个调用点），
+// 在这里挂一次观察者就能覆盖全部迁移，不必让每个调用方自己记得写日志
+// （0.19.x 的 19 个调用点里只有 6 个有对应日志，审计 §4.5 把「状态为什么变」列为最大可观测性缺口）。
+// 用模块级 sink 而不是给 `transition` 加参数：调用签名不动，19 个调用点零改动。
+let transitionObserver = null
+
+/** 注册迁移观察者（index.js 启动时接 logger；测试不注册即静默）。返回解绑函数。 */
+export function setTransitionObserver(observer) {
+  transitionObserver = typeof observer === 'function' ? observer : null
+  return () => { if (transitionObserver === observer) transitionObserver = null }
+}
+
 export function transition(db, id, to, patch = {}) {
   const task = getTask(db, id)
   if (task === undefined) throw new Error(`任务不存在：${id}`)
   nextStatus(task.status, to)
+  // 观察者失败绝不能影响迁移本身（日志是旁路）。
+  if (transitionObserver !== null) {
+    try {
+      transitionObserver({
+        taskId: id,
+        from: task.status,
+        to,
+        sessionId: task.session_id ?? null,
+        reason: typeof patch.error === 'string' ? patch.error : null,
+        closeReason: patch.closeReason ?? null,
+      })
+    } catch { /* 日志旁路 */ }
+  }
   const now = Date.now()
   const sets = ['status = ?', 'updated_at = ?', 'last_event_at = ?', 'progress_count = 0', 'stall_notified_at = NULL']
   // K2：每次进入 running 都是新的一段 activation，keep-alive 预算重新开始
@@ -417,6 +450,13 @@ const WORKTREE_FIELDS = {
  * `targetDir` 一并可写：派发时 target_dir 换成「检出目录 + 原 target 偏移」。
  */
 export function setTaskWorktree(db, id, patch = {}) {
+  // 转移合法性校验（审计 §2.4）：0.19.x 这里可以写任意值，8 个状态没有任何守卫。
+  // 与 `tasks.status` 的 `transition` 同一种做法：非法转移抛错，而不是静默写进去。
+  // 只校验「状态」这一项；路径/分支/基线是快照字段，任何时候都可以补写。
+  if (Object.hasOwn(patch, 'state') && patch.state !== null && patch.state !== undefined) {
+    const current = getTask(db, id)
+    if (current !== undefined) nextWorktreeState(current.worktree_state ?? 'none', patch.state)
+  }
   const sets = []
   const values = []
   for (const [key, column] of Object.entries(WORKTREE_FIELDS)) {

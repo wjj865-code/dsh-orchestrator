@@ -14,17 +14,19 @@ import { objectiveForMessage } from './goal.js'
 import { approvePlan, approvalNote, isPlanTask, planStateOf } from './plan-mode.js'
 import { retryWorktreeOf } from './worktree.js'
 import {
-  ACTIVE_STATUSES, TERMINAL_STATUSES, canClose, canDelete, canFollowup, closeGate, deleteGate,
-  followupGate, stopIsIdempotent,
+  ACTIVE_STATUSES, RETRYABLE_STATUSES, TERMINAL_STATUSES, canClose, canDelete, canFollowup,
+  closeGate, deleteGate, followupGate, stopIsIdempotent,
 } from './panel-gates.js'
+import { statusesWith } from './status-facts.js'
 import { CLOSE_REASONS, closeDelivered, closeReasonLabel } from './delivered.js'
 
+// 状态集合一律从 status-facts 派生（唯一事实源）；本文件不再写本地 Set。
 const TERMINAL = new Set(TERMINAL_STATUSES)
 const ACTIVE = new Set(ACTIVE_STATUSES)
-const RETRYABLE = new Set(['failed', 'orphaned'])
-const WAITING = new Set(['waiting_user', 'waiting_auth'])
-// 可续派（追问）的状态：投递成功后从这些状态回到 running。
-const RESUMABLE = new Set(['waiting_user', 'waiting_auth', 'delivered'])
+const RETRYABLE = new Set(RETRYABLE_STATUSES)
+const WAITING = new Set(statusesWith('waiting'))
+// 可续派（追问）的状态：投递成功后从这些状态回到 running（running 上续派不改状态，所以不是它）。
+const RESUMABLE = new Set(statusesWith('resumable'))
 // message 幂等窗口：同任务、同文本、上一次已成功投递时，窗口内重复提交视为同一次操作。
 // 窗口故意取短（面板双击/重试），代价是「3 秒内故意发两条一模一样的消息」会被吞掉（见 docs/LIMITATIONS.md）。
 const MESSAGE_DEDUPE_MS = 3000
@@ -248,8 +250,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
     // 幂等：已收尾（done/failed/cancelled/orphaned）都按成功返回（already:true），
     // 面板显示「已是该状态」而不是报错。
-    // 判据是 `stopIsIdempotent`（已收尾），不是 `TERMINAL`（流程终态，不含 failed）：
-    // 用后者会让对失败任务点「停止」走 failed → cancelled，把「失败」抹成「已取消」（审计 §2.3.2 第 3 条）。
+    // 判据是 `releases` 能力，不是「流程终态」：0.19.x 用后者（不含 failed），于是对失败任务再点
+    // 「停止」会走 failed → cancelled，把「失败」抹成「已取消」（审计 §2.3.2 第 3 条，可触发）。
     if (stopIsIdempotent(task)) {
       return { ok: true, taskId: task.id, status: task.status, already: true }
     }

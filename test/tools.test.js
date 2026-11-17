@@ -3,10 +3,12 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import{ join } from 'node:path'
 import { openLedger, createTask, getTask, listTasks, recentMessages, transition, setTaskLastMessage } from '../src/ledger.js'
+import { loadPreferences } from '../src/preferences.js'
+import { GLOBAL_PROJECT, searchMemories, projectKeyOf } from '../src/memory.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import { captureLastMessage } from '../src/last-message.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity } = {}) {
   let counter = 0
@@ -199,7 +201,7 @@ test('排队：容量满时任务进队列不报错，结算后自动补位', as
 
   // A 完成释放并发槽位后，队列补位派发 B
   dispatcher.release()
-  transition(db, tasks.A.id, 'done')
+  markDone(db, tasks.A.id)
   await queue.pump()
   const resumed = getTask(db, tasks.B.id)
   assert.equal(resumed.status, 'running')
@@ -269,7 +271,7 @@ test('task_create：done 后同 title+goal 允许重新创建', async () => {
   const { db, dispatcher, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '再跑一遍' }))
   const task = listTasks(db)[0]
-  transition(db, task.id, 'done')
+  markDone(db, task.id)
   const text = await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '再跑一遍' }))
   assert.match(text, /已派发/)
   assert.equal(listTasks(db).length, 2)
@@ -583,7 +585,7 @@ test('task_message：终态任务拒绝续派', async () => {
   const { db, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   const task = listTasks(db)[0]
-  transition(db, task.id, 'done')
+  markDone(db, task.id)
   const text = await call(tools, 'task_message', { task_id: task.id, message: 'x' })
   assert.match(text, /已结束/)
   db.close()
@@ -1162,12 +1164,13 @@ test('task_retry 只接受 failed/orphaned；其他状态不新建', async () =>
 
 test('memory_note 写入并可按关键词检索；done 回报自动沉淀', async () => {
   const { db, tools } = await setup()
-  const noted = await call(tools, 'memory_note', { text: '用户偏好用 pnpm，不要 npm install', kind: 'preference' })
+  // 决策类进 memories（可检索）：这是 history_search / task_detail 的来源。
+  const noted = await call(tools, 'memory_note', { text: '用户偏好用 pnpm，不要 npm install', kind: 'decision' })
   assert.match(noted, /已记住/)
   const found = await call(tools, 'history_search', { query: 'pnpm' })
   assert.match(found, /用户偏好用 pnpm/)
   // 重复写入幂等
-  const again = await call(tools, 'memory_note', { text: '用户偏好用 pnpm，不要 npm install', kind: 'preference' })
+  const again = await call(tools, 'memory_note', { text: '用户偏好用 pnpm，不要 npm install', kind: 'decision' })
   assert.match(again, /已经记过/)
 
   await call(tools, 'task_create', sampleBrief({ title: '登录修复', goal: '修复登录' }))
@@ -1175,6 +1178,39 @@ test('memory_note 写入并可按关键词检索；done 回报自动沉淀', asy
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '改用 session cookie' }, { agent: { id: task.session_id } })
   const done = await call(tools, 'history_search', { query: 'session cookie' })
   assert.match(done, /登录修复/)
+})
+
+test('memory_note 全局偏好走 settings（不进 memories）：单一事实源，不双写', async () => {
+  const { db, tools } = await setup()
+  const noted = await call(tools, 'memory_note', { text: '派任务时优先用 worktree 隔离', kind: 'preference' })
+  // 返回文案必须说清「去了哪儿、会不会生效」，别让人以为记了就生效。
+  assert.match(noted, /已保存为协调者偏好/)
+  assert.match(noted, /每回合注入协调者提示词/)
+  assert.match(noted, /不进 memories/)
+  // settings 里有这条，memories 里没有（不双写）。
+  const items = loadPreferences(db)
+  assert.ok(items.some(item => item.rule.includes('worktree 隔离') && item.source === 'user'))
+  const hits = searchMemories(db, { projectKey: GLOBAL_PROJECT, query: 'worktree 隔离' })
+  assert.equal(hits.length, 0)
+  // 重复写入是幂等的（同 id 覆盖，不新增条目）。
+  const countBefore = loadPreferences(db).length
+  await call(tools, 'memory_note', { text: '派任务时优先用 worktree 隔离', kind: 'preference' })
+  assert.equal(loadPreferences(db).length, countBefore)
+  db.close()
+})
+
+test('memory_note 项目偏好仍走 memories（项目约定，随 task_detail 注入子会话）', async () => {
+  const { db, tools } = await setup()
+  const project = tempDir()
+  const noted = await call(tools, 'memory_note', { text: '本项目测试用 vitest 不用 jest', kind: 'preference', project })
+  assert.match(noted, /已保存为项目偏好/)
+  assert.match(noted, /不进协调者提示词/)
+  // 项目偏好不进 settings（不污染协调者提示词）。
+  assert.equal(loadPreferences(db).some(item => item.rule.includes('vitest')), false)
+  // 但 memories 里查得到（子会话按 task_detail 注入）。
+  const hits = searchMemories(db, { projectKey: projectKeyOf(project), query: 'vitest' })
+  assert.equal(hits.length, 1)
+  db.close()
 })
 
 // ---- T1 brief 纯指引化：详情全走 task_detail ----
@@ -1275,7 +1311,7 @@ test('history_search 合并 memories、历史任务与 sessionQuery 结果', asy
   const { db, tools } = await setup({ sessionQuery })
   const done = createTask(db, { brief: sampleBrief({ title: '登录旧任务', goal: '修登录' }), coordinatorSession: 's-1' })
   transition(db, done.id, 'running', { sessionId: 'c-1', target: 'c-1' })
-  transition(db, done.id, 'done')
+  markDone(db, done.id)
   await call(tools, 'memory_note', { text: '登录用 cookie' })
   const text = await call(tools, 'history_search', { query: '登录', limit: 5 })
   assert.match(text, /【记忆】/)
@@ -1411,7 +1447,7 @@ test('task_retry 保留依赖/分组/写域/优先级', async () => {
   const { db, tools } = await setup()
   const dep = createTask(db, { brief: sampleBrief({ title: '已完成前置' }), coordinatorSession: 's-1' })
   transition(db, dep.id, 'running', { sessionId: 'c-dep', target: 'c-dep' })
-  transition(db, dep.id, 'done')
+  markDone(db, dep.id)
   const old = createTask(db, {
     brief: sampleBrief({ title: '待重派' }), coordinatorSession: 's-1',
     dependsOn: [dep.id], groupId: 'G', writeScopes: ['src'], priority: 3, status: 'pending',

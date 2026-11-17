@@ -1,12 +1,14 @@
 // 工具层：只做参数校验、编排与可读文案；规则都在 brief / ledger / state / notify。
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { validateBrief, renderBriefForTask, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
 import { INDEX_TITLE, registeredWorkspaces, loadWorkspaceIndex, saveWorkspaceIndex, workspaceIndexText } from './workspace-index.js'
 import { fileURLToPath } from 'node:url'
 import { taskLabel, taskLabelWithId } from './task-label.js'
 import { canTransition, statusLabel } from './state.js'
+import { statusesWith } from './status-facts.js'
 import { dependencyState, promoteDependents, upstreamBrief, validateDepends } from './deps.js'
 import { renderTaskDetail } from './task-detail.js'
 import {
@@ -21,6 +23,8 @@ import {
 import { collectWorkspaceArtifacts } from './artifact-collect.js'
 import { formatBytes, PREVIEW_CHARS, readLastMessage } from './last-message.js'
 import { DEFAULT_LINES, MAX_LINES, readWorkspaceFile, renderWorkspaceRead } from './read-workspace.js'
+import { registeredArtifacts } from './artifact-location.js'
+import { preferenceSavedHint, projectPreferenceSavedHint, upsertPreference } from './preferences.js'
 import { artifactLines } from './notify.js'
 import { CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered, closeReasonLabel } from './delivered.js'
 import { toolFailure } from './action-errors.js'
@@ -46,12 +50,15 @@ const textOutput = {
 const REPORT_STATUS = ['progress', 'done', 'blocked', 'needs_auth']
 const MAX_ARTIFACTS = 20
 const MAX_ARTIFACT_LABEL = 160
-const ACTIVE_STATUS = new Set(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered'])
-const WAITING_STATUS = new Set(['waiting_user', 'waiting_auth'])
+// 状态集合一律从 status-facts 派生（唯一事实源）。这里的名字只是「本文件怎么问」，
+// 内容不再各写一份——0.19.x 的 `RESUME_STATUS` 就多写了一个永远进不去的 'failed'（死分支）。
+const ACTIVE_STATUS = new Set(statusesWith('active'))
+const WAITING_STATUS = new Set(statusesWith('waiting'))
 // 可续派（追问）的状态：必须有活着的子会话可投递。delivered 是「已交付待确认」的追问窗口。
-const RESUME_STATUS = new Set(['waiting_user', 'waiting_auth', 'failed', 'delivered'])
-const TERMINAL_STATUS = new Set(['done', 'cancelled', 'orphaned'])
-const RETRYABLE_STATUS = new Set(['failed', 'orphaned'])
+// 注意 `resumable` ≠ `followup`：running 上续派不改状态（否则会撞 `running → running`）。
+const RESUME_STATUS = new Set(statusesWith('resumable'))
+const TERMINAL_STATUS = new Set(statusesWith('terminal'))
+const RETRYABLE_STATUS = new Set(statusesWith('retryable'))
 
 const labelOf = statusLabel
 const short = (value, max = 40) => {
@@ -989,9 +996,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (unbound()) return UNBOUND_HINT
       const task = getTask(db, args.task_id ?? '')
       if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
-      // 「已收尾」判据与面板 stop 同源（stopIsIdempotent）：done/failed/cancelled/orphaned 都不该再迁一次。
-      // 0.19.x 这里用的是不含 failed 的「流程终态」，于是对失败任务执行停止会把它改成「已取消」，
-      // 抹掉失败信息（审计 §2.3.2 第 3 条）。
+      // 「已收尾」判据与面板 stop 同源（stopIsIdempotent = releases 能力）：done/failed/cancelled/orphaned
+      // 都不该再迁一次。0.19.x 这里用的是不含 failed 的「流程终态」，于是对失败任务执行停止会把它
+      // 改成「已取消」，抹掉失败信息（审计 §2.3.2 第 3 条）。
       if (stopIsIdempotent(task)) {
         return toolFailure('STOP_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
       }
@@ -1095,11 +1102,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，前面还有 ${ahead} 个任务在排队。${notes}`
     }),
 
-    // 受控读（协调者读工作区产物）：平台的文件工具没有读路径白名单（沙箱只管写、cwd 不是边界、
-    // glob 直接 ripgrep 全树枚举），所以不开放原生 read/glob，而是自建一条只能读**主会话工作区内**
-    // 的入口。路径校验（词法 + 真实路径两道包含性判定）全在 src/read-workspace.js。
-    wrap('read_workspace', '读主会话工作区内的文件或目录（子会话产物常落在 reports/ 等目录）：路径限制在工作区内，越界/符号链接逃逸/路径穿越一律拒绝；大文件按行窗口截断并给续读 offset。', objectSchema({
-      path: str('主会话工作区内的相对路径（如 reports/t-1a2b3c4d.md、diag/）或工作区内的绝对路径'),
+    // 受控读（协调者读产物）：平台的文件工具没有读路径白名单（沙箱只管写、cwd 不是边界、
+    // glob 直接 ripgrep 全树枚举），所以不开放原生 read/glob，而是自建一条边界由插件算的入口。
+    // 边界 = **主会话工作区包含性 OR 已登记产物**（审计 §2.1 方案 C）：子会话按契约把产物写在
+    // target 目录内，而 target 通常不在工作区里；把台账 artifacts 当第二判据，读取面仍然只有
+    // 「工作区 + 已登记集合」，不必为看一眼产物新派任务，也不把整个 target 仓库暴露出来。
+    wrap('read_workspace', '读产物正文：主会话工作区内的文件/目录，或任务回报过 artifacts 的已登记产物（子会话产物通常写在 target 目录内，不在工作区里）。越界、未登记、符号链接逃逸、路径穿越一律拒绝；大文件按行窗口截断并给续读 offset。', objectSchema({
+      path: str('主会话工作区内的相对路径（如 reports/t-1a2b3c4d.md、diag/）、工作区内的绝对路径，或已登记产物的绝对路径'),
       offset: { type: 'number', description: '起始行号（1 起），默认 1' },
       limit: { type: 'number', description: `最多返回多少行，默认 ${DEFAULT_LINES}，上限 ${MAX_LINES}` },
     }), async (args, exec) => {
@@ -1107,7 +1116,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (denied !== undefined) return denied
       const root = defaultDir()
       if (root === undefined) return '读取失败：没有主会话工作区可用（主会话尚未打开），请先从面板「打开主会话」。'
-      const result = readWorkspaceFile({ root, path: args.path, offset: args.offset, limit: args.limit })
+      // 已登记产物是第二个判据（与 present 同源）：一次性汇总台账里所有任务的 artifacts，
+      // 台账量级是几百行、产物上限 50/任务，开销可忽略（不做缓存，避免登记后读不到）。
+      const registered = registeredArtifacts(listTasks(db, { active: false }))
+      const result = readWorkspaceFile({ root, path: args.path, offset: args.offset, limit: args.limit, registered })
       if (result.ok !== true) {
         // 越界/穿越/符号链接逃逸都要留痕：这是安全边界上的拒绝，出问题要能查。
         log('workspace.read.rejected', {
@@ -1118,7 +1130,15 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       log('workspace.read', {
         agentId: exec?.agent?.id,
-        detail: { path: result.path, kind: result.kind, bytes: result.size ?? null, callId: exec?.callId },
+        detail: {
+          path: result.path,
+          kind: result.kind,
+          bytes: result.size ?? null,
+          // 凭什么可读：workspace（工作区包含性）/ registered（已登记产物）。排障时不用猜。
+          via: result.via ?? 'workspace',
+          artifactTaskId: result.artifact?.taskId ?? null,
+          callId: exec?.callId,
+        },
       })
       return renderWorkspaceRead(result)
     }),
@@ -1205,7 +1225,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return projectContextFor(dir, String(args.query ?? ''))
     }),
 
-    wrap('memory_note', '记住一条跨任务有效的决策/偏好/经验（写进 memories 事实层，供之后 history_search 与 brief 自动注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
+    // 记忆写入的**单一路由**（审计 §5.3 待定项 2 的「不双写」）：
+    //   全局偏好 → 只写 settings.orchestrator_preferences（每回合注入 L1 协调者 policy）；
+    //   项目偏好 / 其它 kind → 只写 memories（随 task_detail 注入子会话 / 供 history_search 检索）。
+    // 一条事实只落一处，不存在「两份真相」。
+    wrap('memory_note', '记住一条跨任务有效的决策/经验，或一条偏好。偏好（kind:preference）不传 project 时写进协调者偏好（每回合注入提示词，立即生效）；其余写进 memories 事实层（供 history_search 与 task_detail 注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
       text: str('要记住的内容，一两句话'),
       project: str('可选：项目绝对路径或工作区名；不传记为全局'),
       kind: { type: 'string', enum: ['note', 'decision', 'preference', 'lesson'], description: '类型，默认 note' },
@@ -1217,6 +1241,24 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (text === '') return '要记的内容不能为空。'
       const hint = resolveProjectHint(args.project)
       const kind = ['note', 'decision', 'preference', LESSON_KIND].includes(args.kind) ? args.kind : 'note'
+      // 全局偏好走 settings（协调者取向），不进 memories；项目偏好仍是项目约定，走 memories。
+      if (kind === 'preference' && hint.key === GLOBAL_PROJECT) {
+        const saved = upsertPreference(db, {
+          id: `p-${createHash('sha256').update(text).digest('hex').slice(0, 8)}`,
+          category: 'general',
+          rule: text,
+          scope: 'global',
+          appliesTo: 'coordinator',
+          priority: 50,
+          source: 'user',
+          addedAt: Date.now(),
+        })
+        log('memory.note', {
+          agentId: exec?.agent?.id,
+          detail: { projectKey: hint.key, kind, route: 'preferences', count: saved.length, callId: exec?.callId },
+        })
+        return preferenceSavedHint(hint.title)
+      }
       const saved = remember(db, {
         text,
         projectKey: hint.key,
@@ -1224,7 +1266,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         sourceSessionId: exec?.agent?.id,
       })
       if (saved === undefined) return '这条已经记过，未重复写入。'
-      log('memory.note', { agentId: exec?.agent?.id, detail: { projectKey: hint.key, kind, callId: exec?.callId } })
+      log('memory.note', {
+        agentId: exec?.agent?.id,
+        detail: { projectKey: hint.key, kind, route: 'memories', callId: exec?.callId },
+      })
+      if (kind === 'preference') return projectPreferenceSavedHint(hint.title)
       return `已记住（${hint.title ?? '全局'}）。`
     }),
 
@@ -1236,7 +1282,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const limit = Number.isFinite(args.limit) ? Math.min(20, Math.max(1, Math.floor(args.limit))) : 10
       const active = listTasks(db, { active: true })
       const waiting = active
-        .filter(task => task.status === 'waiting_user' || task.status === 'waiting_auth')
+        .filter(task => WAITING_STATUS.has(task.status))
         .slice(0, limit)
       // 两段式终态：已交付待确认的任务要协调者/用户拍板（确认或追问），单独一栏。
       const confirm = active

@@ -17,7 +17,7 @@ import {
   PLAN_STATE_LABEL, PLAN_FIRST_DETAIL, EXIT_PLAN_MODE_DENIAL, planListMarker, planStatusLine,
 } from '../src/plan-mode.js'
 import { keepAliveSkipReason } from '../src/keepalive.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
@@ -126,7 +126,7 @@ test('P8 台账：计划任务在「等批准」时进终态按 rejected 收口�
 
   const approved = planTaskRow(db)
   setPlanState(db, approved.id, 'approved')
-  transition(db, approved.id, 'done')
+  markDone(db, approved.id)
   assert.equal(getTask(db, approved.id).plan_state, 'approved')
 
   // 普通任务不受影响（即使 plan_state 被写成 planning 的脏数据，也不在终态改非计划任务之外的行为）。

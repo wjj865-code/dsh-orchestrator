@@ -7,25 +7,38 @@
 //   - host-route.js 把 canFollowup / canClose / canDelete 随 snapshot、detail 一起下发；
 //   - client.js 只读下发字段渲染按钮，不再自己抄一份状态表。
 //
-// 状态口径与台账一致（见 src/state.js 与 ledger.listTasks）：
-//   - 活跃 = waiting_dep / pending / running / waiting_user / waiting_auth / delivered
-//   - 终态 = done / cancelled / orphaned；failed 单独一类（可重派、可删，不再续派）
-import { ACTIVE_STATUSES as _ACTIVE } from './state.js'
+// 状态口径一律从 `src/status-facts.js` 派生（唯一事实源）：本模块不再自己写状态集合，
+// 否则「面板能不能点」与「工具接不接」会各自漂移（审计 §2.3 的三处真实不一致就出在这里）。
+// 导出名保持不变（面板快照/客户端/测试都按这些名字取），只是内容改成派生结果。
+import {
+  STATUSES, hasCap, sourcesOf, statusesWith,
+} from './status-facts.js'
 
 /** 台账里「活跃」任务的状态（不落终态、还在跑/排队/等人/待确认）。 */
-export const ACTIVE_STATUSES = Object.freeze([..._ACTIVE])
+export const ACTIVE_STATUSES = Object.freeze(statusesWith('active'))
 
-/** 流程终态：done / cancelled / orphaned（failed 不在内，它还能重派）。 */
-export const TERMINAL_STATUSES = Object.freeze(['done', 'cancelled', 'orphaned'])
+/**
+ * 流程终态：done / cancelled / orphaned。
+ *
+ * `failed` **刻意不在内**：它还能重派，用户视角不是「流程走完」。但它照样能删、要释放资源——
+ * 那是另外两个能力（`deletable` / `releases`），别再拿这份集合当「能不能删」的判据
+ * （0.19.x 的面板 stop 就这么错过一次，见下面 `stopIsIdempotent`）。
+ */
+export const TERMINAL_STATUSES = Object.freeze(statusesWith('terminal'))
 
 /** 支持续派（追加消息）的状态：必须有活着的子会话可投递；delivered 是「追问」窗口。 */
-export const FOLLOWUP_STATUSES = Object.freeze(['running', 'waiting_user', 'waiting_auth', 'delivered'])
+export const FOLLOWUP_STATUSES = Object.freeze(statusesWith('followup'))
 
 /** 支持确认交付（收成 done）的状态：只有「已交付待确认」。 */
+// 「能确认交付」= 只有 delivered（`terminal` 能力里唯一还没收尾的那个）。它是单元素集合，
+// 但从能力表反查会得到空集（delivered 不 terminal），所以这里显式写——语义上它是「流程约定」而非状态能力。
 export const CLOSABLE_STATUSES = Object.freeze(['delivered'])
 
-/** 支持删除的状态：所有终态（含 failed —— 失败任务用重派或删除收尾）。 */
-export const DELETABLE_STATUSES = Object.freeze(['done', 'failed', 'cancelled', 'orphaned'])
+/** 支持删除的状态：done / failed / cancelled / orphaned（失败任务用重派或删除收尾）。 */
+export const DELETABLE_STATUSES = Object.freeze(statusesWith('deletable'))
+
+/** 支持重派的状态：failed / orphaned。 */
+export const RETRYABLE_STATUSES = Object.freeze(statusesWith('retryable'))
 
 const ACTIVE = new Set(ACTIVE_STATUSES)
 const TERMINAL = new Set(TERMINAL_STATUSES)
@@ -51,8 +64,12 @@ export function followupGate(task) {
     if (hasTarget(task)) return { ok: false, reason: 'pending' }
     return { ok: false, reason: task?.queued_at === null || task?.queued_at === undefined ? 'no_session' : 'queued' }
   }
-  if (status === 'failed') return { ok: false, reason: 'failed' }
-  if (!FOLLOWUP.has(status)) return { ok: false, reason: 'not_followable' }
+  // failed / orphaned 等「不可续派」的收尾态：给专门的 reason，别落到泛化的 not_followable
+  // （0.19.x 这里有一行 `if (status === 'failed')` 分支，但它是**不可达**的——followup 能力表
+  // 本来就不含 failed。现在改成从能力表反查，分支与事实不可能再对不上）。
+  if (!FOLLOWUP.has(status)) {
+    return { ok: false, reason: status === 'failed' ? 'failed' : 'not_followable' }
+  }
   if (!hasTarget(task)) return { ok: false, reason: 'no_session' }
   return { ok: true, reason: null }
 }
@@ -91,21 +108,15 @@ export function deleteGate(task, { activeDependents = 0 } = {}) {
 export const canDelete = (task, context) => deleteGate(task, context).ok
 
 /**
- * 停止门控的**幂等**判定：这个状态已经「收尾」了，再点「停止」应当直接返回 `already:true`，
+ * 停止门控的**幂等**判定：这个状态已经「停掉了」，再点「停止」应当直接返回 `already:true`，
  * 而不是再迁一次状态。
  *
- * 修的是审计 §2.3.2 第 3 条（可触发的真实缺陷）：面板 stop 原先用 `TERMINAL_STATUSES`（不含 failed）
+ * 0.19.x 的缺陷（审计 §2.3.2 第 3 条，可触发）：面板 stop 用 `TERMINAL_STATUSES`（不含 failed）
  * 做这个判定，于是对**失败任务**再点「停止」会走 `failed → cancelled`（转移表允许），
- * 把「失败」抹成「已取消」——用户再也看不出它是失败。
- *
- * 判据是「已收尾」而不是「流程终态」：done / failed / cancelled / orphaned 都已经收尾（要释放可写根
- * 与平台 goal），而 failed 只是还能重派，并不等于「没结束」。这两件事在 0.20.0 会分别落到
- * `releases` 与 `terminal` 两个能力字段上；本版先就地修正判据，不引入状态事实源。
+ * 把「失败」抹成「已取消」——用户再也看不出它是失败。判据必须是「已收尾」（`releases` 能力），
+ * 而不是「流程终态」。
  */
-export const stopIsIdempotent = task => {
-  const status = statusOf(task)
-  return status === 'done' || status === 'failed' || status === 'cancelled' || status === 'orphaned'
-}
+export const stopIsIdempotent = task => hasCap(statusOf(task), 'releases')
 
 /**
  * 停止门控：正在跑/排队/等人都能停；已经收尾的状态按幂等成功处理。
@@ -117,3 +128,6 @@ export function stopGate(task) {
 }
 
 export const canStop = task => stopGate(task).ok
+
+/** 状态的全集与入边来源（面板「详情」与测试核对用，避免各自遍历本地表）。 */
+export { STATUSES, sourcesOf }

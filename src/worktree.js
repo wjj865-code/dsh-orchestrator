@@ -10,6 +10,7 @@ import { execFile } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { setTaskWorktree } from './ledger.js'
+import { WORKTREE_STATES, worktreeHasCap, worktreeStatesWith } from './worktree-facts.js'
 
 /** 单条 git 命令的超时（宿主侧，探测/建树都在派发前，不能拖住派发）。 */
 export const GIT_TIMEOUT_MS = 5000
@@ -359,15 +360,21 @@ export function createWorktreeService({ exec = runGit, now = Date.now, recentDay
 /** 默认（真实）服务：宿主 execFile。 */
 export const defaultWorktreeService = createWorktreeService()
 
-/** 台账里「要不要走派发前建树」的状态：只有 requested 需要真建；reused 只需换算 target。 */
-export const WORKTREE_DISPATCH_STATES = Object.freeze(['requested', 'reused'])
+/** 台账里「要不要走派发前准备」的状态：`requested`（真建检出）+ `reused`（只换算 target_dir）。
+ *  与 write-guard 的隔离判定同源（worktree-request.js 的 WORKTREE_STATE_CAPS）：
+ *  `needsCreate` 给出 requested，`reused` 单独加——它不需要建树，但需要把 cwd 换算进检出目录。
+ *  `created` 不在这里：派发期它已经是建好的状态，再走一遍会重复建树。 */
+export const WORKTREE_DISPATCH_STATES = Object.freeze([
+  ...worktreeStatesWith('needsCreate'),
+  ...WORKTREE_STATES.filter(state => state === 'reused'),
+])
 
 /**
  * 重派时的隔离快照（§4.7）：原台账有检出且目录还在 → 复用（不新建）；
  * 检出被清理/目录不见了 → 按原基线重建（派发时建）。普通任务返回 null（零变化）。
  */
 export function retryWorktreeOf(task) {
-  if (!['created', 'reused', 'cleaned', 'failed'].includes(task?.worktree_state)) return null
+  if (!worktreeHasCap(task?.worktree_state, 'retryable')) return null
   const checkout = trim(task.worktree_path)
   const root = trim(task.repo_root)
   if (checkout === '' && root === '') return null
@@ -458,7 +465,9 @@ export async function prepareTaskWorktree({ db, task, service, log = () => {} } 
 export async function cleanupTaskWorktree({ db, task, service, log = () => {} } = {}) {
   const mode = task?.brief?.worktreeCleanup
   if (mode !== 'checkout-only' && mode !== 'full') return { ok: true, skipped: true }
-  if (!['created', 'reused'].includes(task.worktree_state) || trim(task.worktree_path) === '') {
+  // 清理前置：只有「有检出」的状态才谈得上清（created/reused；cleaned 已经清过了，幂等跳过）。
+  if (!worktreeHasCap(task.worktree_state, 'hasCheckout') || task.worktree_state === 'cleaned'
+    || trim(task.worktree_path) === '') {
     return { ok: true, skipped: true }
   }
   let result

@@ -195,16 +195,26 @@ task_create({
 - 存在性由插件与子任务负责（通知里的路径已 `lstat` 校验）；`present` 只声明交付、不读文件内容。
 - 子任务 `done` 时还会从 `workspaceChanges` 自动收集本轮改动文件，与显式 `artifacts` 按路径去重合并。
 
-### 读工作区产物（`read_workspace`）
+### 读产物（`read_workspace`）
 
-子会话的产物（报告、调研、评审、`diag/` 快照）常落在**主会话工作区**（`$DSH_HOME/state/orchestrator/workspace/`，如 `reports/`）。
-以前协调者要「看一眼产物」只能再派一个子任务或靠 `task_status include:'full'` 读最后一条返回消息；现在可以直接读：
+以前协调者要「看一眼产物」只能再派一个子任务或靠 `task_status include:'full'` 读最后一条返回消息；现在可以直接读。
+边界是**两个判据的并集**：
+
+1. **主会话工作区包含性**：`$DSH_HOME/state/orchestrator/workspace/` 之下（`reports/`、`diag/`、`backups/` 等）；
+2. **已登记产物**：任务 `task_report` 回报过、或 `done` 时自动收集进台账（`tasks.artifacts_json`）的路径。
+   子会话按契约把产物写在 target 目录内（仓库、worktree 检出），这些路径**不在工作区里**，
+   但它们被登记过，所以协调者能直接读正文，不必再派任务。
 
 ```js
 read_workspace({ path: 'reports/p10-coordinator-read-glob-eval.md' })   // 相对工作区
 read_workspace({ path: 'reports/review-ui-1794827205/' })               // 目录：只列条目，不递归
+read_workspace({ path: '/repo/reports/preference-mechanism-plan.md' })  // 已登记产物（target 目录内）
 read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续读行窗口
 ```
+
+**为什么用「登记表」而不是放开 target 目录**：target 通常就是整个仓库根，放开它等于把未提交改动、`.env`、
+`secrets/` 全部暴露给协调者上下文（再叠加 IM 外发风险）。登记表把读取面收窄成「被任务显式/自动登记过的路径」，
+与面板预览、右侧栏的判据同源；未登记的同目录文件仍然被拒。
 
 **为什么自建而不是开放原生 `read`/`glob`**：平台的文件工具没有读路径白名单——`dsh-fs-sandbox` 只给写操作加栅栏（`Reads pass through untouched: every mode permits reading.`），
 `LocalFileSystem` 的 `cwd` 只是相对路径基准、不是包含性边界（`a resolution default, NOT a containment boundary`），`glob` 直接 spawn ripgrep 用 `--no-ignore --hidden` 全树枚举。
@@ -217,12 +227,14 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | 形状 | 空路径、含 NUL、`~` 开头（不做家目录展开） |
 | 词法包含性 | `resolve()` 归一后 `relative()` 判定：`../` 穿越、工作区外的绝对路径 |
 | 真实路径包含性 | `realpathSync` 解析整条链后再判一次：**符号链接逃逸**（含中间目录是链接） |
+| 已登记产物 | 上面两道都不放行时查台账登记表：命中（文件本身，或已登记目录的子树）才允许；登记表**不借符号链接**放行 |
 
 - 只读：没有写/删/改名参数，也不递归枚举（目录只列一层、最多 200 项）。
 - 体积：单文件超过 4 MB 直接拒绝（不整块读入），提示让子会话把摘要写进产物。
 - 截断：正文按行窗口返回（默认 400 行 / 上限 2000 行，且单次不超过 64 K 字符），截断时给 `nextOffset` 续读——截断不是失败。单行本身超 64 K 字符时只返回该行前 64 K 字符并标 `truncatedLine`，续读 `offset` 照给（指向下一行）。
 - 入参：`offset`/`limit` 收数字也收字符串（`offset: '401'` 等价于 `401`），非法值回落默认，不静默忽略。
-- 二进制只报类型不返回内容；越界/穿越/逃逸都会写 `workspace.read.rejected` 审计日志。
+- 二进制只报类型不返回内容；越界/穿越/逃逸/未登记都会写 `workspace.read.rejected` 审计日志；成功读取的日志带 `via: workspace|registered`。
+- 头行标明来源：`【工作区文件】` 还是 `【已登记产物文件】`（后者附「任务 t-xxxx 登记」），一眼看出这条路径凭什么可读。
 - **不用于校验存在性**：存在性仍由插件与子任务保证，`present` 只列真实文件。
 
 > ⚠️ **IM 外发提示**：若本机开启了 IM 双向同步（如 `@xmanrui/dsh-im`），协调者读进上下文的正文可能随「最终助手文字」同步到外部渠道且不可撤回。涉密产物不要用 `read_workspace` 读进主会话。
@@ -282,7 +294,14 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 - **日志层**：`done` 摘要写进 `task-log`（一行一条），**只归档、永不注入**任务详情。
 - **事实层**：摘要里带经验/教训标记的分句蒸馏成 `lesson`，加上 `decision` / `preference` / `note` 原子事实，才随 `task_create` 写进 `lessons/` 记忆文件、由 `task_detail` 给出路径；`memoryLimit` 控制注入条数（默认 3）。
-- **检索**：`history_search` 查插件记忆/历史任务/平台历史会话；`project_context` 读项目白名单文件、顶层结构、最近任务；`memory_note` 记一条跨任务有效的决策/偏好/经验。
+- **检索**：`history_search` 查插件记忆/历史任务/平台历史会话；`project_context` 读项目白名单文件、顶层结构、最近任务；`memory_note` 记一条跨任务有效的决策/经验。
+- **偏好是另一条路**（不进 `memories`）：`memory_note({ kind:'preference' })` **不传 `project`** 时写进协调者偏好
+  （`settings.orchestrator_preferences`），**每回合注入协调者提示词**，改完下一回合生效，不用重启。它不进
+  `memories`（`history_search` 查不到），避免同一件事存两份。带 `project` 的偏好仍是项目约定，写 `memories`、
+  随 `task_detail` 注入子会话。
+  - 出厂预制两条：跑包管理器/写 HOME 缓存 → 派任务传 `access:'full'`；worktree 任务验收含装依赖/构建 → 同样传 full。
+  - 预算：`preferencesMaxChars`（默认 1200）+ `preferencesMaxItems`（默认 12）；超限按优先级保留并在段尾写明「另有 N 条未展示」。
+  - `preferencesInject:false` 关掉整段。偏好只是提示词文本，**不能**用来放宽沙箱/审批/工具边界。
 
 ### 收件箱与日报
 
@@ -373,8 +392,8 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | `task_inbox` | 收件箱：待决、待确认、失败/丢失、长时间没动静 |
 | `history_search` | 查插件记忆、历史任务、平台历史会话 |
 | `project_context` | 只读项目白名单文件、顶层结构、最近任务、相关记忆 |
-| `memory_note` | 记一条跨任务有效的决策/偏好/经验 |
-| `read_workspace` | 读**主会话工作区内**的文件/目录（子会话产物）；越界、`../` 穿越、符号链接逃逸被拒；大文件按行窗口截断给续读 `offset` |
+| `memory_note` | 记一条跨任务有效的决策/经验；`kind:'preference'` 不传 `project` 时写进协调者偏好（立即生效） |
+| `read_workspace` | 读产物正文：**主会话工作区内**的文件/目录，或**任务已登记**的产物（子会话产物通常写在 target 目录内）；未登记/越界/`../` 穿越/符号链接逃逸被拒；大文件按行窗口截断给续读 `offset` |
 
 子任务（3 个）：
 
@@ -386,9 +405,11 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 - 15 个工具**全局注册**，worker 预设不做工具收窄，子会话直接继承。
 - `task_close` / `task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调；`task_detail` / `task_report` / `plan_save` 只对任务自己的子会话开放（`plan_save` 还要求任务是计划任务）。
-- 派发给子会话的 **brief 是纯指引**（任务编号 + 「先调 `task_detail`」+「执行中待确认用 blocked 上报」+「交付时给选项」），目标全文、验收、经验、前置、产物都不内联进提示词。
+- 派发给子会话的 **brief 是纯指引**（4 行：任务编号 +「先调 `task_detail`」+「执行中待确认用 blocked 上报」+「交付时怎么回报」；
+  `access:'full'` 与 worktree 隔离任务各多一行，所以是 4–6 行），目标全文、验收、经验、前置、产物都不内联进提示词。
   - **执行中**遇到要用户拍板的事：`task_report blocked` 上报「问题 + 选项建议」，协调者用 `ask_user_question` 问用户后 `task_message` 续派；不自行假设、不阻塞等待。
-  - **交付时**：待确认要点写进 `summary`（`done` 会清空 `question`/`options`，所以选项要在执行中就用 `blocked` 给出）。
+  - **交付时**：`summary` 写「结论 + 改了什么/改了哪些文件/怎么验证的 + 待确认要点」（`done` 会清空 `question`/`options`，
+    所以选项要在执行中就用 `blocked` 给出，交付时的选项由协调者自己组织）。
   - 子会话直接调 `ask_user_question` 会被平台以 `DELEGATED_CALLER` 拒绝，问用户始终由协调者带选项做。
   worktree 隔离任务额外多一行：检出目录没有依赖，可以执行安装命令（`pnpm install` / `npm install` / `uv sync` 等），**只安装不升级**。
 

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  BLOCKED_HINT, CONFIRM_HINT, DETAIL_POINTER_TEXT, WORKTREE_INSTALL_HINT,
+  BLOCKED_HINT, CONFIRM_HINT, DETAIL_POINTER_TEXT, SUMMARY_FIELDS, WORKTREE_INSTALL_HINT,
   renderBrief, renderBriefForTask, validateBrief, validateTargetDir,
 } from '../src/brief.js'
 
@@ -96,10 +96,12 @@ test('确认方式提示：交付时给结构化选项，不只在正文里问',
   const text = renderBrief({ taskId: 't-1' })
   assert.match(text, /【确认方式】/)
   assert.match(CONFIRM_HINT, /报 done/)
-  assert.match(CONFIRM_HINT, /不要只在正文里问/)
   // 交付阶段走 summary（done 会清空 question/options，这条是平台事实，必须写明）。
-  assert.match(CONFIRM_HINT, /待确认要点写进 summary/)
+  assert.match(CONFIRM_HINT, /待确认要点/)
+  assert.match(CONFIRM_HINT, /summary/)
   assert.match(CONFIRM_HINT, /done 会清空 question\/options/)
+  // 交付口径与 task_detail 的 FINISH_HINT 同源（审计 §5.1.2 矛盾 2）：都从 SUMMARY_FIELDS 拼出。
+  assert.ok(CONFIRM_HINT.includes(SUMMARY_FIELDS), 'brief 与 task_detail 的三问要素必须逐字一致')
   // 用户拍板要带选项：确认 / 要改？
   assert.match(CONFIRM_HINT, /确认 \/ 要改？/)
   // 措辞不能顺手放宽推送前双审查或人工确认门禁。

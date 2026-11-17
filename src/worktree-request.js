@@ -7,11 +7,14 @@
 // 本模块只放纯映射与文案，交给 tools.js（创建期）与 queue/worktree.js（派发期）共用，
 // 避免「工具层一套、派发层一套」两处口径（R11/R19 的来源）。
 import { branchNameLooksValid } from './worktree.js'
-
-/** 台账 / 工具返回里的隔离状态（`requested` 是派发前的待建状态）。 */
-export const WORKTREE_STATES = Object.freeze([
-  'none', 'requested', 'created', 'reused', 'degraded', 'rejected', 'failed', 'cleaned',
-])
+// 状态事实源在叶子模块（无依赖），这里 re-export 保持既有 import 路径可用。
+export {
+  WORKTREE_STATES, WORKTREE_STATE_CAPS, WORKTREE_CAP_KEYS, WORKTREE_TRANSITIONS,
+  canWorktreeTransition, nextWorktreeState, worktreeHasCap, worktreeStatesWith, worktreeStatesWithout,
+} from './worktree-facts.js'
+import {
+  WORKTREE_STATES, worktreeHasCap, worktreeStatesWith,
+} from './worktree-facts.js'
 
 /** 状态文案（面板 / task_status / 通知共用）。 */
 export const WORKTREE_STATE_LABEL = Object.freeze({
@@ -119,8 +122,8 @@ export const isWorktreeTask = task => WORKTREE_STATES.includes(task?.worktree_st
   && task.worktree_state !== 'none'
   && task.worktree_state !== 'rejected'
 
-/** 真的建了检出（有路径、能交付、能清理）的状态。 */
-export const hasCheckout = task => ['created', 'reused', 'cleaned'].includes(task?.worktree_state)
+/** 真的建了检出（有路径、能交付、能清理）的状态（`hasCheckout` 能力 + 路径非空）。 */
+export const hasCheckout = task => worktreeHasCap(task?.worktree_state, 'hasCheckout')
   && trim(task?.worktree_path) !== ''
 
 /** 默认分支名：协调者传了就用协调者的；没传用 `<prefix><taskId>`（默认值填充，不算插件判断）。 */
@@ -227,6 +230,7 @@ export function decideWorktreeFacts({ intent = {}, facts = {}, baseExists, recen
 /** 候选检出（同 group / 同 dependsOn 链上已建好且还在的）→ 给 `worktreeMode:'continue'` 复用。 */
 export function findReusableCheckout({ tasks = [], groupId = null, dependsOn = [] } = {}) {
   const deps = new Set(Array.isArray(dependsOn) ? dependsOn : [])
+  // 可复用的检出必须是「目录真的还在」的两种状态（cleaned 的目录已删，复用会拿到空目录）。
   const usable = (Array.isArray(tasks) ? tasks : []).filter(task => task?.worktree_path
     && ['created', 'reused'].includes(task.worktree_state))
   const sameGroup = groupId === null || groupId === undefined ? [] : usable.filter(task => task.group_id === groupId)
@@ -302,9 +306,10 @@ export function worktreeStatusLine(task = {}) {
   return `隔离：${WORKTREE_STATE_LABEL[state]}｜决定 ${sourceText}`
 }
 
-/** `task_list` 行尾标记：只有真的隔离了才加「·隔离」。 */
+/** `task_list` 行尾标记：只有真的隔离了才加「·隔离」（`showsBadge` 能力，排除已清理）。 */
 export function worktreeListMarker(task = {}) {
-  return ['created', 'reused'].includes(task.worktree_state) ? `·${WORKTREE_LIST_MARKER}` : ''
+  const state = task.worktree_state
+  return worktreeHasCap(state, 'showsBadge') && state !== 'cleaned' ? `·${WORKTREE_LIST_MARKER}` : ''
 }
 
 /** 通知条目里的 worktree 块（tools.task_report 与结算通知共用同一口径）。 */
@@ -334,6 +339,7 @@ export function worktreeNotifyLine(item = {}) {
 
 /** `task_detail` 给子会话的隔离说明（只需知道「在哪个目录、在哪个分支」，不要它碰分支）。 */
 export function worktreeDetailLines(task = {}) {
+  // 只有「检出真的可写」的两个状态给这段说明；cleaned 的目录已经没了，说了会误导。
   if (!['created', 'reused'].includes(task.worktree_state)) return []
   const path = trim(task.worktree_path)
   const branch = trim(task.worktree_branch)

@@ -10,7 +10,8 @@
 - **分组/写域/优先级**：`group` 归组看进度，`priority` 高优先级先派；`writeScopes` 与目标目录一起参与**同写域并发防护**（默认拒绝同目录/同写域的未隔离并发任务，可用 `allowConcurrent:true` 或配置 `sameDirGuard` 放宽）。
 - **跨项目记忆**：分层沉淀——done 摘要只进 `task-log` 日志层（不进任务详情），经验/决策/偏好蒸馏成原子事实才随 `task_detail` 注入；`history_search` 检索历史，`project_context` 读项目白名单背景。
 - **两段式交付**：子会话 `task_report done` 先落 `delivered`（已交付待确认），默认保持待确认，等用户确认（`task_close`）或用 `task_message` 追问（复用同一个子会话）；超过 `deliveredTimeoutMinutes`（默认 60 分钟）自动完成。`done` 是不可逆终态。
-- **brief 纯指引**：派发给子会话的 brief 只有任务编号 + 「先调 `task_detail` 读详情」+「执行中待确认用 blocked 上报」+「交付时给选项」，目标/验收/经验/前置任务/产物都由子会话按需现取。
+- **brief 纯指引**：派发给子会话的 brief 固定两行（任务编号 +「先调 `task_detail` 读详情」）+ 两行回报指引（「执行中待确认用 blocked 上报」「交付时怎么回报」），共 4 行；
+  访问级别（`access:'full'`）与 worktree 隔离任务各多一行（`【访问级别】` / `【worktree 依赖】`），所以实际是 4–6 行。目标/验收/经验/前置任务/产物都由子会话按需现取。
   执行中要用户拍板就 `task_report blocked` 上报「问题 + 选项建议」，协调者问用户后 `task_message` 续派；交付时要点写进 `summary`（`done` 会清空 `question`/`options`）。
   子会话调 `ask_user_question` 会被平台以 `DELEGATED_CALLER` 拒绝，问用户由协调者带选项做。
   worktree 隔离任务的 brief 多一行「检出目录没有依赖，可以装（只安装不升级）」；普通任务与降级任务没有这行。
@@ -21,7 +22,7 @@
 
 安装后从侧栏「插件」下方「◈ 主会话」进入协调者，直接描述需求；协调者会用 `task_create` 拆任务，子任务回报后主动通知。子会话报 `done` 只是交付，任务停在「已交付待确认」，等确认或追问。
 
-常用工具：`task_create`、`task_inbox`、`task_list`、`task_status`、`task_message`、`task_close`、`task_stop`、`task_retry`、`history_search`、`project_context`、`memory_note`。
+常用工具：`task_create`、`task_inbox`、`task_list`、`task_status`、`task_message`、`task_close`、`task_stop`、`task_retry`、`history_search`、`project_context`、`memory_note`、`read_workspace`。
 
 ## 面板动作与错误码
 

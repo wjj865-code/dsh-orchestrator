@@ -1,9 +1,20 @@
-// 任务状态机。只有子会话的回报（或结算）能推进 running 之后的状态；
-// 协调者只能创建、续派、确认交付（task_close）、停止、重派。
-export const STATUSES = ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered', 'done', 'failed', 'cancelled', 'orphaned']
+// 任务状态机（对外门面）：文案表 + 转移判定。
+//
+// 状态的**事实**（全集、能力表、转移表）在 `src/status-facts.js`——那是唯一判定点，
+// 本模块只做两件事：① 保留对外文案（`STATUS_LABEL` / `statusLabel`，工具层与面板共用一套）；
+// ② 把 `canTransition` / `nextStatus` 原样转发给老调用点（`ledger.transition` 依赖它们抛错）。
+//
+// 为什么不把文案也搬进 status-facts：文案是**展示层**（中文措辞会变），能力是**语义层**（不该变）；
+// 混在一起会让「改一句文案」看起来像「改了一次状态语义」。
+//
+// 只有子会话的回报（或结算）能推进 running 之后的状态；协调者只能创建、续派、确认交付（task_close）、
+// 停止、重派。
+import { STATUSES, canTransition, nextStatus, statusesWith } from './status-facts.js'
 
-/** 活跃状态（还没落终态）：台账 listTasks(active)、面板闸门、看门狗共用同一口径。 */
-export const ACTIVE_STATUSES = ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered']
+export { STATUSES, canTransition, nextStatus }
+
+/** 活跃状态（还没落终态）：台账 listTasks(active)、面板闸门、看门狗共用同一口径（派生自 STATUS_CAPS）。 */
+export const ACTIVE_STATUSES = Object.freeze(statusesWith('active'))
 
 // 对外状态文案：工具层、面板动作、卡片共用一套（客户端 client.js 因浏览器环境单独保留同值副本）。
 export const STATUS_LABEL = {
@@ -12,29 +23,3 @@ export const STATUS_LABEL = {
 }
 
 export const statusLabel = status => STATUS_LABEL[status] ?? status
-
-// delivered = 已交付待确认：子会话报 done / 结算 completed 后进入，等协调者 task_close 确认（或超时自动 done）。
-// 它是唯一允许「追问复用原会话」的收尾态；done 仍是不可逆终态。
-const TRANSITIONS = {
-  waiting_dep: ['pending', 'failed', 'cancelled'],
-  pending: ['running', 'failed', 'cancelled'],
-  running: ['waiting_user', 'waiting_auth', 'delivered', 'done', 'failed', 'cancelled', 'orphaned'],
-  waiting_user: ['running', 'cancelled', 'failed', 'orphaned'],
-  waiting_auth: ['running', 'cancelled', 'failed', 'orphaned'],
-  // delivered → done：协调者确认或超时；delivered → running：task_message 追问；其余是停止/会话丢失。
-  delivered: ['running', 'done', 'cancelled', 'orphaned'],
-  failed: ['running', 'cancelled'],
-  done: [],
-  cancelled: [],
-  orphaned: ['pending', 'cancelled'],
-}
-
-export function canTransition(from, to) {
-  if (!STATUSES.includes(from) || !STATUSES.includes(to)) return false
-  return TRANSITIONS[from].includes(to)
-}
-
-export function nextStatus(from, to) {
-  if (!canTransition(from, to)) throw new Error(`不允许的状态迁移：${from} → ${to}`)
-  return to
-}

@@ -23,11 +23,131 @@
 
 ### 测试
 
-新增 3 条用例（总数 941 → 944，全绿）：
+新增 3 条用例（总数 941 → 944，全绿）：`stopIsIdempotent` 判据单测、面板 `stop` 端到端、工具 `task_stop` 端到端。
 
-- `test/status-facts.test.js` 的前身断言暂时放在 `test/panel-gates.test.js`：`stopIsIdempotent` 对
-  `failed`/`orphaned`/`done`/`cancelled` 为 true，对 `running`/`delivered` 为 false。
-- 端到端：面板 `stop` 与工具 `task_stop` 对失败任务各一条，断言返回 `already:true`/「已结束」且台账 `status` 仍是 `failed`。
+## 0.20.0（2026-11-17）
+
+这一版是一次**结构性收敛**，不是新功能：把三件「同一事实在多处判定」的东西各自收成一个唯一事实源——
+产物位置（`artifact-location`）、状态判定（`status-facts`）、提示词分层（`prompt-layers`）。
+起因是一份全量设计审计（`reports/design-audit/dsh-orchestrator-design-audit.md`）：15 个工具、940 条测试、
+零运行时依赖的实现质量高于它的**文本层**，5 天 30 个版本的节奏让「同一句口径写五遍」累积成
+**能力失效**——`read_workspace` 上线首日就只覆盖 21.3% 的真实产物。
+
+相对 **0.19.2** 是 **minor**：`read_workspace` 的读取面放宽（能力变化）、偏好机制新增配置键、onboarding 文案瘦身；
+台账结构、工具入参、沙箱默认值、状态机语义（只删了三条从未可达的边）都没变。
+
+> 本版**不含** 0.19.2 的停止缺陷修复之外的任何行为修正；那一项已在 0.19.2 单独发布（patch）。
+> 本版把 `stopIsIdempotent` 的判据从手写四态改成 `status-facts` 的 `releases` 能力，行为不变。
+
+### 产物位置：已登记产物成为唯一合法性判据（feat(artifact)）
+
+**问题**：`read_workspace` 的边界是「主会话工作区包含性」，而子会话按契约把产物写在 **target 目录**内
+（`WRITE_HINT`：所有产出只写到该目录内）。两条规则各自自洽，拼在一起才断裂——真实台账 89 条产物里
+**78.7% 落在 `read_workspace` 读不到的地方**，能力上线首日即失效。同时工具描述写着「子会话产物常落在
+reports/ 等目录」，模型据此反复撞墙。
+
+**修法**：把台账里**已经存在**的 `tasks.artifacts_json` 提升为产物唯一合法性判据（审计方案 C），四条读取路径
+（`read_workspace` / 面板 `preview` / 右侧栏 / `present`）从此同源：
+
+- 新增 `src/artifact-location.js`：`registeredArtifacts(tasks)` 构造登记表、`registeredMatch(realPath, registered)`
+  判定命中、`deliverableOf(path)` 统一「能不能交付」的类型判定（`notify.js` 的 `classifyPath` 改为引用它）。
+- `src/read-workspace.js`：`resolveWorkspaceTarget` 增加第二个判据——工作区包含性 **OR** 已登记产物；
+  已登记的**目录**放开子树（产物允许是目录），已登记的**文件**只放开它自己。
+- 两条安全边界（都有测试）：① 登记表**不扩大**读取面，未登记的同目录文件仍被拒；② 登记表**不借符号链接**
+  放行——登记一个指向 `~/.ssh` 的链接不等于登记了任意文件。
+- 工具描述与拒绝文案改口径：说清「工作区 **或** 已登记产物」，拒绝时区分「越界（未登记）」与「不存在」。
+- 读取结果头行标明来源：`【工作区文件】` / `【已登记产物文件】（任务 t-xxxx 登记）`；审计日志加 `via` 与
+  `artifactTaskId` 字段。
+- **存量兼容**：不需要迁移任何数据、不需要改 `WRITE_HINT`。用宿主真实台账验证：91 条仍存在的产物
+  **91/91 全部可读**（19 条工作区内 + 72 条登记产物），此前只有 19 条可读。
+
+### 状态判定：单一 caps 表（refactor(status)）
+
+**问题**：`state.js` 有唯一转移表，但**状态集合**被复制到 9 个模块，已产生三处真实不一致：
+
+1. `tools.js` 的 `RESUME_STATUS` 含 `failed`，面板层不含——但 `followupGate` 一直拒绝 failed，工具层那个 `failed`
+   是**死分支**，表达的是错误意图；
+2. 「流程终态」（无 `failed`）与「要释放资源的终态」（有 `failed`）名字几乎一样、语义不同；
+3. 面板 stop 用「不含 failed 的终态」做幂等判定 → 对**失败任务**点「停止」会走 `failed → cancelled`，
+   把「失败」抹成「已取消」（**已在 0.19.2 修复**；本版把判据改由 `releases` 能力表达，行为不变）。
+
+**修法**：新增 `src/status-facts.js`，一张 `STATUS_CAPS` 表回答 13 个具体问题（`active` / `followup` / `resumable` /
+`deletable` / `terminal` / `releases` / `retryable` / `waiting` / `rotationActive` / `liveness` / `catalog` /
+`watchdog` / `planSettled`），其余模块全部派生：
+
+- 删掉 13 处本地状态 Set（`tools` / `panel-gates` / `panel-actions` / `settlement` / `reconcile` / `watchdog` /
+  `main-rotation` / `host-route` 内联三态 / `ledger` 的两处 SQL 字面量）。
+- `ledger.js` 的活跃状态 SQL 由 `ACTIVE_STATUSES` 生成，不再手抄字面量。
+- **三条不可达边已删**：`running → done`、`failed → running`、`orphaned → pending`（自加入起无调用点）。
+  `test/state.test.js` 的 10×10 矩阵曾把它们写成 `allowed`——**测试在保护死代码**；矩阵现在从 `TRANSITIONS` 派生，
+  另有正向用例断言这三条必须被拒。
+- **修掉三处不一致**：`resumable` 与 `followup` 分开（`running` 能续派但续派不改状态）；`terminal` 与 `releases`
+  分开（`failed` 只属后者）；面板与工具的 stop 幂等判定统一用 `stopIsIdempotent`（`releases` 能力）——
+  0.19.2 已就地修过这个缺陷，本版只是把判据换成能力表表达，行为不变（有回归用例）。
+- **迁移有审计日志了**：`transition` 是全部状态变化的唯一入口，`index.js` 通过 `setTransitionObserver` 挂一次
+  `task.transition` 日志（19 个调用点里此前只有 6 个有日志）。
+
+### worktree 状态：caps 表 + 转移校验（refactor(worktree)）
+
+- 新增 `src/worktree-facts.js`（叶子模块，不 import 任何东西——`worktree.js` 与 `worktree-request.js` 本来就互相
+  引用，表放在其中一边会撞 TDZ）：`WORKTREE_STATE_CAPS`（`occupiesTarget` / `needsCreate` / `hasCheckout` /
+  `showsBadge` / `retryable` / `notifyIsolated`）+ `WORKTREE_TRANSITIONS` + `canWorktreeTransition`。
+- 7 份独立列表改为查表，派生结果与原先**逐一等价**（有测试锁定）。
+- `setTaskWorktree` 现在校验转移（非法抛错，同 `tasks.status` 的做法）；同状态重复写入幂等。
+- 这修的是同类 bug 第二次发生的结构原因：0.17.0 的 P1「`requested` 被误当占用目录」就是 7 份列表漂移的产物。
+
+### 提示词分层：五层职责边界（refactor(prompt)）
+
+**问题**：同一批口径写在 5 个地方（policy 3403 字 / brief / task_detail / onboarding 708 字 / 通知 hint），
+**L1 与 L4 重叠 6 条**、**L1 与通知重叠 3 条**，还有 3 处措辞互相打架。
+
+- 新增 `src/prompt-layers.js`：`PROMPT_LAYERS` 表定义五层的**独占职责**与 `forbids`，`layerViolations(id, text)`
+  是机器可读的归层探针（测试用它防止「删掉的重叠又抄回来」）。
+- **L4 onboarding 瘦身 708 → 525 字**：删掉 6 条与 L1 重复的能力边界（只协调不写文件 / 原生 read-glob 被拒 /
+  read_workspace 边界 / 默认 worker 无自动化 / full 只改单任务沙箱）。理由：L1 每回合都在且不会被 compaction 吃掉；
+  onboarding 是一次性 user message，轮换时还会被直接标 `sent` 跳过。
+- **三处矛盾已修**：① 文档不再教「交付时选项进 `question+options`」（实现明确不支持，`done` 会清空）；
+  ② brief 的 `CONFIRM_HINT` 与 task_detail 的 `FINISH_HINT` 统一成「summary = 结论 + 改了什么/改了哪些文件/
+  怎么验证的 + 待确认要点」，同源 `SUMMARY_FIELDS`；③ `DETAIL.md` 的 brief 行数改为「4 行基准 → 4–6 行」。
+- 跨层共享口径只留一份常量：`PRESENT_LIMIT_TEXT`（1-4 个）、`DELIVERY_NOT_FINAL`（done 不是终态）。
+
+### 偏好机制：L1 policy 第 4 段（feat(preferences)）
+
+- 新增 `src/preferences.js`：出厂种子 2 条（`cli-access-full` / `worktree-build-access-full`）、
+  `normalizePreferences`（坏数据逐条丢弃不抛）、`loadPreferences` / `savePreferences` / `upsertPreference` /
+  `setPreferenceEnabled` / `renderPreferenceBlock`。
+- 存 `settings.orchestrator_preferences` 单键 JSON（与 `workspace_repo_index` 同一种存法），**不需要** `ALTER TABLE`。
+- 注入点是 L1 的 `systemPrompt.context().text` 回调——**每回合重渲染**，改完下一回合生效，不用重启；
+  放在 policy **末尾**（阅读顺序即优先级顺序），可单独开关（`preferencesInject`）。
+- 预算：`preferencesMaxChars`（默认 1200，区间 200–4000）为主约束、`preferencesMaxItems`（默认 12，区间 1–20）
+  为安全阀；超限按 priority 降序保留**完整条目**，段尾写明「另有 N 条未展示」——**不静默丢弃**。
+- **不双写**（审计 §5.3 待定项 2 的结论）：全局偏好只写 settings，`history_search` 查不到；项目偏好只写 memories，
+  随 `task_detail` 注入子会话。`memory_note` 的返回文案会明确告知这条偏好去了哪儿、会不会生效。
+- **偏好不是权限通道**：只是提示词文本，不进 config、不改 dispatch、不碰 `sandboxPolicy`；内置种子里不放任何
+  「放宽安全边界」的条目（测试有正向断言）。v1 不带 `scripts/preferences.mjs`（避免第二套写入路径）。
+
+### 文档漂移修正
+
+- `docs/ARCHITECTURE.md`：全局工具数 14 → 15（含 `read_workspace`）；新增「状态事实源」「worktree 状态事实源」
+  「提示词分层」三节；`read_workspace` 一节改为「两个判据的并集」。
+- `docs/DETAIL.md`：常用工具补 `read_workspace`；brief 行数与实现对齐（4–6 行）。
+- `docs/LIMITATIONS.md`：删掉「选项进 question+options」（教用户用不存在的能力），改为如实说明 `done` 不支持；
+  新增「状态与提示词的单一事实源」一节。
+- `README.md`：`read_workspace` 边界、brief 行数、交付 summary 口径、偏好机制各节与实现对齐。
+
+### 测试
+
+新增 4 个测试文件、53 条用例（总数 944 → 997，全绿）：
+
+- `test/artifact-location.test.js`（13 条）：已登记产物可读 / 未登记仍拒 / 符号链接不放行 / 目录子树 /
+  工作区优先 / 存量台账抽样（真实台账 91 条全部可读）。
+- `test/status-facts.test.js`（11 条）：caps 表完整性、三处不一致的回归、静态断言「`src/` 里不再有本地状态集合」。
+- `test/prompt-layers.test.js`（12 条）：五层归层探针、onboarding 瘦身、三处矛盾回归、跨层常量同源。
+- `test/preferences.test.js`（13 条）：归一化、预算截断、不双写路由、出厂种子约束、配置夹取。
+
+`test/state.test.js` 的矩阵改为从 `TRANSITIONS` 派生并新增「三条死边必须被拒」；
+19 处 `transition(db, id, 'done')` 测试夹具改为 `markDone(db, id)` 走合法的
+`… → delivered → done` 路径（这正是「测试锁死死代码」的清理）。
 
 ## 0.19.1（2026-11-17）
 

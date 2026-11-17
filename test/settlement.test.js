@@ -6,7 +6,7 @@ import { openLedger, createTask, getTask, transition, addMessage, recentMessages
 import { createSettlementReporter, mapSettle, outputSummary, PAUSED_REASON } from '../src/settlement.js'
 import { MAX_INLINE_BYTES, SUMMARY_CHARS } from '../src/last-message.js'
 import { saveWorkspaceIndex } from '../src/workspace-index.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const setup = async ({ status = 'running', sessionId = 'child-1', progress = 0, beforeNotify, terminal } = {}) => {
   const dir = tempDir()
@@ -444,7 +444,7 @@ test('B1：空输出不覆盖已有返回消息（不回写空记录）', async 
 test('B1 时序修复：done 之后到达的 settlement 只补写最后消息，不改状态/不通知/不写 settle 行', async () => {
   const f = await setup()
   // 模拟 task_report done 已经在回合中途把任务推到终态
-  transition(f.db, f.task.id, 'done')
+  markDone(f.db, f.task.id)
   const outcome = f.reporter.report({
     taskId: f.task.id,
     sessionId: 'child-1',
@@ -478,7 +478,7 @@ test('B1 时序修复：done 之后到达的 settlement 只补写最后消息，
 
 test('B1 时序修复：终态上收到空输出不写、不报 captured（维持跳过）', async () => {
   const f = await setup()
-  transition(f.db, f.task.id, 'done')
+  markDone(f.db, f.task.id)
   const outcome = f.reporter.report({ taskId: f.task.id, stopReason: 'completed' })
   assert.equal(outcome.action, 'skipped')
   assert.equal(outcome.reason, 'not-running')

@@ -8,9 +8,10 @@
 //     去重表只在内存：插件重启后允许对同一任务再报一次（重启本身值得重新提醒）。
 //   - 关闭：idleWatchdog:false 时不装定时器、scan 直接返回 skipped:'disabled'。
 import { listTasks } from './ledger.js'
+import { statusesWith } from './status-facts.js'
 
-// 只看 running：waiting_user / waiting_auth 是故意停下的，终态不在巡检范围。
-export const WATCHDOG_STATUSES = new Set(['running'])
+// 只看 running（`watchdog` 能力）：waiting_user / waiting_auth 是故意停下的，终态不在巡检范围。
+export const WATCHDOG_STATUSES = new Set(statusesWith('watchdog'))
 // 默认 5 分钟巡检一次、running 空闲 15 分钟才告警（两个值都可由配置覆盖）。
 export const DEFAULT_WATCHDOG_INTERVAL_MINUTES = 5
 export const DEFAULT_WATCHDOG_IDLE_MINUTES = 15

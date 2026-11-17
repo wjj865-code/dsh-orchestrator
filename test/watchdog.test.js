@@ -5,7 +5,7 @@ import {
   findIdleTasks, lastActivityAt, idleSummary, createIdleWatchdog,
   DEFAULT_WATCHDOG_INTERVAL_MINUTES, DEFAULT_WATCHDOG_IDLE_MINUTES,
 } from '../src/watchdog.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const MIN = 60_000
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -16,7 +16,9 @@ async function setup() {
     const task = createTask(db, { brief: sampleBrief({ title }), coordinatorSession: 's-1' })
     const session = sessionId ?? `c-${task.id}`
     if (status !== 'pending') transition(db, task.id, 'running', { sessionId: session, target: session })
-    if (status !== 'pending' && status !== 'running') transition(db, task.id, status)
+    // 终态夹具走合法路径（running → done 已删，见 status-facts.js）；其余状态直接迁。
+    if (status === 'done') markDone(db, task.id)
+    else if (status !== 'pending' && status !== 'running') transition(db, task.id, status)
     return getTask(db, task.id)
   }
   // 把三条活动时间都推到 minutes 分钟前（模拟长时间无动静）。

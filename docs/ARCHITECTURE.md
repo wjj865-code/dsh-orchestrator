@@ -31,7 +31,7 @@
 ### 原生自动化工具面
 
 - `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，allow 显式保留 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；`preset-tools.js` 仍用增量 deny 补集。`index.js` 的 runtime restrict 与 guard 不再拒绝这四工具，其余文件、shell、团队和子会话专属禁止项不变。
-- 这四工具由原生包在预设 scope 等待 Schedule 服务后注册，不进入 `createTools`，插件全局工具数仍为 14。default worker 不新增挂载，不新增 host global plane 工具或 schema 包装。
+- 这四工具由原生包在预设 scope 等待 Schedule 服务后注册，不进入 `createTools`，插件全局工具数仍为 15（含 `read_workspace`）。default worker 不新增挂载，不新增 host global plane 工具或 schema 包装。
 - 缺能力诊断仅针对唯一主会话：打开/非 running 创建/idle/下一轮 policy 渲染检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule` 服务。缺失状态去重 warning + policy 提示，边界重新检查可恢复；不等待 Loader preset list、不改运行回合工具表，也不调用真实自动化 API。
 - 本次自动编排只支持 `target:this_session`，Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new/new_once` 创建 ordinary root Session（当前 cwd/composed preset），不是委托 worker，也不是第二协调者；非唯一主 id 被现有 `requireMain` 拒绝，不改变 main_session_id。
 - 沿用原生 Host-wide 管理与用户明确授权提示、RRULE、updatedAt/expectedUpdatedAt 冲突保护；审批提示是模型约束，不是新增硬门禁。委托 depth 校验仍由宿主负责，`access:full` 不增加工具或解除 `subagent_session`。
@@ -193,13 +193,84 @@
 - **出口 1 · 确认**：协调者 `task_close`（或面板「确认交付」）→ `done`，`close_reason=coordinator`；超过 `deliveredTimeoutMinutes`（默认 60）由 sweeper 自动收成 `done`，`close_reason=timeout`。
 - **出口 2 · 追问**：`task_message` 投递成功 → `running`，复用同一个子会话（**可写根不释放**），完成后再次交付。
 - **出口 3 · 停止/丢失**：`task_stop` → `cancelled`；追问时子会话不可达 → `orphaned`。
-- 归属：`delivered` 是活跃状态（`listTasks(active)`、面板门控、`inboxCount` 都算），但不是终态；`TERMINAL_STATUSES` 不变。
+- 归属：`delivered` 是活跃状态（`listTasks(active)`、面板门控、`inboxCount` 都算），但不是终态。
+  状态集合与转移表只有一份：`src/status-facts.js` 的 `STATUS_CAPS` / `TRANSITIONS`，其余模块（`panel-gates` /
+  `tools` / `panel-actions` / `settlement` / `reconcile` / `watchdog` / `main-rotation` / `ledger` 的 SQL /
+  `host-route`）全部从它派生，不再各写本地 Set（见下「状态事实源」）。
 - 依赖就绪仍只认 `done`（`deps.js`）：交付不等于确认，下游要等确认/超时；正常情况协调者收到通知几秒内就确认。
 - goal 不收口：`delivered` 期间 `goal_state` 保持 active+disarmed，追问时 `edit` 正常；只有 `done` 才 `complete`。
 - 对账：`delivered` 不参与 S2 的 liveness/catalog 检查（成果已落库，等确认即可），超时 sweeper 兜底，重启不会卡死。
 - 审计：`tasks.delivered_at` 记录本次交付时间（追问后再交付会重写，超时从新时间起算），`tasks.close_reason` 记录关闭原因；`messages` 里 `kind='close'` 一行写「协调者确认 / 超时自动完成」。
 - 关闭三条路径（工具 / 面板 / 超时）共用 `src/delivered.js` 的 `closeDelivered`，副作用顺序固定：迁移 + 审计消息 → 释放可写根 → goal 收口 → 按档位清检出 → 唤醒队列。
 - 通知去重：进入 `delivered` 发一条（带 `task_close`/`task_message` 指令），确认/超时**不再发**通知，只在台账写审计消息。
+
+## 状态事实源（`src/status-facts.js`）
+
+0.19.x 的 `state.js` 有唯一转移表，但**状态集合**被复制到 9 个模块，并已产生三处真实不一致
+（`RESUME_STATUS` 含 `failed` 而面板不含、两套「终态」名字几乎一样、面板 stop 把 `failed` 改成 `cancelled`）。
+现在只有一个判定点：
+
+| 能力字段 | 回答什么问题 | 谁用 |
+|---|---|---|
+| `active` | 还算「没落终态」吗？ | `listTasks(active)`、面板筛选、`ledger` 的 SQL |
+| `followup` / `resumable` | 能续派吗 / 续派后要迁回 running 吗？ | `task_message`、面板「追加」 |
+| `deletable` / `retryable` | 能删吗 / 能重派吗？ | 面板删除、`task_retry` |
+| `terminal` / `releases` | 是流程终态吗 / 要释放可写根与 goal 吗？ | `task_close` 判定、结算收尾、**面板与工具的 stop 幂等判定** |
+| `waiting` | 是等人（用户/授权）的停顿态吗？ | 续派即批准计划 |
+| `rotationActive` | 会阻断主会话轮换吗？ | `main-rotation`（**刻意不含 `delivered`**） |
+| `liveness` / `catalog` / `watchdog` | 要对账活着吗 / 要查目录吗 / 要巡检空闲吗？ | `reconcile`、`watchdog` |
+| `planSettled` | 计划任务进这个状态要收口 `plan_state` 吗？ | `ledger.transition` |
+
+- **三条不可达边已删**（`running → done`、`failed → running`、`orphaned → pending`）：它们自加入起就没有调用点，
+  而 `test/state.test.js` 的 10×10 矩阵曾把它们写成 `allowed`——**测试在保护死代码**。矩阵现在从 `TRANSITIONS` 派生，
+  另有正向用例断言这三条边必须被拒。
+- **`failed` 的语义分开了**：`terminal:false`（还能重派，用户视角不是流程走完）但 `releases:true`（要释放资源）。
+  面板与工具的 stop 幂等判定改用 `releases`，不再把失败任务改成「已取消」。
+- **迁移有审计日志了**：`transition` 是全部状态变化的唯一入口（19 个调用点），`index.js` 通过
+  `setTransitionObserver` 挂一次 `task.transition` 日志（`{taskId, from, to, reason, closeReason}`），
+  「这个任务为什么从 running 变 orphaned」可以直接从日志还原。
+
+## worktree 状态事实源（`src/worktree-facts.js`）
+
+`worktree_state` 的 8 个状态曾有 **7 份独立列表**（占不占目录、要不要建树、有没有检出、显不显示小标、
+要不要重派、要不要通知、清理前置）。语义差异是**合理**的，但没有任何一处解释这些差异，每次加状态要改 7 处
+（0.17.0 的 P1「`requested` 被误当占用目录」就是第一次爆发）。现在是一张 `WORKTREE_STATE_CAPS` 表 + 派生列表：
+
+| 能力 | 含哪些状态 | 语义 |
+|---|---|---|
+| `occupiesTarget` | none / degraded / rejected / failed / cleaned | 仍在原工作树里写，参与同写域判定 |
+| `needsCreate` | requested | 派发前要真建检出 |
+| `hasCheckout` | created / reused / cleaned | 台账里有检出路径（cleaned 的目录已删，仅历史可查） |
+| `showsBadge` | created / reused / cleaned | 面板小标（`cleaned` 额外排除，列表小标只在真隔离时出现） |
+| `retryable` | created / reused / failed / cleaned | 重派时沿用/重建检出 |
+| `notifyIsolated` | created / reused / cleaned | 通知里说「产物在检出目录」 |
+
+`setTaskWorktree` 现在校验 `WORKTREE_TRANSITIONS`（非法转移抛错，同 `tasks.status` 的做法）；同状态重复写入是幂等的。
+叶子模块（不 import 任何东西）是刻意的：`worktree.js` 与 `worktree-request.js` 本来就互相引用，能力表放在
+其中一边会在模块求值期撞 TDZ。
+
+## 提示词分层（`src/prompt-layers.js`）
+
+五层文本各有独占职责，**一条口径只许有一个所有者层**；跨层共享的用同一常量（逐字一致）：
+
+| 层 | 载体 | 生命周期 | 唯一职责 |
+|---|---|---|---|
+| **L1** | `ctx.systemPrompt.context().text`（`index.js`） | 每回合重渲染 | 协调者行为规则：工具可用/禁用、交付与确认口径、`present`/`read_workspace` 用法、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
+| **L2** | 派发消息（`src/brief.js`） | 每次派发/续派 | 只指路：任务编号、访问级别、worktree 装依赖提示、`task_detail` 指引、执行中/交付时怎么回报 |
+| **L3** | 子会话按需调用（`src/task-detail.js`） | 按需 | 任务创建详情 + 完成动作 |
+| **L4** | 一次性 `agent.steer`（`src/onboarding.js`） | 仅新主会话首次 | 只开场：一句话自我介绍 + 派索引任务（**能力边界一条都不重复**） |
+| 旁路 | 通知（`src/notify.js`） | 每次通知 | 只讲「现在要你做什么」的动作指令 |
+
+- **L4 从 708 字瘦到 525 字**：删掉 6 条与 L1 重复的能力边界（只协调不写文件 / 原生 read-glob 被拒 /
+  read_workspace 边界 / 默认 worker 无自动化 / full 只改单任务沙箱）。理由：L1 每回合都在且不会被 compaction 吃掉，
+  onboarding 是一次性 user message、轮换时还会被 `main-session` 直接标 `sent` 跳过；两处都写 = 每次改 policy 都要同步改它
+  （已漂移过：`1dc6bd4` 一次改了 4 处文案）。
+- **三处矛盾已修**：① 文档不再声称交付时可以带结构化选项（实现明确不支持：`done` 会清空 `question`/`options`）；② brief 的 `CONFIRM_HINT` 与
+  task_detail 的 `FINISH_HINT` 统一成「summary = 结论 + 改了什么/改了哪些文件/怎么验证的 + 待确认要点」，同源 `SUMMARY_FIELDS`；
+  ③ `DETAIL.md` 的 brief 行数改为「4 行基准，full/隔离各加一行 → 4–6 行」，与 `renderBrief` 一致。
+- **偏好归 L1 末尾**（`src/preferences.js`）：存 `settings.orchestrator_preferences` 单键 JSON，每回合现渲染；
+  字数 1200 为主约束、条数 12 为安全阀；超限**显式告知**被截条数；全局偏好只写 settings（**不双写 memories**），
+  项目偏好只写 memories（随 `task_detail` 注入子会话）。偏好只是提示词文本，不进 config、不改 dispatch、不碰沙箱。
 
 ## 结算闭环（S1）
 
@@ -352,17 +423,23 @@
 - 当前回合的摘要要等 turn stopping 才追加，`index.js` 监听 `session/event` 的 `workspace/changes`，在摘要服务登记后（微任务）把新增路径补进已 done 的任务；没有 `workspaceChanges` 服务或会话已释放时自动收集为空，不影响显式产物。
 - 面板「产物」筛选调用 `artifacts` 端点并打开产物库：可按项目（目标目录末段）或日期分组，复制路径、文本预览（前 64 KiB）、打开子会话/详情；详情抽屉显示路径/标签/存在性。
 
-### 协调者读工作区产物（`read_workspace`）
+### 协调者读产物（`read_workspace`）
 
-子会话产物落在**主会话工作区**（`$DSH_HOME/state/orchestrator/workspace`，如 `reports/`、`diag/`），协调者要看正文不必再派子任务。
+子会话产物按契约落在 **target 目录**内（仓库、worktree 检出），只有一部分落在主会话工作区
+（`$DSH_HOME/state/orchestrator/workspace`，如 `reports/`、`diag/`）。所以边界是**两个判据的并集**：
+工作区包含性 **OR** 已登记产物（台账 `tasks.artifacts_json`）。协调者要看正文不必再派子任务。
 
 - **为什么不开放原生 `read`/`glob`**：平台读路径没有白名单——`dsh-fs-sandbox` 只给写操作加栅栏（`Reads pass through untouched: every mode permits reading.`），
   `dsh-fs-local` 的 `cwd` 只是相对路径基准（`a resolution default, NOT a containment boundary`），`glob` 直接 spawn ripgrep 用 `--no-ignore --hidden` 全树枚举。
   给协调者开原生 `read` = 给它全盘可读的宿主进程读者（含 `~/.dsh/.credentials.yaml`），叠加 IM 双向同步还会外发。所以自建一条只读工作区的入口。
 - **实现分层**：`src/read-workspace.js` 是纯函数 + 一次有界读（路径判定、行窗口切分、目录列条目、二进制识别、文案渲染）；
   `src/tools.js` 的 `read_workspace` 只做 `requireMain` 身份校验、调用、审计日志（`workspace.read` / `workspace.read.rejected`）。
-- **三道闸**（`resolveWorkspaceTarget`）：① 形状（空 / NUL / `~` 拒绝，不做家目录展开）；② `realpathSync` 真实路径包含性（挡符号链接逃逸，含中间目录是链接；同时吃掉工作区根自身在符号链接下的差异，如 macOS `/var` → `/private/var`）；
-  ③ 真实路径解析失败时退回词法包含性，把「越界」与「不存在」分开报，不把安全边界说成普通错误。
+- **判据分层**：`src/artifact-location.js` 是产物的唯一合法性判据（`registeredArtifacts` / `registeredMatch` /
+  `deliverableOf`）；`src/read-workspace.js` 消费它，`src/notify.js` 的可交付性判定（present 口径）也用它。
+  四条产物读取路径（`read_workspace` / `preview` / 右侧栏 / `present`）从此对「什么算合法产物」同源。
+- **闸**（`resolveWorkspaceTarget`）：① 形状（空 / NUL / `~` 拒绝，不做家目录展开）；② `realpathSync` 真实路径包含性（挡符号链接逃逸，含中间目录是链接；同时吃掉工作区根自身在符号链接下的差异，如 macOS `/var` → `/private/var`）；
+  ③ 真实路径解析失败时退回词法包含性，把「越界」与「不存在」分开报，不把安全边界说成普通错误；
+  ④ 前两道都不放行时查**已登记产物**（文件本身或已登记目录的子树）——命中才允许，且登记表不借符号链接放行。
 - **体积与截断**：单文件 > 4 MB 直接拒绝（不整块读入，提示让子会话写摘要）；正文按行窗口返回（默认 400 行 / 上限 2000 行，单次 ≤ 64 K 字符），
   截断给 `nextOffset` 续读；单行本身超上限时截断该行并标 `truncatedLine`，`nextOffset` 仍指向**下一行**（截断的是这一行，不是读不下去；返回 null 会被误读成文件到头）。目录只列一层、最多 200 项，指向工作区外或断链的符号链接条目标 `readable:false`。
 - **不用于校验存在性**：存在性仍由插件与子任务保证，`present` 只列真实文件；`read_workspace` 是「看内容」的入口，不是 stat 替身。

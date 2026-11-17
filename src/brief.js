@@ -32,7 +32,13 @@ export const BLOCKED_HINT = '执行中遇到需要用户拍板的事（业务取
   + '用 task_report 的 blocked 上报「问题 + 选项建议」，由协调者用 ask_user_question 向用户确认后经 task_message 续派再继续；'
   + '不要自行假设用户意图、不要阻塞等待、也不要等不到回复就跳过。blocked 只是上报，不等于已获授权。'
 
-export const CONFIRM_HINT = '交付（报 done）时把待确认要点写进 summary（done 会清空 question/options），不要只在正文里问；'
+// 交付口径的**唯一措辞**（审计 §5.1.2 矛盾 2）：brief 与 task_detail 曾各写一套——
+// 这里说「要点写进 summary」，task_detail 说「正文写：改了什么/改了哪些文件/怎么验证的」，
+// 子会话不知道 summary 该写结论还是写三问。现在统一成「summary = 结论 + 三问要素」，
+// task_detail 的 FINISH_HINT 直接引用本常量，不再各写一份。
+export const SUMMARY_FIELDS = '改了什么、改了哪些文件、怎么验证的'
+export const CONFIRM_HINT = `交付（报 done）时把 summary 写成「结论 + ${SUMMARY_FIELDS}」，并带上待确认要点；`
+  + 'done 会清空 question/options，所以要点必须在 summary 里；'
   + '子会话直接调 ask_user_question 会被平台拒（DELEGATED_CALLER），由协调者带选项问用户「确认 / 要改？」。'
 
 // worktree 任务的检出是全新目录，node_modules/虚拟环境这类依赖不在库里 → 子会话常因依赖缺失跑不了测试/构建。
@@ -66,8 +72,10 @@ export function validateTargetDir(target, { isDirectory = value => statSync(valu
  * +【任务详情】+【执行中待确认】（所有任务，执行期就要用）+【确认方式】（交付时用）：
  * brief 正文不携带任何创建详情（目标/验收/经验/兜底都不进），子会话拿到任务编号后调 task_detail 读台账快照。
  *
- * 三段提示的分工：③执行中遇阻 → blocked 上报（一开始就要看到，不能只写在交付环节）；
- * ①交付时 → 要点进 summary；②隔离任务 → 可装依赖（只装不升）。
+ * 三段提示的分工（每段的归属层见 src/prompt-layers.js 的 PROMPT_LAYERS）：
+ * ③执行中遇阻 → blocked 上报（一开始就要看到，不能只写在交付环节）；
+ * ①交付时 → summary 写「结论 + 三问 + 待确认要点」（`done` 不支持 question/options）；
+ * ②隔离任务 → 可装依赖（只装不升）。
  *
  * @param {{ taskId?: string, access?: string, worktreeState?: string }} [options]
  *   taskId 是台账任务编号（如 t-1a2b3c4d），也是 task_detail 的参数；

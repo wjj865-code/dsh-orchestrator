@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { openLedger, createTask, getTask, transition } from '../src/ledger.js'
 import { reconcileOrphans, createStartupReconciler, reconcileSummary } from '../src/reconcile.js'
 import { createDispatcher } from '../src/dispatch.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const setup = async () => {
   const db = await openLedger(tempDir())
@@ -120,7 +120,7 @@ test('S2 仅 running 参与活跃性对账：waiting_dep / waiting_* / 终态都
   const waitingAuth = running('等授权', 'c-wa')
   transition(db, waitingAuth.id, 'waiting_auth')
   const finished = running('已完成', 'c-done')
-  transition(db, finished.id, 'done')
+  markDone(db, finished.id)
   // waiting_dep 还没有子会话；这里强行塞一个 session_id 的异常行，确认对账完全绕开它。
   const waitingDep = createTask(db, { brief: sampleBrief({ title: '等前置' }), coordinatorSession: 's-1' })
   db.prepare('UPDATE tasks SET status = ?, session_id = ? WHERE id = ?').run('waiting_dep', 'c-dep', waitingDep.id)

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { openLedger, createTask, transition, markQueued, setTaskArtifacts } from '../src/ledger.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from '../src/host-route.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const request = body => new Request('http://localhost/api/orchestrator', {
   method: 'POST',
@@ -245,7 +245,7 @@ test('快照：活跃任务全量 + 历史最多 limit 条（老 running 不被�
   for (let i = 0; i < 3; i += 1) {
     const done = createTask(db, { brief: sampleBrief({ title: `新完成${i}` }), coordinatorSession: 's-1' })
     transition(db, done.id, 'running', { sessionId: `c-${i}`, target: `c-${i}` })
-    transition(db, done.id, 'done')
+    markDone(db, done.id)
   }
   const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-1', live: true }), limit: 2 })
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
@@ -491,7 +491,7 @@ test('snapshot 下发 canFollowup/canDelete：进行中不可删可续派，终�
   transition(db, running.id, 'running', { sessionId: 'c-run', target: 'c-run' })
   const done = createTask(db, { brief: sampleBrief({ title: '完成' }), coordinatorSession: 's-1' })
   transition(db, done.id, 'running', { sessionId: 'c-done', target: 'c-done' })
-  transition(db, done.id, 'done')
+  markDone(db, done.id)
   const pending = createTask(db, { brief: sampleBrief({ title: '待派发' }), coordinatorSession: 's-1' })
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
   const byId = Object.fromEntries(body.tasks.map(row => [row.id, row]))
@@ -508,7 +508,7 @@ test('snapshot 的 canDelete 与活跃下游依赖同源：有活跃下游的终
   const { db, handler } = await setup()
   const upstream = createTask(db, { brief: sampleBrief({ title: '已完成后置' }), coordinatorSession: 's-1' })
   transition(db, upstream.id, 'running', { sessionId: 'c-up', target: 'c-up' })
-  transition(db, upstream.id, 'done')
+  markDone(db, upstream.id)
   const downstream = createTask(db, {
     brief: sampleBrief({ title: '下游' }), coordinatorSession: 's-1', dependsOn: [upstream.id], status: 'waiting_dep',
   })

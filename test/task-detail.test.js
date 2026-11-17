@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { addMessage, createTask, getTask, openLedger, setTaskArtifacts, transition } from '../src/ledger.js'
 import { renderTaskDetail } from '../src/task-detail.js'
 import { createTools } from '../src/tools.js'
-import { tempDir } from './helpers.js'
+import { tempDir, markDone } from './helpers.js'
 
 const WRITE_HINT = '所有产出只写到该目录内，不要写到父会话目录或其他绝对路径；完成后汇报时把文件路径落到该目录下。'
 const READ_ONLY_HINT = '只读任务：读与回报正常，但不要写文件、不要执行写操作的 shell；产物把路径写进回报正文（或给绝对路径），不要尝试创建文件。'
@@ -238,7 +238,7 @@ test('task_detail：前置任务按当前台账现读（创建时还没完成的
   assert.match(before, /当前进行中/)
   // 前置完成后同一个调用方再读：摘要变成已完成 + 最近回报。
   addMessage(db, dep.id, { kind: 'report', rendered: '[done] 前置做完' })
-  transition(db, dep.id, 'done')
+  markDone(db, dep.id)
   const after = await tools.task_detail.execute({ task_id: downstream.id }, { agent: { id: downstream.session_id } })
   assert.match(after, /已完成：前置做完/)
   db.close()

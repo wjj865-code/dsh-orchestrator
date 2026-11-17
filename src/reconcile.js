@@ -11,13 +11,15 @@
 //   - catalog 读不到只 warn：running 的 liveness 判定照做，其余保留现状；
 //   - 标记完发一条汇总通知（不是每个任务一条），协调者晚加载时保留待发，加载后补发一次。
 import { getTask, listTasks, transition } from './ledger.js'
+import { statusesWith } from './status-facts.js'
 
 // 活跃性对账只认 running：其余状态不是「正在跑却没人」。
 // delivered（已交付待确认）刻意不在扫描范围：它的成果已经落库，只等确认/超时，
 // 子会话即使重启后不 live 也不该被标 orphaned（超时 sweeper 会把它收成 done）。
-const LIVENESS_STATUSES = new Set(['running'])
+// 两份集合都从 status-facts 派生（`liveness` / `catalog` 能力），不再各写一份。
+const LIVENESS_STATUSES = new Set(statusesWith('liveness'))
 // catalog 可达性沿用设计口径：running + 故意停下的 waiting_*；waiting_dep 不参与。
-const CATALOG_STATUSES = new Set(['running', 'waiting_user', 'waiting_auth'])
+const CATALOG_STATUSES = new Set(statusesWith('catalog'))
 
 const REASON_DEAD = '进程重启后子会话没有在运行的回合（可重建）'
 const REASON_GONE = '子会话在目录里查不到（可能已被删除）'

@@ -2,7 +2,10 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, DEFAULT_WORKER_PRESET } from './src/config.js'
-import { openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts, listTasks } from './src/ledger.js'
+import {
+  openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts,
+  listTasks, setTransitionObserver,
+} from './src/ledger.js'
 import { collectWorkspaceArtifacts, appendMissingArtifacts, MAX_AUTO_ARTIFACTS } from './src/artifact-collect.js'
 import { createSettlementReporter } from './src/settlement.js'
 import { createDeliveredSweeper } from './src/delivered.js'
@@ -21,6 +24,8 @@ import { createKeepAlive } from './src/keepalive.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
+import { loadPreferences, renderPreferenceBlock } from './src/preferences.js'
+import { PRESENT_LIMIT_TEXT } from './src/prompt-layers.js'
 import { startSnapshotLoop } from './src/snapshot.js'
 import { ensureDigest } from './src/digest.js'
 import { createPanelActions } from './src/panel-actions.js'
@@ -44,7 +49,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 默认 worker 不开放自动化；自定义预设即使露出 schema，宿主仍拒绝 delegated subagent（subagent_session）。access:full 只改变单个子会话沙箱，不增加工具、不绕过宿主委派校验或审批。缺服务/工具时明确报告当前能力缺失，不能模拟成功。
 - 派任务前可用 history_search 查跨项目记忆与历史任务，用 project_context 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
 - 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域（与活跃未隔离任务重叠会被拒，见下「同写域并发防护」）；紧急任务用 priority（-10..10）。
-- 子任务回报产物路径后，默认用 present 展示 1-4 个最关键的产物（最多 4 个；只列真实存在的文件、写绝对路径），不必等用户点名；没有产物就不提 present。要看产物正文（多文件产物挑着看、核对文件里到底写了什么）用 read_workspace({ path })：它只能读**主会话工作区内**的路径（reports/、diag/ 等子会话产物目录），越界/路径穿越/符号链接逃逸会被拒；present 仍只声明交付、不读文件内容。
+- 子任务回报产物路径后，默认用 present 展示 ${PRESENT_LIMIT_TEXT}产物（只列**已登记产物**里的真实文件、写绝对路径），不必等用户点名；没有产物就不提 present。要看产物正文（多文件产物挑着看、核对文件里到底写了什么）用 read_workspace({ path })：边界是**主会话工作区 ∪ 已登记产物**——子会话按契约把产物写在 target 目录内（仓库、worktree 检出），那些路径不在工作区里，但只要登记过就能读；未登记的同目录文件、越界、路径穿越、符号链接逃逸会被拒。present 仍只声明交付、不读文件内容。
 - 需要「看一眼产物」时先用 read_workspace，不要为此新派一个子任务；但**不要**用 read_workspace 校验产物是否真实存在（存在性由插件与子任务保证，present 只列真实文件）。
 - 需要先看方案再动手（大改、跨文件、范围不确定）时用 task_create({ planFirst: true })：子会话只读探索后先 plan_save 把计划落盘到主会话工作区的 reports/plans/<taskId>.md，再用 task_report blocked 只上报摘要 + 计划文档绝对路径 + 待拍板问题，你连路径一起转交用户；用户批准后用 task_message 续派（插件自动把沙箱切回可写）。planFirst 与 readOnly 互斥。
 - 只有构建/发版这类**确实需要越过文件沙箱**（写仓库外、跑不受沙箱限制的 bash/pwsh）的任务才传 task_create({ access: 'full' })：该子会话单独跑在 danger-full-access，**默认策略与其他任务一律不动**；access 只接受 'full'，且与 readOnly / planFirst 互斥；没有这种需求就不要传，也别因为用户说「不限制 bash」就顺手给所有任务加上。access 属于单个任务，插件不往孙任务传，也不写进任何默认配置。
@@ -149,6 +154,15 @@ export async function apply(ctx, rawConfig = {}) {
     warnings(`dsh-orchestrator: workerPreset=${JSON.stringify(rawWorkerPreset)} 不是合法预设 id（小写字母/数字/连字符），已回落到 ${DEFAULT_WORKER_PRESET}`)
   }
   const logger = createLogger({ stateDir: dir, onWarn: warnings })
+  // 状态迁移的审计日志（审计 §4.5）：`transition` 是唯一入口，在这里挂一次观察者就覆盖全部 19 个调用点，
+  // 从此「这个任务为什么从 running 变 orphaned」能直接从日志还原，不必靠 settle 消息反推。
+  setTransitionObserver(({ taskId, from, to, sessionId, reason, closeReason }) => {
+    logger.log('task.transition', {
+      taskId,
+      sessionId: sessionId ?? undefined,
+      detail: { from, to, reason: reason ?? null, closeReason: closeReason ?? null },
+    })
+  })
   // P9：宿主侧 git 能力（只在 worktree 任务上被调用；普通任务零 git 调用）。
   const worktreeLog = (event, fields) => logger.log(event, fields)
   const worktreeService = createWorktreeService({
@@ -378,7 +392,17 @@ export async function apply(ctx, rawConfig = {}) {
       const id = resolvedCoordinatorId()
       if (id === undefined || context?.agent?.id !== id) return ''
       const capability = checkScheduleCapability(context.agent)
-      return `${renderCoordinatorPolicy(config)}${capability === '' ? '' : `\n\n${capability}`}`
+      // L1 四段拼接：硬规则 + worktree 策略 + 写域策略（renderCoordinatorPolicy）→ 偏好 → 能力诊断。
+      // 偏好放**末尾**：阅读顺序即优先级顺序（低于硬规则），且可单独开关/单测/回滚。
+      const preferences = config.preferencesInject === false
+        ? ''
+        : renderPreferenceBlock(loadPreferences(db), {
+          maxItems: config.preferencesMaxItems,
+          maxChars: config.preferencesMaxChars,
+        })
+      return [renderCoordinatorPolicy(config), preferences, capability]
+        .filter(part => part !== '')
+        .join('\n\n')
     },
   })
 

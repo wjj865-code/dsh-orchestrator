@@ -4,8 +4,9 @@
 // 不碰任务状态；经验文件只 stat 存在性，不读正文（子会话自己有 read 工具，读全文由它决定）。
 import { statSync } from 'node:fs'
 import { statusLabel } from './state.js'
+import { SUMMARY_FIELDS } from './brief.js'
 import { PLAN_FIRST_DETAIL, isPlanTask, planStateOf, PLAN_STATE_LABEL } from './plan-mode.js'
-import { worktreeDetailLines } from './worktree-request.js'
+import { worktreeDetailLines, worktreeHasCap } from './worktree-request.js'
 
 const text = value => typeof value === 'string' ? value.trim() : ''
 const single = value => text(value).replace(/[\r\n]+/g, ' ')
@@ -16,7 +17,9 @@ const READ_ONLY_HINT = '只读任务：读与回报正常，但不要写文件�
 // 完整访问（access:'full'）：沙箱不再限制写入，但任务边界还在——风险文案必须写清楚，别让它以为「哪都能改」。
 const FULL_ACCESS_HINT = '完整访问任务：文件沙箱是 danger-full-access，写文件、跑 bash/pwsh 都不会被沙箱拦。仍按任务边界只改这个目录/仓库里的东西，别碰无关路径与用户数据（这条是纪律，不是沙箱拦）。'
 const ACCESS_FULL_LABEL = '完整（danger-full-access：文件沙箱不限制写入，bash/pwsh 也不再被沙箱拦）'
-const FINISH_HINT = '完成后用 task_report 回报（progress / done / blocked / needs_auth），正文写：改了什么、改了哪些文件、怎么验证的。'
+// 完成动作（L3 的独占职责）。交付口径与 brief 的 CONFIRM_HINT **同源**：
+// 都从 `SUMMARY_FIELDS` 拼出「改了什么、改了哪些文件、怎么验证的」，不再一处说「要点」、一处说「三问」。
+const FINISH_HINT = `完成后用 task_report 回报（progress / done / blocked / needs_auth），summary 写：${SUMMARY_FIELDS}。`
   + '报 done 只是「交付」：任务会停在「已交付待确认」，由协调者/用户确认或超时自动完成；收到追问就在同一个会话里继续，不要自行宣告任务结束。'
 
 const fileExists = value => {
@@ -75,7 +78,10 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   const brief = task.brief ?? {}
   // P9：隔离任务的「工作目录」是检出目录（派发时 target_dir 已换算成「检出 + 原 target 偏移」），
   // brief.target 仍是用户原始目录，所以这里优先用 target_dir，否则子会话会去写用户工作树。
-  const checkoutTarget = ['created', 'reused'].includes(task.worktree_state) ? text(task.target_dir) : ''
+  // 「工作目录用检出目录」的状态只有真的建好检出的两个（`hasCheckout` 能力 + 排除已清理）。
+  const checkoutTarget = worktreeHasCap(task.worktree_state, 'hasCheckout') && task.worktree_state !== 'cleaned'
+    ? text(task.target_dir)
+    : ''
   const target = checkoutTarget !== '' ? checkoutTarget : text(brief.target ?? task.target_dir)
   const readOnly = brief.readOnly === true || task.read_only === true
   const planTask = isPlanTask(task)

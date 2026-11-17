@@ -4,6 +4,7 @@ import { DEFAULT_BRANCH_PREFIX, WORKTREE_POLICIES } from './worktree-request.js'
 import { guardModeOf } from './write-guard.js'
 import { DELIVERED_TIMEOUT_MINUTES } from './delivered.js'
 import { normalizeRotationConfig } from './main-rotation.js'
+import { DEFAULT_MAX_CHARS as DEFAULT_PREFERENCE_MAX_CHARS, DEFAULT_MAX_ITEMS as DEFAULT_PREFERENCE_MAX_ITEMS } from './preferences.js'
 
 const DEFAULTS = {
   staleMinutes: 30,
@@ -86,6 +87,16 @@ export function loadConfig(raw = {}) {
   config.worktreeRecentDays = Number.isFinite(raw?.worktreeRecentDays)
     ? Math.min(90, Math.max(1, Math.floor(raw.worktreeRecentDays)))
     : 7
+  // 偏好（审计 §5.3 待定项 3）：**字数为主约束、条数为安全阀**。
+  // 纯条数防不住「一条 2000 字」，纯字数防不住「100 条各 10 字」的碎片化。
+  // preferencesInject:false 让整段消失（默认开：出厂种子就是给协调者用的）。
+  config.preferencesInject = raw?.preferencesInject !== false
+  config.preferencesMaxChars = Number.isFinite(raw?.preferencesMaxChars)
+    ? Math.min(4000, Math.max(200, Math.floor(raw.preferencesMaxChars)))
+    : DEFAULT_PREFERENCE_MAX_CHARS
+  config.preferencesMaxItems = Number.isFinite(raw?.preferencesMaxItems)
+    ? Math.min(20, Math.max(1, Math.floor(raw.preferencesMaxItems)))
+    : DEFAULT_PREFERENCE_MAX_ITEMS
   // 主会话轮换（G1 S1）：12 个键（总开关 + 六个因子阈值 + 冷却/最小龄/闲置/检查节流 + 归档开关）
   // 的默认值、合法区间与非法回落都在 src/main-rotation.js 的 normalizeRotationConfig 里，
   // 这里只负责挂到 config 上。rotateCheckIntervalHours 是「多久才做一次检查」的节流，

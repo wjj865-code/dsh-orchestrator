@@ -7,10 +7,14 @@ import { panelFailure, panelHttpStatus } from './action-errors.js'
 import { createRequestDedupe } from './request-dedupe.js'
 import { isMainSession } from './session-role.js'
 import { ACTIVE_STATUSES, canClose, canDelete, canFollowup } from './panel-gates.js'
+import { statusesWith } from './status-facts.js'
 
 const ENDPOINTS = new Set(['snapshot', 'session-role'])
 const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message', 'close', 'delete'])
 const ACTIVE = new Set(ACTIVE_STATUSES)
+// 「待拍板」口径：等人（waiting_user/waiting_auth）+ 已交付待确认（delivered）——`waiting` 能力
+// 不含 delivered（它不 waiting 于某个问题，而是等确认），所以这里用两份能力拼，不再写内联三态判断。
+const INBOX_STATUSES = new Set([...statusesWith('waiting'), 'delivered'])
 
 const json = (value, status) => new Response(JSON.stringify(value), {
   status,
@@ -41,7 +45,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
         live: status.live === true,
       },
       // 「待你决定」计数：等你确认/要授权/已交付待确认——三种都需要人（或协调者）拍板。
-      inboxCount: tasks.filter(task => task.status === 'waiting_user' || task.status === 'waiting_auth' || task.status === 'delivered').length,
+      inboxCount: tasks.filter(task => INBOX_STATUSES.has(task.status)).length,
       tasks: tasks.map(task => {
         const card = taskCard(task)
         return {

@@ -4,8 +4,7 @@
 // 产物 → 交付（P6）：通知里只列「present 能接住」的绝对路径，并明确要求协调者在自己回合里交付。
 // 判据与平台一致（reports/t0.1-probes.md §3.3 + D6/D7）：present 用 lstat 判 type，目录 / 符号链接 /
 // 不存在一律被拒；平台单次硬上限 8，本插件按「1-4 个最关键的、最多 4 个」收敛成产品上限。
-import { lstatSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { deliverableOf as artifactKindOf } from './artifact-location.js'
 
 const LEVEL = {
   progress: 'silent', done: 'notify', delivered: 'notify', blocked: 'interrupt', needs_auth: 'interrupt',
@@ -35,20 +34,9 @@ const SKIP_LABEL = {
 
 // present 先 lstat 判 type、再 stat 判存在（dsh-tool-present/src/index.ts:88-93）：
 // 只有「存在的普通文件」能交付；目录、符号链接、缺失的路径都会让整次 present 失败。
-const classifyPath = path => {
-  if (typeof path !== 'string' || path.trim() === '') return 'other'
-  if (!isAbsolute(path)) return 'relative'
-  let stats
-  try {
-    stats = lstatSync(path)
-  } catch (error) {
-    return error?.code === 'ENOENT' ? 'missing' : 'other'
-  }
-  if (stats.isFile()) return 'file'
-  if (stats.isSymbolicLink()) return 'symlink'
-  if (stats.isDirectory()) return 'directory'
-  return 'other'
-}
+// 判定在 src/artifact-location.js 的 deliverableOf：与 read_workspace 的产物判定同一模块，
+// 否则「能不能交付」和「能不能读」会各写一份类型表（审计 §2.5 指出的三套口径）。
+const classifyPath = artifactKindOf
 
 /**
  * 把 item.artifacts 拆成「可交付的普通文件」与「跳过原因计数」。
@@ -86,7 +74,7 @@ const skipLine = skipped => {
 
 // 指令写进通知文案（不是系统提示）：插件不代调 present（它要求 open turn，见 T0.1 探针 ③），
 // 只负责把「已 stat 校验过存在、是普通文件」的绝对路径交到协调者手上并说清怎么交付。
-export const PRESENT_HINT = '交付：在你自己的回合里调用 present，files 里每项 path 填上面这些绝对路径（1-4 个最关键的，最多 4 个）；插件已 stat 校验存在且是普通文件，不要另找路径。'
+export const PRESENT_HINT = '交付：在你自己的回合里调用 present，files 里每项 path 填上面这些绝对路径（它们都是**已登记的产物**；1-4 个最关键的，最多 4 个）；插件已 stat 校验存在且是普通文件，不要另找路径，也不要临时拼别的路径。'
 
 /**
  * 产物区块的行（通知与 task_status 共用同一份渲染，避免两处清单口径漂移：风险 R17）。

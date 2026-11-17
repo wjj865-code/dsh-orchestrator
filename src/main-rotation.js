@@ -26,6 +26,7 @@
 import { stat } from 'node:fs/promises'
 import { deleteSetting, getSetting, listTasks, setSetting } from './ledger.js'
 import { onboardingKey } from './onboarding.js'
+import { statusesWith } from './status-facts.js'
 
 const MINUTE_MS = 60_000
 const HOUR_MS = 3_600_000
@@ -111,8 +112,9 @@ export const ROTATION_BLOCKS = Object.freeze([
   'metrics-degraded',
 ])
 
-/** 活跃任务口径（P1）：delivered 单独由 P2/P5 处理，不算「在跑」。 */
-export const ROTATION_ACTIVE_STATUSES = Object.freeze(['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
+/** 活跃任务口径（P1）：delivered 单独由 P2/P5 处理，不算「在跑」——那是 `rotationActive` 能力，
+ *  与通用的 `active` 不是一回事（delivered active 但不阻断轮换）。 */
+export const ROTATION_ACTIVE_STATUSES = Object.freeze(statusesWith('rotationActive'))
 
 const positive = value =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined

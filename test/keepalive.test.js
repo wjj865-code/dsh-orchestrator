@@ -12,7 +12,7 @@ import {
 } from '../src/keepalive.js'
 import { loadConfig } from '../src/config.js'
 import { createSettlementReporter } from '../src/settlement.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const ACTIVE_GOAL = {
   id: 'goal-1', revision: 1, objective: '完成目标', phase: 'active', activation: 'disarmed',
@@ -141,7 +141,8 @@ test('K2 goal 完成/缺失/非 running/只读/中断/inbox 有排队 都不注�
   for (const status of ['done', 'orphaned', 'cancelled', 'waiting_user']) {
     const s = await setup({ config: { keepAlive: true } })
     const task = await runningTask(s.db)
-    transition(s.db, task.id, status)
+    if (status === 'done') markDone(s.db, task.id)
+    else transition(s.db, task.id, status)
     assert.equal(s.ka.handle(event(s.agent)), null, `status=${status}`)
     assert.equal(s.injected.length, 0)
     s.db.close()
@@ -273,9 +274,10 @@ test('K2 台账：bumpKeepAliveRound 原子加轮、超上限返回 null、进�
   // 非 running 不消耗预算
   const other = createTask(db, { brief: sampleBrief({ title: '待派发', goal: 'g' }), coordinatorSession: 's-1' })
   assert.equal(bumpKeepAliveRound(db, other.id, 8), null)
-  // 重新进入 running（续派/冷恢复）预算归零
-  transition(db, task.id, 'orphaned')
-  transition(db, task.id, 'pending')
+  // 重新进入 running（续派/冷恢复）预算归零。
+  // 走 waiting_user → running（合法的续派路径）：orphaned → pending 这条边已删（审计 §2.3.3，
+  // 会话丢失的出口是重派新建任务，不是原任务复活）。
+  transition(db, task.id, 'waiting_user')
   transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
   assert.equal(getTask(db, task.id).keep_alive_rounds, 0)
   db.close()

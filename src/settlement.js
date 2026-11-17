@@ -11,6 +11,7 @@ import { addMessage, findTaskBySession, getTask, getSetting, setTaskLastMessage,
 import { workspaceIndexSavedKey } from './workspace-index.js'
 import { captureLastMessage, messageText, summarizeText } from './last-message.js'
 import { statusLabel } from './state.js'
+import { statusesWith } from './status-facts.js'
 import { notifyWorktreeOf } from './worktree-request.js'
 
 /** stopReason → 台账状态与死因。completed 只在「没有只报 progress」时算交付。 */
@@ -41,8 +42,9 @@ export function mapSettle(stopReason, { progressCount = 0 } = {}) {
 
 const MAX_SUMMARY = 240
 
-/** 结算里「真终态」：只有这些状态才释放可写根、收敛平台 goal。delivered 保留会话与 goal，等确认/追问。 */
-const TERMINAL_SETTLE_STATUSES = new Set(['done', 'cancelled', 'failed', 'orphaned'])
+/** 结算里「要释放资源的状态」：`releases` 能力（done/failed/cancelled/orphaned）。
+ *  delivered 保留会话与 goal，等确认/追问——它 active 但不 releases，别用「终态」这个词混过去。 */
+const RELEASING_STATUSES = new Set(statusesWith('releases'))
 
 /** 从 ContentBlock[] 取可读摘要（平台 SubagentResult.output / lastAssistantMessage 都是这个形状）。 */
 export function outputSummary(output, max = MAX_SUMMARY) {
@@ -229,7 +231,7 @@ export function createSettlementReporter({
     notify(final, mapped.status, summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`))
     // 只有真终态才释放可写根 + 收口 goal：delivered 还要留着会话给追问用（写操作不能半途被收回），
     // goal 也留到 done 再 complete（见 docs/ARCHITECTURE.md「两段式终态」）。
-    if (TERMINAL_SETTLE_STATUSES.has(mapped.status)) {
+    if (RELEASING_STATUSES.has(mapped.status)) {
       try { releaseSession(task.session_id ?? task.target) } catch { /* 释放失败不影响已落库的终态 */ }
       // G1：终态收敛平台 goal（done → complete；cancelled/failed/orphaned → clear）。
       // 回调内部吞错，不能因为 goal 服务缺席/失败回滚已完成的状态迁移。

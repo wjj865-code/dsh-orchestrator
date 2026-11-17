@@ -21,6 +21,7 @@
 // 本模块只做纯计算与文案，不读库、不跑 git，便于单测（台账遍历在 tools.js）。
 import { resolve, sep } from 'node:path'
 import { taskLabelWithId } from './task-label.js'
+import { worktreeStatesWithout } from './worktree-facts.js'
 import { statusLabel } from './state.js'
 
 /** 防护档位：require（默认，拒绝）/ warn（只警告）/ off（关闭）。 */
@@ -76,7 +77,7 @@ export function scopesOverlap(left, right) {
  * 这份列表是唯一事实来源：`tools.js` 判定「新任务自己是否隔离」也引用它，
  * 避免两处各写一套、口径漂移（曾因两处列表不一致导致 P1 误拦）。
  */
-export const ISOLATED_WORKTREE_STATES = Object.freeze(['requested', 'created', 'reused'])
+export const ISOLATED_WORKTREE_STATES = Object.freeze(worktreeStatesWithout('occupiesTarget'))
 
 /** 隔离任务：在独立检出目录里跑，不算同写域。 */
 export const isolatedTask = task => ISOLATED_WORKTREE_STATES.includes(task?.worktree_state)

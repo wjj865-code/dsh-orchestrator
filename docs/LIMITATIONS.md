@@ -23,7 +23,8 @@
 - **子会话只读目标、不能改**：`dsh-orchestrator-worker` 预设的 `tool-goal` 只提供 `get_goal` 的可用路径；`create_goal` / `update_goal` 由平台 `goalToolExecution` + `requireDirectHuman` 校验，要求**顶层 agent 的直接人类回合**，子会话调用必被拒（`GOAL_TOOL_AUTHORITY_REQUIRED`）。只有协调者的 `task_message`（或面板「追加」）会触发 `edit`。目标文本 = `task.goal` + `最新指示：<消息>`，超过 2000 字符截断，只是展示用的持久状态。
 - **brief 只有编号和指引，详情要自己取（T1）**：brief 不再内联目标、验收、经验或兜底，只有 `【任务编号】` + 「先调 `task_detail` 读详情」+ 「执行中待确认用 blocked 上报」+ 「交付时给选项」。所以子会话的第一个动作应当是 `task_detail`；若它跳过这一步直接干活，只能靠 `get_goal`（实时目标）和自身上下文。前提是子会话工具表里有 `task_detail`：它由插件在 host plane 全局注册（`index.js` 的 `createTools(...).map(ctx.tools.register)`），worker 预设没有 `preset-tools` 收窄；如果你把 `workerPreset` 换成自带 allow/deny 收窄的预设、且没把 `task_detail` 列进 allow，子会话就只能靠 `get_goal` 和自己找上下文。
 - **子会话不能直接问用户**：平台的 `userQuestions.ask` 用 `assertLiveRoot` 校验调用方，`session.header.origin === 'subagent'` 一律抛 `DELEGATED_CALLER`——子会话（`subagents.startActivation({ parent })` 起的）调 `ask_user_question` 必被拒，工具在工具表里看得见但用不了。所以需要拍板时只能把问题/选项交回协调者：`blocked`/`needs_auth` 用 `task_report.question` + `options`（原样进通知与 `task_inbox`），`done` 会把 `question`/`options` 清空，要点必须写进 `summary`；真正向用户提问始终由协调者带选项完成。
-  这条也是 brief 三段提示的由来：执行中「有疑问就 blocked 上报」、交付时「要点进 summary / 选项进 question+options」、隔离任务「可装依赖但只装不升」。
+  这条也是 brief 三段提示的由来：执行中「有疑问就 blocked 上报（问题 + 选项建议）」、交付时「结论 + 改了什么/改了哪些文件/怎么验证的 + 待确认要点，全写进 `summary`」、隔离任务「可装依赖但只装不升」。
+  **`done` 不支持 `question`/`options`**：它们只在 `blocked`/`needs_auth` 上生效，`done` 会把它们清空（`src/tools.js` 的 `clearTaskQuestion`），也从不传给通知——交付时的选项由协调者自己组织 `ask_user_question`。
 - **`blocked` 上报不等于授权**：它只是把决策点交回协调者，用户/协调者的答复才是授权来源。子会话不能因为「已经报过 blocked」就自行推进，也不能拿 blocked 当绕过推送前双审查或人工确认门禁的手段（brief 里三段提示都写明「不等于已获授权」）。
 - **worktree 装依赖提示只是「允许装」，不是「装好」**：`【worktree 依赖】` 只在隔离任务（`requested`/`created`/`reused`）里出现，措辞限定「只安装不升级」；插件不代为执行安装，也不保证锁文件/依赖声明不变——子会话真跑 `pnpm install` 时仍以仓库锁文件为准，升级依赖版本不在这个提示的授权范围内。
 - **经验文件是快照，不是台账（T1）**：`lessons/<项目>-<hash>.md` 每次派发覆盖为「本次命中的事实层记忆」；没有历史版本、不参与每日快照、也没有保留期清理。手动删掉文件后，`task_detail` 里的指针会显示「文件已丢失」（下次派发重新生成）；要改记忆请用 `memory_note` / `history_search`，手改文件会被覆盖。写文件失败时经验以更长的内联块只出现在 `task_detail` 里（brief 长度不变，经验不会丢）。
@@ -119,15 +120,23 @@
     仍会继承子会话自己的覆盖（平台行为），要严格管控就别让完整访问的子会话再派生任务。
   - Windows 下 `danger-full-access` 只解除沙箱，**不解除平台审批/权限预设**（审批被禁时会直接拒绝），也不改 `chdir`。
 
-## 协调者读工作区产物（`read_workspace`）
+## 协调者读产物（`read_workspace`）
 
-- **只能读主会话工作区**：`$DSH_HOME/state/orchestrator/workspace` 之下（含 `reports/`、`diag/`、`backups/` 等）。
-  子会话在**自己 target 目录**里写的产物（仓库里的改动、worktree 检出里的文件）**读不到**——那些要子会话回报路径、
-  或把摘要写进工作区产物。这是「只开放一个受控入口」的直接代价，不是缺陷。
+- **边界 = 主会话工作区 ∪ 已登记产物**：前者是 `$DSH_HOME/state/orchestrator/workspace` 之下（含 `reports/`、`diag/`、`backups/` 等）；
+  后者是台账 `tasks.artifacts_json` 里登记过的路径（`task_report` 显式回报 + `done` 时自动收集）。
+  子会话按契约把产物写在 target 目录内，那些路径不在工作区里，但**只要登记过就能读**。
+- **登记表不放宽目录**：未登记的同目录文件仍然被拒——读取面是「工作区 + 登记集合」，不是整个 target 仓库。
+  这也意味着**没回报 artifacts 的产物读不到**：子会话要把关键产物写进 `task_report.artifacts`（`done` 时的
+  `workspaceChanges` 自动收集只覆盖本轮会话里被改动/新建的文件，覆盖不到手工放在别处的东西）。
+- **登记表不借符号链接放行**：登记一个指向别处的链接不等于登记了它的真实路径；链接本身不登记，读取仍按真实路径判定。
+- **`.mr-watch/` 等外部技能的私有状态不要用 `read_workspace` 读**：`mr-watch-state` / `mr-comments` 的水位与锁文件是
+  用户级技能的私有数据，本插件只保证不参与快照与清理，不保证其语义；读进来只会污染协调者上下文。
 - **不是全盘读，也不是 glob**：没有目录递归枚举、没有模式匹配；要看某个目录就逐层读目录条目（一层最多 200 项）。
   这样做的原因是平台读路径没有白名单（见 README「读工作区产物」一节的证据），自建入口必须自己守住边界。
-- **边界靠真实路径判定**：符号链接逃逸、`../` 穿越、工作区外绝对路径都会被拒并写 `workspace.read.rejected` 审计日志；
+- **边界靠真实路径判定**：符号链接逃逸、`../` 穿越、工作区外且未登记的绝对路径都会被拒并写 `workspace.read.rejected` 审计日志；
   但**没有**防住「工作区里本来就有的软链指向里面」——那是工作区内的正常文件，允许读。
+- **已登记产物的目录条目会放开子树**：产物允许是目录（`normalizeArtifacts` 接受目录），登记一个目录就等于放开它下面的
+  所有文件。子会话回报「整个仓库根」当产物会把这个面放得很大，属于使用纪律问题，插件不做二次收窄。
 - **截断是常态，不是失败**：默认 400 行、单次 ≤ 64 K 字符；大文件用 `offset` 续读。单行本身超 64 K 字符时只返回该行前 64 K 字符
   并标记 `truncatedLine`，续读 `offset` 照给（指向下一行）——**这一行的后半截读不到**，要看全就得让子会话把内容拆成多行/多文件。
 - **`offset`/`limit` 收字符串**：`offset: '401'` 会先 `Number()` 再判有限，与数字等价；非法值（`'abc'`、空串）回落默认，不报错。
@@ -135,6 +144,28 @@
 - **IM 外发风险**：若 profile 开了 IM 双向同步（如 `@xmanrui/dsh-im`），协调者读进上下文的正文可能随「最终助手文字」
   同步到外部渠道且**不可撤回**。涉密产物不要用 `read_workspace` 读进主会话——这是本能力最主要的残余风险，不是可配置项。
 - **不用于校验存在性**：存在性仍由插件（通知路径已 `lstat`）与子任务保证；`read_workspace` 只负责「看内容」。
+
+## 状态与提示词的单一事实源（0.19.2）
+
+- **状态能力表只有一份**（`src/status-facts.js` 的 `STATUS_CAPS`）：`active` / `followup` / `resumable` /
+  `deletable` / `terminal` / `releases` / `retryable` / `waiting` / `rotationActive` / `liveness` / `catalog` /
+  `watchdog` / `planSettled`。新增状态只改这张表，13 处引用自动跟上。
+- **三条转移边已删**：`running → done`、`failed → running`、`orphaned → pending` 从未有调用点（审计 §2.3.3）。
+  删边只影响**未来**的迁移，不改任何存量行；若脚本/测试需要「直接完成」，走 `running → delivered → done` 两步。
+- **`failed` 不是流程终态但已收尾**：它 `terminal:false`（能重派）、`releases:true`（要释放资源）。所以对失败任务
+  点「停止」是幂等成功（`already:true`），**不会**再被改成「已取消」——这是 0.19.x 的缺陷，现已修复。
+- **worktree 状态转移现在会校验**（`WORKTREE_TRANSITIONS`）：非法转移抛错而不是静默写进去；同状态重复写入幂等。
+  历史台账里若有「非法」的旧值（人工改库），下一次 `setTaskWorktree` 写状态时会报错——需要人工修数据。
+- **提示词五层各有独占职责**（`src/prompt-layers.js` 的 `PROMPT_LAYERS`）：L1 协调者 policy（每回合）/ L2 brief
+  （每次派发）/ L3 task_detail（按需）/ L4 onboarding（仅首次）/ 通知 hint（每次通知）。`layerViolations` 是机器可读的
+  归层探针，测试用它防止「删掉的重叠又抄回来」。
+- **onboarding 不再复述能力边界**（708 → 525 字）：那些规则只在 L1，`main-session` 轮换时 onboarding 会被标 `sent`
+  跳过，写在那里等于白写且必然漂移。
+- **偏好不是权限通道**：它只是 `settings.orchestrator_preferences` 里的提示词文本，不进 config、不改 dispatch、
+  不碰 `sandboxPolicy`；内置种子里不放任何「放宽安全边界」的条目。全局偏好**只写 settings 不写 memories**，
+  所以 `history_search` 查不到它——这是「单一事实源」的代价，`memory_note` 的返回文案会明确告知。
+- **偏好超限会被截断**：默认 12 条 / 1200 字，超限按 priority 降序保留并在段尾写出「另有 N 条未展示」。
+  被截掉的偏好**不会生效**，也不会报错。
 
 ## 计划阶段（P8）
 
