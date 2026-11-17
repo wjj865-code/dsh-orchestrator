@@ -15,7 +15,7 @@ import {
 import { createTools } from '../src/tools.js'
 import { openLedger } from '../src/ledger.js'
 import { createQueue } from '../src/queue.js'
-import { tempDir } from './helpers.js'
+import { canCreateFileSymlink, SYMLINK_SKIP_REASON, tempDir } from './helpers.js'
 
 /** 搭一个「主会话工作区 + 工作区外的敏感文件」的临时布局。 */
 function workspaceFixture() {
@@ -55,7 +55,9 @@ test('目录只列一层条目，不递归', () => {
   assert.equal(listed.items[0].readable, true)
 })
 
-test('目录里指向工作区外的符号链接被标为不可读', () => {
+test('目录里指向工作区外的符号链接被标为不可读', t => {
+  // 整条用例靠真链接才能验：没有符号链接权限的环境（Windows 未开开发者模式）只跳过它，不判失败。
+  if (!canCreateFileSymlink()) return t.skip(SYMLINK_SKIP_REASON)
   const { root, outside } = workspaceFixture()
   symlinkSync(join(outside, 'secret.yaml'), join(root, 'reports', 'link-out.yaml'))
   symlinkSync(join(root, 'reports', 'plan.md'), join(root, 'reports', 'link-in.md'))
@@ -91,7 +93,9 @@ test('路径穿越被拒：../ 与多级 ../', () => {
   assert.equal(inside.ok, true)
 })
 
-test('符号链接逃逸被拒：指向工作区外的文件链接与目录链接', () => {
+test('符号链接逃逸被拒：指向工作区外的文件链接与目录链接', t => {
+  // 文件链接没有 junction 替代（junction 只对目录生效），无权限环境整条跳过；目录联接的覆盖在 CI 上跑。
+  if (!canCreateFileSymlink()) return t.skip(SYMLINK_SKIP_REASON)
   const { root, outside } = workspaceFixture()
   symlinkSync(join(outside, 'secret.yaml'), join(root, 'reports', 'link-file.yaml'))
   symlinkSync(outside, join(root, 'reports', 'link-dir'))

@@ -5,19 +5,21 @@
 //   2. 登记表不借符号链接放行——登记一个指向别处的链接不等于登记了它的真实路径；
 //   3. 已登记目录放开子树（产物可以是目录），已登记文件只放开它自己。
 // 另外锁住「存量产物兼容」：target 目录下的产物不需要迁移数据、不需要改 WRITE_HINT，登记后立刻可读。
+// 最后区分两种「不可读」：**读取面缺口**（越界/未登记，是权限问题）与**体积拒绝**（内容超 4MB，
+// 是内容问题）——后者在存量抽样里允许出现，但绝不能被当成前者（文案与统计都分开）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   deliverableOf, isInside, isRegisteredArtifact, registeredArtifacts, registeredMatch,
 } from '../src/artifact-location.js'
-import { readWorkspaceFile, renderWorkspaceRead, resolveWorkspaceTarget } from '../src/read-workspace.js'
+import { MAX_FILE_BYTES, readWorkspaceFile, renderWorkspaceRead, resolveWorkspaceTarget } from '../src/read-workspace.js'
 import { createTools } from '../src/tools.js'
 import { createTask, openLedger, setTaskArtifacts, transition } from '../src/ledger.js'
 import { createQueue } from '../src/queue.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { canCreateFileSymlink, sampleBrief, SYMLINK_SKIP_REASON, tempDir } from './helpers.js'
 
 /**
  * 「主会话工作区 + 任务 target 目录（工作区外）」两处布局：
@@ -39,6 +41,14 @@ function locationFixture() {
 }
 
 const taskRow = (id, artifacts) => ({ id, artifacts })
+
+/**
+ * 「体积类拒绝」的唯一判据：ok:false 且原因是文件过大。
+ *
+ * 产品代码没有单独的 `reason` 字段，体积拒绝在文案里以「文件过大」表达（src/read-workspace.js）。
+ * 测试统一走这个判定，避免各处自己正则——两种拒绝（读取面缺口 vs 内容太大）必须分开说。
+ */
+const isOversizeRejection = read => read?.ok === false && /文件过大/.test(read.error ?? '')
 
 test('已登记产物可读：target 目录下（工作区外）的文件按真实路径放行', () => {
   const { workspace, target } = locationFixture()
@@ -67,7 +77,9 @@ test('未登记的同一目录文件仍被拒：登记表不放宽目录', () =>
   assert.match(legacy.error, /越界被拒绝/)
 })
 
-test('登记表里的符号链接仍被拒：不放行真实路径，也不放行链接本身', () => {
+test('登记表里的符号链接仍被拒：不放行真实路径，也不放行链接本身', t => {
+  // 整条用例靠真链接才能验：没有符号链接权限的环境（Windows 未开开发者模式）只跳过它，不判失败。
+  if (!canCreateFileSymlink()) return t.skip(SYMLINK_SKIP_REASON)
   const { workspace, target, secretDir } = locationFixture()
   const link = join(target, 'reports', 'link-out.yaml')
   symlinkSync(join(secretDir, 'secret.yaml'), link)
@@ -87,7 +99,7 @@ test('登记表里的符号链接仍被拒：不放行真实路径，也不放�
   assert.match(ok.text, /偏好机制方案/)
 })
 
-test('已登记目录放开子树（产物可以是目录），未登记目录下的文件仍被拒', () => {
+test('已登记目录放开子树（产物可以是目录），未登记目录下的文件仍被拒', t => {
   const { workspace, target } = locationFixture()
   const registered = registeredArtifacts([taskRow('t-1', [{ path: join(target, 'diag') }])])
   const ok = readWorkspaceFile({ root: workspace, path: join(target, 'diag', 'snap.json'), registered })
@@ -99,6 +111,9 @@ test('已登记目录放开子树（产物可以是目录），未登记目录�
   assert.equal(listed.ok, true)
   assert.equal(listed.kind, 'directory')
   assert.match(renderWorkspaceRead(listed), /【已登记产物目录】/)
+  // 尾段要给目录里造一条指向未登记的链接：环境不支持文件链接时只跳过这一段（前面的断言已跑过），
+  // 不把整条用例判失败，也不假装验过。
+  if (!canCreateFileSymlink()) return t.skip(SYMLINK_SKIP_REASON)
   // 目录里的符号链接指向未登记位置 → 条目标 readable:false（标记与真实判定同源）。
   const outside = mkdtempSync(join(tmpdir(), 'orch-loc-out-'))
   writeFileSync(join(outside, 'x.txt'), 'x', 'utf8')
@@ -153,7 +168,7 @@ test('registeredMatch / isRegisteredArtifact：文件命中自己、目录命中
   assert.equal(relative.files.size, 0)
 })
 
-test('deliverableOf：present 的类型判定（普通文件/目录/链接/缺失/相对路径）', () => {
+test('deliverableOf：present 的类型判定（普通文件/目录/链接/缺失/相对路径）', t => {
   const { target } = locationFixture()
   const file = join(target, 'reports', 'preference-mechanism-plan.md')
   assert.equal(deliverableOf(file), 'file')
@@ -161,6 +176,8 @@ test('deliverableOf：present 的类型判定（普通文件/目录/链接/缺�
   assert.equal(deliverableOf(join(target, 'reports', 'nope.md')), 'missing')
   assert.equal(deliverableOf('reports/plan.md'), 'relative')
   assert.equal(deliverableOf(''), 'other')
+  // 「链接」那一支要真造一条链接：无权限环境只跳过这一段，前面的普通文件/目录/缺失判定照跑。
+  if (!canCreateFileSymlink()) return t.skip(SYMLINK_SKIP_REASON)
   const link = join(target, 'reports', 'link-deliver.md')
   symlinkSync(file, link)
   assert.equal(deliverableOf(link), 'symlink')
@@ -236,8 +253,32 @@ test('工具描述不再声称「子会话产物常落在工作区 reports/」',
   db.close()
 })
 
-test('存量台账抽样：所有仍然存在的已登记产物都可读（真实数据兼容性）', () => {
+test('已登记的超大产物：按体积拒绝，不判成读取面缺口（越界/未登记）', () => {
+  const { workspace, target } = locationFixture()
+  const big = join(target, 'reports', 'big-report.json')
+  writeFileSync(big, Buffer.alloc(MAX_FILE_BYTES + 1, 0x61))
+  const registered = registeredArtifacts([taskRow('t-big', [{ path: big }])])
+  // 登记表认这条产物：读取面是通的。所以拒绝只能来自体积，不能被说成「未登记/越界」——
+  // 后者会把「产物太大」误导成「权限不够」，让人去翻登记表而不是去缩产物。
+  assert.equal(isRegisteredArtifact(big, registered), true)
+  const denied = readWorkspaceFile({ root: workspace, path: big, registered })
+  assert.equal(isOversizeRejection(denied), true)
+  assert.match(denied.error, /上限/)
+  assert.doesNotMatch(denied.error, /越界被拒绝|未登记|读取面缺口/)
+  // 同一登记项、同一路径，只是变小到上限内 → 立刻可读（证明拒绝的是体积，不是读取面）。
+  writeFileSync(big, '{"ok":true}\n', 'utf8')
+  const read = readWorkspaceFile({ root: workspace, path: big, registered })
+  assert.equal(read.ok, true)
+  assert.equal(read.via, 'registered')
+  assert.match(read.text, /"ok":true/)
+})
+
+test('存量台账抽样：已登记产物要么可读、要么只按体积拒（真实数据兼容性）', () => {
   // 用宿主真实台账抽样（CI/无台账时跳过）：这是「78.7% → 100%」的回归证据。
+  //
+  // 判据分两档，两种「不可读」必须分开（宿主大产物不该把读取面回归测红）：
+  //   1. 体积 > MAX_FILE_BYTES：允许 ok:false，但原因必须且只能是体积类；
+  //   2. 其余（含上限内的全部产物）：必须 ok:true——任何「越界/未登记/不存在」都算读取面回归。
   const home = process.env.DSH_HOME ?? join(process.env.HOME ?? '', '.dsh')
   const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
   if (!existsSync(dbPath)) return
@@ -250,13 +291,31 @@ test('存量台账抽样：所有仍然存在的已登记产物都可读（真�
   const workspace = join(home, 'state', 'orchestrator', 'workspace')
   let total = 0
   let readable = 0
+  let oversized = 0
+  const unexpected = []
   for (const task of tasks) {
     for (const item of task.artifacts) {
       if (typeof item?.path !== 'string' || !existsSync(item.path)) continue
       total += 1
-      if (readWorkspaceFile({ root: workspace, path: item.path, registered }).ok === true) readable += 1
+      const read = readWorkspaceFile({ root: workspace, path: item.path, registered })
+      if (read.ok === true) {
+        readable += 1
+        continue
+      }
+      const size = statSync(item.path).size
+      if (size > MAX_FILE_BYTES && isOversizeRejection(read)) {
+        oversized += 1
+        continue
+      }
+      unexpected.push(`${task.id}｜${item.path}（${size} 字节）｜${read.error}`)
     }
   }
   if (total === 0) return
-  assert.equal(readable, total, `存量产物应全部可读（${readable}/${total}）`)
+  assert.deepEqual(
+    unexpected,
+    [],
+    `存量产物应可读、或仅按体积拒绝（可读 ${readable}/${total}，体积拒 ${oversized}）`,
+  )
+  // 体积拒只可能是「内容太大」，不是「读取面被收窄」：越界/未登记一条都不许有。
+  assert.equal(readable + oversized, total)
 })
