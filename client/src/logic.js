@@ -141,6 +141,8 @@ export const fileAddressProblem = (sessionId, path) => {
 // R3 入选：活跃状态（等前置/待派发/进行中/等你确认/要授权/待确认）全收；终态（完成/失败/取消/丢失）
 //    只在 lastEventAt 落在最近 CHIP_RECENT_MS 内时收 —— 「刚跑完」要能看到，昨天的旧任务不翻旧账。
 // R4 排序与截断：lastEventAt ↓ → updatedAt ↓ → id ↑，取前 CHIP_MAX 个出 chip，其余折成「+N」。
+// R5 点击：有子会话（task.childSessionId）→ 打开该子会话；没有 / 宿主不认这个 id → 降级打开任务详情，
+//    并把「无子会话」写进 tooltip（见 chipOpenTargetOf），不给「会跳会话」的误导。
 // ---------------------------------------------------------------------------
 const CHIP_ACTIVE = new Set(CHIP_ACTIVE_STATUSES)
 
@@ -162,11 +164,30 @@ export const chipNameOf = task => {
   return id === '' ? '任务' : `任务 ${id}`
 }
 
-/** 悬浮提示：任务名 + 状态（标题截断后仍能看到全名与状态）。 */
+/**
+ * chip 点击要打开什么（R5）。
+ *
+ * 有子会话 id（快照 tasks[].childSessionId，来自台账 session_id）→ `{ kind: 'session', sessionId }`：
+ * 点一下直接跳到那个子会话（宿主 uiWorkspace.openSession，与面板行的「打开子会话」同一个调用）。
+ * 没有 → `{ kind: 'detail', sessionId: null }`：降级成老行为（打开面板 + 定位任务详情）。
+ *
+ * 「会话目录已清理 / 已归档」在客户端看不出来（快照只下发 id），所以由调用方 try/catch 兜：
+ * 宿主 openSession 抛错（`sessions.retain: unknown session <id>`）时同样走降级分支。
+ */
+export const chipOpenTargetOf = task => {
+  const value = task === null || task === undefined ? undefined : task.childSessionId
+  const sessionId = textOf(value)
+  return sessionId === '' ? { kind: 'detail', sessionId: null } : { kind: 'session', sessionId }
+}
+
+/** 悬浮提示：任务名 + 状态 + 点下去会发生什么（标题截断后仍能看到全名与状态）。 */
 export const chipTooltipOf = task => {
   const status = task === null || task === undefined ? undefined : task.status
   const label = Object.hasOwn(STATUS_LABEL, status) ? STATUS_LABEL[status] : '状态未知'
-  return `${chipNameOf(task)}｜${label}`
+  const hint = chipOpenTargetOf(task).kind === 'session'
+    ? '点击打开子会话'
+    : '无子会话，点击打开任务详情'
+  return `${chipNameOf(task)}｜${label}｜${hint}`
 }
 
 export const CHIP_TITLE_MAX = 24
@@ -235,14 +256,19 @@ export const isLatestTurn = (snapshot, turn) => {
 /**
  * 面板「打开并定位」的一次性请求：chip 点击时记下任务 id，面板下次挂载时取走并直接开详情抽屉。
  * 取走即清空 —— 用户自己点开面板时不会被上一次的残留弹窗打扰。
+ *
+ * 还可以带一条 `notice`（降级原因：子会话打不开了），面板取走后作为可见提示显示在详情里。
+ * notice 与 id 分开取：`take()` 的返回值保持「任务 id 字符串」这个老契约不变。
  */
 export const createFocusRequest = () => {
   let pending = null
+  let pendingNotice = null
   return {
-    request: id => {
+    request: (id, options = {}) => {
       const value = textOf(id)
       if (value === '') return false
       pending = value
+      pendingNotice = textOf(options === null || options === undefined ? undefined : options.notice) || null
       return true
     },
     take: () => {
@@ -250,7 +276,14 @@ export const createFocusRequest = () => {
       pending = null
       return value
     },
+    // 取走即清空：面板只在挂载消费一次，提示跟着那一次走，不留到下次开面板。
+    takeNotice: () => {
+      const value = pendingNotice
+      pendingNotice = null
+      return value
+    },
     peek: () => pending,
+    peekNotice: () => pendingNotice,
   }
 }
 

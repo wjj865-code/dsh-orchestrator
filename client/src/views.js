@@ -13,7 +13,7 @@ export function createViews({
   displayNameOf, textOf, listOf, timeLabel, shortPath,
   countTasks, matchesFilter, matchesQuery, groupArtifacts,
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
-  selectTaskChips, chipViewOf, chipTooltipOf, chipVisibleTitle, isLatestTurn,
+  selectTaskChips, chipViewOf, chipTooltipOf, chipVisibleTitle, chipOpenTargetOf, isLatestTurn,
 }) {
   // 会话头「任务」入口：仅主会话显示。useMainView 由下面 conversation.header.leading 的 inject
   // 以 hooks.mainView 提供；hook 缺失或未判定（默认 false）时返回 null，入口隐藏。
@@ -41,6 +41,8 @@ export function createViews({
   // 数据来自共享 feed（client.js 注入的 chips 可观测源），这里只在需要时订阅：
   // 非最新轮次 / 非主会话不订阅 → 没有 chip 的会话开着一个轮询都没有。
   // 关联规则、状态映射与截断都是 logic.js 的纯函数，组件只做装配（单测直接断言纯函数 + 首帧结构）。
+  // 点击：有子会话 → 交给 injected.openTask 跳该子会话；没有 → 同一个 openTask 负责降级打开任务详情，
+  // tooltip 与 cursor 都按 chipOpenTargetOf 的结果区分（不假装能跳会话）。
   const TaskChipRow = ({ turn, sessionId, useMainView, useChat, chips, openTask, openPanel }) => {
     const isMain = typeof useMainView === 'function' ? useMainView(value => value === true) : false
     const latest = typeof useChat === 'function' ? useChat(snapshot => isLatestTurn(snapshot, turn)) : false
@@ -61,6 +63,10 @@ export function createViews({
     const chipNode = task => {
       const visual = chipViewOf(task.status)
       const tooltip = chipTooltipOf(task)
+      // 点击目标由快照字段决定（logic.js 的 R5）：有子会话 → 跳子会话；没有 → 降级任务详情。
+      // data-orch-chip-open 同时给 CSS（cursor 不误导）和测试一个稳定的观察点。
+      const target = chipOpenTargetOf(task)
+      const clickable = typeof openTask === 'function' && typeof task.id === 'string' && task.id !== ''
       return (
         <button
           key={`chip-${task.id}`}
@@ -68,11 +74,10 @@ export function createViews({
           className="orch-taskchip"
           data-state={visual.state}
           data-task-id={task.id}
+          data-orch-chip-open={target.kind}
           title={tooltip}
           aria-label={tooltip}
-          onClick={typeof openTask === 'function' && typeof task.id === 'string' && task.id !== ''
-            ? () => openTask(task.id)
-            : undefined}
+          onClick={clickable ? () => openTask(task) : undefined}
         >
           <span
             className="orch-taskchip-mark"
@@ -306,6 +311,8 @@ export function createViews({
       setConfirmStop(null)
       setConfirmClose(null)
       setConfirmDelete(null)
+      // 降级提示只属于这一次「chip 点击 → 抽屉」，关掉抽屉就该收走（见下面的 focusNotice）。
+      setFocusNotice(null)
     }
 
     // 抽屉打开时按 Esc 关闭（与平台菜单一致的习惯）。
@@ -324,11 +331,16 @@ export function createViews({
 
     // 关联任务 chip 的「打开并定位」：chip 点击时记下一次任务 id，面板挂载时取走并直接开详情抽屉。
     // 只在挂载时消费一次（take 语义即清空），所以之后用户手动打开面板不会被旧请求弹抽屉。
+    // notice 是降级原因（点了「跳子会话」但宿主不认那个会话 id）：跟着同一次请求显示在抽屉顶部，
+    // 关掉抽屉即清空，不残留到下一次打开面板。
+    const [focusNotice, setFocusNotice] = React.useState(null)
     const focusConsumed = React.useRef(false)
     React.useEffect(() => {
       if (focusConsumed.current || focus === undefined || focus === null || typeof focus.take !== 'function') return
       focusConsumed.current = true
       const id = focus.take()
+      const notice = typeof focus.takeNotice === 'function' ? focus.takeNotice() : null
+      if (typeof notice === 'string' && notice !== '') setFocusNotice(notice)
       if (typeof id === 'string' && id !== '') void openDetail(id)
     }, [focus])
 
@@ -1397,6 +1409,8 @@ export function createViews({
           </div>
         </header>
         <div className="orch-drawer-body">
+          {/* chip 点击降级提示（子会话打不开）：只在这一次抽屉里显示，见 focusNotice。 */}
+          {focusNotice === null ? null : <Banner tone="notice" icon="alert">{focusNotice}</Banner>}
           {detailLoading ? drawerLoading() : null}
           {detailError !== null ? drawerError() : null}
           {detailTask === null ? null : detailBody()}

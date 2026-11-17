@@ -222,10 +222,16 @@
     const id = textOf(task === null || task === void 0 ? void 0 : task.id);
     return id === "" ? "任务" : `任务 ${id}`;
   };
+  const chipOpenTargetOf = (task) => {
+    const value = task === null || task === void 0 ? void 0 : task.childSessionId;
+    const sessionId = textOf(value);
+    return sessionId === "" ? { kind: "detail", sessionId: null } : { kind: "session", sessionId };
+  };
   const chipTooltipOf = (task) => {
     const status = task === null || task === void 0 ? void 0 : task.status;
     const label = Object.hasOwn(STATUS_LABEL, status) ? STATUS_LABEL[status] : "状态未知";
-    return `${chipNameOf(task)}｜${label}`;
+    const hint = chipOpenTargetOf(task).kind === "session" ? "点击打开子会话" : "无子会话，点击打开任务详情";
+    return `${chipNameOf(task)}｜${label}｜${hint}`;
   };
   const CHIP_TITLE_MAX = 24;
   const chipVisibleTitle = (title, max = CHIP_TITLE_MAX) => {
@@ -260,11 +266,13 @@
   };
   const createFocusRequest = () => {
     let pending = null;
+    let pendingNotice = null;
     return {
-      request: (id) => {
+      request: (id, options = {}) => {
         const value = textOf(id);
         if (value === "") return false;
         pending = value;
+        pendingNotice = textOf(options === null || options === void 0 ? void 0 : options.notice) || null;
         return true;
       },
       take: () => {
@@ -272,7 +280,14 @@
         pending = null;
         return value;
       },
-      peek: () => pending
+      // 取走即清空：面板只在挂载消费一次，提示跟着那一次走，不留到下次开面板。
+      takeNotice: () => {
+        const value = pendingNotice;
+        pendingNotice = null;
+        return value;
+      },
+      peek: () => pending,
+      peekNotice: () => pendingNotice
     };
   };
   const readSnapshot = async (signal) => {
@@ -370,6 +385,7 @@
     title: typeof task.title === "string" ? task.title : "",
     status: typeof task.status === "string" ? task.status : "",
     coordinatorSession: typeof task.coordinatorSession === "string" ? task.coordinatorSession : null,
+    childSessionId: typeof task.childSessionId === "string" && task.childSessionId !== "" ? task.childSessionId : null,
     lastEventAt: typeof task.lastEventAt === "number" ? task.lastEventAt : null,
     updatedAt: typeof task.updatedAt === "number" ? task.updatedAt : null
   });
@@ -381,7 +397,7 @@
   const signatureOf = (tasks, at) => {
     let text = "";
     for (const task of tasks) {
-      text += `${task.id}${task.status}${task.title}${task.coordinatorSession ?? ""}${task.lastEventAt ?? ""}${task.updatedAt ?? ""}${recencyOf(task, at)}`;
+      text += `${task.id}${task.status}${task.title}${task.coordinatorSession ?? ""}${task.childSessionId ?? ""}${task.lastEventAt ?? ""}${task.updatedAt ?? ""}${recencyOf(task, at)}`;
     }
     return text;
   };
@@ -1320,6 +1336,11 @@
     background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
     border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
 }
+/* 没有子会话的任务（待派发 / 等前置 / 台账里没有 session_id）：点击降级打开任务详情。
+ * 它仍是可点的（详情入口），但不假装「跳会话」——cursor 不给手感上的误导，文案见 tooltip。 */
+.orch-taskchip[data-orch-chip-open='detail'] {
+  cursor: default;
+}
 .orch-taskchip:hover {
   background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06));
   border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12));
@@ -1529,6 +1550,7 @@
     chipViewOf: chipViewOf2,
     chipTooltipOf: chipTooltipOf2,
     chipVisibleTitle: chipVisibleTitle2,
+    chipOpenTargetOf: chipOpenTargetOf2,
     isLatestTurn: isLatestTurn2
   }) {
     const HeaderButton = ({ openPanel, useMainView }) => {
@@ -1564,6 +1586,8 @@
       const chipNode = (task) => {
         const visual = chipViewOf2(task.status);
         const tooltip = chipTooltipOf2(task);
+        const target = chipOpenTargetOf2(task);
+        const clickable = typeof openTask === "function" && typeof task.id === "string" && task.id !== "";
         return /* @__PURE__ */ h(
           "button",
           {
@@ -1572,9 +1596,10 @@
             className: "orch-taskchip",
             "data-state": visual.state,
             "data-task-id": task.id,
+            "data-orch-chip-open": target.kind,
             title: tooltip,
             "aria-label": tooltip,
-            onClick: typeof openTask === "function" && typeof task.id === "string" && task.id !== "" ? () => openTask(task.id) : void 0
+            onClick: clickable ? () => openTask(task) : void 0
           },
           /* @__PURE__ */ h(
             "span",
@@ -1775,6 +1800,7 @@
         setConfirmStop(null);
         setConfirmClose(null);
         setConfirmDelete(null);
+        setFocusNotice(null);
       };
       const drawerOpen = detailLoading || detail !== null || detailError !== null;
       React.useEffect(() => {
@@ -1791,11 +1817,14 @@
           }
         };
       }, [drawerOpen]);
+      const [focusNotice, setFocusNotice] = React.useState(null);
       const focusConsumed = React.useRef(false);
       React.useEffect(() => {
         if (focusConsumed.current || focus === void 0 || focus === null || typeof focus.take !== "function") return;
         focusConsumed.current = true;
         const id = focus.take();
+        const notice = typeof focus.takeNotice === "function" ? focus.takeNotice() : null;
+        if (typeof notice === "string" && notice !== "") setFocusNotice(notice);
         if (typeof id === "string" && id !== "") void openDetail(id);
       }, [focus]);
       const copyPath = async (path) => {
@@ -2525,7 +2554,7 @@
           onClick: closeDetail
         },
         /* @__PURE__ */ h(Icon, { name: "close" })
-      )), /* @__PURE__ */ h("div", { className: "orch-drawer-sub" }, detailTask === null ? null : /* @__PURE__ */ h("span", null, `编号 ${detailTask.id}`), detailTask === null ? null : /* @__PURE__ */ h("span", null, `更新 ${timeLabel2(detailTask.updatedAt)}`), detailTask !== null && detailTask.readOnly === true ? /* @__PURE__ */ h("span", null, "只读任务") : null, detailTask !== null && detailTask.planFirst === true ? /* @__PURE__ */ h("span", null, `计划：${PLAN_STATE_LABEL2[detailTask.planState] || detailTask.planState || "无计划状态"}`) : null)), /* @__PURE__ */ h("div", { className: "orch-drawer-body" }, detailLoading ? drawerLoading() : null, detailError !== null ? drawerError() : null, detailTask === null ? null : detailBody()), detailTask === null ? null : drawerFoot());
+      )), /* @__PURE__ */ h("div", { className: "orch-drawer-sub" }, detailTask === null ? null : /* @__PURE__ */ h("span", null, `编号 ${detailTask.id}`), detailTask === null ? null : /* @__PURE__ */ h("span", null, `更新 ${timeLabel2(detailTask.updatedAt)}`), detailTask !== null && detailTask.readOnly === true ? /* @__PURE__ */ h("span", null, "只读任务") : null, detailTask !== null && detailTask.planFirst === true ? /* @__PURE__ */ h("span", null, `计划：${PLAN_STATE_LABEL2[detailTask.planState] || detailTask.planState || "无计划状态"}`) : null)), /* @__PURE__ */ h("div", { className: "orch-drawer-body" }, focusNotice === null ? null : /* @__PURE__ */ h(Banner, { tone: "notice", icon: "alert" }, focusNotice), detailLoading ? drawerLoading() : null, detailError !== null ? drawerError() : null, detailTask === null ? null : detailBody()), detailTask === null ? null : drawerFoot());
       return /* @__PURE__ */ h("div", { className: "orch-shell" }, topbar(), metrics(), /* @__PURE__ */ h("div", { className: "orch-body" }, rail(), /* @__PURE__ */ h("main", { className: "orch-main" }, alerts(), filter === "artifacts" ? artifactView() : listView())), /* @__PURE__ */ h("div", { className: "orch-layer" }, /* @__PURE__ */ h(
         "div",
         {
@@ -2602,6 +2631,7 @@
       chipViewOf,
       chipTooltipOf,
       chipVisibleTitle,
+      chipOpenTargetOf,
       isLatestTurn
     });
     function apply(ctx) {
@@ -2714,11 +2744,12 @@
           return { ok: false, reason: "host-refused", message: String(error?.message ?? error) };
         }
       };
+      const openChildSession = (sessionId) => ctx.uiWorkspace.openSession(sessionId);
       ctx.slots.inject("main", () => ctx.slots.register({
         name: "main",
         key: PANEL_ID,
         inject: () => ({
-          openSession: (id) => ctx.uiWorkspace.openSession(id),
+          openSession: openChildSession,
           openArtifactPreview,
           // chip 的「打开并定位」请求交给面板自己消费（挂载时 take 一次，取走即清空）。
           focus: focusRequest
@@ -2729,7 +2760,7 @@
         key: LAUNCHER_ID,
         inject: () => ({
           openMain: openMainOnce,
-          openSession: (id) => ctx.uiWorkspace.openSession(id),
+          openSession: openChildSession,
           clearPanel: () => ctx.layout.selectPanel(null)
         })
       }, LauncherPanel));
@@ -2751,8 +2782,21 @@
         id: CHIP_ID,
         order: 20,
         inject: () => ({
-          openTask: (id) => {
-            if (focusRequest.request(id)) ctx.layout.selectPanel(PANEL_ID);
+          openTask: (task) => {
+            const target = chipOpenTargetOf(task);
+            if (target.kind === "session") {
+              try {
+                openChildSession(target.sessionId);
+                return;
+              } catch (error) {
+                const reason = String(error && error.message || error);
+                if (focusRequest.request(task.id, { notice: `子会话已打不开（${reason}），已改为展示任务详情` })) {
+                  ctx.layout.selectPanel(PANEL_ID);
+                }
+                return;
+              }
+            }
+            if (focusRequest.request(task.id)) ctx.layout.selectPanel(PANEL_ID);
           },
           openPanel: () => ctx.layout.selectPanel(PANEL_ID),
           hooks: { mainView },
@@ -2778,6 +2822,7 @@
         chipViewOf,
         chipTooltipOf,
         chipVisibleTitle,
+        chipOpenTargetOf,
         isLatestTurn,
         createFocusRequest,
         createTaskFeed,

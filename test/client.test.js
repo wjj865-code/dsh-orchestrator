@@ -45,7 +45,9 @@ const load = (options = {}) => {
       register: (spec, component) => { registrations.push({ spec, component }); return () => {} },
     },
     layout: { selectPanel: id => selected.push(id) },
-    uiWorkspace: { openSession: id => opened.push(id) },
+    // 宿主「打开会话」的官方入口就是 uiWorkspace.openSession(id)（导航到该会话）。
+    // 用例默认记下被打开的 id；要测「宿主拒绝/老宿主没这个能力」时用 options.uiWorkspace 覆盖。
+    uiWorkspace: options.uiWorkspace ?? { openSession: id => opened.push(id) },
     get: name => services[name],
     // gate 在 apply 里通过 effect 启动；测试 fake 只记录清理函数，避免真的开定时器。
     effect: callback => {
@@ -64,7 +66,11 @@ const load = (options = {}) => {
     useState: initial => {
       const index = hooks.cursor++
       if (!(index in hooks.slots)) hooks.slots[index] = initial
-      return [hooks.slots[index], () => {}]
+      return [hooks.slots[index], value => {
+        // 写回槽位：需要「事件处理里改状态 → 下一次渲染看得见」的用例（如 chip 降级提示）
+        // 会自己把 cursor 归零再渲染一次；其余用例只渲染首帧，写回不影响断言。
+        hooks.slots[index] = typeof value === 'function' ? value(hooks.slots[index]) : value
+      }]
     },
     useRef: initial => {
       const index = hooks.cursor++
@@ -75,6 +81,11 @@ const load = (options = {}) => {
     useEffect: effect => { hooks.cursor += 1; hooks.effects.push(effect) },
   })
   const sandbox = {
+    // 面板 effect（轮询/详情请求）要用 AbortController；浏览器里本来就有，vm 沙箱要显式给。
+    // 定时器不默认注入：给了真 setTimeout，闸门的自排程会真的跑起来，测试进程就退不出去。
+    // 需要「跑 effect」的用例自己用 options.globals 注入（一般注入空转的 setTimeout）。
+    AbortController,
+    ...(options.globals ?? {}),
     window: {
       __ModuleLoader__: {
         load: ({ id, factory }) => { loadedIds.push(id); loaded = { id, ...factory(requireFn) } },
@@ -1100,6 +1111,8 @@ const chipTask = (id, status, extra = {}) => ({
   title: id,
   status,
   coordinatorSession: 's-main',
+  // R5 默认「没有子会话」：不给就测降级分支；要测跳子会话显式传 childSessionId。
+  childSessionId: null,
   lastEventAt: 1_000,
   updatedAt: 1_000,
   ...extra,
@@ -1183,7 +1196,7 @@ test('chip 关联规则：只收本会话派出的任务；活跃全收、终态
   assert.deepEqual(chipIds(tie.chips), ['t-a', 't-b'])
 })
 
-test('chip 状态映射：旋转圆环 / 虚线静圈 / 脉冲半色 / ✓ / ✗ / —；悬浮写任务名+状态', () => {
+test('chip 状态映射：旋转圆环 / 虚线静圈 / 脉冲半色 / ✓ / ✗ / —；悬浮写任务名+状态+点击去向', () => {
   const { loaded } = load()
   const { chipStateOf, chipViewOf, chipTooltipOf, chipVisibleTitle } = loaded.__test
   const mapping = [
@@ -1209,9 +1222,14 @@ test('chip 状态映射：旋转圆环 / 虚线静圈 / 脉冲半色 / ✓ / ✗
   assert.equal(chipViewOf('failed').icon, 'close')
   assert.equal(chipViewOf('cancelled').icon, 'dash')
 
-  // 悬浮提示 = 任务名 + 状态；没有标题时退化成「任务 t-xxx」。
-  assert.equal(chipTooltipOf(chipTask('t-1', 'waiting_dep', { title: '修发版' })), '修发版｜等前置')
-  assert.equal(chipTooltipOf({ id: 't-2', status: 'done' }), '任务 t-2｜已完成')
+  // 悬浮提示 = 任务名 + 状态 + 点下去会发生什么；没有标题时退化成「任务 t-xxx」。
+  assert.equal(chipTooltipOf(chipTask('t-1', 'waiting_dep', { title: '修发版' })), '修发版｜等前置｜无子会话，点击打开任务详情')
+  assert.equal(chipTooltipOf({ id: 't-2', status: 'done' }), '任务 t-2｜已完成｜无子会话，点击打开任务详情')
+  // 有子会话：提示明说「点击打开子会话」（用户预期的那条路）。
+  assert.equal(
+    chipTooltipOf(chipTask('t-3', 'running', { title: '修发版', childSessionId: 'c-3' })),
+    '修发版｜进行中｜点击打开子会话',
+  )
   // 长标题按码点截断（emoji 不被切成半个），像素级省略交给 CSS。
   const cut = chipVisibleTitle('很长的任务标题'.repeat(6))
   assert.ok(Array.from(cut).length <= 24, `截断后长度 ${Array.from(cut).length}`)
@@ -1220,9 +1238,37 @@ test('chip 状态映射：旋转圆环 / 虚线静圈 / 脉冲半色 / ✓ / ✗
   assert.equal(chipVisibleTitle('😀'.repeat(40)).length > 0, true)
 })
 
+test('chip 点击目标（R5）：有子会话 → 跳会话；没 id / 空串 / 非字符串 → 降级详情', () => {
+  const { loaded } = load()
+  const { chipOpenTargetOf } = loaded.__test
+
+  // 返回值是 vm 沙箱里的对象（原型不同，strict deepEqual 会因引用/原型不等而报错），
+  // 这里摊平成当前 realm 的普通对象再比字段。
+  const targetOf = task => {
+    const target = chipOpenTargetOf(task)
+    return { kind: target.kind, sessionId: target.sessionId }
+  }
+
+  assert.deepEqual(targetOf(chipTask('t-1', 'running', { childSessionId: 'c-1' })),
+    { kind: 'session', sessionId: 'c-1' })
+  // 没有 id / 空串 / 只有空白 / 不是字符串：都当「没有可打开的子会话」，不为一个脏值去调宿主。
+  assert.deepEqual(targetOf(chipTask('t-2', 'running')), { kind: 'detail', sessionId: null })
+  assert.deepEqual(targetOf(chipTask('t-3', 'running', { childSessionId: '' })), { kind: 'detail', sessionId: null })
+  assert.deepEqual(targetOf(chipTask('t-4', 'running', { childSessionId: '   ' })), { kind: 'detail', sessionId: null })
+  assert.deepEqual(targetOf(chipTask('t-5', 'running', { childSessionId: 42 })), { kind: 'detail', sessionId: null })
+  // 坏入参不抛（chip 行是宿主会话流里的组件，崩了就是整轮回复崩）。
+  assert.deepEqual(targetOf(null), { kind: 'detail', sessionId: null })
+  assert.deepEqual(targetOf(undefined), { kind: 'detail', sessionId: null })
+  assert.deepEqual(targetOf({ id: 't-6' }), { kind: 'detail', sessionId: null })
+  // id 首尾空白去掉再交给宿主（快照是 JSON，不该有，但不猜）。
+  assert.deepEqual(targetOf(chipTask('t-7', 'running', { childSessionId: ' c-7 ' })),
+    { kind: 'session', sessionId: 'c-7' })
+})
+
 // 渲染 chip 行：走真实注册项（turnTail），只喂假 props。
 const renderChipRow = (options = {}) => {
-  const env = load()
+  // loadOptions 透传给 load()：用例要覆盖 ctx（比如让 uiWorkspace.openSession 抛错）时用。
+  const env = load(options.loadOptions)
   const { loaded, ctx, registrations, resetHooks, hooks } = env
   loaded.apply(ctx)
   const row = registrations.find(item => item.spec.name === 'conversation.chat.turnTail')
@@ -1336,10 +1382,12 @@ test('chip 渲染与空状态：无关联/非主会话/非最新一轮都不渲�
   const [running, waiting, more] = buttons
   assert.equal(running.props['data-task-id'], 't-run')
   assert.equal(running.props['data-state'], 'running')
-  assert.equal(running.props.title, '修发版 0.17.1｜进行中')
+  // 这批任务都没有子会话：提示走降级文案，属性也标 detail（CSS 据此不给「跳会话」的 pointer）。
+  assert.equal(running.props['data-orch-chip-open'], 'detail')
+  assert.equal(running.props.title, '修发版 0.17.1｜进行中｜无子会话，点击打开任务详情')
   assert.equal(running.props['aria-label'], running.props.title)
   assert.equal(waiting.props['data-state'], 'waiting')
-  assert.equal(waiting.props.title, '回复底部 chip｜等前置')
+  assert.equal(waiting.props.title, '回复底部 chip｜等前置｜无子会话，点击打开任务详情')
   // 运行中的 SVG 挂着旋转 class（虚线静圈只给等前置/待确认）。
   assert.match(collect(running, node => node.type === 'svg')[0].props.className, /orch-taskchip-spin/)
   assert.match(collect(waiting, node => node.type === 'svg')[0].props.className, /orch-taskchip-dashed/)
@@ -1353,19 +1401,71 @@ test('chip 渲染与空状态：无关联/非主会话/非最新一轮都不渲�
   assert.equal(more.props['aria-label'], '还有 2 个关联任务')
 })
 
-test('chip 交互：点击打开面板并定位到该任务（一次性 focus 请求），不点就不吞', () => {
+test('chip 交互（有子会话）：点击直接跳该子会话，不切面板、不吃 focus 请求', () => {
   const now = Date.now()
+  const snapshot = {
+    tasks: [chipTask('t-run', 'running', { title: '跑测试', childSessionId: 'c-run-1', lastEventAt: now, updatedAt: now })],
+  }
+  const env = renderChipRow({ chips: { getSnapshot: () => snapshot, subscribe: () => () => {} } })
+  const buttons = collect(env.tree, node => node.type === 'button')
+  assert.equal(buttons.length, 1)
+  assert.equal(buttons[0].props['data-orch-chip-open'], 'session')
+  assert.equal(buttons[0].props.title, '跑测试｜进行中｜点击打开子会话')
+  assert.equal(typeof buttons[0].props.onClick, 'function')
+  buttons[0].props.onClick()
+  // 目标行为：打开「这个任务对应的子会话」——宿主 uiWorkspace.openSession(子会话 id)。
+  assert.deepEqual(env.opened, ['c-run-1'], '点击 chip 用该任务的子会话 id 调宿主打开会话')
+  assert.deepEqual(env.selected, [], '跳会话不需要先切任务面板')
+  const focus = env.panel.spec.inject().focus
+  assert.equal(focus.peek(), null, '能跳会话时不留 focus 请求（不会下次开面板还弹详情）')
+})
+
+test('chip 交互（无子会话/宿主拒绝）：降级打开任务面板 + 详情，并带可见提示', () => {
+  const now = Date.now()
+  // 降级 1：台账里就没有子会话 id（待派发/等前置）。
   const snapshot = { tasks: [chipTask('t-run', 'running', { title: '跑测试', lastEventAt: now, updatedAt: now })] }
   const env = renderChipRow({ chips: { getSnapshot: () => snapshot, subscribe: () => () => {} } })
   const buttons = collect(env.tree, node => node.type === 'button')
   assert.equal(buttons.length, 1)
+  assert.equal(buttons[0].props['data-orch-chip-open'], 'detail')
   assert.equal(typeof buttons[0].props.onClick, 'function')
   buttons[0].props.onClick()
-  assert.deepEqual(env.selected, ['orchestrator'], '点击 chip 先切到任务面板')
+  assert.deepEqual(env.opened, [], '没有子会话就不许调宿主打开会话')
+  assert.deepEqual(env.selected, ['orchestrator'], '降级：切到任务面板')
   // 面板拿到的是同一份 focus 请求：取走即清空（第二次 take 为 null，用户自己再开面板不会弹旧抽屉）。
   const focus = env.panel.spec.inject().focus
   assert.equal(focus.take(), 't-run')
   assert.equal(focus.take(), null)
+  assert.equal(focus.takeNotice(), null, '这条降级不需要额外提示：tooltip 已经写明「无子会话」')
+
+  // 降级 2：有 id 但宿主不认（会话目录被清理 / 已归档 → sessions.retain: unknown session）。
+  const stale = renderChipRow({
+    loadOptions: {
+      uiWorkspace: {
+        openSession: id => {
+          throw new Error(`sessions.retain: unknown session ${id}`)
+        },
+      },
+    },
+    chips: {
+      getSnapshot: () => ({
+        tasks: [chipTask('t-old', 'done', { title: '旧任务', childSessionId: 'c-gone', lastEventAt: now, updatedAt: now })],
+      }),
+      subscribe: () => () => {},
+    },
+  })
+  const staleButton = collect(stale.tree, node => node.type === 'button')[0]
+  assert.equal(staleButton.props['data-orch-chip-open'], 'session', '快照里有 id 就按可跳会话渲染')
+  staleButton.props.onClick()
+  assert.deepEqual(stale.selected, ['orchestrator'], '宿主拒绝打开时降级到任务面板')
+  const staleFocus = stale.panel.spec.inject().focus
+  assert.equal(staleFocus.take(), 't-old', '降级后仍然定位到该任务详情')
+  const notice = staleFocus.takeNotice()
+  assert.equal(typeof notice, 'string')
+  assert.match(notice, /unknown session/, '降级提示要带宿主给的原因，方便排查')
+  assert.match(notice, /任务详情/)
+  assert.equal(staleFocus.takeNotice(), null, '提示也是一次性的')
+
   // 「+N」也能打开面板（第二个 chip 行带 rest 的情况）。
   const many = renderChipRow({
     chips: {
@@ -1381,6 +1481,59 @@ test('chip 交互：点击打开面板并定位到该任务（一次性 focus �
   assert.equal(flattenText(more), '+1')
   more.props.onClick()
   assert.deepEqual(many.selected, ['orchestrator'])
+})
+
+test('面板消费 chip 的降级提示：抽屉顶部说清「为什么没跳成会话」，且提示只用一次', async () => {
+  const detail = {
+    ok: true,
+    task: {
+      id: 't-old', title: '旧任务', status: 'done', goal: '', targetDir: null, target: 'c-gone', readOnly: false,
+      group: null, priority: 0, dependsOn: [], writeScopes: [], question: null, options: [], error: null,
+      createdAt: 0, updatedAt: 0, artifacts: [], brief: {}, goalState: null, lastMessage: null,
+      canFollowup: false, canDelete: true,
+    },
+    dependencies: [], dependents: [], messages: [],
+  }
+  const { loaded, ctx, registrations, resetHooks, hooks } = load({
+    // 面板 effect 会真跑：快照轮询要一个能返回 snapshot 的 fetch，定时器打成空转（不留待定的 timer）。
+    fetch: async (_url, init) => {
+      const payload = JSON.parse(init.body)
+      const body = payload.endpoint === 'detail' ? detail : snapshotOf([])
+      return { ok: true, status: 200, json: async () => body }
+    },
+    globals: { setTimeout: () => 0, clearTimeout: () => {} },
+  })
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const injected = panel.spec.inject()
+  resetHooks()
+  hooks.slots[0] = snapshotOf([])
+  const props = { openSession: () => {}, focus: injected.focus }
+  // 同一份槽位再渲染一次：只把游标归零，状态（含 focusNotice）保留下来。
+  const render = () => {
+    hooks.cursor = 0
+    hooks.effects.length = 0
+    return panel.component(props)
+  }
+  // 模拟 chip 点击的降级请求：带一句原因的一次性 focus。
+  injected.focus.request('t-old', { notice: '子会话已打不开（sessions.retain: unknown session c-gone），已改为展示任务详情' })
+  render()
+  for (const effect of hooks.effects) effect()
+  assert.equal(injected.focus.peekNotice(), null, '面板取走后提示就不在请求里了（不留到下次开面板）')
+
+  const tree = render()
+  const drawer = collect(tree, node => node.type === 'aside' && node.props?.className === 'orch-drawer')[0]
+  assert.equal(drawer.props['data-open'], 'true', '降级后抽屉要打开（落到任务详情）')
+  // 抽屉顶部（骨架屏之上）要有一枚 notice 提示，写清「为什么没跳成会话」。
+  // 注意：Banner 是函数组件，组件垫片这里只看得到元素本身，文案在它的 children 上。
+  const body = collect(tree, node => node.type === 'div' && node.props?.className === 'orch-drawer-body')[0]
+  const banner = body.children
+    .find(node => node !== null && typeof node === 'object' && typeof node.type === 'function' && node.props?.tone === 'notice')
+  assert.ok(banner, '抽屉里应有一枚 notice 提示')
+  const text = flattenText(banner.children)
+  assert.match(text, /子会话已打不开/)
+  assert.match(text, /unknown session c-gone/, '提示要带宿主给的原因（排查用）')
+  await flush()
 })
 
 test('chip 订阅时序：只有「主会话 + 最新一轮」才订阅共享 feed，退订即停', () => {
@@ -1536,6 +1689,48 @@ test('chip feed：终态跨过 30 分钟线时签名变一次（chip 自己消�
   off()
 })
 
+test('chip feed 保留子会话 id：slim 不丢 childSessionId，变了要发通知（否则 chip 指着旧会话）', async () => {
+  const { loaded } = load()
+  const { createTaskFeed } = loaded.__test
+  const clock = (() => {
+    const list = []
+    return {
+      list,
+      setTimer: (run, ms) => { const timer = { run, ms, cleared: false }; list.push(timer); return timer },
+      clearTimer: timer => { timer.cleared = true },
+    }
+  })()
+  let notified = 0
+  let payload = {
+    ok: true,
+    tasks: [{
+      id: 't-1', title: '跑测试', status: 'running', coordinatorSession: 's-main',
+      childSessionId: 'c-1', lastEventAt: 5, updatedAt: 5,
+    }],
+  }
+  const feed = createTaskFeed({
+    readSnapshot: async () => payload,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  })
+  const off = feed.subscribe(() => { notified += 1 })
+  await clock.list[0].run()
+  // 点击 chip 要用的就是这个字段：剪掉它就只剩降级详情。
+  assert.equal(feed.getSnapshot().tasks[0].childSessionId, 'c-1')
+
+  // 换成另一个子会话（重派）：签名必须变，否则 chip 自己不会重渲染、还指着旧 id。
+  payload = { ok: true, tasks: [{ ...payload.tasks[0], childSessionId: 'c-2' }] }
+  await clock.list[1].run()
+  assert.equal(notified, 2)
+  assert.equal(feed.getSnapshot().tasks[0].childSessionId, 'c-2')
+
+  // 空串/缺字段统一成 null：chipOpenTargetOf 只认非空字符串，别把 '' 当会话 id 递给宿主。
+  payload = { ok: true, tasks: [{ ...payload.tasks[0], childSessionId: '' }] }
+  await clock.list[2].run()
+  assert.equal(feed.getSnapshot().tasks[0].childSessionId, null)
+  off()
+})
+
 test('chip 只走官方 turnTail 槽位：不注入 DOM、不抢动作行/时钟，样式自带动效降级', () => {
   // 官方槽位 + 项目自己的 id/order：list 槽位按新 id 追加，不覆盖宿主条目。
   assert.match(source, /name: 'conversation\.chat\.turnTail'/)
@@ -1551,6 +1746,8 @@ test('chip 只走官方 turnTail 槽位：不注入 DOM、不抢动作行/时钟
   assert.match(STYLE_TEXT, /\.orch-taskchip-dashed \{ stroke-dasharray: 3 2\.4; \}/)
   assert.match(STYLE_TEXT, /\.orch-taskchip\[data-state='confirming'\] \{\s*opacity: 0\.72;\s*animation: orch-chip-pulse/)
   assert.match(STYLE_TEXT, /\.orch-taskchip-title \{[\s\S]*?text-overflow: ellipsis/)
+  // 能跳会话的 chip 是 pointer；没有子会话的那枚不给「点了会跳走」的手感（降级文案在 tooltip 里）。
+  assert.match(STYLE_TEXT, /\.orch-taskchip\[data-orch-chip-open='detail'\] \{\s*cursor: default;/)
   // 宿主的 reduced-motion 规则只作用在 .orch-shell 内，chip 在会话流里，必须自带一份。
   assert.match(
     STYLE_TEXT,

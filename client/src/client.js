@@ -16,7 +16,7 @@ import {
   countTasks, matchesFilter, matchesQuery, groupArtifacts, artifactDate, artifactProject,
   displayNameOf, textOf, listOf, timeLabel, shortPath, fileAddressOf, fileAddressProblem,
   createFocusRequest, selectTaskChips, chipStateOf, chipViewOf, chipTooltipOf, chipVisibleTitle,
-  isLatestTurn,
+  chipOpenTargetOf, isLatestTurn,
 } from './logic.js'
 import {
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
@@ -84,6 +84,7 @@ export const createClient = (req) => {
     chipViewOf,
     chipTooltipOf,
     chipVisibleTitle,
+    chipOpenTargetOf,
     isLatestTurn,
   })
 
@@ -212,11 +213,20 @@ export const createClient = (req) => {
       }
     }
 
+    // 宿主「跳到某个会话」的唯一官方入口：UiWorkspace.openSession(target: SessionTarget)
+    // （@deepseek-ai/dsh-client-ui-workspace 的 navigation.ts：target 既可以是 sessionId，
+    //  也可以是 { parentSessionId, childSessionId } 形式的子会话地址；内部 retain → replaceMain →
+    //  selectPanel(null) 切过去。不是路由、不是 DOM）。
+    // 面板行的「打开子会话」、详情抽屉的「打开子会话」、主会话启动器与回复底部 chip 都走这一个函数：
+    // 一处实现，参数同形（会话 id），行为就不会各写一份而分叉。
+    // 宿主对不认识/已清理的 id 是同步抛错（`sessions.retain: unknown session <id>`），调用方负责兜。
+    const openChildSession = sessionId => ctx.uiWorkspace.openSession(sessionId)
+
     // 侧栏底部不再注册入口（用户要求删掉）；任务面板从会话头按钮进入。
     ctx.slots.inject('main', () => ctx.slots.register({
       name: 'main', key: PANEL_ID,
       inject: () => ({
-        openSession: id => ctx.uiWorkspace.openSession(id),
+        openSession: openChildSession,
         openArtifactPreview,
         // chip 的「打开并定位」请求交给面板自己消费（挂载时 take 一次，取走即清空）。
         focus: focusRequest,
@@ -229,7 +239,7 @@ export const createClient = (req) => {
       name: 'main', key: LAUNCHER_ID,
       inject: () => ({
         openMain: openMainOnce,
-        openSession: id => ctx.uiWorkspace.openSession(id),
+        openSession: openChildSession,
         clearPanel: () => ctx.layout.selectPanel(null),
       }),
     }, LauncherPanel))
@@ -249,15 +259,32 @@ export const createClient = (req) => {
 
     // 回复底部「关联任务」chip：官方 chat 槽位 conversation.chat.turnTail（每轮已完成回复的尾部、
     // 动作行之上），只追加一个带新 id 的 list 条目 —— 不碰宿主时钟、不注入 DOM、不抢别人的条目。
-    // 组件只在「主会话 + 最新一轮」时订阅共享 feed；点击 = 记下任务 id + 打开面板，
-    // 面板挂载时 take() 到 id 就直接开该任务的详情抽屉（定位）。
+    // 组件只在「主会话 + 最新一轮」时订阅共享 feed。
+    // 点击（用户预期「点 chip 就跳到那个子会话」）：
+    // - 有子会话 id → openChildSession(该 id)，与面板行「打开子会话」同一个宿主调用；
+    // - 没子会话 / 宿主不认这个 id（归档、目录已清理、宿主版本无 openSession）→ 降级为老行为：
+    //   记一次性 focus 请求 + 开面板，面板挂载后直接开该任务详情，并把降级原因当提示显示在抽屉里。
     ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
       name: 'conversation.chat.turnTail',
       id: CHIP_ID,
       order: 20,
       inject: () => ({
-        openTask: id => {
-          if (focusRequest.request(id)) ctx.layout.selectPanel(PANEL_ID)
+        openTask: task => {
+          const target = chipOpenTargetOf(task)
+          if (target.kind === 'session') {
+            try {
+              openChildSession(target.sessionId)
+              return
+            } catch (error) {
+              const reason = String((error && error.message) || error)
+              // 会话打不开也要让用户落到看得见的地方：面板 + 该任务详情 + 一句为什么。
+              if (focusRequest.request(task.id, { notice: `子会话已打不开（${reason}），已改为展示任务详情` })) {
+                ctx.layout.selectPanel(PANEL_ID)
+              }
+              return
+            }
+          }
+          if (focusRequest.request(task.id)) ctx.layout.selectPanel(PANEL_ID)
         },
         openPanel: () => ctx.layout.selectPanel(PANEL_ID),
         hooks: { mainView },
@@ -284,6 +311,7 @@ export const createClient = (req) => {
       chipViewOf,
       chipTooltipOf,
       chipVisibleTitle,
+      chipOpenTargetOf,
       isLatestTurn,
       createFocusRequest,
       createTaskFeed,

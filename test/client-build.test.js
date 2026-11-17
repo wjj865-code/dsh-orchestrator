@@ -118,10 +118,10 @@ test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dis
   // __test 出口保留（T7.2 验收点：单测经它验纯逻辑与闸门）。
   const { loaded } = loadArtifact()
   assert.deepEqual(Object.keys(loaded.__test).sort(), [
-    'STYLE_TEXT', 'TONE_COLOR', 'artifactDate', 'artifactProject', 'chipStateOf', 'chipTooltipOf',
-    'chipViewOf', 'chipVisibleTitle', 'countTasks', 'createFocusRequest', 'createMainViewGate',
-    'createTaskFeed', 'fileAddressOf', 'fileAddressProblem', 'groupArtifacts', 'isLatestTurn',
-    'matchesFilter', 'matchesQuery', 'selectTaskChips',
+    'STYLE_TEXT', 'TONE_COLOR', 'artifactDate', 'artifactProject', 'chipOpenTargetOf', 'chipStateOf',
+    'chipTooltipOf', 'chipViewOf', 'chipVisibleTitle', 'countTasks', 'createFocusRequest',
+    'createMainViewGate', 'createTaskFeed', 'fileAddressOf', 'fileAddressProblem', 'groupArtifacts',
+    'isLatestTurn', 'matchesFilter', 'matchesQuery', 'selectTaskChips',
   ])
 })
 

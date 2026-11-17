@@ -741,6 +741,11 @@
     background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
     border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
 }
+/* 没有子会话的任务（待派发 / 等前置 / 台账里没有 session_id）：点击降级打开任务详情。
+ * 它仍是可点的（详情入口），但不假装「跳会话」——cursor 不给手感上的误导，文案见 tooltip。 */
+.orch-taskchip[data-orch-chip-open='detail'] {
+  cursor: default;
+}
 .orch-taskchip:hover {
   background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06));
   border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12));
