@@ -134,30 +134,35 @@ test('坏包形状按失败处理：没有 object() 工厂不算命中，default
 })
 
 test('schemaAnchors：只留真实存在候选、按来源保序、去重（DSH_* / argv / Electron 布局）', () => {
-  const existing = new Set([
-    'C:\\exists\\profile',
-    'C:\\exists\\app\\dsh',
-    'C:\\exists\\app\\resources',
-    'C:\\exists\\app\\resources\\app.asar\\dsh',
-  ])
+  // 夹具路径一律用 `join` 造：源码里 Electron 布局是 `join(dirname(execPath), 'resources', …)` 推出来的，
+  // 硬写 `C:\\…\\app.asar\\dsh` 这种反斜杠字面量在 POSIX（Linux CI）上会被 `dirname` 当成没有分隔符的名字，
+  // 派生结果变成 `resources/app.asar/dsh`，断言就随平台漂移（2026-11-20 CI 首跑 1 fail 即此）。
+  const base = join(process.cwd(), 'schema-anchors-fixture')
+  const profile = join(base, 'profile')
+  const appDir = join(base, 'app')
+  const hostDsh = join(appDir, 'dsh')
+  const exe = join(appDir, 'DeepSeek Harness.exe')
+  const resources = join(appDir, 'resources')
+  const asarDsh = join(resources, 'app.asar', 'dsh')
+  const existing = new Set([profile, hostDsh, resources, asarDsh])
   const anchors = schemaAnchors({
     env: {
-      DSH_PROFILE_DIR: 'C:\\exists\\profile',
-      DSH_HOME: 'C:\\exists\\profile', // 与上面重复 → 只能出现一次
-      DSH_INSTALL_DIR: 'C:\\missing\\install',
+      DSH_PROFILE_DIR: profile,
+      DSH_HOME: profile, // 与上面重复 → 只能出现一次
+      DSH_INSTALL_DIR: join(base, 'missing-install'),
       DSH_NODE_EXECUTABLE: '',
     },
-    argv: ['C:\\exists\\app\\dsh', '--flag', 'value'],
-    execPath: 'C:\\exists\\app\\DeepSeek Harness.exe',
-    resourcesPath: 'C:\\exists\\app\\resources',
+    argv: [hostDsh, '--flag', 'value'],
+    execPath: exe,
+    resourcesPath: resources,
     exists: path => existing.has(path),
   })
 
   assert.deepEqual(anchors, [
-    'C:\\exists\\profile', // env（去重后一份）
-    'C:\\exists\\app\\dsh', // argv 里的 dsh 目录
-    'C:\\exists\\app\\resources', // resourcesPath
-    'C:\\exists\\app\\resources\\app.asar\\dsh', // Electron 打包布局
+    profile, // env（去重后一份）
+    hostDsh, // argv 里的 dsh 目录
+    resources, // resourcesPath
+    asarDsh, // Electron 打包布局
   ])
   // 不存在的候选（missing / 空值 / 无斜杠参数）不进告警列表。
   assert.ok(!anchors.some(anchor => anchor.includes('missing')))
