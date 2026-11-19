@@ -17,7 +17,8 @@
 // │    │ `.context().text`       │                │ 交付/确认/追问的决策口径、worktree/写域策略、 │
 // │    │ （index.js）            │                │ 用户偏好（第 4 段）、能力诊断                  │
 // │ L2 │ 派发消息（brief.js）     │ 每次派发/续派    │ 只做**指路**：任务编号、访问级别、worktree 依赖、│
-// │    │                        │                │ 「详情调 task_detail」、执行中/交付时怎么回报    │
+// │    │ ＋ worker 预设 persona   │ 出生即带（静态）  │ 「详情调 task_detail」、执行中/交付时怎么回报；    │
+// │    │ （cordis.patch.yml）    │                │ worker persona 只说**行为期望**（主动读 context） │
 // │ L3 │ 子会话按需调用           │ 按需（可能不调）  │ 任务的**创建详情**：目标/验收/约束/背景/原话/    │
 // │    │ （task-detail.js）      │                │ 工作目录与权限/前置/经验/产物 + 完成动作          │
 // │ L4 │ 一次性 `agent.steer`     │ 仅新主会话首次    │ 只做**开场**：自我介绍一句 + 派索引任务           │
@@ -61,7 +62,7 @@ export const PROMPT_LAYERS = Object.freeze([
   Object.freeze({
     id: 'L2',
     name: 'brief',
-    carrier: '派发消息（src/brief.js，每次派发/续派）',
+    carrier: '派发消息（src/brief.js，每次派发/续派）＋ worker 预设 persona（cordis.patch.yml，出生即带的静态前缀）',
     audience: 'worker',
     owns: Object.freeze([
       '任务编号（task_detail 的参数）',
@@ -69,6 +70,7 @@ export const PROMPT_LAYERS = Object.freeze([
       '「先调 task_detail 读详情」的指引',
       '执行中怎么上报（blocked + question/options）',
       '交付时怎么回报（summary + 待确认要点）',
+      '子会话的静态行为期望（worker persona）：需要历史经验/项目背景时主动调 context（措辞见 WORKER_CONTEXT_HINT）',
     ]),
     forbids: Object.freeze([
       '任务目标/验收/约束/背景/经验正文（属 L3）',
@@ -144,6 +146,22 @@ export const LAYER_L2_HINTS = Object.freeze({
   blocked: BLOCKED_HINT,
   confirm: CONFIRM_HINT,
 })
+
+/**
+ * 子会话「主动读上下文」的引导（L2 的第二个载体：worker 预设 persona，`cordis.patch.yml`）。
+ *
+ * 为什么写在预设 persona 而不是每条 brief：这是子会话的**固有行为期望**，不是这次任务的参数。
+ * 每条 brief 都写一遍等于把提示词预算花在重复上（brief 的 forbids 也明确它只留任务信息）；
+ * 而预设 persona 是子会话「出生即带」的静态前缀，不随派发次数稀释、也不会被 compaction 忘掉。
+ *
+ * 配套事实（不在本句里重复讲）：
+ *   - `context` 只读且**子会话可用**（`src/tools.js` 不再按主会话拦截；worker 预设 preset-tools 用 `keep` 声明它出生即可用）；
+ *   - `memory_note` **子会话不可用**（worker 预设 `deny` 掉，执行层再兜一层拒绝理由含迁移提示）。
+ *
+ * 措辞只在这里定义：`cordis.patch.yml` 的 worker persona prefix 必须**逐字包含**本句
+ * （`test/prompt-layers.test.js` 断言），改句子两边一起改。
+ */
+export const WORKER_CONTEXT_HINT = '需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读），不要等协调者注入；写记忆只属协调者，要沉淀的结论写进 task_report 的 summary。'
 
 /**
  * 层归属自检：某段文案是否只出现在它该在的层。

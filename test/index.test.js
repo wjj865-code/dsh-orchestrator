@@ -205,7 +205,7 @@ test('apply 注册 10 个工具（P1-B 15 → 10），只写 $DSH_HOME/state/orc
 }))
 
 // 挂载链证据：task_detail 由 index 的 createTools(...).map(ctx.tools.register) 注册成 host plane 全局工具，
-// worker 预设不做 preset-tools 收窄（见 test/config.test.js），所以子会话工具表里直接就有它。
+// worker 预设的 preset-tools 只做遮挡式 deny（当前仅 memory_note，见 test/config.test.js），所以子会话工具表里直接就有它。
 test('task_detail 走全局注册：主会话越权被拒，任务自己的子会话可读', withHome(async () => {
   const coordinator = makeAgent('s-1')
   const { ctx, registered } = fakeCtx({ agent: coordinator })

@@ -2,6 +2,24 @@
 
 ## 未发布（0.23.0 之后）
 
+**子会话开放只读 context（提高记忆读取主动性）**（单 commit `feat: 子会话开放只读 context（提高记忆读取主动性）`，未 bump / 未 tag / 未 push）
+
+### 变更
+
+1. **子会话可以自己读上下文了**：`context` 的三种 mode（`history` / `project` / `workspaces`）对子会话只读开放，与协调者**同一条实现**（同参数输出逐字一致）；`src/tools.js` 不再按主会话拦截它。
+2. **写记忆仍仅主会话**：`memory_note` 从子会话工具表里消失（worker 预设 `preset-tools` 的**遮挡式** `deny`），能力声明落在预设层；执行层再兜一层——万一被别的 profile/旧会话露出，返回「拒绝：写记忆只属协调者」+ 替代路径（`task_report` 的 summary / `context` 只读查 / 请协调者记），并记 `memory.note.rejected`。
+3. **`preset-tools.js` 两种形态**：保留式（`allow` 补集，协调者，不变）与遮挡式（`deny` 点名，worker）二选一；遮挡式另支持 `keep` 正向声明（当前 `context` / `task_detail` / `task_report`），挂载后随 `tools/change` 校验并写 `preset.keep` 审计，未注册先静默、不抛。
+4. **引导写进 worker 预设 prompt**（不是每条 brief）：worker persona prefix 带上 `src/prompt-layers.js` 的 `WORKER_CONTEXT_HINT`——「需要历史经验/项目背景时主动调 context，不要等协调者注入；写记忆只属协调者，要沉淀的结论写进 task_report 的 summary」。brief 仍是 4 行纯指路，不重复这句。
+5. **注入侧只做减法**：brief 自 T1 起就没有记忆正文；`task_detail` 的 `【经验文件】<路径>（N 条）` 保留（关键指针），只在末尾加一句出口「更多历史与项目背景用 `context({ mode: 'history' | 'project' })`」；索引任务的说明里删掉已不存在的「不允许 memory_note 越权」。
+6. **真机语义实验**：`docs/probes/preset-scope-restrict.mjs` 扩到 10/10 PASS（用真实 `ToolsService` 验证「预设 scope 里 deny 只遮点名项」「keep 晚注册后补确认」）。
+
+### 验证
+
+`pnpm test`（1,072 条 / 1,067 pass / 5 skip / 0 fail）+ `check:client` + `check:client-size`（≤95 KiB）+ `check:version`
++ `check:docs` 全绿；新增/改写用例锁住：子会话三种 mode 与协调者逐字一致且不被主会话门槛拦、`memory_note` 子会话被拒（理由含
+替代路径、不写库、留 `memory.note.rejected` 审计）、worker 预设 `preset-tools` 是 `deny`+`keep`（没有 `allow` 补集）、
+worker persona 逐字包含 `WORKER_CONTEXT_HINT` 且 brief 不重复它。
+
 **轮换默认开启 + 配置卡片可写**（单 commit `feat: 轮换默认开启 + 配置卡片可写`，未 bump / 未 tag / 未 push）
 
 ### 升级须知（相对 0.23.0）

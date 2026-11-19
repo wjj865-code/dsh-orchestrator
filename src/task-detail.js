@@ -56,7 +56,9 @@ const experienceText = experience => {
   if (path !== '') {
     const count = Number.isFinite(experience.count) ? `（${experience.count} 条）` : ''
     // 指针模式：完整经验在记忆文件里，子会话按需 read；文件被清理时明确说出来，别让它以为没经验。
-    return `【经验文件】${path}${count}｜${fileExists(path) ? '可 read 全文' : '文件已丢失'}`
+    // 末句是「主动读」的出口（子会话的 context 只读可用，引导主句在 worker 预设 persona）：
+    // 指针只给这一次任务命中的经验，想再多查历史/项目背景得自己调 context。
+    return `【经验文件】${path}${count}｜${fileExists(path) ? '可 read 全文' : '文件已丢失'}；更多历史与项目背景用 context({ mode: 'history' | 'project' })`
   }
   // 降级模式：记忆文件写不出来时 brief 里存的是内联块，这里原样给出（不丢经验，也不进提示词）。
   const inline = text(experience.inline)
@@ -126,7 +128,7 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   }
   if (Array.isArray(brief.workspaceIndexEntries)) {
     lines.push(`【工作区名单】仅扫描这些DSH已登记目录，不全盘递归搜git：\n${JSON.stringify(brief.workspaceIndexEntries)}`)
-    lines.push(`【只读索引脚本】${brief.workspaceIndexScript}\n用 node 脚本路径 + 上述名单JSON作为一个参数执行（正确引用，勿拼shell）；stdout即完整JSON。只读，不fetch/pull、不写文件，单项失败继续，remote去凭证。用 task_report({status:'done',workspace_index:完整JSON字符串,summary:'索引已扫描'}) 回报；宿主验证名单并存settings快照，不允许memory_note越权。采样非实时、歧义列候选。`)
+    lines.push(`【只读索引脚本】${brief.workspaceIndexScript}\n用 node 脚本路径 + 上述名单JSON作为一个参数执行（正确引用，勿拼shell）；stdout即完整JSON。只读，不fetch/pull、不写文件，单项失败继续，remote去凭证。用 task_report({status:'done',workspace_index:完整JSON字符串,summary:'索引已扫描'}) 回报；宿主验证名单并存settings快照。采样非实时、歧义列候选。`)
   }
   const acceptance = list(brief.acceptance)
   if (acceptance.length > 0) lines.push(`【验收标准】\n${acceptance.map(item => `- ${single(item)}`).join('\n')}`)

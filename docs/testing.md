@@ -55,6 +55,11 @@
   brief 不越权定义交付语义、计划/完整访问的原子句只允许在 `src/copy.js` 定义一次。
 - `test/prompt-layers.test.js` 锁分层：L1 policy / L2 brief / L3 task_detail / L4 onboarding / 通知 hint 各自独占，
   `layerViolations` 防「删掉的重叠又抄回来」；brief 行数为 **4 行基准，完整访问 / 隔离各加一行 → 4–6 行**。
+  worker 预设 persona 是 L2 的第二个载体：`cordis.patch.yml` 必须**逐字包含** `WORKER_CONTEXT_HINT`（主动读 `context`），
+  brief 不重复它（只留任务信息）。
+- `test/preset-tools.test.js` 锁预设层收窄：保留式（`allow` 补集）与遮挡式（`deny` 点名 + `keep` 声明）二选一、
+  互斥/冲突配置直接抛错、`preset.deny` / `preset.keep` 审计；真机语义（真实 `ToolsService`）由
+  `docs/probes/preset-scope-restrict.mjs` 覆盖（10/10 PASS）。
 - `test/status-facts.test.js` 锁能力位：`STATUS_CAPS` 是唯一状态能力表；`test/status-property.test.js` 用固定种子
   跑 10k 步随机迁移，断言无非法边、终态闭包、`delivered` 可追问不可轮换（<2s，确定性可复现）。
 - `test/tool-migrations.test.js`：旧工具名 → 新调用的映射表是唯一真源，README「工具迁移映射」必须与它逐条一致。
@@ -78,7 +83,7 @@
 
 ### 3.5 用例规模
 
-- 62 个 `test/*.test.js`、约 1.9 万行、1,062 条 `test()`（1,057 pass / 5 skip，`pnpm test` 会打印总数）。
+- 62 个 `test/*.test.js`、约 1.9 万行、1,072 条 `test()`（1,067 pass / 5 skip，`pnpm test` 会打印总数）。
 - 大文件：`client.test.js`（U2 客户端）、`index.test.js`（装配）、`tools.test.js`（工具面）、`main-rotation.test.js`（轮换）。
 
 ## 4. 已知 flaky / 环境限制

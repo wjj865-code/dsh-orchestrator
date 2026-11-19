@@ -132,6 +132,48 @@ test('空 allow 直接报错（避免协调者工具全开或全空）', () => {
   assert.throws(() => apply(makeCtx(['read']), { allow: [] }), /allow/)
 })
 
+test('遮挡式（deny）：只遮点名工具，其余全局工具原样继承（子会话工具面靠它去写记忆）', () => {
+  const ctx = makeCtx(['context', 'memory_note', 'task_detail', 'task_report', 'read'])
+  applyIsolated(ctx, { deny: ['memory_note'] })
+  assert.deepEqual(ctx.calls, [{ deny: ['memory_note'] }])
+  assert.deepEqual(ctx.visible(), ['context', 'read', 'task_detail', 'task_report'])
+})
+
+test('遮挡式：后注册的 deny 目标经 tools/change 补遮，且不重复', () => {
+  const ctx = makeCtx(['context'])
+  applyIsolated(ctx, { deny: ['memory_note'] })
+  assert.equal(ctx.calls.length, 0)
+  ctx.setGlobals(['context', 'memory_note'])
+  ctx.fire()
+  assert.deepEqual(ctx.calls, [{ deny: ['memory_note'] }])
+  ctx.fire()
+  assert.equal(ctx.calls.length, 1)
+  assert.deepEqual(ctx.visible(), ['context'])
+})
+
+test('keep 是「出生即可用」的正向声明：确认后写 preset.keep 审计，未注册时静默等待', () => {
+  const ctx = makeCtx(['memory_note', 'task_report'])
+  applyIsolated(ctx, { deny: ['memory_note'], keep: ['context', 'task_detail', 'task_report'] })
+  // 只确认已注册的 task_report；context / task_detail 还没注册 → 不抛、不误报。
+  assert.deepEqual(ctx.calls, [{ deny: ['memory_note'] }])
+  assert.deepEqual(ctx.logLines, ['preset-tools: deny memory_note', 'preset-tools: keep task_report'])
+  // 稍后注册上来的 keep 目标补确认（幂等，不重复记）。
+  ctx.setGlobals(['memory_note', 'task_report', 'context', 'task_detail'])
+  ctx.fire()
+  assert.deepEqual(ctx.logLines.at(-1), 'preset-tools: keep context, task_detail')
+  ctx.fire()
+  assert.equal(ctx.logLines.filter(line => line.startsWith('preset-tools: keep')).length, 2)
+  // keep 的工具有没有被误遮：没有（context 与 task_report 都还在）。
+  assert.deepEqual(ctx.visible(), ['context', 'task_detail', 'task_report'])
+})
+
+test('配置互斥：allow 与 deny 只能二选一，deny 与 keep 不许重叠，keep 只用于遮挡式', () => {
+  assert.throws(() => apply(makeCtx([]), { allow: ['task_create'], deny: ['memory_note'] }), /二选一/)
+  assert.throws(() => apply(makeCtx([]), { deny: ['memory_note'], keep: ['memory_note'] }), /冲突/)
+  assert.throws(() => apply(makeCtx([]), { allow: ['task_create'], keep: ['context'] }), /keep/)
+  assert.throws(() => apply(makeCtx([]), { keep: ['context'] }), /allow|deny/)
+})
+
 test('dispose 时移除 tools/change 监听并解除 deny', () => {
   const ctx = makeCtx(['read'])
   applyIsolated(ctx, { allow: ['task_create'] })

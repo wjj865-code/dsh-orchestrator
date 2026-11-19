@@ -6,7 +6,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  DELIVERY_NOT_FINAL, LAYER_NAME, PRESENT_LIMIT_TEXT, PRESENT_MAX_FILES, PROMPT_LAYERS, layerViolations,
+  DELIVERY_NOT_FINAL, LAYER_NAME, PRESENT_LIMIT_TEXT, PRESENT_MAX_FILES, PROMPT_LAYERS, WORKER_CONTEXT_HINT,
+  layerViolations,
 } from '../src/prompt-layers.js'
 import { renderCoordinatorPolicy } from '../index.js'
 import { CONFIRM_HINT, SUMMARY_FIELDS, renderBrief } from '../src/brief.js'
@@ -78,6 +79,20 @@ test('L2 行数：4 行基准，full 与隔离各加一行（修「四件事」�
   assert.equal(both.length, 6)
   assert.match(full[1], /^【访问级别】/)
   assert.match(isolated[1], /^【worktree 依赖】/)
+})
+
+test('L2 的第二个载体（worker 预设 persona）：主动读 context 的引导逐字同源，brief 不重复它', () => {
+  const yml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  // 措辞只在 src/prompt-layers.js 定义一次；cordis.patch.yml 的 worker persona prefix 必须逐字包含。
+  assert.ok(yml.includes(WORKER_CONTEXT_HINT), `worker persona 未逐字包含 WORKER_CONTEXT_HINT：\n${WORKER_CONTEXT_HINT}`)
+  assert.match(WORKER_CONTEXT_HINT, /主动调 context/)
+  assert.match(WORKER_CONTEXT_HINT, /不要等协调者注入/)
+  // 归层：这条引导属 L2（发给子会话的指引），且是「出生即带」的静态前缀，不是每条 brief 的临时注入。
+  const l2 = PROMPT_LAYERS.find(layer => layer.id === 'L2')
+  assert.match(l2.carrier, /persona/)
+  assert.ok(l2.owns.some(item => item.includes('WORKER_CONTEXT_HINT')), 'L2 owns 应登记这条引导的措辞源')
+  const brief = renderBrief({ taskId: 't-1a2b3c4d' })
+  assert.equal(brief.includes(WORKER_CONTEXT_HINT), false, 'brief 只留任务信息，不重复 persona 的引导')
 })
 
 test('L3 task_detail 只给任务详情与完成动作：不重复 brief 的指路，不讲协调者口径', () => {

@@ -158,6 +158,24 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     if (exec?.agent?.id !== current.id) return MAIN_ONLY_HINT
     return undefined
   }
+  // 写记忆只属协调者（子会话只读）：错误来源有两个——
+  //   1. worker 预设的 preset-tools 用 `deny` 把 memory_note 从子会话工具表里遮掉（正路，模型根本看不到）；
+  //   2. 别的 profile / 预设没生效 / 旧会话里它仍在工具表上（兜底路径，本函数负责给可执行出口）。
+  // 「能读不能写」的语义只在工具层表达，**不靠运行时特判决定可用性**（可用性由预设层声明）。
+  const WORKER_WRITE_DENIED = '拒绝：写记忆只属协调者（主会话），子会话只读。替代做法：'
+    + '① 可复用的结论写进 task_report 的 summary（交付后协调者会看到并决定是否记下）；'
+    + '② 查历史经验 / 项目背景用 context({ mode: "history" | "project" | "workspaces" })（只读，子会话可用）；'
+    + '③ 确实该长期记住的决策，在回报正文里点名请协调者 memory_note。'
+  const requireMainForWrite = exec => {
+    const current = status()
+    if (current.id === undefined) return UNBOUND_HINT
+    if (exec?.agent?.id === current.id) return undefined
+    log('memory.note.rejected', {
+      agentId: exec?.agent?.id,
+      detail: { reason: 'worker-write-denied', tool: 'memory_note', callId: exec?.callId },
+    })
+    return WORKER_WRITE_DENIED
+  }
 
   // 分组 / 写域 / 优先级：都只做轻量归一，非法值忽略。
   const normalizeGroup = value => {
@@ -694,9 +712,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   }
 
   // 历史检索（原 history_search 的实现，输出逐字不变）。
+  //
+  // 只读、**子会话也可用**（协调者与子会话走同一条实现，同参数输出逐字一致）：
+  // 「需要历史经验/项目背景时主动查」是子会话的行为期望（worker 预设 persona），这里不按角色拦。
+  // 可用性声明在预设层（worker 预设 preset-tools 的 `keep`），本层只保证「只读 + 无副作用」。
   const historyView = async (args, exec) => {
-    const denied = requireMain(exec)
-    if (denied !== undefined) return denied
     const query = String(args.query ?? '').trim()
     if (query === '') return '给一个关键词再查历史（任务名、目标、决策或文件名）。'
     const limit = Number.isFinite(args.limit) ? Math.min(10, Math.max(1, Math.floor(args.limit))) : 5
@@ -744,15 +764,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
 
   // 已登记工作区 + 仓库采样索引（原 project_context({workspaces:true}) 的实现，输出逐字不变）。
   const workspacesView = async (args, exec) => {
-    const denied = requireMain(exec)
-    if (denied !== undefined) return denied
     return `【已登记工作区】\n${workspaceList().map(item => JSON.stringify({ id: item.id, title: item.title, path: item.path })).join('\n')}\n${workspaceIndexText(loadWorkspaceIndex(db)) || '尚无仓库索引，派只读工作区与仓库索引任务。'}`
   }
 
   // 项目背景（原 project_context 的实现，输出逐字不变）。
   const projectView = async (args, exec) => {
-    const denied = requireMain(exec)
-    if (denied !== undefined) return denied
     if (args.workspaces === true) return workspacesView(args, exec)
     if (typeof args.query === 'string' && !args.target) {
       const match = inferWorkspaceTarget({ title: args.query, goal: args.query }, workspaceList())
@@ -1472,7 +1488,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }),
 
     // P1-B：history_search + project_context 合并成 context（mode 区分），两段输出逐字保持原样。
-    wrap('context', '读上下文（只读，不开放任意文件读取）：mode:"history"（默认）查跨项目历史——本插件记忆、历史任务、平台历史会话，新任务开始前用它补上下文，结果只作参考不作状态断言；mode:"project" 读项目背景——README/AGENTS/package 等白名单文件、顶层结构、最近任务、相关记忆；mode:"workspaces" 返回已登记工作区与持久化仓库采样索引（不扫描全盘）。', objectSchema({
+    // 「读」对协调者与子会话都开放（同一条实现、同参数逐字同输出）；「写」只在 memory_note，且仅主会话。
+    wrap('context', '读上下文（只读，不开放任意文件读取；协调者与子会话都可用）：mode:"history"（默认）查跨项目历史——本插件记忆、历史任务、平台历史会话，新任务开始前用它补上下文，结果只作参考不作状态断言；mode:"project" 读项目背景——README/AGENTS/package 等白名单文件、顶层结构、最近任务、相关记忆；mode:"workspaces" 返回已登记工作区与持久化仓库采样索引（不扫描全盘）。', objectSchema({
       mode: { type: 'string', enum: CONTEXT_MODES, description: '读哪一类：history（默认，历史检索，吸收原 history_search）｜project（项目背景，吸收原 project_context）｜workspaces（已登记工作区 + 仓库索引）' },
       query: str('history：检索关键词（任务名/目标/决策/文件名）；project：用于推断项目与匹配记忆的关键词'),
       project: str('history：项目绝对路径或工作区名；不传则查全局+当前项目'),
@@ -1493,12 +1510,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     //   全局偏好 → 只写 settings.orchestrator_preferences（每回合注入 L1 协调者 policy）；
     //   项目偏好 / 其它 kind → 只写 memories（随 task_detail 注入子会话 / 供 context 检索）。
     // 一条事实只落一处，不存在「两份真相」。
-    wrap('memory_note', '记住一条跨任务有效的决策/经验，或一条偏好。偏好（kind:preference）不传 project 时写进协调者偏好（每回合注入提示词，立即生效）；其余写进 memories 事实层（供 context({ mode: "history" }) 与 task_detail 注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
+    // 写入权只属协调者：子会话的工具表里没有它（worker 预设的 preset-tools deny），误调由 requireMainForWrite 给拒绝理由。
+    wrap('memory_note', '记住一条跨任务有效的决策/经验，或一条偏好（仅主会话/协调者可写；子会话工具表里没有它，误调会被拒并给出只读替代路径）。偏好（kind:preference）不传 project 时写进协调者偏好（每回合注入提示词，立即生效）；其余写进 memories 事实层（供 context({ mode: "history" }) 与 task_detail 注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
       text: str('要记住的内容，一两句话'),
       project: str('可选：项目绝对路径或工作区名；不传记为全局'),
       kind: { type: 'string', enum: ['note', 'decision', 'preference', 'lesson'], description: '类型，默认 note' },
     }), async (args, exec) => {
-      const denied = requireMain(exec)
+      const denied = requireMainForWrite(exec)
       if (denied !== undefined) return denied
       // 写入即蒸馏：去代码块/命令日志并按事实层上限截断，避免长日志混进 brief。
       const text = distillText(args.text, MAX_FACT_CHARS)

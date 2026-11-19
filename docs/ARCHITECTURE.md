@@ -20,8 +20,8 @@
 
 ### 原生自动化工具面
 
-- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，allow 显式保留 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；`preset-tools.js` 仍用增量 deny 补集。这四工具不进入 `createTools`，插件全局工具数仍为 10。
-- **工具面（P1-B：15 → 10）**：`createTools` 返回 10 个（协调者 7 + 子会话 3）。旧入口并进三个工具：`task_message` 的 `action`、`task_list` 的 `view`、新工具 `context` 的 `mode`。旧名**不注册**、不在 allow 名单，`index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）。
+- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，allow 显式保留 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；`preset-tools.js` 在协调者预设里仍用增量 deny 补集（保留式），在 worker 预设里改用**遮挡式 deny + keep 声明**（只遮 `memory_note`，`keep: [context, task_detail, task_report]` 声明「出生即可用」并写 `preset.keep` 审计；见 [子会话读上下文](#子会话读上下文只读-context)）。这四个 schedule 工具不进入 `createTools`，插件全局工具数仍为 10。
+- **工具面（P1-B：15 → 10）**：`createTools` 返回 10 个（协调者 7；子会话 4 = 3 个专属 + 共用的只读 `context`）。旧入口并进三个工具：`task_message` 的 `action`、`task_list` 的 `view`、新工具 `context` 的 `mode`。旧名**不注册**、不在 allow 名单，`index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）。
 - 缺能力诊断只针对唯一主会话：检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule`，缺失去重 warn + policy 提示；不改运行回合工具表，也不模拟自动化。
 - 只支持 `target:this_session`：Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new`/`new_once` 创建普通 root 会话，不是委托 worker、也不是第二协调者；**非唯一主** id 被 `requireMain` 拒绝。**默认 worker 不新增**挂载；`access:full` 不增加工具、不解除 `subagent_session`。沿用 Host-wide 管理、用户**明确授权**、RRULE 与 `expectedUpdatedAt` 冲突保护；用法见 [README 原生自动化](../README.md#主会话原生自动化)，边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。
 
@@ -222,7 +222,7 @@
 | 层 | 载体 | 生命周期 | 唯一职责 |
 |---|---|---|---|
 | **L1** | `ctx.systemPrompt.context().text`（`index.js`） | 每回合重渲染 | 协调者行为规则：**能直接答就不委派**、工具可用/禁用、交付与确认口径（**不主动问「能否关闭」**，只在真歧义/不可逆/远端写授权时提问）、`present`/`read_workspace` 用法、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
-| **L2** | 派发消息（`src/brief.js`） | 每次派发/续派 | 只指路：任务编号、访问级别、worktree 装依赖提示、`task_detail` 指引、执行中/交付时怎么回报 |
+| **L2** | 派发消息（`src/brief.js`）＋ worker 预设 persona（`cordis.patch.yml`） | 每次派发/续派；persona 出生即带 | 只指路：任务编号、访问级别、worktree 装依赖提示、`task_detail` 指引、执行中/交付时怎么回报；persona 只说子会话的**行为期望**（需要历史经验/项目背景时主动调 `context`，措辞真源 `WORKER_CONTEXT_HINT`） |
 | **L3** | 子会话按需调用（`src/task-detail.js`） | 按需 | 任务创建详情 + 完成动作 |
 | **L4** | 一次性 `agent.steer`（`src/onboarding.js`） | 仅新主会话首次 | 只开场：一句话自我介绍 + 派索引任务（能力边界一条都不重复） |
 | 旁路 | 通知（`src/notify.js`） | 每次通知 | 只讲「现在要你做什么」的动作指令 |
@@ -306,6 +306,23 @@
 - **越权拒绝**：只允许任务自己的子会话；主会话或别的子会话调用返回「读取被拒绝…主会话查任务用 task_status」，并记 `task.detail.rejected`。
 - **挂载链**：和其它 `task_*` 一样由 `index.js` 注册成 host plane 全局工具；协调者预设的 allow 名单不含 `task_detail`，执行层 `COORDINATOR_DENY` 也把它列为子会话专属，主会话看不到/调不到。
 - **重派同口径**：`retry` 用 `renderBrief({ taskId: 新任务编号 })` 重渲染，`task.brief` 快照整体复制；队列兜底也用 `renderBrief`，不再拼「【任务】标题 + 目标」。
+
+## 子会话读上下文（只读 `context`）
+
+子会话以前只能拿到协调者注入的那一点记忆（`task_detail` 的经验指针），自己查不到历史/项目背景。现在 `context` 对子会话开放，模型**主动读**，注入侧只留关键指针。
+
+**权限矩阵（能力声明在预设层，执行层只做只读语义兜底）**：
+
+| 工具 | 协调者（主会话） | 子会话 | 依据 |
+|---|---|---|---|
+| `context` | 可调（只读） | 可调（只读，**同一条实现**，同参数输出逐字一致） | worker 预设 `preset-tools` 的 `keep: [context, …]`；`src/tools.js` 三种 mode 都不再拦主会话 |
+| `memory_note` | 可写 | **不可见**（工具表里没有）；万一被别的 profile 露出，执行层返回「拒绝：写记忆只属协调者」+ 替代路径，并记 `memory.note.rejected` | worker 预设 `preset-tools` 的 `deny: [memory_note]`；`requireMainForWrite` 兜底 |
+| `task_report` / `task_detail` / `plan_save` | 不可调（`COORDINATOR_DENY`） | 只对任务自己的子会话 | 执行层 `task.detail.rejected` 等 |
+
+- **两种收窄形态**（`preset-tools.js`）：协调者用**保留式**（`allow` 补集，deny 掉不在名单里的全局工具）；worker 用**遮挡式**（点名 `deny`），因为子会话的 bash/pwsh/fs/web/todo/skill 都是预设自有行、不是全局工具，allow 补集要把平台全部全局工具名抄全，漏一个就把 `task_report`/`task_detail` 一起遮掉。真机语义实验见 `docs/probes/preset-scope-restrict.mjs`（10/10 PASS，含「deny 名单只遮点名项」「`keep` 晚注册后补确认」）。
+- **`keep` 是正向声明**：声明这些全局工具必须对子会话出生即可用；挂载后随 `tools/change` 校验，确认到就写 `preset.keep` 审计（写 `$DSH_HOME/state/orchestrator/logs/*.jsonl`），未注册先静默、不抛——可见性以平台真值为准。
+- **引导写在预设 prompt 里**（不是每条 brief）：worker persona prefix 带上 `src/prompt-layers.js` 的 `WORKER_CONTEXT_HINT`（「需要历史经验/项目背景时主动调 context，不要等协调者注入；写记忆只属协调者…」），`test/prompt-layers.test.js` 逐字校验；brief 仍是 4 行纯指路，不重复这句。
+- **注入侧只做减法**：brief 自 T1 起就没有记忆正文；`task_detail` 的 `【经验文件】<路径>（N 条）` 保留（关键指针），只在末尾加一句出口「更多历史与项目背景用 `context({ mode: 'history' | 'project' })`」。
 
 ## 产物
 
@@ -412,7 +429,7 @@
 
 插件页只展示一段简介与文档链接；这里只留运维需要口径：
 
-- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace`；子会话 `task_report` / `task_detail` / `plan_save`。
+- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace`；子会话 `task_report` / `task_detail` / `plan_save` / 共用的只读 `context`（写记忆的 `memory_note` 不在子会话工具表里）。
 - **面板动作与错误码同源**：面板 stop / retry / message / delete 与 `task_message({action})` 共用 `src/action-errors.js` 的 code 与门控；面板失败返回 `{ok:false, code, error}`，`host-route` 按 code 映射 HTTP 状态（400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部）。
 - `stop`：已结束再 stop 返回 `{ok:true, already:true}`；收子会话失败不阻断取消（`warnings[].code=STOP_DISPATCH_FAILED`）。
 - `retry`：只允许 failed/orphaned；已有活跃重派直接返回那条任务；同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。

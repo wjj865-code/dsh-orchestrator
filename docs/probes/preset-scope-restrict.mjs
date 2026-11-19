@@ -1,8 +1,9 @@
 // 预设层工具收窄的语义实验：从 app.asar 解出 cordis/dsh-tools/dsh-scope（不启动 app），
 // 用真实 ToolsService 验证「预设 scope 里 restrict 的实际效果」，供
-// docs/probes/main-session-preset-restrict.md 引用。
+// preset-tools.js 的注释与 test/preset-tools.test.js 引用。
+// 覆盖两种形态：保留式（allow 补集，协调者）与遮挡式（deny 点名 + keep 声明，子会话）。
 // 用法：node docs/probes/preset-scope-restrict.mjs [app.asar 路径]
-import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { readFileSync, mkdirSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
@@ -104,6 +105,10 @@ new SystemPrompt(app)
 const tools = new ToolsService(app)
 tools.register(mk('read'))
 tools.register(mk('task_create'))
+// 子会话「主动读上下文」那套要用到的全局工具（遮挡式实验）：memory_note（要遮）、context / task_report（要留）。
+tools.register(mk('memory_note'))
+tools.register(mk('context'))
+tools.register(mk('task_report'))
 
 // 对照组：预设 scope 里 restrict({allow})。
 const badKey = {}
@@ -158,6 +163,51 @@ await check('preset-tools 空 allow 抛可读错误', () => {
   let message = ''
   try { presetTools.apply(createScope(app, {}).ctx, {}) } catch (error) { message = error.message }
   assert(message.includes('allow'), `错误信息里没有 allow：${message}`)
+})
+
+// 实验组 2（0.24.0）：**遮挡式**（deny 名单）——子会话工具面只去写记忆，其余全局工具与预设自有工具都保留。
+// 协调者用 allow 补集，子会话用它会把 task_report/task_detail 一起遮掉（见上面 allow 的坑），所以子会话走点名遮挡。
+const denyKey = {}
+const denyPreset = createScope(app, denyKey)
+denyPreset.ctx.tools.register(mk('bash'))
+const denyLogs = join(OUT, 'deny-state')
+const denyApply = () => presetTools.apply(denyPreset.ctx, {
+  deny: ['memory_note'],
+  keep: ['context', 'task_detail', 'task_report'],
+  stateDir: denyLogs,
+})
+denyApply()
+const denyAgent = {}
+createScope(app, denyAgent, { parent: denyKey })
+
+await check('遮挡式 deny：只遮 memory_note，context/task_report 与预设自有 bash 都保留', () => {
+  const names = visible(tools, denyAgent)
+  assert(!names.includes('memory_note'), `memory_note 没有被遮：${names.join(',')}`)
+  for (const kept of ['context', 'task_report', 'bash']) {
+    assert(names.includes(kept), `${kept} 被误遮：${names.join(',')}`)
+  }
+})
+
+await check('遮挡式 keep：已注册的 keep 目标确认可见并写 preset.keep 审计（未注册的 task_detail 不误报）', () => {
+  const dir = join(denyLogs, 'logs')
+  const text = readdirSync(dir).filter(file => file.endsWith('.jsonl'))
+    .map(file => readFileSync(join(dir, file), 'utf8')).join('')
+  const keepEvent = text.split('\n').filter(line => line.includes('"event":"preset.keep"'))
+  assert(keepEvent.length === 1, `preset.keep 应只写一条：${keepEvent.join('|')}`)
+  assert(keepEvent[0].includes('context') && keepEvent[0].includes('task_report'), `keep 审计内容不对：${keepEvent[0]}`)
+  assert(!keepEvent[0].includes('task_detail'), `未注册的 task_detail 不该被确认：${keepEvent[0]}`)
+})
+
+await check('遮挡式：晚注册的 keep 目标（task_detail）经 tools/change 补确认，且不被误遮', () => {
+  tools.register(mk('task_detail'))
+  const names = visible(tools, denyAgent)
+  assert(names.includes('task_detail'), `task_detail 应可见：${names.join(',')}`)
+  const dir = join(denyLogs, 'logs')
+  const keeps = readdirSync(dir).filter(file => file.endsWith('.jsonl'))
+    .map(file => readFileSync(join(dir, file), 'utf8')).join('')
+    .split('\n').filter(line => line.includes('"event":"preset.keep"'))
+  assert(keeps.length === 2, `preset.keep 应再写一条（实际 ${keeps.length}）`)
+  assert(keeps[1].includes('task_detail'), `第二条 keep 应是 task_detail：${keeps[1]}`)
 })
 
 const failed = results.filter(item => !item.hit)

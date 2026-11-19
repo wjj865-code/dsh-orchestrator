@@ -277,14 +277,28 @@ test('worker 预设挂 tool-goal：子会话才有 get_goal 可读自己的任�
   assert.equal(coordinator.rows.some(row => row.id === 'tool-goal'), false)
 })
 
-test('worker 预设不做工具收窄：orchestrator 的全局工具（task_report/task_detail）子会话直接可见', () => {
+test('worker 预设只做「遮挡式」收窄：memory_note 遮掉，context/task_detail/task_report 出生即可用', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const worker = presetPlugins(source, 'dsh-orchestrator-worker')
   // 挂载链：index.js 的 createTools(...).map(tool => ctx.tools.register(tool)) 把 task_detail 注册成
-  // host plane 的**全局**工具；worker 预设不挂 preset-tools，所以不做 allow/deny 收窄，子会话直接继承。
-  assert.equal(worker.rows.some(row => row.id === 'preset-tools'), false,
-    'worker 预设挂 preset-tools 会把 task_report/task_detail 一起遮掉')
-  assert.match(worker.text, /task_report \/ task_detail/, 'worker 预设应保留全局工具挂载链的说明')
+  // host plane 的**全局**工具，子会话继承它们；worker 预设的 preset-tools 用 deny（点名遮挡）而不是 allow 补集——
+  // allow 补集要把平台所有全局工具名抄全，漏一个就把 task_report/task_detail 一起遮掉。
+  const rows = worker.rows.filter(row => row.id === 'preset-tools')
+  assert.equal(rows.length, 1, 'worker 预设应恰好挂一行 preset-tools（遮挡式）')
+  const rowText = rows[0].lines.join('\n')
+  assert.match(rowText, /name:\s*'@wjj865-code\/dsh-orchestrator\/preset-tools'/)
+  // 写记忆仍仅主会话：唯一被遮的是 memory_note。
+  assert.match(rowText, /deny:\s*\n\s+- memory_note/)
+  assert.doesNotMatch(rowText, /^\s+allow:/m, 'worker 预设不能用 allow 补集（会把全局工具全遮掉）')
+  // 正向声明：这些全局工具必须对子会话出生即可用（preset-tools 挂载后校验并写 preset.keep 审计）。
+  for (const tool of ['context', 'task_detail', 'task_report']) {
+    assert.match(rowText, new RegExp(`- ${tool}\\s*$`, 'm'), `worker 预设 keep 应声明 ${tool}`)
+  }
+  assert.match(worker.text, /task_report \/ task_detail \/ plan_save \/ context/, 'worker 预设应保留全局工具挂载链的说明')
+  // 协调者那一侧不受影响：allow 名单里仍保留 memory_note（写记忆留在主会话）。
+  const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
+  const coordinatorTools = coordinator.rows.find(row => row.id === 'preset-tools')
+  assert.match(coordinatorTools.lines.join('\n'), /^\s+- memory_note\s*$/m)
   const index = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
   assert.match(index, /createTools\(\{[\s\S]{0,800}?\.map\(tool => ctx\.tools\.register\(tool\)\)/,
     'task_detail 与其它 task_* 一样走全局注册')

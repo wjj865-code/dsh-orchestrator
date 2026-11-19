@@ -72,15 +72,17 @@
         description: 子会话的完整工作栈；显式指定它，避免继承协调者预设的工具收窄。
         order: 81
         plugins:
-          # task_report / task_detail / plan_save 是 dsh-orchestrator 插件在 host plane 注册的**全局**工具
+          # task_report / task_detail / plan_save / context 是 dsh-orchestrator 插件在 host plane 注册的**全局**工具
           # （index.js 的 createTools(...).map(tool => ctx.tools.register(tool))），不是独立预设包，所以这里没有
-          # 对应的「工具行」。本预设也刻意不做 allow/deny 收窄（不挂 preset-tools）：子会话工具表里直接就有它们。
+          # 对应的「工具行」——子会话工具表里直接继承它们，preset-tools 只在下面做**点名遮挡**（不遮它们）。
           # plan_save 只在计划模式任务里被放行（普通任务/协调者调用都会被工具层拒绝）。
           # 只读的 get_goal 由下面的 tool-goal 行提供（web-app 关掉了 host plane 的同名行）。
+          # persona：子会话的静态行为期望（主动读上下文）写在这里，不靠协调者每条 brief 临时注入；
+          # 句子真源是 src/prompt-layers.js 的 WORKER_CONTEXT_HINT（test/prompt-layers.test.js 逐字校验）。
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: 你是 dsh-orchestrator 的任务执行者，在目标目录里把活干完，并用 task_report 回报。
+              prefix: '你是 dsh-orchestrator 的任务执行者，在目标目录里把活干完，并用 task_report 回报。需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读），不要等协调者注入；写记忆只属协调者，要沉淀的结论写进 task_report 的 summary。'
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
@@ -137,6 +139,20 @@
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
+          # 子会话的工具面：**遮挡式**（deny 名单），与协调者的保留式（allow 补集）不同——
+          # 子会话的 bash/pwsh/fs/web/todo/skill 等工具都由本预设自有行提供（不是全局工具），
+          # 用 allow 补集要把平台所有全局工具名抄全，漏一个就会把 task_report/task_detail 一起遮掉。
+          # 这里只遮写记忆：memory_note 仍只属主会话（执行层 tools.js 另有只读兜底与拒绝理由）。
+          # keep 是正向声明：这些全局工具必须对子会话「出生即可用」；挂载后校验并写 preset.keep 审计。
+          - id: preset-tools
+            name: '@wjj865-code/dsh-orchestrator/preset-tools'
+            config:
+              deny:
+                - memory_note
+              keep:
+                - context
+                - task_detail
+                - task_report
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill

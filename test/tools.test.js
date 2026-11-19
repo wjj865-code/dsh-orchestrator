@@ -1360,6 +1360,67 @@ test('context mode:project 读取白名单文件与顶层结构，不读 .env，
   assert.doesNotMatch(text, /SECRET=/)
 })
 
+test('context 对子会话开放（只读）：三种 mode 与协调者逐字一致，不再被「请从主会话操作任务」拦住', async () => {
+  const { writeFileSync } = await import('node:fs')
+  const project = tempDir()
+  writeFileSync(join(project, 'README.md'), '# 示例项目\n这是说明。', 'utf8')
+  const { db, tools } = await setup()
+  await call(tools, 'memory_note', { text: '登录模块统一走 session cookie', kind: 'decision' })
+  await call(tools, 'task_create', sampleBrief({ title: '修复登录', goal: '修复登录' }))
+  // 子会话执行上下文：id 不是主会话；带上自己的 session cwd（不应影响输出，默认目录仍取主会话目录）。
+  const worker = { agent: { id: 'm-1', session: { header: { cwd: project } } } }
+  const cases = [
+    { mode: 'history', query: '登录' },
+    { mode: 'project', target: project },
+    { mode: 'workspaces' },
+  ]
+  for (const args of cases) {
+    const asCoordinator = await call(tools, 'context', args)
+    const asWorker = await call(tools, 'context', args, worker)
+    assert.equal(asWorker, asCoordinator, `${JSON.stringify(args)} 子会话输出应与协调者逐字一致（同一实现）`)
+    assert.doesNotMatch(asWorker, /请从主会话操作任务|尚未打开主会话/, `${JSON.stringify(args)} 不该被主会话门槛拦住`)
+  }
+  // 只读：子会话查完历史，台账与记忆都不多不少（context 不写任何东西）。
+  const memories = db.prepare('SELECT count(*) AS n FROM memories').get().n
+  await call(tools, 'context', { mode: 'history', query: '登录' }, worker)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM memories').get().n, memories)
+  db.close()
+})
+
+test('memory_note 写记忆仍仅主会话：子会话被拒给可执行理由（含迁移提示），不写库、留审计', async () => {
+  const events = []
+  const logger = { log: (event, fields) => events.push([event, fields]) }
+  const { db, tools } = await setup({ logger })
+  const before = db.prepare('SELECT count(*) AS n FROM memories').get().n
+  const denied = await call(tools, 'memory_note', { text: '子会话想记一条', kind: 'decision' }, { agent: { id: 'm-1' } })
+  // 拒绝理由要「可执行」：写 summary / 用 context 只读查 / 请协调者记——不是一句「请从主会话操作」。
+  assert.match(denied, /^拒绝：写记忆只属协调者（主会话）/)
+  assert.match(denied, /task_report 的 summary/)
+  assert.match(denied, /context\(\{ mode: "history"/)
+  assert.match(denied, /请协调者 memory_note/)
+  // 真没写：memories / settings 都没动（loadPreferences 自带出厂种子，只断言没有新增用户条目）。
+  assert.equal(db.prepare('SELECT count(*) AS n FROM memories').get().n, before)
+  assert.equal(loadPreferences(db).some(item => item.rule.includes('子会话想记一条')), false)
+  // 审计留痕（排障时能看到「谁在写记忆被拒」）。
+  const rejected = events.filter(([event]) => event === 'memory.note.rejected')
+  assert.equal(rejected.length, 1)
+  assert.equal(rejected[0][1].detail.reason, 'worker-write-denied')
+  assert.equal(rejected[0][1].agentId, 'm-1')
+  // 协调者照常可写（同一条路由没被收紧）。
+  const noted = await call(tools, 'memory_note', { text: '子会话想记一条', kind: 'decision' })
+  assert.match(noted, /已记住/)
+  db.close()
+})
+
+test('context 与 memory_note 的 schema 说明体现「读开放、写仅主会话」', async () => {
+  const { db, tools } = await setup()
+  assert.match(tools.context.description, /协调者与子会话都可用/)
+  assert.match(tools.context.description, /只读/)
+  assert.match(tools.memory_note.description, /仅主会话\/协调者可写/)
+  assert.match(tools.memory_note.description, /子会话工具表里没有它/)
+  db.close()
+})
+
 test('依赖：前置未完成时建 waiting_dep、不派发；前置 done 后自动晋升，前置摘要/产物在 task_detail 里', async () => {
   const { writeFileSync } = await import('node:fs')
   const target = tempDir()

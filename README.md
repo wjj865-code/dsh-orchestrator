@@ -11,7 +11,7 @@
 
 1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.23.0`。
 2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）：宿主侧代码在 DSH 进程启动时加载，**刷新页面不会换版本**，装完还是旧行为就是没重启。
-3. 自检：插件页有「任务编排」与详情页；侧栏「插件」下方有「◈ 主会话」；插件全局 **10 个工具**（协调者 7 + 子会话 3）；派一条任务回报后主会话收到「已交付待确认」，`task_message({action:'close'})` 能收成「已完成」。
+3. 自检：插件页有「任务编排」与详情页；侧栏「插件」下方有「◈ 主会话」；插件全局 **10 个工具**（协调者 7；子会话 4：`task_report` / `task_detail` / `plan_save` / 只读的 `context`）；派一条任务回报后主会话收到「已交付待确认」，`task_message({action:'close'})` 能收成「已完成」。
 4. 升级 = 装新版 + 彻底重启。registry 包用插件页的更新入口；从 GitHub 装（`https://github.com/wjj865-code/dsh-orchestrator`）的先卸载旧版。旧包名 `dsh-orchestrator` 与新版不兼容，先移除。
 5. `npm i @latest` 装到旧版 = 镜像还没同步（几十分钟到几小时）：过一会儿重装，或直接用上面的显式版本号。
 
@@ -80,11 +80,11 @@ task_create({ ..., target: '/abs/path/to/repo',
 | `task_list` | 活跃/历史任务（`active` / `group` 过滤）；`view:'inbox'` 是收件箱：待决、待确认、失败/丢失、长时间没动静 |
 | `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条检查的退出码/耗时）、交接、目标状态与轮次（`x/y`）、官方 Team 关联、最近消息、最新返回（`include:'full'` 看全文） |
 | `task_message` | 子任务动作统一入口：`action:'message'`（默认，续派/追问，复用原会话）/ `'stop'` 停止 / `'retry'` 重派 failed·orphaned / `'close'` 把「已交付待确认」确认成 `done` |
-| `context` | 只读读上下文：`mode:'history'`（默认，记忆/历史任务/历史会话）/ `'project'`（项目白名单文件、结构、最近任务、相关记忆）/ `'workspaces'`（已登记工作区与仓库采样索引） |
-| `memory_note` | 记一条跨任务有效的决策/经验；`kind:'preference'` 不传 `project` 时写进协调者偏好（每回合注入、立即生效） |
+| `context` | 只读读上下文（协调者与子会话都能调）：`mode:'history'`（默认，记忆/历史任务/历史会话）/ `'project'`（项目白名单文件、结构、最近任务、相关记忆）/ `'workspaces'`（已登记工作区与仓库采样索引） |
+| `memory_note` | 记一条跨任务有效的决策/经验（**仅主会话可写**：子会话工具表里没有它）；`kind:'preference'` 不传 `project` 时写进协调者偏好（每回合注入、立即生效） |
 | `read_workspace` | 读产物正文：主会话工作区内文件/目录，或任务已登记产物；越界/`../`/符号链接逃逸/未登记均被拒；大文件按行窗口截断给续读 `offset` |
 
-子任务（3 个）：
+子任务（3 个，外加与协调者共用的只读 `context`）：
 
 | 工具 | 作用 |
 |---|---|
@@ -92,7 +92,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 | `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收标准、可执行检查、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物 |
 | `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为产物（计划阶段唯一写入口） |
 
-- 10 个工具**全局注册**，worker 预设不做工具收窄，子会话直接继承；`task_create`/`task_list`/`task_status`/`task_message`/`context`/`memory_note`/`read_workspace` 仅主会话可调，`task_report`/`task_detail`/`plan_save` 只对任务自己的子会话开放。
+- 10 个工具**全局注册**（`index.js` 的 `createTools(...).map(ctx.tools.register)`），角色差异全在**预设层**：协调者预设用 allow 补集只留 7 个；worker 预设用**遮挡式 deny** 只遮 `memory_note`（写记忆仍仅主会话），其余全局工具子会话都继承。所以 `context` 子会话也能调——**只读**、与协调者同一条实现（同参数输出逐字一致）；`task_report`/`task_detail`/`plan_save` 只对任务自己的子会话开放；`memory_note` 万一被别的 profile 露出，执行层会拒绝并给替代路径（写 `task_report` 的 summary / 用 `context` 只读查 / 请协调者记）。
 - 派发给子会话的 **brief 是纯指引**（4 行，`access:'full'` 与隔离任务各多一行 → 4–6 行）：只给任务编号 +「先调 `task_detail`」+「执行中用 `blocked` 上报」+「交付时怎么回报」；目标、验收、经验、前置、产物都不内联进提示词，由子会话用 `task_detail` 现读。交付后协调者**不会**来问「确认 / 要改？」，任务保持待确认、等超时自动完成；用户要改时协调者用 `task_message` 回到同一个子会话。
 
 ### 工具迁移映射
@@ -228,6 +228,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 - **日志层**：`done` 摘要写进 `task-log`（一行一条），只归档、永不注入任务详情。
 - **事实层**：摘要里的经验/教训分句蒸馏成 `lesson`，加上 `decision`/`preference`/`note` 原子事实，随 `task_create` 写进 `lessons/` 记忆文件、由 `task_detail` 给出路径；`memoryLimit` 控制注入条数。
 - **检索**：`context({mode:'history'})` 查记忆/历史任务/历史会话，`context({mode:'project'})` 读项目白名单与最近任务。
+- **子会话自己读**：`context` 对子会话开放（只读、同一条实现）；`task_detail` 只给本次命中的经验指针，想要更多历史/项目背景由子会话自己调 `context`——worker 预设 persona 写明「主动读，不要等协调者注入」。写记忆仍仅主会话（`memory_note` 不在子会话工具表里）。
 - **偏好**：`memory_note({ kind:'preference' })` 不传 `project` 时写进协调者偏好（每回合注入、下一回合生效、不用重启）；带 `project` 的偏好仍是项目约定，写 `memories` 随 `task_detail` 注入。偏好只是提示词文本，**不能**放宽沙箱/审批/工具边界。
 
 ### 收件箱、日报与看门狗
