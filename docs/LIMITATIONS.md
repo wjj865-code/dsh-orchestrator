@@ -70,7 +70,8 @@
 ## 主会话轮换（G1）
 
 - **归档不可逆，这是本功能最硬的边界**：`rotateArchiveOld` 默认 `true`，收尾把旧主会话改名「主会话（已退役 YYYY-MM-DD HH:MM）」再 `archiveSession()`。平台**没有 unarchive API**，插件也不提供恢复；能选的只有事前配置 `rotateArchiveOld:false`（只改名）或 `mainRotation:'off'`（完全不换）。**轮换默认开启（`mainRotation` 默认 `auto`）**：想完全不换就必须显式配 `off`。归档动作本身幂等，但「已归档」不可撤销。
-- **判定只有一个调用点**：`main-session.openOnce()` 在**旧主会话 live** 时算一次。启动、`agent/created`、面板轮询、刷新都不判定；旧会话不 live 时走既有「隐式重建」，不算轮换。没有强制轮换的按钮/工具/端点。每次打开都现算（P1-A 删了检查节流）。
+- **判定只有一个调用点**：`main-session.openOnce()` 在**旧主会话 live** 时算一次。启动、`agent/created`、面板轮询、刷新都不判定；旧会话不 live 时走既有「隐式重建」，不算轮换。没有强制轮换的按钮/工具/端点。
+- **检查粒度是「一天最多一次」，不是「每次打开都算」**：`rotateCheckIntervalHours`（默认 24，1–168）让判定前先看 `settings.main_rotation_checked_at`，没到间隔就**直接跳过采集与判定**。所以**刚调低阈值不会立刻生效**——当天已经检查过的话最多等一个间隔（或清掉该键再打开）。这个节流只决定「查不查」，不改变「换不换」：`rotateCooldownHours` / `rotateMinAgeHours` 照旧在判定里挡。`mainRotation:'off'` 同样受节流（一次检查仍会写「为什么没换」的日志，只是频率压到一天一次）。
 - **判定是快照，动作前不复查**：`evaluate → rotateMain` 之间来新任务/消息/回合仍按旧结论执行；并发打开只生效一次（in-flight 复用），轮换后新会话未 live 的 **60 秒窗口**内再打开交回同一 id。
 - **指标口径与降级**：只剩 `main-log`（`sessionPersistence.locate` + `stat`，坏则记 `degraded`、**不按 0 算**）与 `age`（`since`：先 `settings.main_session_created_at`，退 `header.createdAt`）。只有**两个因子全拿不到**才 fail-closed（`metrics-degraded`）。`main-log` 是压缩后日志大小，不等于上下文占用。
 - **保护规则的边角**：`active-tasks` 只算 waiting_dep/pending/running/waiting_user/waiting_auth（不含 `delivered`，由 `delivered-pending` 单独挡）；`active-children` 依赖 `dispatcher.catalog()`（读不到按「无法判断」，不挡也不误挡）；`coordinator-override` 与 `spawn-provider` 命中时连采集都不做。

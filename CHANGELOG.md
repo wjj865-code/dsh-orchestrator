@@ -1,5 +1,46 @@
 # Changelog
 
+## 未发布
+
+### 恢复轮换检查节流（默认一天一次）· `feat: 恢复轮换检查节流`
+
+> 单片一 commit；本节记录尚未发版的改动，发版时并入对应版本段。
+
+#### 变更
+
+1. **恢复 `rotateCheckIntervalHours`（默认 `24`，区间 1–168，越界夹取、非法回落默认）**：重新把「打开主会话时
+   最多每 N 小时做一次采集 + 判定」的节流接回 `createRotationService.evaluate`。0.23.0 的 P1-A 把它删了
+   （理由：采集只剩 `locate` + `stat`），现场反馈「以前一天最多查一次，现在每次打开都查」——恢复的原因是
+   **每打开一次就是一次台账读 + 日志 `stat` + 平台 `locate`**，而主会话可能一天被打开几十次。
+2. **跳过路径零开销**：`evaluate` 在采集之前只读 `settings.main_rotation_checked_at`（`readRotationState`），
+   交给纯函数 `rotationCheckWindow({ now, lastCheckedAt, intervalHours })` 判定；没到间隔就**直接返回**
+   `{ due:false, skipped:true, skipReason:'check-interval', check:{…} }`——不读台账、不 `locate`、不 `stat`、
+   不碰平台服务，只写一条 `main.rotation.check.skipped` 日志（`intervalHours` / `checkedAt` / `nextCheckAt` / `elapsedHours`）。
+   首次（没有记录）视为需要检查；时钟回拨（记录在未来）按「该检查」处理，检查完用当前时间覆盖。
+3. **只在「不需要换」时写检查时间戳**：`due !== true` 才写 `main_rotation_checked_at = now`（写失败只记
+   `main.rotation.check.record-failed`，不影响本次判定）；`due === true` 不写——动作（create / 切指针）还在后面，
+   失败或崩溃后下次打开要能重试，不能被自己刚记的时间戳挡一个间隔；检查整体异常（`evaluate` 落 `catch`）同样不写。
+4. **三个时间参数分工写清（语义区分，不是同义词）**：
+   - `rotateCheckIntervalHours`（默认 24）＝**查不查**：这次打开要不要花开销做采集 + 判定；
+   - `rotateCooldownHours`（默认 48）＝**换不换**：距上次轮换不足冷却就在判定里挡 `cooldown`，**检查照做**；
+   - `rotateMinAgeHours`（默认 12）＝**换不换**：主会话跑得不够久就挡 `min-age`，同样**不拦检查**。
+   节流的 `skipped` 返回不是判定结论（`triggers` / `blockedBy` 都空），不会把上一次的 blocks 重算一遍。
+5. **配置面 28 → 29**：`rotateCheckIntervalHours` 从 `DEPRECATED_KEYS` 移回正式配置（老 profile 里写过这个键的
+   不再收到「已删除」警告，而是**直接生效**）；插件页配置卡片「主会话轮换」分组恢复该行（可写 int，默认 24，
+   区间 1–168，提示里写明「检查节流 ≠ 轮换冷却」）。README 配置表加回一行 + 增「检查节流」小节、ARCHITECTURE
+   补节流位置与执行顺序、LIMITATIONS 补「一天最多一次」的粒度限制。
+6. **不碰因子/保护/动作层**：触发因子仍是 `main-log` / `age` 两个，十二条保护、冷却/最小龄、动作时序、
+   崩溃恢复一字未动；`readRotationState` / `writeRotationState` 本来就保留 `checkedAt` 这个键，无需迁移旧库。
+
+#### 验证
+
+`pnpm test`（1,080 条 / 1,075 pass / 5 skip / 0 fail）+ `pnpm run check:client` + `pnpm run check:client-size`
+（91.9 KB / 预算 95.0 KB）+ `pnpm run check:version` + `pnpm run check:docs`（1,491 / 1,800 行）+ `npm pack --dry-run`
+（不 push / 不打 tag / 不 bump 版本）；
+新增用例锁住：**未到间隔跳过且零采集**（`persistence.locate` 调用数为 0、无 `main.rotation.decided`、只写
+`main.rotation.check.skipped`）、**到点检查并记录时间戳**、**首次无记录视为需检查**、**边界夹取**（0.5→1、
+1e6→168、非数字/非正数回落 24）、**与冷却叠加**（冷却期内检查照做、`blockedBy:['cooldown']`、时间戳照记）。
+
 ## 0.23.1（2026-11-20）
 
 0.23.0 之后的 **patch 版**，四片合发（按提交从新到旧）：**子会话开放只读 `context`**（提高记忆读取主动性；

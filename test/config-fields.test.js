@@ -99,10 +99,10 @@ test('字段表与 loadConfig 双向一致（字段集 / 默认值 / 枚举 / �
 })
 
 test('废弃键不出现在 UI 字段表', () => {
-  // 13 个键由 src/config.js 的 DEPRECATED_KEYS 给迁移提示（P1-A 的 6 个 + P2-2 的 7 个）；UI 侧不暴露。
+  // 12 个键由 src/config.js 的 DEPRECATED_KEYS 给迁移提示（P1-A 的 6 个 + P2-2 的 7 个 − 恢复的 1 个）；UI 侧不暴露。
   assert.deepEqual(Object.keys(DEPRECATED_KEYS).sort(), [
     'backend', 'rotateAfterDiskMiB', 'rotateAfterContextTokens',
-    'rotateAfterSessions', 'rotateAfterTasks', 'rotateCheckIntervalHours',
+    'rotateAfterSessions', 'rotateAfterTasks',
     'keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt',
     'mergeWindowMs', 'stallRounds', 'preferencesMaxItems',
   ].sort())
@@ -112,13 +112,13 @@ test('废弃键不出现在 UI 字段表', () => {
   }
 })
 
-test('P2-2 语义对齐：字段表只投影 loadConfig({}) 实际产出的 28 个键', () => {
+test('语义对齐：字段表只投影 loadConfig({}) 实际产出的 29 个键', () => {
   // 反向验证：把已删的 7 键任意一个加回 config-fields.js → 本条立刻红。
   const deleted = ['keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt', 'mergeWindowMs', 'stallRounds', 'preferencesMaxItems']
   for (const key of deleted) {
     assert.equal(FIELD_KEYS.includes(key), false, `${key} 已删除，不得回到表单`)
   }
-  assert.equal(FIELD_KEYS.length, 28, '字段表应与 loadConfig({}) 的 28 键同规模')
+  assert.equal(FIELD_KEYS.length, 29, '字段表应与 loadConfig({}) 的 29 键同规模')
   // 续跑只剩「按任务声明」这一条路：不再有续跑分组，也没有任何 keepalive 分组。
   assert.deepEqual(FIELD_GROUPS.map(group => group.id).includes('keepalive'), false, '续跑分组应随四个续跑键一起删除')
 })
@@ -134,13 +134,14 @@ test('mainRotation 默认 auto（开启）；只有显式 off 才关，拼错保
   }
 })
 
-test('轮换分组：7 个键在卡片上可编辑，coordinatorSession 只读（运维兜底通道）', () => {
-  // 布局：轮换分组仍是 8 键（总开关 + 6 个 rotate* + 协调者覆盖）。
+test('轮换分组：8 个键在卡片上可编辑，coordinatorSession 只读（运维兜底通道）', () => {
+  // 布局：轮换分组仍是 9 键（总开关 + 7 个 rotate* + 协调者覆盖）。
   const rotation = FIELDS_BY_GROUP.find(group => group.id === 'rotation')
-  assert.equal(rotation.fields.length, 8, '轮换分组应恰好 8 个字段')
+  assert.equal(rotation.fields.length, 9, '轮换分组应恰好 9 个字段')
   assert.deepEqual(rotation.fields.map(field => field.key), [
     'coordinatorSession', 'mainRotation', 'rotateAfterMainLogMiB', 'rotateAfterDays',
-    'rotateCooldownHours', 'rotateMinAgeHours', 'rotateIdleMinutes', 'rotateArchiveOld',
+    'rotateCooldownHours', 'rotateMinAgeHours', 'rotateIdleMinutes',
+    'rotateCheckIntervalHours', 'rotateArchiveOld',
   ])
   // 只读只有一处，且理由明确：填错会让协调者指向不存在的会话（高危误操作）。
   assert.equal(FIELD_BY_KEY.coordinatorSession.readonly, true, 'coordinatorSession 应恢复只读')
@@ -150,10 +151,18 @@ test('轮换分组：7 个键在卡片上可编辑，coordinatorSession 只读�
     assert.notEqual(field.readonly, true, `${field.key} 不该只读`)
     assert.ok(EDITABLE_KEYS.includes(field.key), `${field.key} 必须可编辑（否则卡片上点不动）`)
   }
-  assert.equal(EDITABLE_KEYS.length, CONFIG_FIELDS.length - 1, '28 键里只有 coordinatorSession 只读')
+  assert.equal(EDITABLE_KEYS.length, CONFIG_FIELDS.length - 1, '29 键里只有 coordinatorSession 只读')
   assert.equal(FIELD_GROUPS.find(group => group.id === 'rotation').label, '主会话轮换', '分组标题不再标「只读」（只读逐行标）')
 
-  // 卡片保存路径：7 个可编辑键经 loadConfig 归一化后真读到新值。
+  // 检查节流：可写 int，默认 24、区间 1–168（与 loadConfig 的夹取口径一致）。
+  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.kind, 'number')
+  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.integer, true)
+  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.min, 1)
+  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.max, 168)
+  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.default, 24)
+  assert.match(FIELD_BY_KEY.rotateCheckIntervalHours.hint, /检查节流 ≠ 轮换冷却/, '提示要写清与冷却的区别')
+
+  // 卡片保存路径：8 个可编辑键经 loadConfig 归一化后真读到新值。
   const saved = loadConfig({
     mainRotation: 'off',
     rotateAfterMainLogMiB: 2.5,
@@ -161,6 +170,7 @@ test('轮换分组：7 个键在卡片上可编辑，coordinatorSession 只读�
     rotateCooldownHours: 6,
     rotateMinAgeHours: 2,
     rotateIdleMinutes: 30,
+    rotateCheckIntervalHours: 6,
     rotateArchiveOld: false,
   })
   assert.equal(saved.mainRotation, 'off')
@@ -169,6 +179,7 @@ test('轮换分组：7 个键在卡片上可编辑，coordinatorSession 只读�
   assert.equal(saved.rotateCooldownHours, 6)
   assert.equal(saved.rotateMinAgeHours, 2)
   assert.equal(saved.rotateIdleMinutes, 30)
+  assert.equal(saved.rotateCheckIntervalHours, 6)
   assert.equal(saved.rotateArchiveOld, false)
   // coordinatorSession 走运维手改 YAML（不经卡片）：loadConfig 照旧认，空串/缺省 = 读台账指针。
   assert.equal(loadConfig({ coordinatorSession: 's-manual' }).coordinatorSession, 's-manual')

@@ -1,6 +1,6 @@
 // 已删除配置键的弃用机制（P1-A 起）：读到旧键就 warn 一次、值不回填、拼错的键不误报。
 //
-// 为什么需要它：配置面 41 → 35（P1-A）→ 28（P2-2），删掉的键还留在老用户的 profile 里。
+// 为什么需要它：配置面 41 → 35（P1-A）→ 28（P2-2）→ 29（恢复检查节流），删掉的键还留在老用户的 profile 里。
 // 静默忽略会让用户以为「我配的阈值还在生效」；这里明确告诉用户哪个键失效了、该改什么。
 // 去重是进程级的（`pnpm test` 用 --experimental-test-isolation=none，所有用例共享模块状态），
 // 所以每个用例开始先 reset。
@@ -14,16 +14,18 @@ const collect = raw => {
   return { config, warnings }
 }
 
-test('弃用键清单：P1-A 的 6 个 + P2-2 的 7 个，每个都有迁移提示', () => {
+test('弃用键清单：P1-A 的 6 个 + P2-2 的 7 个 − 恢复的检查节流键，每个都有迁移提示', () => {
   assert.deepEqual(Object.keys(DEPRECATED_KEYS).sort(), [
     'backend',
     'keepAlive', 'keepAliveMaxRounds', 'keepAliveMode', 'keepAlivePrompt',
     'mergeWindowMs',
     'preferencesMaxItems',
     'rotateAfterContextTokens', 'rotateAfterDiskMiB', 'rotateAfterSessions',
-    'rotateAfterTasks', 'rotateCheckIntervalHours',
+    'rotateAfterTasks',
     'stallRounds',
   ])
+  // 检查节流回来了：键不再算「已删除」，配了就得真生效。
+  assert.equal('rotateCheckIntervalHours' in DEPRECATED_KEYS, false, 'rotateCheckIntervalHours 已恢复为正式配置')
   for (const [key, note] of Object.entries(DEPRECATED_KEYS)) {
     assert.equal(typeof note, 'string')
     assert.ok(note.length > 0, `${key} 要有迁移提示`)
@@ -63,8 +65,11 @@ test('同一键只 warn 一次（进程级去重）；换键仍会 warn', () => 
   assert.equal(first.warnings.length, 1)
   assert.deepEqual(second.warnings, [], '同键第二次不再重复告警')
   const other = collect({ rotateCheckIntervalHours: 4 })
-  assert.equal(other.warnings.length, 1, '不同键各 warn 一次')
-  assert.match(other.warnings[0], /配置键 rotateCheckIntervalHours 已删除/)
+  assert.deepEqual(other.warnings, [], '恢复的检查节流键不再是弃用键：不 warn')
+  assert.equal(other.config.rotateCheckIntervalHours, 4, '而且值真生效')
+  const another = collect({ mergeWindowMs: 9000 })
+  assert.equal(another.warnings.length, 1, '不同键各 warn 一次')
+  assert.match(another.warnings[0], /配置键 mergeWindowMs 已删除/)
 })
 
 test('没有旧键就一条也不 warn；显式 undefined 也算命中（用户 profile 里可能写着 key: undefined）', () => {
@@ -78,6 +83,6 @@ test('没有旧键就一条也不 warn；显式 undefined 也算命中（用户 
 test('没有 onWarn 时静默（纯函数场景不抛、不写日志）', () => {
   resetDeprecatedKeyWarnings()
   assert.doesNotThrow(() => loadConfig({ backend: 'team' }))
-  // 静默调用不该「消耗」去重名额的前提是没 onWarn 就不记；这里只断言结果仍是 28 键的默认值。
-  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 28)
+  // 静默调用不该「消耗」去重名额的前提是没 onWarn 就不记；这里只断言结果仍是 29 键的默认值。
+  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 29)
 })

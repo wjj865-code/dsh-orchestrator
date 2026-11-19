@@ -1,8 +1,9 @@
-// S1 判定内核单测：7 个配置键 + evaluateRotation 纯函数（main-log / age 两因子、P1–P10 保护、冷却/最小龄）。
+// S1 判定内核单测：8 个配置键 + evaluateRotation 纯函数（main-log / age 两因子、P1–P10 保护、冷却/最小龄）。
 // S2 采集层单测：locate + stat 采集/降级、settings 键读写、pending 只读判定。
 // S3 动作台账面单测：marker/时间戳/审计/旧会话处置 + 崩溃恢复（F6/F7）；平台动作一律以函数注入，
 // 真正的「open() 里建会话 + 切指针」在 test/main-session.test.js。
-// P1-A 收缩：M1/M2/M4/M6 四个因子与 S7 检查节流已删除，对应用例一并删除（阈值语义只在剩下的两因子上验）。
+// S7 检查节流：rotationCheckWindow 纯函数 + evaluate 的跳过/首检/到点/夹取/与冷却叠加。
+// P1-A 收缩：M1/M2/M4/M6 四个因子已删除，对应用例一并删除（阈值语义只在剩下的两因子上验）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -11,7 +12,7 @@ import {
   beginRotationMarker, collectRotationMetrics, createRotationService, disposeOldMainSession,
   evaluateRotation, inspectRotationPending, markRotationTimes,
   normalizeRotationConfig, readRotationState, recordRotation, recoverPendingRotation, retiredMainSessionTitle,
-  rotationHeadline, writeRotationState,
+  rotationCheckWindow, rotationHeadline, writeRotationState,
 } from '../src/main-rotation.js'
 import { getSetting, openLedger, setSetting } from '../src/ledger.js'
 import { onboardingKey } from '../src/onboarding.js'
@@ -368,12 +369,12 @@ test('一句话文案：due 列原因、被挡给首要原因、无事可说不�
   assert.equal(rotationHeadline(undefined), '主会话轮换：尚未判定')
 })
 
-test('配置键契约：7 个键、默认值、区间与 loadConfig 接线一致', () => {
+test('配置键契约：8 个键、默认值、区间与 loadConfig 接线一致', () => {
   assert.deepEqual(Object.keys(ROTATION_DEFAULTS).sort(), [
     'mainRotation', 'rotateAfterDays', 'rotateAfterMainLogMiB', 'rotateArchiveOld',
-    'rotateCooldownHours', 'rotateIdleMinutes', 'rotateMinAgeHours',
+    'rotateCheckIntervalHours', 'rotateCooldownHours', 'rotateIdleMinutes', 'rotateMinAgeHours',
   ])
-  assert.equal(Object.keys(ROTATION_LIMITS).length, 5, '除总开关与归档开关外都是数值键')
+  assert.equal(Object.keys(ROTATION_LIMITS).length, 6, '除总开关与归档开关外都是数值键')
   const config = loadConfig({})
   for (const [key, value] of Object.entries(ROTATION_DEFAULTS)) {
     assert.equal(config[key], value, `loadConfig 应挂上 ${key}`)
@@ -385,11 +386,14 @@ test('配置键契约：7 个键、默认值、区间与 loadConfig 接线一致
   assert.equal(normalizeRotationConfig({}).mainRotation, 'auto')
   assert.equal(normalizeRotationConfig({ mainRotation: 'off' }).mainRotation, 'off')
   assert.equal(normalizeRotationConfig({ mainRotation: 'garbage' }).mainRotation, 'auto')
-  // 总量口径：41 → 35（P1-A）→ 28（P2-2 删 keepAlive×4 + 三个固定成常量的阈值键）。
-  assert.equal(Object.keys(config).length, 28)
+  // 检查节流：默认一天一次，区间 1–168（1 ≈ 每次打开都查；168 = 一周）。
+  assert.equal(ROTATION_DEFAULTS.rotateCheckIntervalHours, 24)
+  assert.deepEqual(ROTATION_LIMITS.rotateCheckIntervalHours, [1, 168, true])
+  // 总量口径：41 → 35（P1-A）→ 28（P2-2 删 keepAlive×4 + 三个固定成常量的阈值键）→ 29（恢复检查节流）。
+  assert.equal(Object.keys(config).length, 29)
 })
 
-test('settings 键名固定（S3 动作/恢复的四把事实 + 只读的 checkedAt）', () => {
+test('settings 键名固定（动作/恢复的四把事实 + 检查节流的 checkedAt）', () => {
   assert.deepEqual(
     {
       created: MAIN_SESSION_CREATED_AT_KEY,
@@ -573,12 +577,12 @@ test('S2 evaluate：采集 + 纯判定；不写任何 settings 键、不建会�
   })
   assert.equal(decision.due, true)
   assert.deepEqual(decision.triggers, ['main-log'])
-  // 判定本身不写派生状态（没有 due 标记、也不再写检查时间戳）。
+  // 判定本身不写派生状态（没有 due 标记；due=true 时连检查时间戳也不写，留给下次打开重试）。
   assert.equal(getSetting(db, 'main_session_id'), undefined)
   assert.equal(getSetting(db, MAIN_ROTATION_AT_KEY), undefined)
   assert.equal(getSetting(db, MAIN_ROTATION_LAST_KEY), undefined)
   assert.equal(getSetting(db, MAIN_ROTATION_PENDING_KEY), undefined)
-  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), undefined, 'P1-A 起不再写检查时间戳')
+  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), undefined, 'due=true 不写检查时间戳（动作失败/崩溃后要能重试）')
   // 决策日志（事后复盘入口）带 triggers/blockedBy/metrics 与 since 口径。
   const decided = events.find(([event]) => event === 'main.rotation.decided')
   assert.ok(decided, '应写 main.rotation.decided')
@@ -625,7 +629,7 @@ test('S2 settings 键读写与 pending marker 只读判定（S2 只算不执行�
   setSetting(db, MAIN_ROTATION_AT_KEY, String(NOW - MINUTE))
   setSetting(db, MAIN_ROTATION_LAST_KEY, JSON.stringify({ old: 'a', new: 'b', at: NOW }))
   setSetting(db, MAIN_ROTATION_PENDING_KEY, JSON.stringify({ newId: 'new-1', oldId: 'old-1', at: NOW }))
-  // 旧库里的检查节流键仍能读出来（不清理、也不参与判定）。
+  // 检查节流键是真键（可读可写），默认没有记录。
   setSetting(db, MAIN_ROTATION_CHECKED_AT_KEY, String(NOW - 2 * HOUR))
   const state = readRotationState(db)
   assert.equal(state.createdAt, NOW - HOUR)
@@ -834,4 +838,229 @@ test('S3 恢复：marker 坏了只清不清账、无 marker/无指针是 no-op�
   assert.equal(broken.ok, false)
   assert.equal(broken.state, 'error')
   assert.match(brokenWarns[0], /主会话轮换恢复失败/)
+})
+
+// ---------------------------------------------------------------------------
+// S7：检查节流（rotateCheckIntervalHours / main_rotation_checked_at）
+//
+// 三个时间参数各管一件事，别混：
+//   - rotateCheckIntervalHours = 「查不查」：没到间隔就整段跳过（零采集、零判定）；
+//   - rotateCooldownHours / rotateMinAgeHours = 「换不换」：判定里的保护，命中时检查照做。
+// ---------------------------------------------------------------------------
+
+test('S7 rotationCheckWindow：首次无记录要检查、间隔内跳过、到点（>=）检查、时钟回拨按需检查', () => {
+  // 首次：没有记录 → 必须检查，且不知道下次是什么时候。
+  assert.deepEqual(rotationCheckWindow({ now: NOW }), {
+    shouldCheck: true, firstCheck: true, intervalHours: 24,
+    lastCheckedAt: null, nextCheckAt: null, elapsedHours: null,
+  })
+  // 间隔内：23.9h < 24h → 跳过，并给出「下次什么时候能查」。
+  const waiting = rotationCheckWindow({ now: NOW, lastCheckedAt: NOW - 23.9 * HOUR, intervalHours: 24 })
+  assert.equal(waiting.shouldCheck, false)
+  assert.equal(waiting.firstCheck, false)
+  assert.equal(waiting.lastCheckedAt, NOW - 23.9 * HOUR)
+  assert.equal(waiting.nextCheckAt, NOW + 0.1 * HOUR)
+  assert.equal(waiting.elapsedHours, 23.9)
+  // 边界用 >= 口径：正好 24h 就该查（不能拖过一个间隔）。
+  assert.equal(rotationCheckWindow({ now: NOW, lastCheckedAt: NOW - 24 * HOUR, intervalHours: 24 }).shouldCheck, true)
+  assert.equal(rotationCheckWindow({ now: NOW, lastCheckedAt: NOW - 25 * HOUR, intervalHours: 24 }).shouldCheck, true)
+  // 时钟回拨：记录在 now 之后 → 不信任，按「该检查」处理（否则一次回拨会把检查冻结）。
+  const rewound = rotationCheckWindow({ now: NOW, lastCheckedAt: NOW + 3 * HOUR, intervalHours: 24 })
+  assert.equal(rewound.shouldCheck, true)
+  assert.equal(rewound.elapsedHours, 0, '负时长归零，不写出负的小时数')
+  // 间隔本身按 normalizeRotationConfig 归一化：越界夹取、非法回落默认 24。
+  assert.equal(rotationCheckWindow({ intervalHours: 0.5 }).intervalHours, 1)
+  assert.equal(rotationCheckWindow({ intervalHours: 1e6 }).intervalHours, 168)
+  assert.equal(rotationCheckWindow({ intervalHours: 'garbage' }).intervalHours, 24)
+  assert.equal(rotationCheckWindow({ intervalHours: undefined }).intervalHours, 24)
+})
+
+/** S7 用的轮换服务：注入 stat/persistence 便于断言「有没有采集」，clock 可推进。 */
+const throttleService = ({ db, events, clock, config = {}, persistence = fakePersistence(), size = 8 * MIB } = {}) => ({
+  persistence,
+  rotation: createRotationService({
+    db,
+    config: { mainRotation: 'auto', spawnProvider: 'spawn', ...config },
+    persistence,
+    now: () => clock.at,
+    statFile: statFrom({ 'C:/sessions/s-1.jsonl': size }),
+    log: (event, fields) => events.push([event, fields]),
+    rename: async () => {},
+    archive: async () => {},
+  }),
+})
+
+const openOnceWith = (rotation, liveAgent) =>
+  rotation.evaluate({ mainSessionId: 's-1', liveAgent, source: 'open' })
+
+test('S7 未到间隔：跳过且零采集（不 locate、不 stat、不读任务、不判定、只写 skipped 日志）', async () => {
+  const db = await openTestLedger()
+  const clock = { at: NOW }
+  const events = []
+  const { rotation, persistence } = throttleService({ db, events, clock })
+  const mainHeader = headerOf('s-1', 'C:/ws', NOW - 30 * HOUR)
+  // 首次打开：没有记录 → 真检查（龄 30h > 最小龄 12h、日志 8 MiB > 6 MiB → due，因此不写时间戳）。
+  const first = await openOnceWith(rotation, { status: 'idle', session: { header: mainHeader } })
+  assert.equal(first.skipped, undefined)
+  assert.equal(first.due, true)
+  assert.equal(persistence.calls.locate, 1)
+  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), undefined, 'due=true 不消费节流')
+
+  // 造一个「1 小时前刚检查过」的库：这次打开连采集都不该发生。
+  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - 30 * HOUR))
+  setSetting(db, MAIN_ROTATION_CHECKED_AT_KEY, String(NOW - HOUR))
+  const smallService = throttleService({ db, events, clock })
+  const skipped = await openOnceWith(smallService.rotation, { status: 'idle', session: { header: headerOf('s-1', 'C:/ws', NOW - 30 * HOUR) } })
+  assert.equal(skipped.due, false)
+  assert.equal(skipped.skipped, true)
+  assert.equal(skipped.skipReason, 'check-interval')
+  assert.deepEqual(skipped.triggers, [], '跳过不是判定结论：没有 triggers')
+  assert.deepEqual(skipped.blockedBy, [], '跳过也不重算上一次的 blocks')
+  assert.equal(skipped.check.intervalHours, 24)
+  assert.equal(skipped.check.lastCheckedAt, NOW - HOUR)
+  assert.equal(skipped.check.nextCheckAt, NOW + 23 * HOUR)
+  assert.equal(skipped.check.elapsedHours, 1)
+  assert.equal(smallService.persistence.calls.locate, 0, '跳过时一次 locate 都不做（零采集）')
+  assert.equal(readRotationState(db).checkedAt, NOW - HOUR, '跳过不改写检查时间戳')
+  const skippedLog = events.filter(([event]) => event === 'main.rotation.check.skipped')
+  assert.equal(skippedLog.length, 1, '只留一条 main.rotation.check.skipped')
+  assert.equal(skippedLog[0][1].detail.intervalHours, 24)
+  assert.equal(skippedLog[0][1].detail.checkedAt, NOW - HOUR)
+  // decided 只属于真正检查的那次（首次打开），跳过不写 decided。
+  const decided = events.filter(([event]) => event === 'main.rotation.decided')
+  assert.equal(decided.length, 1)
+  assert.match(rotationHeadline(skipped), /距上次检查未满 24 小时/)
+  db.close()
+})
+
+test('S7 到点：过了间隔就重新采集 + 判定，并按「不需要换」写检查时间戳', async () => {
+  const db = await openTestLedger()
+  const clock = { at: NOW }
+  const events = []
+  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - 30 * HOUR))
+  // 1 小时前刚轮换 → 冷却挡住「换不换」；25 小时前检查过 → 到点该「查」。
+  setSetting(db, MAIN_ROTATION_AT_KEY, String(NOW - HOUR))
+  setSetting(db, MAIN_ROTATION_CHECKED_AT_KEY, String(NOW - 25 * HOUR))
+  const { rotation, persistence } = throttleService({ db, events, clock, config: { rotateCheckIntervalHours: 24 } })
+  const decision = await openOnceWith(rotation, { status: 'idle', session: { header: headerOf('s-1', 'C:/ws', NOW - 30 * HOUR) } })
+  assert.equal(decision.skipped, undefined, '到点不再跳过')
+  assert.equal(decision.due, false, '日志 8 MiB 命中因子，但冷却期挡住 → 不是 due')
+  assert.ok(decision.blockedBy.some(item => item.code === 'cooldown'))
+  assert.equal(persistence.calls.locate, 1, '到点真的采集了')
+  assert.equal(readRotationState(db).checkedAt, NOW, 'not-due → 记录本次检查时刻')
+  const decided = events.find(([event]) => event === 'main.rotation.decided')
+  assert.equal(decided[1].detail.checkedAt, NOW)
+  assert.equal(decided[1].detail.checkRecorded, true)
+  db.close()
+})
+
+test('S7 首次检查：没有 main_rotation_checked_at 视为需要检查（升级后第一次打开不会被节流挡住）', async () => {
+  const db = await openTestLedger()
+  const clock = { at: NOW }
+  const events = []
+  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - 30 * HOUR))
+  // 日志只有 0.5 MiB、没有冷却/最小龄命中 → 首检结论 not-due，会落时间戳。
+  const { rotation, persistence } = throttleService({ db, events, clock, size: 0.5 * MIB })
+  assert.equal(readRotationState(db).checkedAt, null)
+  const decision = await openOnceWith(rotation, { status: 'idle', session: { header: headerOf('s-1', 'C:/ws', NOW - 30 * HOUR) } })
+  assert.equal(decision.skipped, undefined)
+  assert.equal(decision.due, false)
+  assert.equal(persistence.calls.locate, 1, '首检必须真的采集')
+  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), String(NOW), 'not-due 时首检也会落时间戳')
+  // 紧接着再打开一次：这次就跳过了（同一个 24h 窗口内）。
+  persistence.calls.locate = 0
+  clock.at = NOW + 10 * MINUTE
+  const second = await openOnceWith(rotation, { status: 'idle', session: { header: headerOf('s-1', 'C:/ws', NOW - 30 * HOUR) } })
+  assert.equal(second.skipped, true)
+  assert.equal(persistence.calls.locate, 0)
+  db.close()
+})
+
+test('S7 边界夹取经 evaluate 生效：0.5h → 1h（≈每次打开都查）、1e6h → 168h（一周）', async () => {
+  const db = await openTestLedger()
+  const clock = { at: NOW }
+  const events = []
+  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - 30 * HOUR))
+  // 30 分钟前刚检查过：间隔夹到 1h → 仍不足，跳过。
+  setSetting(db, MAIN_ROTATION_CHECKED_AT_KEY, String(NOW - 30 * MINUTE))
+  const low = throttleService({ db, events, clock, config: { rotateCheckIntervalHours: 0.5 } })
+  const skipped = await openOnceWith(low.rotation, { status: 'idle', session: { header: headerOf('s-1', 'C:/ws', NOW - 30 * HOUR) } })
+  assert.equal(skipped.skipped, true)
+  assert.equal(skipped.check.intervalHours, 1, '0.5 夹到下限 1（不会退化成 30 分钟一次）')
+  assert.equal(low.persistence.calls.locate, 0)
+
+  // 25 小时前检查过、间隔夹到 168h → 仍不足，跳过（不会因为写了个巨大值就每次都查）。
+  setSetting(db, MAIN_ROTATION_CHECKED_AT_KEY, String(NOW - 25 * HOUR))
+  const high = throttleService({ db, events, clock, config: { rotateCheckIntervalHours: 1e6 } })
+  const waiting = await openOnceWith(high.rotation, { status: 'idle', session: { header: headerOf('s-1', 'C:/ws', NOW - 25 * HOUR) } })
+  assert.equal(waiting.skipped, true)
+  assert.equal(waiting.check.intervalHours, 168)
+  assert.equal(high.persistence.calls.locate, 0)
+  db.close()
+})
+
+test('S7 与冷却叠加：冷却期内检查照做（blockedBy: cooldown）、时间戳照记；节流只决定查不查', async () => {
+  const db = await openTestLedger()
+  const clock = { at: NOW }
+  const events = []
+  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - 30 * HOUR))
+  // 1 小时前刚轮换过 → 冷却 48h 命中（换不换），但距上次检查 25h → 该查（查不查）。
+  setSetting(db, MAIN_ROTATION_AT_KEY, String(NOW - HOUR))
+  setSetting(db, MAIN_ROTATION_CHECKED_AT_KEY, String(NOW - 25 * HOUR))
+  const { rotation, persistence } = throttleService({ db, events, clock })
+  const decision = await openOnceWith(rotation, { status: 'idle', session: { header: headerOf('s-1', 'C:/ws', NOW - 30 * HOUR) } })
+  assert.equal(decision.skipped, undefined, '节流不拦——到点就查')
+  assert.equal(persistence.calls.locate, 1)
+  assert.equal(decision.due, false)
+  assert.ok(decision.blockedBy.some(item => item.code === 'cooldown'), '换不换交给冷却：blockedBy 里要有 cooldown')
+  assert.equal(readRotationState(db).checkedAt, NOW, '冷却挡住时仍算一次有效检查，写时间戳（下次才跳过）')
+
+  // 冷却期内、且没到检查间隔：这次直接跳过——不会每小时白查一遍。
+  const again = await openOnceWith(rotation, { status: 'idle', session: { header: headerOf('s-1', 'C:/ws', NOW - 30 * HOUR) } })
+  assert.equal(again.skipped, true, '距刚才检查不足 24h → 跳过')
+  assert.deepEqual(again.blockedBy, [], '跳过时不重算上一次的 cooldown')
+  assert.equal(persistence.calls.locate, 1, '没有新的采集')
+  db.close()
+})
+
+test('S7 写时间戳失败只降级：判定照常返回，记 check.record-failed', async () => {
+  const db = await openTestLedger()
+  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - HOUR))
+  const events = []
+  const checkedWrites = []
+  // 只让「写 settings」失败：读照旧（模拟磁盘满/锁死）。
+  const proxy = {
+    prepare(sql) {
+      const statement = db.prepare(sql)
+      if (!sql.includes('INSERT INTO settings')) return statement
+      return {
+        run(...args) {
+          checkedWrites.push(args[0])
+          if (args[0] === MAIN_ROTATION_CHECKED_AT_KEY) throw new Error('disk full')
+          return statement.run(...args)
+        },
+        get: (...args) => statement.get(...args),
+        all: (...args) => statement.all(...args),
+      }
+    },
+  }
+  const rotation = createRotationService({
+    db: proxy,
+    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
+    persistence: fakePersistence(),
+    now: () => NOW,
+    statFile: statFrom({ 'C:/sessions/s-1.jsonl': 0.5 * MIB }),
+    log: (event, fields) => events.push([event, fields]),
+  })
+  // 龄只有 1h → 未到最小龄 12h，结论 not-due；写时间戳会失败，但判定本身必须照常返回。
+  const decision = await rotation.evaluate({
+    mainSessionId: 's-1',
+    liveAgent: { status: 'idle', session: { header: headerOf('s-1', 'C:/ws', NOW - HOUR) } },
+  })
+  assert.equal(decision.due, false)
+  assert.ok(checkedWrites.includes(MAIN_ROTATION_CHECKED_AT_KEY), '尝试写过检查时间戳')
+  assert.ok(events.some(([event]) => event === 'main.rotation.check.record-failed'), '失败只记日志')
+  const decided = events.find(([event]) => event === 'main.rotation.decided')
+  assert.equal(decided[1].detail.checkRecorded, true, 'decided 日志仍按「已尝试记录」标记')
+  db.close()
 })

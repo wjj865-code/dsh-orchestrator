@@ -17,7 +17,6 @@ export const DEPRECATED_KEYS = Object.freeze({
   rotateAfterSessions: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
   rotateAfterContextTokens: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
   rotateAfterDiskMiB: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
-  rotateCheckIntervalHours: '检查节流已删除：每次打开主会话都会现算（没有「一天最多查一次」了）',
   // P2-2：自建 keep-alive 续跑器删除，续跑改为委托宿主 goal 轮次驱动（task_create.goalRounds）。
   keepAlive: '续跑改由宿主 goal 轮次驱动：删掉本键，要续跑请用 task_create({ goalRounds: N })（默认 0 = 不续跑）',
   keepAliveMode: '续跑不再由插件注入消息：宿主 goal driver 的回合形态不归插件管',
@@ -129,9 +128,10 @@ export function loadConfig(raw = {}, { onWarn } = {}) {
   config.preferencesMaxChars = Number.isFinite(raw?.preferencesMaxChars)
     ? Math.min(4000, Math.max(200, Math.floor(raw.preferencesMaxChars)))
     : DEFAULT_PREFERENCE_MAX_CHARS
-  // 主会话轮换（G1 S1，P1-A 收缩到 7 个键）：总开关 + 两个触发阈值（主日志体积 / 运行天数）
-  // + 保护（冷却/最小龄/闲置）+ 归档开关。默认值、合法区间与非法回落都在 src/main-rotation.js 的
-  // normalizeRotationConfig 里，这里只负责挂到 config 上。
+  // 主会话轮换（G1 S1，P1-A 收缩 + 恢复检查节流后 8 个键）：总开关 + 两个触发阈值（主日志体积 / 运行天数）
+  // + 保护（冷却/最小龄/闲置）+ 检查节流 + 归档开关。默认值、合法区间与非法回落都在 src/main-rotation.js 的
+  // normalizeRotationConfig 里，这里只负责挂到 config 上。rotateCheckIntervalHours 是「多久才做一次检查」
+  // 的节流，与 rotateCooldownHours / rotateMinAgeHours（判定里的保护）不是一回事。
   Object.assign(config, normalizeRotationConfig(raw))
   return config
 }

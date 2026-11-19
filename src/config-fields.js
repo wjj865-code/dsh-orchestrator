@@ -11,12 +11,12 @@
 // 回落默认（那是运行时的最后一道防线，行为零变化）；本文件描述的是「字段的规格」，供
 // schema 与 UI 使用。两边由 test/config-fields.test.js 双向比对守住。
 //
-// 0.23.0（P2-2 合并）：字段表投影的是 `loadConfig({})` **实际产出的 28 个键**。已删的 7 个键
+// 0.23.0（P2-2 合并）：字段表投影的是 `loadConfig({})` **实际产出的 29 个键**。已删的 7 个键
 // （`keepAlive*` 四个续跑键 + `mergeWindowMs` / `stallRounds` / `preferencesMaxItems` 三个常量化的阈值键）
 // **不得**再出现在这里——它们只留在 `src/config.js` 的 DEPRECATED_KEYS 里给弃用警告，
 // 表单上多一行「已删除的键」= 用户改完写回去仍是无效配置。
 //
-// 暴露策略（Q3 修订：轮换 8 键里 7 个可编辑 + `coordinatorSession` 只读）：总开关与 6 个 `rotate*`
+// 暴露策略（Q3 修订：轮换 9 键里 8 个可编辑 + `coordinatorSession` 只读）：总开关与 7 个 `rotate*`
 // 都能在插件页直接改——「默认开启 + 能关」才是可用形态，藏成只读会让用户以为轮换只能手改 YAML。
 // `coordinatorSession` 例外，保留 `readonly: true`：它是**运维兜底通道**，填错（拼错/写了个不存在的会话 id）
 // 会让协调者直接指向不存在的会话，工具与派发全部失效、且只能再改配置才恢复——属于高危误操作，
@@ -139,7 +139,7 @@ export const CONFIG_FIELDS = Object.freeze([
     label: '偏好字数上限',
   }),
 
-  // ── 主会话轮换（7 键可编辑 + coordinatorSession 只读） ──────────
+  // ── 主会话轮换（8 键可编辑 + coordinatorSession 只读） ──────────
   Object.freeze({
     key: 'coordinatorSession', group: 'rotation', kind: 'string', default: '', readonly: true,
     label: '协调者会话覆盖', hint: '运维兜底通道：页面只读，只在运维场景手改 cordis.patch.yml（填错会让协调者指向不存在的会话）',
@@ -167,6 +167,11 @@ export const CONFIG_FIELDS = Object.freeze([
   Object.freeze({
     key: 'rotateIdleMinutes', group: 'rotation', kind: 'number', min: 1, max: 1440, integer: true, default: 10,
     label: '闲置判定（分钟）',
+  }),
+  Object.freeze({
+    key: 'rotateCheckIntervalHours', group: 'rotation', kind: 'number', min: 1, max: 168, integer: true, default: 24,
+    label: '检查间隔（小时）',
+    hint: '多久才做一次轮换检查（1–168，默认一天一次）；调成 1 = 每次打开都查。检查节流 ≠ 轮换冷却：冷却期内检查照做、只是不换',
   }),
   Object.freeze({
     key: 'rotateArchiveOld', group: 'rotation', kind: 'boolean', default: true,

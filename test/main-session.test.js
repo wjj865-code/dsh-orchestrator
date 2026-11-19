@@ -464,6 +464,46 @@ test('S3 未命中 due：健康主会话直接复用，不 create、不改名、
   db.close()
 })
 
+test('S7 检查节流（open 路径）：同一天内第二次打开只读一个 settings 键就跳过，不采集不判定', async () => {
+  const db = await ledger()
+  setMainSessionId(db, 'session-old')
+  setMainSessionPreset(db, PRESET_ID)
+  setSetting(db, 'main_session_created_at', String(Date.now() - 3_600_000))
+  const f = fake({ live: new Set(['session-old']) })
+  // 给 live agent 一个带 id/cwd 的 header，采集才会真的走 locate + stat（否则 main-log 直接降级）。
+  f.agents.get = id => id === 'session-old'
+    ? { id, status: 'idle', session: { id, header: { id, cwd: 'C:/ws', createdAt: Date.now() - 3_600_000 } } }
+    : undefined
+  const logs = []
+  let locates = 0
+  const rotation = createRotationService({
+    db,
+    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
+    persistence: {
+      locate: () => {
+        locates += 1
+        return { kind: 'jsonl', path: 'C:/sessions/session-old.jsonl' }
+      },
+    },
+    statFile: async () => ({ size: 1024, mtimeMs: Date.now() - 30 * 60_000 }),
+    log: (event, detail) => logs.push([event, detail]),
+  })
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation, workspacePath: 'C:/ws' })
+  const first = await main.open()
+  assert.equal(first.created, false)
+  assert.equal(locates, 1, '第一次打开真的采集')
+  assert.equal(logs.filter(([event]) => event === 'main.rotation.decided').length, 1)
+  assert.equal(getSetting(db, 'main_rotation_checked_at') !== undefined, true, 'not-due 时写检查时间戳')
+  // 同一天再点一次「打开主会话」：节流直接跳过，采集/判定都不发生。
+  const second = await main.open()
+  assert.equal(second.ok, true)
+  assert.equal(second.sessionId, 'session-old')
+  assert.equal(locates, 1, '第二次打开零采集')
+  assert.equal(logs.filter(([event]) => event === 'main.rotation.decided').length, 1, '第二次打开不判定')
+  assert.equal(logs.filter(([event]) => event === 'main.rotation.check.skipped').length, 1, '跳过留一条日志')
+  db.close()
+})
+
 test('S3 保护沿用 S1：龄命中但有活跃任务时不轮换，照旧复用', async () => {
   const db = await ledger()
   await agedMain(db)

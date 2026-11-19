@@ -5,19 +5,24 @@
 //   所以判据必须能脱离台账/磁盘单独单测：同一份「台账快照 + 配置 + 时间」
 //   必须得到同一个结论；事后也能靠 main.rotation.decided 日志复盘「这次为什么换 / 为什么没换」。
 //
-// 本文件范围（P1-A 收缩后：配置键 12 → 7、触发因子 6 → 2）：
-//   - S1：7 个配置键的默认值、合法区间与归一化（config.js 的 loadConfig 直接复用 normalizeRotationConfig）；
+// 本文件范围（P1-A 收缩到 7 个配置键、触发因子 6 → 2；S7 检查节流恢复后 8 个键）：
+//   - S1：8 个配置键的默认值、合法区间与归一化（config.js 的 loadConfig 直接复用 normalizeRotationConfig）；
 //     evaluateRotation()：main-log / age 两个触发因子 + P1–P10 十二条保护 + 冷却/最小龄 + 原因文案
 //   - S2：指标采集层（collectRotationMetrics：locate + stat，每项 try/catch，
 //     拿不到就是「未知」而不是 0）、settings 键读写（readRotationState / writeRotationState）、
 //     inspectRotationPending()（崩溃恢复 marker 的只读判定）
 //   - S3：轮换动作面（createRotationService：采集 + 判定 + 动作 + 崩溃恢复，平台服务由调用方注入）
-//   - S7（检查节流）已在 P1-A 删除：采集只剩一次 locate + stat，节流的收益小于解释成本。
-//     settings.main_rotation_checked_at 仍被 readRotationState 读出来（旧库无害），但不再写、不再参与判定。
+//   - S7（检查节流）：rotateCheckIntervalHours + settings.main_rotation_checked_at。
+//     evaluate() 在采集之前先问「距上次检查够久了吗」，没到间隔就整段跳过（零采集、零判定）。
+//     注意它**不是**轮换条件：
+//       - rotateCheckIntervalHours（默认 24h）= 「这次打开要不要花开销做检查」的闸门（查不查）；
+//       - rotateCooldownHours / rotateMinAgeHours = 判定里的保护规则，决定「该不该换」（换不换）。
+//     两者叠加才完整：节流只决定「查不查」，冷却/最小龄只决定「换不换」；检查被跳过时
+//     上一次的 blocks（比如还在冷却期）不会重算，因为它们本来就是「此刻的事实」，下次检查再看。
 //
 // 判定只在「打开主会话」时发生一次（main-session 的 openOnce → createRotationService.evaluate）：
 // 不写 due 标记、不在启动/加载时后台检测、面板也不暴露判定结果——省掉一整套派生状态与展示链路。
-// 判定本身不写任何 settings 键：结论只进 main.rotation.decided 日志（P1-A 起连检查时间戳也不写了）。
+// 唯一写进 settings 的是检查时间戳（main_rotation_checked_at），它是节流的事实依据，不是判定结论。
 import { stat } from 'node:fs/promises'
 import { deleteSetting, getSetting, listTasks, setSetting } from './ledger.js'
 import { onboardingKey } from './onboarding.js'
@@ -30,7 +35,7 @@ const HOUR_MS = 3_600_000
 const MIB = 1024 * 1024
 
 /**
- * 7 个配置键的默认值（P1-A 收缩：12 → 7）。
+ * 8 个配置键的默认值（P1-A 收缩后 + 恢复的检查节流）。
  * `mainRotation` 是总开关：auto = 判定并动作（**默认**）；off = 只检测、不动作。
  * **默认 auto**：主会话跑久了（日志 > 6 MiB 或运行 > 10 天，任一命中）会在下次打开时被换掉；
  * 不想换就显式配 `mainRotation: 'off'`（插件页配置卡片里也能改）。
@@ -43,6 +48,10 @@ export const ROTATION_DEFAULTS = Object.freeze({
   rotateCooldownHours: 48,
   rotateMinAgeHours: 12,
   rotateIdleMinutes: 10,
+  // 检查节流（S7）：打开主会话时「最多每 N 小时做一次采集 + 判定」，默认一天一次。
+  // 与 rotateCooldownHours / rotateMinAgeHours 不是一回事：那两个是判定里的保护（该不该换），
+  // 这个只决定「这次打开要不要花开销检查」（查不查）。
+  rotateCheckIntervalHours: 24,
   rotateArchiveOld: true,
 })
 
@@ -56,6 +65,8 @@ export const ROTATION_LIMITS = Object.freeze({
   rotateCooldownHours: Object.freeze([1, 720, true]),
   rotateMinAgeHours: Object.freeze([1, 720, true]),
   rotateIdleMinutes: Object.freeze([1, 1440, true]),
+  // 1 小时 ≈ 退回「每次打开都检查」的旧行为；168 = 一周，再长就失去轮换的时效性。
+  rotateCheckIntervalHours: Object.freeze([1, 168, true]),
 })
 
 /** 总开关合法取值；只认显式 `'off'` 关闭，其余（含拼错/缺省）一律按默认 `auto`。 */
@@ -63,13 +74,13 @@ export const MAIN_ROTATION_MODES = Object.freeze(['auto', 'off'])
 
 /**
  * settings 键名（与台账 settings 表共用）。
- * 只存「起点 / 冷却 / 审计 / 崩溃锚点」四个事实，不存任何判定结论（判定每次打开主会话时现算）。
+ * 只存「起点 / 冷却 / 审计 / 崩溃锚点 / 检查节流」五个事实，不存任何判定结论（判定每次打开主会话时现算）。
  */
 export const MAIN_SESSION_CREATED_AT_KEY = 'main_session_created_at'
 export const MAIN_ROTATION_AT_KEY = 'main_rotation_at'
 export const MAIN_ROTATION_LAST_KEY = 'main_rotation_last'
 export const MAIN_ROTATION_PENDING_KEY = 'main_rotation_pending'
-// 检查节流（S7）已随 P1-A 删除：这个键只在读侧保留（旧库里的值无害、也不清理），不再写、不再参与判定。
+// 检查节流（S7）：上次真正做过「采集 + 判定」的时刻。只影响「多久才查一次」，不影响判定结论。
 export const MAIN_ROTATION_CHECKED_AT_KEY = 'main_rotation_checked_at'
 
 /**
@@ -114,7 +125,7 @@ const fmt = value => {
 }
 
 /**
- * 把（可能是手写的、可能是 loadConfig 产物的）配置归一化成 7 个键。
+ * 把（可能是手写的、可能是 loadConfig 产物的）配置归一化成 8 个键。
  * 幂等：loadConfig 里再调一次也不会改变结果。
  */
 export function normalizeRotationConfig(raw = {}) {
@@ -138,6 +149,53 @@ export function normalizeRotationConfig(raw = {}) {
   return config
 }
 
+/**
+ * 检查节流闸门（S7，纯函数）：这次打开主会话要不要真的做「采集 + 判定」。
+ *
+ * 口径：
+ *   - 从没有记录（首次 / 升级后第一次打开）→ 必须检查（`firstCheck`），检查完才写时间戳；
+ *   - 距上次检查 < 间隔 → 跳过（`shouldCheck:false`），调用方**零采集、零判定**；
+ *   - 到点（`elapsed >= 间隔`）→ 检查；
+ *   - 时钟回拨（记录时间在 `now` 之后）→ 不信任，按「该检查」处理，检查完用当前时间覆盖记录，
+ *     否则一次回拨会把检查冻结到时钟重新走过记录点为止。
+ *
+ * 与 rotateCooldownHours / rotateMinAgeHours 的区别：这个函数只回答「查不查」，
+ * 不参与「换不换」——判定里的冷却/最小龄照旧由 evaluateRotation 管。
+ *
+ * @param {object} input
+ * @param {number} [input.now] 当前时刻（ms）；缺省 Date.now()
+ * @param {number|null} [input.lastCheckedAt] 上次检查时刻（ms，来自 main_rotation_checked_at）；从没检查过传 null/undefined
+ * @param {number} [input.intervalHours] 间隔小时数（配置原值，内部按 1–168 归一化，非法回落 24）
+ * @returns {{shouldCheck:boolean, firstCheck:boolean, intervalHours:number,
+ *   lastCheckedAt:number|null, nextCheckAt:number|null, elapsedHours:number|null}}
+ */
+export function rotationCheckWindow({ now, lastCheckedAt, intervalHours } = {}) {
+  const at = Number.isFinite(now) ? now : Date.now()
+  // 归一化只走一处：非法值回落默认、越界夹取都与判定里的配置口径一致。
+  const interval = normalizeRotationConfig({ rotateCheckIntervalHours: intervalHours }).rotateCheckIntervalHours
+  const intervalMs = interval * HOUR_MS
+  const checked = Number.isFinite(lastCheckedAt) ? lastCheckedAt : undefined
+  if (checked === undefined) {
+    return {
+      shouldCheck: true,
+      firstCheck: true,
+      intervalHours: interval,
+      lastCheckedAt: null,
+      nextCheckAt: null,
+      elapsedHours: null,
+    }
+  }
+  const elapsed = at - checked
+  return {
+    shouldCheck: elapsed < 0 || elapsed >= intervalMs,
+    firstCheck: false,
+    intervalHours: interval,
+    lastCheckedAt: checked,
+    nextCheckAt: checked + intervalMs,
+    elapsedHours: Math.max(0, elapsed / HOUR_MS),
+  }
+}
+
 const TRIGGER_TEXT = {
   'main-log': (value, threshold) => `主会话日志 ${fmt(value)} MiB（阈值 ${fmt(threshold)} MiB）`,
   age: (value, threshold) => `主会话已运行 ${fmt(value)} 小时（阈值 ${fmt(threshold)} 小时）`,
@@ -149,7 +207,7 @@ const TRIGGER_TEXT = {
  *
  * @param {object} input
  * @param {number} [input.now] 判定时刻（ms）；缺省 Date.now()
- * @param {object} [input.config] loadConfig 结果或手写配置（内部按 7 个键归一化，非法值回落）
+ * @param {object} [input.config] loadConfig 结果或手写配置（内部按 8 个键归一化，非法值回落）
  * @param {number} [input.since] 当前主会话起点（ms，来自 main_session_created_at，退 header.createdAt）
  * @param {number} [input.lastRotatedAt] 上次轮换时刻（ms，来自 main_rotation_at）；从未轮换传 undefined
  * @param {object} [input.metrics] 采集结果：mainLogMiB（其余字段已随 P1-A 删除，传了也不看）
@@ -297,13 +355,17 @@ export function evaluateRotation({
 
 /**
  * 一句话文案（面板 banner / 通知 / 日志摘要共用）：
- * due 时列出触发原因；被保护挡住时给首要原因；都没有就是「不需要换」。
+ * due 时列出触发原因；被保护挡住时给首要原因；检查节流跳过与「不需要换」区分开。
  */
 export function rotationHeadline(decision) {
   if (decision === null || typeof decision !== 'object') return '主会话轮换：尚未判定'
   if (decision.due === true) {
     const reasons = Array.isArray(decision.reasons) ? decision.reasons.map(reason => reason?.text).filter(Boolean) : []
     return reasons.length > 0 ? `建议轮换主会话：${reasons.join('；')}` : '建议轮换主会话'
+  }
+  if (decision.skipped === true) {
+    const interval = decision.check?.intervalHours
+    return `主会话轮换：距上次检查未满 ${fmt(interval)} 小时，本次跳过检查`
   }
   if (Array.isArray(decision.blockedBy) && decision.blockedBy.length > 0) {
     return `暂不轮换主会话：${decision.blockedBy[0].text}`
@@ -317,7 +379,8 @@ export function rotationHeadline(decision) {
 // 三条硬约束（P1-A 收缩后仍然成立）：
 //   1. 采集只读：不写台账、不写 settings、不建会话、不动指针（写 settings 是轮换动作的事）；
 //   2. 失败降级为「未知」：服务缺失/抛错只记 degraded，不填 0——0 会被当成「很干净」而漏判；
-//   3. 采集只在「打开主会话」那一次跑：不进面板 2s 轮询、不加定时器。
+//   3. 采集只在「打开主会话」那一次跑、且先过检查节流（S7：没到间隔连采集都不进）：
+//      不进面板 2s 轮询、不加定时器。
 // ---------------------------------------------------------------------------
 
 const millisOf = value => {
@@ -348,7 +411,7 @@ const defaultStatFile = async path => {
 
 /**
  * 读五个 settings 键（只读）。缺键/坏值一律为 null，由调用方按「未知」处理。
- * `checkedAt` 只读不写：检查节流已随 P1-A 删除，旧库里的值留着无害。
+ * `checkedAt` 是检查节流（S7）的事实依据：上次真正做过「采集 + 判定」的时刻。
  * @returns {{createdAt:number|null, rotatedAt:number|null, last:object|null, pending:object|null,
  *   checkedAt:number|null}}
  */
@@ -417,6 +480,7 @@ export function inspectRotationPending(state, pointer) {
  *   - 起点 `since`：age 因子的输入（settings 优先，退 header.createdAt）
  * 每项独立 try/catch：失败记 degraded，值给 null（未知，不是 0）。
  * 只读：不写台账/settings/磁盘；结果只交给判定函数，不落任何 settings 键。
+ * 调用方先过检查节流（S7）：没到间隔根本不会进到这里。
  *
  * @param {object} opts
  * @param {object} opts.db 台账
@@ -741,7 +805,8 @@ export async function recoverPendingRotation({ db, pointer, rename, archive, arc
  *   - 平台服务（persistence/rename/archive）一律**惰性**取：cordis 并发加载时 apply 早期可能还没有。
  *
  * evaluate 只读（判定纯函数是 evaluateRotation），也不建会话（create 归 main-session，权限与错误文案都留在那儿）。
- * P1-A 删掉了检查节流（S7）：采集只剩一次 locate + stat，每次打开主会话都现算，不再写 main_rotation_checked_at。
+ * 唯一的例外是检查节流的时间戳（main_rotation_checked_at）：它记「上次真正检查是什么时候」，
+ * 是节流的事实依据，不是判定结论；写失败只记日志、不影响本次判定。
  */
 export function createRotationService({
   db,
@@ -761,14 +826,19 @@ export function createRotationService({
   /**
    * 采集 + 判定，返回 decision；任何异常 → null（调用方视为「本次不轮换」）。
    *
-   * 这是**唯一**的判定入口（main-session.openOnce 在「打开主会话」时调一次）：
-   *   1. 配置覆盖 / 没有主会话 id → null（连检测都不做）；
-   *   2. 采集（locate + stat，拿不到就降级为「未知」）+ 纯判定；
-   *   3. 判定结论只进审计日志，不落任何 settings 键（P1-A 起也不再有检查时间戳）。
+   * 这是**唯一**的判定入口（main-session.openOnce 在「打开主会话」时调一次）。
+   * 顺序（改顺序前先读顶部 S7 注释）：
+   *   1. 配置覆盖 / 没有主会话 id → null（连检查都不做）；
+   *   2. **检查节流**（S7）：距上次检查 < rotateCheckIntervalHours → 返回 `{skipped:true}`，
+   *      零采集、零判定、不读台账、不碰平台服务——打开主会话的开销就只剩一次 settings 读；
+   *   3. 到点才采集 + 判定；结论为「不需要换」时写 main_rotation_checked_at（下次打开才会跳过）。
+   *      due=true **不写**：动作还在后面（create/切指针可能失败、进程可能崩），
+   *      记了会把重试压到下一个间隔之后。
    *
    * 不写判定结论、不建会话、不改指针、不留 due 标记；动作用下面的 begin/commitTimes/disposeOld/finish。
    * 平台服务是**惰性 getter**（cordis 并发加载期 `ctx.get` 可能抛），所以 try/catch 是契约的一部分，
-   * 不是保险丝：判定失败只有一个语义——这次不换，打开主会话照常走复用分支，下次打开会重试。
+   * 不是保险丝：判定失败只有一个语义——这次不换，打开主会话照常走复用分支；且**不写检查时间戳**，
+   * 下次打开会重试（一次失败的检查不该把下一次检查压到 24 小时之后）。
    */
   const evaluate = async ({ mainSessionId, liveAgent, source = 'open' } = {}) => {
     try {
@@ -777,6 +847,44 @@ export function createRotationService({
       if (typeof mainSessionId !== 'string' || mainSessionId === '') return null
       const at = now()
       const state = readRotationState(db)
+      // ---- 检查节流（S7）：只读一个键就能决定「这次不查」，比采集便宜几个数量级 ----
+      const gate = rotationCheckWindow({
+        now: at,
+        lastCheckedAt: state.checkedAt,
+        intervalHours: config?.rotateCheckIntervalHours,
+      })
+      if (gate.shouldCheck !== true) {
+        // 跳过也是事实：写一条日志，事后能解释「为什么这次打开没查」。
+        log('main.rotation.check.skipped', {
+          detail: {
+            source,
+            intervalHours: gate.intervalHours,
+            checkedAt: gate.lastCheckedAt,
+            nextCheckAt: gate.nextCheckAt,
+            elapsedHours: gate.elapsedHours,
+          },
+        })
+        return {
+          due: false,
+          skipped: true,
+          skipReason: 'check-interval',
+          mode: normalizeRotationConfig(config).mainRotation,
+          triggers: [],
+          reasons: [],
+          blockedBy: [],
+          blockCount: 0,
+          metrics: {},
+          degraded: [],
+          evaluatedAt: at,
+          lastRotatedAt: state.rotatedAt,
+          check: {
+            intervalHours: gate.intervalHours,
+            lastCheckedAt: gate.lastCheckedAt,
+            nextCheckAt: gate.nextCheckAt,
+            elapsedHours: gate.elapsedHours,
+          },
+        }
+      }
       const collected = await collectRotationMetrics({
         db,
         persistence: resolve(persistence),
@@ -813,6 +921,17 @@ export function createRotationService({
         catalog: catalogEntries,
         degraded: collected.degraded,
       })
+      // 检查跑完才记时间戳：下一次打开在间隔内会直接跳过（写失败只降级，不影响本次判定）。
+      // 但**只在「不需要换」时记**：due=true 时动作还在后面（create / 切指针都可能失败，进程也可能崩），
+      // 提前记时间戳会把重试压到下一个间隔之后；失败的那次轮换应该下次打开就能重来。
+      const checkRecorded = decision.due !== true
+      if (checkRecorded) {
+        try {
+          writeRotationState(db, { checkedAt: at })
+        } catch (error) {
+          log('main.rotation.check.record-failed', { detail: { checkedAt: at, error: errorText(error) } })
+        }
+      }
       // 判定结论只进审计日志（事后复盘「为什么换 / 为什么没换」），不落任何 settings 键。
       log('main.rotation.decided', {
         detail: {
@@ -824,6 +943,8 @@ export function createRotationService({
           metrics: decision.metrics,
           since: collected.since,
           sinceSource: collected.sinceSource,
+          checkedAt: at,
+          checkRecorded,
         },
       })
       return decision

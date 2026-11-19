@@ -36,7 +36,7 @@
 | G5 | 工具 schema 契约 | 逐个工具体检 | `parameters.type === 'object'`、根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 中文可读；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面 |
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
-| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` allow | 配置 28 键；全局工具 10 个（协调者 7 + 子会话 3）；allow 名单与工具表一致 |
+| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` allow | 配置 29 键；全局工具 10 个（协调者 7 + 子会话 3）；allow 名单与工具表一致 |
 | G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、配置表/工具表同源、内链可达） |
 | G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **95 KiB**；超了先删重复渲染/样式，不抬预算 |
 

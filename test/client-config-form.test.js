@@ -91,7 +91,7 @@ test('buildOps：只发改过的可编辑字段；清空已覆盖字段发 unset
   const draft = {
     maxQueue: 60, autoResumeQueue: true, digestAt: '', mainRotation: 'off', coordinatorSession: 's-manual',
     // 字段表里没有的键（已删键的残留）不得写回 profile。
-    rotateCheckIntervalHours: 4,
+    mergeWindowMs: 9000,
   }
   // 顺序按字段表声明（maxQueue 在 autoResumeQueue 之前、mainRotation 在末尾），不是按草稿对象顺序。
   assert.deepEqual(buildOps(draft, saved, overridden), [
@@ -109,29 +109,32 @@ test('isDirty：可编辑字段（含轮换）变化算未保存改动；只读�
   assert.equal(isDirty({ maxQueue: 50, rotateAfterDays: 1 }, saved), true)
   // 只读字段变化不点亮保存按钮（改了也写不进去，别让用户白点一次）。
   assert.equal(isDirty({ maxQueue: 50, rotateAfterDays: 10, coordinatorSession: 's-manual' }, saved), false)
-  // 字段表外的键（已删键残留）同样不算。
-  assert.equal(isDirty({ maxQueue: 50, rotateAfterDays: 10, rotateCheckIntervalHours: 4 }, saved), false)
+  // 字段表外的键（已删键残留）不算；检查节流已恢复成正式字段，改了就要点亮保存。
+  assert.equal(isDirty({ maxQueue: 50, rotateAfterDays: 10, mergeWindowMs: 9000 }, saved), false)
+  assert.equal(isDirty({ maxQueue: 50, rotateAfterDays: 10, rotateCheckIntervalHours: 4 }, saved), true)
 })
 
-test('轮换保存路径：7 个可编辑键 buildOps 全发 set、写回后 loadConfig 读到新值；coordinatorSession 不下发', () => {
+test('轮换保存路径：8 个可编辑键 buildOps 全发 set、写回后 loadConfig 读到新值；coordinatorSession 不下发', () => {
   const rotationKeys = CONFIG_FIELDS.filter(field => field.group === 'rotation').map(field => field.key)
-  assert.equal(rotationKeys.length, 8, '轮换分组应恰好 8 个字段')
+  assert.equal(rotationKeys.length, 9, '轮换分组应恰好 9 个字段')
   const editableKeys = rotationKeys.filter(key => key !== 'coordinatorSession')
-  assert.deepEqual(editableKeys.length, 7)
+  assert.deepEqual(editableKeys.length, 8)
   for (const key of editableKeys) assert.ok(EDITABLE_KEYS.includes(key), `${key} 必须可编辑`)
   assert.equal(EDITABLE_KEYS.includes('coordinatorSession'), false, 'coordinatorSession 只读，不得下发')
 
-  // 卡片上把 7 个可编辑键改一遍；coordinatorSession 即使草稿变了也不该进 ops。
+  // 卡片上把 8 个可编辑键改一遍；coordinatorSession 即使草稿变了也不该进 ops。
   const saved = {
     coordinatorSession: '', mainRotation: 'auto', rotateAfterMainLogMiB: 6, rotateAfterDays: 10,
-    rotateCooldownHours: 48, rotateMinAgeHours: 12, rotateIdleMinutes: 10, rotateArchiveOld: true,
+    rotateCooldownHours: 48, rotateMinAgeHours: 12, rotateIdleMinutes: 10,
+    rotateCheckIntervalHours: 24, rotateArchiveOld: true,
   }
   const draft = {
     coordinatorSession: 's-manual', mainRotation: 'off', rotateAfterMainLogMiB: 2.5, rotateAfterDays: 3,
-    rotateCooldownHours: 6, rotateMinAgeHours: 2, rotateIdleMinutes: 30, rotateArchiveOld: false,
+    rotateCooldownHours: 6, rotateMinAgeHours: 2, rotateIdleMinutes: 30,
+    rotateCheckIntervalHours: 6, rotateArchiveOld: false,
   }
   const ops = buildOps(draft, saved, new Set())
-  assert.deepEqual(ops.map(op => op.path[0]), editableKeys, '7 个可编辑键都应发出 set（顺序跟字段表）')
+  assert.deepEqual(ops.map(op => op.path[0]), editableKeys, '8 个可编辑键都应发出 set（顺序跟字段表）')
   assert.ok(ops.every(op => op.op === 'set'))
 
   // 保存 = 宿主把 ops 写进 profile 配置 → 插件重载 → loadConfig 归一化。这里用同一份输入验「真读到新值」。
@@ -144,6 +147,7 @@ test('轮换保存路径：7 个可编辑键 buildOps 全发 set、写回后 loa
   assert.equal(config.rotateCooldownHours, 6)
   assert.equal(config.rotateMinAgeHours, 2)
   assert.equal(config.rotateIdleMinutes, 30)
+  assert.equal(config.rotateCheckIntervalHours, 6)
   assert.equal(config.rotateArchiveOld, false)
   // 只读键没被卡片写进去：仍然是空的（= 读台账指针）。
   assert.equal(config.coordinatorSession, undefined)
@@ -231,12 +235,13 @@ test('渲染四态：loading / unavailable / ready 可写 / ready 只读', () =>
   assert.ok(roText.includes('只读') && !roText.includes('放弃改动'), '只读态应标注且无编辑动作')
 })
 
-test('可写态渲染：28 行都在，轮换 7 键可编辑、coordinatorSession 单行只读（带「只读」标记且控件禁用）', () => {
+test('可写态渲染：29 行都在，轮换 8 键可编辑、coordinatorSession 单行只读（带「只读」标记且控件禁用）', () => {
   const snapshot = {
     status: 'ready',
     value: {
       coordinatorSession: '', mainRotation: 'auto', rotateAfterMainLogMiB: 6, rotateAfterDays: 10,
-      rotateCooldownHours: 48, rotateMinAgeHours: 12, rotateIdleMinutes: 10, rotateArchiveOld: true,
+      rotateCooldownHours: 48, rotateMinAgeHours: 12, rotateIdleMinutes: 10,
+      rotateCheckIntervalHours: 24, rotateArchiveOld: true,
     },
     user: {},
     revision: 1,
@@ -248,7 +253,7 @@ test('可写态渲染：28 行都在，轮换 7 键可编辑、coordinatorSessio
   assert.equal(rows.length, CONFIG_FIELDS.length, '每个字段都应渲染一行（轮换分组默认也展开）')
 
   const rotationFields = CONFIG_FIELDS.filter(field => field.group === 'rotation')
-  assert.equal(rotationFields.length, 8)
+  assert.equal(rotationFields.length, 9)
   // 控件按 aria-label = 字段 label 定位（数值/字符串是 input，枚举是 select，布尔是 button[role=switch]）。
   const controlOf = field => nodes.find(node => node.props?.['aria-label'] === field.label
     && (node.type === 'input' || node.type === 'select' || node.type === 'button'))

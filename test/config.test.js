@@ -118,13 +118,15 @@ test('空闲看门狗：非法分钟数回落默认，超界夹到 1–1440', ()
   assert.equal(clamped.watchdogIdleMinutes, 1)
 })
 
-test('配置面总数 28（P2-2 收缩后）：loadConfig 不泄漏未声明的键', () => {
+test('配置面总数 29（恢复检查节流后）：loadConfig 不泄漏未声明的键', () => {
   const config = loadConfig({})
-  assert.equal(Object.keys(config).length, 28, `实际 ${Object.keys(config).length} 个键：${Object.keys(config).join(',')}`)
+  assert.equal(Object.keys(config).length, 29, `实际 ${Object.keys(config).length} 个键：${Object.keys(config).join(',')}`)
   assert.equal('backend' in config, false, 'backend 键已删除（team 后端先于它删除）')
-  for (const key of ['rotateAfterTasks', 'rotateAfterSessions', 'rotateAfterContextTokens', 'rotateAfterDiskMiB', 'rotateCheckIntervalHours']) {
+  for (const key of ['rotateAfterTasks', 'rotateAfterSessions', 'rotateAfterContextTokens', 'rotateAfterDiskMiB']) {
     assert.equal(key in config, false, `${key} 已删除`)
   }
+  // 检查节流是「恢复」不是新发明：键回到配置面上，默认一天一次。
+  assert.equal(config.rotateCheckIntervalHours, 24)
   // P2-2：自建续跑器删除 + 三个阈值固定成常量后，这 7 个键不再出现在配置面上。
   for (const key of ['keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt']) {
     assert.equal(key in config, false, `${key} 已删除（续跑改 task_create.goalRounds）`)
@@ -134,7 +136,7 @@ test('配置面总数 28（P2-2 收缩后）：loadConfig 不泄漏未声明的�
   }
 })
 
-test('主会话轮换：7 个键默认值（总开关默认 auto 开启 + 两个因子 + 三个保护 + 归档）', () => {
+test('主会话轮换：8 个键默认值（总开关默认 auto 开启 + 两个因子 + 三个保护 + 检查节流 + 归档）', () => {
   const config = loadConfig({})
   // 默认 auto：主会话跑久了会被换掉；不想换就显式配 off（插件页卡片也能改）。
   assert.equal(config.mainRotation, 'auto')
@@ -143,6 +145,7 @@ test('主会话轮换：7 个键默认值（总开关默认 auto 开启 + 两个
   assert.equal(config.rotateCooldownHours, 48)
   assert.equal(config.rotateMinAgeHours, 12)
   assert.equal(config.rotateIdleMinutes, 10)
+  assert.equal(config.rotateCheckIntervalHours, 24, '检查节流默认一天一次')
   assert.equal(config.rotateArchiveOld, true)
 })
 
@@ -154,6 +157,7 @@ test('主会话轮换：合法覆盖生效，总开关只认显式 off（auto �
     rotateCooldownHours: 24,
     rotateMinAgeHours: 6,
     rotateIdleMinutes: 5,
+    rotateCheckIntervalHours: 6,
     rotateArchiveOld: false,
   })
   assert.equal(config.mainRotation, 'auto')
@@ -162,6 +166,7 @@ test('主会话轮换：合法覆盖生效，总开关只认显式 off（auto �
   assert.equal(config.rotateCooldownHours, 24)
   assert.equal(config.rotateMinAgeHours, 6)
   assert.equal(config.rotateIdleMinutes, 5)
+  assert.equal(config.rotateCheckIntervalHours, 6)
   assert.equal(config.rotateArchiveOld, false)
   // 只有显式 'off' 才关；其余（含拼错）按默认 auto——默认开启，但关得掉。
   assert.equal(loadConfig({ mainRotation: 'off' }).mainRotation, 'off')
@@ -180,12 +185,14 @@ test('主会话轮换：越界夹到边界，非数字/非正数回落默认', (
     rotateCooldownHours: 0.5,
     rotateMinAgeHours: 1e6,
     rotateIdleMinutes: 99999,
+    rotateCheckIntervalHours: 9999,
   })
   assert.equal(clamped.rotateAfterMainLogMiB, 4096)
   assert.equal(clamped.rotateAfterDays, 365)
   assert.equal(clamped.rotateCooldownHours, 1)
   assert.equal(clamped.rotateMinAgeHours, 720)
   assert.equal(clamped.rotateIdleMinutes, 1440)
+  assert.equal(clamped.rotateCheckIntervalHours, 168, '检查间隔上限一周')
 
   const bad = loadConfig({
     rotateAfterMainLogMiB: '6',
@@ -193,6 +200,7 @@ test('主会话轮换：越界夹到边界，非数字/非正数回落默认', (
     rotateCooldownHours: undefined,
     rotateMinAgeHours: 0.5,
     rotateIdleMinutes: 1e9,
+    rotateCheckIntervalHours: 0.5,
   })
   // 非正数/非数字一律回落默认（0.5 是正数，会夹到区间下界而不是回落）。
   assert.equal(bad.rotateAfterMainLogMiB, 6)
@@ -200,6 +208,7 @@ test('主会话轮换：越界夹到边界，非数字/非正数回落默认', (
   assert.equal(bad.rotateCooldownHours, 48)
   assert.equal(bad.rotateMinAgeHours, 1)
   assert.equal(bad.rotateIdleMinutes, 1440)
+  assert.equal(bad.rotateCheckIntervalHours, 1, '0.5 是正数 → 夹到下限 1（≈ 每次打开都查）')
 })
 
 test('不泄漏未声明的原始键', () => {

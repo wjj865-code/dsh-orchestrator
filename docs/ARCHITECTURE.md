@@ -35,12 +35,27 @@
 
 主会话是唯一协调者，跑久了上下文与日志只会更大。轮换 = 把旧主会话退役、换一个干净会话继续；台账、任务、记忆、产物都不搬。**判定与动作严格分离**，判定只有一个调用点：`main-session.openOnce()`（启动、`agent/created`、面板轮询都不判定）。
 
-- **模块**：`src/main-rotation.js`（纯判定 `evaluateRotation` / 采集 `collectRotationMetrics` / 动作面 `createRotationService` / 崩溃恢复）、`src/config.js`（轮换相关的 7 个键：`mainRotation` + 6 个 `rotate*`，默认值与回落都在 `normalizeRotationConfig`）、`src/main-session.js`（唯一判定点）、`index.js`（装配 + `apply()` 时 `recoverPending`）。
+- **模块**：`src/main-rotation.js`（纯判定 `evaluateRotation` / 采集 `collectRotationMetrics` / 动作面 `createRotationService` / 崩溃恢复 / 检查节流纯函数 `rotationCheckWindow`）、`src/config.js`（轮换相关的 8 个键：`mainRotation` + 7 个 `rotate*`，默认值与回落都在 `normalizeRotationConfig`）、`src/main-session.js`（唯一判定点）、`index.js`（装配 + `apply()` 时 `recoverPending`）。
 - **判定**：只在旧主会话 **live** 时做（重启后第一次打开是隐式重建，不是轮换）。触发因子两个：`main-log`（日志 MiB）→ `age`（运行天数）。12 个保护 code 按 `ROTATION_BLOCKS` 排优先级：`mode-off`、`coordinator-override`、`spawn-provider`、`active-tasks`、`delivered-pending`、`delivered-artifacts`、`agent-running`、`recent-activity`、`active-children`、`min-age`、`cooldown`、`metrics-degraded`（两个因子全缺才 fail-closed，缺一个只记 `degraded`）。`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；`mainRotation` **默认 `auto`（开启）**，只有显式 `'off'` 才关，拼错保持默认 `auto`。
 - **动作时序**（顺序即回退边界）：建新会话（失败 = 零处置）→ 写 marker `main_rotation_pending`（先 marker 后切指针，崩溃恢复的唯一锚点）→ 切指针（失败 = 轮换没发生，指针切换后不回滚）→ 写时间戳 → `onboarding=sent`（跳过首次介绍）→ 改名 → 退役旧会话（先改名再归档，各自降级）→ 写审计 `main_rotation_last` → 记 `freshMain`（60 秒窗口内再打开交回同一 id）。
 - **崩溃恢复**：`abandoned`（marker.newId ≠ 指针）= 死在切指针前，尽力归档空白残留；`complete` = 指针已切，补时间戳 / onboarding / 旧会话处置，幂等；`invalid` 只清 marker + 告警，**绝不猜 id 去归档**。
-- **settings 键只存事实**：`main_session_created_at` / `main_rotation_at` / `main_rotation_last`（审计，只留最近一条）/ `main_rotation_pending`；`main_rotation_checked_at` 已废弃（只读）。
-- **日志**：`main.rotation.decided`（每次判定都写）、`main.session.rotated`、以及 `failed` / `marker.*` / `metrics.degraded` / `recovered-*` 等降级项。逐条边界见 [LIMITATIONS](LIMITATIONS.md#主会话轮换g1)。
+- **settings 键只存事实**：`main_session_created_at` / `main_rotation_at` / `main_rotation_last`（审计，只留最近一条）/ `main_rotation_pending` / `main_rotation_checked_at`（上次真正做过「采集 + 判定」的时刻，只给检查节流用，**不是判定结论、也不代表轮换过**）。
+- **日志**：`main.rotation.decided`（每次真正检查都写，带 `checkedAt` / `checkRecorded`）、`main.rotation.check.skipped`（节流跳过，带 `intervalHours` / `checkedAt` / `nextCheckAt` / `elapsedHours`）、`main.session.rotated`、以及 `failed` / `check.record-failed` / `marker.*` / `metrics.degraded` / `recovered-*` 等降级项。逐条边界见 [LIMITATIONS](LIMITATIONS.md#主会话轮换g1)。
+
+### 检查节流（S7：`rotateCheckIntervalHours` / `main_rotation_checked_at`）
+
+采集要读台账 + `locate` + `stat` 主会话日志，随手一开就查一次很浪费。`createRotationService.evaluate` 的顺序是：
+
+1. 配置覆盖 `coordinatorSession` / 没有主会话 id → 直接 `null`（连检查都不做）；
+2. **检查节流闸门**：读 `settings.main_rotation_checked_at`，交给纯函数 `rotationCheckWindow({ now, lastCheckedAt, intervalHours })`；
+   - `shouldCheck === false`（距上次检查 < `rotateCheckIntervalHours`，默认 24、区间 1–168）→ 返回 `{ due:false, skipped:true, skipReason:'check-interval', check:{…} }`，
+     **不采集、不读台账、不判定、不碰平台服务**，只写一条 `main.rotation.check.skipped` 日志；
+   - 没有记录（首次 / 升级后第一次打开）或到点（`elapsed >= 间隔`，`>=` 口径）→ 继续；
+   - 记录时间在未来（时钟回拨）→ 不信任，按「该检查」处理，检查完用当前时间覆盖，避免把检查冻结到时钟追上来；
+3. 采集 + 判定，**结论为「不需要换」时**才写 `main_rotation_checked_at = now`（写失败只记 `main.rotation.check.record-failed`，不影响本次判定）；
+   `due === true` **不写**——动作（create / 切指针）还在后面，失败或崩溃后下一次打开要能重试；检查整体异常（落 `catch`）同样不写。
+
+口径边界（三个时间参数各管一件事，别混）：`rotateCheckIntervalHours` 管**查不查**；`rotateCooldownHours`（默认 48）/ `rotateMinAgeHours`（默认 12）管**换不换**，它们命中时检查照做、只是 `blockedBy` 里多一条。`skipped` 的返回不是判定结论（`triggers` / `blockedBy` 都是空），不会把上一次的 blocks 重算一遍。
 
 ## 队列与并发
 
@@ -439,7 +454,7 @@
 
 ### 插件页配置卡片
 
-插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**28 个字段**，与 `loadConfig({})` 的实际键集合一一对应
+插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**29 个字段**，与 `loadConfig({})` 的实际键集合一一对应
 （P2-2 删掉的 7 个键——`keepAlive*` 四键与 `mergeWindowMs` / `stallRounds` / `preferencesMaxItems`——不出现在表单上，
 只由 `src/config.js` 的 `DEPRECATED_KEYS` 给弃用警告），等价于手改 profile 的 `cordis.patch.yml`。DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供
 `configForms`（值 + 写操作）与 slot，**不生成表单**（0.2.2-rc.3 的 `autoGenerate` 字段全 asar 无 client 消费方）。
@@ -456,7 +471,7 @@
 slot key = bundle **包名**（`CONFIG_SLOT_KEY`）；`configForms.get()` / `whileServed()` 参数 = Loader **entry id**
 （`CONFIG_ENTRY_ID` = `orchestrator`，即 `cordis.patch.yml` 的 id）。`whileServed` 保证插件没加载时页面完全无痕。
 
-**暴露策略**：轮换的 7 个键（`mainRotation` + 6 个 `rotate*`）与其余字段都可编辑——轮换默认开启，
+**暴露策略**：轮换的 8 个键（`mainRotation` + 7 个 `rotate*`）与其余字段都可编辑——轮换默认开启，
 用户必须能在卡片里关掉/调阈值；**`coordinatorSession` 只读**（运维兜底通道：填错会让协调者指向不存在的会话，
 且只能改配置才恢复，只在运维场景手改 `cordis.patch.yml`）。不可逆动作仍由 `rotateArchiveOld` 显式控制（`false` = 只改名）。
 写通道 `mutate(ops, revision)` 带 revision 栅栏，别人先改过就拒绝并刷新，
