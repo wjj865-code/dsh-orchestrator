@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.22.0（2026-11-19）
+
+这一版给插件加上了**插件页配置 UI**：在侧栏「插件」→ `dsh-orchestrator` 详情页里出现一张「配置」卡片，
+可以直接改 35 个配置项，等价于手改 profile 的 `cordis.patch.yml`。此前配置只能改 YAML，插件没有任何 UI。
+
+相对 0.21.0 是 **minor**：新增能力，配置键名/默认值/运行时语义零变化，不改变任何既有工具、台账或状态机行为。
+
+### 插件页配置卡片（feat(config-ui)）
+
+- **机制**：DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供 `configForms`（值 + 写操作）与 slot，
+  **不生成表单**（0.2.2-rc.3 的 `autoGenerate` 字段全 asar 无 client 消费方，已核实）。
+  所以本次自带三件套：`src/config-fields.js`（35 个字段的单一事实源）、`src/config-schema.js`
+  （投影成 schemastery `Config`，每字段 `.default().loose().volatile()`）、
+  `client/src/config-form.js` + `config-logic.js`（分组折叠表单）。
+- **暴露策略**：高频子集可编辑；`coordinatorSession` 与 `mainRotation.*`（含 `rotateArchiveOld`）
+  只读展示——前者是运维兜底通道，后者牵动不可逆归档，不该在表单里手滑改。
+- **保存语义**：写当前 profile 的 `cordis.patch.yml`，即时生效（插件会重载；台账在 SQLite，不受影响）。
+  `mutate` 带 revision 栅栏，别人先改过就拒绝并刷新，**不静默覆盖**；清空一个「已覆盖」字段发 `unset`
+  （回落组合默认且不再算覆盖）。
+- **四个必须守住的 P0**（都已用反向验证钉住）：① 非法配置不得拒载（`.loose()` 兜底，否则 Cordis 校验失败会让插件起不来）；
+  ② volatile 字段不得漏标（漏标 = 页面上静默少一行）；③ volatile 字段到达 `apply` 是带 `.get()` 的包装对象，
+  不解包会让 `loadConfig` 全部失效、用户配置被无声丢弃；④ schemastery 解析失败不得拖垮整个插件
+  （`createRequire` + try/catch 降级为 `Config=undefined`，宿主遇空 Config 跳过校验）。
+
+**验证**：`pnpm test` 993 例全通过（含 11 条新增：四个 P0 守卫 + 字段集双向比对 + 废弃键不在 UI 表 +
+mainRotation 默认 off）；`check:client` / `check:docs`（配置表 35 键）/ `check:version` 通过；
+`pnpm install --frozen-lockfile` 复核通过；无头 Chrome 在隔离测试 profile 上真机验证 10/10
+（卡片出现、字段数 35、6 个废弃键不出现、`mainRotation` 默认 `off`、保存写入 profile YAML、
+手改 YAML 后显示「已覆盖」、清空字段回落默认），截图见 `reports/config-ui-verify/`。
+
 ## 0.21.0（2026-11-19）
 
 这一版把 **P1 五片整体发出**：配置面 **41 → 35**、工具面 **15 → 10**（旧名给迁移提示）、文案收口到**单一真源**、
