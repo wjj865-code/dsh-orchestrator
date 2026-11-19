@@ -836,3 +836,96 @@
     transition: none !important;
   }
 }
+
+/* ── 插件页配置卡片（P10）─────────────────────────────────────────────
+   渲染在 plugin-manager 的 bundle 页面里（不在本插件自己的面板里），
+   所以只用 .orch-cfg* 前缀的局部类，不依赖 .orch-shell 的容器样式。 */
+.orch-cfg { display: flex; flex-direction: column; gap: 10px; }
+.orch-cfg--empty { gap: 4px; }
+.orch-cfg-head { display: flex; align-items: center; gap: 8px; }
+.orch-cfg-title { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #1c1e24); }
+.orch-cfg-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary, #8a8f99);
+  overflow-wrap: anywhere;
+}
+.orch-cfg-hint--warn { color: var(--dsw-alias-state-warn-primary, #f59f0a); }
+.orch-cfg-tag {
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-state-business-primary, #4d6bfe);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4d6bfe) 12%, transparent);
+}
+.orch-cfg-tag--readonly {
+  color: var(--dsw-alias-label-tertiary, #8a8f99);
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary, #8a8f99) 14%, transparent);
+}
+.orch-cfg-group { display: flex; flex-direction: column; gap: 6px; }
+.orch-cfg-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 2px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary, #4a4f57);
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.06));
+}
+.orch-cfg-group-header .orch-icon { color: var(--dsw-alias-label-tertiary, #8a8f99); }
+/* 折叠态 chevron 指向右，展开态指向下：同一条图标靠旋转表达开合，不额外造图标。 */
+.orch-cfg-chevron { transition: transform .15s ease; transform: rotate(-90deg); }
+.orch-cfg-chevron--open { transform: rotate(0deg); }
+.orch-cfg-group-label { flex: 1 1 auto; }
+.orch-cfg-group-count { font-weight: 400; color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-cfg-group-body { display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
+.orch-cfg-row { display: grid; grid-template-columns: minmax(120px, 40%) minmax(0, 1fr); gap: 4px 10px; align-items: center; }
+.orch-cfg-label { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.orch-cfg-name { font-size: 12px; color: var(--dsw-alias-label-primary, #1c1e24); overflow-wrap: anywhere; }
+.orch-cfg-control { display: flex; align-items: center; min-width: 0; }
+.orch-cfg-row .orch-cfg-hint { grid-column: 1 / -1; }
+.orch-cfg-input {
+  width: 100%;
+  padding: 4px 7px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary, #1c1e24);
+  background: var(--dsw-alias-bg-base, #fff);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.12));
+  border-radius: var(--dsw-radius-sm, 6px);
+}
+.orch-cfg-input:disabled { color: var(--dsw-alias-label-tertiary, #8a8f99); background: transparent; }
+.orch-cfg-switch {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary, #8a8f99) 35%, transparent);
+  border: 0;
+  border-radius: 9px;
+  transition: background .15s ease;
+}
+.orch-cfg-switch--on { background: var(--dsw-alias-state-business-primary, #4d6bfe); }
+.orch-cfg-switch:disabled { cursor: not-allowed; opacity: .5; }
+.orch-cfg-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform .15s ease;
+}
+.orch-cfg-switch--on .orch-cfg-switch-knob { transform: translateX(14px); }
+.orch-cfg-actions { display: flex; align-items: center; gap: 8px; padding-top: 2px; }

@@ -2,6 +2,7 @@
 import { join } from 'node:path'
 import { loadConfig, DEFAULT_WORKER_PRESET } from './src/config.js'
 import { createHostCapabilities } from './src/host-capabilities.js'
+import { Config, unwrapVolatile } from './src/config-schema.js'
 import {
   openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts,
   listTasks, setTransitionObserver,
@@ -36,6 +37,10 @@ import { cleanupTaskWorktree, createWorktreeService } from './src/worktree.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
+
+// 配置 schema：Cordis 从插件模块的 `Config` 导出读取，决定插件页上能看到/能改哪些字段。
+// 字段规格的单一事实源在 src/config-fields.js；这里只做投影，不参与运行时归一化。
+export { Config }
 
 const COORDINATOR_INVALID_HINT = '主会话已失效，请从面板「打开主会话」重建。'
 const SCHEDULE_TOOLS = ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']
@@ -147,15 +152,19 @@ export const COORDINATOR_DENY = [
 
 export async function apply(ctx, rawConfig = {}) {
   const warnings = message => ctx.logger?.warn?.(message)
+  // Cordis 会把 `Config` 里标了 volatile 的字段包成带 `.get()` 的对象传进来（见 src/config-schema.js
+  // 文件头第 3 条）。不解包的话 loadConfig 的类型判断会全部失效、用户的配置被无声丢弃。
+  const flatConfig = unwrapVolatile(rawConfig)
   // 已删除的配置键（P1-A 41 → 35）在加载时各 warn 一次：旧 profile 不用改也能跑，但用户能看见哪个键失效了。
-  const config = loadConfig(rawConfig, { onWarn: warnings })
+  const config = loadConfig(flatConfig, { onWarn: warnings })
   // P0-2b：宿主耦合统一走访问层（9 类）。首片接线「日志路径 + 版本自检」，其余访问器已就绪、
   // 消费点分批迁移（剩余清单见 docs/compat.md）；这里不改变任何既有行为。
   const host = createHostCapabilities(ctx, { onWarn: warnings })
   const dir = host.stateDir()
   const db = await openLedger(dir)
   // workerPreset 写错（大写/空格/不合法字符）会被归一化回落：明确告诉用户实际用的是哪个。
-  const rawWorkerPreset = rawConfig?.workerPreset
+  // 注意用解包后的值：原始 rawConfig 里的 workerPreset 可能是 Volatile 包装，JSON.stringify 会得到 `{}`。
+  const rawWorkerPreset = flatConfig.workerPreset
   if (rawWorkerPreset !== undefined && config.workerPreset === DEFAULT_WORKER_PRESET && rawWorkerPreset !== DEFAULT_WORKER_PRESET) {
     warnings(`dsh-orchestrator: workerPreset=${JSON.stringify(rawWorkerPreset)} 不是合法预设 id（小写字母/数字/连字符），已回落到 ${DEFAULT_WORKER_PRESET}`)
   }

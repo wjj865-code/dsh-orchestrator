@@ -1,0 +1,50 @@
+{
+  "results": [
+    {
+      "id": "01 打开首页",
+      "status": "PASS",
+      "detail": "title=\"DeepSeek Harness\""
+    },
+    {
+      "id": "02 打开插件页",
+      "status": "PASS",
+      "detail": "已点击侧栏「插件」"
+    },
+    {
+      "id": "03 打开插件详情",
+      "status": "PASS",
+      "detail": "已进入详情页"
+    },
+    {
+      "id": "04 配置卡片出现",
+      "status": "PASS",
+      "detail": "找到 data-orchestrator-config"
+    },
+    {
+      "id": "05 字段数 = 35（展开全部）",
+      "status": "PASS",
+      "detail": ".orch-cfg-row 实际 = 35（分组数 8，只读标记 8）"
+    },
+    {
+      "id": "06 无 6 个废弃键",
+      "status": "PASS",
+      "detail": "均未出现"
+    },
+    {
+      "id": "07 mainRotation 默认 off",
+      "status": "PASS",
+      "detail": "实际 = off"
+    },
+    {
+      "id": "08 保存写入 profile",
+      "status": "PASS",
+      "detail": "点击=true, 保存=true, YAML 含 keepAlive=true"
+    },
+    {
+      "id": "09 手改 YAML 后显示「已覆盖」",
+      "status": "PASS",
+      "detail": "「已覆盖」标签数 = 1"
+    }
+  ],
+  "consoleErrors": []
+}

@@ -408,9 +408,23 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 ## 配置
 
+**两种改法，等价**：① 在**插件页**（侧栏「插件」→ dsh-orchestrator 页面里的「配置」卡片）改；
+② 直接编辑当前 profile 的 `cordis.patch.yml`（`id: orchestrator` 那一行的 `config`）。
+
+| 要点 | 说明 |
+|---|---|
+| 保存位置 | **当前 profile** 的 `cordis.patch.yml`（`~/.dsh/profiles/<profile>/cordis.patch.yml`），不是插件目录 |
+| 生效方式 | **即时生效**：保存会触发插件重载（台账在 SQLite，不受影响；watchdog / 轮换计时器会重置） |
+| 优先级 | 表单写的是 profile 层；若 home patch 或命令行 overlay 覆盖了同一字段，保存会被**拒绝**并提示原因 |
+| 非法值 | 一律**回落默认**，不会让插件起不来（schema 用 `.loose()` 兜底，运行时再由 `loadConfig` 二次归一化） |
+| 只读字段 | `coordinatorSession` 与 `mainRotation.*`（含 `rotateArchiveOld`）在页面上**只读展示**：它们要么是运维兜底通道，要么牵动不可逆归档，不该在表单里手滑改 |
+
+字段规格的单一事实源是 [`src/config-fields.js`](src/config-fields.js)，schema 投影在
+[`src/config-schema.js`](src/config-schema.js)，页面在 [`client/src/config-form.js`](client/src/config-form.js)。
+
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `coordinatorSession` | — | 显式覆盖主会话；不配则读 `settings.main_session_id` |
+| `coordinatorSession` | — | 显式覆盖主会话；不配则读 `settings.main_session_id`（页面只读） |
 | `spawnProvider` | `spawn` | 本地 fresh 子会话 provider |
 | `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（生成器与说明已移出主包，见 [tools/debug-preset/README.md](tools/debug-preset/README.md)，不随 npm 包发货） |
 | `staleMinutes` | `30` | 多久无动静标陈旧 / stall 提醒间隔 |
@@ -438,7 +452,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，漏传时兜底 |
 | `worktreeBranchPrefix` | `orch/` | 隔离任务分支前缀（默认名 `<prefix><taskId>`） |
 | `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（1–90） |
-| `mainRotation` | `off` | 主会话轮换总开关：`auto`（判定 + 动作）/ `off`（只检测不动作）；**默认 off**，拼错回落 `off` |
+| `mainRotation` | `off` | 主会话轮换总开关：`auto`（判定 + 动作）/ `off`（只检测不动作）；**默认 off**，拼错回落 `off`（页面只读） |
 | `rotateAfterMainLogMiB` | `6` | 主会话日志体积 MiB（0.5–4096） |
 | `rotateAfterDays` | `10` | 主会话运行天数（1–365） |
 | `rotateCooldownHours` | `48` | 两次轮换之间的冷却期（1–720） |

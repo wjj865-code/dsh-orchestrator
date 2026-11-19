@@ -26,6 +26,7 @@ import { createMainViewGate } from './gate.js'
 import { ensureStyles, STYLE_TEXT } from './styles.js'
 import { createUi } from './ui.js'
 import { createViews } from './views.js'
+import { createConfigCard, CONFIG_ENTRY_ID, CONFIG_SLOT_KEY } from './config-form.js'
 
 export const createClient = (req) => {
   const React = req('react')
@@ -37,6 +38,8 @@ export const createClient = (req) => {
   const inject = ['slots', 'layout', 'uiWorkspace']
 
   const { Icon, Badge, Chip, EmptyState, Banner, SkeletonList } = createUi(h)
+  // 插件页配置卡片组件（P10）：只吃 props，自己订阅 ConfigForm。
+  const OrchestratorConfigCard = createConfigCard({ React, h, Icon })
   // chip 的「打开并定位」请求：chip 只记任务 id，真正开抽屉的是面板自己（面板挂载时 take 一次）。
   const focusRequest = createFocusRequest()
   const {
@@ -291,6 +294,37 @@ export const createClient = (req) => {
         chips: chipFeed,
       }),
     }, TaskChipRow))
+
+    // 插件页配置卡片（P10）：注册进 plugin-manager 页面声明的 keyed slot。
+    //
+    // 三个 key 各不相同，写错任一处都是**静默不渲染**（不报错、不留痕）：
+    //   - slot 名：'plugins.bundle.config'
+    //   - slot key：bundle 的**包名**（CONFIG_SLOT_KEY）
+    //   - configForms.get() / whileServed() 的参数：Loader **entry id**（CONFIG_ENTRY_ID）
+    //
+    // `whileServed` 保证：插件没加载 / 被禁用时页面完全无痕；namespace 消失时自动撤下。
+    // `configForms` 服务缺失（老宿主）时整段跳过，不影响任务面板。
+    ctx.inject?.(['configForms'], child => {
+      const forms = child.get?.('configForms')
+      if (forms === undefined || forms === null) return
+      if (typeof forms.get !== 'function' || typeof forms.whileServed !== 'function') return
+      child.effect?.(() => forms.whileServed([CONFIG_ENTRY_ID], () => child.slots.inject('plugins.bundle.config', () =>
+        child.slots.register({
+          name: 'plugins.bundle.config',
+          key: CONFIG_SLOT_KEY,
+        }, props => {
+          // 宿主把「值 + 写操作」放在 props.form 上；卡片自己管草稿与校验。
+          const form = forms.get(CONFIG_ENTRY_ID)
+          return h(OrchestratorConfigCard, {
+            ...props,
+            form: {
+              getSnapshot: () => form.getSnapshot(),
+              subscribe: listener => form.subscribe(listener),
+              mutate: (ops, revision) => form.mutate(ops, revision),
+            },
+          })
+        }))), 'dsh-orchestrator: plugins-page config card')
+    })
   }
 
   return {

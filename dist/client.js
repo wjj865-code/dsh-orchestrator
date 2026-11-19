@@ -1431,6 +1431,99 @@
     transition: none !important;
   }
 }
+
+/* ── 插件页配置卡片（P10）─────────────────────────────────────────────
+   渲染在 plugin-manager 的 bundle 页面里（不在本插件自己的面板里），
+   所以只用 .orch-cfg* 前缀的局部类，不依赖 .orch-shell 的容器样式。 */
+.orch-cfg { display: flex; flex-direction: column; gap: 10px; }
+.orch-cfg--empty { gap: 4px; }
+.orch-cfg-head { display: flex; align-items: center; gap: 8px; }
+.orch-cfg-title { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #1c1e24); }
+.orch-cfg-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary, #8a8f99);
+  overflow-wrap: anywhere;
+}
+.orch-cfg-hint--warn { color: var(--dsw-alias-state-warn-primary, #f59f0a); }
+.orch-cfg-tag {
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-state-business-primary, #4d6bfe);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4d6bfe) 12%, transparent);
+}
+.orch-cfg-tag--readonly {
+  color: var(--dsw-alias-label-tertiary, #8a8f99);
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary, #8a8f99) 14%, transparent);
+}
+.orch-cfg-group { display: flex; flex-direction: column; gap: 6px; }
+.orch-cfg-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 2px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary, #4a4f57);
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.06));
+}
+.orch-cfg-group-header .orch-icon { color: var(--dsw-alias-label-tertiary, #8a8f99); }
+/* 折叠态 chevron 指向右，展开态指向下：同一条图标靠旋转表达开合，不额外造图标。 */
+.orch-cfg-chevron { transition: transform .15s ease; transform: rotate(-90deg); }
+.orch-cfg-chevron--open { transform: rotate(0deg); }
+.orch-cfg-group-label { flex: 1 1 auto; }
+.orch-cfg-group-count { font-weight: 400; color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-cfg-group-body { display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
+.orch-cfg-row { display: grid; grid-template-columns: minmax(120px, 40%) minmax(0, 1fr); gap: 4px 10px; align-items: center; }
+.orch-cfg-label { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.orch-cfg-name { font-size: 12px; color: var(--dsw-alias-label-primary, #1c1e24); overflow-wrap: anywhere; }
+.orch-cfg-control { display: flex; align-items: center; min-width: 0; }
+.orch-cfg-row .orch-cfg-hint { grid-column: 1 / -1; }
+.orch-cfg-input {
+  width: 100%;
+  padding: 4px 7px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary, #1c1e24);
+  background: var(--dsw-alias-bg-base, #fff);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.12));
+  border-radius: var(--dsw-radius-sm, 6px);
+}
+.orch-cfg-input:disabled { color: var(--dsw-alias-label-tertiary, #8a8f99); background: transparent; }
+.orch-cfg-switch {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary, #8a8f99) 35%, transparent);
+  border: 0;
+  border-radius: 9px;
+  transition: background .15s ease;
+}
+.orch-cfg-switch--on { background: var(--dsw-alias-state-business-primary, #4d6bfe); }
+.orch-cfg-switch:disabled { cursor: not-allowed; opacity: .5; }
+.orch-cfg-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform .15s ease;
+}
+.orch-cfg-switch--on .orch-cfg-switch-knob { transform: translateX(14px); }
+.orch-cfg-actions { display: flex; align-items: center; gap: 8px; padding-top: 2px; }
 `;
   const ensureStyles = () => {
     try {
@@ -2573,11 +2666,582 @@
     };
     return { HeaderButton, LauncherIcon, LauncherPanel, TasksPanel, TaskChipRow };
   }
+  const FIELD_GROUPS = Object.freeze([
+    Object.freeze({ id: "dispatch", label: "派发与队列" }),
+    Object.freeze({ id: "watchdog", label: "看门狗与陈旧判定" }),
+    Object.freeze({ id: "keepalive", label: "回合间续跑" }),
+    Object.freeze({ id: "delivery", label: "交付与通知" }),
+    Object.freeze({ id: "isolation", label: "隔离与并发" }),
+    Object.freeze({ id: "memory", label: "记忆与快照" }),
+    Object.freeze({ id: "preferences", label: "偏好注入" }),
+    Object.freeze({ id: "rotation", label: "主会话轮换（只读）" })
+  ]);
+  const CONFIG_FIELDS = Object.freeze([
+    // ── 派发与队列 ────────────────────────────────────────────────
+    Object.freeze({
+      key: "spawnProvider",
+      group: "dispatch",
+      kind: "string",
+      default: "spawn",
+      label: "子会话 provider",
+      hint: "本地 fresh 子会话的 provider 名"
+    }),
+    Object.freeze({
+      key: "workerPreset",
+      group: "dispatch",
+      kind: "string",
+      default: "dsh-orchestrator-worker",
+      label: "子会话预设",
+      hint: "只认小写字母/数字/连字符；非法值回落 dsh-orchestrator-worker"
+    }),
+    Object.freeze({
+      key: "maxQueue",
+      group: "dispatch",
+      kind: "number",
+      min: 1,
+      max: 1e4,
+      integer: true,
+      default: 50,
+      label: "队列安全阀",
+      hint: "pending + waiting_dep 的上限"
+    }),
+    Object.freeze({
+      key: "autoResumeQueue",
+      group: "dispatch",
+      kind: "boolean",
+      default: true,
+      label: "重启后自动恢复排队任务"
+    }),
+    Object.freeze({
+      key: "mergeWindowMs",
+      group: "dispatch",
+      kind: "number",
+      min: 1,
+      max: 6e5,
+      integer: true,
+      default: 5e3,
+      label: "完成通知合并窗口（ms）"
+    }),
+    Object.freeze({
+      key: "staleMinutes",
+      group: "dispatch",
+      kind: "number",
+      min: 1,
+      max: 1440,
+      integer: true,
+      default: 30,
+      label: "陈旧判定（分钟）",
+      hint: "多久无动静标陈旧 / stall 提醒间隔"
+    }),
+    Object.freeze({
+      key: "stallRounds",
+      group: "dispatch",
+      kind: "number",
+      min: 1,
+      max: 1e3,
+      integer: true,
+      default: 3,
+      label: "stall 提醒轮数",
+      hint: "连续 progress 达阈值后提醒一次「可能卡住」"
+    }),
+    // ── 看门狗 ────────────────────────────────────────────────────
+    Object.freeze({
+      key: "idleWatchdog",
+      group: "watchdog",
+      kind: "boolean",
+      default: true,
+      label: "空闲看门狗",
+      hint: "只告警，不杀任务"
+    }),
+    Object.freeze({
+      key: "watchdogIntervalMinutes",
+      group: "watchdog",
+      kind: "number",
+      min: 1,
+      max: 1440,
+      integer: true,
+      default: 5,
+      label: "巡检间隔（分钟）"
+    }),
+    Object.freeze({
+      key: "watchdogIdleMinutes",
+      group: "watchdog",
+      kind: "number",
+      min: 1,
+      max: 1440,
+      integer: true,
+      default: 15,
+      label: "空闲阈值（分钟）",
+      hint: "同一段空闲每任务只报一次"
+    }),
+    // ── 续跑 ──────────────────────────────────────────────────────
+    Object.freeze({
+      key: "keepAlive",
+      group: "keepalive",
+      kind: "boolean",
+      default: false,
+      label: "回合间续跑",
+      hint: "需要 ctx.goals；默认关闭，升级后行为不突变"
+    }),
+    Object.freeze({
+      key: "keepAliveMode",
+      group: "keepalive",
+      kind: "enum",
+      values: ["steer", "followup"],
+      default: "steer",
+      label: "续跑方式",
+      hint: "steer = 同回合再走一步；followup = 新回合（会写 turn/end）"
+    }),
+    Object.freeze({
+      key: "keepAliveMaxRounds",
+      group: "keepalive",
+      kind: "number",
+      min: 1,
+      max: 50,
+      integer: true,
+      default: 8,
+      label: "续跑轮数上限"
+    }),
+    Object.freeze({
+      key: "keepAlivePrompt",
+      group: "keepalive",
+      kind: "string",
+      default: "",
+      label: "续跑提示词",
+      hint: "留空 = 用内置默认提示"
+    }),
+    // ── 交付与通知 ────────────────────────────────────────────────
+    Object.freeze({
+      key: "deliveredTimeoutMinutes",
+      group: "delivery",
+      kind: "number",
+      min: 1,
+      max: 1440,
+      integer: true,
+      default: 60,
+      label: "待确认超时（分钟）",
+      hint: "设成 1 约等于「交付即完成」的旧行为"
+    }),
+    Object.freeze({
+      key: "digestAt",
+      group: "delivery",
+      kind: "string",
+      default: "",
+      label: "每日日报时刻",
+      hint: "HH:MM（如 09:00）；留空 = 关闭",
+      pattern: "^([01]\\d|2[0-3]):[0-5]\\d$"
+    }),
+    Object.freeze({
+      key: "digestTimeZone",
+      group: "delivery",
+      kind: "string",
+      default: "",
+      label: "日报时区",
+      hint: "如 Asia/Shanghai；留空 = 系统时区"
+    }),
+    // ── 隔离与并发 ────────────────────────────────────────────────
+    Object.freeze({
+      key: "sameDirGuard",
+      group: "isolation",
+      kind: "enum",
+      values: ["require", "warn", "off"],
+      default: "require",
+      label: "同写域并发防护",
+      hint: "require = 拒绝并给可操作错误；非法值一律回落 require（默认必须安全）"
+    }),
+    Object.freeze({
+      key: "worktreePolicy",
+      group: "isolation",
+      kind: "enum",
+      values: ["required", "auto", "off"],
+      default: "auto",
+      label: "worktree 隔离策略",
+      hint: "required = 每个需求都隔离；auto = 满足三条件才建议"
+    }),
+    Object.freeze({
+      key: "worktreeBranchPrefix",
+      group: "isolation",
+      kind: "string",
+      default: "orch/",
+      label: "隔离分支前缀",
+      hint: "默认分支名 <prefix><taskId>"
+    }),
+    Object.freeze({
+      key: "worktreeRecentDays",
+      group: "isolation",
+      kind: "number",
+      min: 1,
+      max: 90,
+      integer: true,
+      default: 7,
+      label: "近期活跃分支窗口（天）"
+    }),
+    // ── 记忆与快照 ────────────────────────────────────────────────
+    Object.freeze({
+      key: "memoryInject",
+      group: "memory",
+      kind: "boolean",
+      default: true,
+      label: "注入事实层记忆",
+      hint: "新任务是否注入跨项目记忆"
+    }),
+    Object.freeze({
+      key: "memoryLimit",
+      group: "memory",
+      kind: "number",
+      min: 1,
+      max: 10,
+      integer: true,
+      default: 3,
+      label: "注入记忆条数"
+    }),
+    Object.freeze({
+      key: "snapshotRetentionDays",
+      group: "memory",
+      kind: "number",
+      min: 1,
+      max: 30,
+      integer: true,
+      default: 7,
+      label: "台账快照保留（天）"
+    }),
+    // ── 偏好注入 ──────────────────────────────────────────────────
+    Object.freeze({
+      key: "preferencesInject",
+      group: "preferences",
+      kind: "boolean",
+      default: true,
+      label: "注入偏好段",
+      hint: "协调者 policy 的第 4 段；关闭则整段消失"
+    }),
+    Object.freeze({
+      key: "preferencesMaxChars",
+      group: "preferences",
+      kind: "number",
+      min: 200,
+      max: 4e3,
+      integer: true,
+      default: 1200,
+      label: "偏好字数上限"
+    }),
+    Object.freeze({
+      key: "preferencesMaxItems",
+      group: "preferences",
+      kind: "number",
+      min: 1,
+      max: 20,
+      integer: true,
+      default: 12,
+      label: "偏好条数上限"
+    }),
+    // ── 主会话轮换（只读，Q3） ─────────────────────────────────────
+    Object.freeze({
+      key: "coordinatorSession",
+      group: "rotation",
+      kind: "string",
+      default: "",
+      readonly: true,
+      label: "协调者会话覆盖",
+      hint: "留空 = 读台账 settings.main_session_id；只在运维兜底时手改 YAML"
+    }),
+    Object.freeze({
+      key: "mainRotation",
+      group: "rotation",
+      kind: "enum",
+      values: ["auto", "off"],
+      default: "off",
+      readonly: true,
+      label: "轮换总开关",
+      hint: "默认 off（默认必须安全）；拼错也回落 off"
+    }),
+    Object.freeze({
+      key: "rotateAfterMainLogMiB",
+      group: "rotation",
+      kind: "number",
+      min: 0.5,
+      max: 4096,
+      integer: false,
+      default: 6,
+      readonly: true,
+      label: "触发：主会话日志体积（MiB）"
+    }),
+    Object.freeze({
+      key: "rotateAfterDays",
+      group: "rotation",
+      kind: "number",
+      min: 1,
+      max: 365,
+      integer: true,
+      default: 10,
+      readonly: true,
+      label: "触发：运行天数"
+    }),
+    Object.freeze({
+      key: "rotateCooldownHours",
+      group: "rotation",
+      kind: "number",
+      min: 1,
+      max: 720,
+      integer: true,
+      default: 48,
+      readonly: true,
+      label: "冷却期（小时）"
+    }),
+    Object.freeze({
+      key: "rotateMinAgeHours",
+      group: "rotation",
+      kind: "number",
+      min: 1,
+      max: 720,
+      integer: true,
+      default: 12,
+      readonly: true,
+      label: "最小龄（小时）"
+    }),
+    Object.freeze({
+      key: "rotateIdleMinutes",
+      group: "rotation",
+      kind: "number",
+      min: 1,
+      max: 1440,
+      integer: true,
+      default: 10,
+      readonly: true,
+      label: "闲置判定（分钟）"
+    }),
+    Object.freeze({
+      key: "rotateArchiveOld",
+      group: "rotation",
+      kind: "boolean",
+      default: true,
+      readonly: true,
+      label: "轮换后归档旧主会话",
+      hint: "不可逆：平台没有 unarchive"
+    })
+  ]);
+  const EDITABLE_FIELDS = Object.freeze(CONFIG_FIELDS.filter((field) => field.readonly !== true));
+  Object.freeze(
+    Object.fromEntries(CONFIG_FIELDS.map((field) => [field.key, field]))
+  );
+  const FIELDS_BY_GROUP = Object.freeze(
+    FIELD_GROUPS.map((group) => Object.freeze({
+      ...group,
+      fields: Object.freeze(CONFIG_FIELDS.filter((field) => field.group === group.id))
+    })).filter((group) => group.fields.length > 0)
+  );
+  Object.freeze(CONFIG_FIELDS.map((field) => field.key));
+  const EDITABLE_KEYS = Object.freeze(EDITABLE_FIELDS.map((field) => field.key));
+  const CONFIG_SLOT_KEY = "@wjj865-code/dsh-orchestrator";
+  const CONFIG_ENTRY_ID = "orchestrator";
+  const COLLAPSED_BY_DEFAULT = Object.freeze(["rotation"]);
+  const plainValues = (value) => typeof value === "object" && value !== null ? value : {};
+  const overriddenKeys = (user) => new Set(Object.keys(plainValues(user)));
+  const isDirty = (draft, saved) => {
+    const keys = /* @__PURE__ */ new Set([...Object.keys(draft), ...Object.keys(saved)]);
+    for (const key of keys) {
+      if (!EDITABLE_KEYS.includes(key)) continue;
+      if (draft[key] !== saved[key]) return true;
+    }
+    return false;
+  };
+  function buildOps(draft, saved, overridden) {
+    const ops = [];
+    for (const key of EDITABLE_KEYS) {
+      if (draft[key] === saved[key]) continue;
+      if (draft[key] === "" || draft[key] === void 0 || draft[key] === null) {
+        if (overridden.has(key)) ops.push({ op: "unset", path: [key] });
+        continue;
+      }
+      ops.push({ op: "set", path: [key], value: draft[key] });
+    }
+    return ops;
+  }
+  function parseInput(field, text) {
+    if (field.kind === "boolean") return text === true || text === "true";
+    if (field.kind === "number") {
+      if (text === "") return "";
+      const numeric = Number(text);
+      return Number.isFinite(numeric) ? numeric : text;
+    }
+    return text;
+  }
+  function createConfigCard({ React, h, Icon }) {
+    const useFormSnapshot = (form) => {
+      const [, bump] = React.useState(0);
+      React.useEffect(() => {
+        if (form === void 0 || form === null || typeof form.subscribe !== "function") return void 0;
+        return form.subscribe(() => bump((value) => value + 1));
+      }, [form]);
+      if (form === void 0 || form === null || typeof form.getSnapshot !== "function") {
+        return { status: "loading", value: void 0, user: void 0, revision: void 0, writable: false };
+      }
+      return form.getSnapshot();
+    };
+    const Row = ({ field, draft, overridden, disabled, onChange }) => {
+      const value = draft[field.key];
+      const isOverridden = overridden.has(field.key);
+      const common = {
+        className: "orch-cfg-input",
+        disabled: disabled || field.readonly === true,
+        value: value === void 0 || value === null ? "" : String(value),
+        onChange: (event) => onChange(field, event.target.value),
+        "aria-label": field.label
+      };
+      return /* @__PURE__ */ h("div", { className: "orch-cfg-row" }, /* @__PURE__ */ h("div", { className: "orch-cfg-label" }, /* @__PURE__ */ h("span", { className: "orch-cfg-name" }, field.label), isOverridden ? /* @__PURE__ */ h("span", { className: "orch-cfg-tag" }, "已覆盖") : null, field.readonly === true ? /* @__PURE__ */ h("span", { className: "orch-cfg-tag orch-cfg-tag--readonly" }, "只读") : null), /* @__PURE__ */ h("div", { className: "orch-cfg-control" }, field.kind === "boolean" ? /* @__PURE__ */ h(
+        "button",
+        {
+          type: "button",
+          role: "switch",
+          "aria-checked": value === true,
+          "aria-label": field.label,
+          className: value === true ? "orch-cfg-switch orch-cfg-switch--on" : "orch-cfg-switch",
+          disabled: disabled || field.readonly === true,
+          onClick: () => onChange(field, value !== true)
+        },
+        /* @__PURE__ */ h("span", { className: "orch-cfg-switch-knob" })
+      ) : field.kind === "enum" ? /* @__PURE__ */ h("select", { ...common }, field.values.map((option) => /* @__PURE__ */ h("option", { key: option, value: option }, option))) : /* @__PURE__ */ h(
+        "input",
+        {
+          ...common,
+          type: field.kind === "number" ? "number" : "text",
+          placeholder: field.kind === "number" ? String(field.default) : ""
+        }
+      )), field.hint === void 0 ? null : /* @__PURE__ */ h("div", { className: "orch-cfg-hint" }, field.hint), field.pattern !== void 0 && value !== "" && !new RegExp(field.pattern).test(String(value)) ? /* @__PURE__ */ h("div", { className: "orch-cfg-hint orch-cfg-hint--warn" }, "格式不符（例：09:00）；非法值保存后会回落默认") : null);
+    };
+    return function OrchestratorConfigCard(props) {
+      const form = props.form;
+      const snapshot = useFormSnapshot(form === void 0 ? void 0 : form);
+      const saved = React.useMemo(() => plainValues(snapshot.value), [snapshot.value]);
+      const overridden = React.useMemo(() => overriddenKeys(snapshot.user), [snapshot.user]);
+      const [draft, setDraft] = React.useState(saved);
+      const [saving, setSaving] = React.useState(false);
+      const [error, setError] = React.useState(null);
+      const [notice, setNotice] = React.useState(null);
+      const [collapsed, setCollapsed] = React.useState(() => new Set(COLLAPSED_BY_DEFAULT));
+      React.useEffect(() => {
+        setDraft(saved);
+        setError(null);
+      }, [saved]);
+      const dirty = isDirty(draft, saved);
+      const readonly = snapshot.writable !== true;
+      const onChange = (field, next) => {
+        setNotice(null);
+        setDraft((current) => ({ ...current, [field.key]: field.kind === "string" || field.kind === "enum" ? next : parseInput(field, next) }));
+      };
+      const onSave = async () => {
+        if (form === void 0 || typeof form.mutate !== "function") return;
+        const ops = buildOps(draft, saved, overridden);
+        if (ops.length === 0) {
+          setNotice("没有需要保存的改动");
+          return;
+        }
+        setSaving(true);
+        setError(null);
+        setNotice(null);
+        try {
+          const accepted = await form.mutate(ops, snapshot.revision);
+          if (accepted === true) {
+            setNotice("已保存。配置即时生效（插件会重载，台账不受影响）。");
+          } else {
+            setError("保存被拒绝：配置可能已被别处改动，或该字段不允许写入。表单已按最新值刷新，请重试。");
+          }
+        } catch (failure) {
+          setError(`保存失败：${String(failure && failure.message || failure)}`);
+        } finally {
+          setSaving(false);
+        }
+      };
+      const onReset = () => {
+        setDraft(saved);
+        setError(null);
+        setNotice("已放弃未保存的改动");
+      };
+      const toggleGroup = (id) => setCollapsed((current) => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      if (snapshot.status === "unavailable") {
+        return h("div", { className: "orch-cfg orch-cfg--empty" }, [
+          h("div", { key: "title", className: "orch-cfg-title" }, "配置"),
+          h("p", { key: "body", className: "orch-cfg-hint" }, "该插件当前未加载，暂时无法配置。")
+        ]);
+      }
+      if (snapshot.status === "loading") {
+        return h("div", { className: "orch-cfg orch-cfg--empty" }, [
+          h("div", { key: "title", className: "orch-cfg-title" }, "配置"),
+          h("p", { key: "body", className: "orch-cfg-hint" }, "正在读取配置…")
+        ]);
+      }
+      const groups = FIELDS_BY_GROUP.map((group) => {
+        const isCollapsed = collapsed.has(group.id);
+        const header = h("button", {
+          key: "header",
+          type: "button",
+          className: "orch-cfg-group-header",
+          "aria-expanded": !isCollapsed,
+          onClick: () => toggleGroup(group.id)
+        }, [
+          // 折叠时图标旋转 90°（同一条 chevron，靠 CSS 表达开合，不额外造图标）。
+          h(Icon, { key: "icon", name: "chevron", className: isCollapsed ? "orch-cfg-chevron" : "orch-cfg-chevron orch-cfg-chevron--open" }),
+          h("span", { key: "label", className: "orch-cfg-group-label" }, group.label),
+          h("span", { key: "count", className: "orch-cfg-group-count" }, String(group.fields.length))
+        ]);
+        const body = isCollapsed ? null : h(
+          "div",
+          { key: "body", className: "orch-cfg-group-body" },
+          group.fields.map((field) => h(Row, {
+            key: field.key,
+            field,
+            draft,
+            overridden,
+            disabled: readonly || saving,
+            onChange
+          }))
+        );
+        return h("section", { key: group.id, className: "orch-cfg-group" }, [header, body]);
+      });
+      const actions = readonly ? null : h("div", { key: "actions", className: "orch-cfg-actions" }, [
+        h("button", {
+          key: "save",
+          type: "button",
+          className: "orch-btn orch-btn--primary",
+          disabled: !dirty || saving,
+          onClick: onSave
+        }, saving ? "保存中…" : "保存"),
+        h("button", {
+          key: "reset",
+          type: "button",
+          className: "orch-btn",
+          disabled: !dirty || saving,
+          onClick: onReset
+        }, "放弃改动"),
+        dirty ? h("span", { key: "dirty", className: "orch-cfg-hint" }, "有未保存的改动") : null
+      ]);
+      return h("div", { className: "orch-cfg", "data-orchestrator-config": "true" }, [
+        h("div", { key: "head", className: "orch-cfg-head" }, [
+          h("div", { key: "title", className: "orch-cfg-title" }, "配置"),
+          readonly ? h("span", { key: "ro", className: "orch-cfg-tag orch-cfg-tag--readonly" }, "只读") : null
+        ]),
+        h(
+          "p",
+          { key: "intro", className: "orch-cfg-hint" },
+          "保存在当前 profile 的 cordis.patch.yml；保存后插件即时重载（台账不受影响）。"
+        ),
+        error === null ? null : h("div", { key: "error", className: "orch-banner orch-banner--error", role: "alert" }, error),
+        notice === null ? null : h("div", { key: "notice", className: "orch-banner orch-banner--info", role: "status" }, notice),
+        ...groups,
+        actions
+      ]);
+    };
+  }
   const createClient = (req) => {
     const React = req("react");
     const { createElement: h } = React;
     const inject = ["slots", "layout", "uiWorkspace"];
     const { Icon, Badge, Chip, EmptyState, Banner, SkeletonList } = createUi(h);
+    const OrchestratorConfigCard = createConfigCard({ React, h, Icon });
     const focusRequest = createFocusRequest();
     const {
       HeaderButton,
@@ -2800,6 +3464,25 @@
           chips: chipFeed
         })
       }, TaskChipRow));
+      ctx.inject?.(["configForms"], (child) => {
+        const forms = child.get?.("configForms");
+        if (forms === void 0 || forms === null) return;
+        if (typeof forms.get !== "function" || typeof forms.whileServed !== "function") return;
+        child.effect?.(() => forms.whileServed([CONFIG_ENTRY_ID], () => child.slots.inject("plugins.bundle.config", () => child.slots.register({
+          name: "plugins.bundle.config",
+          key: CONFIG_SLOT_KEY
+        }, (props) => {
+          const form = forms.get(CONFIG_ENTRY_ID);
+          return h(OrchestratorConfigCard, {
+            ...props,
+            form: {
+              getSnapshot: () => form.getSnapshot(),
+              subscribe: (listener) => form.subscribe(listener),
+              mutate: (ops, revision) => form.mutate(ops, revision)
+            }
+          });
+        }))), "dsh-orchestrator: plugins-page config card");
+      });
     }
     return {
       inject,

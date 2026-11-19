@@ -745,6 +745,46 @@ target 可写根（`danger-full-access` 下用不上，只当注入失败时的�
 - **边界**：依赖只能指向已存在任务、不支持编辑；`writeScopes` 是冲突提示不是文件锁；`done` 不可逆、不提供 reopen；
   协调者禁止任何阻塞等待；台账每天快照，损坏要手工恢复（[LIMITATIONS](LIMITATIONS.md)）。
 
+### 插件页配置卡片
+
+插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**32→35 个字段**（P1-A 配置面收缩后为 35），
+等价于手改 profile 的 `cordis.patch.yml`。DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供
+`configForms`（值 + 写操作）与 slot，**不生成表单**（0.2.2-rc.3 的 `autoGenerate` 字段全 asar 无 client 消费方）。
+
+**三件套**（字段规格只声明一次，三方共用，避免漂移）：
+
+| 文件 | 职责 |
+|---|---|
+| `src/config-fields.js` | 字段单一事实源：名称/类型/枚举/区间/默认/只读/分组 |
+| `src/config-schema.js` | 投影成 schemastery `Config`（每字段 `.default().loose().volatile()`）+ `unwrapVolatile` + 降级加载 |
+| `client/src/config-form.js` + `config-logic.js` | 分组折叠表单；纯逻辑（`buildOps`/`isDirty`/`parseInput`）单独拆出以便 node 直测 |
+
+**注册的三个 key 各不相同**（写错任一处都是静默不渲染）：slot 名 `plugins.bundle.config`；
+slot key = bundle **包名**（`CONFIG_SLOT_KEY`）；`configForms.get()` / `whileServed()` 参数 = Loader **entry id**
+（`CONFIG_ENTRY_ID` = `orchestrator`，即 `cordis.patch.yml` 的 id）。`whileServed` 保证插件没加载时页面完全无痕。
+
+**暴露策略**：高频子集可编辑；`coordinatorSession` 与 `mainRotation.*`（含 `rotateArchiveOld`）只读展示
+（前者是运维兜底通道，后者牵动不可逆归档）。写通道 `mutate(ops, revision)` 带 revision 栅栏，别人先改过就拒绝并刷新，
+不静默覆盖；清空一个「已覆盖」字段发 `unset`（回落组合默认且不再算覆盖）。保存触发插件重载（台账不受影响，
+watchdog/轮换计时器重置），页面文案写明。
+
+**四个必须守住的 P0**（改动前先读 `src/config-schema.js` 文件头，`test/config-fields.test.js` 逐条反向验证过）：
+
+1. **不得拒载**：Cordis `resolveConfig()` 校验失败抛 `ValidationError` → 插件起不来。解法：每字段 `.default()`、
+   不 `required()`、`.loose()` 兜底。反向验证：去掉 `.loose()` → 2 条用例变红。
+2. **volatile 不得漏标**：宿主 `volatileForm()` 只保留 volatile 字段，漏标 = 页面上不报错地少一行。解法：单测把
+   schema 的 volatile 集合与字段表 key 集合**双向比对**。反向验证：去掉 `.volatile()` → 2 条变红。
+3. **volatile 到达 `apply` 是包装对象**：经 Cordis 校验后是带 `.get()` 的 cosmokit Volatile，不解包会让
+   `loadConfig` 的 `typeof` 判断全失效、用户配置被无声丢弃（实测 `staleMinutes:10` 变回 30）。解法：`apply` 首行
+   `unwrapVolatile(rawConfig)`。
+4. **schemastery 解析失败不得拖垮整个插件**：它是宿主自带包，本插件声明为 optional peer，但静态 `import` 失败 =
+   模块加载失败 = 任务面板与全部工具一起消失。解法：`createRequire` + try/catch 同步降级为 `Config=undefined`
+   （宿主 `resolveConfig()` 遇空 Config 跳过校验，已核实）。
+
+**废弃键**：P1-A 删掉的 6 个键（`backend`、`rotateAfterTasks`、`rotateAfterSessions`、`rotateAfterContextTokens`、
+`rotateAfterDiskMiB`、`rotateCheckIntervalHours`）由 `src/config.js` 的 `DEPRECATED_KEYS` 给一次性迁移提示；
+它们**不出现在配置卡片上**（字段表不含），无需 UI 侧额外接入。
+
 ## 落盘与日志
 
 ```
