@@ -32,7 +32,7 @@ scripts/            镜像同步、access:'full' 离线验证、版本口径
 tools/debug-preset/ orch-debug 预设生成器（维护者工具，不随 npm 包发货）
 cordis.patch.yml     随包预设：协调者 + worker
 test/                node:test，按模块分文件（*.test.js）
-docs/                ARCHITECTURE / LIMITATIONS / UI / DETAIL / probes
+docs/                ARCHITECTURE / LIMITATIONS / testing / compat / api-notes / probes
 ```
 
 ## 本地开发
@@ -42,6 +42,8 @@ pnpm install             # 装依赖（按 pnpm-lock.yaml；CI 用 pnpm install 
 pnpm test                # pretest 会先 pnpm run build，再跑 node --test
 pnpm run build           # client/src/** --vite--> dist/client.js（+ .map）
 pnpm run check:client    # node --check dist/client.js
+pnpm run check:docs      # 文档行数预算 + README 配置表/工具表 + 内链（pretest 会跑）
+pnpm run check:version   # package.json / README / CHANGELOG 版本口径
 node tools/debug-preset/cli.mjs            # 把随包「创造模式」组合复制成可安装的 orch-debug 预设（维护者工具，不随包发货）
 node tools/debug-preset/cli.mjs --check    # 升级 DSH 后查预设漂移
 node --test tools/debug-preset/test/debug-preset.test.js   # 外移工具的测试（不在 pnpm test 里）

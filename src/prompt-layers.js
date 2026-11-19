@@ -5,7 +5,7 @@
 //   1. `LIMITATIONS.md` 说「交付时选项进 question+options」，实现明确不支持（`done` 会清空）；
 //   2. brief 的 `CONFIRM_HINT` 说「要点写进 summary」，task_detail 的 `FINISH_HINT` 说「正文写：改了什么…」
 //      —— 子会话不知道 summary 该写结论还是写三问；
-//   3. `DETAIL.md` 说 brief 是「四件事」，实际有 worktree 时是 6 行（多「访问级别」「worktree 依赖」）。
+//   3. 插件页简介（原 `DETAIL.md`，P1-D 已并入 README/ARCHITECTURE）说 brief 是「四件事」，实际有 worktree 时是 6 行（多「访问级别」「worktree 依赖」）。
 //
 // 本模块把「谁说什么」固定下来，并给出跨层共享的**唯一措辞**：各层从这里取常量，不再各写一份。
 // 判据：**一条口径只允许有一个所有者层**；其它层要么不提，要么用本模块的常量（内容逐字一致）。

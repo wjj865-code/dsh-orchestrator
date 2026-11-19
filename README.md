@@ -64,7 +64,7 @@ https://github.com/wjj865-code/dsh-orchestrator
 - 面板右上角「打开主会话」：创建/复用一个主会话。
 - 回复底部的关联任务 chip：主会话里协调者**最新一轮**回复的动作行上方，最多两枚「状态图标 + 任务标题」（其余折成「+N」），
   点一下打开任务面板并直接定位到该任务的详情；历史回复、子会话、没有关联任务时都不渲染。规则与状态映射见
-  [docs/UI.md §7](docs/UI.md#7-回复底部关联任务-chip官方-turntail-槽位)。
+  [docs/ARCHITECTURE.md §回复底部关联任务 chip](docs/ARCHITECTURE.md#回复底部关联任务-chip官方-turntail-槽位)。
 
 ## 快速上手
 
@@ -135,7 +135,8 @@ task_create({
 - 颜色/圆角/阴影/动效全部取宿主 `--dsw-*` token，深浅色主题自动跟随。
 - 底部动作条：停止（二次确认）/ 确认交付（仅「待确认」，二次确认）/ 重派 / 打开子会话 / 删除（仅终态、二次确认，级联清台账）。可见性与后端门控同源（`src/panel-gates.js`）。
 - 面板**没有「追加消息」按钮**（旧实现依赖 `window.prompt`，在 Electron 里被禁用、点了只会抛错）：续派与计划批准统一走协调者 `task_message`。
-- 交互细节与 token 对照见 [docs/UI.md](docs/UI.md)。
+- 交互细节、`--dsw-*` token 对照与 chip 规则见
+  [docs/ARCHITECTURE.md §界面与消息块](docs/ARCHITECTURE.md#界面与消息块合并自原-uimd)。
 
 ## 核心概念
 
@@ -314,27 +315,20 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 主会话是唯一的协调者：所有子任务回报、确认、追问都落在它身上。跑久了上下文变大、会话日志变长，打开它越来越慢。**主会话轮换**就是把旧主会话退役、换一个干净的新会话接着当协调者——台账、任务、经验、产物都留在原处，只有「当前协调者是哪个会话」变了。
 
-它**没有定时器、没有后台巡检、也没有面板按钮**：判定只在**你打开主会话那一次**发生（面板「打开主会话」或侧栏「◈ 主会话」，且旧主会话当前是活的）。每次打开都现算（一次 `locate` + `stat` 主会话日志）；只有 `due === true` 才真的换，否则照旧复用，不写任何 settings 键。
+它**没有定时器、没有后台巡检、也没有面板按钮**：判定只在**你打开主会话那一次**发生（面板「打开主会话」或侧栏「◈ 主会话」，且旧主会话当前是活的）；每次打开现算，只有该换才换。
 
-**两个触发因子（任一命中即「该换」）**
+| 触发因子（任一命中即「该换」） | 默认阈值 |
+|---|---|
+| 主会话日志体积（MiB，压缩后） | `rotateAfterMainLogMiB: 6` |
+| 主会话已运行天数 | `rotateAfterDays: 10` |
 
-| 因子 | 默认阈值 | 含义 |
-|---|---|---|
-| 主会话日志 | `rotateAfterMainLogMiB: 6` | 主会话日志体积（MiB，压缩后） |
-| 龄 | `rotateAfterDays: 10` | 主会话已运行天数 |
+**十二条保护（任一命中就不换，宁可不动）**：`mainRotation` 关闭、显式覆盖协调者、非 `spawn` provider、还有活跃任务、还有「已交付待确认」、待确认任务带未读产物、主会话正在跑回合、10 分钟内刚聊过（`rotateIdleMinutes`）、还有活跃子代理、未到最小龄（`rotateMinAgeHours` 12h）、冷却期（`rotateCooldownHours` 48h）、指标全拿不到（fail-closed）。采不到的指标记「未知」并按降级处理，**不按 0 算**。
 
-**十二条保护（任一命中就不换，宁可不动）**：`mainRotation: 'off'`、配置了 `coordinatorSession` 覆盖、`spawnProvider != spawn`、还有活跃任务（等前置/待派发/进行中/等待回复）、还有「已交付待确认」、待确认任务带未读产物、主会话正在跑回合、`rotateIdleMinutes`（默认 10 分钟）内有交互、子会话目录里还有活跃子代理、未到最小龄 `rotateMinAgeHours`（默认 12 小时）、冷却期 `rotateCooldownHours`（默认 48 小时）、所有触发指标都拿不到（fail-closed）。采不到的指标记「未知」并按降级处理，**不按 0 算**。
+**默认 `off`**：仍会检测（日志 `blockedBy: ['mode-off']`）、`due` 恒 false，但**绝不动作**——升级后不会自己换。要自动换就显式配 `mainRotation: 'auto'`；想马上试一次就把两个阈值和最小龄/冷却调低、收掉活跃任务后再打开主会话（判定结论在日志 `main.rotation.decided`）。
 
-**默认策略与开启方法**：`mainRotation` **默认 `off`**——仍会检测，日志里能看到「为什么没换」（`blockedBy: ['mode-off']`）、`due` 恒为 false，但**绝不动作**。要自动换就显式配 `mainRotation: 'auto'`；最小龄 12 小时 + 冷却 48 小时，加上两个阈值都在「跑很久」的量级，日常打开主会话不会被换。只想保留旧会话回看入口就配 `rotateArchiveOld: false`（只改名不归档）。
+**风险**：① **归档不可逆**——默认 `rotateArchiveOld: true`，旧会话改名「主会话（已退役 …）」并交给平台归档，平台没有 unarchive；只想留回看入口就配 `false`（只改名）。② 换的是协调者身份、**不搬历史**，旧会话里没处理完的追问不会再回来（跟进用面板 / `task_list({view:'inbox'})`）。③ 只在打开时判定，重启/刷新/面板轮询都不触发；崩溃中间态由启动恢复补完，极端情况下旧会话可能还留在列表里。
 
-**怎么手动触发一次**：没有「强制轮换」按钮。要现在就换，先配 `mainRotation: 'auto'`，再把阈值调低（例：`rotateAfterDays: 1`、`rotateMinAgeHours: 1`、`rotateCooldownHours: 1`、`rotateIdleMinutes: 1`），把活跃/待确认任务收掉，再打开主会话。判定结论写进 `main.rotation.decided` 日志（`due` / `triggers` / `blockedBy` / 指标），事后能复盘「这次为什么换 / 为什么没换」。
-
-**风险（开之前先看）**
-
-- **归档不可逆**：默认 `rotateArchiveOld: true`，轮换会把旧主会话改名成「主会话（已退役 YYYY-MM-DD HH:MM）」并**交给平台归档**（从会话列表隐藏）。平台没有 unarchive，归档后在 UI 里**无法恢复**。只想留个回看入口就配 `rotateArchiveOld: false`，那时只改名不归档。
-- **换的是协调者身份，不搬历史**：活跃任务、待确认任务都会挡住轮换，但轮换之后旧会话里没处理完的追问不会再自动回来；跟进用面板 / `task_list` / `task_list({view:'inbox'})`。
-- **崩溃可能留中间态**：插件启动时会按 `settings.main_rotation_pending` 补完或清理（补处置旧会话 / 归档空白残留），失败只告警、下次启动重试；极端情况下旧会话可能还留在列表里。
-- **只有打开主会话才判定**：一直不打开就永远不换；反过来说，重启 DSH、刷新页面、面板 2 秒轮询都不会触发轮换（P1 删掉了「一天最多查一次」的检查节流，每次打开都现算）。
+逐条边界（指标口径、崩溃恢复、平台服务缺失的降级）见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md#主会话轮换g1)，时序与日志见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#主会话轮换g1)。
 
 ### 主会话原生自动化
 
@@ -436,6 +430,9 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | `mergeWindowMs` | `5000` | 完成通知合并窗口 |
 | `memoryInject` | `true` | 新任务是否注入事实层记忆 |
 | `memoryLimit` | `3` | 注入记忆条数（1–10） |
+| `preferencesInject` | `true` | 是否把协调者偏好段（`settings.orchestrator_preferences`）注入 L1 提示词 |
+| `preferencesMaxChars` | `1200` | 偏好段字数上限，超限按优先级截断并写明被截条数 |
+| `preferencesMaxItems` | `12` | 偏好段条数上限 |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
 | `sameDirGuard` | `require` | 同写域并发防护：`require`（默认，拒绝）/ `warn`（只警告）/ `off`（关闭）；见「同写域并发防护」 |
 | `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，漏传时兜底 |
@@ -468,37 +465,20 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 **平台与沙箱**
 
-- **委托子会话的审批固定 `never`**：子会话写被拒时**不会弹审批**，沙箱拒绝就是终局。子会话里没有「升级权限再试一次」这条路；要越过沙箱边界只能用 `access:'full'`（见上）或换 CI/人工执行。
-- **插件没有命令白名单**：隔离只在「沙箱模式 / 可写根」这一层做，**不对 `bash` / `pwsh` 的命令做 allow/deny 名单**；`danger-full-access` 下模型能跑任意命令，没有命令级护栏。字符串白名单本身可被复合命令绕过，这里不做「假安全」。
-- **构建 / 发版需要完整访问或 CI**：子会话默认 `workspace-write`，写不进仓库外的东西，也可能被平台限制 `pwsh` 写 target（Windows）。两条正路：① 给**单条**任务 `access:'full'`；② 把构建交给 CI 或人在终端跑（子会话只改源码 + 交构建清单），插件零改动。
-- 首回合可写窗口：只读/计划/完整访问都在 `agent/created` 之后设置，极短窗口内仍是继承来的模式。
-- 父会话自己是 `danger-full-access` 时，平台会把该覆盖按 delegation 种进所有子会话（不是插件做的，插件也不改写）。
+- **委托子会话的审批固定 `never`**：子会话写被拒时**不会弹审批**，沙箱拒绝就是终局；要越过沙箱边界只能用 `access:'full'`（见上）或换 CI/人工执行。
+- **插件没有命令白名单**：隔离只在「沙箱模式 / 可写根」这一层做，不对 `bash` / `pwsh` 的命令做 allow/deny；`danger-full-access` 下模型能跑任意命令，不做「假安全」。
+- **构建 / 发版需要完整访问或 CI**：子会话默认写不进仓库外（Windows 上 `pwsh` 写 target 也受平台限制）；给**单条**任务 `access:'full'`，或把构建交给 CI/终端。
+- 首回合可写窗口与 delegation 继承：只读/计划/完整访问都在 `agent/created` 之后设置，极短窗口内仍是继承来的模式；父会话自己是 `danger-full-access` 时平台会把该覆盖种进所有子会话（不是插件做的）。
 
-**编排**
+**编排与视图**
 
-- 同目录/同写域并发默认拒绝（`sameDirGuard`，见「同写域并发防护」）；`dependsOn` 创建后不可编辑。
-- `done` 不可逆、无 reopen；要改交付物用追问窗口，要新工作新派/重派。
-- 结算自动收场只覆盖「一次 activation」；上报过 progress 的回合异常结束会落 `orphaned`。
-- 「最后一条回复」可能缺：插件在结算事件到达前被卸载/进程被杀时拿不到。
+- **同写域并发默认拒绝**（`sameDirGuard`，三条出路见上）；`dependsOn` 创建后不可编辑；**`done` 不可逆、无 reopen**——要改交付物用「待确认」追问，要新工作就新派/重派。
+- 结算自动收场只覆盖「一次 activation」，上报过 progress 的回合异常结束落 `orphaned`；「最后一条回复」在插件提前卸载/进程被杀时可能缺。
+- **主会话轮换归档不可逆、且只在打开主会话时判定**（见上「主会话轮换」）；判定是快照，动作前不复查。
+- worktree 产物不在你的工作树里（合并由你决定）；计划文档只有一版、没有审批流 UI；会话头入口依赖宿主身份信号（刚打开 1 秒内可能不可见）；产物预览依赖宿主右侧栏，缺失时只有产物库那行回退行内预览；面板轮询 2 秒、没有 SSE；Bot 模式视图停在 Bot 会话。
 - 主会话工具表可能残留团队工具（agent-scope 自注册，`restrict` 遮不到），执行层 guard 会拦。
 
-**主会话轮换**
-
-- **归档不可逆**：默认 `rotateArchiveOld: true`，旧主会话改名「已退役」并归档后，平台没有 unarchive，UI 里无法恢复；要保留回看入口就配 `false`。
-- **没有手动强制换**：只在「打开主会话」时判定一次，重启/刷新/面板轮询都不判定，也没有按钮、工具或配置能绕过保护规则强制换。
-- **判定是快照，动作前不复查**：判定与动作之间若刚好来了新任务/新消息，可能仍按旧结论执行（保护规则挡的是判定时刻的状态）；并发打开只有一次生效。
-- **指标缺就保守**：主日志体积依赖 `sessionPersistence.locate`，定位不到时只剩「龄」一个因子；两个因子都拿不到才 fail-closed 不换。
-- **不搬历史**：轮换不迁移旧会话的上下文、未处理追问或平台侧状态；新会话照常跳过首次介绍与工作区索引任务，日报 schedule 按新主会话重建。
-- 判定结论只在日志 `main.rotation.decided` 与 `open-main` 返回里可见，面板不展示「建议轮换」提示。
-
-**worktree / 计划 / 视图**
-
-- worktree 需宿主有 `git`；未合并的产物不在你的工作树里，合并责任在用户；默认不清理会占磁盘。
-- 计划模式硬拦只靠只读沙箱，plan mode 本身是软引导；计划文档只有一版，没有审批流 UI。
-- 会话头「任务」入口依赖宿主身份信号，刚打开主会话 1 秒内可能短暂不可见；面板轮询 2 秒，没有 SSE。
-- 产物预览依赖宿主右侧栏（`ui-sidebar-right` + `ui-sidebar-documentpreview`）：宿主缺这两个包、拿不到当前会话 id，或右侧栏打开失败时，**只有产物库那一行**会退回面板内的行内预览（并提示具体原因）；任务卡与抽屉里没有行内预览的位置，只提示「到产物页看或复制路径」。
-- 面板「删除」只删台账（级联清消息/通知），产物文件、`reports/` 全文、记忆不删。
-- Bot 模式视图停在 Bot 会话；纯 dsh 表面不受影响。
+完整清单（指标口径、崩溃恢复、平台服务缺失的降级、通知时序、面板动作幂等等）见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
 
 ## 故障排查
 
@@ -529,12 +509,11 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | 文档 | 内容 |
 |---|---|
 | [docs/compat.md](docs/compat.md) | 宿主兼容基线（rc.3–rc.5）、9 类能力探测与降级、rc.3 冒烟 3 条 |
-| [docs/DETAIL.md](docs/DETAIL.md) | 插件页简介：功能点、工具与面板错误码 |
-| [docs/UI.md](docs/UI.md) | 面板/抽屉布局、`--dsw-*` token 对照、交互清单 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 内部设计：模块划分、状态机、派发、结算、对账、面板与消息块、落盘 |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | 平台/沙箱/计划/worktree/通知/UI 的完整限制清单 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 内部设计：模块划分、状态机、派发、结算、对账、落盘 |
+| [docs/testing.md](docs/testing.md) | 测试与复核：怎么跑、门禁、断言口径、历史复核索引、真机矩阵 |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | 开发、构建、发版与镜像同步（维护者） |
 | [tools/debug-preset/README.md](tools/debug-preset/README.md) | `orch-debug` 调试预设的生成、安装/回退与插件更新流程（开发仓库工具，不随包发货） |
-| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | 开发、构建、测试策略与发版流程（维护者） |
 | [CHANGELOG.md](CHANGELOG.md) | 每个版本的变化与取舍 |
 
 ## License

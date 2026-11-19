@@ -248,7 +248,7 @@
   （已漂移过：`1dc6bd4` 一次改了 4 处文案）。
 - **三处矛盾已修**：① 文档不再声称交付时可以带结构化选项（实现明确不支持：`done` 会清空 `question`/`options`）；② brief 的 `CONFIRM_HINT` 与
   task_detail 的 `FINISH_HINT` 统一成「summary = 结论 + 改了什么/改了哪些文件/怎么验证的 + 待确认要点」，同源 `SUMMARY_FIELDS`；
-  ③ `DETAIL.md` 的 brief 行数改为「4 行基准，full/隔离各加一行 → 4–6 行」，与 `renderBrief` 一致。
+  ③ 文档里的 brief 行数改为「4 行基准，full/隔离各加一行 → 4–6 行」，与 `renderBrief` 一致（`docs/testing.md` 有锁定断言）。
 - **偏好归 L1 末尾**（`src/preferences.js`）：存 `settings.orchestrator_preferences` 单键 JSON，每回合现渲染；
   字数 1200 为主约束、条数 12 为安全阀；超限**显式告知**被截条数；全局偏好只写 settings（**不双写 memories**），
   项目偏好只写 memories（随 `task_detail` 注入子会话）。偏好只是提示词文本，不进 config、不改 dispatch、不碰沙箱。
@@ -576,7 +576,7 @@ target 可写根（`danger-full-access` 下用不上，只当注入失败时的�
 
 ## 面板与详情（UI U2）
 
-面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件，视觉规范见 [UI.md](UI.md)。四件事值得记在架构里：
+面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件，视觉与交互规范见下（原 `docs/UI.md` 已合并进本节与「界面与消息块」）。四件事值得记在架构里：
 
 - **构建链与产物路径（P7，T7.2 已切生效入口）**：客户端源码在 `client/src/**`（ESM），由 `vite.client.config.mjs`
   构建成 `dist/client.js`（iife classic script，配 `dist/client.js.map`），**产物入库**。平台 `clientExportOf()` 读
@@ -638,6 +638,112 @@ target 可写根（`danger-full-access` 下用不上，只当注入失败时的�
   `@deepseek-ai/dsh-client-ui-sidebar-documentpreview`（**只是预取提示**，见下）；客户端的 `inject` 数组**不加**
   `sidebarRight`——它用 `serviceOf('sidebarRight')` 现取，与 `uiSession`/`sessions` 同一口径。写进 `inject` 会让 cordis
   在服务缺失时卡住 `apply`，那就没有「缺侧栏 → 提示 + 产物库行内回退」这条路了。
+
+### 界面与消息块（合并自原 UI.md）
+
+- **三段式布局**：① 顶部命令栏 `.orch-topbar`（标题 + 主会话状态点、搜索、刷新、打开主会话）与 `.orch-metrics` 4 张指标卡
+  （进行中/待你决定/已完成/失败，点击即切筛选）；② 中部 `.orch-body`：`.orch-rail` 筛选轨（7 项、带计数徽标）+
+  `.orch-main`（提示条 + 任务卡列表 / 产物库）；③ 右侧 `.orch-layer > .orch-scrim + .orch-drawer`。
+  抽屉**常驻挂载**、只切 `data-open`（关闭是 `transform: translateX(102%)` 滑出，不是卸载，否则没有动画）；遮罩走 `--dsw-alias-bg-mask-1`。
+  窄屏：≤860px 筛选轨变横向条、指标两列；≤640px 抽屉铺满。
+- **代码位置**：`client/src/views.js`（`topbar` / `metrics` / `rail` / `alerts` / `renderTask` / `artifactView` / `listView` /
+  `drawerContent` / `drawerBody`）、`client/src/styles.css`（整张样式表）、`client/src/ui.js`（图标 / 徽标 / 空态 / 骨架）、
+  `client/src/logic.js`（纯函数：`matchesQuery` / `matchesFilter` / `groupArtifacts`）、`client/src/feed.js`（chip 快照源）。
+- **设计 token**：颜色/圆角/阴影/动效全部取宿主 `@deepseek-ai/dsh-client-ui-theme` 的 `--dsw-*` / `--ds-*`，**不写死颜色**；
+  深浅色由宿主把 alias token 绑到 `body[data-ds-dark-theme]`，面板只读 token。每处 `var()` 都带兜底值。常用对照：
+
+  | 用途 | token |
+  | --- | --- |
+  | 画布 / 顶栏抽屉头尾 / 卡片聚焦面 | `--dsw-alias-bg-base`、`--dsw-alias-bg-layer-1`、`--dsw-alias-bg-layer-2` |
+  | 卡片底色 / hover | `--dsw-alias-card-fill` / `--dsw-alias-card-fill-hover` |
+  | 文字三档 | `--dsw-alias-label-primary/secondary/tertiary` |
+  | 描边三档 / 选中 | `--dsw-alias-border-l1/l2/l3`、`--dsw-alias-border-selected` |
+  | 交互层 / 危险悬停 | `--dsw-alias-interactive-bg-hover(-active)`、`-hover-danger` |
+  | 主按钮 | `--dsw-alias-button-primary-fill` + `--dsw-alias-label-primary-inverted` |
+  | 圆角 / 阴影 | `--dsw-radius-xs/sm/md/lg`、`--dsw-shadow-lv1`、`--dsw-elevation-prominent` |
+  | 骨架 / 遮罩 / 焦点环 | `--dsw-alias-bg-skeleton`、`--dsw-alias-bg-mask-1`、`--dsw-focus-ring-color` |
+  | 代码块 / 气泡 / 状态语义色 | `--dsw-alias-markdown-code-block`、`--dsw-specific-bubble`、`--dsw-alias-state-success/error/warn/business-primary` |
+  | 动效曲线 / 时长 | `--ds-ease-in-out`、`--ds-transition-duration(-fast/-slow)` |
+
+  > 旧 bug：U2 之前用 `--dsw-alias-color-success` 这类宿主 token 表里**不存在**的变量（一直走 fallback、深色下颜色发脏）；
+  > 现在统一成 `--dsw-alias-state-*` / `--dsw-alias-label-*` 语义 token，测试里有 `doesNotMatch` 守着。
+- **交互**：hover（卡片底色+描边+`--dsw-shadow-lv1`、指标上浮 1px、按钮/入口无描边）；抽屉滑入滑出、`0fr↔1fr` 折叠、
+  chevron 旋转、内容入场 `orch-slide-in`、骨架 `orch-shimmer`、按钮 `transform: scale(.985)` 按下反馈；
+  二次确认（停止 / 确认交付 / 删除）用 `.orch-confirm` 两步，不用 `window.confirm`；空态 / 加载态 / 错误态齐备
+  （快照错误带重试、动作错误带 code、产物加载失败、右侧栏不可用）；`Esc` 关抽屉、`aria-expanded/pressed/hidden/label`、
+  `:focus-visible` 焦点环；`prefers-reduced-motion: reduce` 关掉全部动画与过渡。
+- **会话头入口**：注册在 `conversation.header.leading`（单席位、不带 id），仅主会话显示（闸门见「入口可见性」）。
+  视觉与面板顶栏同一套语言，按钮本身不画外框（与协调者预设标签、子智能体计数一致）：高 26px、内边距 0 4px、透明底、
+  `--dsw-alias-label-primary` 半粗字；图标块 `.orch-entry-mark` 18×18、`--dsw-radius-xs` 圆角、`--dsw-specific-bubble` 底 +
+  `--dsw-alias-state-business-primary` 前景，内含 `ui.js` 的三横线内联 SVG。
+
+### 回复底部关联任务 chip（官方 turnTail 槽位）
+
+协调者每轮回复的底部（动作行**之上**）挂一行关联任务 chip：状态图标 + 任务标题，点一下就打开面板并定位到该任务。
+它显示「这一轮回复之后这几个任务在干什么」，因此不是面板的镜像，也不进会话头。
+
+- **挂载与槽位契约**：槽位 `conversation.chat.turnTail`（`kind:'list'`、`scope:'session'`）；宿主 `TurnTailNodeView`
+  先 `renderSlot(...)` 再 `MessageIconActions`（复制/分支/时钟），所以 chip 天然落在动作行上方，**不碰时钟右侧、不做 DOM 注入**。
+  注册点在 `client/src/client.js`（`id: CHIP_ID`、`order: 20`，同 id 复注册才是替换）；`sessionId` 与 `useChat` 由槽位作用域自带，
+  `inject` 只给 `openTask` / `openPanel` / `chips`（共享数据源）与 `hooks:{ mainView }`。
+- **关联规则**（可解释、可断言）：
+
+  | 规则 | 内容 | 判据 |
+  | --- | --- | --- |
+  | R1 会话绑定 | 只收 `coordinatorSession === 当前 sessionId` 的任务（随快照下发） | 子会话 / 别的协调者一个都收不到 |
+  | R2 轮次 | 只挂在**最新一轮**已完成回复的尾部（`snapshot.timeline.turnOrder` 末位 === `turn`） | 历史回复不带 chip |
+  | R3 入选 | 活跃状态全收；终态只在 `lastEventAt` 落在最近 30 分钟内时收 | 「刚跑完」看得见，昨天的旧任务不翻旧账 |
+  | R4 排序截断 | `lastEventAt↓` → `updatedAt↓` → `id↑`，取前 2 个出 chip，其余折成「+N」 | 顺序确定，不受快照数组顺序影响 |
+
+- **状态映射**：台账 10 个状态压成 6 个视觉态（`client/src/constants.js` 的 `CHIP_STATE_OF` / `CHIP_STATE_VIEW`）：
+
+  | 视觉态 | 台账状态 | 图标 | 动效 | 语义色 |
+  | --- | --- | --- | --- | --- |
+  | `running` | `running` | 留缺口的圆环 | 自转 1s 线性无限（`orch-taskchip-spin`） | `info`（business） |
+  | `waiting` | `pending`、`waiting_dep` | 虚线圆（`stroke-dasharray:3 2.4`） | 无 | `muted` |
+  | `confirming` | `waiting_user`、`waiting_auth`、`delivered` | 虚线圆 | 半色 `opacity .72` + 脉冲 1.6s | `warn` |
+  | `done` | `done` | ✓ | 无 | `good` |
+  | `failed` | `failed`、`orphaned`、`missing` | ✗ | 无 | `bad` |
+  | `cancelled` | `cancelled` | 一横 | 无 | `muted` |
+
+  颜色全部走 `TONE_COLOR` 的 `--dsw-alias-*`；`prefers-reduced-motion: reduce` 下停转、停脉冲但保留形状与颜色
+  （宿主那份规则只作用于 `.orch-shell` 内，chip 在会话流里，必须自带一份）。
+- **交互**：点 chip → `openTask(id)` 记一条一次性 focus 请求 → `selectPanel(PANEL_ID)`；面板挂载时 `focus.take()` 取走 id
+  并直接开该任务详情抽屉（取走即清空，不残留弹窗）；点「+N」只打开面板不定位；`title` 与 `aria-label` 同为「任务名｜状态」；
+  长标题先按码点截 24 字（emoji 不被切半），再由 CSS `text-overflow: ellipsis` 兜底，chip 自身 `max-width: 260px`。
+- **订阅与性能**：单实例 `createTaskFeed`（`client/src/feed.js`），一条历史会话有 N 个 turn-tail 组件，只有「主会话 + 最新一轮」那行订阅；
+  首个订阅者立即拉一次、之后自排程 `setTimeout`，最后一个退订清表、卸载（`ctx.effect`）兜底 `stop()`；
+  节奏：有活跃任务 3s、全是终态 15s、请求失败退避 30s 且保留上一份快照；响应先剪成 6 个字段算签名，内容没变复用对象，
+  签名还带「终态任务是否仍在 30 分钟窗口内」一位，任务跨线时签名变一次、chip 自己消失。
+- **空状态 = 不渲染整行**：没关联、快照没到、非主会话、历史轮次都返回 `null`（不占位、不出骨架、不报错）。
+  「等前置」是活跃不是取消：`waiting_dep` 走 `waiting`（虚线静圈），不画成 `cancelled`。
+
+## 插件页与面板错误码（合并自原 DETAIL.md）
+
+插件页（DSH「插件」详情）只展示一段简介与文档链接；功能点已在 README「核心概念」逐节展开，这里只留运维需要的口径：
+
+- **协调者主会话**：固定入口，只拆任务 / 派活 / 看回报，不读写文件、不执行命令。**子任务**：独立 DSH 子会话，按目标目录运行，
+  支持只读沙箱、计划模式、续派、停止、重派。**工具面**：全局 10 个（协调者 7 + 子会话专属 3），schema 与门控在 `src/tools.js`。
+- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` /
+  `memory_note` / `read_workspace`；子会话 `task_report` / `task_detail` / `plan_save`。
+- 依赖 / 分组 / 写域 / 优先级、两段式交付、收件箱与日报的用法见 README；内部机制见本文件对应章节。
+- **面板动作与错误码同源**：面板的 stop / retry / message / delete 与 `task_message({action})` 共用 `src/action-errors.js` 的
+  code、门控语义和文案；面板失败返回 `{ ok:false, code, error }`，`host-route` 按 code 映射 HTTP 状态
+  （400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部），工具层保持可读字符串。面板把错误显示成 `动作 失败（CODE）：原因`。
+- **「能不能点」与「接不接」是同一份判定**：`src/panel-gates.js` 的 `followupGate` / `deleteGate` 同时供面板动作、`task_message`
+  与 snapshot/detail 的 `canFollowup` / `canClose` / `canDelete` 使用，客户端只读下发字段。
+- `stop`：已 cancelled/done/orphaned 再 stop 返回 `{ ok:true, already:true }`（并发双击只迁移一次）；收子会话失败不阻断取消，
+  结果带 `warnings[].code=STOP_DISPATCH_FAILED`。
+- `retry`：只允许 failed/orphaned；同一失败任务已有活跃重派时直接返回那条任务（`already:true` + `retryOf`）；
+  同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。
+- `message`：只允许 running / waiting_user / waiting_auth / delivered 且已有子会话（`delivered` 上是追问，复用原会话）；
+  终态 `MESSAGE_TASK_ENDED`、等前置 `MESSAGE_WAITING_DEP`、待派发/排队/无会话 `MESSAGE_NO_SESSION`、
+  失败任务 `MESSAGE_NOT_FOLLOWABLE`（改用重派）。面板每次点击生成 `clientRequestId`，按 `(taskId, clientRequestId)` 进程内去重；
+  没有 id 的旧客户端退回「同任务 3 秒内相同文本」窗口。投递失败 `MESSAGE_DELIVERY_FAILED`，失败记录不当已投递、窗口内可立刻重发。
+- `delete`：只允许终态（done/failed/cancelled/orphaned），活跃返回 `DELETE_TASK_ACTIVE`（先停止）；还有活跃下游返回
+  `DELETE_HAS_ACTIVE_DEPENDENTS`。成功时级联删该任务的 messages / notifications，产物文件、报告正文与 memories 不动。
+- **边界**：依赖只能指向已存在任务、不支持编辑；`writeScopes` 是冲突提示不是文件锁；`done` 不可逆、不提供 reopen；
+  协调者禁止任何阻塞等待；台账每天快照，损坏要手工恢复（[LIMITATIONS](LIMITATIONS.md)）。
 
 ## 落盘与日志
 

@@ -183,6 +183,45 @@
 **不做**：不改工具面（P1-B 已完成）、不动配置（P1-A）、不合并文档（P1-D）；不删 `plan-doc.js`（只读沙箱下唯一写入口）；
 不引入官方 `exit_plan_mode` 审阅流（P2）；不 bump 版本、不 push、不打 tag。
 
+### P1-D：文档合并 + check-docs 预算（docs）
+
+文档从 **3,128 行压到 1,985 行**（README + 顶层 `docs/*.md`，−1,143 行 / −36.5%），三篇重复/过时文档被合并后删除，
+并把「文档别再长回去」变成 CI 断言：新增 `scripts/check-docs.mjs`（行数预算 2,250 + README 配置表/工具表与代码同源 +
+包内文档存在 + 内链与锚点可达），`pretest` 与 CI 都会跑。
+
+**合并与删除**
+
+| 原文档 | 去向 |
+|---|---|
+| `docs/qa-checklist.md`（989 行） | → 新增 `docs/testing.md`（177 行）：怎么跑 / 门禁 / 断言口径 / 已知 flaky / 新功能自检模板 + 历史复核索引表（版本 → 要点 → 证据）+ 真机矩阵 |
+| `docs/UI.md`（291 行） | → `docs/ARCHITECTURE.md`「界面与消息块」「回复底部关联任务 chip（官方 turnTail 槽位）」（token 表、交互、入口按钮、chip 规则/状态/性能） |
+| `docs/DETAIL.md`（44 行） | → `docs/ARCHITECTURE.md`「插件页与面板错误码」（动作/错误码/门控同源/边界）；插件页简介合并进 README |
+| `docs/LIMITATIONS.md`（250 行） | → 251 → **176 行**：与 README「已知限制」去重，README 只留入口级 6 条 + 链接，维护者细节只留本文件 |
+
+- README：面板/UI 两处链接改指 ARCHITECTURE；配置表补 3 个漏掉的 `preferences*` 键（35 键齐）；轮换章节压成
+  「两因子 + 12 保护 + 默认 off + 三条风险」；「更多文档」表换成 testing/ARCHITECTURE/LIMITATIONS/CONTRIBUTING/CHANGELOG。
+- `package.json`：`files` 去掉 `docs/DETAIL.md` / `docs/UI.md`，加 `docs/testing.md`；新增 `check:docs` script，
+  `pretest` = `pnpm run build && pnpm run check:docs`，`prepublishOnly` 也加一道。
+- `locale/{zh,en}.json`：插件页 `meta.detail` 由 `docs/DETAIL.md` 改为 `README.md`（DETAIL 已删，不能让插件页 404）。
+- 测试同步 4 处：`config.test.js`（files/locale 断言）、`copy-consistency.test.js`（docs 列表改 testing.md、常用工具断言改指 ARCHITECTURE）、
+  `prompt-layers.test.js`（brief 行数断言改读 testing.md）、`write-guard.test.js`（去掉 DETAIL）、`client-build.test.js`（pretest 新口径）。
+
+**`scripts/check-docs.mjs` 校验什么**
+
+1. `README.md` + 顶层 `docs/*.md`（不含 `docs/superpowers/`、`docs/probes/`）总行数 ≤ 2,250；超了直接说「差多少 + 最大的几篇」。
+2. README 配置表键集合 == `loadConfig({})`（35 个键；原来漏了 3 个偏好键，这次补上了）。
+3. README 工具表工具名集合 == `createTools()`（10 个；迁移映射表里的旧名不算工具面）。
+4. `package.json.files` 里的 `docs/*.md` 必须存在。
+5. README 与 `docs/*.md` 的相对链接（含 `#锚点`）都可达；锚点按 GitHub slug 规则（CJK 保留、标点去掉、空格转连字符）。
+
+**验证**：`pnpm test` 982 条 / 977 pass / 5 skip / 0 fail（`pretest` 里 build + check-docs 都过）；
+`pnpm run check:client`、`pnpm run check:version`、`node scripts/check-docs.mjs`（1,985 / 2,250）exit 0；
+`npm pack --dry-run` 72 个文件，含 `docs/testing.md`，不含 DETAIL/UI/qa-checklist。另做了反向验证：把 README 灌到 2,385 行 →
+check-docs 报「多 135 行」并列出最大几篇；旧文档里指向已删文件的链接会被报出来。
+
+**用户可见影响**：三个旧文档链接失效（README 已同步）；信息不丢（迁入 ARCHITECTURE / testing / LIMITATIONS）。
+**不做**：不重写 README 首屏（≤1,800 行预算仍留 P2）、不删 CHANGELOG、不动源码行为；不 bump 版本、不 push、不打 tag。
+
 ## 0.20.1（2026-11-17）
 
 这一版**只改测试，产品零变更**：`src/`、`dist/`、`index.js`、`preset-tools.js` 一行未动，不发新能力、

@@ -557,7 +557,7 @@ test('README / docs 写明行为变更、配置字段与默认值、三条出路
   // 迁移表里要能查到旧名与对应新调用（README「工具迁移映射」）。
   assert.match(readme, /task_close/) 
   assert.match(readme, /worktree:true/)
-  for (const file of ['docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md', 'docs/DETAIL.md']) {
+  for (const file of ['docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md']) {
     const text = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
     assert.match(text, /sameDirGuard|同写域/, `${file} 缺防护说明`)
   }

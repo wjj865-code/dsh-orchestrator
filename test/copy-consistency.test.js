@@ -145,7 +145,7 @@ test('原生自动化 policy 与文档锁住真实工具、授权及会话边界
 test('文档工具数一致：docs 与 README 都说 10 个（审计 §3.1/§3.2 的漏检）', () => {
   // 0.19.x 的 copy-consistency 只断言 README 的「15 个」，不检查 docs/ARCHITECTURE.md 的「14」，
   // 于是这条漂移长期没被发现。现在把 docs 也纳入同一断言。
-  const docs = ['README.md', 'docs/ARCHITECTURE.md', 'docs/DETAIL.md']
+  const docs = ['README.md', 'docs/ARCHITECTURE.md', 'docs/testing.md']
     .map(file => [file, readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')])
   for (const [file, text] of docs) {
     // 任何「N 个工具」的说法都必须与实现一致（P1-B 起 10 个全局工具：7 协调者 + 3 子会话专属）。
@@ -154,9 +154,9 @@ test('文档工具数一致：docs 与 README 都说 10 个（审计 §3.1/§3.2
     }
     assert.doesNotMatch(text, /仍为\s*14|工具数\s*14/, `${file} 还写着 14 个工具`)
   }
-  // DETAIL.md 的「常用工具」清单必须含 read_workspace（审计 §3.2）。
-  const detail = readFileSync(new URL('../docs/DETAIL.md', import.meta.url), 'utf8')
-  assert.match(detail, /常用工具[^\n]*read_workspace/)
+  // ARCHITECTURE 的「常用工具」清单必须含 read_workspace（审计 §3.2；原 DETAIL.md 已并进该节）。
+  const arch = readFileSync(new URL('../docs/ARCHITECTURE.md', import.meta.url), 'utf8')
+  assert.match(arch, /常用工具[\s\S]{0,200}?read_workspace/)
 })
 
 test('README 只服务使用者：维护者内容放 docs/，仅留链接', () => {
@@ -166,7 +166,7 @@ test('README 只服务使用者：维护者内容放 docs/，仅留链接', () =
   assert.doesNotMatch(readme, /release\.yml|npm publish|npm version patch/)
   assert.doesNotMatch(readme, /npm test\s+#|npm run build\s+#/)
   // 指向文档的链接要在。
-  for (const doc of ['docs/CONTRIBUTING.md', 'docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md', 'docs/UI.md', 'CHANGELOG.md']) {
+  for (const doc of ['docs/CONTRIBUTING.md', 'docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md', 'docs/testing.md', 'CHANGELOG.md']) {
     assert.ok(readme.includes(doc), `README 缺少文档链接：${doc}`)
   }
 })

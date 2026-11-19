@@ -42,7 +42,9 @@ const loadArtifact = () => {
 test('构建脚本：vite 是 pin 住的 devDependency，build/pretest/check:client 都指向产物', () => {
   assert.match(pkg.devDependencies?.vite ?? '', /^\d+\.\d+\.\d+$/, 'vite 必须 pin 精确版本（不用 ^ / ~），避免产物漂移')
   assert.equal(pkg.scripts.build, 'vite build --config vite.client.config.mjs')
-  assert.equal(pkg.scripts.pretest, 'pnpm run build', 'pnpm test 前必须自动构建（否则契约测试读的是旧产物）')
+  // pretest 先构建（否则契约测试读的是旧产物），再跑文档预算/一致性（P1-D：文档也算交付物）。
+  assert.equal(pkg.scripts.pretest, 'pnpm run build && pnpm run check:docs', 'pnpm test 前必须自动构建 + 检查文档')
+  assert.equal(pkg.scripts['check:docs'], 'node scripts/check-docs.mjs')
   assert.equal(pkg.scripts['check:client'], 'node --check dist/client.js')
 })
 

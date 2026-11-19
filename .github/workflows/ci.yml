@@ -39,6 +39,12 @@ jobs:
         shell: bash
         run: node scripts/check-version.mjs
 
+      - name: Docs budget & consistency
+        # 文档行数预算（README + docs 顶层 ≤2250）+ README 配置表/工具表与代码一致 + 包内文档与内链可达。
+        # pretest 也会跑一遍（本地 `pnpm test` 同样挡住），这里单独一步让 CI 红点直接指向文档。
+        shell: bash
+        run: node scripts/check-docs.mjs
+
       - name: Test
         shell: bash
         run: |

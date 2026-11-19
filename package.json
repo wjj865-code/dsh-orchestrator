@@ -20,11 +20,10 @@
     "scripts/",
     "cordis.patch.yml",
     "locale/*.json",
-    "docs/DETAIL.md",
+    "docs/testing.md",
     "docs/ARCHITECTURE.md",
     "docs/compat.md",
     "docs/LIMITATIONS.md",
-    "docs/UI.md",
     "docs/CONTRIBUTING.md",
     "icon.svg",
     "README.md",
@@ -47,13 +46,14 @@
   },
   "scripts": {
     "build": "vite build --config vite.client.config.mjs",
-    "pretest": "pnpm run build",
+    "pretest": "pnpm run build && pnpm run check:docs",
     "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"",
     "check:client": "node --check dist/client.js",
     "check:version": "node scripts/check-version.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
     "mirror:sync": "node scripts/mirror-sync.mjs",
     "mirror:check": "node scripts/mirror-sync.mjs --check",
-    "prepublishOnly": "pnpm test && pnpm run check:client && pnpm run check:version"
+    "prepublishOnly": "pnpm test && pnpm run check:client && pnpm run check:version && pnpm run check:docs"
   },
   "dsh": {
     "bundle": {

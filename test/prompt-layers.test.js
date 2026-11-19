@@ -68,7 +68,7 @@ test('L2 brief 只指路：不定义交付/关闭口径，不讲协调者工具'
   assert.doesNotMatch(brief, /task_close|present|read_workspace|已交付待确认/)
 })
 
-test('L2 行数：4 行基准，full 与隔离各加一行（修 DETAIL.md 的「四件事」漂移）', () => {
+test('L2 行数：4 行基准，full 与隔离各加一行（修「四件事」漂移）', () => {
   const plain = renderBrief({ taskId: 't-1' }).split('\n')
   const full = renderBrief({ taskId: 't-1', access: 'full' }).split('\n')
   const isolated = renderBrief({ taskId: 't-1', worktreeState: 'created' }).split('\n')
@@ -110,7 +110,7 @@ test('矛盾 2 已修：brief 与 task_detail 的交付口径同源（都从 SUM
 })
 
 test('矛盾 1 已修：文档不再教「交付时选项进 question+options」', () => {
-  for (const file of ['docs/LIMITATIONS.md', 'docs/DETAIL.md', 'docs/ARCHITECTURE.md', 'README.md']) {
+  for (const file of ['docs/LIMITATIONS.md', 'docs/testing.md', 'docs/ARCHITECTURE.md', 'README.md']) {
     const text = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
     assert.doesNotMatch(text, /选项进\s*question\+options/, `${file} 仍在教不存在的能力`)
   }
@@ -119,10 +119,10 @@ test('矛盾 1 已修：文档不再教「交付时选项进 question+options」
   assert.match(limits, /done\*\*?不支持|不支持 `question`\/`options`|会把它们清空/)
 })
 
-test('矛盾 3 已修：DETAIL.md 的 brief 行数描述与实现一致（4–6 行）', () => {
-  const detail = readFileSync(new URL('../docs/DETAIL.md', import.meta.url), 'utf8')
-  assert.match(detail, /4 行/)
-  assert.match(detail, /4–6 行/)
+test('矛盾 3 已修：文档的 brief 行数描述与实现一致（4–6 行）', () => {
+  const doc = readFileSync(new URL('../docs/testing.md', import.meta.url), 'utf8')
+  assert.match(doc, /4 行/)
+  assert.match(doc, /4–6 行/)
   // 实现侧核对：不隔离不 full 就是 4 行。
   assert.equal(renderBrief({ taskId: 't-1' }).split('\n').length, 4)
 })
