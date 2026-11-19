@@ -143,15 +143,17 @@ test('没有触发因子即使有保护也算「不需要轮换」：due=false�
   assert.match(decision.blockedBy[0].text, /1 个活跃任务/)
 })
 
-test('off 模式（默认）：因子照算，但永不 due（只检测不动作）', () => {
+test('off 模式：因子照算，但永不 due（只检测不动作）；不传配置 = 默认 auto 会动作', () => {
   const decision = evaluateRotation(allTriggersInput({ config: { mainRotation: 'off', spawnProvider: 'spawn' } }))
   assert.equal(decision.mode, 'off')
   assert.equal(decision.due, false)
   // 仍然把「本来会命中」的因子报出来，方便日志核对关闭期间本会轮换几次。
   assert.deepEqual(decision.triggers, ROTATION_TRIGGERS)
   assert.equal(decision.blockedBy[0].code, 'mode-off')
-  // 默认（不传配置）就是 off：升级后不会自动换主会话。
-  assert.equal(evaluateRotation(allTriggersInput({ config: {} })).due, false)
+  // 默认（不传配置）就是 auto：同样的输入会判定 due（12 条保护仍照旧兜底）。
+  const defaulted = evaluateRotation(allTriggersInput({ config: {} }))
+  assert.equal(defaulted.mode, 'auto')
+  assert.equal(defaulted.due, true)
 })
 
 test('P6/P7：配置覆盖会话与 fork provider 都不轮换', () => {
@@ -378,6 +380,11 @@ test('配置键契约：7 个键、默认值、区间与 loadConfig 接线一致
   }
   // 归一化幂等：loadConfig 出来的配置再归一化一次不变。
   assert.deepEqual(normalizeRotationConfig(config), { ...ROTATION_DEFAULTS })
+  // 总开关默认 auto（开）：只有显式 'off' 才关，拼错保持默认开启。
+  assert.equal(ROTATION_DEFAULTS.mainRotation, 'auto')
+  assert.equal(normalizeRotationConfig({}).mainRotation, 'auto')
+  assert.equal(normalizeRotationConfig({ mainRotation: 'off' }).mainRotation, 'off')
+  assert.equal(normalizeRotationConfig({ mainRotation: 'garbage' }).mainRotation, 'auto')
   // 总量口径：41 → 35（P1-A）→ 28（P2-2 删 keepAlive×4 + 三个固定成常量的阈值键）。
   assert.equal(Object.keys(config).length, 28)
 })

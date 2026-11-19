@@ -12,8 +12,9 @@
 // 2. **只有标了 `.volatile()` 的字段会出现在插件页上。**
 //    宿主 `SettingsForms.describe()` 用 `volatileForm(schema)` 过滤，非 volatile 字段
 //    **静默消失**（不报错、不提示）。所以「页面上该有的字段」必须 volatile；
-//    而 volatile 意味着宿主允许对它做即时写入，因此只读字段（Q3）也标 volatile，
-//    只读性由浏览器表单保证（不给控件），不是宿主强制的。单测双向比对字段表。
+//    而 volatile 意味着宿主允许对它做即时写入。所有字段都标 volatile（包括只读的
+//    `coordinatorSession`——它也必须显示在页面上）；只读性由浏览器表单保证（不给控件），
+//    不是宿主强制的。单测双向比对字段表。
 //
 // 3. **volatile 字段到达 `apply(ctx, config)` 时不是普通值，而是带 `.get()` 的包装对象**
 //    （cosmokit Volatile）。`loadConfig()` 里全是 `typeof === 'string'` / `Number.isFinite()`

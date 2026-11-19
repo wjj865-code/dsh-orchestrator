@@ -1,5 +1,29 @@
 # Changelog
 
+## 未发布（0.23.0 之后）
+
+**轮换默认开启 + 配置卡片可写**（单 commit `feat: 轮换默认开启 + 配置卡片可写`，未 bump / 未 tag / 未 push）
+
+### 升级须知（相对 0.23.0）
+
+1. **`mainRotation` 默认从 `off` 改回 `auto`（开启）**：升级后，主会话跑久了（日志 > 6 MiB **或** 运行 > 10 天，任一命中）
+   会在你**下一次打开主会话**时被换掉——旧会话改名「主会话（已退役 YYYY-MM-DD HH:MM）」并归档（**不可逆**，平台没有 unarchive）。
+   12 条保护照旧兜底（有活跃任务 / 待确认 / 刚聊过 / 主会话正在跑回合 / 未到最小龄 12h / 冷却 48h 等任一命中都不换）。
+   **不想换就显式配 `mainRotation: 'off'`**（插件页配置卡片里也能直接关）：仍会检测，但绝不动作。
+2. **拼错不再「安全地关掉」**：总开关只认显式 `'off'`，缺省/拼错一律按默认 `auto`（与 `memoryInject` / `rotateArchiveOld`
+   的「只有显式 false 才关」同口径）。想关轮换只有一条路：写 `off`。
+3. **配置卡片轮换分组：7 个键取消只读、`coordinatorSession` 保持只读**。`mainRotation` 与 6 个 `rotate*` 现在都能在
+   插件页直接改，保存即时生效（插件重载，台账不受影响）；轮换分组不再默认折叠。**`coordinatorSession` 仅运维手改**
+   （页面只读展示）：它是兜底通道，填错会让协调者指向不存在的会话、且只能改配置才恢复，属高危误操作，要改请直接编辑
+   当前 profile 的 `cordis.patch.yml`。`rotateArchiveOld` 仍是不可逆开关（`false` = 只改名不归档）。卡片侧机制没删：
+   `readonly` 标记即让某键只读，表单与保存路径（`EDITABLE_KEYS`）自动跟随，只读键保存时不下发。
+
+### 验证
+
+`pnpm test`（全绿）+ `check:client` + `check:client-size`（≤95 KiB）+ `check:version` + `check:docs` + `npm pack --dry-run`；
+新增/改写用例锁住：默认 `mainRotation === 'auto'`、显式 `off` 才关、轮换 7 个键可写标记与真实可写性一致（字段表双向 + 渲染控件不 disabled）、
+`coordinatorSession` 保持只读且保存时不下发（`buildOps`/`isDirty` 都不带它）、卡片保存生成的 ops 经 `loadConfig` 真读到新值。
+
 ## 0.23.0（2026-11-19）
 
 这一版把两条线合到一起发：远端已发布的 **0.22.0（插件页配置卡片）** 与 **0.22.1（少派一次活、少问一次关闭）**，

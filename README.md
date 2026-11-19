@@ -118,13 +118,13 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | 生效方式 | **即时生效**：保存触发插件重载（台账在 SQLite 不受影响；watchdog / 轮换计时器会重置） |
 | 优先级 | 表单写 profile 层；若 home patch 或命令行 overlay 覆盖同一字段，保存被**拒绝**并提示原因 |
 | 非法值 | 一律**回落默认**，不会让插件起不来（schema 用 `.loose()` 兜底，运行时再由 `loadConfig` 二次归一化） |
-| 只读字段 | `coordinatorSession` 与 `mainRotation.*`（含 `rotateArchiveOld`）只读展示：一个是运维兜底通道，一个牵动不可逆归档 |
+| 可编辑范围 | 轮换的 7 个键（`mainRotation` + 6 个 `rotate*`）与其余字段都可编辑；**`coordinatorSession` 只读**（运维兜底通道，填错会让协调者指向不存在的会话，仅在运维场景手改 profile YAML）；不可逆动作仍由 `rotateArchiveOld` 显式控制（`false` = 只改名） |
 
 字段规格的单一事实源是 [`src/config-fields.js`](src/config-fields.js)，schema 投影在 [`src/config-schema.js`](src/config-schema.js)，页面在 [`client/src/config-form.js`](client/src/config-form.js)——三处都只投影 `loadConfig()` 真实存在的键。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `coordinatorSession` | — | 显式覆盖主会话；不配则读 `settings.main_session_id`（页面只读） |
+| `coordinatorSession` | — | 显式覆盖主会话；不配则读 `settings.main_session_id`（**页面只读**：运维兜底通道，仅手改 profile YAML；填错会让协调者指向不存在的会话） |
 | `spawnProvider` | `spawn` | 本地 fresh 子会话 provider（只支持 `spawn`） |
 | `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（生成器与说明已移出主包，见 [tools/debug-preset/README.md](tools/debug-preset/README.md)，不随 npm 包发货） |
 | `staleMinutes` | `30` | 多久无动静标陈旧 / 卡住提醒间隔 |
@@ -145,7 +145,7 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，漏传时兜底 |
 | `worktreeBranchPrefix` | `orch/` | 隔离任务分支前缀（默认名 `<prefix><taskId>`） |
 | `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（1–90） |
-| `mainRotation` | `off` | 主会话轮换总开关：`auto`（判定 + 动作）/ `off`（只检测不动作）；拼错回落 `off`（页面只读） |
+| `mainRotation` | `auto` | 主会话轮换总开关：`auto`（默认，判定 + 动作）/ `off`（只检测不动作）；只有显式 `off` 才关，拼错保持默认 `auto` |
 | `rotateAfterMainLogMiB` | `6` | 主会话日志体积 MiB（0.5–4096） |
 | `rotateAfterDays` | `10` | 主会话运行天数（1–365） |
 | `rotateCooldownHours` | `48` | 两次轮换之间的冷却期（1–720） |
@@ -243,7 +243,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 - **没有定时器、没有后台巡检、没有面板按钮**：判定只在**你打开主会话那一次**发生（`main-session.openOnce()`），每次现算，只有该换才换。
 - **触发因子**（任一命中即「该换」）：主会话日志体积 `rotateAfterMainLogMiB`（默认 6 MiB）、运行天数 `rotateAfterDays`（默认 10 天）。
 - **十二条保护**（任一命中就不换）：`mainRotation` 关闭、显式覆盖协调者、非 `spawn` provider、还有活跃任务、还有「已交付待确认」、待确认任务带未读产物、主会话正在跑回合、10 分钟内刚聊过、还有活跃子代理、未到最小龄（12h）、冷却期（48h）、指标全拿不到（fail-closed）。采不到的指标记「未知」，**不按 0 算**。
-- **默认 `off`**：仍会检测（日志 `blockedBy: ['mode-off']`），但绝不动作——升级后不会自己换。要自动换就配 `mainRotation: 'auto'`。
+- **默认 `auto`（开启）**：跑久了会在你**下一次打开主会话**时换掉（判定照旧，12 条保护任一命中就不换）。不想换就配 `mainRotation: 'off'`——仍会检测（日志 `blockedBy: ['mode-off']`），但绝不动作；插件页配置卡片里也能直接关。
 - **风险**：归档**不可逆**（平台没有 unarchive；`rotateArchiveOld:false` 只改名）；换的是身份、**不搬历史**；只在打开时判定，重启/刷新都不触发。
 - 逐条边界见 [LIMITATIONS](docs/LIMITATIONS.md#主会话轮换g1)，时序与日志见 [ARCHITECTURE](docs/ARCHITECTURE.md#主会话轮换g1)。
 
@@ -283,7 +283,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 **编排与视图**
 
 - **同写域并发默认拒绝**（`sameDirGuard`，三条出路见上）；`dependsOn` 创建后不可编辑；**`done` 不可逆、无 reopen**——要改交付物用「待确认」追问，要新工作就新派/重派。
-- **主会话轮换归档不可逆、且只在打开主会话时判定**；判定是快照，动作前不复查。
+- **主会话轮换归档不可逆、且只在打开主会话时判定**（默认开启，`mainRotation: 'off'` 可关）；判定是快照，动作前不复查。
 - worktree 产物不在你的工作树里（合并由你决定）；计划文档只有一版、没有审批流 UI；面板轮询 2 秒、没有 SSE；产物预览依赖宿主右侧栏。
 - 结算自动收场只覆盖「一次 activation」，上报过 progress 的回合异常结束落 `orphaned`。
 
@@ -304,7 +304,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 | 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制；确实要写仓库外用 `access:'full'` 或 CI |
 | 台账损坏 | 用 `snapshots/` 里最新快照手工替换（不会自动恢复） |
 | Bot 模式看不到入口 | 用会话头「任务」按钮；侧栏入口只在纯 dsh 表面 |
-| 想马上换一次主会话 | 配 `mainRotation: 'auto'`，调低 `rotateAfterDays` / `rotateMinAgeHours` / `rotateCooldownHours` / `rotateIdleMinutes`，收掉活跃任务后再打开主会话 |
+| 想马上换一次主会话 | 确认没被 `mainRotation: 'off'` 关掉（默认 `auto`），调低 `rotateAfterDays` / `rotateMinAgeHours` / `rotateCooldownHours` / `rotateIdleMinutes`，收掉活跃任务后再打开主会话 |
 
 排障细节（平台缺陷、时序竞态、已知降级）见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
 

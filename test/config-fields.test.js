@@ -92,6 +92,8 @@ test('字段表与 loadConfig 双向一致（字段集 / 默认值 / 枚举 / �
       assert.ok(field.min <= field.max && field.default >= field.min && field.default <= field.max, `${field.key} 区间或默认值非法`)
     }
     if (field.readonly === true) assert.ok(!EDITABLE_KEYS.includes(field.key), `${field.key} 只读却可编辑`)
+    // 双向：可写标记与真实可写性必须一致（漏标 readonly = 用户以为不能改；标了却可写 = 只读是假的）。
+    assert.equal(EDITABLE_KEYS.includes(field.key), field.readonly !== true, `${field.key} 可写标记与 EDITABLE_KEYS 不一致`)
   }
   assert.equal(FIELDS_BY_GROUP.flatMap(g => g.fields).length, CONFIG_FIELDS.length, '分组未覆盖全部字段')
 })
@@ -121,10 +123,57 @@ test('P2-2 语义对齐：字段表只投影 loadConfig({}) 实际产出的 28 �
   assert.deepEqual(FIELD_GROUPS.map(group => group.id).includes('keepalive'), false, '续跑分组应随四个续跑键一起删除')
 })
 
-test('mainRotation 默认 off，拼错也回落 off', () => {
-  assert.equal(FIELD_BY_KEY.mainRotation.default, 'off')
-  assert.equal(loadConfig({}).mainRotation, 'off')
-  assert.equal(loadConfig({ mainRotation: 'GARBAGE' }).mainRotation, 'off')
+test('mainRotation 默认 auto（开启）；只有显式 off 才关，拼错保持默认', () => {
+  assert.equal(FIELD_BY_KEY.mainRotation.default, 'auto')
+  assert.equal(ROTATION_DEFAULTS.mainRotation, 'auto')
+  assert.equal(loadConfig({}).mainRotation, 'auto')
+  assert.equal(loadConfig({ mainRotation: 'off' }).mainRotation, 'off')
+  // 拼错不再「安全地关掉」，而是保持默认开启——关轮换只有一条路：显式写 off。
+  for (const bad of ['GARBAGE', 'AUTO', 'on', false, 0]) {
+    assert.equal(loadConfig({ mainRotation: bad }).mainRotation, 'auto', JSON.stringify(bad))
+  }
+})
+
+test('轮换分组：7 个键在卡片上可编辑，coordinatorSession 只读（运维兜底通道）', () => {
+  // 布局：轮换分组仍是 8 键（总开关 + 6 个 rotate* + 协调者覆盖）。
+  const rotation = FIELDS_BY_GROUP.find(group => group.id === 'rotation')
+  assert.equal(rotation.fields.length, 8, '轮换分组应恰好 8 个字段')
+  assert.deepEqual(rotation.fields.map(field => field.key), [
+    'coordinatorSession', 'mainRotation', 'rotateAfterMainLogMiB', 'rotateAfterDays',
+    'rotateCooldownHours', 'rotateMinAgeHours', 'rotateIdleMinutes', 'rotateArchiveOld',
+  ])
+  // 只读只有一处，且理由明确：填错会让协调者指向不存在的会话（高危误操作）。
+  assert.equal(FIELD_BY_KEY.coordinatorSession.readonly, true, 'coordinatorSession 应恢复只读')
+  assert.equal(EDITABLE_KEYS.includes('coordinatorSession'), false, 'coordinatorSession 不得下发保存')
+  for (const field of rotation.fields) {
+    if (field.key === 'coordinatorSession') continue
+    assert.notEqual(field.readonly, true, `${field.key} 不该只读`)
+    assert.ok(EDITABLE_KEYS.includes(field.key), `${field.key} 必须可编辑（否则卡片上点不动）`)
+  }
+  assert.equal(EDITABLE_KEYS.length, CONFIG_FIELDS.length - 1, '28 键里只有 coordinatorSession 只读')
+  assert.equal(FIELD_GROUPS.find(group => group.id === 'rotation').label, '主会话轮换', '分组标题不再标「只读」（只读逐行标）')
+
+  // 卡片保存路径：7 个可编辑键经 loadConfig 归一化后真读到新值。
+  const saved = loadConfig({
+    mainRotation: 'off',
+    rotateAfterMainLogMiB: 2.5,
+    rotateAfterDays: 3,
+    rotateCooldownHours: 6,
+    rotateMinAgeHours: 2,
+    rotateIdleMinutes: 30,
+    rotateArchiveOld: false,
+  })
+  assert.equal(saved.mainRotation, 'off')
+  assert.equal(saved.rotateAfterMainLogMiB, 2.5)
+  assert.equal(saved.rotateAfterDays, 3)
+  assert.equal(saved.rotateCooldownHours, 6)
+  assert.equal(saved.rotateMinAgeHours, 2)
+  assert.equal(saved.rotateIdleMinutes, 30)
+  assert.equal(saved.rotateArchiveOld, false)
+  // coordinatorSession 走运维手改 YAML（不经卡片）：loadConfig 照旧认，空串/缺省 = 读台账指针。
+  assert.equal(loadConfig({ coordinatorSession: 's-manual' }).coordinatorSession, 's-manual')
+  assert.equal(loadConfig({ coordinatorSession: '' }).coordinatorSession, undefined)
+  assert.equal(loadConfig({}).coordinatorSession, undefined)
 })
 
 // ── P0-3：volatile 到达 apply 是包装对象，不解包 = 用户配置被丢弃 ──

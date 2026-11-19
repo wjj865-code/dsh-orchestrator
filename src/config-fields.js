@@ -16,8 +16,13 @@
 // **不得**再出现在这里——它们只留在 `src/config.js` 的 DEPRECATED_KEYS 里给弃用警告，
 // 表单上多一行「已删除的键」= 用户改完写回去仍是无效配置。
 //
-// 暴露策略（Q3 已定）：高频子集可编辑；`mainRotation.*` 与 `coordinatorSession` 只读展示
-// （readonly: true）——它们要么牵动不可逆动作（归档），要么是运维兜底通道，不该在表单里手滑改。
+// 暴露策略（Q3 修订：轮换 8 键里 7 个可编辑 + `coordinatorSession` 只读）：总开关与 6 个 `rotate*`
+// 都能在插件页直接改——「默认开启 + 能关」才是可用形态，藏成只读会让用户以为轮换只能手改 YAML。
+// `coordinatorSession` 例外，保留 `readonly: true`：它是**运维兜底通道**，填错（拼错/写了个不存在的会话 id）
+// 会让协调者直接指向不存在的会话，工具与派发全部失效、且只能再改配置才恢复——属于高危误操作，
+// 不该在表单里手滑改；需要时手改当前 profile 的 `cordis.patch.yml`。不可逆动作仍由 `rotateArchiveOld`
+// 显式控制（`false` = 只改名）。
+// `readonly` 机制是给这类键用的：标上即只读，表单与 `EDITABLE_KEYS` 自动跟随。
 
 /** 字段分组：顺序即页面上的分组顺序。 */
 export const FIELD_GROUPS = Object.freeze([
@@ -27,7 +32,7 @@ export const FIELD_GROUPS = Object.freeze([
   Object.freeze({ id: 'isolation', label: '隔离与并发' }),
   Object.freeze({ id: 'memory', label: '记忆与快照' }),
   Object.freeze({ id: 'preferences', label: '偏好注入' }),
-  Object.freeze({ id: 'rotation', label: '主会话轮换（只读）' }),
+  Object.freeze({ id: 'rotation', label: '主会话轮换' }),
 ])
 
 /**
@@ -36,7 +41,8 @@ export const FIELD_GROUPS = Object.freeze([
  * - `kind`：`number` / `boolean` / `string` / `enum`，决定 schema 与控件类型；
  * - `min` / `max` / `integer`：数字字段的合法区间（与 `loadConfig` 的夹取口径一致）；
  * - `pattern`：字符串字段的正则（仅用于提示，非法值仍由 loadConfig 回落）；
- * - `readonly`：true = 只在页面上展示生效值，不给编辑（Q3）；
+ * - `readonly`：true = 只在页面上展示生效值，不给编辑（当前只有 `coordinatorSession` 标它：
+ *   运维兜底通道，手滑改错会让协调者指向不存在的会话）；
  * - `default`：与 `loadConfig` 的默认值**必须一致**（由单测守）。
  */
 export const CONFIG_FIELDS = Object.freeze([
@@ -133,38 +139,38 @@ export const CONFIG_FIELDS = Object.freeze([
     label: '偏好字数上限',
   }),
 
-  // ── 主会话轮换（只读，Q3） ─────────────────────────────────────
+  // ── 主会话轮换（7 键可编辑 + coordinatorSession 只读） ──────────
   Object.freeze({
     key: 'coordinatorSession', group: 'rotation', kind: 'string', default: '', readonly: true,
-    label: '协调者会话覆盖', hint: '留空 = 读台账 settings.main_session_id；只在运维兜底时手改 YAML',
+    label: '协调者会话覆盖', hint: '运维兜底通道：页面只读，只在运维场景手改 cordis.patch.yml（填错会让协调者指向不存在的会话）',
   }),
   Object.freeze({
-    key: 'mainRotation', group: 'rotation', kind: 'enum', values: ['auto', 'off'], default: 'off', readonly: true,
-    label: '轮换总开关', hint: '默认 off（默认必须安全）；拼错也回落 off',
+    key: 'mainRotation', group: 'rotation', kind: 'enum', values: ['auto', 'off'], default: 'auto',
+    label: '轮换总开关', hint: '默认 auto（开）；只有显式 off 才关，拼错保持 auto',
   }),
   Object.freeze({
-    key: 'rotateAfterMainLogMiB', group: 'rotation', kind: 'number', min: 0.5, max: 4096, integer: false, default: 6, readonly: true,
+    key: 'rotateAfterMainLogMiB', group: 'rotation', kind: 'number', min: 0.5, max: 4096, integer: false, default: 6,
     label: '触发：主会话日志体积（MiB）',
   }),
   Object.freeze({
-    key: 'rotateAfterDays', group: 'rotation', kind: 'number', min: 1, max: 365, integer: true, default: 10, readonly: true,
+    key: 'rotateAfterDays', group: 'rotation', kind: 'number', min: 1, max: 365, integer: true, default: 10,
     label: '触发：运行天数',
   }),
   Object.freeze({
-    key: 'rotateCooldownHours', group: 'rotation', kind: 'number', min: 1, max: 720, integer: true, default: 48, readonly: true,
+    key: 'rotateCooldownHours', group: 'rotation', kind: 'number', min: 1, max: 720, integer: true, default: 48,
     label: '冷却期（小时）',
   }),
   Object.freeze({
-    key: 'rotateMinAgeHours', group: 'rotation', kind: 'number', min: 1, max: 720, integer: true, default: 12, readonly: true,
+    key: 'rotateMinAgeHours', group: 'rotation', kind: 'number', min: 1, max: 720, integer: true, default: 12,
     label: '最小龄（小时）',
   }),
   Object.freeze({
-    key: 'rotateIdleMinutes', group: 'rotation', kind: 'number', min: 1, max: 1440, integer: true, default: 10, readonly: true,
+    key: 'rotateIdleMinutes', group: 'rotation', kind: 'number', min: 1, max: 1440, integer: true, default: 10,
     label: '闲置判定（分钟）',
   }),
   Object.freeze({
-    key: 'rotateArchiveOld', group: 'rotation', kind: 'boolean', default: true, readonly: true,
-    label: '轮换后归档旧主会话', hint: '不可逆：平台没有 unarchive',
+    key: 'rotateArchiveOld', group: 'rotation', kind: 'boolean', default: true,
+    label: '轮换后归档旧主会话', hint: '不可逆：平台没有 unarchive；关掉则只改名退役',
   }),
 ])
 
@@ -189,5 +195,9 @@ export const FIELDS_BY_GROUP = Object.freeze(
 /** 全部字段 key（顺序与声明一致）。 */
 export const FIELD_KEYS = Object.freeze(CONFIG_FIELDS.map(field => field.key))
 
-/** 可编辑字段 key 集合：宿主 schema 只把这些标 volatile。 */
+/**
+ * 可编辑字段 key 集合：表单控件与保存路径（`buildOps`/`isDirty`）只认这些。
+ * 只读字段（`coordinatorSession`）不在这里——它照样出现在页面上（schema 对全部字段标 volatile），
+ * 但保存时不会下发。
+ */
 export const EDITABLE_KEYS = Object.freeze(EDITABLE_FIELDS.map(field => field.key))

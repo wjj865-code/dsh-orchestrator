@@ -31,12 +31,13 @@ const MIB = 1024 * 1024
 
 /**
  * 7 个配置键的默认值（P1-A 收缩：12 → 7）。
- * `mainRotation` 是总开关：auto = 判定并动作；off = 只检测、不动作。
- * **默认 off**：升级后不再自动换主会话，要换必须显式配 `mainRotation: 'auto'`。
+ * `mainRotation` 是总开关：auto = 判定并动作（**默认**）；off = 只检测、不动作。
+ * **默认 auto**：主会话跑久了（日志 > 6 MiB 或运行 > 10 天，任一命中）会在下次打开时被换掉；
+ * 不想换就显式配 `mainRotation: 'off'`（插件页配置卡片里也能改）。
  * `rotateArchiveOld` = 轮换后是否把旧主会话交给平台归档（不可逆）。
  */
 export const ROTATION_DEFAULTS = Object.freeze({
-  mainRotation: 'off',
+  mainRotation: 'auto',
   rotateAfterMainLogMiB: 6,
   rotateAfterDays: 10,
   rotateCooldownHours: 48,
@@ -57,7 +58,7 @@ export const ROTATION_LIMITS = Object.freeze({
   rotateIdleMinutes: Object.freeze([1, 1440, true]),
 })
 
-/** 总开关合法取值；拼错/其它值一律回落 off（默认必须安全：不能因为配置写错就自动换掉协调者）。 */
+/** 总开关合法取值；只认显式 `'off'` 关闭，其余（含拼错/缺省）一律按默认 `auto`。 */
 export const MAIN_ROTATION_MODES = Object.freeze(['auto', 'off'])
 
 /**
@@ -119,8 +120,9 @@ const fmt = value => {
 export function normalizeRotationConfig(raw = {}) {
   const source = raw !== null && typeof raw === 'object' ? raw : {}
   const config = {
-    // 默认 off（P1-A）：只有显式 'auto' 才开；拼错保持「不开」，不能因为写错就自动换掉协调者。
-    mainRotation: source.mainRotation === 'auto' ? 'auto' : 'off',
+    // 默认 auto（开）：只有显式 'off' 才关；拼错保持默认（这里默认开），与 rotateArchiveOld 同口径。
+    // 判定仍有 12 条保护兜底，不会因为配置写错就在活跃任务/刚聊过时换掉协调者。
+    mainRotation: source.mainRotation === 'off' ? 'off' : 'auto',
     // 与 memoryInject / idleWatchdog 同口径：只有显式 false 才关，拼错保持默认（这里默认开）。
     rotateArchiveOld: source.rotateArchiveOld !== false,
   }

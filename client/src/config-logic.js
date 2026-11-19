@@ -12,8 +12,12 @@ export const CONFIG_SLOT_KEY = '@wjj865-code/dsh-orchestrator'
 /** `configForms.get()` / `whileServed()` 用的 Loader entry id（cordis.patch.yml 的 `id: orchestrator`）。 */
 export const CONFIG_ENTRY_ID = 'orchestrator'
 
-/** 分组折叠状态默认全展开；只读分组（轮换）默认折叠，避免一屏 12 行噪声。 */
-export const COLLAPSED_BY_DEFAULT = Object.freeze(['rotation'])
+/**
+ * 分组折叠状态默认全展开。
+ * 轮换分组以前整体只读、默认折叠（省一屏噪声）；本版起 7 个键能改、总开关默认还开着，
+ * 折叠反而让「关掉轮换」要多点一次——所以一起展开，折叠能力保留给用户自己收。
+ */
+export const COLLAPSED_BY_DEFAULT = Object.freeze([])
 
 /** 把宿主快照里的值摊平成普通标量（宿主的 volatile 字段在 wire 上已是普通 JSON）。 */
 export const plainValues = value => (typeof value === 'object' && value !== null ? value : {})

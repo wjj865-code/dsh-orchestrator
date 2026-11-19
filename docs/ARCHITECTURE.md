@@ -36,7 +36,7 @@
 主会话是唯一协调者，跑久了上下文与日志只会更大。轮换 = 把旧主会话退役、换一个干净会话继续；台账、任务、记忆、产物都不搬。**判定与动作严格分离**，判定只有一个调用点：`main-session.openOnce()`（启动、`agent/created`、面板轮询都不判定）。
 
 - **模块**：`src/main-rotation.js`（纯判定 `evaluateRotation` / 采集 `collectRotationMetrics` / 动作面 `createRotationService` / 崩溃恢复）、`src/config.js`（轮换相关的 7 个键：`mainRotation` + 6 个 `rotate*`，默认值与回落都在 `normalizeRotationConfig`）、`src/main-session.js`（唯一判定点）、`index.js`（装配 + `apply()` 时 `recoverPending`）。
-- **判定**：只在旧主会话 **live** 时做（重启后第一次打开是隐式重建，不是轮换）。触发因子两个：`main-log`（日志 MiB）→ `age`（运行天数）。12 个保护 code 按 `ROTATION_BLOCKS` 排优先级：`mode-off`、`coordinator-override`、`spawn-provider`、`active-tasks`、`delivered-pending`、`delivered-artifacts`、`agent-running`、`recent-activity`、`active-children`、`min-age`、`cooldown`、`metrics-degraded`（两个因子全缺才 fail-closed，缺一个只记 `degraded`）。`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；`mainRotation` **默认 `off`**，拼错也回落 `off`。
+- **判定**：只在旧主会话 **live** 时做（重启后第一次打开是隐式重建，不是轮换）。触发因子两个：`main-log`（日志 MiB）→ `age`（运行天数）。12 个保护 code 按 `ROTATION_BLOCKS` 排优先级：`mode-off`、`coordinator-override`、`spawn-provider`、`active-tasks`、`delivered-pending`、`delivered-artifacts`、`agent-running`、`recent-activity`、`active-children`、`min-age`、`cooldown`、`metrics-degraded`（两个因子全缺才 fail-closed，缺一个只记 `degraded`）。`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；`mainRotation` **默认 `auto`（开启）**，只有显式 `'off'` 才关，拼错保持默认 `auto`。
 - **动作时序**（顺序即回退边界）：建新会话（失败 = 零处置）→ 写 marker `main_rotation_pending`（先 marker 后切指针，崩溃恢复的唯一锚点）→ 切指针（失败 = 轮换没发生，指针切换后不回滚）→ 写时间戳 → `onboarding=sent`（跳过首次介绍）→ 改名 → 退役旧会话（先改名再归档，各自降级）→ 写审计 `main_rotation_last` → 记 `freshMain`（60 秒窗口内再打开交回同一 id）。
 - **崩溃恢复**：`abandoned`（marker.newId ≠ 指针）= 死在切指针前，尽力归档空白残留；`complete` = 指针已切，补时间戳 / onboarding / 旧会话处置，幂等；`invalid` 只清 marker + 告警，**绝不猜 id 去归档**。
 - **settings 键只存事实**：`main_session_created_at` / `main_rotation_at` / `main_rotation_last`（审计，只留最近一条）/ `main_rotation_pending`；`main_rotation_checked_at` 已废弃（只读）。
@@ -439,8 +439,10 @@
 slot key = bundle **包名**（`CONFIG_SLOT_KEY`）；`configForms.get()` / `whileServed()` 参数 = Loader **entry id**
 （`CONFIG_ENTRY_ID` = `orchestrator`，即 `cordis.patch.yml` 的 id）。`whileServed` 保证插件没加载时页面完全无痕。
 
-**暴露策略**：高频子集可编辑；`coordinatorSession` 与 `mainRotation.*`（含 `rotateArchiveOld`）只读展示
-（前者是运维兜底通道，后者牵动不可逆归档）。写通道 `mutate(ops, revision)` 带 revision 栅栏，别人先改过就拒绝并刷新，
+**暴露策略**：轮换的 7 个键（`mainRotation` + 6 个 `rotate*`）与其余字段都可编辑——轮换默认开启，
+用户必须能在卡片里关掉/调阈值；**`coordinatorSession` 只读**（运维兜底通道：填错会让协调者指向不存在的会话，
+且只能改配置才恢复，只在运维场景手改 `cordis.patch.yml`）。不可逆动作仍由 `rotateArchiveOld` 显式控制（`false` = 只改名）。
+写通道 `mutate(ops, revision)` 带 revision 栅栏，别人先改过就拒绝并刷新，
 不静默覆盖；清空一个「已覆盖」字段发 `unset`（回落组合默认且不再算覆盖）。保存触发插件重载（台账不受影响，
 watchdog/轮换计时器重置），页面文案写明。
 

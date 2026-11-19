@@ -134,10 +134,10 @@ test('配置面总数 28（P2-2 收缩后）：loadConfig 不泄漏未声明的�
   }
 })
 
-test('主会话轮换：7 个键默认值（P1-A：总开关默认 off + 两个因子 + 三个保护 + 归档）', () => {
+test('主会话轮换：7 个键默认值（总开关默认 auto 开启 + 两个因子 + 三个保护 + 归档）', () => {
   const config = loadConfig({})
-  // 默认 off：升级后不再自动换主会话（要换必须显式配 auto）。
-  assert.equal(config.mainRotation, 'off')
+  // 默认 auto：主会话跑久了会被换掉；不想换就显式配 off（插件页卡片也能改）。
+  assert.equal(config.mainRotation, 'auto')
   assert.equal(config.rotateAfterMainLogMiB, 6)
   assert.equal(config.rotateAfterDays, 10)
   assert.equal(config.rotateCooldownHours, 48)
@@ -146,7 +146,7 @@ test('主会话轮换：7 个键默认值（P1-A：总开关默认 off + 两个�
   assert.equal(config.rotateArchiveOld, true)
 })
 
-test('主会话轮换：合法覆盖生效，总开关只认 auto/off', () => {
+test('主会话轮换：合法覆盖生效，总开关只认显式 off（auto 是默认、拼错保持默认）', () => {
   const config = loadConfig({
     mainRotation: 'auto',
     rotateAfterMainLogMiB: 3,
@@ -163,9 +163,10 @@ test('主会话轮换：合法覆盖生效，总开关只认 auto/off', () => {
   assert.equal(config.rotateMinAgeHours, 6)
   assert.equal(config.rotateIdleMinutes, 5)
   assert.equal(config.rotateArchiveOld, false)
-  // 拼错/其它值回落 off：默认必须安全，不能因为写错就自动换掉协调者。
-  for (const bad of ['OFF', 'manual', 'on', 0, true, null]) {
-    assert.equal(loadConfig({ mainRotation: bad }).mainRotation, 'off', String(bad))
+  // 只有显式 'off' 才关；其余（含拼错）按默认 auto——默认开启，但关得掉。
+  assert.equal(loadConfig({ mainRotation: 'off' }).mainRotation, 'off')
+  for (const bad of ['OFF', 'manual', 'on', 0, true, null, '']) {
+    assert.equal(loadConfig({ mainRotation: bad }).mainRotation, 'auto', JSON.stringify(bad))
   }
   // 归档开关与其它布尔项同口径：只有显式 false 才关。
   assert.equal(loadConfig({ rotateArchiveOld: 'no' }).rotateArchiveOld, true)

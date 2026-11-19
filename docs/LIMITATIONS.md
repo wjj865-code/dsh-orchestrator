@@ -67,14 +67,14 @@
 
 ## 主会话轮换（G1）
 
-- **归档不可逆，这是本功能最硬的边界**：`rotateArchiveOld` 默认 `true`，收尾把旧主会话改名「主会话（已退役 YYYY-MM-DD HH:MM）」再 `archiveSession()`。平台**没有 unarchive API**，插件也不提供恢复；能选的只有事前配置 `rotateArchiveOld:false`（只改名）或 `mainRotation:'off'`（完全不换，**P1-A 起是默认值**）。归档动作本身幂等，但「已归档」不可撤销。
+- **归档不可逆，这是本功能最硬的边界**：`rotateArchiveOld` 默认 `true`，收尾把旧主会话改名「主会话（已退役 YYYY-MM-DD HH:MM）」再 `archiveSession()`。平台**没有 unarchive API**，插件也不提供恢复；能选的只有事前配置 `rotateArchiveOld:false`（只改名）或 `mainRotation:'off'`（完全不换）。**轮换默认开启（`mainRotation` 默认 `auto`）**：想完全不换就必须显式配 `off`。归档动作本身幂等，但「已归档」不可撤销。
 - **判定只有一个调用点**：`main-session.openOnce()` 在**旧主会话 live** 时算一次。启动、`agent/created`、面板轮询、刷新都不判定；旧会话不 live 时走既有「隐式重建」，不算轮换。没有强制轮换的按钮/工具/端点。每次打开都现算（P1-A 删了检查节流）。
 - **判定是快照，动作前不复查**：`evaluate → rotateMain` 之间来新任务/消息/回合仍按旧结论执行；并发打开只生效一次（in-flight 复用），轮换后新会话未 live 的 **60 秒窗口**内再打开交回同一 id。
 - **指标口径与降级**：只剩 `main-log`（`sessionPersistence.locate` + `stat`，坏则记 `degraded`、**不按 0 算**）与 `age`（`since`：先 `settings.main_session_created_at`，退 `header.createdAt`）。只有**两个因子全拿不到**才 fail-closed（`metrics-degraded`）。`main-log` 是压缩后日志大小，不等于上下文占用。
 - **保护规则的边角**：`active-tasks` 只算 waiting_dep/pending/running/waiting_user/waiting_auth（不含 `delivered`，由 `delivered-pending` 单独挡）；`active-children` 依赖 `dispatcher.catalog()`（读不到按「无法判断」，不挡也不误挡）；`coordinator-override` 与 `spawn-provider` 命中时连采集都不做。
 - **崩溃中间态**：marker（`main_rotation_pending`）写失败只记日志、轮换继续，之后崩溃**无法自动恢复**；marker 形状坏掉（`invalid`）只清 marker + 告警，**绝不猜 id 去归档**；`abandoned` 恢复会把空白残留会话归档（同样不可逆）；`complete` 恢复幂等，但审计只保留**最近一条**。
 - **标题被覆盖**：旧会话标题改成「主会话（已退役 …）」，原标题不保留、平台没有标题历史。
-- **配置写错的表现**：`mainRotation` 只认 `'auto'`，缺省/拼错一律回落 `off`；数值键越界夹边界；`rotateArchiveOld` 只认显式 `false`；已删键留在 profile 只会在启动时给一条弃用警告。
+- **配置写错的表现**：`mainRotation` 只认显式 `'off'` 关闭，缺省/拼错一律按默认 `auto`（开）；数值键越界夹边界；`rotateArchiveOld` 只认显式 `false`；已删键留在 profile 只会在启动时给一条弃用警告。
 - **不迁移任何状态**：上下文、未处理追问、平台 goal/automation 都不搬；新会话直接 `onboarding=sent`（不补首次介绍与索引任务）；日报 schedule 在 `open-main` 响应里按新 id 重建，失败只 warn。
 - **平台服务缺失的降级**：缺 `rename` → 只归档；缺 `archiveSession` → 只改名 + warn；缺 `sessionController.create` → `open-main` 返回可读错误、**零处置**。都不抛异常到宿主。
 

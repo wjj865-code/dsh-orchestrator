@@ -182,7 +182,7 @@
 | 7 | `worktree:true` | 真的建出 `orch/<taskId>` 与检出；通知/`task_status` 标「隔离」；`git status` 无 `.agents/` |
 | 8 | 多分支仓库不给 `worktreeBase` | 任务不创建、返回候选，带基线重调后建树 |
 | 9 | 同目录并发派两条 | 默认拒绝并给三条出路；`allowConcurrent:true` 放行并标风险 |
-| 10 | 主会话轮换（`mainRotation:'auto'` + 低阈值） | 命中一次：旧会话改名「已退役」并归档；日志有 `main.rotation.decided` |
+| 10 | 主会话轮换（默认 `mainRotation:'auto'`，调低阈值） | 命中一次：旧会话改名「已退役」并归档；日志有 `main.rotation.decided`；在插件页卡片里改成 `off` 保存后，再打开主会话只记 `blockedBy: ['mode-off']`、不换 |
 | 11 | 配了 `checks` 的任务报 done | 全过才「待确认」并显示「验收 N/N」；有失败项即拒绝交付、任务仍「进行中」、回执给退出码与输出尾部 |
 | 12 | 关联官方板的任务被**人**确认交付 | 官方任务按 CAS 标 `complete`；超时自动完成时官方板**不变**，日志有 `team.board.skipped` |
 

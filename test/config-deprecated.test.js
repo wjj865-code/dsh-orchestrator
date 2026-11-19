@@ -50,10 +50,10 @@ test('命中旧键：各 warn 一次，文案带键名与提示；值不回填',
   assert.match(warnings[0], /配置键 backend 已删除/)
   assert.match(warnings[1], /配置键 rotateAfterTasks 已删除/)
   for (const warning of warnings) assert.match(warning, /按默认值运行/)
-  // 值不回填：旧键不出现在归一化结果里，也不会改变轮换本来会用的默认值。
+  // 值不回填：旧键不出现在归一化结果里，也不会改变轮换本来会用的默认值（默认 auto）。
   assert.equal('backend' in config, false)
   assert.equal('rotateAfterTasks' in config, false)
-  assert.equal(config.mainRotation, 'off')
+  assert.equal(config.mainRotation, 'auto')
 })
 
 test('同一键只 warn 一次（进程级去重）；换键仍会 warn', () => {
