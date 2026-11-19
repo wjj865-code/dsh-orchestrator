@@ -24,7 +24,7 @@ export const GOAL_DONE_PHASES = new Set(['complete', 'cleared'])
 export const DEFAULT_KEEPALIVE_PROMPT = [
   '宿主 keep-alive：上一回合已结束，但本任务的目标还没完成。',
   '请接着推进同一个目标：先看已有进展与产物，再做下一件具体的实事，不要重复已经做完的工作。',
-  `全部验收标准达成后调用 task_report 上报 done（报 done 是交付，会停在「${DELIVERY_LINES.state}」等协调者确认；收到追问就在同一会话继续）；被阻塞或需要授权时上报 blocked / needs_auth，不要空转。`,
+  `全部验收标准达成后调用 task_report 上报 done（报 done 是交付，会停在「${DELIVERY_LINES.state}」，确认或${DELIVERY_LINES.timeout}后才收成完成；收到追问就在同一会话继续）；被阻塞或需要授权时上报 blocked / needs_auth，不要空转。`,
 ].join('\n')
 
 const noop = () => {}

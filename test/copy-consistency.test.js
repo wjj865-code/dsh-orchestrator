@@ -59,7 +59,7 @@ test('协调者 policy：done 后默认保持待确认，不主动 action:close'
 test('协调者 policy：不主动问「任务能否关闭」，交付后保持待确认等超时', () => {
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /ask_user_question/)
-  // 0.23：从「必须主动问用户」改成「不主动问关闭」——催关闭比超时自动完成更打扰。
+  // 0.22.1：从「必须主动问用户」改成「不主动问关闭」——催关闭比超时自动完成更打扰。
   assert.match(policy, /不要问「任务能不能关闭」/)
   assert.match(policy, /不要\*\*用 ask_user_question 追问「确认 \/ 要改？」/)
   assert.match(policy, /等超时自动完成/)

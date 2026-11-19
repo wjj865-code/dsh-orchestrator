@@ -102,7 +102,7 @@ test('确认方式提示：交付时给结构化摘要，不只在正文里问',
   assert.match(CONFIRM_HINT, /done 会清空 question\/options/)
   // 交付口径与 task_detail 的 FINISH_HINT 同源（审计 §5.1.2 矛盾 2）：都从 SUMMARY_FIELDS 拼出。
   assert.ok(CONFIRM_HINT.includes(SUMMARY_FIELDS), 'brief 与 task_detail 的三问要素必须逐字一致')
-  // 0.23：协调者不再追问「确认 / 要改？」，子会话要知道交付后不会被催确认。
+  // 0.22.1：协调者不再追问「确认 / 要改？」，子会话要知道交付后不会被催确认。
   assert.doesNotMatch(CONFIRM_HINT, /确认 \/ 要改？/)
   assert.match(CONFIRM_HINT, /不会为「能不能关闭」来问你/)
   assert.match(CONFIRM_HINT, /等超时自动完成/)
