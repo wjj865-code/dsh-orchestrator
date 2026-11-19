@@ -21,36 +21,185 @@
 //    这类判断，拿到包装对象会全部失效、静默回落默认——等于用户的配置被无声丢弃。
 //    因此 `apply` 第一步必须 `unwrapVolatile()`。见本文件末尾。
 //
-// 4. **schemastery 解析不到时必须降级，不能让插件整体起不来。**
+// 4. **schemastery 解析不到时必须降级，且降级必须「有声音」。**
 //    `@deepseek-ai/schemastery` 是宿主自带的包（harness 自己的 bundle 从 dsh 安装目录解析），
 //    本插件把它声明成 **optional peer**。但「声明成 optional」不等于「运行时一定拿得到」：
-//    装法不同（pnpm 提升位置、profile 隔离、宿主版本差异）都可能解析失败。
+//    装法不同（pnpm 隔离的虚拟 store、`link:` 安装、profile 隔离、宿主版本差异、asar 打包）
+//    都可能让插件自己那条解析路径失败。
+//
 //    如果这里用静态 `import z from '@deepseek-ai/schemastery'`，解析失败 = 整个模块加载失败 =
-//    插件连任务面板和全部工具一起消失——为了一个「配置页」赔掉主功能，不可接受。
-//    所以用 `createRequire` + try/catch **同步降级**：拿不到就 `Config = undefined`，
-//    Cordis 的 `resolveConfig()` 看到 `runtime.Config` 为空会**原样跳过校验**（已核实宿主实现），
-//    插件照常工作，只是插件页上没有配置卡片。`loadConfig()` 的运行时归一化完全不受影响。
+//    插件连任务面板和全部工具一起消失——为了一个「配置页」赔掉主功能，不可接受。所以用
+//    `createRequire` + try/catch **同步降级**：拿不到就 `Config = undefined`，Cordis 的
+//    `resolveConfig()` 看到 `runtime.Config` 为空会**原样跳过校验**（已核实宿主实现），
+//    插件照常工作，只是插件页上没有配置卡片。
+//
+//    但「静默降级」本身是更坏的 bug（2026-11-20 二诊就卡在这里）：`Config` 为空时
+//    宿主 `settings.describe()` 直接不列 `orchestrator` 命名空间，客户端 `whileServed` 门控
+//    不触发，页面上**连空壳都没有、控制台零报错**，排查只能靠猜。因此本文件做两件事：
+//      a. **兜底解析**：插件自身路径失败后，再按「宿主安装目录」重试一遍（`DSH_*` 环境变量、
+//         宿主进程 argv 里的 dsh 目录、Electron `resources/app.asar/dsh`）——这几种布局下
+//         schemastery 就在宿主自己的 `node_modules` 里，不需要插件转手；
+//      b. **显式告警**：全部失败时 `console.warn` 一次，写明「配置卡片将不显示」、试过哪些位置、
+//         首个错误；成功/降级的结果记进 `configSchemaDiagnostics`，供日志与测试取证。
+//    `loadConfig()` 的运行时归一化完全不受影响。
+import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import { CONFIG_FIELDS } from './config-fields.js'
 
-/** 同步加载 schemastery；拿不到返回 undefined（降级，不抛）。 */
-const loadSchemastery = () => {
-  try {
-    const require = createRequire(import.meta.url)
-    const loaded = require('@deepseek-ai/schemastery')
-    // ESM 互操作：`require` 拿到的是 module.exports，schema 工厂可能在 default 上。
-    const z = loaded?.default ?? loaded
-    return typeof z?.object === 'function' ? z : undefined
-  } catch {
-    return undefined
-  }
+/** schemastery 包名（主路径与兜底路径共用这一处，避免两处写法漂移）。 */
+const SCHEMA_PACKAGE = '@deepseek-ai/schemastery'
+
+/** 降级的用户可见后果（告警文案只写这一句，避免各处说法不一致）。 */
+const SCHEMA_MISSING_HINT = '配置卡片将不显示（插件照常工作，任务面板与工具不受影响）'
+
+/** 兜底锚点里用的假文件名：createRequire 只需要一个路径，按它的 dirname 向上找 node_modules。 */
+const ANCHOR_FILE = '__host-module-resolve__.cjs'
+
+/** ESM 互操作取工厂：`require` 拿到的是 module.exports，工厂可能在 `default` 上。 */
+const pickFactory = loaded => {
+  const z = loaded?.default ?? loaded
+  return typeof z?.object === 'function' ? z : undefined
 }
 
+/** 锚点 → createRequire 的入参：已经是脚本路径就原样用，目录则补一个假文件名。 */
+const anchorFile = anchor => /\.(?:cjs|mjs|js)$/i.test(anchor) ? anchor : join(anchor, ANCHOR_FILE)
+
+/** Electron 布局：`<exe 目录>/resources/{app.asar,app.asar.unpacked}/dsh`（asar 路径在 Electron 里可读）。 */
+const electronRoots = exePath => {
+  if (typeof exePath !== 'string' || exePath.trim() === '') return []
+  const resources = join(dirname(exePath), 'resources')
+  return [join(resources, 'app.asar', 'dsh'), join(resources, 'app.asar.unpacked', 'dsh'), resources]
+}
+
+/**
+ * 兜底解析的候选锚点（按「最可能命中」排序，去重、只留真实存在的路径）。
+ *
+ * 为什么要这么多来源：宿主有两种形态——桌面宿主（Electron 主进程，插件与 schemastery 都在
+ * `resources/app.asar/dsh/node_modules` 里）与 CLI 宿主（同样是 Electron-as-node，argv 里带
+ * `app.asar/dsh` 或全局安装目录）。宿主给子进程设的 `DSH_*` 环境变量是最省事的线索，
+ * 但**宿主进程自己不保证有**，所以还要从 argv / exe 路径反推，避免只赌一条路。
+ * @param {object} [options] 依赖注入点（测试用）。
+ * @param {Record<string, string | undefined>} [options.env] 环境变量。
+ * @param {string[]} [options.argv] 宿主进程参数。
+ * @param {string} [options.execPath] 宿主可执行文件。
+ * @param {string} [options.resourcesPath] Electron 的 resources 目录。
+ * @param {(path: string) => boolean} [options.exists] 存在性判断（asar 等在 Electron 外一律 false）。
+ * @returns {string[]} 真实存在的锚点（目录或脚本路径）。
+ */
+export function schemaAnchors({
+  env = process.env,
+  argv = process.argv,
+  execPath = process.execPath,
+  resourcesPath = process.resourcesPath,
+  exists = existsSync,
+} = {}) {
+  const candidates = []
+  const push = value => {
+    if (typeof value === 'string' && value.trim() !== '') candidates.push(value)
+  }
+  // 1) 宿主给会话进程的标准环境变量：profile 的 node_modules 里通常就有一份 schemastery。
+  push(env.DSH_PROFILE_DIR)
+  push(env.DSH_HOME)
+  push(env.DSH_INSTALL_DIR)
+  // 2) 宿主进程自己的参数：`…/app.asar/dsh`、profile 目录、host 的 entry 脚本都可能在里面。
+  for (const arg of Array.isArray(argv) ? argv : []) {
+    if (typeof arg === 'string' && /[\\/]/.test(arg)) push(arg)
+  }
+  // 3) Electron 打包目录：resourcesPath 只在 Electron 里有；exe 路径兜底同源。
+  push(resourcesPath)
+  for (const root of [...electronRoots(execPath), ...electronRoots(env.DSH_NODE_EXECUTABLE)]) push(root)
+
+  const seen = new Set()
+  const anchors = []
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue
+    seen.add(candidate)
+    // asar 内部路径在 Electron 里 existsSync 为 true；纯 node 下为 false → 直接跳过，
+    // 免得告警里出现一堆注定不可能的位置。
+    if (exists(candidate)) anchors.push(candidate)
+  }
+  return anchors
+}
+
+/** 错误信息压成一行、限长：告警要能读，不要夹一屏 node 的解析栈。 */
+const reasonOf = error => String(error?.message ?? error ?? '').split('\n')[0].slice(0, 240)
+
+/**
+ * 同步加载 schemastery：先按插件自身解析规则找，失败再按宿主安装目录兜底；全失败则显式告警。
+ *
+ * 返回值：`{ z, source, anchor?, attempts }`
+ * - `z`：schemastery 工厂；解析失败为 `undefined`。
+ * - `source`：`'plugin'`（插件自身路径）｜`'host'`（宿主目录兜底）｜`'unavailable'`（全失败）。
+ * - `anchor`：命中兜底时用的是哪个锚点。
+ * - `attempts`：每次尝试的 `{ anchor, reason }`，供日志/告警取证。
+ * @param {object} [options] 依赖注入点（测试用）。
+ * @param {string[]} [options.anchors] 兜底锚点；默认按 {@link schemaAnchors} 推导。
+ * @param {(spec: string) => (name: string) => unknown} [options.requireFor] 由锚点造 require 函数。
+ * @param {string} [options.primary] 主路径锚点（默认本模块 URL）。
+ * @param {string} [options.packageName] 包名（默认 {@link SCHEMA_PACKAGE}）。
+ * @param {(message: string) => void} [options.warn] 告警出口（默认 `console.warn`）。
+ */
+export function loadSchemastery({
+  anchors = schemaAnchors(),
+  requireFor = spec => createRequire(spec),
+  primary = import.meta.url,
+  packageName = SCHEMA_PACKAGE,
+  warn = message => console.warn(message),
+} = {}) {
+  const attempts = []
+  const attempt = (label, spec) => {
+    try {
+      const z = pickFactory(requireFor(spec)(packageName))
+      if (z === undefined) throw new Error('包已加载但取不到 schemastery 工厂（缺少 object() 工厂）')
+      return z
+    } catch (error) {
+      attempts.push({ anchor: label, reason: reasonOf(error) })
+      return undefined
+    }
+  }
+
+  // 主路径：插件自己按 Node 解析规则找（正常 npm/pnpm 安装下都能命中）。
+  const own = attempt('插件自身（createRequire(import.meta.url)）', primary)
+  if (own !== undefined) return { z: own, source: 'plugin', attempts }
+
+  // 兜底：宿主安装目录 / profile / asar —— schemastery 本来就住在那里。
+  for (const anchor of anchors) {
+    const hit = attempt(`宿主目录（${anchor}）`, anchorFile(anchor))
+    if (hit !== undefined) return { z: hit, source: 'host', anchor, attempts }
+  }
+
+  // 全失败：显式告警，绝不静默（静默 = 用户只看到「配置卡片没了」，连原因都查不到）。
+  const tried = attempts.map(item => item.anchor).join('、')
+  warn(
+    `[dsh-orchestrator] ${SCHEMA_MISSING_HINT}：${packageName} 解析失败（已尝试 ${attempts.length} 个位置：`
+    + `${tried || '无可用锚点'}）。首个原因：${attempts[0]?.reason ?? '未知'}`,
+  )
+  return { z: undefined, source: 'unavailable', attempts }
+}
+
+/** 模块加载期只解析一次（ESM 模块缓存：进程内不会重试，所以失败必须当次说清楚）。 */
+const loaded = loadSchemastery()
+
 /** schemastery 工厂；解析不到时为 undefined。 */
-const z = loadSchemastery()
+const z = loaded.z
 
 /** 是否拿到了 schemastery（false = 插件页上不会有配置卡片，但插件本身照常工作）。 */
 export const configSchemaAvailable = z !== undefined
+
+/**
+ * 解析诊断（只读快照）：给日志与测试取证用（模块加载期已解析完，进程内不会重试）。
+ * - `source`：`plugin`｜`host`｜`unavailable`；
+ * - `anchor`：走兜底时命中的宿主目录；
+ * - `attempts`：逐个位置的失败原因（`unavailable` 时就是告警里那份证据）。
+ */
+export const configSchemaDiagnostics = Object.freeze({
+  available: z !== undefined,
+  source: loaded.source,
+  anchor: loaded.anchor,
+  packageName: SCHEMA_PACKAGE,
+  attempts: Object.freeze(loaded.attempts.map(item => Object.freeze({ ...item }))),
+})
 
 /**
  * 按字段规格造一个 schemastery 节点。
@@ -87,7 +236,7 @@ const nodeFor = field => {
  *
  * 注意：这是**投影用** schema，不是运行时归一化。运行时值仍由 `loadConfig()` 决定。
  * 拿不到 schemastery 时为 `undefined`：Cordis 的 `resolveConfig()` 见 `runtime.Config` 为空
- * 会原样跳过校验，插件照常工作（只是插件页上没有配置卡片）。
+ * 会原样跳过校验，插件照常工作（只是插件页上没有配置卡片；此时模块加载期已 warn 过）。
  */
 export const Config = z === undefined
   ? undefined

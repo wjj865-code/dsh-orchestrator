@@ -1,0 +1,127 @@
+[
+  {
+    "step": {
+      "type": "goto",
+      "url": "http://127.0.0.1:5611/?token=<redacted>"
+    },
+    "result": "navigated"
+  },
+  {
+    "step": {
+      "type": "wait",
+      "ms": 7000
+    },
+    "result": "waited"
+  },
+  {
+    "step": {
+      "type": "click",
+      "text": "继续"
+    },
+    "result": {
+      "ok": true,
+      "clicked": {
+        "tag": "BUTTON",
+        "text": "继续",
+        "before": 377
+      }
+    }
+  },
+  {
+    "step": {
+      "type": "wait",
+      "ms": 1000
+    },
+    "result": "waited"
+  },
+  {
+    "step": {
+      "type": "click",
+      "text": "插件"
+    },
+    "result": {
+      "ok": true,
+      "clicked": {
+        "tag": "BUTTON",
+        "text": "插件",
+        "before": 185
+      }
+    }
+  },
+  {
+    "step": {
+      "type": "wait",
+      "ms": 3000
+    },
+    "result": "waited"
+  },
+  {
+    "step": {
+      "type": "click",
+      "text": "任务编排"
+    },
+    "result": {
+      "ok": true,
+      "clicked": {
+        "tag": "BUTTON",
+        "text": "任务编排",
+        "before": 580
+      }
+    }
+  },
+  {
+    "step": {
+      "type": "wait",
+      "ms": 3500
+    },
+    "result": "waited"
+  },
+  {
+    "step": {
+      "type": "eval",
+      "expr": "(() => { const el = document.querySelector('[data-orchestrator-config]'); if(!el) return 'NO CARD'; return JSON.stringify({ card: true, groups: el.querySelectorAll('.orch-cfg-group').length, rows: el.querySelectorAll('.orch-cfg-row').length, text: el.innerText.slice(0,300) }); })()"
+    },
+    "result": {
+      "value": "{\"card\":true,\"groups\":7,\"rows\":29,\"text\":\"配置\\n\\n保存在当前 profile 的 cordis.patch.yml；运行中的插件不热重载，需重载插件或重启 DSH 后生效（台账不受影响）。\\n\\n派发与队列\\n5\\n子会话 provider\\n本地 fresh 子会话的 provider 名\\n子会话预设\\n只认小写字母/数字/连字符；非法值回落 dsh-orchestrator-worker\\n队列安全阀\\npending + waiting_dep 的上限\\n重启后自动恢复排队任务\\n陈旧判定（分钟）\\n多久无动静标陈旧 / stall 提醒间隔\\n看门狗与陈旧判定\\n3\\n空闲看门狗\\n只告警，不杀任务\\n巡检间隔（分钟）\\n空闲阈值（分钟）\\n同一段空闲每任务只报\"}"
+    }
+  },
+  {
+    "step": {
+      "type": "eval",
+      "expr": "(async () => { try { const r = await fetch('/api/settings/describe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'settings/describe', payload: { args: {} } }) }); const j = await r.json(); const ns = j?.result?.namespaces ?? j?.namespaces ?? null; return JSON.stringify({ status: r.status, keys: ns ? Object.keys(ns) : null, hasOrchestrator: ns ? Object.keys(ns).includes('orchestrator') : null, raw: JSON.stringify(j).slice(0, 240) }); } catch (error) { return 'ERR ' + String(error); } })()"
+    },
+    "result": {
+      "value": "{\"status\":200,\"keys\":null,\"hasOrchestrator\":null,\"raw\":\"{\\\"type\\\":\\\"server-response\\\",\\\"rpcId\\\":\\\"r1\\\",\\\"result\\\":{\\\"ok\\\":true,\\\"value\\\":{\\\"writable\\\":true,\\\"hasDocument\\\":true,\\\"namespaces\\\":[{\\\"ns\\\":\\\"session-log-deepseek\\\",\\\"autoGenerate\\\":true,\\\"schema\\\":{\\\"uid\\\":10531,\\\"refs\\\":{\\\"10530\\\":{\\\"type\\\":\\\"boolean\\\",\\\"meta\\\":{\\\"default\\\":\"}"
+    }
+  },
+  {
+    "step": {
+      "type": "eval",
+      "expr": "(() => { const el = document.querySelector('[data-orchestrator-config]'); if(el) el.scrollIntoView({block:'start'}); return el ? 'scrolled' : 'no card'; })()"
+    },
+    "result": {
+      "value": "scrolled"
+    }
+  },
+  {
+    "step": {
+      "type": "wait",
+      "ms": 800
+    },
+    "result": "waited"
+  },
+  {
+    "step": {
+      "type": "shot",
+      "file": "e2e-card.png"
+    },
+    "result": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-t-e471168a\\out\\e2e-card.png"
+  },
+  {
+    "step": {
+      "type": "shot",
+      "file": "zz-final.png"
+    },
+    "result": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-t-e471168a\\out\\zz-final.png"
+  }
+]

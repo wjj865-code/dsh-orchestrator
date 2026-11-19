@@ -1,0 +1,32 @@
+[
+  {
+    "step": {
+      "type": "goto",
+      "url": "http://127.0.0.1:5611/?token=<redacted>"
+    },
+    "result": "navigated"
+  },
+  {
+    "step": {
+      "type": "wait",
+      "ms": 6000
+    },
+    "result": "waited"
+  },
+  {
+    "step": {
+      "type": "eval",
+      "expr": "(async () => { const r = await fetch('/api/settings/describe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId: 'r1', method: 'settings/describe', payload: { args: {} } }) }); const j = await r.json(); const list = j?.result?.value?.namespaces ?? []; const names = list.map(x => x.ns ?? x); return JSON.stringify({ status: r.status, count: names.length, hasOrchestrator: names.includes('orchestrator') }); })()"
+    },
+    "result": {
+      "value": "{\"status\":200,\"count\":23,\"hasOrchestrator\":true}"
+    }
+  },
+  {
+    "step": {
+      "type": "shot",
+      "file": "zz-final.png"
+    },
+    "result": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-t-e471168a\\out-describe\\zz-final.png"
+  }
+]

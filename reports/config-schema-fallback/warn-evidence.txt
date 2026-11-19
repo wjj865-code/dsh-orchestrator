@@ -1,0 +1,10 @@
+﻿node : [dsh-orchestrator] 配置卡片将不显示（插件照常工作，任务面板与工具不受影响）：@deepseek-ai/schemastery 解析失败（已尝试 3 个位置：插件自身（createRequire(impor
+t.meta.url)）、宿主目录（C:\nvm4w\nodejs\node.exe）、宿主目录（C:\Users\72489\AppData\Local\Temp\orch-e2e-t-e471168a\sim-missing\prob
+e.mjs））。首个原因：Cannot find module '@deepseek-ai/schemastery'
+所在位置 行:1 字符: 525
++ ... fig-schema.js")).AbsoluteUri; node "$sim\probe.mjs" $url 2>&1 | Out-F ...
++                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([dsh-orchestrat...ai/schemastery':String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Config=undefined
