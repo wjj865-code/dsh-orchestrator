@@ -9,7 +9,11 @@ import { defineConfig } from 'vite'
 // - 平台按 `exports["./client"]` 的**文件内容**算 rev，所以产物文件名固定、不带 hash。
 //
 // 因此：lib mode + iife + `entryFileNames: 'client.js'`，`name` 必填（rollup iife 要求），
-// 顶层不许出现 import/export。minify 先关：体积不是当前约束，可读性对排查更有价值。
+// 顶层不许出现 import/export。
+//
+// P2-5（S9′）：体积是交付预算（`dist/client.js` ≤ 95 KiB，闸门 scripts/check-client-size.mjs），
+// 默认开 esbuild minify；sourcemap 保留，线上排查按 map 还原。
+// 需要读可读产物时：`CLIENT_MINIFY=0 pnpm run build`（只影响本次构建，不入库）。
 export default defineConfig({
   // S0（JSX 迁移）：源码继续用 `.js` 后缀，靠 esbuild 的 loader 覆盖把 `.js` 按 JSX 解析。
   // - vite 默认 esbuild 插件 include 只含 jsx/tsx，且 exclude 默认排除 `.js`，两个都要显式改；
@@ -27,7 +31,7 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: true,
-    minify: false,
+    minify: process.env.CLIENT_MINIFY === '0' ? false : 'esbuild',
     // 平台是 Chromium（Electron / Web GUI），按 ES2022 输出即可；不降到更老语法，避免产物变形。
     target: 'es2022',
     lib: {

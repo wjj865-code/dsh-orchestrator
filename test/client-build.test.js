@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { CLIENT_SIZE_LIMIT, collectClientSizeProblems, formatSize } from '../scripts/check-client-size.mjs'
 import { canSpawnWithPipes, PIPE_SPAWN_SKIP_REASON } from './helpers.js'
 
 // P7 构建契约：只断言「vite 产出的 dist/client.js 符合平台契约」。
@@ -42,10 +43,32 @@ const loadArtifact = () => {
 test('构建脚本：vite 是 pin 住的 devDependency，build/pretest/check:client 都指向产物', () => {
   assert.match(pkg.devDependencies?.vite ?? '', /^\d+\.\d+\.\d+$/, 'vite 必须 pin 精确版本（不用 ^ / ~），避免产物漂移')
   assert.equal(pkg.scripts.build, 'vite build --config vite.client.config.mjs')
-  // pretest 先构建（否则契约测试读的是旧产物），再跑文档预算/一致性（P1-D：文档也算交付物）。
-  assert.equal(pkg.scripts.pretest, 'pnpm run build && pnpm run check:docs', 'pnpm test 前必须自动构建 + 检查文档')
+  // pretest 先构建（否则契约测试读的是旧产物），再过体积闸门（P2-5：dist ≤ 95 KiB），最后跑文档预算。
+  assert.equal(pkg.scripts.pretest, 'pnpm run build && node scripts/check-client-size.mjs && pnpm run check:docs',
+    'pnpm test 前必须构建 + 体积闸门 + 检查文档')
   assert.equal(pkg.scripts['check:docs'], 'node scripts/check-docs.mjs')
   assert.equal(pkg.scripts['check:client'], 'node --check dist/client.js')
+  assert.equal(pkg.scripts['check:client-size'], 'node scripts/check-client-size.mjs')
+  // 发布前把四个闸门都跑一遍（体积闸门也在其中，不能只靠 pretest）。
+  assert.match(pkg.scripts.prepublishOnly, /check:client-size/)
+})
+
+test('P2-5 体积预算：dist/client.js ≤ 95 KiB，闸门脚本可单独执行且给可读结论', () => {
+  // 机器可判定：95 KiB 预算写死在脚本里，产物超了 CI 直接红（不是「看着差不多」）。
+  assert.equal(CLIENT_SIZE_LIMIT, 95 * 1024)
+  const size = statSync(distPath).size
+  assert.ok(size <= CLIENT_SIZE_LIMIT, `dist/client.js ${formatSize(size)} 超出预算 ${formatSize(CLIENT_SIZE_LIMIT)}`)
+  // 纯函数口径：预算内空数组、超预算给两条（超了多少 + 怎么回去）、产物缺失也算问题。
+  assert.deepEqual(Array.from(collectClientSizeProblems({ bytes: CLIENT_SIZE_LIMIT })), [])
+  const over = collectClientSizeProblems({ bytes: CLIENT_SIZE_LIMIT + 1 })
+  assert.equal(over.length, 2)
+  assert.match(over[0], /超出预算/)
+  assert.match(over[1], /删重复渲染/)
+  assert.match(collectClientSizeProblems({ bytes: 0 })[0], /先跑/)
+  // 构建配置真的开了 minify（默认 esbuild），且留了 CLIENT_MINIFY=0 的可读产物旁路。
+  const viteConfig = readFileSync(new URL('../vite.client.config.mjs', import.meta.url), 'utf8')
+  assert.match(viteConfig, /minify: process\.env\.CLIENT_MINIFY === '0' \? false : 'esbuild'/)
+  assert.match(viteConfig, /sourcemap: true/, 'minify 后必须保留 sourcemap（线上排查靠它）')
 })
 
 test('包管理器：固定 pnpm 版本，提交 pnpm 锁文件且不再有 package-lock.json', () => {
@@ -114,13 +137,14 @@ test('产物工厂形状：factory 返回 { inject, apply }，inject 覆盖三�
 })
 
 test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dist/client.js', () => {
-  // 空壳产物 341 B；搬完源码后接近 100 KB。这条阈值只是「别把 UI 弄丢」的粗护栏。
-  assert.ok(statSync(distPath).size > 50_000, `产物只有 ${statSync(distPath).size} B，像是空壳`)
+  // 空壳产物 341 B；P2-5 开 minify 前 129.9 KB，之后 77.6 KB。这条阈值只是「别把 UI 弄丢」的粗护栏，
+  // 精确预算由上面的 check-client-size（95 KiB）守；minify 会压掉空白但不改字符串字面量。
+  assert.ok(statSync(distPath).size > 35_000, `产物只有 ${statSync(distPath).size} B，像是空壳`)
   for (const marker of ['orch-shell', 'orch-drawer', 'orch-skeleton', 'createMainViewGate', 'open-main']) {
     assert.ok(artifact.includes(marker), `产物缺少 UI 标记 ${marker}`)
   }
-  // CSS 走 ?inline 内联：构建后整张表以字符串形式出现在产物里。
-  assert.ok(artifact.includes('.orch-shell {'), '样式表未内联进产物（?inline 失效？）')
+  // CSS 走 ?inline 内联：构建后整张表以字符串形式出现在产物里（minify 会把 `.orch-shell {` 压成 `.orch-shell{`）。
+  assert.ok(artifact.includes('.orch-shell{') || artifact.includes('.orch-shell {'), '样式表未内联进产物（?inline 失效？）')
   assert.ok(artifact.includes('@keyframes orch-shimmer'))
   // __test 出口保留（T7.2 验收点：单测经它验纯逻辑与闸门）。
   const { loaded } = loadArtifact()

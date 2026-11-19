@@ -105,10 +105,16 @@ const flush = async () => { await new Promise(resolve => setImmediate(resolve)) 
 // 从内联样式表里切出某个选择器的规则块（到第一个 `}` 为止）：断言 .orch-entry-* 这类
 // 单层规则时够用，也避免每条用例各写一份同样的切片逻辑。
 const cssBlock = (css, selector) => {
-  const index = css.indexOf(selector)
-  assert.ok(index !== -1, `样式表缺少 ${selector}`)
+  // 产物里的样式表经过 esbuild minify：`.orch-x {` 会变成 `.orch-x{`。两种形态都认。
+  const variants = [selector, selector.replace(/\s*\{$/, '{')]
+  const index = variants.map(candidate => css.indexOf(candidate)).find(at => at !== -1)
+  assert.ok(index !== undefined, `样式表缺少 ${selector}`)
   const end = css.indexOf('}', index)
-  return css.slice(index, end === -1 ? css.length : end)
+  const block = css.slice(index, end === -1 ? css.length : end)
+  // 断言看的是声明值、不是排版：minify 后的 `gap:6px` 还原成 `gap: 6px` 再比（规则块本身不动）。
+  const brace = block.indexOf('{')
+  if (brace === -1) return block
+  return `${block.slice(0, brace + 1)}${block.slice(brace + 1).replace(/;\s*/g, '; ').replace(/:\s*/g, ': ')}`
 }
 
 // 回归：0.3.0 那次 npm 包名改成 @wjj865-code/dsh-orchestrator 后，client.js 仍注册
@@ -165,7 +171,7 @@ test('JSX 迁移：构建链用经典运行时 h，产物不得出现 React.crea
     /React\.createElement/,
     'dist/client.js 出现 React.createElement：JSX 运行时配置被改回去了（应走 jsxFactory h）',
   )
-  assert.match(artifact, /h\("span", \{ className: "orch-badge"/, 'ui.js 的 Badge 应编译成 h(...) 调用')
+  assert.match(artifact, /"span",\s*\{\s*className:\s*"orch-badge"/, 'ui.js 的 Badge 应编译成 h(...) 调用（工厂名会被 minify 压成单字母）')
 })
 
 test('apply 不再注册侧栏底部入口；注册任务面板、启动器面板、侧栏入口与会话回复 chip', () => {
@@ -245,7 +251,7 @@ test('面板提供「打开主会话」并调用 open-main', () => {
   assert.match(source, /只读/)
   assert.match(source, /task\.artifacts/)
   assert.match(source, /toggleArtifacts/)
-  assert.match(source, /产物 \$\{artifacts\.length\}/)
+  assert.match(source, /产物 \$\{artifactCount\}/)
   assert.match(source, /（未找到）/)
   assert.match(source, /openingMain/)
   assert.match(source, /打开中…/)
@@ -1121,6 +1127,183 @@ test('P2-1 验收区块：抽屉显示检查清单、失败输出尾部、通过
   assert.match(source, /acceptance: '验收'/)
 })
 
+// ---------------------------------------------------------------------------
+// P2-5（S9′）：新增两个只读视图。
+// 数据全部由服务端下发（snapshot.teamBoard / tasks[].handoff / tasks[].acceptance），
+// 客户端只负责渲染：不自己判断官方板可不可操作，也不自己算验收过没过。
+// ---------------------------------------------------------------------------
+// 与 flattenText 同义，但按 React 语义把 children 一起传给函数组件：Badge/Chip/DotRow 的文案才读得到。
+const textAll = node => {
+  if (node === null || node === undefined) return ''
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textAll).join('')
+  if (typeof node !== 'object') return ''
+  if (typeof node.type === 'function') return textAll(node.type({ ...(node.props ?? {}), children: node.children }))
+  return textAll(node.children)
+}
+
+const panelOf = () => {
+  const harness = load()
+  harness.loaded.apply(harness.ctx)
+  const panel = harness.registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  return { ...harness, panel }
+}
+
+const boardRowOf = (id, extra = {}) => ({
+  id, revision: 3, subject: `官方任务 ${id}`, status: 'in_progress', statusLabel: '进行中',
+  owner: 'lead', blockedBy: [], writeScopes: [], ready: true, ...extra,
+})
+
+test('P2-5 官方 Team（只读）分区：enabled 才渲染、行不可操作、disabled 隐藏、degraded 只提示', () => {
+  const { hooks, panel, resetHooks } = panelOf()
+  const render = (tasks = [], teamBoard = undefined) => {
+    resetHooks()
+    const snapshot = snapshotOf(tasks)
+    if (teamBoard !== undefined) snapshot.teamBoard = teamBoard
+    hooks.slots[0] = snapshot
+    return panel.component({ openSession: () => {} })
+  }
+
+  // enabled + 两行：分区标题、条数、行内容（状态/负责人/阻塞）都在，且行内**没有按钮**。
+  const tree = render([], {
+    enabled: true,
+    rows: [
+      boardRowOf('o-1', { status: 'in_progress', statusLabel: '进行中', blockedBy: ['o-9'], owner: 'alice' }),
+      boardRowOf('o-2', { status: 'completed', statusLabel: '已完成', owner: null }),
+    ],
+    degraded: null,
+  })
+  assert.match(textAll(tree), /官方 Team（只读）/)
+  assert.match(textAll(tree), /2 条 · 只读/)
+  assert.match(textAll(tree), /官方任务 o-1/)
+  assert.match(textAll(tree), /进行中/)
+  assert.match(textAll(tree), /负责人 alice/)
+  assert.match(textAll(tree), /等 1/)
+  assert.match(textAll(tree), /rev 3/)
+  assert.match(textAll(tree), /官方板只读：任务由官方 Team 的成员认领与完成/)
+  const sections = collect(tree, node => node.props?.['data-orch-board'] === 'true')
+  assert.equal(sections.length, 1, '官方板分区应只有一个')
+  const buttons = collect(sections[0], node => node.type === 'button')
+  assert.equal(buttons.length, 1, '官方板分区里只有折叠标题一个按钮，行内不可操作')
+  assert.equal(buttons[0].props.className, 'orch-section-head')
+  // data 属性只给折叠态：没有 onClick 的“行为行”。
+  assert.equal(collect(sections[0], node => node.props?.['data-board-id'] !== undefined).length, 0)
+
+  // 折叠：复用 collapsedSections（key='board'），收起只是 CSS 高度为 0，行仍在 DOM。
+  resetHooks()
+  hooks.slots[0] = { ...snapshotOf([]), teamBoard: { enabled: true, rows: [boardRowOf('o-3')], degraded: null } }
+  hooks.slots[14] = ['board']
+  const collapsed = panel.component({ openSession: () => {} })
+  const collapsedSection = collect(collapsed, node => node.props?.['data-orch-board'] === 'true')[0]
+  assert.equal(collapsedSection.props['data-collapsed'], 'true')
+  assert.match(textAll(collapsed), /官方任务 o-3/)
+
+  // enabled:false → 整区不渲染（官方 Team 没开，面板不该冒出一块空板）。
+  const disabled = render([], { enabled: false, rows: [], degraded: null })
+  assert.doesNotMatch(textAll(disabled), /官方 Team（只读）/)
+  // 服务在但读不到 → 一条只读提示，不假装没有，也不显示表格。
+  const degraded = render([], { enabled: false, rows: [], degraded: { code: 'TEAM_BOARD_READ_FAILED', message: '读官方 Team 板失败：boom' } })
+  assert.match(textAll(degraded), /官方 Team 板暂时读不到：读官方 Team 板失败：boom/)
+  assert.doesNotMatch(textAll(degraded), /官方 Team（只读）/)
+  // 首帧（snapshot=null）没有分区，也不抛。
+  resetHooks()
+  hooks.slots[0] = null
+  assert.doesNotMatch(textAll(panel.component({ openSession: () => {} })), /官方 Team（只读）/)
+  // 源码层：只读投影字段，前端没有任何写官方板的调用。
+  assert.match(source, /snapshot\.teamBoard/)
+  assert.doesNotMatch(source, /agentTeams|updateTask|action: 'complete'/)
+})
+
+test('P2-5 验收小标：只在有 acceptance 时出现，通过/未通过对色而不是自己算', () => {
+  const { hooks, panel, resetHooks } = panelOf()
+  const render = tasks => {
+    resetHooks()
+    hooks.slots[0] = snapshotOf(tasks)
+    return panel.component({ openSession: () => {} })
+  }
+  const passed = render([taskRow('t-acc', 'done', { acceptance: { ok: true, total: 2, passed: 2, skipped: 0, failed: 0, ranAt: 1 } })])
+  assert.match(textAll(passed), /验收 2\/2/)
+  const titlesOf = tree => collect(tree, node => node.props?.title !== undefined).map(node => String(node.props.title))
+  assert.ok(titlesOf(passed).some(title => title.includes('交付前机器验收：2/2 通过')), '通过时应带「2/2 通过」的悬浮提示')
+
+  const failed = render([taskRow('t-bad', 'done', { acceptance: { ok: false, total: 3, passed: 1, skipped: 0, failed: 2, ranAt: 1 } })])
+  assert.match(textAll(failed), /验收 1\/3/)
+  assert.ok(titlesOf(failed).some(title => title.includes('不通过不交付')), '未通过时要说明「不通过不交付」')
+
+  // 没配检查（字段缺失）→ 卡片上零「验收」字样，不占位。
+  const none = render([taskRow('t-none', 'running')])
+  assert.doesNotMatch(textAll(none), /验收 /)
+  assert.match(source, /task\.acceptance/)
+})
+
+test('P2-5 交接：卡片写清谁确认；抽屉交接区块给交付/确认/轮次/官方板关联', () => {
+  const { hooks, panel, resetHooks } = panelOf()
+  const now = Date.now()
+  const handoff = (extra = {}) => ({
+    contract: 1, taskId: 't-h', sessionId: 'c-1', title: 't-h',
+    deliveredAt: now - 180_000, acceptedAt: now - 90_000, acceptedBy: 'coordinator',
+    rounds: { turns: 2, followups: 1 },
+    evidence: { acceptance: { ok: true, total: 1, passed: 1, failed: 0, skipped: 0, ranAt: now - 240_000 }, artifacts: [{ path: 'reports/x.md' }] },
+    status: 'done', closeReason: 'coordinator', ...extra,
+  })
+  // 卡片：已确认就带确认方式小标（未确认时靠状态徽标「待确认」，不重复）。
+  resetHooks()
+  hooks.slots[0] = snapshotOf([taskRow('t-h', 'done', {
+    handoff: { contract: 1, deliveredAt: now - 180_000, acceptedAt: now - 90_000, acceptedBy: 'coordinator', acceptedByLabel: '协调者确认', acceptanceOk: true },
+  })])
+  const cardTree = panel.component({ openSession: () => {} })
+  assert.match(textAll(cardTree), /协调者确认/)
+  assert.ok(
+    collect(cardTree, node => typeof node.props?.title === 'string')
+      .some(node => String(node.props.title).includes('交接已确认：协调者确认')),
+    '已确认的交接小标应把「谁确认」写进悬浮提示',
+  )
+
+  // 抽屉：完整 handoff + 官方板关联视图（只读下发的字段，前端不判断状态）。
+  const detailOf = taskHandoff => ({
+    ok: true,
+    task: {
+      id: 't-h', title: 't-h', status: 'done', goal: 'g', targetDir: null, target: null, readOnly: false,
+      planFirst: false, planState: 'none', worktreeState: 'none', group: null, priority: 0, dependsOn: [],
+      writeScopes: [], question: null, options: [], error: null, createdAt: now - 120_000, updatedAt: now,
+      artifacts: [], brief: {}, goalState: null, lastMessage: null, acceptance: null,
+      handoff: taskHandoff,
+      teamTask: { id: 'o-1', revision: 4, enabled: true, row: { statusLabel: '进行中' }, degraded: null },
+      canFollowup: false, canClose: false, canDelete: true,
+    },
+    dependencies: [], dependents: [], messages: [],
+  })
+  const renderDrawer = (taskHandoff, teamTask) => {
+    resetHooks()
+    const snapshot = snapshotOf([])
+    hooks.slots[0] = snapshot
+    const detail = detailOf(taskHandoff)
+    if (teamTask !== undefined) detail.task.teamTask = teamTask
+    hooks.slots[10] = detail
+    hooks.slots[13] = 't-h'
+    return textAll(panel.component({ openSession: () => {} }))
+  }
+  const confirmed = renderDrawer(handoff())
+  assert.match(confirmed, /交接/)
+  assert.match(confirmed, /协调者确认（1 分钟前）/)
+  assert.match(confirmed, /派发 2 次｜追问 1 次/)
+  assert.match(confirmed, /验收.*1\/1 通过/)
+  assert.match(confirmed, /o-1（revision 4｜进行中）/)
+
+  // 待确认：acceptedAt/acceptedBy 都是 null → 明确写「未确认」，不假装已确认。
+  const pending = renderDrawer(handoff({ acceptedAt: null, acceptedBy: null, status: 'delivered', closeReason: null }))
+  assert.match(pending, /未确认（等你或协调者确认，或超时自动完成）/)
+  assert.match(pending, /待确认/)
+  // 官方板读不到：只给降级原因，不改本地交接结论。
+  const degraded = renderDrawer(handoff(), { id: 'o-1', revision: 4, enabled: false, row: null, degraded: { code: 'TEAM_BOARD_UNAVAILABLE', message: '宿主没有 agentTeams 服务' } })
+  assert.match(degraded, /官方 Team 板读取降级：宿主没有 agentTeams 服务/)
+  // 没交付过：交接口显示空态，不编一个空壳契约。
+  const none = renderDrawer(null)
+  assert.match(none, /还没交付，没有交接记录/)
+  assert.match(source, /const ACCEPTED_BY_LABEL/)
+})
+
 // F4 回归（0.13.0 冒烟发现）：面板「隔离」小标未接线 —— views.js 从 createViews 的参数里
 // 解构 WORKTREE_STATE_LABEL / WORKTREE_SOURCE_LABEL，client.js 却没传，值恒为 undefined。
 // 只要台账里有一条 worktree_state != 'none' 的任务，renderTask 就抛 TypeError，整个 main 槽位
@@ -1832,16 +2015,18 @@ test('chip 只走官方 turnTail 槽位：不注入 DOM、不抢动作行/时钟
   assert.doesNotMatch(source, /conversation\.chat\.assistant-actions/)
 
   const { STYLE_TEXT } = load().loaded.__test
-  assert.match(STYLE_TEXT, /\.orch-chips \{[\s\S]*?display: flex/)
-  assert.match(STYLE_TEXT, /\.orch-taskchip-spin \{\s*animation: orch-rotate 1s linear infinite/)
-  assert.match(STYLE_TEXT, /\.orch-taskchip-dashed \{ stroke-dasharray: 3 2\.4; \}/)
-  assert.match(STYLE_TEXT, /\.orch-taskchip\[data-state='confirming'\] \{\s*opacity: 0\.72;\s*animation: orch-chip-pulse/)
-  assert.match(STYLE_TEXT, /\.orch-taskchip-title \{[\s\S]*?text-overflow: ellipsis/)
+  // P2-5 起产物里的样式表走 esbuild minify（`.x {` → `.x{`、`a: b` → `a:b`、属性值引号被去掉），
+  // 断言按空白可选、引号可选写。
+  assert.match(STYLE_TEXT, /\.orch-chips\s*\{[\s\S]*?display:\s*flex/)
+  assert.match(STYLE_TEXT, /\.orch-taskchip-spin\s*\{\s*animation:\s*orch-rotate 1s linear infinite/)
+  assert.match(STYLE_TEXT, /\.orch-taskchip-dashed\s*\{\s*stroke-dasharray:\s*3 2\.4\s*;?\s*\}/)
+  assert.match(STYLE_TEXT, /\.orch-taskchip\[data-state=['"]?confirming['"]?\]\s*\{\s*opacity:\s*0?\.72\s*;\s*animation:\s*orch-chip-pulse/)
+  assert.match(STYLE_TEXT, /\.orch-taskchip-title\s*\{[\s\S]*?text-overflow:\s*ellipsis/)
   // 能跳会话的 chip 是 pointer；没有子会话的那枚不给「点了会跳走」的手感（降级文案在 tooltip 里）。
-  assert.match(STYLE_TEXT, /\.orch-taskchip\[data-orch-chip-open='detail'\] \{\s*cursor: default;/)
+  assert.match(STYLE_TEXT, /\.orch-taskchip\[data-orch-chip-open=['"]?detail['"]?\]\s*\{\s*cursor:\s*default\s*;?/)
   // 宿主的 reduced-motion 规则只作用在 .orch-shell 内，chip 在会话流里，必须自带一份。
   assert.match(
     STYLE_TEXT,
-    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.orch-taskchip-spin \{ animation: none; \}[\s\S]*?\.orch-taskchip\[data-state='confirming'\] \{ animation: none; opacity: 0\.6; \}/,
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.orch-taskchip-spin\s*\{\s*animation:\s*none\s*;?\s*\}[\s\S]*?\.orch-taskchip\[data-state=['"]?confirming['"]?\]\s*\{\s*animation:\s*none\s*;\s*opacity:\s*0?\.6\s*;?\s*\}/,
   )
 })

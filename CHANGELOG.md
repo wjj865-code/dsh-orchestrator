@@ -68,6 +68,47 @@ mainRotation 默认 off）；`check:client` / `check:docs`（配置表 35 键）
 
 ## 未发布
 
+**P2-5：面板 S9′（dist ≤95 KB + 交接/官方板只读视图）**（`refactor: P2-5 面板 S9′（dist ≤95KB + 交接/官方板只读视图）`，单 commit，未 bump / 未 tag）
+
+面板产物从 **129.9 KB 压到 77.6 KB（−52.3 KB，−40%）**，并把 P2-3 的交接数据、P2-4 的官方 Team 板快照真正渲染出来。
+**功能不减少**：三段式布局、抽屉八区块、产物库、二次确认、骨架/空态/错误态全在；只收敛重复渲染与样式排版。
+
+### 能力变化
+
+1. **构建**：`vite.client.config.mjs` 默认开 esbuild minify（`sourcemap: true` 保留）；
+   `CLIENT_MINIFY=0 pnpm run build` 可出可读产物排查。产物仍入库（平台按 exports 原样 serve）。
+2. **体积闸门**：新增 `scripts/check-client-size.mjs`（`dist/client.js` ≤ **95 KiB**，超了退出 1 并说超多少、
+   怎么回去），挂进 `pretest` 与 `prepublishOnly`，另有 `pnpm run check:client-size`。体积预算从「约定」变成机器可判定。
+3. **官方 Team（只读）分区**：消费 `snapshot.teamBoard`（P2-4）。`enabled:true` 时在任务列表上方出现可折叠分区，
+   逐行显示 `subject / statusLabel / owner / blockedBy / revision`，**行内没有按钮**（认领与完成只能在官方 Team 里做）；
+   `enabled:false` 整区不渲染；服务在但读不到时只给一条「官方 Team 板暂时读不到：<原因>」提示。
+4. **交接区块**：抽屉新增「交接」区块，读 `detail.task.handoff`（P2-3）——契约版本、交付/确认时间、
+   **谁确认**（协调者/面板/超时）、派发与追问次数、验收结论、官方板关联（id/revision/当前状态）；没交付过显示空态。
+   卡片上已确认的交接多一枚「谁确认」小标（悬浮提示带时间），待确认仍由状态徽标表达，不重复。
+5. **验收小标**：任务卡显示 `验收 2/2`（数据来自 `snapshot.tasks[].acceptance`，P2-1）；没配检查就没有这枚小标。
+
+### 代码（收敛，不改行为）
+
+- `client/src/views.js`：把「停止 / 确认交付 / 删除」三条二次确认条合成 `ConfirmBar`，圆点行合一成 `DotRow`，
+  键值对网格合一成 `KvRows`，状态徽标与标签兜底合一成 `statusBadge` / `labelOf` / `toneOf`
+  （替掉各处 `X_LABEL[v] || v || '未知'`），卡片小标从十来个三元嵌套改成清单；14 处内联
+  `style={{ display:'flex', flexDirection:'column' }}` 换成 `.orch-stack*` 档位类。
+- `client/src/styles.css`：一条规则一行（**692 条声明的值逐字不变**，脚本比对过），合并重复规则
+  （`.orch-drawer-content`）与两处 `prefers-reduced-motion` 断点，新增 `.orch-stack*`、`.orch-chip--good`、
+  `.orch-board-subject`。
+- 净变化：`client/src` **3,589 → 3,082 行（−507）**，其中 `styles.css` 838 → 255、`views.js` 1,525 → 1,601
+  （新增两个只读视图 ≈ +150 行，其余为收敛）。
+
+### 测试
+
+`test/client-build.test.js`：pretest 链含体积闸门、`CLIENT_SIZE_LIMIT`/`collectClientSizeProblems` 纯函数口径、
+构建配置真的开了 minify 且保留 sourcemap、空壳护栏阈值 50 KB → 35 KB（minify 后）、CSS 内联标记按 minify 形态断言；
+`test/client.test.js`：新增官方板分区（enabled/disabled/degraded/折叠/行内零按钮）、验收小标（通过/未通过/无数据）、
+交接（卡片小标 + 抽屉区块 + 待确认 + 官方板降级 + 无交接空态）三组用例，并把既有样式断言改成空白/引号可选
+（`.x{`、`a:b`、`[data-state=confirming]`）——断言仍是同一批声明，只是不再依赖排版。
+
+> 同批「未发布」里还有 P2-1（检查）、P2-3（交接契约）、P2-4（官方板互通），细节见 `docs/ARCHITECTURE.md`。
+
 **P2-4：官方 Team 板只读互通 + 确认反写（CAS）**（`feat: P2-4 官方 Team 板只读 + 确认反写（CAS）`，单 commit，未 bump / 未 tag）
 
 把官方 Team 任务板**只读**接进插件视图；插件任务若显式关联官方板任务（`task_create.teamTaskId`），

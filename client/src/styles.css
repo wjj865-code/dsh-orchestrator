@@ -1,172 +1,50 @@
-/* dsh-orchestrator 面板样式表（P7 / T7.2 从 client.js 的 STYLE_TEXT 迁入，内容逐字不变）。
+﻿/* dsh-orchestrator 面板样式表（P7 / T7.2 从 client.js 的 STYLE_TEXT 迁入）。
  * 只消费宿主设计平台 token（--dsw-* / --ds-*），深浅色由宿主切换 body[data-ds-dark-theme] 时自动跟随。
  * 平台不 serve .css（assets 路由白名单只有图片），所以构建时用 ?inline 把整张表内联回 JS，
- * 运行时由 ensureStyles() 注入一个 <style id="dsh-orchestrator-styles">。 */
-.orch-shell {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  background: var(--dsw-alias-bg-base, #fff);
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-  font-family: var(--dsw-font-family, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif);
-  font-size: 13px;
-  line-height: 1.5;
-}
+ * 运行时由 ensureStyles() 注入一个 <style id="dsh-orchestrator-styles">。
+ *
+ * P2-5（S9′）样式收敛：一条规则一行（声明值逐字不变，只合并排版），重复的断点/规则合并，
+ * 内联的 flex 列换成 .orch-stack* 档位；新增官方板只读分区与验收小标所需的 3 组类。 */
+.orch-shell { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, #1f1f1f); font-family: var(--dsw-font-family, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif); font-size: 13px; line-height: 1.5; }
 
 /* ---------- 第一段：顶部命令栏 ---------- */
-.orch-topbar {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-  background: var(--dsw-alias-bg-layer-1, #fff);
-}
+.orch-topbar { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); background: var(--dsw-alias-bg-layer-1, #fff); }
 .orch-brand { display: flex; align-items: center; gap: 8px; min-width: 0; margin-right: auto; }
-.orch-brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 auto;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: var(--dsw-specific-bubble, #eef2ff);
-  color: var(--dsw-alias-state-business-primary, #4d6bfe);
-}
+.orch-brand-mark { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: 0 0 auto; border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-specific-bubble, #eef2ff); color: var(--dsw-alias-state-business-primary, #4d6bfe); }
 .orch-title { font-size: 14px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; }
-.orch-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  color: var(--dsw-alias-label-tertiary, #8a8f99);
-  white-space: nowrap;
-}
+.orch-status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dsw-alias-label-tertiary, #8a8f99); white-space: nowrap; }
 .orch-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-state-idle-primary, #c4c7cc); }
 .orch-status[data-live='true'] .orch-status-dot { background: var(--dsw-alias-state-success-primary, #01a241); }
 .orch-topbar-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 
 /* 搜索框：focus-within 用设计平台的焦点环颜色 */
-.orch-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: var(--dsw-specific-input-major, #fff);
-  color: var(--dsw-alias-label-tertiary, #8a8f99);
-  transition:
-    border-color var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease),
-    box-shadow var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease);
-}
+.orch-search { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1)); border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-specific-input-major, #fff); color: var(--dsw-alias-label-tertiary, #8a8f99); transition: border-color var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease), box-shadow var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease); }
 .orch-search:hover { border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12)); }
-.orch-search:focus-within {
-  border-color: var(--dsw-alias-border-selected, #9aa4b2);
-  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, rgba(77, 107, 254, 0.35));
-}
-.orch-search input {
-  width: 132px;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-  font: inherit;
-}
+.orch-search:focus-within { border-color: var(--dsw-alias-border-selected, #9aa4b2); box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, rgba(77, 107, 254, 0.35)); }
+.orch-search input { width: 132px; border: 0; outline: none; background: transparent; color: var(--dsw-alias-label-primary, #1f1f1f); font: inherit; }
 .orch-search input::placeholder { color: var(--dsw-alias-label-tertiary, #8a8f99); }
 
 /* 按钮：hover / active / disabled / focus-visible 四态 */
-.orch-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 26px;
-  padding: 0 9px;
-  border: 1px solid transparent;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: transparent;
-  color: var(--dsw-alias-label-secondary, #55585f);
-  font: inherit;
-  font-size: 12px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    transform var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
-.orch-btn:hover {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06));
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-}
+.orch-btn { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border: 1px solid transparent; border-radius: var(--dsw-radius-sm, 8px); background: transparent; color: var(--dsw-alias-label-secondary, #55585f); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), transform var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
+.orch-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06)); color: var(--dsw-alias-label-primary, #1f1f1f); }
 .orch-btn:active { background: var(--dsw-alias-interactive-bg-active, rgba(38, 49, 72, 0.1)); transform: scale(0.985); }
 .orch-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
-.orch-btn:focus-visible {
-  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4d6bfe));
-  outline-offset: 1px;
-}
+.orch-btn:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4d6bfe)); outline-offset: 1px; }
 .orch-btn--ghost { border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1)); }
-.orch-btn--primary {
-  background: var(--dsw-alias-button-primary-fill, #1f1f1f);
-  color: var(--dsw-alias-label-primary-inverted, #fff);
-  border-color: transparent;
-}
-.orch-btn--primary:hover {
-  background: var(--dsw-alias-button-primary-hover, #3a3a3d);
-  color: var(--dsw-alias-label-primary-inverted, #fff);
-}
+.orch-btn--primary { background: var(--dsw-alias-button-primary-fill, #1f1f1f); color: var(--dsw-alias-label-primary-inverted, #fff); border-color: transparent; }
+.orch-btn--primary:hover { background: var(--dsw-alias-button-primary-hover, #3a3a3d); color: var(--dsw-alias-label-primary-inverted, #fff); }
 .orch-btn--danger { color: var(--dsw-alias-state-error-primary, #ec1313); }
-.orch-btn--danger:hover {
-  background: var(--dsw-alias-interactive-bg-hover-danger, rgba(236, 19, 19, 0.05));
-  color: var(--dsw-alias-state-error-primary, #ec1313);
-}
+.orch-btn--danger:hover { background: var(--dsw-alias-interactive-bg-hover-danger, rgba(236, 19, 19, 0.05)); color: var(--dsw-alias-state-error-primary, #ec1313); }
 .orch-btn--sm { height: 22px; padding: 0 7px; font-size: 11px; }
 /* 会话头「任务」入口：按面板顶栏 .orch-brand 的语言（品牌色方块 + 半粗文字）。
    不画外框，与同排的协调者预设标签、子智能体计数一致——那两个都是无描边、透明底、
    hover 只换交互底色的 chip。所以这里只覆盖尺寸/字重：描边与底色一律沿用 .orch-btn 的
    border: 1px solid transparent + background: transparent，不重复声明；也不再有自己
    的 hover 覆盖（否则 hover 会冒出描边与悬浮阴影，又把它从同排里顶出来）。 */
-.orch-btn--entry {
-  height: 26px;
-  padding: 0 4px;
-  gap: 6px;
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-  font-weight: 600;
-}
-.orch-entry-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  border-radius: var(--dsw-radius-xs, 4px);
-  background: var(--dsw-specific-bubble, #eef2ff);
-  color: var(--dsw-alias-state-business-primary, #4d6bfe);
-}
+.orch-btn--entry { height: 26px; padding: 0 4px; gap: 6px; color: var(--dsw-alias-label-primary, #1f1f1f); font-weight: 600; }
+.orch-entry-mark { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex: 0 0 auto; border-radius: var(--dsw-radius-xs, 4px); background: var(--dsw-specific-bubble, #eef2ff); color: var(--dsw-alias-state-business-primary, #4d6bfe); }
 .orch-entry-label { font-size: 12px; letter-spacing: 0.01em; white-space: nowrap; }
-.orch-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
+.orch-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; flex: 0 0 auto; border: 0; border-radius: var(--dsw-radius-sm, 8px); background: transparent; color: inherit; cursor: pointer; transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
 .orch-icon-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06)); }
 .orch-icon-btn:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, #4d6bfe); outline-offset: 1px; }
 .orch-icon { flex: 0 0 auto; }
@@ -174,50 +52,12 @@
 @keyframes orch-rotate { to { transform: rotate(360deg); } }
 
 /* ---------- 概览卡（第一段下半：4 个指标） ---------- */
-.orch-metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  flex: 0 0 auto;
-  padding: 12px 16px 0;
-}
-.orch-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: flex-start;
-  padding: 8px 10px;
-  border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-  border-radius: var(--dsw-radius-md, 12px);
-  background: var(--dsw-alias-card-fill, #f7f8fa);
-  color: var(--dsw-alias-label-secondary, #55585f);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    box-shadow var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    transform var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
-.orch-metric:hover {
-  background: var(--dsw-alias-card-fill-hover, #f1f2f4);
-  border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
-  box-shadow: var(--dsw-shadow-lv1, 0 2px 4px rgba(0, 0, 0, 0.05));
-  transform: translateY(-1px);
-}
-.orch-metric[data-active='true'] {
-  border-color: var(--dsw-alias-border-selected, #9aa4b2);
-  background: var(--dsw-alias-bg-layer-2, #fff);
-}
+.orch-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; flex: 0 0 auto; padding: 12px 16px 0; }
+.orch-metric { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-card-fill, #f7f8fa); color: var(--dsw-alias-label-secondary, #55585f); font: inherit; text-align: left; cursor: pointer; transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), box-shadow var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), transform var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
+.orch-metric:hover { background: var(--dsw-alias-card-fill-hover, #f1f2f4); border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1)); box-shadow: var(--dsw-shadow-lv1, 0 2px 4px rgba(0, 0, 0, 0.05)); transform: translateY(-1px); }
+.orch-metric[data-active='true'] { border-color: var(--dsw-alias-border-selected, #9aa4b2); background: var(--dsw-alias-bg-layer-2, #fff); }
 .orch-metric:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, #4d6bfe); outline-offset: 1px; }
-.orch-metric-value {
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-}
+.orch-metric-value { font-size: 18px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-primary, #1f1f1f); }
 .orch-metric-label { font-size: 11px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
 .orch-metric[data-tone='info'] .orch-metric-value { color: var(--dsw-alias-state-business-primary, #4d6bfe); }
 .orch-metric[data-tone='warn'] .orch-metric-value { color: var(--dsw-alias-state-warn-primary, #f59f0a); }
@@ -226,82 +66,18 @@
 
 /* ---------- 第二段：筛选轨 + 列表 ---------- */
 .orch-body { display: flex; flex: 1 1 auto; min-height: 0; }
-.orch-rail {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 0 0 auto;
-  width: 156px;
-  padding: 12px;
-  overflow: auto;
-  border-right: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-}
-.orch-rail-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: transparent;
-  color: var(--dsw-alias-label-secondary, #55585f);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
-.orch-rail-item:hover {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06));
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-}
-.orch-rail-item[data-active='true'] {
-  background: var(--dsw-specific-sidebar-nav-item-active, #eceff5);
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-  font-weight: 600;
-}
+.orch-rail { display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto; width: 156px; padding: 12px; overflow: auto; border-right: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); }
+.orch-rail-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: var(--dsw-radius-sm, 8px); background: transparent; color: var(--dsw-alias-label-secondary, #55585f); font: inherit; font-size: 12px; text-align: left; cursor: pointer; transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
+.orch-rail-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06)); color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-rail-item[data-active='true'] { background: var(--dsw-specific-sidebar-nav-item-active, #eceff5); color: var(--dsw-alias-label-primary, #1f1f1f); font-weight: 600; }
 .orch-rail-item:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, #4d6bfe); outline-offset: -2px; }
 .orch-rail-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.orch-rail-count {
-  flex: 0 0 auto;
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-  background: var(--dsw-alias-bg-multi-select, #eef0f3);
-  color: var(--dsw-alias-label-tertiary, #8a8f99);
-}
-.orch-rail-item[data-active='true'] .orch-rail-count {
-  background: var(--dsw-specific-sidebar-nav-item-active-accent, #dce6ff);
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-}
-.orch-main {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 12px 16px 24px;
-  overflow: auto;
-}
+.orch-rail-count { flex: 0 0 auto; min-width: 18px; padding: 0 5px; border-radius: 999px; font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; background: var(--dsw-alias-bg-multi-select, #eef0f3); color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-rail-item[data-active='true'] .orch-rail-count { background: var(--dsw-specific-sidebar-nav-item-active-accent, #dce6ff); color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-main { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-width: 0; padding: 12px 16px 24px; overflow: auto; }
 
 /* 提示条：error / notice / info 共用骨架，颜色取 --orch-tone */
-.orch-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--orch-tone) 22%, transparent);
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: color-mix(in srgb, var(--orch-tone) 8%, transparent);
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-  font-size: 12px;
-}
+.orch-banner { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--orch-tone) 22%, transparent); border-radius: var(--dsw-radius-sm, 8px); background: color-mix(in srgb, var(--orch-tone) 8%, transparent); color: var(--dsw-alias-label-primary, #1f1f1f); font-size: 12px; }
 .orch-banner--error { --orch-tone: var(--dsw-alias-state-error-primary, #ec1313); }
 .orch-banner--notice { --orch-tone: var(--dsw-alias-state-warn-primary, #f59f0a); }
 .orch-banner--info { --orch-tone: var(--dsw-alias-label-tertiary, #8a8f99); }
@@ -310,100 +86,24 @@
 
 /* 任务卡 */
 .orch-list { display: flex; flex-direction: column; gap: 8px; }
-.orch-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-  border-radius: var(--dsw-radius-md, 12px);
-  background: var(--dsw-alias-card-fill, #f7f8fa);
-  cursor: pointer;
-  transition:
-    background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    box-shadow var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
-.orch-card:hover {
-  background: var(--dsw-alias-card-fill-hover, #f1f2f4);
-  border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
-  box-shadow: var(--dsw-shadow-lv1, 0 2px 4px rgba(0, 0, 0, 0.05));
-}
-.orch-card[data-open='true'] {
-  border-color: var(--dsw-alias-border-selected, #9aa4b2);
-  background: var(--dsw-alias-bg-layer-2, #fff);
-}
+.orch-card { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-card-fill, #f7f8fa); cursor: pointer; transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), box-shadow var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
+.orch-card:hover { background: var(--dsw-alias-card-fill-hover, #f1f2f4); border-color: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1)); box-shadow: var(--dsw-shadow-lv1, 0 2px 4px rgba(0, 0, 0, 0.05)); }
+.orch-card[data-open='true'] { border-color: var(--dsw-alias-border-selected, #9aa4b2); background: var(--dsw-alias-bg-layer-2, #fff); }
 .orch-card-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.orch-card-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-}
+.orch-card-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
 .orch-card-time { flex: 0 0 auto; font-size: 11px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
 .orch-card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .orch-card-actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.orch-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
-}
-.orch-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  max-width: 240px;
-  padding: 0 6px;
-  border-radius: var(--dsw-radius-xs, 4px);
-  background: var(--dsw-alias-bg-layer-2, #f2f3f5);
-  color: var(--dsw-alias-label-tertiary, #8a8f99);
-  font-size: 11px;
-  line-height: 18px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.orch-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent); }
+.orch-chip { display: inline-flex; align-items: center; gap: 3px; max-width: 240px; padding: 0 6px; border-radius: var(--dsw-radius-xs, 4px); background: var(--dsw-alias-bg-layer-2, #f2f3f5); color: var(--dsw-alias-label-tertiary, #8a8f99); font-size: 11px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .orch-chip--warn { color: var(--dsw-alias-state-warn-label, #b45309); background: var(--dsw-alias-state-warn-tertiary, #fef3c7); }
-.orch-chip--bad {
-  color: var(--dsw-alias-state-error-primary, #ec1313);
-  background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ec1313) 12%, transparent);
-}
-.orch-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 0 6px;
-  flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
-  border-radius: var(--dsw-radius-xs, 4px);
-  background: color-mix(in srgb, currentColor 10%, transparent);
-  font-size: 11px;
-  line-height: 17px;
-  white-space: nowrap;
-}
-.orch-question {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #f59f0a) 10%, transparent);
-  color: var(--dsw-alias-state-warn-label, #b45309);
-  font-size: 12px;
-}
+.orch-chip--good { color: var(--dsw-alias-state-success-label, #0f7b37); background: var(--dsw-alias-state-success-tertiary, #dcfce7); }
+.orch-chip--bad { color: var(--dsw-alias-state-error-primary, #ec1313); background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ec1313) 12%, transparent); }
+.orch-badge { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; flex: 0 0 auto; border: 1px solid color-mix(in srgb, currentColor 28%, transparent); border-radius: var(--dsw-radius-xs, 4px); background: color-mix(in srgb, currentColor 10%, transparent); font-size: 11px; line-height: 17px; white-space: nowrap; }
+.orch-question { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border-radius: var(--dsw-radius-sm, 8px); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #f59f0a) 10%, transparent); color: var(--dsw-alias-state-warn-label, #b45309); font-size: 12px; }
 
 /* 展开/折叠：grid-template-rows 0fr↔1fr，才能动画到内容真实高度 */
-.orch-expand {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease);
-}
+.orch-expand { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease); }
 .orch-expand[data-open='true'] { grid-template-rows: 1fr; }
 .orch-expand > div { min-height: 0; overflow: hidden; }
 .orch-artifact-list { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; }
@@ -411,175 +111,49 @@
 .orch-chevron[data-open='true'] { transform: rotate(180deg); }
 
 /* 空态 / 加载骨架 / 错误态 */
-.orch-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 36px 16px;
-  text-align: center;
-  color: var(--dsw-alias-label-tertiary, #8a8f99);
-}
-.orch-empty-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: var(--dsw-alias-card-fill, #f2f3f5);
-  color: var(--dsw-alias-label-tertiary, #8a8f99);
-}
+.orch-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 36px 16px; text-align: center; color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-empty-icon { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; background: var(--dsw-alias-card-fill, #f2f3f5); color: var(--dsw-alias-label-tertiary, #8a8f99); }
 .orch-empty-title { font-size: 13px; color: var(--dsw-alias-label-secondary, #55585f); }
 .orch-empty-hint { max-width: 360px; font-size: 12px; line-height: 1.6; }
-.orch-skeleton {
-  height: 10px;
-  border-radius: var(--dsw-radius-xs, 4px);
-  background: linear-gradient(
-    90deg,
-    var(--dsw-alias-bg-skeleton, rgba(0, 0, 0, 0.04)) 25%,
-    var(--dsw-alias-bg-layer-3, rgba(0, 0, 0, 0.06)) 37%,
-    var(--dsw-alias-bg-skeleton, rgba(0, 0, 0, 0.04)) 63%
-  );
-  background-size: 400% 100%;
-  animation: orch-shimmer 1.4s var(--ds-ease-in-out, ease) infinite;
-}
+.orch-skeleton { height: 10px; border-radius: var(--dsw-radius-xs, 4px); background: linear-gradient( 90deg, var(--dsw-alias-bg-skeleton, rgba(0, 0, 0, 0.04)) 25%, var(--dsw-alias-bg-layer-3, rgba(0, 0, 0, 0.06)) 37%, var(--dsw-alias-bg-skeleton, rgba(0, 0, 0, 0.04)) 63% ); background-size: 400% 100%; animation: orch-shimmer 1.4s var(--ds-ease-in-out, ease) infinite; }
 @keyframes orch-shimmer {
   0% { background-position: 100% 0; }
   100% { background-position: -100% 0; }
 }
-.orch-skeleton-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-  border-radius: var(--dsw-radius-md, 12px);
-}
+.orch-skeleton-card { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); border-radius: var(--dsw-radius-md, 12px); }
 .orch-skeleton-row { display: flex; align-items: center; gap: 8px; }
 
 /* ---------- 第三段：右侧抽屉详情 ---------- */
 .orch-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
-.orch-scrim {
-  position: absolute;
-  inset: 0;
-  background: var(--dsw-alias-bg-mask-1, rgba(0, 0, 0, 0.24));
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease);
-}
+.orch-scrim { position: absolute; inset: 0; background: var(--dsw-alias-bg-mask-1, rgba(0, 0, 0, 0.24)); opacity: 0; pointer-events: none; transition: opacity var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease); }
 .orch-scrim[data-open='true'] { opacity: 1; pointer-events: auto; }
-.orch-drawer {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
-  width: min(460px, 92%);
-  pointer-events: none;
-  transform: translateX(102%);
-  background: var(--dsw-alias-bg-layer-2, #fff);
-  border-left: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
-  box-shadow: var(--dsw-elevation-prominent, 0 3px 8px rgba(0, 0, 0, 0.04));
-  transition: transform var(--ds-transition-duration-slow, 0.3s) var(--ds-ease-in-out, cubic-bezier(0.4, 0, 0.2, 1));
-}
+.orch-drawer { position: absolute; top: 0; right: 0; bottom: 0; display: flex; flex-direction: column; width: min(460px, 92%); pointer-events: none; transform: translateX(102%); background: var(--dsw-alias-bg-layer-2, #fff); border-left: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1)); box-shadow: var(--dsw-elevation-prominent, 0 3px 8px rgba(0, 0, 0, 0.04)); transition: transform var(--ds-transition-duration-slow, 0.3s) var(--ds-ease-in-out, cubic-bezier(0.4, 0, 0.2, 1)); }
 .orch-drawer[data-open='true'] { transform: translateX(0); pointer-events: auto; }
-.orch-drawer-content { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.orch-drawer-content { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; animation: orch-slide-in var(--ds-transition-duration-slow, 0.3s) var(--ds-ease-in-out, ease); }
 @keyframes orch-slide-in {
   from { opacity: 0; transform: translateX(12px); }
   to { opacity: 1; transform: translateX(0); }
 }
-.orch-drawer-content { animation: orch-slide-in var(--ds-transition-duration-slow, 0.3s) var(--ds-ease-in-out, ease); }
-.orch-drawer-head {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 0 0 auto;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-  background: var(--dsw-alias-bg-layer-1, #fff);
-}
+.orch-drawer-head { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; padding: 12px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); background: var(--dsw-alias-bg-layer-1, #fff); }
 .orch-drawer-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.orch-drawer-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 14px;
-  font-weight: 600;
-}
-.orch-drawer-sub {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 11px;
-  color: var(--dsw-alias-label-tertiary, #8a8f99);
-}
-.orch-drawer-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: 12px 16px 20px;
-  overflow: auto;
-}
+.orch-drawer-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.orch-drawer-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-drawer-body { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; padding: 12px 16px 20px; overflow: auto; }
 .orch-drawer-sections { display: flex; flex-direction: column; gap: 10px; }
-.orch-drawer-foot {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  flex: 0 0 auto;
-  padding: 10px 16px;
-  border-top: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-  background: var(--dsw-alias-bg-layer-1, #fff);
-}
+.orch-drawer-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 0 0 auto; padding: 10px 16px; border-top: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); background: var(--dsw-alias-bg-layer-1, #fff); }
 
 /* 抽屉里的可折叠区块 */
-.orch-section {
-  border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-  border-radius: var(--dsw-radius-md, 12px);
-  background: var(--dsw-alias-card-fill, #f7f8fa);
-  overflow: hidden;
-}
-.orch-section-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 8px 10px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
+.orch-section { border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-card-fill, #f7f8fa); overflow: hidden; }
+.orch-section-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
 .orch-section-head:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06)); }
 .orch-section-head:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, #4d6bfe); outline-offset: -2px; }
 .orch-section-title { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
 .orch-section-hint { margin-left: auto; font-size: 11px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
-.orch-section-body-wrap {
-  display: grid;
-  grid-template-rows: 1fr;
-  transition: grid-template-rows var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease);
-}
+.orch-section-body-wrap { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--ds-transition-duration, 0.2s) var(--ds-ease-in-out, ease); }
 .orch-section[data-collapsed='true'] .orch-section-body-wrap { grid-template-rows: 0fr; }
 .orch-section[data-collapsed='true'] .orch-section-head .orch-chevron { transform: rotate(-90deg); }
 .orch-section-body { min-height: 0; overflow: hidden; }
-.orch-section-inner {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 0 10px 10px;
-  font-size: 12px;
-  color: var(--dsw-alias-label-secondary, #55585f);
-}
+.orch-section-inner { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 10px; font-size: 12px; color: var(--dsw-alias-label-secondary, #55585f); }
 
 /* 详情内部排版 */
 .orch-kv { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 3px 8px; }
@@ -587,208 +161,77 @@
 .orch-kv-val { color: var(--dsw-alias-label-secondary, #55585f); overflow-wrap: anywhere; }
 .orch-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .orch-muted { color: var(--dsw-alias-label-tertiary, #8a8f99); }
+/* 纵向堆叠：原来 14 处内联 style 各写一遍同样的 flex 列，现在按间距档位复用同一组类。 */
+.orch-stack { display: flex; flex-direction: column; gap: 6px; }
+.orch-stack--xs { gap: 4px; }
+.orch-stack--sm { gap: 8px; }
+.orch-stack--md { gap: 10px; }
+.orch-stack--lg { gap: 12px; }
 .orch-ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 2px; }
-.orch-quote {
-  margin: 0;
-  padding: 6px 8px;
-  border-left: 2px solid var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12));
-  border-radius: 0 var(--dsw-radius-xs, 4px) var(--dsw-radius-xs, 4px) 0;
-  background: var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.02));
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.orch-pre {
-  margin: 0;
-  max-height: 240px;
-  overflow: auto;
-  padding: 8px;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: var(--dsw-alias-markdown-code-block, #f5f6f8);
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-  font-family: var(--ds-font-family-code, 'SF Mono', Consolas, monospace);
-  font-size: 11px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.orch-msg {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 8px;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.02));
-}
+.orch-quote { margin: 0; padding: 6px 8px; border-left: 2px solid var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12)); border-radius: 0 var(--dsw-radius-xs, 4px) var(--dsw-radius-xs, 4px) 0; background: var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.02)); white-space: pre-wrap; overflow-wrap: anywhere; }
+.orch-pre { margin: 0; max-height: 240px; overflow: auto; padding: 8px; border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-alias-markdown-code-block, #f5f6f8); color: var(--dsw-alias-label-primary, #1f1f1f); font-family: var(--ds-font-family-code, 'SF Mono', Consolas, monospace); font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.orch-msg { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.02)); }
 .orch-msg[data-kind='followup'] { background: var(--dsw-specific-bubble, #eef2ff); }
 .orch-msg-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .orch-msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .orch-msg-at { font-size: 11px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
-.orch-artifact {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding: 6px 8px;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.02));
-  transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
+.orch-artifact { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.02)); transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
 .orch-artifact:hover { background: var(--dsw-alias-card-fill-hover, #f1f2f4); }
-.orch-artifact-path {
-  flex: 1 1 220px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-family: var(--ds-font-family-code, 'SF Mono', Consolas, monospace);
-  font-size: 11px;
-}
+.orch-artifact-path { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; font-family: var(--ds-font-family-code, 'SF Mono', Consolas, monospace); font-size: 11px; }
+/* 官方 Team（只读）分区的行标题：与产物路径同栏宽，长标题省略而不是把行撑破。 */
+.orch-board-subject { flex: 1 1 220px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 可点开的产物路径：在会话右侧栏打开预览（不再是行内展开）。
    总是与 .orch-artifact-path 同时挂，字体/尺寸沿用那边，这里只加按钮复位与可点提示。 */
-.orch-artifact-open {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary, #55585f);
-  text-align: left;
-  cursor: pointer;
-  transition: color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
-.orch-artifact-open:hover {
-  color: var(--dsw-alias-state-business-primary, #4d6bfe);
-  text-decoration: underline;
-}
+.orch-artifact-open { padding: 0; border: 0; background: transparent; color: var(--dsw-alias-label-secondary, #55585f); text-align: left; cursor: pointer; transition: color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
+.orch-artifact-open:hover { color: var(--dsw-alias-state-business-primary, #4d6bfe); text-decoration: underline; }
 .orch-artifact-open:disabled { cursor: not-allowed; opacity: 0.6; text-decoration: none; }
 .orch-artifact-open:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, #4d6bfe); outline-offset: 2px; }
-.orch-preview {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex-basis: 100%;
-  padding-top: 6px;
-  border-top: 1px dashed var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
-}
+.orch-preview { display: flex; flex-direction: column; gap: 4px; flex-basis: 100%; padding-top: 6px; border-top: 1px dashed var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1)); }
 .orch-group { display: flex; flex-direction: column; gap: 6px; }
 .orch-group-head { display: flex; align-items: baseline; gap: 6px; }
 .orch-group-title { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
-.orch-seg {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: var(--dsw-alias-bg-multi-select, #eef0f3);
-}
-.orch-seg-item {
-  padding: 2px 8px;
-  border: 0;
-  border-radius: var(--dsw-radius-xs, 4px);
-  background: transparent;
-  color: var(--dsw-alias-label-secondary, #55585f);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-  transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
+.orch-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-alias-bg-multi-select, #eef0f3); }
+.orch-seg-item { padding: 2px 8px; border: 0; border-radius: var(--dsw-radius-xs, 4px); background: transparent; color: var(--dsw-alias-label-secondary, #55585f); font: inherit; font-size: 11px; cursor: pointer; transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
 .orch-seg-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06)); }
-.orch-seg-item[data-active='true'] {
-  background: var(--dsw-alias-bg-layer-2, #fff);
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-  box-shadow: var(--dsw-shadow-lv1, 0 2px 4px rgba(0, 0, 0, 0.05));
-}
+.orch-seg-item[data-active='true'] { background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #1f1f1f); box-shadow: var(--dsw-shadow-lv1, 0 2px 4px rgba(0, 0, 0, 0.05)); }
 /* 破坏性动作的二次确认条 */
-.orch-confirm {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding: 2px 4px 2px 8px;
-  border-radius: var(--dsw-radius-sm, 8px);
-  background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ec1313) 8%, transparent);
-  color: var(--dsw-alias-label-primary, #1f1f1f);
-  font-size: 11px;
-}
+.orch-confirm { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 2px 4px 2px 8px; border-radius: var(--dsw-radius-sm, 8px); background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ec1313) 8%, transparent); color: var(--dsw-alias-label-primary, #1f1f1f); font-size: 11px; }
 
 /* ---------- 回复底部「关联任务」chip（conversation.chat.turnTail 槽位） ----------
  * 挂在宿主会话流里（不在 .orch-shell 里），所以颜色全部走设计平台 token，并自带
  * prefers-reduced-motion 降级：宿主那份 reduced-motion 规则只作用在 .orch-shell 内。
  * 状态：运行中=旋转圆环；等前置/待确认=虚线静圈（待确认再加脉冲 + 半色）；
  *       完成=✓；失败=✗；取消=—。图标颜色走 TONE_COLOR 的语义 token（内联 style 下发）。 */
-.orch-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-.orch-taskchip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 260px;
-  height: 24px;
-  padding: 0 9px 0 8px;
-  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
-  border-radius: 999px;
-  background: var(--dsw-alias-bg-layer-1, #fff);
-  color: var(--dsw-alias-label-secondary, #55585f);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease),
-    border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease);
-}
+.orch-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.orch-taskchip { display: inline-flex; align-items: center; gap: 6px; max-width: 260px; height: 24px; padding: 0 9px 0 8px; border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1)); border-radius: 999px; background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-secondary, #55585f); font: inherit; font-size: 12px; line-height: 1; white-space: nowrap; cursor: pointer; transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease), border-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
 /* 没有子会话的任务（待派发 / 等前置 / 台账里没有 session_id）：点击降级打开任务详情。
  * 它仍是可点的（详情入口），但不假装「跳会话」——cursor 不给手感上的误导，文案见 tooltip。 */
 .orch-taskchip[data-orch-chip-open='detail'] {
   cursor: default;
 }
-.orch-taskchip:hover {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06));
-  border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12));
-}
-.orch-taskchip:focus-visible {
-  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4d6bfe));
-  outline-offset: 1px;
-}
-.orch-taskchip-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 12px;
-  height: 12px;
-  flex: 0 0 auto;
-}
+.orch-taskchip:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06)); border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12)); }
+.orch-taskchip:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4d6bfe)); outline-offset: 1px; }
+.orch-taskchip-mark { display: inline-flex; align-items: center; justify-content: center; width: 12px; height: 12px; flex: 0 0 auto; }
 /* 长标题：先按码点截断（chipVisibleTitle），再由 CSS 按像素补省略号；宽度不撑破动作行。 */
-.orch-taskchip-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.orch-taskchip-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 「+N」：同一行里最弱的一枚，点击打开任务面板。 */
-.orch-taskchip--more {
-  color: var(--dsw-alias-label-tertiary, #8a8f99);
-  font-variant-numeric: tabular-nums;
-}
+.orch-taskchip--more { color: var(--dsw-alias-label-tertiary, #8a8f99); font-variant-numeric: tabular-nums; }
 /* 运行中：圆环自转（留了缺口才看得出在转）。 */
-.orch-taskchip-spin {
-  animation: orch-rotate 1s linear infinite;
-  transform-origin: 50% 50%;
-}
+.orch-taskchip-spin { animation: orch-rotate 1s linear infinite; transform-origin: 50% 50%; }
 /* 等前置 / 待确认：虚线静圈，不跟运行中抢动效。 */
 .orch-taskchip-dashed { stroke-dasharray: 3 2.4; }
 /* 待确认：半色 + 脉冲（呼吸），提示「等你/协调者拍板」。 */
-.orch-taskchip[data-state='confirming'] {
-  opacity: 0.72;
-  animation: orch-chip-pulse 1.6s ease-in-out infinite;
-}
+.orch-taskchip[data-state='confirming'] { opacity: 0.72; animation: orch-chip-pulse 1.6s ease-in-out infinite; }
 @keyframes orch-chip-pulse {
   0%, 100% { opacity: 0.72; }
   50% { opacity: 0.4; }
 }
-/* 尊重系统「减少动态效果」：停转、停脉冲，但保留状态色与图标形状（信息不丢）。 */
+/* 尊重系统「减少动态效果」：停转、停脉冲、停骨架闪烁，但保留状态色与图标形状（信息不丢）。
+ * 会话流里的 chip 不在 .orch-shell 内，宿主那份 reduced-motion 覆盖不到，所以单独列一组。 */
 @media (prefers-reduced-motion: reduce) {
+  .orch-shell *,
+  .orch-shell *::before,
+  .orch-shell *::after { animation: none !important; transition: none !important; }
   .orch-taskchip-spin { animation: none; }
   .orch-taskchip[data-state='confirming'] { animation: none; opacity: 0.6; }
   .orch-taskchip { transition: none; }
@@ -796,30 +239,13 @@
 
 /* 启动器面板（侧栏「◈ 主会话」选中后一闪而过） */
 .orch-launcher { align-items: center; justify-content: center; gap: 10px; padding: 32px; }
-.orch-launcher-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 24px;
-  border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-  border-radius: var(--dsw-radius-lg, 16px);
-  background: var(--dsw-alias-card-fill, #f7f8fa);
-}
+.orch-launcher-card { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 24px; border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); border-radius: var(--dsw-radius-lg, 16px); background: var(--dsw-alias-card-fill, #f7f8fa); }
 .orch-launcher-icon { font-size: 16px; line-height: 1; }
 
 /* 窄屏：筛选轨变横向条，指标两列；抽屉铺满 */
 @media (max-width: 860px) {
   .orch-body { flex-direction: column; }
-  .orch-rail {
-    width: 100%;
-    flex-direction: row;
-    gap: 4px;
-    padding: 8px 12px;
-    overflow-x: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
-  }
+  .orch-rail { width: 100%; flex-direction: row; gap: 4px; padding: 8px 12px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); }
   .orch-rail-item { width: auto; white-space: nowrap; }
   .orch-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -827,16 +253,6 @@
   .orch-drawer { width: 100%; }
   .orch-search input { width: 96px; }
 }
-/* 尊重系统「减少动态效果」偏好 */
-@media (prefers-reduced-motion: reduce) {
-  .orch-shell *,
-  .orch-shell *::before,
-  .orch-shell *::after {
-    animation: none !important;
-    transition: none !important;
-  }
-}
-
 /* ── 插件页配置卡片（P10）─────────────────────────────────────────────
    渲染在 plugin-manager 的 bundle 页面里（不在本插件自己的面板里），
    所以只用 .orch-cfg* 前缀的局部类，不依赖 .orch-shell 的容器样式。 */
