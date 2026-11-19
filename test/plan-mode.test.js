@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { openLedger, createTask, getTask, listTasks, transition, setPlanState } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
-import { createSubagentDispatcher, createTeamDispatcher } from '../src/dispatch.js'
+import { createSubagentDispatcher } from '../src/dispatch.js'
 import { createHostRoute } from '../src/host-route.js'
 import { createPanelActions } from '../src/panel-actions.js'
 import { renderTaskDetail } from '../src/task-detail.js'
@@ -564,17 +564,6 @@ test('P8 批准失败：拿不到子会话时返回 ok:false（不静默假装�
   const result = await env.dispatcher.approvePlan('missing-session', 'C:/target')
   assert.equal(result.ok, false)
   assert.match(result.reason, /未拿到子会话/)
-})
-
-test('P8 team 后端：明确拒绝计划模式（没有会话级沙箱/planMode）', async () => {
-  const agentTeams = {
-    async spawnTeammate() { return { member: { id: 'm1', name: 'w' } } },
-    async sendMessage() {},
-    async interrupt() {},
-    listMembers() { return [] },
-  }
-  const dispatcher = createTeamDispatcher({ agentTeams, agent: coordinator })
-  await assert.rejects(dispatcher.spawn({ prompt: 'p', planFirst: true }), /不支持计划模式/)
 })
 
 // —— 五、面板与快照：字段下发 + 面板追加消息同样批准 ——

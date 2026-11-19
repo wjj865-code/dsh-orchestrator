@@ -415,9 +415,6 @@ export async function apply(ctx, rawConfig = {}) {
   let settlement
   const dispatcher = createDispatcher({
     backend: config.backend,
-    // agentTeams 是可选的：不放进 inject，缺这个服务的 profile 也能激活。
-    // 只有显式选 backend:'team' 时才需要它，缺了由派发器给可读错误。
-    agentTeams: () => ctx.get?.('agentTeams') ?? ctx.agentTeams,
     subagents: ctx.subagents,
     getAgent: resolveCoordinator,
     provider: config.spawnProvider,

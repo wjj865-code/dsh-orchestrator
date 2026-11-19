@@ -1,5 +1,6 @@
 // 派发层：把「建子会话 / 投递 / 停止」收成一个窄接口。
-// 后端二选一：subagent（默认，直连 ctx.subagents）或 team（旧的 agentTeams 名册）。
+// 后端：subagent（唯一实现，直连 ctx.subagents）。旧的 team 后端已随 rc.3 移除的 agentTeams
+// 成员 API 一并删除，见 TEAM_REMOVED_MESSAGE。
 import { randomUUID } from 'node:crypto'
 import { resolve as resolvePath } from 'node:path'
 import { messageText } from './last-message.js'
@@ -45,99 +46,11 @@ export function sameDirectory(left, right) {
   }
 }
 
-// team 后端用到的 agentTeams 成员 API。rc.3 起平台把这组方法整体移除（只剩 state/transact
-// 与团队任务板），调用会报 is not a function；这里按服务方法探测，给出可读错误。
-const TEAM_METHODS = ['spawnTeammate', 'sendMessage', 'interrupt', 'listMembers']
-
-export function missingTeamMethods(agentTeams) {
-  const source = agentTeams ?? {}
-  return TEAM_METHODS.filter(name => typeof source[name] !== 'function')
-}
-
-export function teamUnavailableMessage(missing) {
-  return `team 后端不可用：当前平台缺少 agentTeams.${missing.join('/')}`
-    + '（rc.3 起平台移除了 agentTeams 成员 API），请把 backend 改回 subagent'
-}
-
-export function createTeamDispatcher({ agentTeams, agent, getAgent, provider = 'spawn', retryDelaysMs = [1000, 2000, 4000], onWarn = noop, goalBridge }) {
-  // 能力探测在构造时做一次：缺方法立即给可读错误，不留到每次派发时报 is not a function。
-  const missing = missingTeamMethods(agentTeams)
-  if (missing.length > 0) throw new Error(teamUnavailableMessage(missing))
-  const currentAgent = () => getAgent === undefined ? agent : getAgent()
-  const requireAgent = () => {
-    const current = currentAgent()
-    if (current === undefined) throw new Error('未找到协调者会话：请配置 coordinatorSession（协调者会话 id），并确保该会话已加载')
-    return current
-  }
-
-  return {
-    slug(title) {
-      return slugify(title)
-    },
-    async spawn({ name, description, prompt, signal, readOnly, planFirst, access, taskId, goal }) {
-      // team 后端没有按会话设只读的通道：明确拒绝，避免台账标只读、实际可写。
-      if (readOnly === true) throw new Error('team 后端不支持只读任务：只读需要 subagent 后端，请把 backend 改回 subagent')
-      // per-task 完整访问同样只有 subagent 后端能按会话注入（team 成员没有 session 沙箱写入口）。
-      if (access === 'full') throw new Error('team 后端不支持完整访问（access:"full"）：需要按会话设沙箱，请把 backend 改回 subagent')
-      // P8：计划模式同样依赖会话级沙箱 + 预设作用域的 planMode 服务，team 后端没有。
-      if (planFirst === true) throw new Error('team 后端不支持计划模式：计划模式需要 subagent 后端，请把 backend 改回 subagent')
-      // 真实 spawnTeammate 要求 provider（fresh 用 'spawn'）和 AbortSignal，缺一个都会被拒。
-      const input = {
-        name: name ?? slugify(String(prompt ?? '').slice(0, 20)),
-        description: description ?? 'orchestrator task',
-        prompt: [{ type: 'text', text: prompt }],
-        context: 'fresh',
-        provider,
-        ...(signal === undefined ? {} : { signal }),
-      }
-      const result = await agentTeams.spawnTeammate(requireAgent(), input)
-      const member = result.member
-      if (goalBridge !== undefined && typeof goalBridge.attach === 'function' && typeof goal === 'string' && goal.trim() !== '') {
-        void Promise.resolve(goalBridge.attach(taskId, member.id, goal)).catch(() => {})
-      }
-      return { id: member.id, name: member.name, sessionId: member.id, target: member.name }
-    },
-    async send(target, message, signal, targetDir, taskId, readOnly, objective) {
-      const sent = await agentTeams.sendMessage(requireAgent(), {
-        target,
-        content: [{ type: 'text', text: message }],
-        ...(signal === undefined ? {} : { signal }),
-      })
-      if (goalBridge !== undefined && typeof goalBridge.update === 'function' && typeof objective === 'string' && objective.trim() !== '') {
-        void Promise.resolve(goalBridge.update(taskId, target, objective)).catch(() => {})
-      }
-      return sent
-    },
-    /** 续派消息：失败按 retryDelaysMs 重试；全部失败时抛出最后一次原因。 */
-    async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective) {
-      let lastError
-      for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
-        try {
-          return await this.send(target, message, signal, targetDir, taskId, readOnly, objective)
-        } catch (error) {
-          lastError = error
-          if (attempt < retryDelaysMs.length) {
-            onWarn(`续派第 ${attempt + 1} 次投递失败：${error?.message ?? error}`)
-            await sleep(retryDelaysMs[attempt])
-          }
-        }
-      }
-      throw new Error(`投递失败：${lastError?.message ?? lastError}`)
-    },
-    async stop(target, taskId) {
-      try {
-        return agentTeams.interrupt(requireAgent(), target)
-      } finally {
-        if (goalBridge !== undefined && typeof goalBridge.clear === 'function') {
-          void Promise.resolve(goalBridge.clear(taskId, target)).catch(() => {})
-        }
-      }
-    },
-    members() {
-      return agentTeams.listMembers(requireAgent())
-    },
-  }
-}
+// team 后端已移除（P0-1）。rc.3 起平台删掉了 agentTeams 成员 API（只剩 state/transact 与团队任务板），
+// 而插件的兼容基线是 rc.3+，所以这条后端在任何受支持的宿主上都跑不起来——旧实现只是把「必然失败」
+// 包装成可读错误。`backend` 键保留一个版本：传 'team' 时插件照常加载（面板与其他能力可用），
+// 派发一律返回同一条可读错误，文案仍指明「改回 subagent」，与旧版给人的提示一致。
+export const TEAM_REMOVED_MESSAGE = 'team 后端已移除（rc.3 起平台删除了 agentTeams 成员 API）：请把 backend 改回 subagent'
 
 export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000, goalBridge }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
@@ -763,19 +676,12 @@ function createUnavailableDispatcher(reason) {
   }
 }
 
-export function createDispatcher({ backend = 'subagent', agentTeams, subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge }) {
+export function createDispatcher({ backend = 'subagent', subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge }) {
   if (backend === 'team') {
-    // agentTeams 用惰性 getter 传进来时在这里解析：缺服务的 profile 只有选 team 后端才会报错。
-    const teams = typeof agentTeams === 'function' ? agentTeams() : agentTeams
-    try {
-      return createTeamDispatcher({ agentTeams: teams, agent, getAgent, provider, retryDelaysMs, onWarn, goalBridge })
-    } catch (error) {
-      // 平台升级把 team 后端废了：插件照常加载（面板与其他能力可用），
-      // 派发时给同一条可读错误，而不是插件加载失败或抛 is not a function。
-      const reason = error?.message ?? String(error)
-      onWarn(`dsh-orchestrator: ${reason}`)
-      return createUnavailableDispatcher(reason)
-    }
+    // 见 TEAM_REMOVED_MESSAGE：插件照常加载（面板与其他能力照常可用），
+    // 派发一律返回同一条可读错误，而不是加载失败或抛 is not a function。
+    onWarn(`dsh-orchestrator: ${TEAM_REMOVED_MESSAGE}`)
+    return createUnavailableDispatcher(TEAM_REMOVED_MESSAGE)
   }
   return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge })
 }

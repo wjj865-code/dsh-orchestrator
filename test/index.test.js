@@ -163,7 +163,7 @@ test('profile 没有 agentTeams 且 backend=team：apply 不炸，派发返回�
   const f = fakeCtx({ withAgentTeams: false })
   await assert.doesNotReject(() => apply(f.ctx, { backend: 'team' }))
   assert.equal(f.registered.length, 15)
-  assert.ok(f.warnings.some(message => /team 后端不可用/.test(message)), f.warnings.join(' | '))
+  assert.ok(f.warnings.some(message => /team 后端已移除/.test(message)), f.warnings.join(' | '))
 }))
 
 test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {

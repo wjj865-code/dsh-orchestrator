@@ -1,28 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createDispatcher, createSubagentDispatcher, createTeamDispatcher } from '../src/dispatch.js'
-
-function fakeTeams({ failTimes = 0 } = {}) {
-  const calls = []
-  let failures = 0
-  return {
-    calls,
-    async spawnTeammate(agent, input) {
-      calls.push(['spawn', input])
-      return { member: { id: 'm1', name: input.name } }
-    },
-    async sendMessage(agent, input) {
-      calls.push(['send', input])
-      if (failures < failTimes) {
-        failures += 1
-        throw new Error('网络抖动')
-      }
-      return { messageId: 'msg-1' }
-    },
-    async interrupt(agent, target) { calls.push(['interrupt', target]) },
-    listMembers(agent) { calls.push(['members', agent]); return [{ id: 'm1', name: 'worker-1', status: 'inactive' }] },
-  }
-}
+import { createDispatcher, createSubagentDispatcher } from '../src/dispatch.js'
 
 function fakeSubagents({ failStart = false, failTimes = 0, deferred = false } = {}) {
   const calls = []
@@ -193,11 +171,6 @@ test('createDispatcher 接线：onAgentCreated 被转发，只读任务经生产
   assert.deepEqual(modes[0][2], { mode: 'read-only' })
 })
 
-test('team：readOnly 任务给可读错误（team 后端没有会话级只读通道）', async () => {
-  const dispatcher = team({ agentTeams: fakeTeams(), agent })
-  await assert.rejects(() => dispatcher.spawn({ prompt: 'p', readOnly: true }), /team 后端不支持只读任务/)
-})
-
 // ---- per-task 完整访问（access:'full'） ------------------------------------------
 // 与只读同一条注入路径：只 append 目标子会话的 sandbox/mode，payload 里带 source:'delegation'。
 
@@ -282,12 +255,6 @@ test('access:full：缺 sandboxPolicy 服务也不炸，不影响派发', async 
   assert.ok(member.id)
 })
 
-test('team：access:full 给可读错误（team 成员没有会话级沙箱写入口）', async () => {
-  const dispatcher = team({ agentTeams: fakeTeams(), agent })
-  await assert.rejects(() => dispatcher.spawn({ prompt: 'p', access: 'full' }), /team 后端不支持完整访问/)
-})
-
-const team = options => createDispatcher({ backend: 'team', ...options })
 const sub = options => createDispatcher({ backend: 'subagent', ...options })
 const agent = { id: 'a1', session: { id: 's1', header: { cwd: 'C:\\work' } } }
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -542,95 +509,14 @@ test('rc.3 可写根：服务缺失/register 不存在也不报错', async () =>
   await assert.doesNotReject(() => dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' }))
 })
 
-test('team：spawn 透传合法名字、渲染文本 prompt、fresh provider 与 signal', async () => {
-  const teams = fakeTeams()
-  const dispatcher = team({ agentTeams: teams, agent })
-  const signal = new AbortController().signal
-  const member = await dispatcher.spawn({ name: 'worker-1', description: 'd', prompt: '【任务】x', signal })
-  assert.equal(member.target, 'worker-1')
-  assert.equal(member.sessionId, 'm1')
-  const input = teams.calls[0][1]
-  assert.deepEqual(input.prompt, [{ type: 'text', text: '【任务】x' }])
-  assert.equal(input.description, 'd')
-  assert.equal(input.context, 'fresh')
-  assert.equal(input.provider, 'spawn')
-  assert.equal(input.signal, signal)
-})
-
-test('team：spawn 未给名字时生成 kebab 名', async () => {
-  const teams = fakeTeams()
-  const dispatcher = team({ agentTeams: teams, agent })
-  await dispatcher.spawn({ prompt: '【任务】😀' })
-  assert.match(teams.calls[0][1].name, /^task-\d+-\d+$/)
-})
-
-test('team：显式 provider 覆盖默认 fresh provider', async () => {
-  const teams = fakeTeams()
-  const dispatcher = team({ agentTeams: teams, agent, provider: 'fork' })
-  await dispatcher.spawn({ name: 'w-1', prompt: 'x' })
-  assert.equal(teams.calls[0][1].provider, 'fork')
-})
-
-test('team：send 透传 target、content 与 signal；stop 走 interrupt', async () => {
-  const teams = fakeTeams()
-  const dispatcher = team({ agentTeams: teams, agent })
-  const signal = new AbortController().signal
-  await dispatcher.send('worker-1', '继续', signal)
-  await dispatcher.stop('worker-1')
-  assert.deepEqual(teams.calls.map(call => call[0]), ['send', 'interrupt'])
-  assert.deepEqual(teams.calls[0][1], { target: 'worker-1', content: [{ type: 'text', text: '继续' }], signal })
-  assert.equal(teams.calls[1][1], 'worker-1')
-})
-
-test('team：members 透传 listMembers', async () => {
-  const teams = fakeTeams()
-  const dispatcher = team({ agentTeams: teams, agent })
-  const members = await dispatcher.members()
-  assert.equal(members[0].name, 'worker-1')
-  assert.deepEqual(teams.calls[0], ['members', agent])
-})
-
 test('slug 化：中文、空格、标点、emoji 只留 kebab；连续调用不重名', () => {
-  const dispatcher = team({ agentTeams: fakeTeams(), agent })
+  const dispatcher = createSubagentDispatcher({ subagents: fakeSubagents(), agent })
   const a = dispatcher.slug('修复 空数据 文案！😀')
   const b = dispatcher.slug('修复 空数据 文案！😀')
   assert.match(a, /^[a-z0-9-]+$/)
   assert.notEqual(a, b)
   const c = dispatcher.slug('Fix the empty data message in report')
   assert.ok(c.length <= 32 + 1 + String(Number.MAX_SAFE_INTEGER).length)
-})
-
-test('team：sendReliable 失败重试 3 次后成功', async () => {
-  const teams = fakeTeams({ failTimes: 3 })
-  const dispatcher = team({ agentTeams: teams, agent, retryDelaysMs: [0, 0, 0] })
-  const result = await dispatcher.sendReliable('worker-1', '继续')
-  assert.deepEqual(result, { messageId: 'msg-1' })
-  assert.equal(teams.calls.length, 4)
-})
-
-test('team：sendReliable 四次都失败后抛出可读错误', async () => {
-  const teams = fakeTeams({ failTimes: 99 })
-  const dispatcher = team({ agentTeams: teams, agent, retryDelaysMs: [0, 0, 0] })
-  await assert.rejects(() => dispatcher.sendReliable('worker-1', '继续'), /网络抖动/)
-  assert.equal(teams.calls.length, 4)
-})
-
-test('team：未配置协调者时派活给出可读错误', async () => {
-  const teams = fakeTeams()
-  const dispatcher = team({ agentTeams: teams, agent: undefined })
-  await assert.rejects(() => dispatcher.spawn({ name: 'w', prompt: 'x' }), /协调者会话/)
-  await assert.rejects(() => dispatcher.send('w', 'x'), /协调者会话/)
-  assert.equal(teams.calls.length, 0)
-})
-
-test('team：协调者会话后加载，getAgent 惰性解析', async () => {
-  const teams = fakeTeams()
-  let live
-  const dispatcher = team({ agentTeams: teams, getAgent: () => live })
-  await assert.rejects(() => dispatcher.spawn({ name: 'w', prompt: 'x' }), /协调者会话/)
-  live = agent
-  const member = await dispatcher.spawn({ name: 'w', prompt: 'x' })
-  assert.equal(member.target, 'w')
 })
 
 test('subagent：spawn 用自有 childId、caller delivery、cwd，返回 childId 作 target', async () => {
@@ -716,40 +602,21 @@ test('subagent：activation.result 被拒时发 subagent.failed（带 taskId 与
   assert.equal(typeof original, 'function')
 })
 
-test('team：rc.3 缺成员 API 时构造即抛可读错误，文案不含 is not a function', () => {
-  // rc.3 的 agentTeams 只剩 state/transact 与团队任务板，成员 API 整体移除。
-  const rc3Teams = { state() {}, transact() {} }
-  let message = ''
-  try {
-    createTeamDispatcher({ agentTeams: rc3Teams, agent })
-  } catch (error) {
-    message = error.message
-  }
-  assert.match(message, /backend 改回 subagent/)
-  assert.match(message, /agentTeams\.spawnTeammate/)
-  assert.doesNotMatch(message, /is not a function/)
-})
-
-test('team：backend:team 且平台缺能力时插件不炸，派发返回同一条可读错误', async () => {
+test('team：backend:team 已移除，插件不炸但派发返回同一条可读错误', async () => {
   const warnings = []
-  const dispatcher = createDispatcher({
-    backend: 'team',
-    agentTeams: { state() {}, transact() {} },
-    agent,
-    onWarn: message => warnings.push(message),
-  })
-  await assert.rejects(() => dispatcher.spawn({ prompt: 'p' }), /backend 改回 subagent/)
+  const dispatcher = createDispatcher({ backend: 'team', agent, onWarn: message => warnings.push(message) })
+  await assert.rejects(() => dispatcher.spawn({ prompt: 'p' }), /team 后端已移除.*backend 改回 subagent/)
   await assert.rejects(() => dispatcher.send('m1', 'x'), /backend 改回 subagent/)
   // members 没人用，降级为空即可；catalog 必须抛错，否则对账会把 running 全误标 orphaned。
   assert.deepEqual(await dispatcher.members(), [])
   await assert.rejects(() => dispatcher.catalog(), /backend 改回 subagent/)
   assert.equal(warnings.length, 1)
-  assert.match(warnings[0], /backend 改回 subagent/)
+  assert.match(warnings[0], /team 后端已移除/)
 })
 
-test('team：agentTeams 整个缺失时也是可读错误（不是读 property 崩）', async () => {
-  const dispatcher = createDispatcher({ backend: 'team', agentTeams: undefined, agent })
-  await assert.rejects(() => dispatcher.spawn({ prompt: 'p' }), /agentTeams\.spawnTeammate/)
+test('team：宿主即使还留着 agentTeams 成员 API，也走同一条移除文案（不再探测）', async () => {
+  const dispatcher = createDispatcher({ backend: 'team', agentTeams: { spawnTeammate() {} }, agent })
+  await assert.rejects(() => dispatcher.spawn({ prompt: 'p' }), /team 后端已移除/)
 })
 test('subagent：spawn 失败把错误原样抛出并记 requested 事件', async () => {
   const service = fakeSubagents({ failStart: true })
