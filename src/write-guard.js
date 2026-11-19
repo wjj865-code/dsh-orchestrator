@@ -23,6 +23,8 @@ import { resolve, sep } from 'node:path'
 import { taskLabelWithId } from './task-label.js'
 import { worktreeStatesWithout } from './worktree-facts.js'
 import { statusLabel } from './state.js'
+// P1-C 文案单源：待确认≠终态、追问复用原会话的口径与通知/详情同源（src/copy.js）。
+import { DELIVERY_LINES } from './copy.js'
 
 /** 防护档位：require（默认，拒绝）/ warn（只警告）/ off（关闭）。 */
 export const SAME_DIR_GUARD_MODES = Object.freeze(['require', 'warn', 'off'])
@@ -183,7 +185,8 @@ export function sameDirRejection({ target, conflicts = [] } = {}) {
     '3. 确认确实要并发写同一目录时，显式传 allowConcurrent:true 放行（冲突风险自负）。',
   ]
   if (delivered) {
-    lines.push('提示：上面有任务处于「待确认」（已交付待确认）——那是追问窗口，不是终态；确认完成用 task_message({ action: "close" })，要继续改就用 task_message 追问原会话（不要新建任务）。')
+    lines.push(`提示：上面有任务处于「${DELIVERY_LINES.statusWord}」（${DELIVERY_LINES.state}）——那是追问窗口，${DELIVERY_LINES.notFinal}；`
+      + `确认完成用 ${DELIVERY_LINES.closeCall}，要继续改就用 ${DELIVERY_LINES.followupRule}。`)
   }
   return lines.join('\n')
 }

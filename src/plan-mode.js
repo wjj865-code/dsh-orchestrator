@@ -5,6 +5,10 @@
 // - 台账只存编排视图：plan_first（是否计划任务）+ plan_state（none/planning/approved/rejected）；
 // - 本模块只放纯映射与一次「批准后恢复执行」的编排函数，tools.js / panel-actions.js 共用，避免两处口径。
 import { setPlanState } from './ledger.js'
+// P1-C 文案单源：计划阶段的原子句在 src/copy.js，这里只做本域的映射与一次「批准后恢复执行」。
+import { EXIT_PLAN_MODE_DENIAL, PLAN_FIRST_DETAIL, PLAN_PHASE_LINES, PLAN_STATUS_LINES } from './copy.js'
+
+export { EXIT_PLAN_MODE_DENIAL, PLAN_FIRST_DETAIL, PLAN_PHASE_LINES, PLAN_STATUS_LINES }
 
 /** 台账 plan_state 的合法值（与 docs/ARCHITECTURE.md 的表一致）。 */
 export const PLAN_STATES = Object.freeze(['none', 'planning', 'approved', 'rejected'])
@@ -19,32 +23,6 @@ export const PLAN_STATE_LABEL = {
 
 /** 列表行「计划中」小标（只在真的等批准时出现；已批准/已结束不加）。 */
 export const PLAN_LIST_MARKER = '计划中'
-
-/**
- * 子会话在 task_detail 里看到的计划阶段说明。
- *
- * 计划模式在平台侧是**软引导**（只注入一段提示），真正拦写入的是只读沙箱；这段文案必须把
- * 「写被拒是预期行为」「计划唯一写入口是 plan_save」「出口是 task_report blocked，不是
- * exit_plan_mode」写清楚，否则模型会在计划阶段反复被沙箱拒绝、或把长计划硬塞进 500 字的
- * question 里被截断。
- */
-export const PLAN_FIRST_DETAIL = [
-  '【计划阶段】本任务以计划模式起步：沙箱 read-only（只读）——写文件/写 shell 会被拒绝，这是预期行为，不是权限故障。',
-  '- 只读探索：读代码/文档、跑只读命令、验证假设；不要创建或修改文件。',
-  '- 探索完先落盘计划：调 plan_save({ task_id, content }) 把计划正文（Markdown）写入主会话工作区的 reports/plans/<taskId>.md，插件自动登记为任务产物。'
-    + '这是计划阶段**唯一**允许的写入口：路径固定、不接受自定义路径，也不要用 write/edit/pwsh 硬写。',
-  '- 再用 task_report 报 blocked 上报：summary 只写 3–8 行摘要（做什么、改哪些文件、怎么验证）；'
-    + 'question 写「计划文档绝对路径 + 待拍板问题清单」，不要把计划正文贴进 question（上限 500 字，会截断）。',
-  '- options 可给「批准执行 / 调整计划」。',
-  '- 不要调用 exit_plan_mode：编排子会话没有直接人类，批准会悬空（调用会被插件拒绝）。',
-  '- 用户批准后协调者会 task_message 续派，插件把沙箱切回可写，再按计划执行。',
-].join('\n')
-
-/** 子会话被拒 `exit_plan_mode` 时的文案：给出正确出口（先落盘、再报摘要），不改任何状态。 */
-export const EXIT_PLAN_MODE_DENIAL = 'exit_plan_mode 在编排子任务里不可用：子会话没有直接人类，批准会悬空。'
-  + '计划阶段的出口是先在 plan_save 里把计划写进主会话工作区的 reports/plans/<taskId>.md，'
-  + '再用 task_report({ status: "blocked", summary: "<3–8 行摘要>", question: "<计划文档绝对路径 + 待拍板问题清单>" }) 上报，'
-  + '由协调者转交用户批准；批准后协调者用 task_message 续派，插件会把沙箱切回可写再执行。'
 
 /** 是否计划任务（台账列优先，兼容旧 brief 快照）。 */
 export const isPlanTask = task => task?.plan_first === true || task?.brief?.planFirst === true
@@ -63,11 +41,7 @@ export function planListMarker(task) {
 /** `task_status` 的计划状态行；非计划任务返回 undefined（调用方不追加）。 */
 export function planStatusLine(task) {
   if (!isPlanTask(task)) return undefined
-  const state = planStateOf(task)
-  if (state === 'planning') return '计划：计划中｜子会话只读探索，计划用 plan_save 落盘到主会话工作区的 reports/plans/；用 task_message（或面板「追加」）批准后自动切回可写执行'
-  if (state === 'approved') return '计划：已批准｜沙箱已切回可写，子会话按计划执行'
-  if (state === 'rejected') return '计划：未批准｜计划阶段已结束（停止或结算时未获批准）'
-  return '计划：无进行中的计划'
+  return PLAN_STATUS_LINES[planStateOf(task)] ?? PLAN_STATUS_LINES.none
 }
 
 /**

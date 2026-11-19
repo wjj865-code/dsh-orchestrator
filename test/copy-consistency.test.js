@@ -5,12 +5,23 @@
 // 这里只锁「口径」——默认保持待确认、追问复用原会话、present 1-4 个——不锁具体措辞细节。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { renderCoordinatorPolicy } from '../index.js'
 import { renderBrief } from '../src/brief.js'
 import { renderTaskDetail } from '../src/task-detail.js'
 import { DELIVERED_HINT, PRESENT_HINT } from '../src/notify.js'
 import { DEFAULT_KEEPALIVE_PROMPT } from '../src/keepalive.js'
+import { DELIVERY_NOT_FINAL } from '../src/prompt-layers.js'
+import {
+  EXIT_PLAN_MODE_DENIAL, PLAN_FIRST_DETAIL, PLAN_PHASE_LINES, PLAN_STATE_LABEL, PLAN_STATUS_LINES,
+} from '../src/plan-mode.js'
+import * as planMode from '../src/plan-mode.js'
+import {
+  ACCESS_FULL, DELIVERY_LINES, DELIVERY_NOT_FINAL as DELIVERY_NOT_FINAL_COPY,
+  PLAN_SAVE_TOOL_DESC, planCreateReceipt, planDocPathText,
+} from '../src/copy.js'
+import { planSavedNote } from '../src/plan-doc.js'
+import { STATUS_LABEL } from '../src/state.js'
 
 /** 与两段式终态冲突的旧口径：命中任何一条都说明文案在「done 即结束 / 默认自动关闭」。 */
 const CONFLICTS = [
@@ -158,4 +169,117 @@ test('README 只服务使用者：维护者内容放 docs/，仅留链接', () =
   for (const doc of ['docs/CONTRIBUTING.md', 'docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md', 'docs/UI.md', 'CHANGELOG.md']) {
     assert.ok(readme.includes(doc), `README 缺少文档链接：${doc}`)
   }
+})
+
+// —— P1-C 文案单源：同一句话只许在 src/copy.js 定义一次，其余模块一律引用 ——
+
+/** 服务端源码文本（src/ 全部模块 + index.js）：静态扫描「这句话是不是又被抄了一份」。 */
+const serverSources = () => {
+  const dir = new URL('../src/', import.meta.url)
+  const files = readdirSync(dir).filter(file => file.endsWith('.js')).map(file => [file, readFileSync(new URL(file, dir), 'utf8')])
+  files.push(['index.js', readFileSync(new URL('../index.js', import.meta.url), 'utf8')])
+  return files
+}
+
+/** 出现某段文案的文件名（同一文件里写几遍只算一次）。 */
+const filesWith = marker => serverSources().filter(([, text]) => text.includes(marker)).map(([file]) => file)
+
+/** 一份计划任务 / 普通任务的渲染夹具（文案口径的端到端检查）。 */
+const planDetail = () => renderTaskDetail({
+  id: 't-1a2b3c4d', title: '计划', goal: 'g', status: 'running', plan_first: true, plan_state: 'planning',
+  brief: { title: '计划', goal: 'g', acceptance: ['a'] },
+})
+
+test('文案单源：计划/交付/完整访问的原子句只在 src/copy.js 定义（其它模块只能引用）', () => {
+  const markers = [
+    '唯一允许的写入口',
+    '3–8 行摘要',
+    '计划文档绝对路径 + 待拍板问题清单',
+    '不要自行宣告任务结束',
+    'danger-full-access：文件沙箱不限制写入',
+  ]
+  for (const marker of markers) {
+    assert.deepEqual(filesWith(marker), ['copy.js'], `「${marker}」在其它模块又写了一份（应引用 src/copy.js）`)
+  }
+  // plan-mode.js 是计划域门面：对外仍从这里拿同一份常量（对象引用相同，不是副本）。
+  assert.equal(planMode.PLAN_PHASE_LINES, PLAN_PHASE_LINES)
+  assert.equal(planMode.PLAN_FIRST_DETAIL, PLAN_FIRST_DETAIL)
+  assert.equal(planMode.EXIT_PLAN_MODE_DENIAL, EXIT_PLAN_MODE_DENIAL)
+})
+
+test('计划文案只有一处真源：详情 / 创建回执 / 工具描述 / 落盘回执 / 拒绝文案逐字同源', () => {
+  const id = 't-1a2b3c4d'
+  // 详情（L3）：整段说明就是 copy.js 的那一份，包含全部动作要素。
+  const detail = planDetail()
+  assert.ok(detail.includes(PLAN_FIRST_DETAIL), 'task_detail 没有渲染 PLAN_FIRST_DETAIL 原文')
+  for (const part of [
+    PLAN_PHASE_LINES.saveCall, planDocPathText(), PLAN_PHASE_LINES.reportRule,
+    PLAN_PHASE_LINES.reportQuestion, PLAN_PHASE_LINES.noExitPlanMode, PLAN_PHASE_LINES.resume,
+  ]) assert.ok(PLAN_FIRST_DETAIL.includes(part), `计划说明缺少要素：${part}`)
+  // 创建回执（L1 看到的动作指令）与详情同源，不是另一套说法。
+  assert.ok(planCreateReceipt(id).includes(planDocPathText(id)))
+  assert.ok(planCreateReceipt(id).includes(PLAN_PHASE_LINES.reportSummaryShort))
+  assert.ok(planCreateReceipt(id).includes(PLAN_PHASE_LINES.reportQuestion))
+  // plan_save 工具描述、落盘回执、exit_plan_mode 拒绝文案。
+  assert.ok(PLAN_SAVE_TOOL_DESC.includes(planDocPathText()))
+  assert.ok(PLAN_SAVE_TOOL_DESC.includes(PLAN_PHASE_LINES.saveEntry))
+  assert.ok(planSavedNote({ path: 'p', chars: 1, bytes: 2 }).includes(PLAN_PHASE_LINES.reportRule))
+  assert.ok(EXIT_PLAN_MODE_DENIAL.includes(PLAN_PHASE_LINES.reportCallFull))
+  assert.ok(EXIT_PLAN_MODE_DENIAL.includes(planDocPathText()))
+  // 计划状态行与 plan_save 的落盘目录同一口径。
+  assert.ok(PLAN_STATUS_LINES.planning.includes('reports/plans/'))
+  // 协调者 policy（L1）仍要提到同一批事实（口径对齐，不重复定义句子）。
+  const policy = renderCoordinatorPolicy({})
+  assert.ok(policy.includes(PLAN_PHASE_LINES.reportQuestion))
+  assert.ok(policy.includes('plan_save'))
+})
+
+test('交付文案只有一处真源：brief / 详情 / 通知 / 分层常量引用同一批原子句', () => {
+  const detail = renderTaskDetail({ id: 't-1', title: '示例', status: 'running', brief: { title: '示例', goal: '目标', acceptance: ['验收'] } })
+  // 详情与通知的「交付不是结束」都从 copy.js 来（不是各写一句相似的）。
+  assert.ok(detail.includes(DELIVERY_LINES.state))
+  assert.ok(detail.includes(DELIVERY_LINES.timeout))
+  assert.equal(DELIVERY_NOT_FINAL, DELIVERY_NOT_FINAL_COPY)
+  assert.ok(DELIVERY_NOT_FINAL.includes(DELIVERY_LINES.notFinal))
+  assert.ok(DELIVERED_HINT.includes(DELIVERY_LINES.followupRule))
+  assert.ok(DELIVERED_HINT.includes(DELIVERY_LINES.closeCallWithTaskId))
+  assert.ok(DELIVERED_HINT.includes(DELIVERY_LINES.timeout))
+  // 文档/策略里的同一句事实：done 只是交付（两处必须是同一个词）。
+  const policy = renderCoordinatorPolicy({})
+  assert.ok(policy.includes(DELIVERY_LINES.state))
+  assert.ok(policy.includes(DELIVERY_LINES.notFinal))
+  assert.ok(DEFAULT_KEEPALIVE_PROMPT.includes(DELIVERY_LINES.state))
+})
+
+test('完整访问文案只有一处真源：brief 行 / 详情标签 / 详情纪律 / 创建回执同源', () => {
+  const brief = renderBrief({ taskId: 't-1', access: 'full' })
+  assert.ok(brief.includes(ACCESS_FULL.briefLine), 'brief 的访问级别行不是 copy.js 那一份')
+  const detail = renderTaskDetail({
+    id: 't-1', status: 'running', access: 'full', brief: { title: 'x', goal: 'g', acceptance: ['a'], target: 'C:/work' },
+  })
+  assert.ok(detail.includes(`访问级别：${ACCESS_FULL.label}`))
+  assert.ok(detail.includes(ACCESS_FULL.workerHint))
+  // 只读任务绝不带完整访问文案（两者互斥，随机组合由 status-property 覆盖）。
+  const readOnly = renderTaskDetail({
+    id: 't-1', status: 'running', read_only: true, access: 'full', brief: { title: 'x', goal: 'g', acceptance: ['a'], target: 'C:/work' },
+  })
+  assert.equal(readOnly.includes(ACCESS_FULL.label), false)
+})
+
+test('面板文案与服务端同值：STATUS_LABEL / PLAN_STATE_LABEL 不在客户端各写一套（漂移即失败）', () => {
+  const read = file => readFileSync(new URL(`../client/src/${file}`, import.meta.url), 'utf8')
+  const source = read('constants.js')
+  const literalPairs = (name) => {
+    const matched = new RegExp(`export const ${name} = \\{([\\s\\S]*?)\\n\\}`).exec(source)
+    assert.ok(matched !== null, `client/src/constants.js 里找不到 ${name}`)
+    return Object.fromEntries([...matched[1].matchAll(/(\w+):\s*'([^']*)'/g)].map(item => [item[1], item[2]]))
+  }
+  const clientPlan = literalPairs('PLAN_STATE_LABEL')
+  assert.deepEqual(clientPlan, PLAN_STATE_LABEL, '面板计划状态文案与服务端漂移')
+  // STATUS_LABEL：客户端多一个 missing（面板专有），其余必须逐字一致。
+  const clientStatus = literalPairs('STATUS_LABEL')
+  for (const [status, label] of Object.entries(STATUS_LABEL)) {
+    assert.equal(clientStatus[status], label, `面板状态文案与服务端漂移：${status}`)
+  }
+  assert.equal(clientStatus.missing, '缺失')
 })

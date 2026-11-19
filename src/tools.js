@@ -32,6 +32,10 @@ import { objectiveForMessage } from './goal.js'
 import { followupGate, stopIsIdempotent } from './panel-gates.js'
 import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, planStatusLine } from './plan-mode.js'
 import { MAX_PLAN_CHARS, isSafePlanTaskId, planSavedNote, writePlanDocument } from './plan-doc.js'
+// P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
+import {
+  ACCESS_FULL, DELIVERY_LINES, PLAN_SAVE_TOOL_DESC, deliveredReceiptNote, planCreateReceipt,
+} from './copy.js'
 import {
   branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, findReusableCheckout,
   notifyWorktreeOf, parseWorktreeRequest, worktreeListMarker, worktreeNoteLines, worktreeStatusLine,
@@ -485,7 +489,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，批准后同一会话会自动切回可写。'
       : ''
     const deliveredNote = wasDelivered
-      ? '\n该任务此前是「已交付待确认」，已回到进行中并在同一子会话继续；完成后会再次落「已交付待确认」，等你/用户确认或超时自动完成。'
+      ? `\n该任务此前是「${DELIVERY_LINES.state}」，已回到进行中并在同一子会话继续；`
+        + `完成后会再次落「${DELIVERY_LINES.state}」，等你/用户确认或${DELIVERY_LINES.timeout}。`
       : ''
     return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}`
   }
@@ -665,7 +670,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }
     if (waiting.length > 0) blocks.push(`【待你决定】${waiting.length}\n${waiting.map(lineOf).join('\n')}`)
     if (confirm.length > 0) {
-      blocks.push(`【待确认】${confirm.length}（已交付待确认：默认保持、等你或用户拍板；要改 task_message 追问原会话，用户确认后才 task_message({action:'close'})，超时自动完成）\n${confirm.map(lineOf).join('\n')}`)
+      blocks.push(`【待确认】${confirm.length}（${DELIVERY_LINES.state}：默认保持、等你或用户拍板；`
+        + `要改 ${DELIVERY_LINES.followupRule}，用户确认后才 ${DELIVERY_LINES.closeCall}，${DELIVERY_LINES.timeout}）\n${confirm.map(lineOf).join('\n')}`)
     }
     if (failed.length > 0) blocks.push(`【失败/丢失】${failed.length}\n${failed.map(lineOf).join('\n')}`)
     if (stale.length > 0) blocks.push(`【长时间没动静】${stale.length}\n${stale.map(lineOf).join('\n')}`)
@@ -1083,10 +1089,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }).join('、')
       const dependencyNote = depends.ids.length === 0 ? '' : `前置任务：${depNames}`
       // 完整访问在返回里明说：用户/协调者要能一眼看出这次子会话不在沙箱里跑。
-      const accessNote = fullAccess
-        ? '访问级别：完整（danger-full-access）——该子会话的文件沙箱不限制写入、bash/pwsh 也不再被沙箱拦；'
-          + '只对本任务生效，其他任务与默认策略都没动（构建/发版类任务用完照常走终态/清理）。'
-        : ''
+      const accessNote = fullAccess ? ACCESS_FULL.createNote : ''
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
       if (current.live === false) {
         const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
@@ -1109,10 +1112,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const outcome = await queue.enqueueAndPump(task.id)
       const resultTask = outcome.task
       const inferredNote = inferred === undefined ? '' : `（目标目录按工作区推断：${inferred.path}）`
-      const planNote = planFirst
-        ? `计划模式：子会话只读探索，探索完先 plan_save 把计划写入主会话工作区 reports/plans/${task.id}.md（自动登记为产物），`
-          + '再用 task_report blocked 只上报 3–8 行摘要 + 计划文档绝对路径 + 待拍板问题清单；你转交用户，批准后用 task_message 续派（插件自动切回可写）。'
-        : ''
+      const planNote = planFirst ? planCreateReceipt(task.id) : ''
       // 派发后以台账实际状态为准（created / reused / degraded / failed），不要凭创建期的计划糊弄用户。
       const worktreeLines = worktreeNoteLines({
         state: resultTask?.worktree_state ?? worktreeRecord?.state ?? 'none',
@@ -1180,7 +1180,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         `任务「${taskLabelWithId(task)}」`,
         `状态：${labelOf(task.status)}`,
         ...(task.read_only ? ['权限：只读（读正常，写文件/写 shell 被拒绝）'] : []),
-        ...(task.access === 'full' ? ['访问级别：完整（danger-full-access：文件沙箱不限制写入，bash/pwsh 也不再被沙箱拦）'] : []),
+        ...(task.access === 'full' ? [`访问级别：${ACCESS_FULL.label}`] : []),
         ...(planLine === undefined ? [] : [planLine]),
         ...(worktreeLine === undefined ? [] : [worktreeLine]),
         ...(task.group_id ? [`分组：${task.group_id}`] : []),
@@ -1202,7 +1202,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         const timeout = Number.isFinite(config?.deliveredTimeoutMinutes)
           ? Math.max(1, Math.min(1440, Math.floor(config.deliveredTimeoutMinutes)))
           : DELIVERED_TIMEOUT_MINUTES
-        lines.push(`交付：已交付待确认（默认等你或用户确认：要改 task_message 追问原会话；确认完成才 task_message({ action: 'close' })；超过 ${timeout} 分钟自动完成）`)
+        lines.push(`交付：${DELIVERY_LINES.state}（默认等你或用户确认：要改 ${DELIVERY_LINES.followupRule}；`
+          + `确认完成才 ${DELIVERY_LINES.closeCall}；超过 ${timeout} 分钟自动完成）`)
       }
       if (task.close_reason !== null && task.close_reason !== undefined) {
         lines.push(`关闭：${closeReasonLabel(task.close_reason)}`)
@@ -1591,16 +1592,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (args.status === 'done' && !deliveredNow) {
         return `已记录任务「${labelFor(next)}」的重复 done 回报（当前${labelOf(next.status)}，未重复迁移）。${hint === '' ? '' : `\n${hint}`}`
       }
-      const deliveredNote = deliveredNow
-        ? `\n已交付待确认：这是交付、不是终态；协调者可能用 task_message 追问（同一会话继续），确认或超时后才收成完成。`
-        : ''
+      const deliveredNote = deliveredNow ? deliveredReceiptNote : ''
       return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${deliveredNote}${hint === '' ? '' : `\n${hint}`}`
     }),
 
     // 计划落盘（P8 计划交付）：计划阶段是只读沙箱，这是子会话**唯一**被允许的写入口。
     // 路径不开放参数：只认任务编号，由插件拼成「主会话工作区/reports/plans/<taskId>.md」，
     // 编号形状白名单 + relative() 包含性校验两道闸拒绝逃逸（见 src/plan-doc.js）。
-    wrap('plan_save', '计划模式专用：把计划正文写入主会话工作区 reports/plans/<taskId>.md 并登记为任务产物（计划阶段唯一允许的写入口，路径固定、禁止逃逸）。', objectSchema({
+    wrap('plan_save', PLAN_SAVE_TOOL_DESC, objectSchema({
       task_id: str('任务编号，创建时给过'),
       content: str('计划正文（Markdown）：目标、步骤、要改的文件、验证方式、风险与待拍板问题'),
     }), async (args, exec) => {

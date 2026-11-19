@@ -17,7 +17,8 @@ index.js             插件入口：apply()、协调者系统提示（COORDINATO
 src/                 宿主侧逻辑（每个模块一个职责，见 docs/ARCHITECTURE.md）
   ledger.js          台账（SQLite）：任务/消息/通知/记忆/设置
   state.js           状态机（STATUSES / 迁移 / 文案）
-  tools.js           15 个工具的 schema + 文案 + 门控
+  copy.js            文案单一真源（计划/交付/完整访问的原子句，别在别处再写一份）
+  tools.js           10 个工具的 schema + 文案 + 门控
   dispatch.js        派发后端（subagent/team）、沙箱/plan/guard 注入
   delivered.js       两段式终态：确认交付 + 超时 sweeper
   settlement.js      结算闭环（子会话结束 → 终态/交付）

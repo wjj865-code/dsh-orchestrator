@@ -11,6 +11,8 @@
 // 不写结算、不改 progress_count —— 结算永远由 S1（src/settlement.js）在真正的 subagent 结束事件上做。
 import { randomUUID } from 'node:crypto'
 import { addMessage, bumpKeepAliveRound, findTaskBySession } from './ledger.js'
+// P1-C 文案单源：续跑提示里的交付口径与 task_detail / 通知同源（src/copy.js）。
+import { DELIVERY_LINES } from './copy.js'
 
 /** 注入消息的 source.kind：与真人发言、平台 relay 区分开（面板/历史里看得出是宿主续跑）。 */
 export const KEEPALIVE_SOURCE = 'orchestrator-keepalive'
@@ -22,7 +24,7 @@ export const GOAL_DONE_PHASES = new Set(['complete', 'cleared'])
 export const DEFAULT_KEEPALIVE_PROMPT = [
   '宿主 keep-alive：上一回合已结束，但本任务的目标还没完成。',
   '请接着推进同一个目标：先看已有进展与产物，再做下一件具体的实事，不要重复已经做完的工作。',
-  '全部验收标准达成后调用 task_report 上报 done（报 done 是交付，会停在「已交付待确认」等协调者确认；收到追问就在同一会话继续）；被阻塞或需要授权时上报 blocked / needs_auth，不要空转。',
+  `全部验收标准达成后调用 task_report 上报 done（报 done 是交付，会停在「${DELIVERY_LINES.state}」等协调者确认；收到追问就在同一会话继续）；被阻塞或需要授权时上报 blocked / needs_auth，不要空转。`,
 ].join('\n')
 
 const noop = () => {}

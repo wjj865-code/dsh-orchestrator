@@ -5,6 +5,8 @@ import { isAbsolute } from 'node:path'
 // requested 待建检出 / created / reused）。brief 的装依赖提示必须与它同口径：
 // degraded（目标不是 git 仓库）仍在原工作树里跑、依赖齐全，不该出现装依赖提示。
 import { ISOLATED_WORKTREE_STATES } from './write-guard.js'
+// P1-C 文案单源：访问级别这一行与 task_detail / 工具回执 / 状态行是同一句（src/copy.js）。
+import { ACCESS_FULL } from './copy.js'
 
 const text = value => typeof value === 'string' ? value.trim() : ''
 const single = value => text(value).replace(/[\r\n]+/g, ' ')
@@ -87,7 +89,7 @@ export function renderBrief({ taskId, access, worktreeState } = {}) {
   const id = single(taskId)
   const lines = []
   if (id !== '') lines.push(`【任务编号】${id}`)
-  if (access === 'full') lines.push(`【访问级别】完整（danger-full-access：文件沙箱不限制写入，bash/pwsh 也不再被沙箱拦；只对本任务生效）`)
+  if (access === 'full') lines.push(ACCESS_FULL.briefLine)
   if (ISOLATED_WORKTREE_STATES.includes(worktreeState)) lines.push(`【worktree 依赖】${WORKTREE_INSTALL_HINT}`)
   lines.push(`【任务详情】${DETAIL_POINTER_TEXT}`)
   lines.push(`【执行中待确认】${BLOCKED_HINT}`)

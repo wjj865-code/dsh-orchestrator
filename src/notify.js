@@ -5,6 +5,10 @@
 // 判据与平台一致（reports/t0.1-probes.md §3.3 + D6/D7）：present 用 lstat 判 type，目录 / 符号链接 /
 // 不存在一律被拒；平台单次硬上限 8，本插件按「1-4 个最关键的、最多 4 个」收敛成产品上限。
 import { deliverableOf as artifactKindOf } from './artifact-location.js'
+// P1-C 文案单源：交付指令与 task_detail / 文档 / 协调者 policy 共用 src/copy.js 的句子。
+import { DELIVERED_HINT, DELIVERY_LINES } from './copy.js'
+
+export { DELIVERED_HINT }
 
 const LEVEL = {
   progress: 'silent', done: 'notify', delivered: 'notify', blocked: 'interrupt', needs_auth: 'interrupt',
@@ -13,7 +17,7 @@ const LEVEL = {
 
 const DONE_LABEL = {
   failed: '失败', stalled: '可能卡住', cancelled: '已取消', orphaned: '会话已结束但没有终态回报',
-  done: '完成', delivered: '已交付待确认',
+  done: '完成', delivered: DELIVERY_LINES.state,
 }
 
 export function levelOf(status) {
@@ -161,7 +165,7 @@ const batchHint = batch => (batch.some(hasDeliverable) ? `\n  ${PRESENT_HINT}` :
 // 两段式终态（delivered）：交付通知必须带动作指令，否则协调者只会转述「完成了」，
 // 也会忘了 task_message 追问能复用原会话（用户随后只能新派任务）。
 // 默认口径是「保持待确认、别急着关」（0.14.x 起）：关闭要用户明确确认，或等超时。
-export const DELIVERED_HINT = '默认保持待确认（别急着关闭）：要改 task_message 追问原会话（不新建任务）；用户明确说确认完成时再 task_message({ action: "close", task_id: \'<任务编号>\' })；一直不确认则超时自动完成。'
+// 文案本体在 src/copy.js（DELIVERED_HINT），本文件只负责把它贴进通知。
 const deliveredBlock = item => item?.status === 'delivered'
   ? `\n  交付确认：${DELIVERED_HINT.replace('<任务编号>', String(item.taskId ?? ''))}`
   : ''
@@ -273,7 +277,7 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, 
     const allSettled = batch.every(item => item.status === 'done' || item.status === 'delivered')
     const text = batch.length === 1
       ? `任务「${nameOf(batch[0])}」${label(batch[0].status)}：${batch[0].summary}${questionBlock(batch[0])}${worktreeBlock(batch[0])}${artifactBlock(batch[0])}${deliveredBlock(batch[0])}`
-      : `${batch.length} 个任务${allDone ? '完成' : (allSettled ? '已交付待确认' : '状态更新')}：\n${batch.map(line).join('\n')}${batchHint(batch)}${deliveredBatchHint(batch)}`
+      : `${batch.length} 个任务${allDone ? '完成' : (allSettled ? DELIVERY_LINES.state : '状态更新')}：\n${batch.map(line).join('\n')}${batchHint(batch)}${deliveredBatchHint(batch)}`
     return deliver(text, batch)
   }
 

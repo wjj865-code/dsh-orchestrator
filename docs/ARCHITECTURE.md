@@ -253,6 +253,40 @@
   字数 1200 为主约束、条数 12 为安全阀；超限**显式告知**被截条数；全局偏好只写 settings（**不双写 memories**），
   项目偏好只写 memories（随 `task_detail` 注入子会话）。偏好只是提示词文本，不进 config、不改 dispatch、不碰沙箱。
 
+## 文案单源（`src/copy.js`）
+
+分层解决「谁该说什么」，本模块解决「这句话写在哪」。同一件事（计划阶段怎么落盘、交付不是终态、完整访问是什么）
+原先在 8 个模块各写一遍（`plan-mode` / `plan-doc` / `task-detail` / `tools` / `notify` / `prompt-layers` /
+`keepalive` / `write-guard`），改一处其余就跟不上；P1-C 起**跨模块共享的句子只在 `src/copy.js` 定义一次**：
+
+| 文案域 | 真源常量 | 复用到 |
+|---|---|---|
+| 计划阶段 | `PLAN_PHASE_LINES`（原子句）/ `PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `PLAN_STATUS_LINES` / `planDocPathText()` / `planCreateReceipt()` / `PLAN_SAVE_TOOL_DESC` / `planSavedNextStep` | `task-detail`（L3）、`plan-mode`（门面转发）、`plan-doc`（落盘回执）、`tools`（`task_create` 回执 + `plan_save` 描述）、`dispatch`（`exit_plan_mode` 拒绝）、`index.js`（L1 policy 插值） |
+| 两段式终态 | `DELIVERY_LINES`（状态名/非终态/追问/确认/超时）/ `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`（L3 完成动作）、`brief`（L2 回报指引）、`notify`（通知动作指令）、`prompt-layers`（跨层口径）、`keepalive`、`write-guard`、`tools`（回执/状态行/收件箱）、`deps` / `main-rotation` / `tool-migrations`（状态名） |
+| 完整访问 | `ACCESS_FULL.label` / `.briefLine` / `.workerHint` / `.createNote` | `brief`（L2 行）、`task-detail`（标签与纪律）、`tools`（`task_create` 回执与 `task_status` 行） |
+
+约定（写新文案前先自问）：
+
+1. **判据**：这句话会不会在第二个模块出现？会 → 放 `copy.js`；不会 → 留在本层（协调者规则归 L1、面板短标签归客户端）。
+2. `copy.js` 是**叶子**：不 import 任何模块，谁都能引用而不引入环；`plan-mode.js` 仍对外转发计划域常量，
+   调用方既可以 `import { PLAN_FIRST_DETAIL } from './plan-mode.js'`，也可以直接从 `copy.js` 取（同一对象引用）。
+3. 客户端是浏览器 bundle、**不能** import 服务端模块：面板的 `STATUS_LABEL` / `PLAN_STATE_LABEL` 仍各存一份字面量，
+   由 `test/copy-consistency.test.js` 的**同值断言**兜住漂移（漂了就红）。
+4. 静态断言守着「别再抄一份」：`唯一允许的写入口` / `3–8 行摘要` / `计划文档绝对路径 + 待拍板问题清单` /
+   `不要自行宣告任务结束` / `danger-full-access：文件沙箱不限制写入` 这些标记只许出现在 `src/copy.js`。
+
+## 属性测试（`test/status-property.test.js`）
+
+状态机与文案拼装用**固定种子的随机路径**验证，而不是再抄一遍 10×10 矩阵（那由 `test/state.test.js` 锁静态表）：
+
+| 用例 | 规模 | 断言 |
+|---|---|---|
+| 随机迁移 | 12,000 步（seed `0x9e3779b9`，可复现：同种子路径逐条相同） | 每步 `canTransition`/`nextStatus` 与 `TRANSITIONS` 逐位一致；非法边必抛错；走到终态即「重启新任务」，12k 步覆盖全部 10 个状态；< 2s |
+| 能力位不变量 | 每个到达状态 | 能力位齐全且是布尔；非活跃态只能迁到非活跃态（终态闭包）；`terminal ⇒ !followup`；`releases ⇒ !active`；`rotationActive/waiting ⇒ active`；`followup ⇒ 有回 running 的边`；`retryable ⇒ 不能原地复活`；无出边 ⇒ 必须是流程终态 |
+| 文案随机组合 | 10,000 组任务字段（只读 × 完整访问 × 计划 × 四种 plan_state × 隔离 × 编排字段） | 同输入渲染两次逐字相同；只读与完整访问互斥；计划说明恰一段且逐字等于 `PLAN_FIRST_DETAIL`；「已交付待确认」恰出现一次；四条分支都被覆盖 |
+
+失败信息带种子与步号：把种子抄进新用例即可复现同一条路径（不依赖机器/时间）。
+
 ## 结算闭环（S1）
 
 子会话不一定都会回报：模型可能忘了 `task_report`，也可能被打断或起不来。`src/settlement.js` 消费平台的**结算**信号，把 `running` 推到终态（自然结束先落 `delivered`），用户不再看到「永远在跑」的幽灵任务：

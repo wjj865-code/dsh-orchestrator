@@ -10,6 +10,8 @@
 // - 越权（不是任务自己的子会话 / 不是计划任务）、正文大小、日志、产物登记都在 src/tools.js。
 import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+// 计划文案单源（P1-C）：落盘后的「下一步」与 task_detail / 工具回执用同一句。
+import { planSavedNextStep } from './copy.js'
 
 /** 计划文档目录（相对主会话工作区）。 */
 export const PLAN_SUBDIR = join('reports', 'plans')
@@ -118,5 +120,5 @@ export async function writePlanDocument({ mainDir, task, content = '', savedAt =
 /** 工具结果文案：落盘成功后下一步该做什么（摘要上报，不搬正文）。 */
 export function planSavedNote({ path, chars, bytes }) {
   return `计划已落盘：${path}（正文 ${chars} 字 / 文件 ${bytes} 字节）｜已登记为任务产物（通知与面板可交付）。\n`
-    + '下一步用 task_report 报 blocked：summary 只写 3–8 行摘要；question 写「计划文档绝对路径 + 待拍板问题清单」，不要把计划正文贴进 question（会被截断）。'
+    + planSavedNextStep
 }

@@ -132,6 +132,57 @@
 **不做**：不加 `legacyTools` 兼容开关（那会多一个临时配置键，且旧名会重新出现在工具表里）；不动面板
 （`panel-actions` / `host-route` / 客户端）；不删 stop/retry/close 的业务实现（只换入口）；不 bump 版本、不 push、不打 tag。
 
+### P1-C：文案单源 + 属性测试（refactor(copy)）
+
+把「计划阶段怎么落盘」「交付不是终态」「完整访问是什么」这三件事的措辞收口到**一个叶子模块**
+`src/copy.js`（不 import 任何模块，谁都能引用而不引环），其余模块只引用、不再各写一份；同时补一组
+**固定种子的属性测试**（12,000 步状态迁移 + 10,000 组文案组合），防止文案与状态机在随机组合下漂移。
+
+**合并的文案源**
+
+| 文案域 | 真源（`src/copy.js`） | 复用到 |
+|---|---|---|
+| 计划阶段 | `PLAN_PHASE_LINES`（原子句）/ `PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `PLAN_STATUS_LINES` / `planDocPathText()` / `planCreateReceipt()` / `PLAN_SAVE_TOOL_DESC` / `planSavedNextStep` | `task-detail`（L3 详情）、`plan-mode`（计划域门面，转出同一对象）、`plan-doc`（落盘回执）、`tools`（`task_create` 回执 + `plan_save` 工具描述）、`dispatch`（`exit_plan_mode` 拒绝文案）、`index.js`（协调者 policy 插值） |
+| 两段式终态 | `DELIVERY_LINES`（状态名/非终态/追问/确认/超时原子句）/ `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`（L3 完成动作）、`brief`（L2 回报指引同源 `SUMMARY_FIELDS`）、`notify`（交付通知动作指令）、`prompt-layers`（跨层共享口径）、`keepalive`（续跑提示）、`write-guard`（冲突提示）、`tools`（回执/`task_status`/收件箱）、`deps` / `main-rotation` / `tool-migrations`（状态名） |
+| 完整访问 | `ACCESS_FULL.label` / `.briefLine` / `.workerHint` / `.createNote` | `brief`（L2 访问级别行）、`task-detail`（标签 + 纪律提示）、`tools`（`task_create` 回执 + `task_status` 行） |
+
+**删掉的重复点**（同一句话原先各写一份）
+
+1. **计划出口**（`plan_save` 落盘 → `task_report blocked` 只报摘要 → 批准后续派）：`plan-mode.js` 的
+   `PLAN_FIRST_DETAIL`（7 行块）、`EXIT_PLAN_MODE_DENIAL`、`planStatusLine` 的 planning 行，`plan-doc.js` 的
+   `planSavedNote`，`tools.js` 的 `task_create` 回执与 `plan_save` 描述，`index.js` policy 各一份 → **7 处 → 1 处**。
+2. **交付不是终态**（状态名 + 追问复用原会话 + 确认/超时收成完成）：`prompt-layers` 的 `DELIVERY_NOT_FINAL`、
+   `notify` 的 `DELIVERED_HINT`、`task-detail` 的 `FINISH_HINT`、`tools` 的交付回执 / `task_status` 交付行 /
+   收件箱汇总 / 追问回执、`write-guard` 的待确认提示、`keepalive` 的续跑提示 → **10 处 → 1 处**（状态名与五个原子句）。
+3. **完整访问**：`brief` 的【访问级别】行、`task-detail` 的标签与风险提示、`tools` 的创建回执与状态行 → **5 处 → 1 处**。
+4. **客户端双份文案**（浏览器 bundle 不能 import 服务端模块）：`client/src/constants.js` 的 `PLAN_STATE_LABEL` /
+   `STATUS_LABEL` 保留字面量，但加**同值断言**（`test/copy-consistency.test.js`），漂移即红。
+
+**属性测试（`test/status-property.test.js`，4 条）**
+
+- 随机迁移 **12,000 步**（固定种子 `0x9e3779b9`，同种子路径逐条可复现）：每步 `canTransition` / `nextStatus` 与
+  `TRANSITIONS` 逐位一致，非法边必抛错；走到终态即「重启新任务」，12k 步覆盖全部 10 个状态；耗时 ~120ms（预算 < 2s）。
+- **能力位不变量**：`terminal ⇒ !followup`、`releases ⇒ !active`、`rotationActive/waiting ⇒ active`、
+  `followup ⇒ 有回 running 的边`、`retryable ⇒ 不能原地复活`、非活跃态只能迁到非活跃态（终态闭包）、
+  无出边 ⇒ 必须是流程终态。
+- 文案随机组合 **10,000 组**（只读 × 完整访问 × 计划 × 四种 `plan_state` × 隔离 × 编排字段）：同输入渲染两次逐字相同、
+  只读与完整访问互斥、计划说明恰一段且逐字等于 `PLAN_FIRST_DETAIL`、「已交付待确认」恰出现一次，并断言四条分支都被覆盖。
+
+**测试断言**
+
+- `test/copy-consistency.test.js` 新增 5 条：原子句标记只许出现在 `src/copy.js`（静态扫描 `src/**` + `index.js`）；
+  计划文案在详情 / 创建回执 / 工具描述 / 落盘回执 / 拒绝文案 / policy **逐字同源**；交付文案在 brief / 详情 / 通知 /
+  分层常量同源；完整访问文案四处同源；客户端 `PLAN_STATE_LABEL` / `STATUS_LABEL` 与服务端**同值**。
+- 用例数 973 → **982**（+4 属性 +5 单源）；`pnpm test` 982 条 / 977 pass / 5 skip / 0 fail。
+
+**文案差异（两处等价说法统一，无行为变化）**：`plan_saved` 回执补上摘要口径「（做什么、改哪些文件、怎么验证）」
+与 500 字上限的说明；`task_status` 的完整访问行由「（danger-full-access）——该子会话…」改为与 brief/详情同一句。
+
+**用户可见影响**：无行为变化（工具契约、台账、面板、通知分级、沙箱注入都没动）；只是同一件事不再有第二套说法。
+
+**不做**：不改工具面（P1-B 已完成）、不动配置（P1-A）、不合并文档（P1-D）；不删 `plan-doc.js`（只读沙箱下唯一写入口）；
+不引入官方 `exit_plan_mode` 审阅流（P2）；不 bump 版本、不 push、不打 tag。
+
 ## 0.20.1（2026-11-17）
 
 这一版**只改测试，产品零变更**：`src/`、`dist/`、`index.js`、`preset-tools.js` 一行未动，不发新能力、

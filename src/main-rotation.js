@@ -22,6 +22,8 @@ import { stat } from 'node:fs/promises'
 import { deleteSetting, getSetting, listTasks, setSetting } from './ledger.js'
 import { onboardingKey } from './onboarding.js'
 import { statusesWith } from './status-facts.js'
+// P1-C 文案单源：阻断原因里的状态名与通知/工具回执同源（src/copy.js）。
+import { DELIVERY_LINES } from './copy.js'
 
 const MINUTE_MS = 60_000
 const HOUR_MS = 3_600_000
@@ -228,7 +230,7 @@ export function evaluateRotation({
   const delivered = taskList.filter(task => task.status === 'delivered')
   if (delivered.length > 0) {
     // P2：待确认要协调者拍板，换会话会把确认/追问窗口切断，只剩超时自动完成。
-    block('delivered-pending', `还有 ${delivered.length} 个任务处于「已交付待确认」：换主会话会切断确认与追问窗口`)
+    block('delivered-pending', `还有 ${delivered.length} 个任务处于「${DELIVERY_LINES.state}」：换主会话会切断确认与追问窗口`)
   }
   const deliveredWithArtifacts = delivered.filter(task => Array.isArray(task.artifacts) && task.artifacts.length > 0)
   if (deliveredWithArtifacts.length > 0) {

@@ -3,6 +3,8 @@
 import { getTask, listTasks, recentMessages, transition } from './ledger.js'
 import { taskLabelWithId } from './task-label.js'
 import { statusLabel } from './state.js'
+// P1-C 文案单源：「已交付待确认」这个状态名只在 src/copy.js 定义。
+import { DELIVERY_LINES } from './copy.js'
 
 const FAILED_DEP = new Set(['failed', 'cancelled', 'orphaned'])
 const MAX_DEPENDS = 20
@@ -115,7 +117,7 @@ export function upstreamBrief(db, dependsOn) {
       continue
     }
     const report = recentMessages(db, id, 5).find(row => row.kind === 'report')
-    const settledText = dep.status === 'done' ? '已完成' : (dep.status === 'delivered' ? '已交付待确认' : `当前${labelOf(dep.status)}`)
+    const settledText = dep.status === 'done' ? '已完成' : (dep.status === 'delivered' ? DELIVERY_LINES.state : `当前${labelOf(dep.status)}`)
     const summary = report === undefined
       ? (dep.status === 'done' || dep.status === 'delivered' ? dep.goal : `（当前${labelOf(dep.status)}）`)
       : String(report.rendered).replace(/^\[[^\]]+\]\s*/, '')

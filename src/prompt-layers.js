@@ -30,6 +30,10 @@
 //   2. 它需要**每回合都在**吗？——是 → L1；只在派发那一刻需要 → L2；只在子会话主动要时 → L3。
 //   3. 它是不是「收到通知后马上要做的动作」？——是 → 通知 hint；否则别写进通知。
 import { BLOCKED_HINT, CONFIRM_HINT } from './brief.js'
+// P1-C 文案单源：跨层共享的「交付不是结束」与通知/详情/工具回执同源（src/copy.js）。
+import { DELIVERY_NOT_FINAL } from './copy.js'
+
+export { DELIVERY_NOT_FINAL }
 
 /**
  * 五层清单（机器可读）：文档、测试与排障都按这张表核对「谁该说什么」。
@@ -123,8 +127,9 @@ export const LAYER_NAME = Object.freeze(Object.fromEntries(PROMPT_LAYERS.map(lay
  *   - 子会话不能问用户（L2 说原因、L1 说协调者要做的事）；
  *   - 交付不是结束（L1 决策口径、L2 回报指引、L3 完成动作、通知动作指令都依赖它）；
  *   - present 的 1-4 个上限（L1 规则与通知动作指令）。
+ *
+ * P1-C：句子本体已收口到 `src/copy.js`（这里只做分层出口，避免「同一句话两处定义」）。
  */
-export const DELIVERY_NOT_FINAL = 'done 不是终态：任务落在「已交付待确认」（delivered），等你或用户确认，或超时自动完成'
 
 /** 子会话问不了用户（平台约束，L2 的 BLOCKED_HINT / CONFIRM_HINT 已含此事实）。 */
 export const WORKER_CANNOT_ASK = '子会话调 ask_user_question 会被平台拒（DELEGATED_CALLER）'

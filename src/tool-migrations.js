@@ -8,12 +8,13 @@
 //
 // 注意：这里**只放被合并掉的 6 个名**；`task_create` / `task_status` / `task_detail` /
 // `task_report` / `plan_save` / `read_workspace` / `memory_note` 名字不变（子会话契约稳定）。
+import { DELIVERY_LINES } from './copy.js'
 
 /** 旧工具名 → 新调用（`call` 可直接抄进提示词/文档，`note` 说清它原来干什么）。 */
 export const REMOVED_TOOLS = {
   task_stop: {
     call: "task_message({ task_id, action: 'stop' })",
-    note: '停止任务：运行中/排队/等前置/已交付待确认都能停，行为与原 task_stop 一致',
+    note: `停止任务：运行中/排队/等前置/${DELIVERY_LINES.state}都能停，行为与原 task_stop 一致`,
   },
   task_retry: {
     call: "task_message({ task_id, action: 'retry' })",
@@ -21,7 +22,7 @@ export const REMOVED_TOOLS = {
   },
   task_close: {
     call: "task_message({ task_id, action: 'close' })",
-    note: '把「已交付待确认」确认成 done，行为与原 task_close 一致（走同一个 closeDelivered）',
+    note: `把「${DELIVERY_LINES.state}」确认成 done，行为与原 task_close 一致（走同一个 closeDelivered）`,
   },
   task_inbox: {
     call: "task_list({ view: 'inbox' })",
