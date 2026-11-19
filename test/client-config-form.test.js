@@ -54,18 +54,18 @@ const textOf = node => {
 // ── 保存契约：只发改过的可编辑字段 ────────────────────────────────
 
 test('buildOps：只发改过的可编辑字段；清空已覆盖字段发 unset；只读字段永不写入', () => {
-  const saved = { maxQueue: 50, keepAlive: false, digestAt: '09:30', mainRotation: 'off' }
+  const saved = { maxQueue: 50, autoResumeQueue: false, digestAt: '09:30', mainRotation: 'off' }
   const overridden = new Set(['digestAt'])
 
   // 无改动 → 无操作
   assert.deepEqual(buildOps(saved, saved, overridden), [])
 
   // 改两个可编辑字段 + 清空一个已覆盖字段 + 改一个只读字段（必须被忽略）
-  const draft = { maxQueue: 60, keepAlive: true, digestAt: '', mainRotation: 'auto' }
-  // 顺序按字段表声明（maxQueue 在 keepAlive 之前），不是按草稿对象顺序。
+  const draft = { maxQueue: 60, autoResumeQueue: true, digestAt: '', mainRotation: 'auto' }
+  // 顺序按字段表声明（maxQueue 在 autoResumeQueue 之前），不是按草稿对象顺序。
   assert.deepEqual(buildOps(draft, saved, overridden), [
     { op: 'set', path: ['maxQueue'], value: 60 },
-    { op: 'set', path: ['keepAlive'], value: true },
+    { op: 'set', path: ['autoResumeQueue'], value: true },
     { op: 'unset', path: ['digestAt'] },
   ])
 })

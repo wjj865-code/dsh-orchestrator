@@ -29,7 +29,8 @@ export const DETAIL_POINTER_TEXT = '先调 task_detail（参数 task_id 填上�
 //
 // 所以「问用户」这件事始终由协调者做（带子会话给的同一批选项），子会话只负责**把问题与选项交回去**：
 // - 执行中（提示三）：task_report blocked + question/options → 通知原样带给协调者 → 协调者问用户 → task_message 续派；
-// - 交付时（提示一）：done 会清掉 question/options，待确认要点写进 summary，协调者据此带选项问。
+// - 交付时（提示一）：done 会清掉 question/options，待确认要点写进 summary；协调者不为「能否关闭」提问，
+//   任务留待确认、超时自动完成，用户要改时协调者 task_message 回到同一会话。
 export const BLOCKED_HINT = '执行中遇到需要用户拍板的事（业务取舍、范围变更、不可逆操作、方案歧义等）：'
   + '用 task_report 的 blocked 上报「问题 + 选项建议」，由协调者用 ask_user_question 向用户确认后经 task_message 续派再继续；'
   + '不要自行假设用户意图、不要阻塞等待、也不要等不到回复就跳过。blocked 只是上报，不等于已获授权。'

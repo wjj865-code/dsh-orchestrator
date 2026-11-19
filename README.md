@@ -152,7 +152,7 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | `rotateIdleMinutes` | `10` | 多久没交互才算「空下来」（1–1440） |
 | `rotateArchiveOld` | `true` | 轮换后是否归档旧主会话（**不可逆**）；`false` = 只改名退役 |
 
-> **配置面 41 → 35 → 28**：P1-A 删了 `backend` 与 5 个 `rotate*` 键；P2-2 又删了续跑四键（续跑改用 `task_create({ goalRounds })`）和三个固定成常量的阈值键。老 profile 里留着也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#未发布)。
+> **配置面 41 → 35 → 28**：P1-A 删了 `backend` 与 5 个 `rotate*` 键；P2-2 又删了续跑四键（续跑改用 `task_create({ goalRounds })`）和三个固定成常量的阈值键。老 profile 里留着也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#02302026-11-19)。
 
 ## 核心概念
 
@@ -299,7 +299,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页与 `logs/` |
 | 子任务报 done 后一直「待确认」 | 正常：默认保持待确认；要收尾就 `task_message({action:'close'})`，或等 `deliveredTimeoutMinutes` 超时 |
 | 任务停在「会话丢失」 | 先用 `task_status` 看进展；要接着做就 `task_message({action:'retry'})` |
-| 提示「配置键 X 已删除」 | 老 profile 里的已删键按提示删掉即可，插件已按默认值运行（迁移见 [CHANGELOG](CHANGELOG.md#未发布)） |
+| 提示「配置键 X 已删除」 | 老 profile 里的已删键按提示删掉即可，插件已按默认值运行（迁移见 [CHANGELOG](CHANGELOG.md#02302026-11-19)） |
 | 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制；确实要写仓库外用 `access:'full'` 或 CI |
 | 台账损坏 | 用 `snapshots/` 里最新快照手工替换（不会自动恢复） |
 | Bot 模式看不到入口 | 用会话头「任务」按钮；侧栏入口只在纯 dsh 表面 |

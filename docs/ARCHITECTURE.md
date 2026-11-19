@@ -421,8 +421,9 @@
 
 ### 插件页配置卡片
 
-插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**32→35 个字段**（P1-A 配置面收缩后为 35），
-等价于手改 profile 的 `cordis.patch.yml`。DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供
+插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**28 个字段**，与 `loadConfig({})` 的实际键集合一一对应
+（P2-2 删掉的 7 个键——`keepAlive*` 四键与 `mergeWindowMs` / `stallRounds` / `preferencesMaxItems`——不出现在表单上，
+只由 `src/config.js` 的 `DEPRECATED_KEYS` 给弃用警告），等价于手改 profile 的 `cordis.patch.yml`。DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供
 `configForms`（值 + 写操作）与 slot，**不生成表单**（0.2.2-rc.3 的 `autoGenerate` 字段全 asar 无 client 消费方）。
 
 **三件套**（字段规格只声明一次，三方共用，避免漂移）：

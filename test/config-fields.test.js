@@ -30,19 +30,19 @@ test('P0-1 非法配置不拒载：垃圾值/非有限数都不产生 issues', (
   const junk = {
     staleMinutes: 'not-a-number',
     maxQueue: Number.NaN,
-    keepAlive: 'yes-please',
+    autoResumeQueue: 'yes-please',
     sameDirGuard: 'GARBAGE_MODE',
     digestAt: 12345,
     workerPreset: { nested: 'object' },
-    stallRounds: Number.POSITIVE_INFINITY,
+    watchdogIdleMinutes: Number.POSITIVE_INFINITY,
     memoryLimit: 999999,
   }
   const result = Config['~standard'].validate(junk)
   assert.equal(result.issues, undefined, `垃圾配置不得拒载：${JSON.stringify(result.issues)}`)
 
   // 合法值必须原样保留（.loose() 只兜底非法值，不能顺手抹掉用户配置）。
-  const ok = unwrapVolatile(Config['~standard'].validate({ staleMinutes: 10, keepAlive: true, sameDirGuard: 'warn' }).value)
-  assert.deepEqual([ok.staleMinutes, ok.keepAlive, ok.sameDirGuard], [10, true, 'warn'])
+  const ok = unwrapVolatile(Config['~standard'].validate({ staleMinutes: 10, autoResumeQueue: true, sameDirGuard: 'warn' }).value)
+  assert.deepEqual([ok.staleMinutes, ok.autoResumeQueue, ok.sameDirGuard], [10, true, 'warn'])
 })
 
 // ── P0-2：volatile 漏标 = 插件页上静默少一行 ──────────────────────
@@ -97,15 +97,28 @@ test('字段表与 loadConfig 双向一致（字段集 / 默认值 / 枚举 / �
 })
 
 test('废弃键不出现在 UI 字段表', () => {
-  // 6 个键由 src/config.js 的 DEPRECATED_KEYS 给迁移提示；UI 侧不暴露。
+  // 13 个键由 src/config.js 的 DEPRECATED_KEYS 给迁移提示（P1-A 的 6 个 + P2-2 的 7 个）；UI 侧不暴露。
   assert.deepEqual(Object.keys(DEPRECATED_KEYS).sort(), [
     'backend', 'rotateAfterDiskMiB', 'rotateAfterContextTokens',
     'rotateAfterSessions', 'rotateAfterTasks', 'rotateCheckIntervalHours',
+    'keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt',
+    'mergeWindowMs', 'stallRounds', 'preferencesMaxItems',
   ].sort())
   for (const key of Object.keys(DEPRECATED_KEYS)) {
     assert.equal(FIELD_BY_KEY[key], undefined, `废弃键 ${key} 不得出现在字段表`)
     assert.ok(!FIELD_KEYS.includes(key) && !EDITABLE_KEYS.includes(key), `废弃键 ${key} 不得可编辑`)
   }
+})
+
+test('P2-2 语义对齐：字段表只投影 loadConfig({}) 实际产出的 28 个键', () => {
+  // 反向验证：把已删的 7 键任意一个加回 config-fields.js → 本条立刻红。
+  const deleted = ['keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt', 'mergeWindowMs', 'stallRounds', 'preferencesMaxItems']
+  for (const key of deleted) {
+    assert.equal(FIELD_KEYS.includes(key), false, `${key} 已删除，不得回到表单`)
+  }
+  assert.equal(FIELD_KEYS.length, 28, '字段表应与 loadConfig({}) 的 28 键同规模')
+  // 续跑只剩「按任务声明」这一条路：不再有续跑分组，也没有任何 keepalive 分组。
+  assert.deepEqual(FIELD_GROUPS.map(group => group.id).includes('keepalive'), false, '续跑分组应随四个续跑键一起删除')
 })
 
 test('mainRotation 默认 off，拼错也回落 off', () => {
@@ -117,13 +130,13 @@ test('mainRotation 默认 off，拼错也回落 off', () => {
 // ── P0-3：volatile 到达 apply 是包装对象，不解包 = 用户配置被丢弃 ──
 
 test('P0-3 volatile 必须解包：不解包时 loadConfig 丢弃配置，解包后生效', () => {
-  const validated = Config['~standard'].validate({ staleMinutes: 10, keepAlive: true })
+  const validated = Config['~standard'].validate({ staleMinutes: 10, maxQueue: 60 })
   // 对照：直接喂校验结果（包装对象）→ 类型判断失效 → 回落默认，用户的 10 被无声丢弃。
   assert.equal(loadConfig(validated.value).staleMinutes, 30, '前置事实：不解包会丢配置')
   // 正确路径：解包后生效。
   const flat = unwrapVolatile(validated.value)
   assert.equal(loadConfig(flat).staleMinutes, 10)
-  assert.equal(loadConfig(flat).keepAlive, true)
+  assert.equal(loadConfig(flat).maxQueue, 60)
   // 解包器本身：非包装值原样、null/undefined 给空对象、不误判「带 get 的普通对象」。
   const lookalike = { get: () => 'x', other: 1 }
   assert.deepEqual(unwrapVolatile({ a: 1 }), { a: 1 })

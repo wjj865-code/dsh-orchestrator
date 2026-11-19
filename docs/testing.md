@@ -102,7 +102,7 @@
 [ ] 工具面变化 → cordis.patch.yml allow、README 工具表、tool-migrations 映射、check-docs
 [ ] 配置面变化 → loadConfig 键数、README 配置表、check-docs
 [ ] 文档：README（用户可见）/ ARCHITECTURE（机制）/ LIMITATIONS（边界）/ 本文件（复核）
-[ ] CHANGELOG 顶部「未发布」写清「为什么改 / 改了什么 / 边界」
+[ ] CHANGELOG 顶部本次版本段写清「为什么改 / 改了什么 / 边界」
 [ ] pnpm test + check:client + check:version + check:docs + npm pack --dry-run
 [ ] 真机矩阵（§7）勾一遍，未验项写明原因与谁验
 [ ] 文档总行数仍在预算内（check-docs 若超，先删重复而不是抬预算）

@@ -1,4 +1,4 @@
-﻿/* dsh-orchestrator 面板样式表（P7 / T7.2 从 client.js 的 STYLE_TEXT 迁入）。
+/* dsh-orchestrator 面板样式表（P7 / T7.2 从 client.js 的 STYLE_TEXT 迁入）。
  * 只消费宿主设计平台 token（--dsw-* / --ds-*），深浅色由宿主切换 body[data-ds-dark-theme] 时自动跟随。
  * 平台不 serve .css（assets 路由白名单只有图片），所以构建时用 ?inline 把整张表内联回 JS，
  * 运行时由 ensureStyles() 注入一个 <style id="dsh-orchestrator-styles">。

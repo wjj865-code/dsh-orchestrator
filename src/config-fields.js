@@ -11,6 +11,11 @@
 // 回落默认（那是运行时的最后一道防线，行为零变化）；本文件描述的是「字段的规格」，供
 // schema 与 UI 使用。两边由 test/config-fields.test.js 双向比对守住。
 //
+// 0.23.0（P2-2 合并）：字段表投影的是 `loadConfig({})` **实际产出的 28 个键**。已删的 7 个键
+// （`keepAlive*` 四个续跑键 + `mergeWindowMs` / `stallRounds` / `preferencesMaxItems` 三个常量化的阈值键）
+// **不得**再出现在这里——它们只留在 `src/config.js` 的 DEPRECATED_KEYS 里给弃用警告，
+// 表单上多一行「已删除的键」= 用户改完写回去仍是无效配置。
+//
 // 暴露策略（Q3 已定）：高频子集可编辑；`mainRotation.*` 与 `coordinatorSession` 只读展示
 // （readonly: true）——它们要么牵动不可逆动作（归档），要么是运维兜底通道，不该在表单里手滑改。
 
@@ -18,7 +23,6 @@
 export const FIELD_GROUPS = Object.freeze([
   Object.freeze({ id: 'dispatch', label: '派发与队列' }),
   Object.freeze({ id: 'watchdog', label: '看门狗与陈旧判定' }),
-  Object.freeze({ id: 'keepalive', label: '回合间续跑' }),
   Object.freeze({ id: 'delivery', label: '交付与通知' }),
   Object.freeze({ id: 'isolation', label: '隔离与并发' }),
   Object.freeze({ id: 'memory', label: '记忆与快照' }),
@@ -54,16 +58,8 @@ export const CONFIG_FIELDS = Object.freeze([
     label: '重启后自动恢复排队任务',
   }),
   Object.freeze({
-    key: 'mergeWindowMs', group: 'dispatch', kind: 'number', min: 1, max: 600000, integer: true, default: 5000,
-    label: '完成通知合并窗口（ms）',
-  }),
-  Object.freeze({
     key: 'staleMinutes', group: 'dispatch', kind: 'number', min: 1, max: 1440, integer: true, default: 30,
     label: '陈旧判定（分钟）', hint: '多久无动静标陈旧 / stall 提醒间隔',
-  }),
-  Object.freeze({
-    key: 'stallRounds', group: 'dispatch', kind: 'number', min: 1, max: 1000, integer: true, default: 3,
-    label: 'stall 提醒轮数', hint: '连续 progress 达阈值后提醒一次「可能卡住」',
   }),
 
   // ── 看门狗 ────────────────────────────────────────────────────
@@ -78,24 +74,6 @@ export const CONFIG_FIELDS = Object.freeze([
   Object.freeze({
     key: 'watchdogIdleMinutes', group: 'watchdog', kind: 'number', min: 1, max: 1440, integer: true, default: 15,
     label: '空闲阈值（分钟）', hint: '同一段空闲每任务只报一次',
-  }),
-
-  // ── 续跑 ──────────────────────────────────────────────────────
-  Object.freeze({
-    key: 'keepAlive', group: 'keepalive', kind: 'boolean', default: false,
-    label: '回合间续跑', hint: '需要 ctx.goals；默认关闭，升级后行为不突变',
-  }),
-  Object.freeze({
-    key: 'keepAliveMode', group: 'keepalive', kind: 'enum', values: ['steer', 'followup'], default: 'steer',
-    label: '续跑方式', hint: 'steer = 同回合再走一步；followup = 新回合（会写 turn/end）',
-  }),
-  Object.freeze({
-    key: 'keepAliveMaxRounds', group: 'keepalive', kind: 'number', min: 1, max: 50, integer: true, default: 8,
-    label: '续跑轮数上限',
-  }),
-  Object.freeze({
-    key: 'keepAlivePrompt', group: 'keepalive', kind: 'string', default: '',
-    label: '续跑提示词', hint: '留空 = 用内置默认提示',
   }),
 
   // ── 交付与通知 ────────────────────────────────────────────────
@@ -153,10 +131,6 @@ export const CONFIG_FIELDS = Object.freeze([
   Object.freeze({
     key: 'preferencesMaxChars', group: 'preferences', kind: 'number', min: 200, max: 4000, integer: true, default: 1200,
     label: '偏好字数上限',
-  }),
-  Object.freeze({
-    key: 'preferencesMaxItems', group: 'preferences', kind: 'number', min: 1, max: 20, integer: true, default: 12,
-    label: '偏好条数上限',
   }),
 
   // ── 主会话轮换（只读，Q3） ─────────────────────────────────────

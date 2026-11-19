@@ -9,7 +9,7 @@ import { DEFAULT_MAX_CHARS as DEFAULT_PREFERENCE_MAX_CHARS } from './preferences
 /**
  * 已删除的配置键（P1-A 41 → 35、P2-2 35 → 28）→ 迁移提示。
  * 读到就 warn 一次（进程级按 key 去重），**值一律不回填**：旧配置不会「看起来还在」，
- * 而是明确告诉用户该改什么/哪个键已经不起作用。迁移说明见 CHANGELOG「未发布」段。
+ * 而是明确告诉用户该改什么/哪个键已经不起作用。迁移说明见 CHANGELOG「0.23.0」段。
  */
 export const DEPRECATED_KEYS = Object.freeze({
   backend: '派发后端只剩 subagent；team 后端在 P0-1 已随平台 API 删除',
