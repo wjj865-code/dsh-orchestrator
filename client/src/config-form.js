@@ -155,8 +155,9 @@ export function createConfigCard({ React, h, Icon }) {
       try {
         const accepted = await form.mutate(ops, snapshot.revision)
         if (accepted === true) {
-          // 保存会触发插件重载（台账不丢，但 watchdog/轮换计时器会重置）——明确告诉用户。
-          setNotice('已保存。配置即时生效（插件会重载，台账不受影响）。')
+          // 保存只写 profile，运行中的插件**不会**重载（0.23.0 冒烟实测：判定/计时器仍按启动时那份配置）。
+          // 所以这里必须说清「需重载插件或重启 DSH 后生效」，不能再让用户以为已经生效。
+          setNotice('已保存到当前 profile 的 cordis.patch.yml。需重载插件或重启 DSH 后生效（台账在 SQLite，不受影响）。')
         } else {
           setError('保存被拒绝：配置可能已被别处改动，或该字段不允许写入。表单已按最新值刷新，请重试。')
         }
@@ -246,7 +247,7 @@ export function createConfigCard({ React, h, Icon }) {
           : null,
       ]),
       h('p', { key: 'intro', className: 'orch-cfg-hint' },
-        '保存在当前 profile 的 cordis.patch.yml；保存后插件即时重载（台账不受影响）。'),
+        '保存在当前 profile 的 cordis.patch.yml；运行中的插件不热重载，需重载插件或重启 DSH 后生效（台账不受影响）。'),
       error === null ? null : h('div', { key: 'error', className: 'orch-banner orch-banner--error', role: 'alert' }, error),
       notice === null ? null : h('div', { key: 'notice', className: 'orch-banner orch-banner--info', role: 'status' }, notice),
       ...groups,

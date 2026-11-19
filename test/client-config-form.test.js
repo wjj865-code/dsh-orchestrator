@@ -149,6 +149,54 @@ test('轮换保存路径：7 个可编辑键 buildOps 全发 set、写回后 loa
   assert.equal(config.coordinatorSession, undefined)
 })
 
+// ── 保存回执口径：保存只写 profile，需重载插件 / 重启 DSH 后生效 ──
+
+/**
+ * 跑一次真实交互：改一个可编辑字段 → 点「保存」→ 再渲染，返回最终卡片文本。
+ * 渲染垫片不会自动重渲染（宿主才订阅），所以每次重新调用组件前把 hook 游标归零。
+ */
+const saveThenRender = async snapshot => {
+  const { reg, hooks } = renderCard(snapshot)
+  const render = () => { hooks.cursor = 0; return reg.c({ view: 'page' }) }
+  const input = collectNodes(expandTree(render()))
+    .find(node => node.type === 'input' && node.props?.['aria-label'] === '队列安全阀')
+  assert.ok(input !== undefined, '可写态应渲染「队列安全阀」输入框')
+  input.props.onChange({ target: { value: '60' } })
+  const save = collectNodes(expandTree(render()))
+    .find(node => node.type === 'button' && textOf(node) === '保存')
+  assert.ok(save !== undefined, '可写态应有「保存」按钮')
+  await save.props.onClick()
+  return textOf(render())
+}
+
+test('保存回执：写明「重载插件或重启 DSH 后生效」，不再承诺保存后立刻生效', async () => {
+  // 0.23.0 冒烟 §6.1：保存只落 profile，运行中的插件不重新 apply。回执若写「已生效」，用户会以为轮换已经关掉。
+  const text = await saveThenRender({
+    status: 'ready', value: { maxQueue: 50 }, user: {}, revision: 1, writable: true,
+  })
+  assert.match(text, /已保存到当前 profile 的 cordis\.patch\.yml/, '回执要写明保存位置')
+  assert.match(text, /需重载插件或重启 DSH 后生效/, '回执要写明需重载/重启后生效')
+  assert.doesNotMatch(text, /即时生效/, '回执不得再承诺保存后立刻生效（实测运行中的插件不重载）')
+  // 简介（静置在卡片顶部）与回执同口径：没点保存前就能读到「不热重载」。
+  const intro = textOf(renderCard({
+    status: 'ready', value: { maxQueue: 50 }, user: {}, revision: 1, writable: true,
+  }).reg.c({ view: 'page' }))
+  assert.match(intro, /运行中的插件不热重载，需重载插件或重启 DSH 后生效/)
+})
+
+test('配置保存口径同源：回执 / README / ARCHITECTURE / LIMITATIONS / CHANGELOG 一致', () => {
+  const read = file => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
+  for (const file of ['README.md', 'docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md', 'CHANGELOG.md']) {
+    assert.match(read(file), /重载插件或重启 DSH 后生效/, `${file} 没写「重载插件或重启 DSH 后生效」`)
+    assert.doesNotMatch(read(file), /即时生效/, `${file} 仍写着「即时生效」`)
+  }
+  // README 的「生效方式」一行必须直说，不能只在别处提一句。
+  assert.match(read('README.md'), /^\| 生效方式 \|.*重载插件或重启 DSH 后生效/m)
+  // 产物里也带同一句（dist 是用户实际拿到的东西，源码改了没构建等于没改）。
+  assert.match(artifact, /需重载插件或重启 DSH 后生效/)
+  assert.doesNotMatch(artifact, /即时生效/)
+})
+
 // ── 注册契约：三个 key 各不相同，写错就静默不渲染 ────────────────
 
 test('注册 key：slot key 用包名、configForms 用 entry id，且 entry id 与 cordis.patch.yml 一致', () => {

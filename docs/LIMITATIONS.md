@@ -158,6 +158,7 @@
 - **删除只删台账，不删盘**：级联清 `tasks`/`messages`/`notifications`，产物文件、`reports/<taskId>.md` 全文、`memories` 都保留；平台侧子会话历史也没有删除 API。删除不可恢复。
 - **删除不给活跃任务**：活跃状态先「停止」；终态任务若还有活跃下游依赖也不让删（`DELETE_HAS_ACTIVE_DEPENDENTS`）。
 - 日报默认关闭；开启后每个主会话一条 schedule，主会话重建会重建 schedule。
+- **配置卡片保存不热重载**：点「保存」只把值写进当前 profile 的 `cordis.patch.yml`，**运行中的插件不会 reload**——轮换判定、看门狗/陈旧计时器仍按启动时那份配置；改动不会自动生效：**重载插件或重启 DSH 后生效**（卡片回执与简介都写明这一点）。
 
 ## 面板动作幂等
 

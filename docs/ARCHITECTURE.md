@@ -443,8 +443,11 @@ slot key = bundle **包名**（`CONFIG_SLOT_KEY`）；`configForms.get()` / `whi
 用户必须能在卡片里关掉/调阈值；**`coordinatorSession` 只读**（运维兜底通道：填错会让协调者指向不存在的会话，
 且只能改配置才恢复，只在运维场景手改 `cordis.patch.yml`）。不可逆动作仍由 `rotateArchiveOld` 显式控制（`false` = 只改名）。
 写通道 `mutate(ops, revision)` 带 revision 栅栏，别人先改过就拒绝并刷新，
-不静默覆盖；清空一个「已覆盖」字段发 `unset`（回落组合默认且不再算覆盖）。保存触发插件重载（台账不受影响，
-watchdog/轮换计时器重置），页面文案写明。
+不静默覆盖；清空一个「已覆盖」字段发 `unset`（回落组合默认且不再算覆盖）。
+
+**保存语义（0.23.0 发版前冒烟订正）**：保存**只**写当前 profile 的 `cordis.patch.yml`——运行中的插件实例**不会**重新 apply，
+判定/计时器仍按启动时那份配置，**重载插件或重启 DSH 后生效**（台账在 SQLite，不受影响）。卡片回执/简介、README
+与 LIMITATIONS 都是这一口径；0.23.0 及以前回执写的「保存后热重载」与实际不符，别按它做用户承诺。
 
 **四个必须守住的 P0**（改动前先读 `src/config-schema.js` 文件头，`test/config-fields.test.js` 逐条反向验证过）：
 

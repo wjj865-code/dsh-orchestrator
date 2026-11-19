@@ -13,7 +13,7 @@
 2. **拼错不再「安全地关掉」**：总开关只认显式 `'off'`，缺省/拼错一律按默认 `auto`（与 `memoryInject` / `rotateArchiveOld`
    的「只有显式 false 才关」同口径）。想关轮换只有一条路：写 `off`。
 3. **配置卡片轮换分组：7 个键取消只读、`coordinatorSession` 保持只读**。`mainRotation` 与 6 个 `rotate*` 现在都能在
-   插件页直接改，保存即时生效（插件重载，台账不受影响）；轮换分组不再默认折叠。**`coordinatorSession` 仅运维手改**
+   插件页直接改，保存到当前 profile 的 `cordis.patch.yml`，**重载插件或重启 DSH 后生效**（台账不受影响）；轮换分组不再默认折叠。**`coordinatorSession` 仅运维手改**
    （页面只读展示）：它是兜底通道，填错会让协调者指向不存在的会话、且只能改配置才恢复，属高危误操作，要改请直接编辑
    当前 profile 的 `cordis.patch.yml`。`rotateArchiveOld` 仍是不可逆开关（`false` = 只改名不归档）。卡片侧机制没删：
    `readonly` 标记即让某键只读，表单与保存路径（`EDITABLE_KEYS`）自动跟随，只读键保存时不下发。
@@ -42,6 +42,27 @@
 + `pnpm run check:version` + `pnpm run check:docs`（1,444 / 1,800）+ `npm pack --dry-run` 全绿；新增用例锁住 policy 含
 「必须用 ask_user_question 结构化提问」「不得用纯文字问句代替」、「少打扰」只针对不拍板的进展汇报、与
 「不催关闭」「能直接回答就不派任务」并列且不矛盾，并反向断言不出现「不问用户就直接执行不可逆操作」式口径。
+
+**配置卡片保存口径（重载/重启后生效）**（单 commit `fix: 配置卡片保存口径（重载/重启后生效）`，未 bump / 未 tag / 未 push）
+
+### 修正
+
+1. **卡片保存不会让运行中的插件热生效**（0.23.0 发版前 UI 冒烟 §6.1，两轮独立复现）：保存只把值写进当前 profile 的
+   `cordis.patch.yml`（落盘、读回都对，`revision` 栅栏正常），但插件实例**没有被重新 apply**——主会话轮换判定仍用启动时
+   那份配置。用户点完保存、看到「已保存」，以为已经关掉轮换，同一进程内下次打开主会话仍可能被换走。本版**只改口径、不改保存链路**：
+   保存后**重载插件或重启 DSH 后生效**。
+2. **卡片回执/简介改口径**：回执「已保存到当前 profile 的 `cordis.patch.yml。需重载插件或重启 DSH 后生效（台账在 SQLite，不受影响）。」；
+   简介「保存在当前 profile 的 `cordis.patch.yml；运行中的插件不热重载，需重载插件或重启 DSH 后生效（台账不受影响）。」
+   README「生效方式」、`docs/ARCHITECTURE.md` 保存语义、`docs/LIMITATIONS.md` 新增一条，与实现逐字同口径。
+3. **为什么不做运行时热重载**：卡片走宿主 `configForms.mutate` → settings 服务写 profile，宿主不保证重新 apply loader 条目
+   （冒烟里 `host.capabilities` 只在进程启动时出现，保存后没有任何 re-apply 事件）；插件侧「每次判读现读 profile」会多一条 I/O
+   与失败面、并绕过宿主的 `revision` 栅栏，不值得。要真热重载得先查 `dsh-settings` → loader 的 reload 链路，建议后续单独评估。
+
+### 验证
+
+`pnpm test`（1,064 条 / 1,059 pass / 5 skip / 0 fail）+ `check:client` + `check:client-size`（≤95 KiB）+ `check:version`
++ `check:docs`（1,448 / 1,800）+ `npm pack --dry-run` 全绿；新增用例走真实交互（改字段 → 点保存 → 读回执）断言文案含「重载插件或重启 DSH
+后生效」且不再承诺保存后立刻生效，并锁住 README / ARCHITECTURE / LIMITATIONS / CHANGELOG 与实现同口径。
 
 ## 0.23.0（2026-11-19）
 
@@ -412,7 +433,7 @@ CAS 成功 / 冲突重读一次 / 二次冲突停手、不触发派发、确认�
   `client/src/config-form.js` + `config-logic.js`（分组折叠表单）。
 - **暴露策略**：高频子集可编辑；`coordinatorSession` 与 `mainRotation.*`（含 `rotateArchiveOld`）
   只读展示——前者是运维兜底通道，后者牵动不可逆归档，不该在表单里手滑改。
-- **保存语义**：写当前 profile 的 `cordis.patch.yml`，即时生效（插件会重载；台账在 SQLite，不受影响）。
+- **保存语义**：写当前 profile 的 `cordis.patch.yml`，**重载插件或重启 DSH 后生效**（台账在 SQLite，不受影响）。**订正（0.23.0 发版前冒烟）**：运行中的插件不会因保存而重新 apply，判定/计时器仍按启动时那份配置。
   `mutate` 带 revision 栅栏，别人先改过就拒绝并刷新，**不静默覆盖**；清空一个「已覆盖」字段发 `unset`
   （回落组合默认且不再算覆盖）。
 - **四个必须守住的 P0**（都已用反向验证钉住）：① 非法配置不得拒载（`.loose()` 兜底，否则 Cordis 校验失败会让插件起不来）；

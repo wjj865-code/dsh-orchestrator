@@ -115,7 +115,7 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | 要点 | 说明 |
 |---|---|
 | 保存位置 | **当前 profile** 的 `cordis.patch.yml`，不是插件目录 |
-| 生效方式 | **即时生效**：保存触发插件重载（台账在 SQLite 不受影响；watchdog / 轮换计时器会重置） |
+| 生效方式 | **重载插件或重启 DSH 后生效**：保存只把值写进当前 profile 的 `cordis.patch.yml`，运行中的插件不热重载（判定与计时器仍按启动时那份配置；台账在 SQLite 不受影响） |
 | 优先级 | 表单写 profile 层；若 home patch 或命令行 overlay 覆盖同一字段，保存被**拒绝**并提示原因 |
 | 非法值 | 一律**回落默认**，不会让插件起不来（schema 用 `.loose()` 兜底，运行时再由 `loadConfig` 二次归一化） |
 | 可编辑范围 | 轮换的 7 个键（`mainRotation` + 6 个 `rotate*`）与其余字段都可编辑；**`coordinatorSession` 只读**（运维兜底通道，填错会让协调者指向不存在的会话，仅在运维场景手改 profile YAML）；不可逆动作仍由 `rotateArchiveOld` 显式控制（`false` = 只改名） |
