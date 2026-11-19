@@ -2,14 +2,14 @@
 
 > **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目标目录里把活干完，进度与结论落进持久台账，浏览器里有任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.23.0`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
+- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.23.1`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
 - Node `>= 22.15`（`engines`）｜DSH 兼容基线 **`0.2.2-rc.3` – `rc.5`**（CI 与真机实测在 `rc.3`，Web 表面为主，Desktop 同构）
 
 **三分钟看懂**：装插件 → 打开「主会话」→ 用自然语言说需求（协调者拆成 `task_create` 派给子会话）→ 子会话回报「已交付待确认」→ 你看面板与产物，确认或追问。下面按这个顺序走一遍。
 
 ## 安装与升级
 
-1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.23.0`。
+1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.23.1`。
 2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）：宿主侧代码在 DSH 进程启动时加载，**刷新页面不会换版本**，装完还是旧行为就是没重启。
 3. 自检：插件页有「任务编排」与详情页；侧栏「插件」下方有「◈ 主会话」；插件全局 **10 个工具**（协调者 7；子会话 4：`task_report` / `task_detail` / `plan_save` / 只读的 `context`）；派一条任务回报后主会话收到「已交付待确认」，`task_message({action:'close'})` 能收成「已完成」。
 4. 升级 = 装新版 + 彻底重启。registry 包用插件页的更新入口；从 GitHub 装（`https://github.com/wjj865-code/dsh-orchestrator`）的先卸载旧版。旧包名 `dsh-orchestrator` 与新版不兼容，先移除。
@@ -294,8 +294,8 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 | 现象 | 处理 |
 |---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.23.0`；**彻底退出 DSH 再启动**（刷新页面无效） |
-| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.23.0` 显式版本；维护者侧可主动同步镜像（见 [CONTRIBUTING](docs/CONTRIBUTING.md#发版)） |
+| 侧栏没有「主会话」 | 确认装的是 `0.23.1`；**彻底退出 DSH 再启动**（刷新页面无效） |
+| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.23.1` 显式版本；维护者侧可主动同步镜像（见 [CONTRIBUTING](docs/CONTRIBUTING.md#发版)） |
 | 会话头没有「任务」入口 | 只在主会话显示：确认当前会话就是从侧栏「主会话」打开的；没建就点「打开主会话」 |
 | 点产物「预览」没有右侧栏 | 宿主要装 `ui-sidebar-right` 与 `ui-sidebar-documentpreview`；缺了会提示原因，产物库那行退回面板内预览 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页与 `logs/` |

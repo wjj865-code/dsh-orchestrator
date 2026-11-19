@@ -1,10 +1,16 @@
 # Changelog
 
-## 未发布（0.23.0 之后）
+## 0.23.1（2026-11-20）
 
-**子会话开放只读 context（提高记忆读取主动性）**（单 commit `feat: 子会话开放只读 context（提高记忆读取主动性）`，未 bump / 未 tag / 未 push）
+0.23.0 之后的 **patch 版**，四片合发（按提交从新到旧）：**子会话开放只读 `context`**（提高记忆读取主动性；
+写记忆仍只属协调者）、**配置卡片保存口径修正**（保存只落 profile，需重载插件或重启 DSH 后生效）、
+**需拍板时用 `ask_user_question` 结构化提问**、**轮换默认开启 + 配置卡片可写**（`mainRotation` 缺省回到 `auto`，
+轮换 7 个键可在插件页直接改、`coordinatorSession` 仍只读）。
+本版唯一会自己动手的行为变化是**主会话轮换默认开启**——不想被换的先看最后一节的升级须知。
 
-### 变更
+### 子会话开放只读 context（提高记忆读取主动性）（`31b4a85`）
+
+#### 变更
 
 1. **子会话可以自己读上下文了**：`context` 的三种 mode（`history` / `project` / `workspaces`）对子会话只读开放，与协调者**同一条实现**（同参数输出逐字一致）；`src/tools.js` 不再按主会话拦截它。
 2. **写记忆仍仅主会话**：`memory_note` 从子会话工具表里消失（worker 预设 `preset-tools` 的**遮挡式** `deny`），能力声明落在预设层；执行层再兜一层——万一被别的 profile/旧会话露出，返回「拒绝：写记忆只属协调者」+ 替代路径（`task_report` 的 summary / `context` 只读查 / 请协调者记），并记 `memory.note.rejected`。
@@ -13,16 +19,16 @@
 5. **注入侧只做减法**：brief 自 T1 起就没有记忆正文；`task_detail` 的 `【经验文件】<路径>（N 条）` 保留（关键指针），只在末尾加一句出口「更多历史与项目背景用 `context({ mode: 'history' | 'project' })`」；索引任务的说明里删掉已不存在的「不允许 memory_note 越权」。
 6. **真机语义实验**：`docs/probes/preset-scope-restrict.mjs` 扩到 10/10 PASS（用真实 `ToolsService` 验证「预设 scope 里 deny 只遮点名项」「keep 晚注册后补确认」）。
 
-### 验证
+#### 验证
 
 `pnpm test`（1,072 条 / 1,067 pass / 5 skip / 0 fail）+ `check:client` + `check:client-size`（≤95 KiB）+ `check:version`
 + `check:docs` 全绿；新增/改写用例锁住：子会话三种 mode 与协调者逐字一致且不被主会话门槛拦、`memory_note` 子会话被拒（理由含
 替代路径、不写库、留 `memory.note.rejected` 审计）、worker 预设 `preset-tools` 是 `deny`+`keep`（没有 `allow` 补集）、
 worker persona 逐字包含 `WORKER_CONTEXT_HINT` 且 brief 不重复它。
 
-**轮换默认开启 + 配置卡片可写**（单 commit `feat: 轮换默认开启 + 配置卡片可写`，未 bump / 未 tag / 未 push）
+### 轮换默认开启 + 配置卡片可写（`74cb735`）
 
-### 升级须知（相对 0.23.0）
+#### 升级须知（相对 0.23.0）
 
 1. **`mainRotation` 默认从 `off` 改回 `auto`（开启）**：升级后，主会话跑久了（日志 > 6 MiB **或** 运行 > 10 天，任一命中）
    会在你**下一次打开主会话**时被换掉——旧会话改名「主会话（已退役 YYYY-MM-DD HH:MM）」并归档（**不可逆**，平台没有 unarchive）。
@@ -36,15 +42,15 @@ worker persona 逐字包含 `WORKER_CONTEXT_HINT` 且 brief 不重复它。
    当前 profile 的 `cordis.patch.yml`。`rotateArchiveOld` 仍是不可逆开关（`false` = 只改名不归档）。卡片侧机制没删：
    `readonly` 标记即让某键只读，表单与保存路径（`EDITABLE_KEYS`）自动跟随，只读键保存时不下发。
 
-### 验证
+#### 验证
 
 `pnpm test`（全绿）+ `check:client` + `check:client-size`（≤95 KiB）+ `check:version` + `check:docs` + `npm pack --dry-run`；
 新增/改写用例锁住：默认 `mainRotation === 'auto'`、显式 `off` 才关、轮换 7 个键可写标记与真实可写性一致（字段表双向 + 渲染控件不 disabled）、
 `coordinatorSession` 保持只读且保存时不下发（`buildOps`/`isDirty` 都不带它）、卡片保存生成的 ops 经 `loadConfig` 真读到新值。
 
-**需拍板时用 ask_user_question 结构化提问**（单 commit `docs(policy): 需拍板时用 ask_user_question 结构化提问`，未 bump / 未 tag / 未 push）
+### 需拍板时用 ask_user_question 结构化提问（`c0147c9`）
 
-### 升级须知（相对 0.23.0）
+#### 升级须知（相对 0.23.0）
 
 1. **「少打扰」只覆盖不用拍板的进展汇报**：progress / done 这类汇报照旧直接说结论、不提问；这不影响既有的
    「交付后不催关闭」与「能直接回答就不派任务」——三者的共同边界是「不替用户做决定、也不逼用户表态」，
@@ -54,16 +60,16 @@ worker persona 逐字包含 `WORKER_CONTEXT_HINT` 且 brief 不重复它。
    纯文字既容易被用户忽略、又没有选项可点，等于让决策悬空；不可逆操作必须先拿到拍板再做，不能先做后报。
 3. **只改提示词与测试**：状态机、工具入参、台账结构、`dist/` 一字未动；「任务能否关闭」仍不属于提问范畴。
 
-### 验证
+#### 验证
 
 `pnpm test`（1,062 条 / 1,057 pass / 5 skip / 0 fail）+ `pnpm run check:client` + `pnpm run check:client-size`
 + `pnpm run check:version` + `pnpm run check:docs`（1,444 / 1,800）+ `npm pack --dry-run` 全绿；新增用例锁住 policy 含
 「必须用 ask_user_question 结构化提问」「不得用纯文字问句代替」、「少打扰」只针对不拍板的进展汇报、与
 「不催关闭」「能直接回答就不派任务」并列且不矛盾，并反向断言不出现「不问用户就直接执行不可逆操作」式口径。
 
-**配置卡片保存口径（重载/重启后生效）**（单 commit `fix: 配置卡片保存口径（重载/重启后生效）`，未 bump / 未 tag / 未 push）
+### 配置卡片保存口径（重载/重启后生效）（`f2f5e7d`）
 
-### 修正
+#### 修正
 
 1. **卡片保存不会让运行中的插件热生效**（0.23.0 发版前 UI 冒烟 §6.1，两轮独立复现）：保存只把值写进当前 profile 的
    `cordis.patch.yml`（落盘、读回都对，`revision` 栅栏正常），但插件实例**没有被重新 apply**——主会话轮换判定仍用启动时
@@ -76,11 +82,18 @@ worker persona 逐字包含 `WORKER_CONTEXT_HINT` 且 brief 不重复它。
    （冒烟里 `host.capabilities` 只在进程启动时出现，保存后没有任何 re-apply 事件）；插件侧「每次判读现读 profile」会多一条 I/O
    与失败面、并绕过宿主的 `revision` 栅栏，不值得。要真热重载得先查 `dsh-settings` → loader 的 reload 链路，建议后续单独评估。
 
-### 验证
+#### 验证
 
 `pnpm test`（1,064 条 / 1,059 pass / 5 skip / 0 fail）+ `check:client` + `check:client-size`（≤95 KiB）+ `check:version`
 + `check:docs`（1,448 / 1,800）+ `npm pack --dry-run` 全绿；新增用例走真实交互（改字段 → 点保存 → 读回执）断言文案含「重载插件或重启 DSH
 后生效」且不再承诺保存后立刻生效，并锁住 README / ARCHITECTURE / LIMITATIONS / CHANGELOG 与实现同口径。
+
+### 发版门禁（0.23.1 实跑，各片「验证」里的数字是当时快照）
+
+`pnpm test` **1,072 条 / 1,067 pass / 5 skip / 0 fail**（5 条 skip 是本机建不了符号链接的显式跳过，与 0.23.0 同因）+
+`check:client` + `check:client-size`（**91.6 KB / 93,824 B**，预算 95.0 KB，余 3.4 KB）+ `check:version`（`0.23.1`）
++ `check:docs`（**1,473 / 1,800** 行；配置表 28 键、工具表 10 个）+ `npm pack --dry-run`（**77 个文件 / 516.8 kB**）全绿；
+可选探针 `node docs/probes/preset-scope-restrict.mjs` **10/10 PASS**；`git status` 除本版版本/文档文件外无改动。
 
 ## 0.23.0（2026-11-19）
 
