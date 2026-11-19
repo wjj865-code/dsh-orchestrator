@@ -1,10 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { openLedger, addNotification } from '../src/ledger.js'
 import { levelOf, createNotifier } from '../src/notify.js'
-import { tempDir } from './helpers.js'
+import { canCreateFileSymlink, SYMLINK_SKIP_REASON, tempDir } from './helpers.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -289,19 +289,33 @@ test('目录不进交付候选：present 只收普通文件', async () => {
   assert.doesNotMatch(delivered[0], /调用 present/)
 })
 
-test('符号链接不进交付候选：present 用 lstat 判 type，链接同样被拒', async t => {
+test('链接不进交付候选：present 用 lstat 判 type，符号链接/目录联接同样被拒', async t => {
   const dir = tempDir()
   const realDir = join(dir, 'real')
   mkdirSync(realDir)
-  const link = join(dir, 'link')
-  try {
-    // Windows 上文件符号链接需要特权，目录联接（junction）不需要，且 lstat 同样报 symlink。
-    symlinkSync(realDir, link, process.platform === 'win32' ? 'junction' : 'dir')
-  } catch {
-    t.skip('当前环境无法创建符号链接/目录联接')
-    return
-  }
   const file = fileIn(dir, 'a.md')
+  const link = join(dir, 'link')
+  let kind
+  if (canCreateFileSymlink()) {
+    // 优先造**真文件符号链接**：lstat 必报 symlink，判据无歧义（Linux/CI、开了开发者模式的 Windows 走这条）。
+    symlinkSync(file, link)
+    kind = 'symlink'
+  } else {
+    // 没有文件链接权限时退到**目录联接**（junction 不需要特权）。这里必须按**实测类型**断言：
+    // 部分 Windows/Node 组合下 lstat 对 junction 报 isSymbolicLink()=true，另一些直接报 isDirectory()=true
+    // ——宿主类型表不同，但「链接不能当普通文件交付」这条不变量两种情况都成立，所以不弱化断言，
+    // 只是把期望文案钉在实测类型上（既不能两种都放过，也不能把环境差异判成用例失败）。
+    try {
+      symlinkSync(realDir, link, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch {
+      return t.skip(SYMLINK_SKIP_REASON)
+    }
+    const stats = lstatSync(link)
+    if (stats.isSymbolicLink()) kind = 'symlink'
+    else if (stats.isDirectory()) kind = 'directory'
+    else return t.skip(`${SYMLINK_SKIP_REASON}（本机 lstat 把这条链接既不当链接也不当目录，无法确定期望文案）`)
+  }
+  const skippedLabel = kind === 'symlink' ? '符号链接 1' : '目录 1'
   const delivered = []
   const notifier = createNotifier({ send: async message => delivered.push(message), mergeWindowMs: 10 })
   notifier.push({
@@ -311,7 +325,7 @@ test('符号链接不进交付候选：present 用 lstat 判 type，链接同样
   await wait(25)
   assert.equal(delivered[0].includes(`- ${link}`), false)
   assert.ok(delivered[0].includes(`- ${file}`))
-  assert.match(delivered[0], /另有 1 条产物不能交付（符号链接 1）/)
+  assert.match(delivered[0], new RegExp(`另有 1 条产物不能交付（${skippedLabel}）`))
 })
 
 test('相对路径不进交付候选：协调者的 cwd 不是任务目录', async () => {
