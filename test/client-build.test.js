@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { canSpawnWithPipes, PIPE_SPAWN_SKIP_REASON } from './helpers.js'
 
 // P7 构建契约：只断言「vite 产出的 dist/client.js 符合平台契约」。
 // T7.1 立契约（空壳产物）；T7.2 搬完源码后同一批断言继续成立，另加「产物里真有 UI」与
@@ -67,7 +68,11 @@ test('产物是 classic script：顶层没有 import/export（平台用 <script>
   assert.doesNotThrow(() => new vm.Script(artifact))
 })
 
-test('产物语法：node --check 通过', () => {
+test('产物语法：node --check 通过', t => {
+  // 这条断言必须真起子进程（`node --check` 才是发布闸门 `check:client` 的口径），
+  // 但受限沙箱禁止带管道 spawn 子进程（EPERM）——那是环境限制，不是产物问题。
+  // 能力探测不过就显式 skip 并写清原因；能力可用（本地全权 / CI）时照常真跑，覆盖不减。
+  if (!canSpawnWithPipes()) return t.skip(PIPE_SPAWN_SKIP_REASON)
   execFileSync(process.execPath, ['--check', fileURLToPath(distPath)], { stdio: 'pipe' })
 })
 

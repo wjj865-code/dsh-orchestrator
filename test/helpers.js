@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,6 +32,31 @@ export function canCreateFileSymlink() {
     rmSync(dir, { recursive: true, force: true })
   }
   return fileSymlinkSupport
+}
+
+/** 管道 spawn 用例不可用时给用户的跳过原因：同样必须说清「为什么没真跑」。 */
+export const PIPE_SPAWN_SKIP_REASON = '需要「带管道 spawn 子进程」的能力（当前沙箱禁止打开命名管道，spawn/execFile 传 stdio:"pipe" 直接 EPERM）：跳过 `node --check 产物` 这条用例，正常环境/CI 仍会真跑'
+
+/**
+ * 管道 spawn 能力探测：真起一个只退出的 node 子进程，**用 stdio:'pipe' 捕获它的输出**——
+ * 这正是 `node --check` 那条用例需要的形态，能力成不成立即缓存进进程（每进程只试一次）。
+ *
+ * 为什么要它：DSH 的受限沙箱禁止子进程打开命名管道，`execFileSync(..., { stdio: 'pipe' })`
+ * 直接 `EPERM`（不是被测代码的问题）。判失败会让「沙箱里的 pnpm test」永远红；探测失败只让调用方
+ * `t.skip(理由)`，能力可用的环境（本地全权 / CI）照常真跑。
+ */
+let pipeSpawnSupport
+
+export function canSpawnWithPipes() {
+  if (pipeSpawnSupport !== undefined) return pipeSpawnSupport
+  try {
+    // spawnSync 对 EPERM 不抛，落在 result.error 上：既要没有 error，也要真的跑完（status 0）。
+    const result = spawnSync(process.execPath, ['-e', ''], { stdio: 'pipe', timeout: 30_000 })
+    pipeSpawnSupport = result?.error === undefined && result?.status === 0
+  } catch {
+    pipeSpawnSupport = false
+  }
+  return pipeSpawnSupport
 }
 
 export function sampleBrief(overrides = {}) {
