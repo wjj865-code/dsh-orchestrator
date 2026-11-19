@@ -27,10 +27,11 @@ src/                 宿主侧逻辑（每个模块一个职责，见 docs/ARCHI
   worktree.js        git worktree 隔离（宿主侧 git）
   host-route.js      /api/orchestrator（面板只读 + 动作）
 client/src/**        面板/入口/抽屉（vite 构建成 dist/client.js）
-scripts/             preset 生成/漂移检查、镜像同步、access:'full' 离线验证
+scripts/            镜像同步、access:'full' 离线验证、版本口径
+tools/debug-preset/ orch-debug 预设生成器（维护者工具，不随 npm 包发货）
 cordis.patch.yml     随包预设：协调者 + worker
 test/                node:test，按模块分文件（*.test.js）
-docs/                ARCHITECTURE / LIMITATIONS / UI / DETAIL / DEBUG-PRESET / probes
+docs/                ARCHITECTURE / LIMITATIONS / UI / DETAIL / probes
 ```
 
 ## 本地开发
@@ -40,8 +41,9 @@ pnpm install             # 装依赖（按 pnpm-lock.yaml；CI 用 pnpm install 
 pnpm test                # pretest 会先 pnpm run build，再跑 node --test
 pnpm run build           # client/src/** --vite--> dist/client.js（+ .map）
 pnpm run check:client    # node --check dist/client.js
-pnpm run preset:debug    # 把随包「创造模式」组合复制成可安装的 orch-debug 预设
-node scripts/orch-debug-preset.mjs --check   # 升级 DSH 后查预设漂移
+node tools/debug-preset/cli.mjs            # 把随包「创造模式」组合复制成可安装的 orch-debug 预设（维护者工具，不随包发货）
+node tools/debug-preset/cli.mjs --check    # 升级 DSH 后查预设漂移
+node --test tools/debug-preset/test/debug-preset.test.js   # 外移工具的测试（不在 pnpm test 里）
 node scripts/verify-access-full.mjs          # 离线核对 access:'full' 整条链（台账→brief→派发→沙箱事件→通知）
 node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 docs/probes/ 逐条重跑）
 ```

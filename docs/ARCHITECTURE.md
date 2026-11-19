@@ -134,7 +134,7 @@
 - 唤醒：子会话结算、任务终态、`task_stop`、插件启动、协调者 `agent/created`。
 - 高优先级先派；同优先级按创建时间 FIFO。
 - 子会话创建的非容量错误才标 `failed` 并推通知，不留幽灵 `pending`。
-- 子会话预设由 `config.workerPreset` 决定（默认 `dsh-orchestrator-worker`），`dispatch` 只在 `spawn` provider 上传 `agentPreset`；续派/冷恢复沿用会话创建时记下的预设。调试用的 `orch-debug` 副本由 `scripts/orch-debug-preset.mjs` 生成、走 bundle 安装（见 [DEBUG-PRESET](DEBUG-PRESET.md)）。
+- 子会话预设由 `config.workerPreset` 决定（默认 `dsh-orchestrator-worker`），`dispatch` 只在 `spawn` provider 上传 `agentPreset`；续派/冷恢复沿用会话创建时记下的预设。调试用的 `orch-debug` 副本**不在本包内**（P1-E 已外移）：生成器与说明在开发仓库 `tools/debug-preset/`（`cli.mjs` + `README.md`），生成后走 bundle 安装；插件运行时只透传预设 id。
 
 ## 依赖 / 分组 / 写域 / 优先级
 

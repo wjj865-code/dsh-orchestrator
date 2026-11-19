@@ -12,6 +12,10 @@
 //
 // 本模块只做「读源组合 → 拼 YAML → 落盘」，不安装、不改 profile；失败一律降级成可读结果，
 // 不抛异常（加载期/CLI 都不该因为找不到源组合而崩）。
+//
+// 位置（P1-E）：这是**维护者工具**，已从插件主包外移到开发仓库的 `tools/debug-preset/`，
+// 不随 `@wjj865-code/dsh-orchestrator` 发货（package.json 的 files 不含 tools/）。
+// 插件运行时只透传 `config.workerPreset`（如 `orch-debug`）给宿主，不 import 本模块。
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
@@ -452,7 +456,7 @@ export function checkDebugPreset({ outDir, source, env = process.env, platform =
   const dir = resolve(outDir)
   const patchPath = join(dir, 'cordis.patch.yml')
   if (!existsSync(patchPath)) {
-    return { ok: false, reason: 'missing-bundle', hint: `没找到 ${patchPath}：先跑一次 pnpm run preset:debug 生成并安装` }
+    return { ok: false, reason: 'missing-bundle', hint: `没找到 ${patchPath}：先跑一次 node tools/debug-preset/cli.mjs 生成并安装` }
   }
   let existingText
   try {
@@ -489,7 +493,7 @@ export function checkDebugPreset({ outDir, source, env = process.env, platform =
       source: sourceInfo,
       skills,
       differences: comparison.differences,
-      hint: 'bundle 与当前随包 cordis 组合不一致：重新跑 pnpm run preset:debug，再重装 bundle 并彻底重启 DSH。',
+      hint: 'bundle 与当前随包 cordis 组合不一致：重新跑 node tools/debug-preset/cli.mjs，再重装 bundle 并彻底重启 DSH。',
     }
   }
   return { ok: true, path: patchPath, source: sourceInfo, plugins: comparison.generatedRows, skills }
@@ -535,8 +539,8 @@ export function renderBundlePatch({
   const body = plugins.split('\n').map(line => line === '' ? '' : `          ${line}`).join('\n')
   return [
     `# 由 dsh-orchestrator 生成（勿手改）：preset ${id} = 随包「创造模式」(${SOURCE_PRESET_ID}) 组合的副本。`,
-    '# 重新生成：node scripts/orch-debug-preset.mjs',
-    '# 对齐检查：node scripts/orch-debug-preset.mjs --check',
+    '# 重新生成：node tools/debug-preset/cli.mjs',
+    '# 对齐检查：node tools/debug-preset/cli.mjs --check',
     '- insert:',
     `    - id: preset-${id}`,
     "      name: '@deepseek-ai/dsh-agent-preset'",

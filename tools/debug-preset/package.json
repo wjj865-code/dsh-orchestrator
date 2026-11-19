@@ -1,0 +1,14 @@
+{
+  "name": "@wjj865-code/dsh-orchestrator-debug-preset-tooling",
+  "private": true,
+  "type": "module",
+  "description": "orch-debug 预设生成器（维护者工具）：已从 @wjj865-code/dsh-orchestrator 主包外移，不随 npm 包发货。",
+  "engines": {
+    "node": ">=22.15"
+  },
+  "scripts": {
+    "generate": "node cli.mjs",
+    "check": "node cli.mjs --check",
+    "test": "node --test test/debug-preset.test.js"
+  }
+}

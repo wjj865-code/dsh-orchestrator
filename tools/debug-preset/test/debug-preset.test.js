@@ -446,7 +446,7 @@ test('checkDebugPreset：刚生成时对齐，组合漂移时给出逐行差异'
   assert.equal(broken.ok, false)
   assert.equal(broken.reason, 'drift')
   assert.ok(broken.differences.some(d => d.kind === 'extra' && d.id === 'tool-extra'), JSON.stringify(broken.differences))
-  assert.match(broken.hint, /重新跑 pnpm run preset:debug/)
+  assert.match(broken.hint, /重新跑 node tools\/debug-preset\/cli\.mjs/)
 
   const absent = checkDebugPreset({ outDir: join(dir, 'nope'), source, env: {}, platform: 'linux' })
   assert.equal(absent.ok, false)
@@ -454,11 +454,13 @@ test('checkDebugPreset：刚生成时对齐，组合漂移时给出逐行差异'
 })
 
 test('调试子任务文档覆盖安装步骤、宿主重启与能力边界', () => {
-  const doc = readFileSync(new URL('../docs/DEBUG-PRESET.md', import.meta.url), 'utf8')
+  const doc = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
   for (const needle of [
     'workerPreset', 'orch-debug', 'install_bundle', '彻底退出 DSH',
-    'cordis_inspect_list', '不是沙箱', 'preset:debug', '.agent-presets', 'createRequire(baseUrl)',
+    'cordis_inspect_list', '不是沙箱', 'tools/debug-preset/cli.mjs', '.agent-presets', 'createRequire(baseUrl)',
     '--check', 'plugin_manager', 'client-hmr', 'restart-required', '动态',
+    // P1-E：文档必须写明它在主包外、不随包发货，并给回退口径。
+    '不随', 'git revert',
   ]) {
     assert.match(doc, new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `文档缺少：${needle}`)
   }

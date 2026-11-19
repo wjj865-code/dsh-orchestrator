@@ -2,15 +2,20 @@
 
 > 目标：让某个子任务跑在「创造模式」的能力栈上（`cordis_*` 只读运行时洞察工具 + `dsh-doc` 技能 + `plugin_manager`），
 > 用来调试、更新 DSH 插件。默认行为不变：不配 `workerPreset` 就是 `dsh-orchestrator-worker`。
+>
+> **位置（P1-E）**：本工具是**维护者工具**，已从插件主包外移到开发仓库 `tools/debug-preset/`，
+> 不随 `@wjj865-code/dsh-orchestrator` 的 npm 包发货（`package.json.files` 不含 `tools/`）。
+> 用法：`git clone https://github.com/wjj865-code/dsh-orchestrator.git`，在**仓库根**执行本文命令。
+> 普通使用者不需要它——插件只透传 `config.workerPreset`，预设本身装在宿主 profile 里。
 
 ## 1. 能力入口
 
 | 入口 | 作用 |
 |---|---|
 | `config.workerPreset` | 派发子会话时落到启动 spec 的 `agentPreset`（`src/config.js:29`，`index.js:232`，`src/dispatch.js:334`） |
-| `pnpm run preset:debug` | 把随包「创造模式」(`cordis`) 组合复制成可安装的 `orch-debug` bundle |
-| `pnpm run preset:debug:check` | 只读检查：已生成的 bundle 是否仍与当前随包 `cordis` 组合逐行对齐（等价 `node scripts/orch-debug-preset.mjs --check`） |
-| `docs/DEBUG-PRESET.md` | 本文：对齐差异、安装、插件更新流程、边界、回滚 |
+| `node tools/debug-preset/cli.mjs` | 把随包「创造模式」(`cordis`) 组合复制成可安装的 `orch-debug` bundle |
+| `node tools/debug-preset/cli.mjs --check` | 只读检查：已生成的 bundle 是否仍与当前随包 `cordis` 组合逐行对齐（退出码 1 = 有漂移） |
+| `tools/debug-preset/README.md` | 本文：对齐差异、安装、插件更新流程、边界、回滚（开发仓库内，不随包发货） |
 
 ## 2. 与随包「创造模式」(`cordis`) 的差异
 
@@ -37,7 +42,7 @@
 **对齐检查**：`--check` 会重新读取当前安装的随包 `cordis`，与已生成 bundle 的 `plugins` 逐行比较（技能根落点抹平、`skills` 单独报告）：
 
 ```powershell
-node scripts/orch-debug-preset.mjs --check
+node tools/debug-preset/cli.mjs --check
 # 已对齐：…\debug-presets\orch-debug\cordis.patch.yml
 #   插件行：23（工具 / 技能 / 权限条件 / 系统提示与随包 cordis 一致）
 #   技能：已挂 dsh-doc（…\debug-presets\orch-debug\skills）
@@ -65,13 +70,14 @@ DSH 0.2.2-rc.3 起，预设是 **bundle 补丁里的 `@deepseek-ai/dsh-agent-pre
   skills/dsh-doc/    # 从安装包里抄出来的 dsh-doc 技能（有 asar 源时才会生成）
 ```
 
-默认落地在 `$DSH_HOME/state/orchestrator/debug-presets/orch-debug/`（插件唯一的写入根，见 README「数据与日志」）。
+默认落地在 `$DSH_HOME/state/orchestrator/debug-presets/orch-debug/`（插件自己的 state 目录下；
+只有本工具写它，插件运行时既不读也不写）。
 
 ## 4. 生成
 
 ```powershell
-pnpm run preset:debug
-# 等价：node scripts/orch-debug-preset.mjs
+node tools/debug-preset/cli.mjs
+# 等价快捷方式：pnpm --dir tools/debug-preset generate
 ```
 
 | 参数 | 说明 |
@@ -207,8 +213,8 @@ DSH 没有「运行期注册插件」的工具。插件是 Loader entry，随组
 `orch-debug` 的组合在**生成时**定格：DSH 升级 / 随包 `cordis` 变了以后，先 `--check` 看漂移，再重新生成并重装：
 
 ```powershell
-node scripts/orch-debug-preset.mjs --check     # 有差异会打印逐行 diff，退出码 1
-pnpm run preset:debug                           # 重新生成 bundle
+node tools/debug-preset/cli.mjs --check     # 有差异会打印逐行 diff，退出码 1
+node tools/debug-preset/cli.mjs             # 重新生成 bundle
 # plugin_manager: remove_bundle → install_bundle（或直接重装生成目录）
 # 彻底退出 DSH 再启动
 ```
@@ -239,16 +245,16 @@ pnpm run preset:debug                           # 重新生成 bundle
 - **只读洞察不等于只读文件**：`cordis_*` 只读运行时 API；文件写入能力仍在，`readOnly: true` 打开的沙箱才是硬约束。
 - **插件更新受沙箱/审批约束**：`plugin_manager` 需要 `danger-full-access` 或当次审批；只读子任务改不了 profile。
 - **任务工具不受预设影响**：`task_report` / `task_create` 等来自插件全局注册，换了预设仍有；调试子任务照样要 `task_report` 收尾，否则台账停在 `running`。
-- **升级 DSH 后要重新生成**：组合随版本变化，包名/行 id 变更会让声明行激活失败（插件页显示 broken），旧组合不会自动跟随；先 `--check` 再 `pnpm run preset:debug` 重装。
+- **升级 DSH 后要重新生成**：组合随版本变化，包名/行 id 变更会让声明行激活失败（插件页显示 broken），旧组合不会自动跟随；先 `--check` 再 `node tools/debug-preset/cli.mjs` 重装。
 - **源不可得时降级，不崩**：`no-source`（找不到安装/asar）、`no-preset-row`（版本换了预设格式）、`write-failed`（目录不可写）都返回可读原因；技能成分单独降级（`skipped:*`），`prepareDebugPreset` 从不抛异常。
 - **不要手改生成物**：`package.json` / `cordis.patch.yml` 是生成器输出；升级 DSH 或换安装目录后重跑生成器，别直接编辑（`customSkillDirs` 里写着绝对路径）。
 - **不影响默认路径**：不配 `workerPreset` 时派发行为与之前完全一致（同样的 `dsh-orchestrator-worker`）。
 
 ## 9. 验证清单
 
-1. `pnpm run preset:debug` → 打印输出目录、两个文件、`技能：copied:N`、`对齐：与随包 cordis 逐行一致（N 个插件行）`；重复执行幂等。
-2. `node scripts/orch-debug-preset.mjs --check` → 退出码 0，打印插件行数与 `dsh-doc` 状态。
-3. `node scripts/orch-debug-preset.mjs --print | Select-String 'tool-cordis'` → 有 `tool-cordis` 行，且输出里没有 `createRequire(baseUrl)`。
+1. `node tools/debug-preset/cli.mjs` → 打印输出目录、两个文件、`技能：copied:N`、`对齐：与随包 cordis 逐行一致（N 个插件行）`；重复执行幂等。
+2. `node tools/debug-preset/cli.mjs --check` → 退出码 0，打印插件行数与 `dsh-doc` 状态。
+3. `node tools/debug-preset/cli.mjs --print | Select-String 'tool-cordis'` → 有 `tool-cordis` 行，且输出里没有 `createRequire(baseUrl)`。
 4. `plugin_manager list_plugins`（或插件页）→ `preset-orch-debug` 已激活、无 broken 诊断。
 5. 配 `workerPreset: orch-debug` → 彻底重启 → `task_create` 派一个调试任务。
 6. 子任务工具表有 `cordis_inspect_list` / `cordis_inspect_query` / `plugin_manager`；技能列表有 `dsh-doc`。
@@ -261,3 +267,5 @@ pnpm run preset:debug                           # 重新生成 bundle
 - 停用：把 `workerPreset` 删掉或改回 `dsh-orchestrator-worker` → 重启。
 - 卸载：`plugin_manager` 里移除 `@local/dsh-orch-debug-preset` bundle（或从 profile 补丁里删掉 `preset-orch-debug` 行）→ 重启。
 - 生成物可随时删除：`$DSH_HOME/state/orchestrator/debug-presets/orch-debug/`（插件不依赖它，只在生成时写）。
+- 恢复「随包发货」的旧形态：回退引入 P1-E 的那个 commit（`git revert <sha>`）即可把生成器、
+  测试与 `pnpm run preset:debug` 脚本还原回主包（见 CHANGELOG「未发布」段的迁移说明）。

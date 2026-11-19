@@ -407,7 +407,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 |---|---|---|
 | `coordinatorSession` | — | 显式覆盖主会话；不配则读 `settings.main_session_id` |
 | `spawnProvider` | `spawn` | 本地 fresh 子会话 provider |
-| `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（见 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)） |
+| `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（生成器与说明已移出主包，见 [tools/debug-preset/README.md](tools/debug-preset/README.md)，不随 npm 包发货） |
 | `staleMinutes` | `30` | 多久无动静标陈旧 / stall 提醒间隔 |
 | `deliveredTimeoutMinutes` | `60` | 「已交付待确认」多久没确认就自动 `done`（1–1440；设成 1 约等于「交付即完成」的旧行为） |
 | `stallRounds` | `3` | 连续 progress 达阈值后提醒一次「可能卡住」 |
@@ -439,6 +439,10 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | `rotateArchiveOld` | `true` | 轮换后是否归档旧主会话（**不可逆**）；`false` = 只改名退役 |
 
 > **配置面 41 → 35（P1-A）**：`backend` 与 `rotateAfterTasks` / `rotateAfterSessions` / `rotateAfterContextTokens` / `rotateAfterDiskMiB` / `rotateCheckIntervalHours` 已删除。老 profile 里留着也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#未发布)。
+
+> **调试预设 `orch-debug`（可选安装）**：生成器与说明已移出主包，在开发仓库的 `tools/debug-preset/`（不随 npm 包发货）。
+> 装一次：`node tools/debug-preset/cli.mjs` → `plugin_manager` 的 `install_bundle` → 配 `workerPreset: orch-debug` → 彻底重启 DSH；
+> 回退：`workerPreset` 改回 `dsh-orchestrator-worker`（或 `plugin_manager` 的 `remove_bundle`）后重启——插件运行时只透传预设 id，不依赖这些文件。
 
 ## 状态与数据
 
@@ -503,7 +507,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | 提示「配置键 X 已删除」 | 老 profile 里的已删键（`backend` / 5 个 `rotate*`）：按提示删掉即可，插件已按默认值运行（迁移见 [CHANGELOG](CHANGELOG.md#未发布)） |
 | 日志提示 `workerPreset` 回落 | 预设 id 只能用小写字母/数字/连字符；改值后彻底重启 |
 | 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制；确实要写仓库外用 `access:'full'` 或 CI |
-| 子任务没有 `cordis_*` 工具 | 确认 `orch-debug` bundle 已装、`workerPreset: orch-debug`、已彻底重启（见 [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md)） |
+| 子任务没有 `cordis_*` 工具 | 确认 `orch-debug` bundle 已装、`workerPreset: orch-debug`、已彻底重启（生成器在 [tools/debug-preset/README.md](tools/debug-preset/README.md)，不随包发货） |
 | 台账损坏 | 用 `snapshots/` 最新快照手工替换 |
 | Bot 模式看不到入口 | 用会话头「任务」按钮；侧栏入口只在纯 dsh 表面 |
 
@@ -518,7 +522,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | [docs/UI.md](docs/UI.md) | 面板/抽屉布局、`--dsw-*` token 对照、交互清单 |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | 平台/沙箱/计划/worktree/通知/UI 的完整限制清单 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 内部设计：模块划分、状态机、派发、结算、对账、落盘 |
-| [docs/DEBUG-PRESET.md](docs/DEBUG-PRESET.md) | `orch-debug` 调试预设的安装、对齐与插件更新流程 |
+| [tools/debug-preset/README.md](tools/debug-preset/README.md) | `orch-debug` 调试预设的生成、安装/回退与插件更新流程（开发仓库工具，不随包发货） |
 | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | 开发、构建、测试策略与发版流程（维护者） |
 | [CHANGELOG.md](CHANGELOG.md) | 每个版本的变化与取舍 |
 

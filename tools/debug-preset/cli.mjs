@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 // 生成 orch-debug 预设 bundle（「创造模式」组合的副本），供调试子会话使用。
 //
-// 用法：
-//   node scripts/orch-debug-preset.mjs                      # 生成到 $DSH_HOME/state/orchestrator/debug-presets/orch-debug
-//   node scripts/orch-debug-preset.mjs --out <dir>          # 生成到指定目录
-//   node scripts/orch-debug-preset.mjs --source <path>      # 指定源 presets/cordis.patch.yml（源码检出时用）
-//   node scripts/orch-debug-preset.mjs --skills-dir <path>  # 用现成的技能目录（默认从安装包抄 dsh-doc）
-//   node scripts/orch-debug-preset.mjs --no-skills          # 不挂 dsh-doc 技能
-//   node scripts/orch-debug-preset.mjs --print              # 只打印补丁文本，不落盘
-//   node scripts/orch-debug-preset.mjs --check              # 检查已生成的 bundle 是否仍与随包 cordis 对齐
+// 位置（P1-E）：维护者工具，已从插件主包外移到开发仓库 `tools/debug-preset/`，不随 npm 包发货；
+// 安装与回退说明见同目录 README.md。
+//
+// 用法（在仓库根执行）：
+//   node tools/debug-preset/cli.mjs                      # 生成到 $DSH_HOME/state/orchestrator/debug-presets/orch-debug
+//   node tools/debug-preset/cli.mjs --out <dir>          # 生成到指定目录
+//   node tools/debug-preset/cli.mjs --source <path>      # 指定源 presets/cordis.patch.yml（源码检出时用）
+//   node tools/debug-preset/cli.mjs --skills-dir <path>  # 用现成的技能目录（默认从安装包抄 dsh-doc）
+//   node tools/debug-preset/cli.mjs --no-skills          # 不挂 dsh-doc 技能
+//   node tools/debug-preset/cli.mjs --print              # 只打印补丁文本，不落盘
+//   node tools/debug-preset/cli.mjs --check              # 检查已生成的 bundle 是否仍与随包 cordis 对齐
+//   pnpm --dir tools/debug-preset generate               # 等价快捷方式（目录内 package.json 的 script）
 //
 // 失败（找不到源组合 / 写盘失败 / 对齐检查发现漂移）打印可读原因并以退出码 1 结束，不抛栈。
 import { homedir } from 'node:os'
@@ -23,9 +27,9 @@ import {
   locateSourcePreset,
   replaceSkillDirs,
   SOURCE_PRESET_ID,
-} from '../src/debug-preset.js'
+} from './src/debug-preset.js'
 
-const USAGE = '用法：node scripts/orch-debug-preset.mjs [--out <dir>] [--source <path>] [--skills-dir <path>] [--no-skills] [--print] [--check]'
+const USAGE = '用法：node tools/debug-preset/cli.mjs [--out <dir>] [--source <path>] [--skills-dir <path>] [--no-skills] [--print] [--check]'
 
 function parseArgs(argv) {
   const args = { out: undefined, source: undefined, skillsDir: undefined, skills: undefined, print: false, check: false }
@@ -115,7 +119,7 @@ function main() {
   console.log(`  2) 在插件配置里打开调试预设：workerPreset: ${DEBUG_PRESET_ID}`)
   console.log('  3) 彻底退出 DSH 再启动（只关窗口不生效），新派发的子会话才用新组合')
   console.log('  4) 派调试任务后用子会话工具表确认 cordis_inspect_list / cordis_inspect_query / plugin_manager')
-  console.log('  5) 升级 DSH 后先跑 node scripts/orch-debug-preset.mjs --check 看组合是否漂移')
+  console.log('  5) 升级 DSH 后先跑 node tools/debug-preset/cli.mjs --check 看组合是否漂移')
   return 0
 }
 

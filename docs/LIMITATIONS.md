@@ -66,7 +66,7 @@
 - `show_view` 在 base asar 未证实存在；协调者 allow 默认不带。memory 已由插件自己的 `memories` 表实现，不依赖平台 memory 服务。
 - `task_report` 目前靠全局注册对子会话可见；若某 profile 不可见，改为专用轻量工具模块，不把整个插件塞进 worker 预设。
 - **子会话预设（`workerPreset`）只在派发时生效**：续派/冷恢复沿用会话创建时记下的 `agentPreset`，改配置不会切换已有子会话；值不是合法 preset id 时静默回落 `dsh-orchestrator-worker`（日志一行 warn）。
-- **`orch-debug` 调试预设**复制随包「创造模式」(`cordis`) 组合：预设声明装在 profile 里，**升级 DSH 后必须先 `node scripts/orch-debug-preset.mjs --check` 看漂移，再重跑 `pnpm run preset:debug` 重新生成并重装**，否则组合里的包名/行 id 与新版对不上会让声明行 broken；预设可执行 Host 代码，不是沙箱。旧的 `$DSH_HOME/.agent-presets/<id>/` 目录在 rc.3 已无人读取，本插件不再写那个路径。
+- **`orch-debug` 调试预设**复制随包「创造模式」(`cordis`) 组合：预设声明装在 profile 里，**升级 DSH 后必须先 `node tools/debug-preset/cli.mjs --check` 看漂移，再重跑 `node tools/debug-preset/cli.mjs` 重新生成并重装**，否则组合里的包名/行 id 与新版对不上会让声明行 broken；预设可执行 Host 代码，不是沙箱。旧的 `$DSH_HOME/.agent-presets/<id>/` 目录在 rc.3 已无人读取，本插件不再写那个路径。**生成器与文档自 P1-E 起不随 npm 包发货**：在开发仓库 `tools/debug-preset/` 下执行（`git clone` 后于仓库根运行）；纯使用方不需要它们。
 
 ## 主会话轮换（G1）
 

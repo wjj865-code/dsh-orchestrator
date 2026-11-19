@@ -321,11 +321,27 @@ test('package.json 导出 preset-tools', () => {
   assert.equal(pkg.publishConfig.access, 'public')
   assert.equal(pkg.exports['./preset-tools'], './preset-tools.js')
   assert.ok(pkg.files.includes('preset-tools.js'))
-  // D1：调试预设生成脚本与文档随包发布。
+  // P1-E：调试预设生成器已外移到开发仓库 tools/debug-preset/，不随 npm 包发货。
   assert.ok(pkg.files.includes('scripts/'))
-  assert.ok(pkg.files.includes('docs/DEBUG-PRESET.md'))
-  assert.equal(pkg.scripts['preset:debug'], 'node scripts/orch-debug-preset.mjs')
-  assert.match(readFileSync(new URL('../README.md', import.meta.url), 'utf8'), /`workerPreset`/)
+  assert.equal(pkg.files.includes('docs/DEBUG-PRESET.md'), false)
+  assert.equal(pkg.scripts['preset:debug'], undefined)
+  assert.equal(pkg.scripts['preset:debug:check'], undefined)
+  assert.equal(pkg.files.some(entry => entry.startsWith('tools/')), false, 'files 白名单不能把 tools/ 带进包')
+  for (const file of [
+    'tools/debug-preset/cli.mjs',
+    'tools/debug-preset/src/debug-preset.js',
+    'tools/debug-preset/README.md',
+    'tools/debug-preset/package.json',
+    'tools/debug-preset/test/debug-preset.test.js',
+  ]) {
+    assert.equal(existsSync(new URL(`../${file}`, import.meta.url)), true, `外移工具缺文件：${file}`)
+  }
+  const toolsPkg = JSON.parse(readFileSync(new URL('../tools/debug-preset/package.json', import.meta.url), 'utf8'))
+  assert.equal(toolsPkg.private, true)
+  assert.equal(toolsPkg.scripts.generate, 'node cli.mjs')
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  assert.match(readme, /`workerPreset`/)
+  assert.match(readme, /tools\/debug-preset\/README\.md/, 'README 必须给出调试预设的新位置')
 })
 
 test('插件展示元数据：locale/icon/docs 都在文件与 exports 里', () => {
