@@ -27,7 +27,8 @@
     "docs/UI.md",
     "docs/CONTRIBUTING.md",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=22.15"
@@ -49,11 +50,12 @@
     "pretest": "pnpm run build",
     "test": "node --test --experimental-test-isolation=none --disable-warning=ExperimentalWarning \"test/*.test.js\"",
     "check:client": "node --check dist/client.js",
+    "check:version": "node scripts/check-version.mjs",
     "preset:debug": "node scripts/orch-debug-preset.mjs",
     "preset:debug:check": "node scripts/orch-debug-preset.mjs --check",
     "mirror:sync": "node scripts/mirror-sync.mjs",
     "mirror:check": "node scripts/mirror-sync.mjs --check",
-    "prepublishOnly": "pnpm test && pnpm run check:client"
+    "prepublishOnly": "pnpm test && pnpm run check:client && pnpm run check:version"
   },
   "dsh": {
     "bundle": {

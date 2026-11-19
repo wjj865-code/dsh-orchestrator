@@ -84,6 +84,7 @@ jobs:
         run: |
           pnpm test
           pnpm run check:client
+          pnpm run check:version
 
       - name: Publish
         # 发布仍走 npm CLI：provenance（OIDC）与 --ignore-scripts 的语义在 npm 上最稳，

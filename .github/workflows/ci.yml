@@ -34,6 +34,11 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile
 
+      - name: Version consistency
+        # README / CHANGELOG / package.json 三处版本漂移过一次（README 停在 0.19.1），发版前用断言挡住。
+        shell: bash
+        run: node scripts/check-version.mjs
+
       - name: Test
         shell: bash
         run: |
