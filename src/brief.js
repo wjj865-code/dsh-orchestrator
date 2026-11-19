@@ -41,7 +41,8 @@ export const BLOCKED_HINT = '执行中遇到需要用户拍板的事（业务取
 export const SUMMARY_FIELDS = '改了什么、改了哪些文件、怎么验证的'
 export const CONFIRM_HINT = `交付（报 done）时把 summary 写成「结论 + ${SUMMARY_FIELDS}」，并带上待确认要点；`
   + 'done 会清空 question/options，所以要点必须在 summary 里；'
-  + '子会话直接调 ask_user_question 会被平台拒（DELEGATED_CALLER），由协调者带选项问用户「确认 / 要改？」。'
+  + '子会话直接调 ask_user_question 会被平台拒（DELEGATED_CALLER）：交付后协调者不会为「能不能关闭」来问你，'
+  + '任务留待确认、等超时自动完成；用户要改时协调者会 task_message 回到本会话。'
 
 // worktree 任务的检出是全新目录，node_modules/虚拟环境这类依赖不在库里 → 子会话常因依赖缺失跑不了测试/构建。
 // 只说「可以装、只装不升」：不授权改依赖版本，也不放宽任何推送前审查/人工确认门禁。

@@ -56,27 +56,40 @@ test('协调者 policy：done 后默认保持待确认，不主动 action:close'
   assertNoConflicts('COORDINATOR_POLICY', policy)
 })
 
-test('协调者 policy：待确认要主动 ask_user_question 问用户（任务名 + 要点 + 确认 / 要改）', () => {
+test('协调者 policy：不主动问「任务能否关闭」，交付后保持待确认等超时', () => {
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /ask_user_question/)
-  assert.match(policy, /待确认要主动问用户，不许只挂台账/)
-  assert.match(policy, /任务名/)
-  assert.match(policy, /一句结果要点/)
-  assert.match(policy, /确认 \/ 要改？/)
-  // 多个待确认合并成一条清单，而不是连发多条或只报数量。
-  assert.match(policy, /合并成一条清单一次问/)
-  // 不许等用户自己去翻面板 / 台账。
-  assert.match(policy, /不要等用户自己去翻面板或 task_list/)
+  // 0.23：从「必须主动问用户」改成「不主动问关闭」——催关闭比超时自动完成更打扰。
+  assert.match(policy, /不要问「任务能不能关闭」/)
+  assert.match(policy, /不要\*\*用 ask_user_question 追问「确认 \/ 要改？」/)
+  assert.match(policy, /等超时自动完成/)
+  // 提问不是禁用，而是收窄到真需要拍板的场合。
+  assert.match(policy, /只在真正需要拍板时提问/)
+  assert.match(policy, /不可逆操作/)
+  assert.match(policy, /远端写授权/)
+  // 多个待拍板点合并成一条清单，不逐任务连问。
+  assert.match(policy, /合成一条清单问完/)
+  // 不再要求「收到交付通知的同一回合里就用 ask_user_question 问」。
+  assert.doesNotMatch(policy, /待确认要主动问用户/)
+  assert.doesNotMatch(policy, /同一回合里就用 ask_user_question 问/)
+})
+
+test('协调者 policy：能直接回答就不派任务（只有新鲜取证/写文件/跨仓库才委派）', () => {
+  const policy = renderCoordinatorPolicy({})
+  assert.match(policy, /能直接回答就不派任务/)
+  assert.match(policy, /直接回复用户/)
+  assert.match(policy, /新鲜取证/)
+  assert.match(policy, /写文件/)
+  assert.match(policy, /跨仓库证据/)
 })
 
 test('协调者 policy：主动提问与「默认保持待确认、不主动关闭」不矛盾', () => {
   const policy = renderCoordinatorPolicy({})
-  assert.match(policy, /提问不等于关闭/)
-  assert.match(policy, /问完任务依旧是待确认，默认不 task_message\(\{ action: 'close' \}\)/)
+  // 提问不再是交付后的固定动作，但「不替用户默认确认、等超时」的口径必须还在。
+  assert.match(policy, /不要替用户默认确认|等超时自动完成/)
+  assert.match(policy, /问完任务依旧是待确认|任务保持待确认/)
   // 两段口径必须能同时读到：保持待确认那条还在。
   assert.match(policy, /默认\*\*保持待确认、不要主动 task_message\(\{ action: 'close' \}\)\*\*/)
-  // 提问不是替用户拍板：没回答就走超时，不做默认确认。
-  assert.match(policy, /不要替用户默认确认/)
   assertNoConflicts('COORDINATOR_POLICY', policy)
 })
 

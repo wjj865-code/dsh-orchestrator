@@ -90,9 +90,9 @@ test('执行中待确认提示对所有任务都出现（一开始就要能看�
   assert.equal(lines.findIndex(line => line.startsWith('【执行中待确认】')) < lines.findIndex(line => line.startsWith('【确认方式】')), true)
 })
 
-// ---- 提示一：报告后用 ask_user_question 的选项方式确认 ----------------------------
+// ---- 提示一：交付口径（summary 三问 + 待确认要点，不催关闭） -----------------------
 
-test('确认方式提示：交付时给结构化选项，不只在正文里问', () => {
+test('确认方式提示：交付时给结构化摘要，不只在正文里问', () => {
   const text = renderBrief({ taskId: 't-1' })
   assert.match(text, /【确认方式】/)
   assert.match(CONFIRM_HINT, /报 done/)
@@ -102,8 +102,10 @@ test('确认方式提示：交付时给结构化选项，不只在正文里问',
   assert.match(CONFIRM_HINT, /done 会清空 question\/options/)
   // 交付口径与 task_detail 的 FINISH_HINT 同源（审计 §5.1.2 矛盾 2）：都从 SUMMARY_FIELDS 拼出。
   assert.ok(CONFIRM_HINT.includes(SUMMARY_FIELDS), 'brief 与 task_detail 的三问要素必须逐字一致')
-  // 用户拍板要带选项：确认 / 要改？
-  assert.match(CONFIRM_HINT, /确认 \/ 要改？/)
+  // 0.23：协调者不再追问「确认 / 要改？」，子会话要知道交付后不会被催确认。
+  assert.doesNotMatch(CONFIRM_HINT, /确认 \/ 要改？/)
+  assert.match(CONFIRM_HINT, /不会为「能不能关闭」来问你/)
+  assert.match(CONFIRM_HINT, /等超时自动完成/)
   // 措辞不能顺手放宽推送前双审查或人工确认门禁。
   assert.doesNotMatch(CONFIRM_HINT, /跳过|免确认|不用审查|无需审查/)
 })
@@ -115,7 +117,8 @@ test('确认方式提示不指挥子会话去调 ask_user_question（平台会�
   // 否则每个子会话每轮都会撞一次墙。
   assert.match(CONFIRM_HINT, /DELEGATED_CALLER/)
   assert.match(CONFIRM_HINT, /子会话直接调 ask_user_question 会被平台拒/)
-  assert.match(CONFIRM_HINT, /由协调者带选项问用户/)
+  // 问用户仍只由协调者做（这里说清「不会有人来问你确认」即可，不必再教协调者怎么问）。
+  assert.match(CONFIRM_HINT, /协调者/)
 })
 
 test('确认方式提示对所有任务都出现（交付待确认是每个任务的出口）', () => {

@@ -236,7 +236,7 @@
 
 | 层 | 载体 | 生命周期 | 唯一职责 |
 |---|---|---|---|
-| **L1** | `ctx.systemPrompt.context().text`（`index.js`） | 每回合重渲染 | 协调者行为规则：工具可用/禁用、交付与确认口径、`present`/`read_workspace` 用法、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
+| **L1** | `ctx.systemPrompt.context().text`（`index.js`） | 每回合重渲染 | 协调者行为规则：**能直接答就不委派**、工具可用/禁用、交付与确认口径（**不主动问「能否关闭」**，只在真歧义/不可逆/远端写授权时提问）、`present`/`read_workspace` 用法、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
 | **L2** | 派发消息（`src/brief.js`） | 每次派发/续派 | 只指路：任务编号、访问级别、worktree 装依赖提示、`task_detail` 指引、执行中/交付时怎么回报 |
 | **L3** | 子会话按需调用（`src/task-detail.js`） | 按需 | 任务创建详情 + 完成动作 |
 | **L4** | 一次性 `agent.steer`（`src/onboarding.js`） | 仅新主会话首次 | 只开场：一句话自我介绍 + 派索引任务（**能力边界一条都不重复**） |
@@ -404,7 +404,8 @@
     子会话是 `subagents.startActivation({ parent })` 起的 subagent，必然撞墙。
     注意 `done` 会清掉 `question`/`options`（`task_report` 里 `progress`/`done` 都走 `clearTaskQuestion`），
     所以交付阶段的要点只能走 `summary`；要结构化选项就得在执行中走 `blocked`/`needs_auth`（提示三）。
-    问用户始终由协调者带同一批选项做；待确认/关闭语义仍只在 `task_detail` 与协调者 policy 里定义。
+    问用户始终由协调者做（子会话调不通），但协调者**不会为「任务能否关闭」提问**：交付后任务保持「已交付待确认」、
+    等 `deliveredTimeoutMinutes` 超时自动完成，用户要改再 `task_message` 追问；待确认/关闭语义仍只在 `task_detail` 与协调者 policy 里定义。
   - `WORKTREE_INSTALL_HINT`（【worktree 依赖】，只有隔离任务有）：检出目录没有 `node_modules`/虚拟环境，可以执行安装命令
     （`pnpm install` / `npm install` / `uv sync` 等），**只安装不升级**（不改依赖声明与版本）。
     触发条件是台账 `worktree_state ∈ ISOLATED_WORKTREE_STATES`（`requested` / `created` / `reused`，与同写域防护共用同一份列表）；

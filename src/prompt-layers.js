@@ -47,8 +47,9 @@ export const PROMPT_LAYERS = Object.freeze([
     audience: 'coordinator',
     owns: Object.freeze([
       '工具可用与禁用（wait_agent / 团队工具 / 原生 read-glob / schedule 四工具）',
+      '能直接回答就不委派（只有新鲜取证/写文件/跨仓库证据才 task_create）',
       '交付与确认的决策口径（done 不是终态、默认保持待确认、何时 task_message({ action: "close" })、何时追问）',
-      '待确认要主动问用户（任务名 + 要点 + 「确认 / 要改？」）',
+      '不主动问「任务能否关闭」；只在真歧义/不可逆/远端写授权时提问（多条合并成一条清单）',
       'present 与 read_workspace 的用法与边界',
       'worktree 隔离策略（renderWorktreePolicy）',
       '同写域并发防护（renderWriteGuardPolicy）',
