@@ -78,7 +78,7 @@
 
 ### 3.5 用例规模
 
-- 60 个 `test/*.test.js`、约 2.1 万行、1,041 条 `test()`（1,036 pass / 5 skip，`pnpm test` 会打印总数）。
+- 62 个 `test/*.test.js`、约 1.9 万行、1,062 条 `test()`（1,057 pass / 5 skip，`pnpm test` 会打印总数）。
 - 大文件：`client.test.js`（U2 客户端）、`index.test.js`（装配）、`tools.test.js`（工具面）、`main-rotation.test.js`（轮换）。
 
 ## 4. 已知 flaky / 环境限制

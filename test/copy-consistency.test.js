@@ -73,6 +73,25 @@ test('协调者 policy：不主动问「任务能否关闭」，交付后保持�
   assert.doesNotMatch(policy, /同一回合里就用 ask_user_question 问/)
 })
 
+test('协调者 policy：需要拍板必须用 ask_user_question 结构化提问，不得用纯文字问句', () => {
+  const policy = renderCoordinatorPolicy({})
+  // 「少打扰」只覆盖不用拍板的进展汇报：不能拿它当作跳过决策的借口。
+  assert.match(policy, /少打扰只针对「不用拍板的进展汇报」/)
+  // 决策走结构化提问：问题 + 选项，纯文字问句不算（容易被忽略、也没东西可点）。
+  assert.match(policy, /必须用 ask_user_question 结构化提问/)
+  assert.match(policy, /不得用纯文字问句代替/)
+  assert.match(policy, /question \+ 2–4 个 options/)
+  // 与既有两原则并列，且写明不矛盾。
+  assert.match(policy, /不催关闭/)
+  assert.match(policy, /能直接回答就不派任务/)
+  assert.match(policy, /不矛盾/)
+  // 反向口径：不允许「不问用户就直接执行不可逆操作」这类授权句式。
+  for (const pattern of [/不问用户[^\n]{0,12}执行/, /无需(?:询问|确认)[^\n]{0,12}(?:执行|发布|推送)/, /自行决定[^\n]{0,8}不可逆/]) {
+    assert.doesNotMatch(policy, pattern, `policy 出现「不问用户直接干」的授权口径：${pattern}`)
+  }
+  assertNoConflicts('COORDINATOR_POLICY', policy)
+})
+
 test('协调者 policy：能直接回答就不派任务（只有新鲜取证/写文件/跨仓库才委派）', () => {
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /能直接回答就不派任务/)
