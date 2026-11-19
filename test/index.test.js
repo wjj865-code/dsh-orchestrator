@@ -217,6 +217,42 @@ test('task_detail 走全局注册：主会话越权被拒，任务自己的子�
   assert.match(detail, /【验收标准】/)
 }))
 
+// P2-3 交接契约 v1 的端到端接线：交付事件由 `transition` 观察者写、确认事件由 `closeDelivered` 写，
+// 都落 `$DSH_HOME/state/orchestrator/handoff/`（不进仓库、不改台账 messages 的语义）。
+test('P2-3 交接事件：交付写 task.handoff.delivered、确认写 task.handoff.confirmed', withHome(async home => {
+  const coordinator = makeAgent('s-1')
+  const { ctx, registered } = fakeCtx({ agent: coordinator })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  const created = await byName.task_create.execute({ title: '交接', goal: '目标', acceptance: ['a'] }, { agent: coordinator })
+  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const readEvents = () => {
+    const dir = join(home, 'state', 'orchestrator', 'handoff')
+    const files = readdirSync(dir).filter(name => name.endsWith('.jsonl'))
+    return files.flatMap(name => readFileSync(join(dir, name), 'utf8').split('\n').filter(line => line !== '').map(line => JSON.parse(line)))
+  }
+
+  const receipt = await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '结论：完成' }, { agent: { id: 'm-1' } })
+  assert.match(receipt, /待确认/)
+  const delivered = readEvents()
+  assert.deepEqual(delivered.map(line => line.event), ['task.handoff.delivered'])
+  assert.equal(delivered[0].taskId, taskId)
+  assert.equal(delivered[0].detail.contract, 1)
+  assert.equal(delivered[0].detail.handoff.acceptedBy, null)
+  assert.equal(delivered[0].detail.handoff.status, 'delivered')
+
+  const closed = await byName.task_message.execute({ task_id: taskId, action: 'close' }, { agent: coordinator })
+  assert.match(closed, /已确认完成/)
+  const events = readEvents()
+  assert.deepEqual(events.map(line => line.event), ['task.handoff.delivered', 'task.handoff.confirmed'])
+  assert.equal(events[1].detail.handoff.acceptedBy, 'coordinator')
+  assert.equal(events[1].detail.handoff.status, 'done')
+  assert.ok(Number.isFinite(events[1].detail.handoff.acceptedAt))
+  // 重复确认不再写第二条事件（幂等）。
+  await byName.task_message.execute({ task_id: taskId, action: 'close' }, { agent: coordinator })
+  assert.equal(readEvents().length, 2)
+}))
+
 test('apply 给 createTools 传 defaultCwd：无 target 时相对产物按主会话目录（指挥舱）解析', withHome(async home => {
   const s1 = makeAgent('s-1')
   const { ctx, registered } = fakeCtx({ agents: [s1] })

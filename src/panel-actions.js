@@ -19,6 +19,8 @@ import {
 } from './panel-gates.js'
 import { statusesWith } from './status-facts.js'
 import { CLOSE_REASONS, closeDelivered, closeReasonLabel } from './delivered.js'
+// P2-3 交接契约 v1：抽屉里的交接对象与 task_status / JSONL 同源（src/handoff.js 是唯一字段真源）。
+import { handoffOfTask } from './handoff.js'
 
 // 状态集合一律从 status-facts 派生（唯一事实源）；本文件不再写本地 Set。
 const TERMINAL = new Set(TERMINAL_STATUSES)
@@ -161,6 +163,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         deliveredAt: task.delivered_at ?? null,
         closeReason: task.close_reason ?? null,
         closeReasonLabel: task.close_reason === null || task.close_reason === undefined ? null : closeReasonLabel(task.close_reason),
+        // P2-3 交接契约 v1：完整交接对象（谁/何时确认、轮次、验收与产物证据）；没交付过是 null。
+        handoff: handoffOfTask(db, task),
         // P2-1 A1：交付前机器验收的完整证据（spec + 每条 check 的退出码/耗时/输出尾部）；没跑过是 null。
         acceptance: task.acceptance ?? null,
         // 面板按钮可见性与动作门控同源（src/panel-gates.js）：前端只读这三个字段，不抄状态表。
@@ -446,6 +450,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       db,
       taskId: task.id,
       reason: CLOSE_REASONS.coordinator,
+      // P2-3：面板确认 = `panel`（与工具 coordinator / 超时 timeout 区分，落 accepted_by）。
+      by: 'panel',
       releaseSession: target => { try { dispatcher.releaseWritableRoots?.(target) } catch { /* 释放失败不影响关闭 */ } },
       completeGoal: closed => { void goalBridge?.complete?.(closed.id, closed.session_id) },
       cleanupWorktree,

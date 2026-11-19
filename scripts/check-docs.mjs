@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url'
 
 import { loadConfig } from '../src/config.js'
 import { createTools } from '../src/tools.js'
+// P2-3 交接契约 v1：文档里的字段表 / 事件名必须与代码同源（防止「发布即契约」的字段漂移）。
+import { HANDOFF_EVENT, HANDOFF_FIELDS } from '../src/handoff.js'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -46,6 +48,18 @@ export function sectionOf(markdown, title) {
   let end = lines.length
   for (let index = start + 1; index < lines.length; index += 1) {
     if (/^##\s+/.test(lines[index])) { end = index; break }
+  }
+  return lines.slice(start + 1, end).join('\n')
+}
+
+/** 取某个 `### 标题` 小节正文（到下一个同级或更高级标题为止）。 */
+export function subsectionOf(markdown, title) {
+  const lines = markdown.split('\n')
+  const start = lines.findIndex(line => new RegExp(`^###\\s+${title}\\s*$`).test(line))
+  if (start === -1) return ''
+  let end = lines.length
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^#{1,3}\s+/.test(lines[index])) { end = index; break }
   }
   return lines.slice(start + 1, end).join('\n')
 }
@@ -153,7 +167,27 @@ export function collectProblems(root = ROOT) {
     if (!existsSync(join(root, file))) problems.push(`package.json.files 指向不存在的文档：${file}（发出去就是 404）`)
   }
 
-  // —— 4. 相对链接与锚点可达 ——
+  // —— 4. 交接契约 v1 的字段表 / 事件名与代码同源（P2-3） ——
+  // 字段名一旦发布就是对外承诺：只允许「代码加字段同时改文档」，不允许文档自己长字段。
+  const architecture = read('docs/ARCHITECTURE.md')
+  const documentedFields = [...subsectionOf(architecture, '契约字段')
+    .matchAll(/^\|\s*`([A-Za-z][A-Za-z0-9]*)`\s*\|/gm)].map(match => match[1])
+  const missingFields = HANDOFF_FIELDS.filter(name => !documentedFields.includes(name))
+  const extraFields = documentedFields.filter(name => !HANDOFF_FIELDS.includes(name))
+  if (documentedFields.length === 0) {
+    problems.push('docs/ARCHITECTURE.md 缺少「### 契约字段」小节：交接契约 v1 的字段表是唯一真源，不能只写在代码里')
+  }
+  if (missingFields.length > 0) {
+    problems.push(`docs/ARCHITECTURE.md 交接契约字段表缺少：${missingFields.join('、')}（src/handoff.js 的 HANDOFF_FIELDS 有 ${HANDOFF_FIELDS.length} 个）`)
+  }
+  if (extraFields.length > 0) {
+    problems.push(`docs/ARCHITECTURE.md 交接契约字段表多出：${extraFields.join('、')}（代码里没有这些字段）`)
+  }
+  for (const event of Object.values(HANDOFF_EVENT)) {
+    if (!architecture.includes(event)) problems.push(`docs/ARCHITECTURE.md 缺少交接事件名 ${event}（src/handoff.js 的 HANDOFF_EVENT 有它）`)
+  }
+
+  // —— 5. 相对链接与锚点可达 ——
   for (const file of files) {
     const text = read(file)
     for (const link of relativeLinks(text)) {

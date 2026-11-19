@@ -138,6 +138,24 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 - `task_report` 的 `artifacts`：相对路径按 `target_dir ?? 指挥舱` 解析；只 `stat` 不读文件；非法条目丢弃；`exists:false` 标「未找到」但不失败。
 - 台账 `tasks.artifacts_json`（旧库 ALTER + 旧行按 `[]`）；通知在 done/blocked/needs_auth 文本里追加产物块；快照 `tasks[].artifacts` 与 `taskCard.artifactCount` 供面板展示。
 
+## 9. 交接契约 v1 的 JSONL 事件（D2）
+
+契约字段与语义的唯一真源是 `docs/ARCHITECTURE.md` 的「交接契约 v1」一节（`src/handoff.js` 的 `HANDOFF_FIELDS` 与文档表由 `scripts/check-docs.mjs` 对齐）。这里只记**外部消费方式**：
+
+- 文件：`$DSH_HOME/state/orchestrator/handoff/handoff-YYYY-MM-DD.jsonl`（`$DSH_HOME` 默认 `~/.dsh`）；与仓库无关，不随包发布。
+- 格式：一行一个 JSON；`event` 只有 `task.handoff.delivered`（进入待确认）与 `task.handoff.confirmed`（确认/超时收成 done）；`detail.contract` 是契约版本（v1 = 1），`detail.handoff` 是完整契约对象。
+- 追加写、按天分文件、单文件超 5 MiB 换新（`handoff-YYYY-MM-DD.2.jsonl`）、保留 30 天；同一套轮转实现与运行日志共用（`src/log.js`）。
+- 去重：文件只追加不改写，重复投递由读方按 `(event, taskId, deliveredAt)` 去重；`task.handoff.confirmed` 每次确认只写一条（重复确认走幂等分支，不写）。
+- 消费示例（等 `confirmed` 后通知下游）：
+
+```bash
+tail -F "$DSH_HOME/state/orchestrator/handoff"/handoff-*.jsonl \
+  | jq -c 'select(.event=="task.handoff.confirmed") | {taskId, by: .detail.handoff.acceptedBy, at: .detail.handoff.acceptedAt}'
+```
+
+- 边界：v1 只提供文件级事件，**没有**进程内订阅 API / webhook（宿主事件契约未定，留 v2）；事件写入失败只 warn、不影响交付与确认。
+
+
 
 
 

@@ -3,10 +3,15 @@
 // done 仍是不可逆终态；delivered 是唯一允许「追问复用原会话」的收尾态。
 //
 // 为什么单独一个模块：确认有两条触发路径（工具层 / 面板）和一条兜底（超时 sweeper），
-// 三条必须做**同一件事**（迁移 + 审计消息 + 释放可写根 + goal 收口 + 检出清理 + 队列补位），
+// 三条必须做**同一件事**（迁移 + 交接确认 + 审计消息 + 释放可写根 + goal 收口 + 检出清理 + 队列补位），
 // 否则会出现「工具确认了但检出没清理 / 下游不推进」的分叉。
-import { addMessage, getTask, listTasks, transition } from './ledger.js'
+// P2-3 交接契约 v1：三条路径各自传 `by`（coordinator / panel / timeout），
+// 落 `tasks.accepted_by` / `accepted_at` 并发一条 `task.handoff.confirmed` JSONL（见 src/handoff.js）。
+import { addMessage, getTask, listTasks, setTaskAccepted, transition } from './ledger.js'
 import { statusLabel } from './state.js'
+// P2-3 交接契约 v1：确认人/确认时间在这里落库，`task.handoff.confirmed` 也只在这里上报一次
+// （幂等关闭走已 done 的 early return，不会再写第二条事件）。
+import { acceptedByOf, emitHandoffConfirmed } from './handoff.js'
 
 /** 交付后等确认的默认超时（分钟）；`config.deliveredTimeoutMinutes` 可覆盖（1–1440）。 */
 export const DELIVERED_TIMEOUT_MINUTES = 60
@@ -34,15 +39,18 @@ export function findExpiredDelivered({ db, now = Date.now(), timeoutMinutes = DE
 /**
  * 把一条 delivered 任务收成 done（协调者确认与超时共用）。
  *
- * 副作用顺序与 settlement 的终态收尾一致：先落库（迁移 + 审计消息），再释放可写根 / 收口 goal /
+ * 副作用顺序与 settlement 的终态收尾一致：先落库（迁移 + 交接确认 + 审计消息），再释放可写根 / 收口 goal /
  * 按档位清检出 / 唤醒队列。任何一步抛错都不能回滚已经落库的 done。
  *
+ * @param {object} options
+ * @param {'coordinator'|'panel'|'timeout'} [options.by] 谁确认的（交接契约 `acceptedBy`，默认按 reason 推断）
  * @returns {{ok:true, task:object, already:boolean} | {ok:false, reason:'not-found'|'not-delivered', task?:object}}
  */
 export function closeDelivered({
   db,
   taskId,
   reason = CLOSE_REASONS.coordinator,
+  by,
   releaseSession = () => {},
   completeGoal = () => {},
   cleanupWorktree = () => {},
@@ -52,6 +60,7 @@ export function closeDelivered({
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志失败不能回滚关闭 */ }
   }
+  const acceptedBy = acceptedByOf(by, reason)
   const task = getTask(db, String(taskId ?? ''))
   if (task === undefined) return { ok: false, reason: 'not-found' }
   // 幂等：已经 done（并发确认、超时与手工确认撞车）按成功返回，不再迁移/不再写消息。
@@ -68,10 +77,16 @@ export function closeDelivered({
     return { ok: false, reason: 'not-delivered', task: latest }
   }
   try {
+    // 交接契约 v1：先落「谁确认、何时确认」，再写审计消息——两者失败都不能回滚已落库的 done。
+    next = setTaskAccepted(db, task.id, { acceptedBy })
+  } catch (error) {
+    log('task.handoff.accept-failed', { taskId: task.id, detail: { acceptedBy, error: error?.message ?? String(error) } })
+  }
+  try {
     addMessage(db, task.id, {
       kind: 'close',
       rendered: `[确认] ${closeReasonLabel(reason)}：${statusLabel(next.status)}`,
-      meta: { closeReason: reason, status: next.status },
+      meta: { closeReason: reason, status: next.status, acceptedBy },
     })
   } catch (error) {
     log('task.delivered.message-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } })
@@ -81,7 +96,9 @@ export function closeDelivered({
   try { completeGoal(next) } catch { /* goal 收口失败不影响关闭 */ }
   try { cleanupWorktree(next) } catch { /* 清理失败只影响磁盘 */ }
   try { pump() } catch { /* 队列补位失败不影响关闭 */ }
-  log('task.delivered.closed', { taskId: next.id, sessionId: sessionId ?? null, detail: { reason } })
+  log('task.delivered.closed', { taskId: next.id, sessionId: sessionId ?? null, detail: { reason, acceptedBy } })
+  // 交接契约 v1：确认事件只在这里发一次（already 分支已提前返回，重复确认不会重复发）。
+  try { emitHandoffConfirmed(next) } catch { /* 事件失败是旁路，不影响已落库的 done */ }
   return { ok: true, task: next, already: false }
 }
 
@@ -114,7 +131,7 @@ export function createDeliveredSweeper({
     const closed = []
     for (const task of expired) {
       const result = closeDelivered({
-        db, taskId: task.id, reason: CLOSE_REASONS.timeout,
+        db, taskId: task.id, reason: CLOSE_REASONS.timeout, by: 'timeout',
         releaseSession, completeGoal, cleanupWorktree, pump, logger,
       })
       if (result.ok === true && result.already !== true) closed.push(result.task.id)

@@ -8,6 +8,8 @@ import { createRequestDedupe } from './request-dedupe.js'
 import { isMainSession } from './session-role.js'
 import { ACTIVE_STATUSES, canClose, canDelete, canFollowup } from './panel-gates.js'
 import { statusesWith } from './status-facts.js'
+// P2-3 交接契约 v1：snapshot 只下发精简版（谁/何时确认 + 验收是否通过），完整证据在 detail 端点。
+import { handoffSnapshot } from './handoff.js'
 
 const ENDPOINTS = new Set(['snapshot', 'session-role'])
 const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message', 'close', 'delete'])
@@ -80,6 +82,8 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
           // delivered 两段式：交付时间 / 关闭原因（供面板显示「待确认」「协调者确认/超时」）。
           deliveredAt: task.delivered_at ?? null,
           closeReason: task.close_reason ?? null,
+          // P2-3 交接契约 v1（精简）：契约版本 + 交付/确认时间 + 确认方式 + 验收结论；没交接是 null。
+          handoff: handoffSnapshot(task),
           // P2-1 A1：验收摘要（列表/卡片小标用；完整证据在面板 detail 端点）。
           acceptance: task.acceptance === null || task.acceptance === undefined
             ? null

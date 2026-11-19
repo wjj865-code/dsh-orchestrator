@@ -5,7 +5,7 @@ import { createHostCapabilities } from './src/host-capabilities.js'
 import { Config, unwrapVolatile } from './src/config-schema.js'
 import {
   openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts,
-  listTasks, setTransitionObserver,
+  getTask, listTasks, setTransitionObserver,
 } from './src/ledger.js'
 import { collectWorkspaceArtifacts, appendMissingArtifacts, MAX_AUTO_ARTIFACTS } from './src/artifact-collect.js'
 import { createSettlementReporter } from './src/settlement.js'
@@ -25,6 +25,8 @@ import { createGoalBridge } from './src/goal.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
+// P2-3 交接契约 v1：JSONL 事件（交付 / 确认）落 $DSH_HOME/state/orchestrator/handoff/。
+import { createHandoffLog, emitHandoffDelivered, setHandoffSink } from './src/handoff.js'
 import { loadPreferences, renderPreferenceBlock } from './src/preferences.js'
 import { PRESENT_LIMIT_TEXT } from './src/prompt-layers.js'
 // P1-C 文案单源：协调者 policy 里的计划/交付口径引用 src/copy.js，避免与 L2/L3 说法漂移。
@@ -177,13 +179,22 @@ export async function apply(ctx, rawConfig = {}) {
   }
   // 状态迁移的审计日志（审计 §4.5）：`transition` 是唯一入口，在这里挂一次观察者就覆盖全部 19 个调用点，
   // 从此「这个任务为什么从 running 变 orphaned」能直接从日志还原，不必靠 settle 消息反推。
+  // P2-3 交接契约 v1：进入 delivered 的**唯一**入口也在这里 → `task.handoff.delivered` 只写一次
+  // （task_report done 与结算 completed 两条路都过 transition，不会漏也不会重）。
+  const handoffLog = createHandoffLog({ db, stateDir: dir, onWarn: warnings })
   setTransitionObserver(({ taskId, from, to, sessionId, reason, closeReason }) => {
     logger.log('task.transition', {
       taskId,
       sessionId: sessionId ?? undefined,
       detail: { from, to, reason: reason ?? null, closeReason: closeReason ?? null },
     })
+    if (to === 'delivered') {
+      try { emitHandoffDelivered(getTask(db, taskId)) } catch { /* 事件失败是旁路，不影响迁移 */ }
+    }
   })
+  // 确认侧（三条路径共用 closeDelivered）走同一个进程级 sink：交付事件也从这里出，
+  // 少一处「忘接就不发事件」的可能（与上面观察者是同一套做法）。
+  const disposeHandoffSink = setHandoffSink(handoffLog)
   // P9：宿主侧 git 能力（只在 worktree 任务上被调用；普通任务零 git 调用）。
   const worktreeLog = (event, fields) => logger.log(event, fields)
   const worktreeService = createWorktreeService({
@@ -766,6 +777,7 @@ export async function apply(ctx, rawConfig = {}) {
     // 看门狗先停：定时器巡检会在 db.close() 之后继续读台账（卸载期不允许）。
     try { watchdog.stop() } catch { /* 看门狗清理失败不阻断卸载 */ }
     try { deliveredSweeper.stop() } catch { /* 超时巡检清理失败不阻断卸载 */ }
+    try { disposeHandoffSink() } catch { /* 交接事件 sink 解绑失败不阻断卸载 */ }
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
     for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, routeDisposer].reverse()) {

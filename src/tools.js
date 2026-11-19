@@ -31,6 +31,8 @@ import { registeredArtifacts } from './artifact-location.js'
 import { preferenceSavedHint, projectPreferenceSavedHint, upsertPreference } from './preferences.js'
 import { artifactLines } from './notify.js'
 import { CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered, closeReasonLabel } from './delivered.js'
+// P2-3 交接契约 v1：`task_status` 的「交接」段与面板/JSONL 同源（src/handoff.js 是唯一字段真源）。
+import { handoffOfTask, handoffStatusLines } from './handoff.js'
 import { toolFailure } from './action-errors.js'
 import { objectiveForMessage, normalizeGoalRounds } from './goal.js'
 import { followupGate, stopIsIdempotent } from './panel-gates.js'
@@ -623,7 +625,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const outcome = closeDelivered({
       db,
       taskId: task.id,
+      // P2-3：工具确认 = 协调者确认（与面板 `panel` / 超时 `timeout` 区分，落 accepted_by）。
       reason: CLOSE_REASONS.coordinator,
+      by: 'coordinator',
       releaseSession: releaseTaskSession,
       // G1：确认完成 = 目标达成，complete 并 disarm（桥内部幂等）。
       completeGoal: closed => { void goalBridge?.complete?.(closed.id, closed.session_id) },
@@ -1286,6 +1290,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (task.close_reason !== null && task.close_reason !== undefined) {
         lines.push(`关闭：${closeReasonLabel(task.close_reason)}`)
       }
+      // P2-3 交接契约 v1：谁确认/何时确认/几轮——没交付过的任务没有交接段（返回空数组）。
+      lines.push(...handoffStatusLines(handoffOfTask(db, task)))
       // P2-1 A1：交付前机器验收——有结果就逐条列（退出码/耗时/截断），没跑过但配了检查也要说清。
       if (task.acceptance !== null) {
         lines.push(...acceptanceStatusLines(task.acceptance))

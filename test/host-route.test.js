@@ -81,6 +81,17 @@ test('snapshot 返回待决计数（waiting_user / waiting_auth / delivered）',
   assert.equal(row.canDelete, false)
   assert.ok(Number.isFinite(row.deliveredAt))
   assert.equal(row.closeReason, null)
+  // P2-3 交接契约 v1（精简版）：交付未确认时 acceptedAt/acceptedBy 都是 null，契约版本可判定。
+  assert.deepEqual(row.handoff, {
+    contract: 1,
+    deliveredAt: row.deliveredAt,
+    acceptedAt: null,
+    acceptedBy: null,
+    acceptedByLabel: null,
+    acceptanceOk: null,
+  })
+  // 没交付过的任务没有交接（null，而不是空壳对象）。
+  assert.equal(body.tasks.find(item => item.id === waiting.id).handoff, null)
   db.close()
 })
 

@@ -71,7 +71,8 @@ test('closeDelivered：delivered → done，写审计消息并依次释放/收�
   const closeRow = recentMessages(db, task.id, 1)[0]
   assert.equal(closeRow.kind, 'close')
   assert.match(closeRow.rendered, /协调者确认：已完成/)
-  assert.deepEqual(closeRow.meta, { closeReason: 'coordinator', status: 'done' })
+  // P2-3 交接契约：审计消息带上确认人（by 未传时按原因推断为 coordinator）。
+  assert.deepEqual(closeRow.meta, { closeReason: 'coordinator', status: 'done', acceptedBy: 'coordinator' })
   db.close()
 })
 

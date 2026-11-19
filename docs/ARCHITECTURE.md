@@ -185,6 +185,67 @@
 - 关闭三条路径（工具 / 面板 / 超时）共用 `src/delivered.js` 的 `closeDelivered`，副作用顺序固定：迁移 + 审计消息 → 释放可写根 → goal 收口 → 按档位清检出 → 唤醒队列。
 - 通知去重：进入 `delivered` 发一条（带 `task_message({action:'close'})`/`task_message` 指令），确认/超时**不再发**通知，只在台账写审计消息。
 
+## 交接契约 v1（D2：`acceptedBy` / `acceptedAt` + JSONL）
+
+「交付 → 确认 / 追问 → 完成」是插件独有的一段语义（官方宿主没有），v1 把它从内部状态机提升为**可被外部消费的只读契约**：稳定字段 + 版本号 + JSONL 审计事件。**v1 只做数据契约与事件，不做进程内订阅 API**（回调/事件总线留 v2，取决于宿主事件契约，见 P2 计划 §9 待拍板 4）。
+
+三条确认路径各自带 `by`，落库与事件只在 `closeDelivered` 一处写：
+
+| 入口 | `acceptedBy` | `close_reason` |
+|---|---|---|
+| `task_message({action:'close'})`（`src/tools.js`） | `coordinator` | `coordinator` |
+| 面板「确认交付」（`src/panel-actions.js`） | `panel` | `coordinator` |
+| 超时 sweeper（`src/delivered.js`，`deliveredTimeoutMinutes`） | `timeout` | `timeout` |
+
+### 契约字段
+
+`handoff` 出现在 `task_status`、面板 detail 端点、JSONL 事件三处，字段与顺序以此表为唯一真源（`src/handoff.js` 的 `HANDOFF_FIELDS`；`scripts/check-docs.mjs` 断言两边逐字一致，防止代码与文档漂移）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `contract` | number | 契约版本，v1 = `1`；只增不改语义 |
+| `taskId` | string | 任务编号 |
+| `sessionId` | string \| null | 子会话 id（未派发为 null） |
+| `title` | string | 任务标题（外部工具直接可读，不必回查台账） |
+| `deliveredAt` | number \| null | 交付时间（毫秒时间戳；追问后再交付会重写，超时从新时间起算） |
+| `acceptedAt` | number \| null | 确认时间（毫秒）；未确认是 null |
+| `acceptedBy` | `coordinator` \| `panel` \| `timeout` \| null | 谁确认的；未确认是 null |
+| `rounds` | object | `{ turns, followups }`：派发/续派次数（台账 `attempts`）与追问次数（`kind='followup'` 消息数） |
+| `evidence` | object | `{ acceptance, artifacts }`：A1 的验收记录原样（没跑过 null）与已登记产物 |
+| `status` | string | 当前状态（`delivered` / `done` / …） |
+| `closeReason` | `coordinator` \| `timeout` \| null | 关闭原因（台账原文） |
+
+**没有交接 = `null`**：从没交付过的任务（pending / running / failed / 存量 done）没有 `handoff`（不是空壳对象）；「交付了但没确认」是 `acceptedAt: null` + `acceptedBy: null`，两者必须能区分。
+
+三个视图粒度不同、字段同源：面板 snapshot 只下发精简版 `{contract, deliveredAt, acceptedAt, acceptedBy, acceptedByLabel, acceptanceOk}`（快照不给证据，避免变大）；`task_status` 渲染「交接 / 交接轮次」两行；面板 detail 与 JSONL 事件给完整契约对象。
+
+### JSONL 事件
+
+落 `$DSH_HOME/state/orchestrator/handoff/handoff-YYYY-MM-DD.jsonl`（**不进仓库、不写台账 messages**）：按天分文件、单文件超 5 MiB 换新（`handoff-YYYY-MM-DD.2.jsonl`）、保留 30 天，与运行日志共用 `src/log.js` 的同一套轮转实现。
+
+| 事件 | 何时写 | 幂等 |
+|---|---|---|
+| `task.handoff.delivered` | 任务进入 `delivered`（`transition` 观察者；`task_report done` 与结算 `completed` 两条路都覆盖） | 每次交付一条（追问后再交付是新的一次交付） |
+| `task.handoff.confirmed` | `closeDelivered` 落库成功后（三条确认路径共用） | 只发一次：重复确认走 `already` 分支提前返回，不写第二条 |
+
+一行一个 JSON 对象（与运行日志同格式，字段固定）：
+
+```json
+{"at":"2026-11-19T13:37:44.172Z","event":"task.handoff.delivered","taskId":"t-1a2b3c4d","sessionId":"c-1234","detail":{"contract":1,"handoff":{"contract":1,"taskId":"t-1a2b3c4d","sessionId":"c-1234","title":"示例","deliveredAt":1763108264172,"acceptedAt":null,"acceptedBy":null,"rounds":{"turns":1,"followups":0},"evidence":{"acceptance":null,"artifacts":[]},"status":"delivered","closeReason":null}}}
+{"at":"2026-11-19T13:40:02.010Z","event":"task.handoff.confirmed","taskId":"t-1a2b3c4d","sessionId":"c-1234","detail":{"contract":1,"handoff":{"contract":1,"taskId":"t-1a2b3c4d","sessionId":"c-1234","title":"示例","deliveredAt":1763108264172,"acceptedAt":1763108402010,"acceptedBy":"panel","rounds":{"turns":1,"followups":0},"evidence":{"acceptance":null,"artifacts":[]},"status":"done","closeReason":"coordinator"}}}
+```
+
+消费方式：按行 `JSON.parse`，按 `event` 过滤；文件**只追加不改写**，重复投递由读方按 `(event, taskId, deliveredAt)` 去重（见 [api-notes](api-notes.md) 的 jq 示例）。
+
+### 兼容性与边界
+
+- **字段只增不改**：v1 冻结字段名与语义；改名/改语义必须升 `contract`，读方见到不认识的版本应忽略而不是猜。
+- **幂等**：`closeDelivered` 的 `already` 分支不写 accepted_*、不发事件；并发确认（工具与面板撞车）只会有一次真实写入。
+- **超时也是确认**：超时 sweeper 走同一条 `closeDelivered`，`acceptedBy: 'timeout'`、`close_reason: 'timeout'`，事件照发——「没人确认」与「超时自动完成」必须能区分。
+- **存量行**：`accepted_by` / `accepted_at` 由旧库启动时 ALTER 补列，存量行 NULL → `acceptedBy/acceptedAt` 为 null；v1 之前已 `done` 的存量任务（没有 `delivered_at`）直接没有 `handoff`，面板与 `task_status` 按「没有交接记录」显示，不猜。
+- **失败是旁路**：事件写入失败只 warn 一次，不影响迁移/确认（JSONL 是审计旁路，不是交付的前置条件）。
+- **不做订阅 API**：v1 的消费方式是「读文件」；进程内可订阅 API（回调、事件总线）留 v2，不在这片偷偷长大。
+
 ## 机器可判定验收（A1：`task_create.checks`）
 
 `acceptance` 是给人读的标准，`checks` 是给机器执行的证据：**子会话报 `done` 时由插件先跑检查，全过才落 `delivered`，任一条失败即拒绝交付**。这让「任务做完了」不再只靠子会话自述。
@@ -815,12 +876,14 @@ $DSH_HOME/state/orchestrator/
   tasks.sqlite
   snapshots/tasks-YYYY-MM-DD.sqlite
   logs/YYYY-MM-DD.jsonl
+  handoff/handoff-YYYY-MM-DD.jsonl  # P2-3 交接契约 v1 事件（task.handoff.delivered / confirmed，保留 30 天）
   lessons/<项目>-<short-hash>.md   # task_detail 经验指针指向的记忆文件（每次派发覆盖）
   reports/<taskId>.md              # 超 64 KiB 的返回消息全文
   workspace/                 # 指挥舱
 ```
 
 - 日志按天、保留 7 天、单文件超 5MB 换新；`goal`/`summary` 只留 80 字，不写 `user_verbatim`。
+- 交接事件独立目录（`handoff/`）、保留 30 天：外部订阅方可能一周才拉一次；不进仓库、不写台账 messages。
 - 快照启动时生成、每 6 小时跨日检查，保留 `snapshotRetentionDays` 天；损坏不自动恢复。
 - 报问题附当天日志。
 

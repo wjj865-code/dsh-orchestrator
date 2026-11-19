@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   access TEXT,
   worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
   worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT,
-  delivered_at INTEGER, close_reason TEXT, acceptance_json TEXT
+  delivered_at INTEGER, close_reason TEXT, acceptance_json TEXT,
+  accepted_by TEXT, accepted_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -96,6 +97,10 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('close_reason')) db.exec('ALTER TABLE tasks ADD COLUMN close_reason TEXT')
     // P2-1 A1 机器可判定验收：spec + 每次交付前的结果 JSON（旧库/存量行 NULL = 没跑过验收）。
     if (!taskColumns.includes('acceptance_json')) db.exec('ALTER TABLE tasks ADD COLUMN acceptance_json TEXT')
+    // P2-3 交接契约 v1：谁确认（coordinator / panel / timeout）、何时确认（毫秒）。
+    // 旧库/存量行都是 NULL：读出来是「没确认记录」，面板与 task_status 按「未确认」显示，存量行一律不动。
+    if (!taskColumns.includes('accepted_by')) db.exec('ALTER TABLE tasks ADD COLUMN accepted_by TEXT')
+    if (!taskColumns.includes('accepted_at')) db.exec('ALTER TABLE tasks ADD COLUMN accepted_at INTEGER')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -202,6 +207,9 @@ const taskOf = row => row === undefined ? undefined : ({
   close_reason: typeof row.close_reason === 'string' && row.close_reason !== '' ? row.close_reason : null,
   // P2-1：最近一次交付前验收的结果（spec + 每条 check 的退出码/耗时/输出尾部）；没跑过是 null。
   acceptance: parseAcceptance(row.acceptance_json),
+  // P2-3 交接契约：确认人（coordinator / panel / timeout）与确认时间；未确认（含存量行）都是 null。
+  accepted_by: typeof row.accepted_by === 'string' && row.accepted_by !== '' ? row.accepted_by : null,
+  accepted_at: Number.isFinite(row.accepted_at) ? row.accepted_at : null,
 })
 
 export function createTask(db, {
@@ -334,6 +342,8 @@ const nextPlanStateOnTransition = (task, to) => {
 // 在这里挂一次观察者就能覆盖全部迁移，不必让每个调用方自己记得写日志
 // （0.19.x 的 19 个调用点里只有 6 个有对应日志，审计 §4.5 把「状态为什么变」列为最大可观测性缺口）。
 // 用模块级 sink 而不是给 `transition` 加参数：调用签名不动，19 个调用点零改动。
+// P2-3 起观察者在 **UPDATE 落库之后** 触发：订阅方（交接事件）要能读到迁移后的任务行
+// （`delivered_at` 就是这次 UPDATE 写的），否则会拿到迁移前的快照。
 let transitionObserver = null
 
 /** 注册迁移观察者（index.js 启动时接 logger；测试不注册即静默）。返回解绑函数。 */
@@ -346,19 +356,6 @@ export function transition(db, id, to, patch = {}) {
   const task = getTask(db, id)
   if (task === undefined) throw new Error(`任务不存在：${id}`)
   nextStatus(task.status, to)
-  // 观察者失败绝不能影响迁移本身（日志是旁路）。
-  if (transitionObserver !== null) {
-    try {
-      transitionObserver({
-        taskId: id,
-        from: task.status,
-        to,
-        sessionId: task.session_id ?? null,
-        reason: typeof patch.error === 'string' ? patch.error : null,
-        closeReason: patch.closeReason ?? null,
-      })
-    } catch { /* 日志旁路 */ }
-  }
   const now = Date.now()
   const sets = ['status = ?', 'updated_at = ?', 'last_event_at = ?', 'progress_count = 0', 'stall_notified_at = NULL']
   const values = [to, now, now]
@@ -372,6 +369,19 @@ export function transition(db, id, to, patch = {}) {
   if (Object.hasOwn(patch, 'closeReason')) { sets.push('close_reason = ?'); values.push(patch.closeReason ?? null) }
   values.push(id)
   db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+  // 观察者失败绝不能影响迁移本身（日志/事件是旁路）；放在落库之后，订阅方能读到新行。
+  if (transitionObserver !== null) {
+    try {
+      transitionObserver({
+        taskId: id,
+        from: task.status,
+        to,
+        sessionId: task.session_id ?? null,
+        reason: typeof patch.error === 'string' ? patch.error : null,
+        closeReason: patch.closeReason ?? null,
+      })
+    } catch { /* 日志旁路 */ }
+  }
   return getTask(db, id)
 }
 
@@ -421,6 +431,25 @@ export function setTaskAcceptance(db, id, record) {
   db.prepare('UPDATE tasks SET acceptance_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
     .run(record === null || record === undefined ? null : JSON.stringify(record), now, now, id)
   return getTask(db, id)
+}
+
+/**
+ * 记录交接确认（P2-3 交接契约 v1）：谁确认的（coordinator / panel / timeout）与确认时间。
+ * 只写列 + 时间戳，不改状态机——状态迁移由 `closeDelivered` 调 `transition` 完成。
+ * 幂等由调用方保证（`closeDelivered` 的 `already` 分支直接返回，不重复写）。
+ */
+export function setTaskAccepted(db, id, { acceptedBy = null, acceptedAt = Date.now() } = {}) {
+  const at = Number.isFinite(acceptedAt) ? acceptedAt : Date.now()
+  db.prepare('UPDATE tasks SET accepted_by = ?, accepted_at = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
+    .run(typeof acceptedBy === 'string' && acceptedBy !== '' ? acceptedBy : null, at, at, at, id)
+  return getTask(db, id)
+}
+
+/** 追问次数（交接契约 `rounds.followups`）：台账里 kind='followup' 的消息条数。
+ *  一次追问一条（投递失败会另写 kind='delivery_failed'，不重复计数同一行的续发）。 */
+export function countFollowups(db, taskId) {
+  const row = db.prepare("SELECT count(*) AS n FROM messages WHERE task_id = ? AND kind = 'followup'").get(String(taskId))
+  return Number.isFinite(row?.n) ? row.n : 0
 }
 
 /** 记录子会话最后一次返回消息（B1）：只写镜像，不改状态。

@@ -1,5 +1,7 @@
-// 结构化日志：$DSH_HOME/state/orchestrator/logs/orchestrator-YYYY-MM-DD.jsonl
-// 按天、保留 7 天、单文件超过 maxBytes 换新；写失败只 warn 一次，不影响主流程。
+// 结构化日志：$DSH_HOME/state/orchestrator/<subdir>/<prefix>-YYYY-MM-DD.jsonl
+// 默认 logs/orchestrator-*（运行日志）；交接契约（P2-3 / src/handoff.js）用 handoff/handoff-*，
+// 两边共用同一套「按天分文件 + 超 maxBytes 换新 + 保留 N 天」的实现，避免两份轮转逻辑漂移。
+// 写失败只 warn 一次，不影响主流程。
 import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -24,8 +26,20 @@ const sanitize = detail => {
   return clean
 }
 
-export function createLogger({ stateDir, maxBytes = 5 * 1024 * 1024, keepDays = 7, now = Date.now, onWarn = () => {} }) {
-  const dir = join(stateDir, 'logs')
+const escapeRegExp = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+export function createLogger({
+  stateDir,
+  maxBytes = 5 * 1024 * 1024,
+  keepDays = 7,
+  now = Date.now,
+  onWarn = () => {},
+  // 子目录 / 文件名前缀：默认是运行日志；交接事件用 handoff/ + handoff-。
+  subdir = 'logs',
+  filePrefix = 'orchestrator',
+}) {
+  const dir = join(stateDir, subdir)
+  const namePattern = new RegExp(`^${escapeRegExp(filePrefix)}-(\\d{4}-\\d{2}-\\d{2})(?:\\.\\d+)?\\.jsonl$`)
   let warned = false
   let currentDay = ''
   let currentIndex = 0
@@ -40,7 +54,7 @@ export function createLogger({ stateDir, maxBytes = 5 * 1024 * 1024, keepDays = 
     if (!existsSync(dir)) return
     const cutoff = new Date(`${day}T00:00:00`).getTime() - (keepDays - 1) * DAY_MS
     for (const name of readdirSync(dir)) {
-      const match = /^orchestrator-(\d{4}-\d{2}-\d{2})(?:\.\d+)?\.jsonl$/.exec(name)
+      const match = namePattern.exec(name)
       if (match === null) continue
       const created = new Date(`${match[1]}T00:00:00`).getTime()
       if (created < cutoff) {
@@ -65,8 +79,8 @@ export function createLogger({ stateDir, maxBytes = 5 * 1024 * 1024, keepDays = 
   const fileFor = bytes => {
     for (;;) {
       const name = currentIndex === 0
-        ? `orchestrator-${currentDay}.jsonl`
-        : `orchestrator-${currentDay}.${currentIndex + 1}.jsonl`
+        ? `${filePrefix}-${currentDay}.jsonl`
+        : `${filePrefix}-${currentDay}.${currentIndex + 1}.jsonl`
       const file = join(dir, name)
       let size = 0
       try {
@@ -96,7 +110,7 @@ export function createLogger({ stateDir, maxBytes = 5 * 1024 * 1024, keepDays = 
       }
     },
     pathForDay(day = dateKey(now())) {
-      return join(dir, `orchestrator-${day}.jsonl`)
+      return join(dir, `${filePrefix}-${day}.jsonl`)
     },
   }
 }
