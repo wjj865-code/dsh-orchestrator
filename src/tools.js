@@ -19,6 +19,7 @@ import {
   addMessage, createTask, getTask, listTasks, recentMessages, setMessageDelivery,
   setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
+  countTaskMessages, incrementResumeCount,
 } from './ledger.js'
 import {
   acceptanceFailureText, acceptancePassText, acceptanceStatusLines,
@@ -38,6 +39,8 @@ import { TEAM_BOARD_UNAVAILABLE, teamLinkStatusLine } from './team-board.js'
 import { toolFailure } from './action-errors.js'
 import { objectiveForMessage, normalizeGoalRounds } from './goal.js'
 import { followupGate, stopIsIdempotent } from './panel-gates.js'
+// v0.24 resume：续跑的判定/阈值/投递文案单一来源（面板第二批与提示词都从这里取）。
+import { RESUME_HISTORY_THRESHOLD, resumeGate, resumePrompt } from './resume.js'
 import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, planStatusLine } from './plan-mode.js'
 import { MAX_PLAN_CHARS, isSafePlanTaskId, planSavedNote, writePlanDocument } from './plan-doc.js'
 // P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
@@ -59,7 +62,7 @@ const textOutput = {
   render: (_args, value) => [{ type: 'text', text: value === undefined ? '' : String(value) }],
 }
 
-const MESSAGE_ACTIONS = ['message', 'stop', 'retry', 'close']
+const MESSAGE_ACTIONS = ['message', 'resume', 'stop', 'retry', 'close']
 const CONTEXT_MODES = ['history', 'project', 'workspaces']
 const REPORT_STATUS = ['progress', 'done', 'blocked', 'needs_auth']
 const MAX_ARTIFACTS = 20
@@ -636,6 +639,61 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }
     const ahead = Math.max(outcome.position - 1, 0)
     return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，前面还有 ${ahead} 个任务在排队。${notes}`
+  }
+
+  // 续跑（v0.24，原会话冷恢复）：resume = 同 task_id + 同一子会话（失败/额度中断/重启孤儿的默认出口）；
+  // retry = 新任务 + 新子会话（上下文污染、换检出/权限、会话不可达时用）。纪律（真机踩过的反面）：
+  // 投递失败**绝不静默新建任务**——任务留在原状态，由协调者决定改派。
+  const resumeTask = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    if (unbound()) return UNBOUND_HINT
+    const task = getTask(db, args.task_id ?? '')
+    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id, hint: '用 task_list 查编号。' })
+    const history = countTaskMessages(db, task.id)
+    const gate = resumeGate(task, { history })
+    if (gate.ok !== true) {
+      if (gate.reason === 'closed') return toolFailure('RESUME_CLOSED', { label: labelFor(task), closeReason: closeReasonLabel(task.close_reason) ?? '已确认' })
+      if (gate.reason === 'no_session') return toolFailure('RESUME_NO_SESSION', { label: labelFor(task) })
+      if (gate.reason === 'checkout_cleaned') return toolFailure('RESUME_CHECKOUT_CLEANED', { label: labelFor(task) })
+      return toolFailure('RESUME_NOT_ALLOWED', { label: labelFor(task), statusLabel: labelOf(task.status) })
+    }
+    const text = typeof args.message === 'string' ? args.message.trim() : ''
+    const body = resumePrompt(task, { history, message: text })
+    const from = task.status
+    const seq = addMessage(db, task.id, { kind: 'resume', rendered: body, meta: { delivery: 'pending', from, stopReason: task.last_stop_reason } })
+    try {
+      // 与追问同一条投递链：dispatch.send 内部就是冷恢复 + 幂等补沙箱 / target 可写根 / goal。
+      await sendFollowup(task.target, body, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, body), task.access === 'full' ? 'full' : undefined)
+    } catch (error) {
+      const reason = error?.message ?? String(error)
+      setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
+      addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[续跑投递失败] ${reason}` })
+      log('task.resume.failed', { taskId: task.id, sessionId: task.session_id, detail: { reason, from, history } })
+      // 不新建、不改状态：原状态与死因都留着。不可达是终局（只能换新会话）→ 专门错误码并指 retry；
+      // 其余投递错误可能是暂时的，回执里留「可再试一次 resume」的口子。
+      return toolFailure(isUnreachable(error) ? 'RESUME_UNREACHABLE' : 'RESUME_DELIVERY_FAILED', { label: labelFor(task), reason })
+    }
+    setMessageDelivery(db, task.id, seq, 'delivered')
+    // 投递成功才迁状态（gate 已保证这条边存在）。清死因/关闭原因（done(timeout) 续跑后不再是「已关闭」、
+    // 旧问题也不再有效）——都跟下一次结算重新写。
+    transition(db, task.id, 'running', { error: null, lastStopReason: null, closeReason: null })
+    clearTaskQuestion(db, task.id)
+    incrementAttempts(db, task.id)
+    const updated = incrementResumeCount(db, task.id)
+    touchTask(db, task.id)
+    log('task.resume', { taskId: task.id, sessionId: task.session_id, detail: { from, history, stopReason: task.last_stop_reason } })
+    // 如实说清代价：只读任务续跑仍是 read-only（见 docs/LIMITATIONS.md）；历史过长建议 retry（软阈值不拦截）。
+    const readOnlyNote = task.read_only === true && isPlanTask(task) !== true
+      ? '\n注意：该任务是只读任务（readOnly），续跑后子会话仍是 read-only 沙箱、写操作会被拒；要落地执行请重派可写任务。'
+      : ''
+    const longNote = gate.warn === 'history_too_long'
+      ? `\n注意：历史已有 ${history} 条消息（> ${RESUME_HISTORY_THRESHOLD}），冷恢复会重放整段历史，成本可能高于新派；`
+        + '建议改用 task_message({ action: \'retry\' }) 新开一条（resume 仍可显式调用）。'
+      : ''
+    return `已续跑任务「${labelFor(task)}」：在原会话 ${task.target} 上冷恢复继续（「${labelOf(from)}」→「进行中」，第 ${updated?.resume_count ?? 1} 次续跑）。`
+      + (task.last_stop_reason === null ? '' : `\n上次结束原因：${task.last_stop_reason}`)
+      + readOnlyNote + longNote
   }
 
   // 确认交付（原 task_close 的实现，行为不变）。
@@ -1419,16 +1477,18 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }),
 
     // P1-B：task_stop / task_retry / task_close 并入本工具的 action（业务实现一字未改，只换入口）。
-    wrap('task_message', '子任务动作统一入口：action:"message"（默认）给已有子任务追加消息（续派），进行中/等你确认/要授权/待确认都能续派，投递失败会重试 3 次；action:"stop" 停止任务（运行中/排队/等前置/待确认）；action:"retry" 重派 failed/orphaned 任务（原 brief 新起一条，旧任务留审计）；action:"close" 把「已交付待确认」确认成 done。task_id 必填，message 仅 action:"message" 需要。', objectSchema({
+    // v0.24：新增 action:"resume"（续跑原会话），与 retry 的分工见 resumeTask 的注释。
+    wrap('task_message', '子任务动作统一入口：action:"message"（默认）给已有子任务追加消息（续派），进行中/等你确认/要授权/待确认都能续派，投递失败会重试 3 次；action:"resume" 续跑 failed/orphaned（或超时完成）的任务——同一任务、同一子会话冷恢复，上下文延续；action:"stop" 停止任务（运行中/排队/等前置/待确认）；action:"retry" 重派 failed/orphaned 任务（新任务编号 + 新子会话，旧任务留审计）；action:"close" 把「已交付待确认」确认成 done。task_id 必填，message 仅 action:"message"/"resume" 可选。', objectSchema({
       task_id: str('任务编号'),
       action: {
         type: 'string',
         enum: MESSAGE_ACTIONS,
-        description: '动作：message（默认，追加消息/续派）｜stop（停止任务，吸收原 task_stop）｜retry（重派 failed/orphaned，吸收原 task_retry）｜close（确认已交付待确认 → done，吸收原 task_close）',
+        description: '动作：message（默认，追加消息/续派）｜resume（续跑原会话：同任务同子会话冷恢复，用于失败/会话丢失后接着干）｜stop（停止任务，吸收原 task_stop）｜retry（重派 failed/orphaned：新任务新会话，吸收原 task_retry）｜close（确认已交付待确认 → done，吸收原 task_close）',
       },
-      message: str('要追加的内容（仅 action:"message" 必填）'),
+      message: str('要追加的内容（action:"message" 必填；action:"resume" 可选，作为本轮续跑指示）'),
     }), async (args, exec) => {
       const action = typeof args.action === 'string' ? args.action.trim() : ''
+      if (action === 'resume') return resumeTask(args, exec)
       if (action === 'stop') return stopTask(args, exec)
       if (action === 'retry') return retryTask(args, exec)
       if (action === 'close') return closeTask(args, exec)

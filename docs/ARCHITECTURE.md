@@ -205,13 +205,15 @@
 | `active` | 还算「没落终态」吗？ | `listTasks(active)`、面板筛选、`ledger` 的 SQL |
 | `followup` / `resumable` | 能续派吗 / 续派后要迁回 running 吗？ | `task_message`、面板 |
 | `deletable` / `retryable` | 能删吗 / 能重派吗？ | 面板删除、`retry` |
+| `resume` | 能续跑**原会话**吗？（`failed`/`orphaned`/超时收尾的 `done`） | `task_message({action:'resume'})`（判定与阈值在 `src/resume.js`） |
 | `terminal` / `releases` | 是流程终态吗 / 要释放可写根与 goal 吗？ | `close` 判定、结算收尾、面板与工具的 stop 幂等判定 |
 | `waiting` | 是等人（用户/授权）的停顿态吗？ | 续派即批准计划 |
 | `rotationActive` | 会阻断主会话轮换吗？ | `main-rotation`（**刻意不含 `delivered`**） |
 | `liveness` / `catalog` / `watchdog` | 要对账活着吗 / 要查目录吗 / 要巡检空闲吗？ | `reconcile`、`watchdog` |
 | `planSettled` | 计划任务进这个状态要收口 `plan_state` 吗？ | `ledger.transition` |
 
-- **三条不可达边已删**（`running→done`、`failed→running`、`orphaned→pending`）：它们自加入起就没有调用点，而测试曾把它们写成 `allowed`——**测试在保护死代码**。矩阵现在从 `TRANSITIONS` 派生，另有正向用例断言这三条边必须被拒。
+- **不可达边**（`running→done`、`orphaned→pending`）已删：它们自加入起就没有调用点，而测试曾把它们写成 `allowed`——**测试在保护死代码**。矩阵现在从 `TRANSITIONS` 派生，另有正向用例断言这些边必须被拒。
+- **v0.24 重开三条入边给 `resume`**：`failed→running`、`orphaned→running`、`done→running`（`done` 还多一道行级白名单：只认 `close_reason='timeout'`，判定在 `src/resume.js`）。它们只服务「续跑同一 task_id 的同一子会话」，`retry` 仍是新建任务；`cancelled→running` 刻意没有（用户主动停的不复活）。
 - **`failed` 的语义分开了**：`terminal:false`（还能重派）但 `releases:true`（要释放资源）；stop 幂等判定改用 `releases`，不再把失败任务改成「已取消」。
 - **迁移有审计日志**：`transition` 是全部状态变化的唯一入口，`index.js` 挂一次 `task.transition` 日志（`{taskId, from, to, reason, closeReason}`）。
 
@@ -292,6 +294,7 @@
 - 活跃性对账只认 `running`：`agents.get(session_id)` 不存在 → `orphaned`；catalog 查不到 → `orphaned`；`waiting_user`/`waiting_auth` 不 live 但 catalog 有 → 保持原状态（靠 `task_message` 冷恢复）。
 - catalog 读失败只 warn，`running` 的 liveness 判定照做；标记前重读状态，已落终态的不覆盖，重复启动幂等。
 - 标记完发**一条汇总通知**（超过 10 条折叠）；启动时协调者还没加载导致投递 `skipped` 时保留待发，`agent/created` 后补发一次。
+- 汇总通知里的默认出口是 `task_message({action:'resume'})`：标 `orphaned` 时把死因落 `last_stop_reason`，子会话 durable 就能冷恢复接着跑；**不自动 resume**（会花 token 且可能重复写文件），会话真不可达再 `retry`。
 
 ## 空闲看门狗（W1）
 
@@ -451,6 +454,7 @@
 - `stop`：已结束再 stop 返回 `{ok:true, already:true}`；收子会话失败不阻断取消（`warnings[].code=STOP_DISPATCH_FAILED`）。
 - `retry`：只允许 failed/orphaned；已有活跃重派直接返回那条任务；同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。
 - `message`：只允许 running / waiting_user / waiting_auth / delivered 且已有子会话（`delivered` 上是追问）；错误码 `MESSAGE_TASK_ENDED` / `MESSAGE_WAITING_DEP` / `MESSAGE_NO_SESSION` / `MESSAGE_NOT_FOLLOWABLE` / `MESSAGE_DELIVERY_FAILED`。面板每次点击生成 `clientRequestId`，按 `(taskId, clientRequestId)` 进程内去重。
+- `resume`：只允许 `failed` / `orphaned` / 超时收尾的 `done`，且已有子会话、隔离检出未清理（`src/resume.js` 的 `resumeGate`，与 `retry` 的分工写在文件头）。投递走 `dispatch.send` 的同一条冷恢复链（幂等补沙箱/可写根/goal），成功后 `attempts` 与 `resume_count` 自增、清死因与 `close_reason`；**投递失败只报错回退**（`RESUME_UNREACHABLE` / `RESUME_DELIVERY_FAILED`，文案指向 retry），绝不静默新建任务。历史消息 > 60 条只回「建议 retry」，不拦截。台账列 `resume_count` / `last_stop_reason` 由旧库 ALTER 补。
 - `delete`：只允许终态；还有活跃下游返回 `DELETE_HAS_ACTIVE_DEPENDENTS`；成功时级联删 messages / notifications，产物文件与 memories 不动。
 - **边界**：依赖只能指向已存在任务、不支持编辑；`writeScopes` 是冲突提示不是文件锁；`done` 不可逆、不提供 reopen；台账每天快照，损坏要手工恢复（见 [LIMITATIONS](LIMITATIONS.md)）。
 

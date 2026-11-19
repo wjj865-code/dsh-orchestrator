@@ -88,6 +88,31 @@ export const ACTION_ERRORS = Object.freeze({
     http: 502,
     tool: ({ label, reason }) => `续派失败：任务「${label}」的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`,
   }),
+  // resume（v0.24：续跑原会话 —— 同一 task_id、同一子会话冷恢复，不是新任务）
+  RESUME_NOT_ALLOWED: define({
+    http: 409, panel: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有失败 / 会话丢失（或超时自动完成）的任务能续跑；在跑的用「追加」，跑偏了用「重派（新会话）」。`,
+    tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有失败 / 会话丢失（或超时自动完成）的任务能续跑；在跑的用 task_message，跑偏了用 task_message({ action: 'retry' }) 新开一条。`,
+  }),
+  RESUME_CLOSED: define({
+    http: 409, panel: ({ label, closeReason }) => `任务「${label}」是确认完成（${closeReason}），不能续跑；要接着改请重派新任务，并把上次产物路径带上。`,
+    tool: ({ label, closeReason }) => `任务「${label}」是确认完成（${closeReason}），不能续跑；要接着改请 task_message({ action: 'retry' }) 重派，或在 brief 里带上上次产物路径。`,
+  }),
+  RESUME_NO_SESSION: define({
+    http: 409, panel: ({ label }) => `任务「${label}」还没有子会话（派发前就失败了），没有可续跑的会话；请用「重派（新会话）」。`,
+    tool: ({ label }) => `任务「${label}」还没有子会话（派发前就失败了），没有可续跑的会话；请用 task_message({ action: 'retry' })。`,
+  }),
+  RESUME_CHECKOUT_CLEANED: define({
+    http: 409, panel: ({ label }) => `任务「${label}」的隔离检出已清理，原会话写不进去；请用「重派（新会话）」，插件会按原基线重建检出。`,
+    tool: ({ label }) => `任务「${label}」的隔离检出已清理，原会话写不进去；请用 task_message({ action: 'retry' })（按原基线重建检出）。`,
+  }),
+  RESUME_UNREACHABLE: define({
+    http: 502, panel: ({ reason }) => `续跑失败：子会话不可达（不能冷恢复），未新建任务。原因：${reason}`,
+    tool: ({ label, reason }) => `续跑失败：任务「${label}」的子会话不可达（不能冷恢复）。**没有自动新建任务**——确认要重来请用 task_message({ action: 'retry' })。原因：${reason}`,
+  }),
+  RESUME_DELIVERY_FAILED: define({
+    http: 502, panel: ({ reason }) => `续跑投递失败（已重试 3 次），任务状态未变、未新建任务。原因：${reason}`,
+    tool: ({ label, reason }) => `续跑投递失败：任务「${label}」状态未变、**未新建任务**（已重试 3 次；可再续跑一次，或改用 task_message({ action: 'retry' })）。原因：${reason}`,
+  }),
   // close（两段式终态的确认）：只有 delivered（已交付待确认）能收成 done。
   CLOSE_TASK_ENDED: define({
     http: 409,

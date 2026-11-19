@@ -4,6 +4,9 @@
 // （`orphaned→pending`、`failed→running`、`running→done`），任何人删掉死边都会让测试变红——
 // 测试在保护死代码（审计 §2.3.3）。现在矩阵从 `status-facts.js` 的 `TRANSITIONS` 派生，
 // 另加一条「不可达边必须被拒」的正向断言，删边不会再被测试拦回来。
+//
+// v0.24 反过来把两条边**接回来**了：`failed → running`、`orphaned → running`（resume 续跑原会话），
+// 外加行级限定的 `done → running`（只认 close_reason='timeout'）。调用点是 `task_message({ action:'resume' })`。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { canTransition, nextStatus, STATUSES } from '../src/state.js'
@@ -24,7 +27,9 @@ test('合法迁移', () => {
 })
 
 test('非法迁移', () => {
-  assert.equal(canTransition('done', 'running'), false)
+  // v0.24：done → running 只给 resume（且仅 close_reason='timeout'）用，行级白名单在 resumeGate；
+  // 用户主动取消的任务不复活。
+  assert.equal(canTransition('cancelled', 'running'), false)
   assert.equal(canTransition('cancelled', 'pending'), false)
   assert.equal(canTransition('pending', 'done'), false)
   assert.equal(canTransition('running', 'pending'), false)
@@ -35,25 +40,25 @@ test('非法迁移', () => {
   assert.equal(canTransition('delivered', 'delivered'), false)
 })
 
-test('三条不可达边已删：删边不会被测试拦回来（审计 §2.3.3）', () => {
-  // running→done：0.14.0 引入 delivered 后交付主路径改了，这条边再无调用点；
-  // 留着等于允许「跳过确认直接收终态」，与两段式终态相反。
+test('不可达边仍是死的：删边不会被测试拦回来（审计 §2.3.3）', () => {
+  // running→done：交付主路径已改成 running→delivered，留着等于允许「跳过确认直接收终态」。
   assert.equal(canTransition('running', 'done'), false)
-  // failed→running：followupGate 自 0.12.0 起就拒绝 failed，task_message 先被拦 → 死边。
-  assert.equal(canTransition('failed', 'running'), false)
-  // orphaned→pending：deps.js 只从 waiting_dep 晋升，从不从 orphaned 晋升 → 死边。
+  // orphaned→pending：deps.js 只从 waiting_dep 晋升 → 死边。
   assert.equal(canTransition('orphaned', 'pending'), false)
-  // 出口仍然在：失败/丢失可以取消（用户放弃），也可以重派（新建任务，不是原任务复活）。
+  // failed→running 在 v0.24 反向接回（resume 续跑）；「重派仍是新任务」，所以同时留 retryable 与取消出口。
+  assert.equal(canTransition('failed', 'running'), true)
   assert.equal(canTransition('failed', 'cancelled'), true)
-  assert.equal(canTransition('orphaned', 'cancelled'), true)
   assert.equal(STATUS_CAPS.failed.retryable, true)
-  assert.equal(STATUS_CAPS.orphaned.retryable, true)
+  assert.equal(STATUS_CAPS.failed.resume, true)
 })
 
 test('nextStatus 返回新状态或抛错', () => {
   assert.equal(nextStatus('delivered', 'done'), 'done')
   assert.equal(nextStatus('running', 'delivered'), 'delivered')
-  assert.throws(() => nextStatus('done', 'running'), /不允许/)
+  // v0.24：done → running 只给 resume（且仅 close_reason='timeout'）用，行级白名单在 resumeGate；
+  // 转移表本身表达不了行级条件，所以这里只断言「这条边存在、其他收尾态不能乱走」。
+  assert.equal(nextStatus('done', 'running'), 'running')
+  assert.throws(() => nextStatus('cancelled', 'running'), /不允许的状态迁移/)
   // 死边删掉后 nextStatus 也拒绝，且错误信息可读。
   assert.throws(() => nextStatus('running', 'done'), /不允许的状态迁移：running → done/)
 })
@@ -80,11 +85,12 @@ test('10×10 全迁移矩阵从 TRANSITIONS 派生：只放行表里写明的边
   }
 })
 
-test('每条边都有能力表依据：流程终态不能回到活跃态', () => {
+test('每条边都有能力表依据：除 resume 外，流程终态不能回到活跃态', () => {
   // 「流程终态」= 用户视角已经结束。它唯一的合法出边是「取消」这种收尾（orphaned → cancelled），
-  // 绝不能回到任何活跃态——那等于让结束的任务复活（复活只能靠重派新建任务）。
+  // 绝不能回到任何活跃态——**唯一例外是 resume 能力为真的收尾态**（v0.24）：
+  // failed / orphaned / timeout 收尾的 done 可以冷恢复原会话回 running，那是「续跑」不是「复活」。
   for (const from of STATUSES) {
-    if (STATUS_CAPS[from].terminal) {
+    if (STATUS_CAPS[from].terminal && STATUS_CAPS[from].resume !== true) {
       for (const to of TRANSITIONS[from]) {
         assert.equal(STATUS_CAPS[to].active, false, `${from}（终态）不该能迁到活跃态 ${to}`)
       }
@@ -93,11 +99,11 @@ test('每条边都有能力表依据：流程终态不能回到活跃态', () =>
   for (const from of STATUSES) {
     if (STATUS_CAPS[from].terminal) assert.equal(STATUS_CAPS[from].followup, false, `${from} 是终态，不该能续派`)
   }
-  // done 无出口（设计如此）；cancelled 无出口；failed/orphaned 只能取消。
-  assert.deepEqual([...TRANSITIONS.done], [])
+  // done 只有 resume 出口（且行级限定时超时收尾）；cancelled 无出口；failed/orphaned 还能取消。
+  assert.deepEqual([...TRANSITIONS.done], ['running'])
   assert.deepEqual([...TRANSITIONS.cancelled], [])
-  assert.deepEqual([...TRANSITIONS.failed], ['cancelled'])
-  assert.deepEqual([...TRANSITIONS.orphaned], ['cancelled'])
+  assert.deepEqual([...TRANSITIONS.failed], ['cancelled', 'running'])
+  assert.deepEqual([...TRANSITIONS.orphaned], ['cancelled', 'running'])
 })
 
 test('每个状态都有入边（没有无法到达的状态）', () => {

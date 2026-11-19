@@ -62,7 +62,9 @@ export async function reconcileOrphans({ db, dispatcher, coordinatorSessionId, i
     const current = getTask(db, task.id)
     if (current === undefined || current.status !== task.status || !needsCheck(current)) continue
     try {
-      const next = transition(db, task.id, 'orphaned', { error: reason })
+      // v0.24：死因也落 last_stop_reason —— 孤儿任务的默认出口是 resume（冷恢复原会话），
+      // 续跑文案要能说出「上一轮为什么停」。
+      const next = transition(db, task.id, 'orphaned', { error: reason, lastStopReason: reason })
       marked.push(next)
       // orphaned 是终态：释放该会话的 target 可写根。
       try {
@@ -99,9 +101,12 @@ export function reconcileSummary(tasks, { max = RECONCILE_SUMMARY_MAX, labelFor 
   const hidden = list.length - shown.length
   const tail = hidden > 0 ? [`- 另有 ${hidden} 个任务未列出`] : []
   return [
-    `启动对账：${list.length} 个任务在跑，但子会话已不活跃，已标记为会话丢失（orphaned，可 task_message({ action: 'retry' }) 重派）：`,
+    `启动对账：${list.length} 个任务在跑，但子会话已不活跃，已标记为会话丢失（orphaned）：`,
     ...lines,
     ...tail,
+    // v0.24：默认出口改成「续跑原会话」——重启后子会话多半 durable，resume 能接着上下文干；
+    // 只有确认会话真的不可达/上下文跑偏才 retry（新任务新会话）。
+    '优先 task_message({ action: \'resume\' }) 续跑原会话（上下文还在）；会话确实不可达或已跑偏才用 action: \'retry\' 重派（新任务）。',
     '详情用 task_status，全部任务用 task_list / task_list({ view: \'inbox\' })。',
   ].join('\n')
 }

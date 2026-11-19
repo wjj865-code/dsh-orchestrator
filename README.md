@@ -79,7 +79,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 | `task_create` | 建任务并派发。`dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent` / `checks`（交付前机器验收）/ `goalRounds`（续跑预算，默认 0 不续跑）/ `teamTaskId`（关联官方 Team 板，确认时按 CAS 反写 `complete`） |
 | `task_list` | 活跃/历史任务（`active` / `group` 过滤）；`view:'inbox'` 是收件箱：待决、待确认、失败/丢失、长时间没动静 |
 | `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条检查的退出码/耗时）、交接、目标状态与轮次（`x/y`）、官方 Team 关联、最近消息、最新返回（`include:'full'` 看全文） |
-| `task_message` | 子任务动作统一入口：`action:'message'`（默认，续派/追问，复用原会话）/ `'stop'` 停止 / `'retry'` 重派 failed·orphaned / `'close'` 把「已交付待确认」确认成 `done` |
+| `task_message` | 子任务动作统一入口：`action:'message'`（默认，续派/追问，复用原会话）/ `'resume'` 续跑失败·丢失（或超时完成）任务的原会话 / `'stop'` 停止 / `'retry'` 重派 failed·orphaned（新任务新会话）/ `'close'` 把「已交付待确认」确认成 `done` |
 | `context` | 只读读上下文（协调者与子会话都能调）：`mode:'history'`（默认，记忆/历史任务/历史会话）/ `'project'`（项目白名单文件、结构、最近任务、相关记忆）/ `'workspaces'`（已登记工作区与仓库采样索引） |
 | `memory_note` | 记一条跨任务有效的决策/经验（**仅主会话可写**：子会话工具表里没有它）；`kind:'preference'` 不传 `project` 时写进协调者偏好（每回合注入、立即生效） |
 | `read_workspace` | 读产物正文：主会话工作区内文件/目录，或任务已登记产物；越界/`../`/符号链接逃逸/未登记均被拒；大文件按行窗口截断给续读 `offset` |
@@ -168,13 +168,14 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | `waiting_user` | 子会话 `blocked`，等人决定 | `task_message` 续派 → `running` |
 | `waiting_auth` | 子会话 `needs_auth`，等授权 | 同上 |
 | **`delivered`** | **已交付待确认**：成果已落库，等确认或追问 | `close` → `done`；`task_message` → `running`；超时 → `done` |
-| `done` | 已完成（**不可逆终态**，不提供 reopen） | — |
-| `failed` | 失败（可 `retry` / 面板重派） | — |
-| `cancelled` | 被 `stop` 停掉 | — |
-| `orphaned` | 会话丢了（上报过 progress 的回合异常结束） | 可重派 |
+| `done` | 已完成（**不可逆终态**，不提供 reopen；`close` 确认的不可续跑） | — |
+| `failed` | 失败（可 `resume` 续跑原会话 / `retry` 新派） | `resume` → `running` |
+| `cancelled` | 被 `stop` 停掉（尊重意图，不续跑） | — |
+| `orphaned` | 会话丢了（上报过 progress 的回合异常结束；重启后常见） | `resume` 续跑 / `retry` 新派 |
 
 - 依赖就绪**只认 `done`**：`delivered` 会短暂挡住下游，确认或超时后自动晋升。
-- `delivered` 是唯一允许「追问复用原会话」的收尾态；`done` 之后要改只能新派任务。
+- **能复用会话的三条收尾态各有出口**：`delivered` 用 `task_message` 追问；`failed`/`orphaned` 用 `resume` 冷恢复同一个子会话（上下文还在）；只有超时自动完成的 `done` 允许 `resume`——确认过的 `done` 要改只能新派。
+- **`resume` vs `retry`**：`resume` = 同一任务同一子会话接着跑（失败/额度中断/重启中断的默认出口）；`retry` = 新任务编号 + 新子会话（上下文跑偏、换检出/权限、会话真的不可达时用）。会话不可达时 `resume` **报错回退**、不静默新建；历史消息 > 60 条只**建议** `retry`（长会话冷恢复可能更贵），不拦截。
 - 状态集合与转移表只有一份（`src/status-facts.js`），面板、工具、结算、对账都从它派生。
 
 ### 依赖、分组、写域、优先级
@@ -304,7 +305,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 | 点产物「预览」没有右侧栏 | 宿主要装 `ui-sidebar-right` 与 `ui-sidebar-documentpreview`；缺了会提示原因，产物库那行退回面板内预览 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页与 `logs/` |
 | 子任务报 done 后一直「待确认」 | 正常：默认保持待确认；要收尾就 `task_message({action:'close'})`，或等 `deliveredTimeoutMinutes` 超时 |
-| 任务停在「会话丢失」 | 先用 `task_status` 看进展；要接着做就 `task_message({action:'retry'})` |
+| 任务停在「会话丢失」/「失败」 | 先用 `task_status` 看进展；要接着做就 `task_message({action:'resume'})`（同一个子会话冷恢复，上下文还在）；会话确实不可达或已跑偏才 `task_message({action:'retry'})` |
 | 提示「配置键 X 已删除」 | 老 profile 里的已删键按提示删掉即可，插件已按默认值运行（迁移见 [CHANGELOG](CHANGELOG.md#02302026-11-19)） |
 | 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制；确实要写仓库外用 `access:'full'` 或 CI |
 | 台账损坏 | 用 `snapshots/` 里最新快照手工替换（不会自动恢复） |

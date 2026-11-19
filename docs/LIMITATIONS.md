@@ -118,8 +118,9 @@
 
 ## 状态与提示词的单一事实源
 
-- **状态能力表只有一份**（`src/status-facts.js` 的 `STATUS_CAPS`）：新增状态只改这张表，其余引用自动跟上。**三条死边已删**：`running→done`、`failed→running`、`orphaned→pending` 从未有调用点（要「直接完成」走 `running→delivered→done`）。
+- **状态能力表只有一份**（`src/status-facts.js` 的 `STATUS_CAPS`）：新增状态只改这张表，其余引用自动跟上。**死边已删**：`running→done`、`orphaned→pending` 从未有调用点（要「直接完成」走 `running→delivered→done`）；v0.24 反过来给 `resume` 重开了 `failed→running` / `orphaned→running` / `done→running`（`done` 只认 `close_reason='timeout'`）。
 - **`failed` 不是流程终态但已收尾**：`terminal:false`（能重派）、`releases:true`（释放资源）；对失败任务「停止」是幂等成功（`already:true`），不会被改成「已取消」。
+- **续跑（`resume`）的边界**：只续 `failed` / `orphaned` / 超时自动完成的 `done`；`cancelled`（用户主动停）与确认过的 `done` 不续。只读/计划任务续跑后沙箱仍按原样（`readOnly` 就还是只读）；历史消息 > 60 条只**建议** `retry`（冷恢复要重放历史，可能比新派贵），不拦截；子会话不可达时报错回退、**不静默新建任务**。
 - **worktree 状态转移会校验**（`WORKTREE_TRANSITIONS`）：非法转移抛错而不是静默写入。
 - **提示词五层各有独占职责**（`src/prompt-layers.js` 的 `PROMPT_LAYERS`）；`layerViolations` 是机器可读归层探针，测试用它防「删掉的重叠又抄回来」。
 - **偏好不是权限通道**：只是 `settings.orchestrator_preferences` 里的提示词文本，不进 config、不改 dispatch、不碰 `sandboxPolicy`；内置种子里不放「放宽安全边界」的条目。超限（默认 12 条 / 1200 字）按 priority 降序保留并写明「另有 N 条未展示」，被截掉的**不会生效**也不报错。
@@ -147,7 +148,7 @@
 
 - 通知走 `agent.steer`：空闲唤醒、忙时 next-step 排队；平台另发 `subagent-settled`，不经过本插件、不写 `notifications`，不能当成插件投递成功。
 - **结算自动收场（S1）只覆盖「一次 activation」**：派发侧 `activation.result` 只对第一次生效，续派/冷恢复起的轮次只能靠 `subagent/end` 观察；平台若停发该事件，续派轮次退回「只有 `task_report` 才推终态」。
-- **`completed` 不等于「工作做完了」**：continuable 子会话可以一轮正常收场等续派，所以只在「没上报过 progress」时自动 `done`；上报过 progress 的回合结束落 `orphaned`（可重派）。
+- **`completed` 不等于「工作做完了」**：continuable 子会话可以一轮正常收场等续派，所以只在「没上报过 progress」时自动 `done`；上报过 progress 的回合结束落 `orphaned`（可 `resume` 续跑，会话真不可达才 `retry`）。
 - `refusal` 只有源码级依据（pre-step hook deny / 策略拒绝），真机没有稳定构造；`max-tokens` 由 `maxTokens` 截断触发，真实长输出落同一个值。
 - headless 一次性进程在 5 秒合并窗口内退出时，`steer` 可能因 initiator scope dispose 失败；`notifications` 记 `failed` 是正确审计。重启窗口内子会话已完成但结算未消费时，会对账为 `orphaned`，重建即可。
 - Bot 模式：ds-bot 的 Bot 表面只认自己的 DSH Agent 会话，打开主会话后视图可能仍停在 Bot 会话；纯 dsh 表面不受影响。

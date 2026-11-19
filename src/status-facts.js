@@ -22,6 +22,7 @@
 //   releases     —— 进入这个状态要释放可写根与平台 goal 吗？（结算/停止的收尾动作）
 //   retryable    —— 能重派吗？（工具 task_message action:retry 与面板「重派」）
 //   waiting      —— 是「等人（用户/授权）」的停顿态吗？（回复消息 = 批准计划）
+//   resume       —— 能「续跑原会话」吗？（failed / orphaned / timeout 收尾的 done；与 retry 分工）
 //   rotationActive —— 算「在跑」、会阻断主会话轮换吗？（delivered 刻意不算：它只等确认）
 //   liveness     —— 要做「子会话还活着吗」对账吗？（只有 running：其余是故意停下的）
 //   catalog      —— 要查子会话目录里还在不在吗？（running + 故意停下的 waiting_*）
@@ -42,61 +43,64 @@ export const STATUSES = Object.freeze([
  *
  * 注意几个刻意的不对称（改动前先读理由，别当成笔误）：
  * - `failed`：`terminal:false`（还能重派，用户视角不是「流程走完」）但 `releases:true`（要释放资源）；
- *   它 `deletable:true` 且 `retryable:true`，但 `followup:false`——子会话已结束，追问没有投递对象。
+ *   它 `deletable:true` 且 `retryable:true`，但 `followup:false`——子会话已结束，追问没有投递对象；
+ *   但 `resume:true`：**续跑**（冷恢复原会话）是另一条路，不靠追问，靠 task_message({ action:'resume' })。
  * - `delivered`：`active:true`（还在等人确认）且 `followup:true`（追问窗口），但 `rotationActive:false`
  *   （只等确认，不该阻断轮换）。
- * - `orphaned`：`terminal:true` 且 `retryable:true`——会话丢了可以重派，但流程上它已经结束。
+ * - `orphaned`：`terminal:true` 且 `retryable:true`——会话丢了可以重派，流程上它已经结束；
+ *   子会话 durable 时还能 resume 回来（这是重启后「别新开一条」的默认出口）。
  * - `waiting_dep` / `pending`：`active:true` 但 `followup:false`（还没有子会话可投递）。
  */
 export const STATUS_CAPS = Object.freeze({
   waiting_dep: Object.freeze({
     active: true, followup: false, resumable: false, deletable: false, terminal: false, releases: false,
-    retryable: false, waiting: false, rotationActive: true, liveness: false, catalog: false,
+    retryable: false, resume: false, waiting: false, rotationActive: true, liveness: false, catalog: false,
     watchdog: false, planSettled: false,
   }),
   pending: Object.freeze({
     active: true, followup: false, resumable: false, deletable: false, terminal: false, releases: false,
-    retryable: false, waiting: false, rotationActive: true, liveness: false, catalog: false,
+    retryable: false, resume: false, waiting: false, rotationActive: true, liveness: false, catalog: false,
     watchdog: false, planSettled: false,
   }),
   running: Object.freeze({
     active: true, followup: true, resumable: false, deletable: false, terminal: false, releases: false,
-    retryable: false, waiting: false, rotationActive: true, liveness: true, catalog: true,
+    retryable: false, resume: false, waiting: false, rotationActive: true, liveness: true, catalog: true,
     watchdog: true, planSettled: false,
   }),
   waiting_user: Object.freeze({
     active: true, followup: true, resumable: true, deletable: false, terminal: false, releases: false,
-    retryable: false, waiting: true, rotationActive: true, liveness: false, catalog: true,
+    retryable: false, resume: false, waiting: true, rotationActive: true, liveness: false, catalog: true,
     watchdog: false, planSettled: false,
   }),
   waiting_auth: Object.freeze({
     active: true, followup: true, resumable: true, deletable: false, terminal: false, releases: false,
-    retryable: false, waiting: true, rotationActive: true, liveness: false, catalog: true,
+    retryable: false, resume: false, waiting: true, rotationActive: true, liveness: false, catalog: true,
     watchdog: false, planSettled: false,
   }),
   delivered: Object.freeze({
     active: true, followup: true, resumable: true, deletable: false, terminal: false, releases: false,
-    retryable: false, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: false, resume: false, waiting: false, rotationActive: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
+  // done：`resume:true` 表达「存在续跑入口」，行级白名单只认 close_reason='timeout'（见 src/resume.js）。
   done: Object.freeze({
     active: false, followup: false, resumable: false, deletable: true, terminal: true, releases: true,
-    retryable: false, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: false, resume: true, waiting: false, rotationActive: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
   failed: Object.freeze({
     active: false, followup: false, resumable: false, deletable: true, terminal: false, releases: true,
-    retryable: true, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: true, resume: true, waiting: false, rotationActive: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
   cancelled: Object.freeze({
     active: false, followup: false, resumable: false, deletable: true, terminal: true, releases: true,
-    retryable: false, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: false, resume: false, waiting: false, rotationActive: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
   orphaned: Object.freeze({
     active: false, followup: false, resumable: false, deletable: true, terminal: true, releases: true,
-    retryable: true, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: true, resume: true, waiting: false, rotationActive: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
 })
@@ -104,7 +108,7 @@ export const STATUS_CAPS = Object.freeze({
 /** 能力字段清单（派生集合与测试都按它遍历，加字段时一处生效）。 */
 export const CAP_KEYS = Object.freeze([
   'active', 'followup', 'resumable', 'deletable', 'terminal', 'releases',
-  'retryable', 'waiting', 'rotationActive', 'liveness', 'catalog', 'watchdog', 'planSettled',
+  'retryable', 'resume', 'waiting', 'rotationActive', 'liveness', 'catalog', 'watchdog', 'planSettled',
 ])
 
 const capsOf = status => STATUS_CAPS[status]
@@ -127,10 +131,12 @@ export const statusesWith = cap => STATUSES.filter(status => hasCap(status, cap)
  *   保留它等于允许「跳过确认直接收终态」——与两段式终态的设计相反。删除只影响**未来的**迁移，
  *   不改任何存量行（台账里的历史 `running` 行不会因为删边而变化）；重放/核对历史数据时如需
  *   模拟「直接完成」，走 `running → delivered → done` 两步即可。
- * - `failed → running`：`followupGate` 自 0.12.0 起就拒绝 failed，`task_message` 在工具层先被拦，
- *   所以这条边自加入起就不可达；重派走的是**新建任务**（task_message action:retry），不是原任务复活。
- * - `orphaned → pending`：`deps.js` 只从 `waiting_dep` 晋升，从不从 `orphaned` 晋升；
- *   会话丢失的出口是重派（新任务）或取消。
+ * - `orphaned → pending`：`deps.js` 只从 `waiting_dep` 晋升；会话丢失的出口是续跑或重派（新任务）。
+ *
+ * v0.24（resume）重开三条边，**只给 `task_message({ action:'resume' })` 用**：`failed → running`、
+ * `orphaned → running`（失败/重启收尾但子会话仍 durable，冷恢复接着跑）、`done → running`（仅限
+ * `close_reason='timeout'`；行级白名单在 src/resume.js 的 resumeGate，转移表表达不了行级条件）。
+ * 这不是「复活」：retry 才是新任务；resume 是同一 task_id 的同一子会话继续，`attempts`/`resume_count` 自增。
  */
 export const TRANSITIONS = Object.freeze({
   waiting_dep: Object.freeze(['pending', 'failed', 'cancelled']),
@@ -140,10 +146,12 @@ export const TRANSITIONS = Object.freeze({
   waiting_auth: Object.freeze(['running', 'cancelled', 'failed', 'orphaned']),
   // delivered → done：协调者确认或超时；delivered → running：task_message 追问；其余是停止/会话丢失。
   delivered: Object.freeze(['running', 'done', 'cancelled', 'orphaned']),
-  failed: Object.freeze(['cancelled']),
-  done: Object.freeze([]),
+  // failed → running 只给 resume（原会话续跑），failed → cancelled 是收尾；done → running 还多一道
+  // close_reason='timeout' 的行级白名单（见文件头注释）。
+  failed: Object.freeze(['cancelled', 'running']),
+  done: Object.freeze(['running']),
   cancelled: Object.freeze([]),
-  orphaned: Object.freeze(['cancelled']),
+  orphaned: Object.freeze(['cancelled', 'running']),
 })
 
 export function canTransition(from, to) {

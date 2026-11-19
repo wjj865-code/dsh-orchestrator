@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT,
   delivered_at INTEGER, close_reason TEXT, acceptance_json TEXT,
   accepted_by TEXT, accepted_at INTEGER,
+  resume_count INTEGER NOT NULL DEFAULT 0, last_stop_reason TEXT,
   team_task_id TEXT, team_task_revision INTEGER
 );
 CREATE TABLE IF NOT EXISTS messages (
@@ -106,6 +107,10 @@ export async function openLedger(stateDir) {
     // 旧库/存量行都是 NULL = 没关联官方任务，确认时不做任何反写。
     if (!taskColumns.includes('team_task_id')) db.exec('ALTER TABLE tasks ADD COLUMN team_task_id TEXT')
     if (!taskColumns.includes('team_task_revision')) db.exec('ALTER TABLE tasks ADD COLUMN team_task_revision INTEGER')
+    // v0.24 resume：resume_count 数「收尾后被冷恢复」的次数（与 activation 轮数 attempts 分开，度量里要
+    // 能单独算复用率）；last_stop_reason 记最近一次结算的 stopReason（旧库存量行都是 NULL）。
+    if (!taskColumns.includes('resume_count')) db.exec('ALTER TABLE tasks ADD COLUMN resume_count INTEGER NOT NULL DEFAULT 0')
+    if (!taskColumns.includes('last_stop_reason')) db.exec('ALTER TABLE tasks ADD COLUMN last_stop_reason TEXT')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -218,6 +223,9 @@ const taskOf = row => row === undefined ? undefined : ({
   // P2-4（D6）：官方 Team 板关联（可选）。id 为空/旧库 → null = 没关联，确认时不反写。
   team_task_id: typeof row.team_task_id === 'string' && row.team_task_id !== '' ? row.team_task_id : null,
   team_task_revision: Number.isSafeInteger(row.team_task_revision) && row.team_task_revision >= 0 ? row.team_task_revision : null,
+  // v0.24 resume：续跑次数（收尾后被冷恢复的次数）与最近一次结算原因（failed/orphaned 的 stopReason）。
+  resume_count: Number.isFinite(row.resume_count) ? row.resume_count : 0,
+  last_stop_reason: typeof row.last_stop_reason === 'string' && row.last_stop_reason !== '' ? row.last_stop_reason : null,
 })
 
 export function createTask(db, {
@@ -381,6 +389,8 @@ export function transition(db, id, to, patch = {}) {
   if (Object.hasOwn(patch, 'target')) { sets.push('target = ?'); values.push(patch.target) }
   if (Object.hasOwn(patch, 'error')) { sets.push('error = ?'); values.push(patch.error) }
   if (Object.hasOwn(patch, 'closeReason')) { sets.push('close_reason = ?'); values.push(patch.closeReason ?? null) }
+  // v0.24：结算落最近一次 stopReason（resume 判定与面板文案要用）；不传则不动这一列。
+  if (Object.hasOwn(patch, 'lastStopReason')) { sets.push('last_stop_reason = ?'); values.push(patch.lastStopReason ?? null) }
   values.push(id)
   db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values)
   // 观察者失败绝不能影响迁移本身（日志/事件是旁路）；放在落库之后，订阅方能读到新行。
@@ -599,6 +609,18 @@ export function failStalePending(db, { staleMinutes = 30, now = Date.now() } = {
 export function incrementAttempts(db, id) {
   db.prepare('UPDATE tasks SET attempts = attempts + 1 WHERE id = ?').run(id)
   return getTask(db, id)
+}
+
+/** v0.24：续跑次数（收尾后冷恢复原会话）。与 attempts 分工：续跑时两者都 +1，追问只 +1 attempts。 */
+export function incrementResumeCount(db, id) {
+  db.prepare('UPDATE tasks SET resume_count = resume_count + 1 WHERE id = ?').run(id)
+  return getTask(db, id)
+}
+
+/** 任务的消息条数（brief / report / settle / followup / resume 全算）：resume 的历史长度阈值用。 */
+export function countTaskMessages(db, taskId) {
+  const row = db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(String(taskId))
+  return Number.isFinite(row?.n) ? row.n : 0
 }
 
 export function addMessage(db, taskId, { kind, rendered, meta = null }) {

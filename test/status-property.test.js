@@ -40,8 +40,9 @@ function assertStateInvariants(status) {
   const caps = STATUS_CAPS[status]
   assert.deepEqual(Object.keys(caps).sort(), [...CAP_KEYS].sort(), `${status} 的能力位不全`)
   for (const key of CAP_KEYS) assert.equal(typeof caps[key], 'boolean', `${status}.${key} 必须是布尔`)
-  // 终态闭包：非活跃状态只能迁到非活跃状态（复活只能靠重派新建任务，不能靠迁移）。
-  if (caps.active === false) {
+  // 终态闭包：非活跃状态只能迁到非活跃状态。v0.24 例外：`resume` 能力为真的收尾态可以回 running
+  // （那是「续跑原会话」，不新建任务；门控在 src/resume.js，done 还多一层 close_reason='timeout'）。
+  if (caps.active === false && caps.resume !== true) {
     for (const to of TRANSITIONS[status]) {
       assert.equal(STATUS_CAPS[to].active, false, `${status} 已不活跃，却仍有边到活跃态 ${to}`)
     }
@@ -55,8 +56,12 @@ function assertStateInvariants(status) {
   if (caps.followup) {
     assert.ok(status === 'running' || canTransition(status, 'running'), `${status} 能续派却没有回 running 的边`)
   }
-  // 重派永远是新任务：可重派的状态不能原地复活成 running。
-  if (caps.retryable) assert.equal(canTransition(status, 'running'), false, `${status} 可重派却能原地复活`)
+  // resume 能力 ⇒ 有回 running 的边（反过来不成立：pending/waiting_* 晋升是正常推进）；
+  // 收尾态里能回 running 的必须正好是 resume 能力为真者。
+  if (caps.resume) assert.equal(canTransition(status, 'running'), true, `${status} 可续跑却没有回 running 的边`)
+  if (caps.active === false && canTransition(status, 'running')) assert.equal(caps.resume, true, `${status} 收尾态能回 running 却不是 resume`)
+  // 重派永远是新建一条：可重派的状态只能靠「边」续跑，不能把 retry 实现成原地复活。
+  if (caps.retryable && caps.resume !== true) assert.equal(canTransition(status, 'running'), false, `${status} 可重派却能原地复活`)
   // 没有出边的状态必须是流程终态（failed/orphaned 都还有「取消」出口，别让任务卡死）。
   if (TRANSITIONS[status].length === 0) assert.equal(caps.terminal, true, `${status} 没有出边却不是终态`)
 }
@@ -133,8 +138,12 @@ test('属性：能力位与转移表不矛盾（delivered 可追问不可轮换�
   assert.ok(statusesWith('followup').includes('delivered'), 'delivered 是追问窗口')
   assert.equal(statusesWith('rotationActive').includes('delivered'), false, 'delivered 只等确认，不该阻断轮换')
   assert.deepEqual(statusesWith('terminal').filter(status => STATUS_CAPS[status].followup), [])
-  // failed/orphaned 可重派，但都不能原地复活（重派＝新任务）。
-  for (const status of statusesWith('retryable')) assert.equal(canTransition(status, 'running'), false, `${status} 不该回到 running`)
+  // failed/orphaned 可重派（新任务），也可 resume（同任务同会话续跑）——两者不是互斥关系：
+  // retry 走新建、resume 走「回 running」的边，实现上各有一条独立路径（tools.js retryTask / resumeTask）。
+  assert.deepEqual(statusesWith('resume'), ['done', 'failed', 'orphaned'])
+  for (const status of statusesWith('resume')) {
+    assert.equal(canTransition(status, 'running'), true, `${status} 可续跑却没有回 running 的边`)
+  }
 })
 
 /** 随机造一份任务行：覆盖只读 / 完整访问 / 计划（四种 plan_state）/ 隔离 / 编排字段。 */

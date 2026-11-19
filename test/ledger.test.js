@@ -92,11 +92,13 @@ test('非法状态迁移被拒绝且不落库', async () => {
   const db = await openLedger(tempDir())
   const task = createTask(db, { brief: sampleBrief(), coordinatorSession: 's-1' })
   transition(db, task.id, 'running')
-  markDone(db, task.id)
+  // v0.24：收尾态 → running 现在是 resume 的合法边（failed/orphaned/done），死边改取 cancelled→running
+  // （用户主动停掉的任务不续跑，见 src/resume.js 的 resumeGate）。
+  transition(db, task.id, 'cancelled')
   const before = getTask(db, task.id)
   assert.throws(() => transition(db, task.id, 'running'), /不允许/)
   const after = getTask(db, task.id)
-  assert.equal(after.status, 'done')
+  assert.equal(after.status, 'cancelled')
   assert.equal(after.updated_at, before.updated_at)
   db.close()
 })

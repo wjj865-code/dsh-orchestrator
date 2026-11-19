@@ -196,7 +196,12 @@ export function createSettlementReporter({
     try {
       // delivered 不是失败：清掉 error；只有真正异常收场才写死因。
       const clearsError = mapped.status === 'delivered' || mapped.status === 'done'
-      next = transition(db, task.id, mapped.status, { error: clearsError ? null : errorText })
+      // v0.24：把 stopReason 落进 last_stop_reason —— failed/orphaned 之后 resume 的判定与文案都靠它，
+      // 不必再翻 messages 去找 settle 行。
+      next = transition(db, task.id, mapped.status, {
+        error: clearsError ? null : errorText,
+        lastStopReason: mapped.stopReason ?? null,
+      })
     } catch (failure) {
       log('task.settle.transition-failed', {
         taskId: task.id,
