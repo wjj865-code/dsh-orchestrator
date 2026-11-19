@@ -4,7 +4,8 @@
 
 这一版把两条线合到一起发：远端已发布的 **0.22.0（插件页配置卡片）** 与 **0.22.1（少派一次活、少问一次关闭）**，
 加上本地 **P2-1 ~ P2-6** 六片（机器可判定验收 / 删自建 keepAlive 回归宿主 goal / 交接契约 v1 / 官方 Team 板只读互通 /
-面板体积与只读视图 / 文档收口）。版本定 **0.23.0**——0.22.0、0.22.1 已被占用，这次是它们之后的 **minor**：
+面板体积与只读视图 / 文档收口），以及发版前 UI 冒烟揪出的**两处 inject 取服务修复**（官方 Team 板、goal 桥）。
+版本定 **0.23.0**——0.22.0、0.22.1 已被占用，这次是它们之后的 **minor**：
 新增能力为主，配置面 **35 → 28**，面板体积第一次进机器闸门。
 
 ### 升级须知（相对 0.22.1）
@@ -18,7 +19,9 @@
    要续跑必须按任务显式声明（1–50，与 `planFirst` 互斥）。
 4. **面板体积进闸门**：`dist/client.js` ≤ **95 KiB**（`pnpm run check:client-size`，已挂进 `pretest` / `prepublishOnly`）。
 5. **官方 Team 板只读互通**：插件任务可选 `teamTaskId` 关联官方任务，人/协调者确认交付时按 CAS 反写 `complete`；
-   超时自动完成不反写。没开官方 Team 的用户完全无感。
+   超时自动完成不反写。没开官方 Team 的用户完全无感；服务缺失/Team 未开启时面板**整区隐藏**（不刷存在感）。
+6. **可选服务一律经 `ctx.get`（inject 安全）**：官方 Team 板与 goal 桥在本版修掉「读 `ctx.<服务名>` 属性必抛」的写法。
+   若你在真机上曾觉得「官方 Team 分区从来不出现」或「`goalRounds` 设了也不续跑」，就是这个——本版取得到服务了。
 
 ### 六片一览
 
@@ -30,6 +33,29 @@
 | P2-4 | `feat: P2-4 官方 Team 板只读 + 确认反写（CAS）` | 官方板只读快照 + 确认交付时按 CAS 反写 `complete` |
 | P2-5 | `refactor: P2-5 面板 S9′（dist ≤95KB + 交接/官方板只读视图）` | esbuild minify：面板 129.9 → 77.6 KB，体积闸门进 `pretest` |
 | P2-6 | `docs: P2-6 文档收口（≤1800 行）+ P2 变更收录` | README 首屏重写，文档 2,152 → 1,386 行，`check-docs` 预算 1,800 + 首屏结构断言 |
+
+### 发版前两处 inject 修复（P2-4 官方板 / goal 桥）
+
+发版前 UI 冒烟（`workspace/reports/p2-ui-verify.md`，19/19 断言 PASS）抓到一个**真机缺陷**：P2-4 的「官方 Team 板只读」
+在任何宿主都不渲染，面板只多一条 cordis 内部报错。根因不在 P2-4 的业务逻辑，而在**取服务的方式**，同类写法一并收口。
+
+- **`fix: P2-4 修正 agentTeams 取服务路径（inject 安全）`**：`src/host-capabilities.js` 里
+  `agentTeams: () => ctx?.agentTeams ?? service('agentTeams')` 改成**只走** `service('agentTeams')`。
+  `agentTeams` 不在 `index.js` 的 `inject` 里，cordis 的 get trap 对**未 inject 服务的属性读取必抛**
+  `cannot get property "agentTeams" without inject`——于是 `??` 右边永远走不到，每次 snapshot 都记一条内部报错。
+  真机探针（`at-probe.mjs`）对照过：`ctx.get('settings')` 有对象、`ctx.settings` 同样抛错，与业务无关。
+  顺带把面板口径对齐 `docs/compat.md`：`teamBoard.enabled !== true`（服务缺失 / 形状变了 / Team 未开启）时**整区隐藏**，
+  只有 `enabled === true` 而这次 `listTasks` 没读成才给一条只读提示——不把「没装 Agent Teams」吼到用户脸上。
+- **`fix: host-capabilities 统一经 service() 取可选服务（goals 等）`**：同一个坑的其余实例一起修，
+  `goals` / `agents` / `subagents` 全部改成 `service('x')`（`agents` / `subagents` 当前在 `inject` 里、属性读不抛，
+  也统一，不给下一个可选服务留坏样板）。`index.js` 里 `/api/orchestrator` 装配处的 `host.connection() ?? ctx.connection`
+  与能力检查的 `host.schedule() ?? ctx.schedule` 同样去掉属性兜底——`connection` / `schedule` 都不在 `inject` 里，
+  旧写法会把「可选服务缺失」变成装配期异常，而不是走既有的友好降级。
+  **用户可见影响**：真机上 goal 桥以前一直拿到 `undefined`、`task_create({ goalRounds })` 永不 arm，现在取得到 `goals` 服务；
+  缺 `connection` 时回到「警告 + 面板路由不可用」而不是抛错。
+- **回归**：`test/host-capabilities.test.js`（属性读抛错仍返回 undefined、`service()` 是唯一入口）、
+  `test/goal.test.js`（真机形状下 `goalRounds` 能 arm）、`test/index.test.js` / `test/integration.test.js`（缺服务时装配不炸）
+  与 `test/client.test.js`（`enabled` 三态 → 渲染/提示/隐藏）锁住。
 
 ### 合并与验证（本次 rebase 记录）
 
@@ -53,11 +79,12 @@
 - **keepAlive 保持删除**：`src/keepalive.js` 不复活；远端那句「报 done 会停在『已交付待确认』，确认或超时后才收成完成」
   落到 `src/copy.js` 的 `deliveredReceiptNote` / `finishHint`、`src/brief.js` 的 `CONFIRM_HINT`
   与 `src/handoff.js` 的「未确认（等你或用户确认，或超时自动完成）」。
-- **dist 用 `pnpm build` 重建**：`dist/client.js` = 93,749 B（**91.6 KiB / 95 KiB**，余 3.4 KiB），sourcemap 一并重建。
+- **dist 用 `pnpm build` 重建**：`dist/client.js` = 93,745 B（**91.5 KiB / 95 KiB**，余 3.5 KiB），sourcemap 一并重建。
 
-**全门禁**：`pnpm test`（1,054 例：1,049 pass / 5 skip / 0 fail）、`pnpm run check:client`、
-`pnpm run check:client-size`（91.6 / 95 KiB）、`pnpm run check:version`（0.23.0）、
-`pnpm run check:docs`（1,440 / 1,800）、`npm pack --dry-run`（77 文件，503 kB）全绿。**未 push、未打 tag、未发版。**
+**全门禁**（两处 inject 修复后的最后一次全跑）：`pnpm test`（1,058 例：1,053 pass / 5 skip / 0 fail）、
+`pnpm run check:client`、`pnpm run check:client-size`（91.5 / 95 KiB）、`pnpm run check:version`（0.23.0）、
+`pnpm run check:docs`（1,442 / 1,800）、`npm pack --dry-run`（77 文件，504.4 kB）全绿，工作树干净。
+rebase 当时**未 push、未打 tag、未发版**；本版随后以 `v0.23.0` 一次发出（不再重打 tag）。
 
 ### P2-6 文档收口（≤1,800 行）+ P2 变更收录
 
