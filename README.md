@@ -529,6 +529,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 | 文档 | 内容 |
 |---|---|
+| [docs/compat.md](docs/compat.md) | 宿主兼容基线（rc.3–rc.5）、9 类能力探测与降级、rc.3 冒烟 3 条 |
 | [docs/DETAIL.md](docs/DETAIL.md) | 插件页简介：功能点、工具与面板错误码 |
 | [docs/UI.md](docs/UI.md) | 面板/抽屉布局、`--dsw-*` token 对照、交互清单 |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | 平台/沙箱/计划/worktree/通知/UI 的完整限制清单 |

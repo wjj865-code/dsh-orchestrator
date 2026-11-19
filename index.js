@@ -1,7 +1,7 @@
 // dsh-orchestrator：协调者会话 + 子任务。唯一写入是 $DSH_HOME/state/orchestrator。
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, DEFAULT_WORKER_PRESET } from './src/config.js'
+import { createHostCapabilities } from './src/host-capabilities.js'
 import {
   openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts,
   listTasks, setTransitionObserver,
@@ -141,19 +141,26 @@ export const COORDINATOR_DENY = [
   'task_report', 'task_detail', 'plan_save',
 ]
 
-const stateDir = () => join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'state', 'orchestrator')
-
 export async function apply(ctx, rawConfig = {}) {
   const config = loadConfig(rawConfig)
-  const dir = stateDir()
-  const db = await openLedger(dir)
   const warnings = message => ctx.logger?.warn?.(message)
+  // P0-2b：宿主耦合统一走访问层（9 类）。首片接线「日志路径 + 版本自检」，其余访问器已就绪、
+  // 消费点分批迁移（剩余清单见 docs/compat.md）；这里不改变任何既有行为。
+  const host = createHostCapabilities(ctx, { onWarn: warnings })
+  const dir = host.stateDir()
+  const db = await openLedger(dir)
   // workerPreset 写错（大写/空格/不合法字符）会被归一化回落：明确告诉用户实际用的是哪个。
   const rawWorkerPreset = rawConfig?.workerPreset
   if (rawWorkerPreset !== undefined && config.workerPreset === DEFAULT_WORKER_PRESET && rawWorkerPreset !== DEFAULT_WORKER_PRESET) {
     warnings(`dsh-orchestrator: workerPreset=${JSON.stringify(rawWorkerPreset)} 不是合法预设 id（小写字母/数字/连字符），已回落到 ${DEFAULT_WORKER_PRESET}`)
   }
   const logger = createLogger({ stateDir: dir, onWarn: warnings })
+  // 宿主自检（只诊断、不拦加载）：版本落在声明基线外时 warn 一次；能力快照等装配完成后再记。
+  // 为什么只 warn：插件历史上靠「服务缺失静默不生效」吃过亏（真实宿主不渲染），宁可多一行可读诊断。
+  const hostVersion = host.version()
+  if (hostVersion.status === 'below' || hostVersion.status === 'above') {
+    warnings(`dsh-orchestrator: 宿主版本 ${hostVersion.version} ${hostVersion.status === 'below' ? '低于' : '高于'}声明的兼容基线 ${hostVersion.baseline}：插件照常加载，但接口形状可能已变；升级/降级宿主后先跑 docs/compat.md 的冒烟 3 条`)
+  }
   // 状态迁移的审计日志（审计 §4.5）：`transition` 是唯一入口，在这里挂一次观察者就覆盖全部 19 个调用点，
   // 从此「这个任务为什么从 running 变 orphaned」能直接从日志还原，不必靠 settle 消息反推。
   setTransitionObserver(({ taskId, from, to, sessionId, reason, closeReason }) => {
@@ -178,8 +185,8 @@ export async function apply(ctx, rawConfig = {}) {
   // 平台 goal 接入（G1）：能力缺失时桥不可用，所有钩子静默 no-op；不阻塞派发/续派/结算。
   const goalBridge = createGoalBridge({
     db,
-    goals: () => ctx.get?.('goals') ?? ctx.goals,
-    agents: () => ctx.agents ?? ctx.get?.('agents'),
+    goals: () => host.goals(),
+    agents: () => host.agents(),
     onAgentCreated: handler => ctx.on?.('agent/created', ({ agent } = {}) => handler(agent)),
     onWarn: warnings,
     onEvent: (event, fields) => logger.log(event, fields),
@@ -200,10 +207,10 @@ export async function apply(ctx, rawConfig = {}) {
   const pendingRestrictions = new WeakSet()
 
   const resolvedCoordinatorId = () => config.coordinatorSession ?? getMainSessionId(db)
-  const isChildLive = sessionId => ctx.get?.('agents')?.get?.(sessionId) !== undefined
+  const isChildLive = sessionId => host.agents()?.get?.(sessionId) !== undefined
   const resolveCoordinator = () => {
     const id = resolvedCoordinatorId()
-    return id === undefined ? undefined : ctx.get?.('agents')?.get?.(id)
+    return id === undefined ? undefined : host.agents()?.get?.(id)
   }
   const coordinatorStatus = () => {
     const id = resolvedCoordinatorId()
@@ -216,7 +223,7 @@ export async function apply(ctx, rawConfig = {}) {
     if (agent === undefined || agent.id !== resolvedCoordinatorId()) return ''
     const missing = []
     try {
-      if ((ctx.get?.('schedule') ?? ctx.schedule) === undefined) missing.push('schedule 服务')
+      if ((host.schedule() ?? ctx.schedule) === undefined) missing.push('schedule 服务')
       const tools = agent.ctx?.tools ?? ctx.tools
       for (const name of SCHEDULE_TOOLS) {
         if (typeof tools?.get !== 'function' || tools.get(name, agent) === undefined) missing.push(name)
@@ -270,7 +277,7 @@ export async function apply(ctx, rawConfig = {}) {
 
   // 主会话：固定入口创建/打开唯一协调者会话；不再由 task_create 自动绑定。
   // 服务用 getter 惰性取：cordis 并发加载条目，apply 时服务可能还没就绪（同上 connection）。
-  const service = name => ctx.get?.(name)
+  const service = name => host.service(name)
   // G1 S3：轮换**动作面**（marker / 指针时间戳 / 审计 / 旧会话改名+归档 / 启动恢复）。
   // 判定仍是 src/main-rotation.js 的纯函数与采集层；这里只把「台账 + 平台动作」绑成服务，
   // 且平台服务一律惰性取（cordis 并发加载，apply 早期 get 可能还是 undefined）。
@@ -303,14 +310,14 @@ export async function apply(ctx, rawConfig = {}) {
     agents: () => service('agents'),
     sessionController: () => service('sessionController'),
     workspaces: () => service('workspaceRegistry'),
-    defaultCwd: join(stateDir(), 'workspace'),
+    defaultCwd: join(dir, 'workspace'),
     presetFor: agent => service('agentPresets')?.presetForSession?.(agent?.session),
     selectPreset: (agent, presetId) => {
       const presets = service('agentPresets')
       if (typeof presets?.select !== 'function') throw new Error('缺少 agentPresets.select 服务')
       return presets.select(agent, presetId)
     },
-    workspacePath: join(stateDir(), 'workspace'),
+    workspacePath: join(dir, 'workspace'),
     workspaceName: '指挥舱',
     log: (event, detail) => logger.log(event, { detail }),
   })
@@ -415,7 +422,7 @@ export async function apply(ctx, rawConfig = {}) {
   let settlement
   const dispatcher = createDispatcher({
     backend: config.backend,
-    subagents: ctx.subagents,
+    subagents: host.subagents(),
     getAgent: resolveCoordinator,
     provider: config.spawnProvider,
     // 子会话预设（dispatch 里落到启动 spec 的 agentPreset）：默认 worker，调试时可指 orch-debug。
@@ -423,9 +430,9 @@ export async function apply(ctx, rawConfig = {}) {
     onWarn: warnings,
     // rc.3 子会话沙箱根取父会话 header.cwd：派发后给子会话补注册 target 可写根。
     // 服务惰性取，加载顺序不保证；agents 在 inject 里，sessions/sandboxPolicy 用 ctx.get。
-    agents: () => ctx.agents ?? ctx.get?.('agents'),
-    sessions: () => ctx.get?.('sessions'),
-    sandboxPolicy: () => ctx.get?.('sandboxPolicy'),
+    agents: () => host.agents(),
+    sessions: () => host.sessions(),
+    sandboxPolicy: () => host.sandboxPolicy(),
     onSessionCreated: handler => ctx.on('session/created', handler),
     // 只读子任务：agent/created 一到就设沙箱，压掉首回合窗口。
     onAgentCreated: handler => ctx.on('agent/created', ({ agent } = {}) => handler(agent)),
@@ -514,7 +521,7 @@ export async function apply(ctx, rawConfig = {}) {
       const result = collectWorkspaceArtifacts({
         session,
         workspaceChanges: service('workspaceChanges'),
-        fallbackCwd: task.target_dir ?? join(stateDir(), 'workspace'),
+        fallbackCwd: task.target_dir ?? join(dir, 'workspace'),
         max: MAX_AUTO_ARTIFACTS,
       })
       const added = appendMissingArtifacts(task.artifacts, result.artifacts)
@@ -632,7 +639,7 @@ export async function apply(ctx, rawConfig = {}) {
     db, dispatcher, queue, notifier, config, coordinatorStatus, logger,
     workspaces: () => service('workspaceRegistry'),
     // 相对产物/项目上下文默认跟主会话目录；主会话重建后 getter 自动取到新目录。
-    defaultCwd: () => resolveCoordinator()?.session?.header?.cwd ?? join(stateDir(), 'workspace'),
+    defaultCwd: () => resolveCoordinator()?.session?.header?.cwd ?? join(dir, 'workspace'),
     sessionQuery: () => service('sessionQuery'),
     sessions: () => service('sessions'),
     workspaceChanges: () => service('workspaceChanges'),
@@ -656,7 +663,7 @@ export async function apply(ctx, rawConfig = {}) {
         const result = collectWorkspaceArtifacts({
           session,
           workspaceChanges: service('workspaceChanges'),
-          fallbackCwd: task.target_dir ?? join(stateDir(), 'workspace'),
+          fallbackCwd: task.target_dir ?? join(dir, 'workspace'),
           max: MAX_AUTO_ARTIFACTS,
         })
         const added = appendMissingArtifacts(task.artifacts, result.artifacts)
@@ -729,11 +736,25 @@ export async function apply(ctx, rawConfig = {}) {
       scope.effect?.(() => () => { try { dispose?.() } catch { /* 卸载期失败不阻断 */ } })
     })
   } else {
-    routeDisposer = installRoute(ctx.get?.('connection') ?? ctx.connection)
+    routeDisposer = installRoute(host.connection() ?? ctx.connection)
     if (routeDisposer === undefined) {
       warnings('dsh-orchestrator: 缺少 connection 服务，/api/orchestrator 面板路由不可用')
     }
   }
+
+  // 宿主能力快照：装配完成后记一次，尽量反映真实可用面（服务仍可能晚加载，缺失如实记录、不猜）。
+  // 面板诊断行与工具返回后续直接读 host.report()，不另存副本。
+  const hostReport = host.report()
+  logger.log('host.capabilities', {
+    detail: {
+      version: hostReport.version.version ?? null,
+      versionSource: hostReport.version.source,
+      versionStatus: hostReport.version.status,
+      available: hostReport.available,
+      total: hostReport.total,
+      missing: hostReport.missing,
+    },
+  })
 
   ctx.effect?.(() => async () => {
     // 看门狗先停：定时器巡检会在 db.close() 之后继续读台账（卸载期不允许）。
