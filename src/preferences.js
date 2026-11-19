@@ -20,7 +20,8 @@ import { getSetting, setSetting } from './ledger.js'
 /** settings 键（单键 JSON，与 workspace_repo_index 同一种存法）。 */
 export const PREFERENCES_KEY = 'orchestrator_preferences'
 
-/** 渲染预算：字数为主约束（防「一条 2000 字」），条数为安全阀（防「100 条各 10 字」）。 */
+/** 渲染预算：字数为主约束（防「一条 2000 字」），条数为安全阀（防「100 条各 10 字」）。
+ *  P2-2：条数上限固定成常量（配置键 preferencesMaxItems 已删），只有字数仍可配。 */
 export const DEFAULT_MAX_CHARS = 1200
 export const DEFAULT_MAX_ITEMS = 12
 /** 单条规则的字数上限（写入侧截断，渲染侧不再二次切半句）。 */
@@ -183,7 +184,7 @@ export function renderPreferenceBlock(items, { maxItems = DEFAULT_MAX_ITEMS, max
   }
   const omitted = candidates.length - kept.length
   const lines = [...head, '', ...kept]
-  if (omitted > 0) lines.push('', `（另有 ${omitted} 条偏好因超限未展示：提高 preferencesMaxChars / preferencesMaxItems 或停用部分条目）`)
+  if (omitted > 0) lines.push('', `（另有 ${omitted} 条偏好因超限未展示：提高 preferencesMaxChars 或停用部分条目）`)
   return lines.join('\n')
 }
 

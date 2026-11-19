@@ -35,7 +35,7 @@
 | G5 | 工具 schema 契约 | 逐个工具体检 | `parameters.type === 'object'`、根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 中文可读；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面 |
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
-| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` allow | 配置 35 键；全局工具 10 个（协调者 7 + 子会话 3）；allow 名单与工具表一致 |
+| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` allow | 配置 28 键；全局工具 10 个（协调者 7 + 子会话 3）；allow 名单与工具表一致 |
 | G9 | 文档面 | `pnpm run check:docs` | 见 §3.4 |
 
 ## 3. 断言口径（测试怎么写）
@@ -137,6 +137,8 @@
 | P1-C 文案单源 | 计划文案单一真源、12k 步状态迁移 + 10k 组文案属性测试 | CHANGELOG `0.21.0`；`test/status-property.test.js` |
 | P1-D 文档合并 | 文档 3,128→1,985 行、README 配置表/工具表与代码同源、内链可达 | `scripts/check-docs.mjs`（预算 2,250）；CHANGELOG `0.21.0` |
 | P1-E 调试预设外移 | 生成器/测试/文档移出主包、`files` 不含 `docs/DEBUG-PRESET.md`、`tools/debug-preset/` 四件套 | CHANGELOG `0.21.0`；`node tools/debug-preset/cli.mjs --check` |
+| P2-2 续跑委托宿主 goal | 28 键（再删 7 键各一条弃用警告）、`goalRounds=0` create+disarm / `>0` create 带 maxGoalRounds 且保持 armed、`src/` 无 `turn-stopping` 订阅 | `test/config-deprecated.test.js`、`test/goal.test.js`、`test/index.test.js` |
+| P2-2 通知合并窗口 | 配置键删除后仍按 5 秒合并；测试用 `DSH_ORCH_NOTIFY_MERGE_MS` 旁路（只调窗口，不改语义） | `test/notify.test.js`、`test/index.test.js` |
 | 外部依赖 | ds-bot Bot 模式不撤外部 root 会话皮肤、rc.3 子会话沙箱根=父目录、团队工具残留 | CHANGELOG `0.13.0`/`0.14.0`；[LIMITATIONS](LIMITATIONS.md) |
 
 ## 7. 真机复核清单（装 profile + 彻底重启后逐条勾）

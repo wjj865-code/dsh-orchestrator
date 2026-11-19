@@ -9,6 +9,11 @@ import { openLedger, listTasks } from '../src/ledger.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+// P2-2：完成通知的合并窗口成了固定常量（配置键 mergeWindowMs 已删）。单测用环境变量把它压到
+// 毫秒级——否则每个通知用例都要真等 5 秒；它只调窗口，不改「同批任务合并成一条」的语义。
+// （个别用例要「窗口没到」时再自己临时改大，用完还原。）
+process.env.DSH_ORCH_NOTIFY_MERGE_MS = '5'
+
 function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', 'task_detail', 'ask_user', 'show_view'], restrictableTools = knownTools } = {}) {
   const restrictions = []
   const injected = []
@@ -36,10 +41,11 @@ function fakeGoalService() {
     state,
     get(agent) { calls.push(['get', agent.id]); return state.view },
     create(agent, request) {
-      calls.push(['create', agent.id, request.objective])
+      // P2-2：goalRounds>0 时桥会带 maxGoalRounds；记录它，测试据此断言「续跑交给宿主 driver」。
+      calls.push(['create', agent.id, request.objective, request.maxGoalRounds ?? null])
       state.view = {
         id: 'goal-1', revision: 1, objective: request.objective, phase: 'active', activation: 'armed',
-        roundsStarted: 0, maxGoalRounds: 256, createdAt: 1, updatedAt: 1,
+        roundsStarted: 0, maxGoalRounds: request.maxGoalRounds ?? 256, createdAt: 1, updatedAt: 1,
       }
       return state.view
     },
@@ -48,7 +54,12 @@ function fakeGoalService() {
       state.view = { ...state.view, activation: 'disarmed' }
       return state.view
     },
-    edit(agent, ref, request) { calls.push(['edit', agent.id, ref, request.objective]); return state.view },
+    edit(agent, ref, request) {
+      calls.push(['edit', agent.id, ref, request.objective])
+      if (request.objective !== undefined) state.view = { ...state.view, objective: request.objective }
+      if (request.maxGoalRounds !== undefined) state.view = { ...state.view, maxGoalRounds: request.maxGoalRounds }
+      return state.view
+    },
     complete(agent, ref) { calls.push(['complete', agent.id, ref]); return state.view },
     clear(agent, ref) { calls.push(['clear', agent.id, ref]); return { id: ref.id, revision: ref.revision + 1 } },
   }
@@ -349,7 +360,7 @@ test('配置的协调者失效：task_create 结果带失效提示，任务标 f
 test('主会话失效：通知记 skipped 并在结果里提示', withHome(async home => {
   const s1 = makeAgent('s-1')
   const { ctx, registered, live } = fakeCtx({ agents: [s1] })
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
+  await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   const { DatabaseSync } = await import('node:sqlite')
@@ -639,7 +650,7 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
   const coordinator = makeAgent('s-1')
   const teammate = { id: 'm-1' }
   const { ctx, registered, sent } = fakeCtx({ agent: coordinator })
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
+  await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   const created = await byName.task_create.execute(
     { title: '甲', goal: 'g', acceptance: ['a'] },
@@ -668,7 +679,7 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
 
 test('无 coordinatorSession 时不投递通知', withHome(async home => {
   const { ctx, registered, sent } = fakeCtx()
-  await apply(ctx, { mergeWindowMs: 5 })
+  await apply(ctx, {})
   const { openLedger, createTask, transition } = await import('../src/ledger.js')
   const ledger = await openLedger(join(home, 'state', 'orchestrator'))
   const task = createTask(ledger, { brief: { title: 't', goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
@@ -682,7 +693,7 @@ test('无 coordinatorSession 时不投递通知', withHome(async home => {
 
 test('回报缺少 sender：不投递，通知行记 skipped', withHome(async home => {
   const { ctx, registered, sent } = fakeCtx()
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
+  await apply(ctx, { coordinatorSession: 's-1' })
   const create = registered.find(tool => tool.name === 'task_create')
   const created = await create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: { id: 's-1' } })
   const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
@@ -702,20 +713,29 @@ test('卸载时窗口内的 done 通知不丢行', withHome(async home => {
   const coordinator = makeAgent('s-1')
   const teammate = { id: 'm-1' }
   const { ctx, registered, disposers } = fakeCtx({ agent: coordinator })
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 600000 })
-  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
-  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
-  await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: teammate })
-  assert.equal(coordinator.injected.length, 0)
-  await disposers[0]()
-  assert.equal(coordinator.injected.length, 1)
-  const { DatabaseSync } = await import('node:sqlite')
-  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-  const row = db.prepare('SELECT status, delivered_at FROM notifications').get()
-  assert.equal(row.status, 'delivered')
-  assert.ok(row.delivered_at > 0)
-  db.close()
+  // 合并窗口是固定常量（P2-2 删了配置键）：这里用测试旁路把它拉到 10 分钟，
+  // 断言「窗口没到 → 一条都没发」，再靠卸载时的 flushNow 把行补上（不丢通知）。
+  const previousWindow = process.env.DSH_ORCH_NOTIFY_MERGE_MS
+  process.env.DSH_ORCH_NOTIFY_MERGE_MS = '600000'
+  try {
+    await apply(ctx, { coordinatorSession: 's-1' })
+    const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+    const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
+    const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+    await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: teammate })
+    assert.equal(coordinator.injected.length, 0)
+    await disposers[0]()
+    assert.equal(coordinator.injected.length, 1)
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+    const row = db.prepare('SELECT status, delivered_at FROM notifications').get()
+    assert.equal(row.status, 'delivered')
+    assert.ok(row.delivered_at > 0)
+    db.close()
+  } finally {
+    if (previousWindow === undefined) delete process.env.DSH_ORCH_NOTIFY_MERGE_MS
+    else process.env.DSH_ORCH_NOTIFY_MERGE_MS = previousWindow
+  }
 }))
 
 test('注入失败记 failed + reason，不是 skipped', withHome(async home => {
@@ -723,7 +743,7 @@ test('注入失败记 failed + reason，不是 skipped', withHome(async home => 
   coordinator.steer = () => { throw new Error('steer 失败') }
   const teammate = { id: 'm-1' }
   const { ctx, registered } = fakeCtx({ agent: coordinator })
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
+  await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
   const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
@@ -975,7 +995,7 @@ test('S1：派发侧 settle completed 落「已交付待确认」，写结算消
     async listChildren() { return [] },
   }
   const { ctx, registered, disposers } = fakeCtx({ agents: [s1], subagents })
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 1 })
+  await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   const { DatabaseSync } = await import('node:sqlite')
@@ -1038,7 +1058,7 @@ test('D5：结算自动 done 的通知在发送前补齐产物，注入文案带
     sessions: { get: id => (id === childSession.id ? childSession : undefined) },
     workspaceChanges: { summary: () => ({ cwd: target, files: [{ path: 'report.md', added: 3, deleted: 0 }] }) },
   })
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 1 })
+  await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'], target }, { agent: s1 })
   childSession.id = childId
@@ -1076,7 +1096,7 @@ test('S1：平台 subagent/end（续派/冷恢复）也能把 running 推到 can
     async listChildren() { return [{ id: childId ?? '', mode: 'continuable' }] },
   }
   const { ctx, registered, listeners, disposers } = fakeCtx({ agents: [s1], subagents })
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 1 })
+  await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   await byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   assert.ok(listeners.has('subagent/end'), '未订阅平台生命周期事件')
@@ -1114,7 +1134,7 @@ test('B1：超 64KB 的 lastAssistantMessage 落 reports 文件，task_status �
     async listChildren() { return [{ id: childId ?? '', mode: 'continuable' }] },
   }
   const { ctx, registered, listeners, disposers } = fakeCtx({ agents: [s1], subagents })
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 1 })
+  await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   await byName.task_create.execute({ title: '长回执', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   const big = `最后一行\n${'细'.repeat(25_000)}`
@@ -1169,7 +1189,65 @@ test('S1：waiting_user 任务收到 settle 不改状态（子任务自己报了
   await disposers.at(-1)?.()
 }))
 
-test('K2 keepAlive 默认关闭：agent/turn-stopping 到达也不注入、不动台账', withHome(async home => {
+test('P2-2 续跑委托宿主 goals：goalRounds=0（默认）create 后立刻 disarm，不订阅 turn-stopping', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const goals = fakeGoalService()
+  const f = fakeCtx({ agents: [s1], goals })
+  await apply(f.ctx, { coordinatorSession: 's-1', autoResumeQueue: false })
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '不续跑', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const child = { id: 'm-1', session: { id: 'm-1', header: {} } }
+  f.live.set('m-1', child)
+  f.listeners.get('agent/created')({ agent: child })
+  await wait(20)
+  // 默认 0 = 与 P2-2 之前完全一致：create 后**立刻** disarm，create 也不带 maxGoalRounds。
+  assert.deepEqual(goals.calls.map(call => call[0]), ['get', 'create', 'disarm'])
+  assert.equal(goals.calls[1][3], null, 'goalRounds=0 时不该传 maxGoalRounds')
+  assert.equal(goals.state.view.activation, 'disarmed')
+  // 自建续跑器已删除：插件不再订阅 agent/turn-stopping，也没有 keepalive 审计消息。
+  assert.equal(f.listeners.has('agent/turn-stopping'), false, 'P2-2 后不应再订阅 agent/turn-stopping')
+  const check = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = listTasks(check).find(item => item.title === '不续跑')
+  assert.equal(task.goal_rounds, 0)
+  assert.equal(task.keep_alive_rounds, 0, '旧列停写，恒为 0')
+  assert.equal(check.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'keepalive'").get().n, 0)
+  check.close()
+  await f.disposers.at(-1)?.()
+}))
+
+test('P2-2 续跑委托宿主 goals：goalRounds=3 时 create 带 maxGoalRounds 且保持 armed', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const goals = fakeGoalService()
+  const f = fakeCtx({ agents: [s1], goals })
+  await apply(f.ctx, { coordinatorSession: 's-1', autoResumeQueue: false })
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  const created = await byName.task_create.execute(
+    { title: '续跑', goal: 'g', acceptance: ['a'], goalRounds: 3 },
+    { agent: s1 },
+  )
+  assert.match(created, /续跑：goalRounds=3/)
+  const child = { id: 'm-1', session: { id: 'm-1', header: {} } }
+  f.live.set('m-1', child)
+  f.listeners.get('agent/created')({ agent: child })
+  await wait(20)
+  // >0：create 带 maxGoalRounds 且**不** disarm —— 轮次交给宿主 dsh-goal-round-driver。
+  assert.deepEqual(goals.calls.map(call => call[0]), ['get', 'create'])
+  assert.equal(goals.calls[1][3], 3, 'create 应带 maxGoalRounds=3')
+  assert.equal(goals.state.view.activation, 'armed')
+  assert.equal(goals.state.view.maxGoalRounds, 3)
+  const check = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = listTasks(check).find(item => item.title === '续跑')
+  assert.equal(task.goal_rounds, 3)
+  assert.equal(task.goal_state.activation, 'armed')
+  // task_status 显示平台 goal 的轮次（真源是 goal，不是插件自建预算）。
+  const status = await byName.task_status.execute({ task_id: task.id }, { agent: s1 })
+  assert.match(status, /目标状态：进行中｜自动续轮（宿主 goal 轮次驱动）/)
+  assert.match(status, /目标轮次：0\/3（续跑中）/)
+  check.close()
+  await f.disposers.at(-1)?.()
+}))
+
+test('S1 结算：只写一条 settle；重复 subagent/end 只补消息不重复结算', withHome(async home => {
   const s1 = makeAgent('s-1')
   const spawned = { id: undefined }
   const subagents = {
@@ -1184,90 +1262,22 @@ test('K2 keepAlive 默认关闭：agent/turn-stopping 到达也不注入、不�
   const f = fakeCtx({ agents: [s1], subagents })
   await apply(f.ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: '续跑', goal: 'g', acceptance: ['a'] }, { agent: s1 })
-  const child = {
-    id: spawned.id, session: { id: spawned.id, header: {} }, status: 'running',
-    inbox: { nextStep: [], nextTurn: [] }, steers: [],
-    steer(message) { this.steers.push(message) },
-  }
+  await byName.task_create.execute({ title: '结算', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  const child = { id: spawned.id, session: { id: spawned.id, header: {} }, status: 'running' }
   f.live.set(spawned.id, child)
   const ledger = await openLedger(join(home, 'state', 'orchestrator'))
-  const { setTaskGoalState } = await import('../src/ledger.js')
-  setTaskGoalState(ledger, ledger.prepare('SELECT id FROM tasks').get().id, {
-    id: 'goal-1', revision: 1, objective: 'g', phase: 'active', activation: 'disarmed', roundsStarted: 0,
-  })
-  ledger.close()
-  assert.ok(f.listeners.has('agent/turn-stopping'), '未订阅 agent/turn-stopping')
-  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 1, signal: { aborted: false } })
-  await wait(20)
-  assert.equal(child.steers.length, 0)
-  const { DatabaseSync } = await import('node:sqlite')
-  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-  assert.equal(db.prepare('SELECT keep_alive_rounds FROM tasks').get().keep_alive_rounds, 0)
-  assert.equal(db.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'keepalive'").get().n, 0)
-  db.close()
-  await f.disposers.at(-1)?.()
-}))
-
-test('K2 keepAlive 开启：turn-stopping 同步给 running 子会话注入下一轮，S1 仍只结算一次', withHome(async home => {
-  const s1 = makeAgent('s-1')
-  const spawned = { id: undefined }
-  const subagents = {
-    async startActivation(spec) {
-      spawned.id = spec.childId
-      return { childId: spec.childId, messageId: 'msg-1', result: new Promise(() => {}), dispose: async () => {} }
-    },
-    async sendMessage() {},
-    async interruptByParent() {},
-    async listChildren() { return [{ id: spawned.id ?? '', mode: 'continuable' }] },
-  }
-  const f = fakeCtx({ agents: [s1], subagents })
-  await apply(f.ctx, { coordinatorSession: 's-1', keepAlive: true, keepAliveMaxRounds: 3, mergeWindowMs: 1 })
-  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: '续跑', goal: 'g', acceptance: ['a'] }, { agent: s1 })
-  const child = {
-    id: spawned.id, session: { id: spawned.id, header: {} }, status: 'running',
-    inbox: { nextStep: [], nextTurn: [] }, steers: [],
-    steer(message) { this.steers.push(message) },
-  }
-  f.live.set(spawned.id, child)
-  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
-  const { setTaskGoalState, getTask } = await import('../src/ledger.js')
   const taskId = ledger.prepare('SELECT id FROM tasks').get().id
-  setTaskGoalState(ledger, taskId, {
-    id: 'goal-1', revision: 1, objective: 'g', phase: 'active', activation: 'disarmed', roundsStarted: 0,
-  })
 
-  // 回合边界：注入 steer，消息带自定义 source，轮数落台账。
-  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 1, signal: { aborted: false } })
-  assert.equal(child.steers.length, 1)
-  assert.equal(child.steers[0].role, 'user')
-  assert.equal(child.steers[0].source.kind, 'orchestrator-keepalive')
-  assert.equal(child.steers[0].source.taskId, taskId)
-  assert.equal(getTask(ledger, taskId).keep_alive_rounds, 1)
-  assert.equal(getTask(ledger, taskId).status, 'running')
-
-  // 轮数用满后停：第 4 次 turn-stopping 不再注入。
-  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 2, signal: { aborted: false } })
-  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 3, signal: { aborted: false } })
-  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 4, signal: { aborted: false } })
-  assert.equal(child.steers.length, 3)
-  assert.equal(getTask(ledger, taskId).keep_alive_rounds, 3)
-
-  // S1 结算（子会话真的结束）：只写一条 settle 消息，任务落「待确认」；之后 turn-stopping 不再续跑。
   f.listeners.get('subagent/end')({ id: spawned.id, local: true, stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '做完了' }] })
   await wait(50)
+  const { getTask } = await import('../src/ledger.js')
   assert.equal(getTask(ledger, taskId).status, 'delivered')
   assert.equal(getTask(ledger, taskId).last_message.text, '做完了')
-  const settles = ledger.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'settle' AND task_id = ?").get(taskId).n
-  assert.equal(settles, 1)
+  assert.equal(ledger.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'settle' AND task_id = ?").get(taskId).n, 1)
   // 重复的 subagent/end（派发侧 + 生命周期双到达）：只补消息，不再迁移/不再写 settle。
   f.listeners.get('subagent/end')({ id: spawned.id, local: true, stopReason: 'completed' })
   await wait(20)
   assert.equal(ledger.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'settle' AND task_id = ?").get(taskId).n, 1)
-  f.listeners.get('agent/turn-stopping')({ agent: child, turn: 5, signal: { aborted: false } })
-  assert.equal(child.steers.length, 3)
-  assert.equal(getTask(ledger, taskId).keep_alive_rounds, 3)
   ledger.close()
   await f.disposers.at(-1)?.()
 }))
@@ -1373,7 +1383,7 @@ test('派发失败给主会话发一条带原因的通知（无 sender 也能投
     async listChildren() { return [] },
   }
   const { ctx, registered } = fakeCtx({ agents: [s1], subagents })
-  await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
+  await apply(ctx, { coordinatorSession: 's-1' })
   const create = registered.find(tool => tool.name === 'task_create')
   const result = await create.execute({ title: '失败任务', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   assert.match(result, /任务协调失败/)

@@ -161,7 +161,7 @@
 
 | status | 通知级别 | 说明 |
 |---|---|---|
-| progress | silent | 只更新台账；连续达到 `stallRounds` 才推一次 `stalled` |
+| progress | silent | 只更新台账；连续 3 次（固定口径，配置键 `stallRounds` 已删）才推一次 `stalled` |
 | done | notify | 落「已交付待确认」（`delivered`）；5 秒合并窗口后注入协调者，带确认/追问动作指令 |
 | blocked | interrupt | 立即投递，可带 `question` / `options` |
 | needs_auth | interrupt | 立即投递，可带 `question` / `options` |
@@ -278,12 +278,12 @@
 
 分层解决「谁该说什么」，本模块解决「这句话写在哪」。同一件事（计划阶段怎么落盘、交付不是终态、完整访问是什么）
 原先在 8 个模块各写一遍（`plan-mode` / `plan-doc` / `task-detail` / `tools` / `notify` / `prompt-layers` /
-`keepalive` / `write-guard`），改一处其余就跟不上；P1-C 起**跨模块共享的句子只在 `src/copy.js` 定义一次**：
+`write-guard` 等），改一处其余就跟不上；P1-C 起**跨模块共享的句子只在 `src/copy.js` 定义一次**：
 
 | 文案域 | 真源常量 | 复用到 |
 |---|---|---|
 | 计划阶段 | `PLAN_PHASE_LINES`（原子句）/ `PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `PLAN_STATUS_LINES` / `planDocPathText()` / `planCreateReceipt()` / `PLAN_SAVE_TOOL_DESC` / `planSavedNextStep` | `task-detail`（L3）、`plan-mode`（门面转发）、`plan-doc`（落盘回执）、`tools`（`task_create` 回执 + `plan_save` 描述）、`dispatch`（`exit_plan_mode` 拒绝）、`index.js`（L1 policy 插值） |
-| 两段式终态 | `DELIVERY_LINES`（状态名/非终态/追问/确认/超时）/ `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`（L3 完成动作）、`brief`（L2 回报指引）、`notify`（通知动作指令）、`prompt-layers`（跨层口径）、`keepalive`、`write-guard`、`tools`（回执/状态行/收件箱）、`deps` / `main-rotation` / `tool-migrations`（状态名） |
+| 两段式终态 | `DELIVERY_LINES`（状态名/非终态/追问/确认/超时）/ `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`（L3 完成动作）、`brief`（L2 回报指引）、`notify`（通知动作指令）、`prompt-layers`（跨层口径）、`write-guard`、`tools`（回执/状态行/收件箱）、`deps` / `main-rotation` / `tool-migrations`（状态名） |
 | 完整访问 | `ACCESS_FULL.label` / `.briefLine` / `.workerHint` / `.createNote` | `brief`（L2 行）、`task-detail`（标签与纪律）、`tools`（`task_create` 回执与 `task_status` 行） |
 
 约定（写新文案前先自问）：
@@ -353,7 +353,7 @@
 - 每次投递写 `notifications`：`delivered` / `failed`（带 reason）/ `skipped`；合并后续行 `merged_into` 指向首条。
 - `task_list({view:'inbox'})` 汇总待决、失败/丢失、长时间没动静；问题/选项来自台账 `question` / `question_options_json`。
 - `progress`/`done`/`task_message` 会清掉旧问题。
-- `stallRounds`：连续 progress 达到阈值且距上次提醒超过 `staleMinutes`，推一次「可能卡住」。
+- **卡住提醒**：连续 3 次 progress（固定口径，配置键 `stallRounds` 已删）且距上次提醒超过 `staleMinutes`，推一次「可能卡住」。
 - `digestAt`（HH:MM）开启后，主会话上维护一条每日 `schedule`；到点提示协调者调用 `task_list({view:'inbox'})` + `task_list` 汇总。主会话重建/时区变化会重建，配置为空会删除。
 
 ## 启动对账（S2）
@@ -377,34 +377,35 @@
 - 启动时放在 S2 对账之后：先让「进程重启后没人跑」的 `running` 落 `orphaned`，避免同一任务既报丢失又报卡住；
 - 关闭：`idleWatchdog:false`；插件卸载先 `stop()` 再关台账，定时器不会在 `db.close()` 后继续巡检。
 
-## 子会话目标（G1）
+## 子会话目标（G1）与续跑（P2-2）
 
-平台有完整的 `ctx.goals` 子系统（durable `goal/change` + 进程内 activation + `goal-round-driver`）。本插件只取它的**状态能力**，不取续轮能力：
+平台有完整的 `ctx.goals` 子系统（durable `goal/change` + 进程内 activation + `dsh-goal-round-driver`）。
+**插件是子任务 goal 的唯一写方**：只做 `create` / `edit` / `complete` / `clear`（外加只读 `get` 做镜像与降级），
+续跑能力完全委托宿主 driver —— 自建的 `agent/turn-stopping` 注入器（`src/keepalive.js`，246 行）已删除。
 
-- **spawn**：`dispatch.spawn` 成功拿到 childId 后，`src/goal.js` 的桥在子 agent 进注册表时执行 `create(agent,{objective})`，**紧接着** `disarm(agent)`，顺序固定；子会话目标 = `tasks.goal`。
-- **task_message / 面板追加**：投递成功后用 `objectiveForMessage(task.goal, message)` 得到「原目标 + 最新指示」，文本变了才 `edit`，随后确保 `disarmed`。目标文本上限 2000 字符。
+- **spawn（默认 `goalRounds: 0`）**：`dispatch.spawn` 成功拿到 childId 后，`src/goal.js` 的桥在子 agent 进注册表时执行
+  `create(agent, { objective })`，**紧接着** `disarm(agent)`，顺序固定；子会话目标 = `tasks.goal`。
+  这就是 P2-2 之前的行为：goal 只当只读镜子，不驱动续轮。
+- **spawn（`goalRounds: N`，1–50）**：`create(agent, { objective, maxGoalRounds: N })` 后**不 disarm**，
+  goal 保持 armed；回合结束后由宿主的 `dsh-goal-round-driver` 按预算续轮，跑到 `maxGoalRounds` 自行停。
+  插件**不注入消息、不写轮次预算**（`tasks.keep_alive_rounds` 停写、列保留兼容旧库），轮次真源是
+  `goal.roundsStarted` / `goal.maxGoalRounds`（台账只存只读镜像 `goal_state_json`）。
+  派发层不需要新参数：桥按 `taskId` 从台账读 `goal_rounds`（`task_create` 写入、重派复制）。
+- **task_message / 面板追加**：投递成功后用 `objectiveForMessage(task.goal, message)` 得到「原目标 + 最新指示」，
+  文本变了才 `edit`（`edit` 不改 activation）；`maxGoalRounds` 变了才随 `edit` 一起同步。
+  `goalRounds=0` 时若发现 goal 是 armed（宿主 `/goal resume` 或上一段 activation 的残留），压回 `disarmed`——
+  「默认不续跑」是硬约束，不靠运气。目标文本上限 2000 字符。
 - **done**：`task_report done` 与结算自动 `done` 走 `complete`；**stop/cancelled/failed/orphaned/retry** 走 `clear`。没有 live agent（冷恢复/孤儿）时只收口台账镜像，平台侧不调用。
-- **台账/面板只读**：每次成功变更把裁剪后的 `{id,revision,objective,phase,activation,roundsStarted,maxGoalRounds,updatedAt}` 写进 `tasks.goal_state_json`；snapshot 只下发生命周期字段（不含 objective），详情抽屉展示完整只读状态，面板没有任何 goal 写操作。
-- **静默降级**：`ctx.goals` 缺失或方法不全时 `createGoalBridge` 的所有钩子 no-op，不 warn、不阻塞派发/续派/结算、不写镜像。
+- **台账/面板只读**：每次成功变更把裁剪后的 `{id,revision,objective,phase,activation,roundsStarted,maxGoalRounds,updatedAt}` 写进 `tasks.goal_state_json`；snapshot 只下发生命周期字段（不含 objective），详情抽屉展示完整只读状态，面板没有任何 goal 写操作。`task_status` 直接渲染「目标状态」+「目标轮次 x/y」。
+- **静默降级**：`ctx.goals` 缺失或方法不全时 `createGoalBridge` 的所有钩子 no-op，不 warn、不阻塞派发/续派/结算、不写镜像；
+  `goalRounds>0` 但平台没 arm（旧宿主没有 driver）时记一条 `goal.degraded`（`reason: 'not-armed'`），
+  `task_status` 显示「不自动续轮」——**不模拟续跑**。
 - **子会话可读**：`dsh-orchestrator-worker` 预设带一行 `tool-goal`（`@deepseek-ai/dsh-tool-goal`）。web-app 层把 host plane 的 `tool-goal` 行 `disabled: true`、改由预设挂载，而 `goals` 服务仍在 host plane（`dsh-base` 的 `goal` / `goal-round-driver` 行），所以子会话拿得到 `get_goal` 读到本任务目标；`create_goal` / `update_goal` 因平台权限校验（`requireDirectHuman`：需要顶层 agent 的**直接人类**回合）在子会话里必然被拒，等于只读。
   平台**不会**把 objective 注入系统提示或消息（`dsh-goal` 的 inject 只有 `agents` / `sessionProjections`），所以 `get_goal` 是子会话读**实时目标（含「最新指示」）**的途径；创建时的目标快照另由 `task_detail` 提供（T1）。不挂这行时子会话仍能从 `task_detail` 拿到创建时的目标，但读不到之后 `task_message` 并进去的最新指示。
 
-## 回合间 keep-alive（K2）
-
-`src/keepalive.js`。平台在回合结束前派发 `agent/turn-stopping`（serial 且被 await）：监听器返回前投递的消息进 inbox，loop 在回合尾部重读 inbox 继续跑——
-`steer` → `next-step`（同一 turn 多走一步，不写 `turn/end`），`followup` → `next-turn`（新 turn）。因此 `agent.status` 不经过 `idle`，
-而 S1 的结算观察器与平台 goal driver 都以 `idle` 为触发点，轮次之间根本没有可观察的 idle：不是处理了「结算 vs 续轮」竞态，而是不产生这个观察点（K1 探针实测见 [reports/k1-keepalive-probe.md](../reports/k1-keepalive-probe.md)）。
-
-- **接线**：`index.js:348` `createKeepAlive({ db, config, logger, goalState })`，`index.js:355` `keepAlive.start(ctx)` 订阅 `agent/turn-stopping`（`src/keepalive.js:230`），disposer 进 `ctx.effect` 清理列表（`index.js:531`）。
-- **续跑判定**（纯函数 `keepAliveSkipReason()`，`src/keepalive.js:49`）：开关开 / 无 `signal.aborted` / `agent.status === 'running'` / 任务存在且 `running` / 非只读 / inbox 无 `nextStep`·`nextTurn` / 平台 goal 存在且 phase 不是 `complete`·`cleared` / 轮数未满；全部通过才注入（`handle`，`src/keepalive.js:129`）。
-- **预算**：`tasks.keep_alive_rounds`（旧库自动补列）+ `bumpKeepAliveRound()`（`src/ledger.js` 条件 `UPDATE ... WHERE status='running' AND keep_alive_rounds < ?`，
-  重复/并发事件不会超发）；每次 `transition(..., 'running')` 归零，等于「每段 activation 一份预算」。轮满、goal 收口、注入异常都在 `handle` 里就地停。
-- **注入形态**：`role:'user'` 消息，`source.kind = 'orchestrator-keepalive'`（带 `taskId`/`round`），正文「（keep-alive 第 N/M 轮）+ 默认提示或 `keepAlivePrompt`」；
-  默认 `steer`，`keepAliveMode:'followup'` 切新回合。每次注入写一条 `kind='keepalive'` 审计消息 + `task.keepalive.injected` 日志；停止原因写 `task.keepalive.stopped`（同任务同原因只记一次）。
-- **与 S1 的边界**：keep-alive 不改任务状态、不写 `progress_count`、不写 `kind='followup'` 消息（避开面板「同文去重」口径）、不调用结算。
-  结算仍然只在 `subagent.settled` / `subagent/end` 上由 S1 做一次（状态机天然幂等）；任务一旦离开 `running`，同一会话后续的 `turn-stopping` 直接跳过，
-  不会把已结算任务重新拉起来。`aborted`/`error`/blocked 不经过 `turn-stopping`，keep-alive 也无法阻止显式 stop / 父级 dispose / 模型报错。
-- **默认关闭**：`config.keepAlive !== true` 时监听器在查台账之前返回（连 `db` 都不用），默认路径零开销。
+> 为什么删掉自建层：旧实现是「先把平台 goal disarm 掉，再自己订阅 `agent/turn-stopping` 注入下一轮」——
+> 一个宿主私有契约点（rc 级）+ 一套与宿主 driver 重复的轮次预算。P2-2 把这两件事都还给了平台：
+> 宿主升级 driver 时插件不需要跟着改，插件也不再有机会「续跑与结算打架」（K1 探针的结论只留在探针报告里）。
 
 ## brief 纯指引（T1）
 

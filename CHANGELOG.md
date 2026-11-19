@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 ## 0.22.1（2026-11-19）
 
@@ -65,6 +65,54 @@ mainRotation 默认 off）；`check:client` / `check:docs`（配置表 35 键）
 `pnpm install --frozen-lockfile` 复核通过；无头 Chrome 在隔离测试 profile 上真机验证 10/10
 （卡片出现、字段数 35、6 个废弃键不出现、`mainRotation` 默认 `off`、保存写入 profile YAML、
 手改 YAML 后显示「已覆盖」、清空字段回落默认），截图见 `reports/config-ui-verify/`。
+
+## 未发布
+
+**P2-2：删自建 keepAlive、goal 收敛为单一写方、配置 35 → 28**（`refactor: P2-2 …`，单 commit，未 bump / 未 tag）
+
+这一版把「续跑」从插件自己实现改成交给宿主：删掉 `src/keepalive.js`（246 行，订阅 `agent/turn-stopping` 注入下一轮），
+续跑改由 `task_create.goalRounds` 声明、平台 `dsh-goal-round-driver` 驱动；插件对 goal 只剩 `create` / `edit` / `complete` / `clear`
+（+ 只读 `get`），**不再持有轮次预算**。同时把三个纯阈值键固定成常量，配置面 **35 → 28**。
+
+### 升级须知（行为变化）
+
+1. **默认不续跑**：`task_create.goalRounds` 默认 **0**，与 P2-2 之前完全一致（create 后立刻 `disarm`）。
+   需要续跑时显式传 `task_create({ goalRounds: 8 })`（1–50）；轮次由宿主 goal 轮次驱动，插件不注入消息、不模拟续跑。
+2. **`keepAlive*` 四个键失效**：留在老 profile 里不影响加载——启动时各给一条弃用警告、按默认值运行。
+3. **`goalRounds` 与 `planFirst` 互斥**：计划任务每轮都要停下来等批准，自动续轮会绕过批准闸门（`task_create` 直接拒绝）。
+4. **通知合并窗口固定 5 秒**、**卡住提醒固定连续 3 次**、**偏好段条数上限固定 12 条**：三个键不再可配（同批任务仍合并成一条通知）。
+
+### 迁移表（7 个键）
+
+| 旧键 | 迁移 |
+|---|---|
+| `keepAlive` | 删掉该键；要续跑改用 `task_create({ goalRounds: N })`（默认 0 = 不续跑） |
+| `keepAliveMode` | 删掉：插件不再注入消息（回合形态归宿主 driver），没有 steer/followup 之分 |
+| `keepAliveMaxRounds` | 删掉：轮次预算按任务声明（`goalRounds`，1–50） |
+| `keepAlivePrompt` | 删掉：续跑提示由宿主生成；目标正文与「最新指示」都在平台 goal 里 |
+| `mergeWindowMs` | 删掉：完成通知的合并窗口固定 5000 ms |
+| `stallRounds` | 删掉：「连续 3 次 progress 无变化」是提醒口径，不再是策略 |
+| `preferencesMaxItems` | 删掉：偏好段条数上限固定 12（字数主约束 `preferencesMaxChars` 仍可配） |
+
+### 代码
+
+- **删除**：`src/keepalive.js`（246）、`test/keepalive.test.js`（330）、`index.js` 的装配与 disposer、
+  `ledger.js` 的 `bumpKeepAliveRound()` 与「进 running 清零轮数」；`tasks.keep_alive_rounds` **停写、列保留**（旧库兼容）。
+- **goal 单写方**（`src/goal.js` 291 → 248）：`attach`/`update` 按台账 `goal_rounds` 决定 activation——
+  0 → `create` 后紧接 `disarm`（老行为）；>0 → `create({ objective, maxGoalRounds })` 并保持 armed。
+  `edit` 只在文本/轮次变化时发；0 时把外部留下的 armed 压回 disarmed；平台没 arm 时记 `goal.degraded`（`reason:'not-armed'`）。
+- **台账**：新列 `goal_rounds INTEGER NOT NULL DEFAULT 0`（旧库 ALTER 补齐）；`task_create.goalRounds` 落库、重派复制。
+- **配置**（`src/config.js`）：删 4 + 3 键，7 条弃用提示（进程级去重、值不回填）；`loadConfig({})` 现在 **28** 键。
+- **工具面**：`task_create` 新增 `goalRounds`（0–50 整数，非法值明确报错）；`task_status` 显示「目标状态｜目标轮次 x/y」；
+  keep-alive 轮次行删除。
+- **文档**：README（goal/续跑小节 + 配置表 28 行 + 排障）、`docs/ARCHITECTURE.md`（「子会话目标与续跑」重写，删 keep-alive 全节）、
+  `docs/LIMITATIONS.md`（「自动续跑（委托宿主 goal）」）、`docs/testing.md`（28 键 + 两条复核索引）、`docs/api-notes.md`。
+
+### 测试
+
+`test/keepalive.test.js` 删除（330 行）；`test/goal.test.js` 新增 armed/disarmed 两组断言与静态扫描（`src/` 不得再出现
+`turn-stopping` / `createKeepAlive` 等引用）；`test/config.test.js` / `test/config-deprecated.test.js` 锁 28 键与 7 条弃用警告；
+`test/index.test.js` 用 fake goals 断言「`goalRounds=0` → create+disarm」「`goalRounds=3` → create 带 maxGoalRounds 且保持 armed」。
 
 ## 0.21.0（2026-11-19）
 

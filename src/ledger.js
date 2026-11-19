@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0,
   question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER,
   goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0,
+  goal_rounds INTEGER NOT NULL DEFAULT 0,
   plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT,
   access TEXT,
   worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
@@ -70,8 +71,11 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('stall_notified_at')) db.exec('ALTER TABLE tasks ADD COLUMN stall_notified_at INTEGER')
     if (!taskColumns.includes('goal_state_json')) db.exec('ALTER TABLE tasks ADD COLUMN goal_state_json TEXT')
     if (!taskColumns.includes('last_message_json')) db.exec('ALTER TABLE tasks ADD COLUMN last_message_json TEXT')
-    // K2 keep-alive 预算：旧库补列，历史行按 0 轮（不阻止人工续派/重派）。
+    // K2 的轮数列：P2-2 删掉自建续跑器后**停写**，列保留只为旧库/历史导出一致
+    // （新库照建，旧库照补，读出来恒为 0；轮次真源改由平台 goal 的 roundsStarted/maxGoalRounds 提供）。
     if (!taskColumns.includes('keep_alive_rounds')) db.exec('ALTER TABLE tasks ADD COLUMN keep_alive_rounds INTEGER NOT NULL DEFAULT 0')
+    // P2-2 续跑预算：goalRounds（1–50，默认 0 = 不续跑）。派发时传给平台 goal 的 maxGoalRounds。
+    if (!taskColumns.includes('goal_rounds')) db.exec('ALTER TABLE tasks ADD COLUMN goal_rounds INTEGER NOT NULL DEFAULT 0')
     // P8 计划模式：旧库补两列；历史行 plan_first=0 → taskOf 归一成 false / plan_state='none'。
     if (!taskColumns.includes('plan_first')) db.exec('ALTER TABLE tasks ADD COLUMN plan_first INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('plan_state')) db.exec('ALTER TABLE tasks ADD COLUMN plan_state TEXT')
@@ -189,8 +193,10 @@ const taskOf = row => row === undefined ? undefined : ({
   progress_count: Number.isFinite(row.progress_count) ? row.progress_count : 0,
   goal_state: parseGoalState(row.goal_state_json),
   last_message: parseLastMessage(row.last_message_json),
-  // K2：本段 activation 已用的 keep-alive 轮数（进 running 时归零）。
+  // K2 的轮数列：P2-2 起插件不再写（停写），只为旧库/历史导出保留读取。
   keep_alive_rounds: Number.isFinite(row.keep_alive_rounds) ? row.keep_alive_rounds : 0,
+  // P2-2：续跑预算（task_create.goalRounds，0 = 不续跑）；派发时作为平台 goal 的 maxGoalRounds。
+  goal_rounds: Number.isFinite(row.goal_rounds) ? row.goal_rounds : 0,
   // delivered 两段式：交付时间（毫秒）与关闭原因（coordinator / timeout）；旧行都是 NULL。
   delivered_at: Number.isFinite(row.delivered_at) ? row.delivered_at : null,
   close_reason: typeof row.close_reason === 'string' && row.close_reason !== '' ? row.close_reason : null,
@@ -205,6 +211,8 @@ export function createTask(db, {
   readOnly = false,
   planFirst = false,
   planState,
+  // P2-2：续跑轮次预算（1–50，默认 0 = 不续跑）。派发时作为平台 goal 的 maxGoalRounds。
+  goalRounds = 0,
   // per-task 访问级别：null（默认）= 沿用会话策略；'full' = 子会话 danger-full-access。
   access = null,
   // P9：隔离请求/结果快照（path/branch/repoRoot/base/mode/source/state）。
@@ -227,8 +235,8 @@ export function createTask(db, {
     (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of,
      depends_json, group_id, write_scopes_json, priority, plan_first, plan_state, access,
      worktree_path, worktree_branch, repo_root, worktree_base, worktree_mode, worktree_source, worktree_state,
-     created_at, updated_at, last_event_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     goal_rounds, created_at, updated_at, last_event_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id, String(brief.title), String(brief.goal), JSON.stringify(brief), status,
       String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null,
@@ -238,6 +246,7 @@ export function createTask(db, {
       plan ? 1 : 0, initialPlanState, access === 'full' ? 'full' : null,
       wt.path ?? null, wt.branch ?? null, wt.repoRoot ?? null, wt.base ?? null,
       wt.mode ?? null, wt.source ?? null, wt.state ?? null,
+      Number.isFinite(goalRounds) && goalRounds > 0 ? Math.trunc(goalRounds) : 0,
       now, now, now,
     )
   return getTask(db, id)
@@ -352,9 +361,6 @@ export function transition(db, id, to, patch = {}) {
   }
   const now = Date.now()
   const sets = ['status = ?', 'updated_at = ?', 'last_event_at = ?', 'progress_count = 0', 'stall_notified_at = NULL']
-  // K2：每次进入 running 都是新的一段 activation，keep-alive 预算重新开始
-  // （重派/续派/冷恢复都走 transition；running → running 本来不允许，所以不会误清）。
-  if (to === 'running') sets.push('keep_alive_rounds = 0')
   const values = [to, now, now]
   // delivered 超时计时从「本次交付」起算：追问后再交付会重写时间，不会被旧交付时间提前收掉。
   if (to === 'delivered') { sets.push('delivered_at = ?'); values.push(now) }
@@ -430,20 +436,6 @@ export function setTaskLastMessage(db, id, record) {
   db.prepare('UPDATE tasks SET last_message_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
     .run(JSON.stringify(record), now, now, id)
   return getTask(db, id)
-}
-
-/**
- * K2 keep-alive 预算：原子地给「仍在 running」的任务 +1 轮，返回新的轮数；
- * 已到上限（或任务已不在 running）返回 null，调用方据此停止注入。
- * 用条件 UPDATE 而不是「先读后写」，重复/并发的 turn-stopping 事件也不会超发。
- */
-export function bumpKeepAliveRound(db, id, max) {
-  const limit = Number.isFinite(max) && max > 0 ? Math.floor(max) : 0
-  const now = Date.now()
-  const row = db.prepare(`UPDATE tasks SET keep_alive_rounds = keep_alive_rounds + 1, updated_at = ?, last_event_at = ?
-    WHERE id = ? AND status = 'running' AND keep_alive_rounds < ?
-    RETURNING keep_alive_rounds`).get(now, now, id, limit)
-  return Number.isFinite(row?.keep_alive_rounds) ? row.keep_alive_rounds : null
 }
 
 /** 只更新时间戳，不改状态（progress 回报用）。 */

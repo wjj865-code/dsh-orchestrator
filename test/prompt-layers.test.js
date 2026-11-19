@@ -14,7 +14,6 @@ import { renderTaskDetail } from '../src/task-detail.js'
 import { ONBOARDING_PROMPT } from '../src/onboarding.js'
 import { DELIVERED_HINT, PRESENT_HINT } from '../src/notify.js'
 import { PRESET_PREFERENCES, renderPreferenceBlock } from '../src/preferences.js'
-import { DEFAULT_KEEPALIVE_PROMPT } from '../src/keepalive.js'
 
 const sampleDetail = () => renderTaskDetail({
   id: 't-1',
@@ -133,13 +132,12 @@ test('跨层共享口径只有一个来源：present 上限、交付不是结束
   // policy 与通知都用同一个常量拼，改了常量两边一起变。
   assert.ok(renderCoordinatorPolicy({}).includes(PRESENT_LIMIT_TEXT))
   assert.ok(PRESENT_HINT.includes(PRESENT_LIMIT_TEXT))
-  // 「done 不是终态」这条口径的四层都必须与共享常量同义（不许出现「done 即结束」）。
+  // 「done 不是终态」这条口径的三层都必须与共享常量同义（不许出现「done 即结束」）。
   assert.match(DELIVERY_NOT_FINAL, /不是终态/)
   for (const [name, text] of [
     ['L1', renderCoordinatorPolicy({})],
     ['L3', sampleDetail()],
     ['NOTIFY', DELIVERED_HINT],
-    ['keep-alive', DEFAULT_KEEPALIVE_PROMPT],
   ]) {
     assert.doesNotMatch(text, /done\s*即(?:任务)?(?:结束|终态|完成)/, `${name} 出现「done 即结束」`)
   }

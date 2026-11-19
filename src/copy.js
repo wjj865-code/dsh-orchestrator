@@ -2,7 +2,7 @@
 //
 // 背景（P1-C，承接审计 §5.1 的文案矛盾）：计划阶段与「两段式终态」的表述原先散在 8 个模块里，
 // 同一件事被写了 3–5 遍（`plan-mode` / `plan-doc` / `task-detail` / `tools` / `notify` /
-// `prompt-layers` / `keepalive` / `write-guard`）；改一处其余就跟不上，已经发生过漂移
+// `prompt-layers` / `write-guard`）；改一处其余就跟不上，已经发生过漂移
 // （工具数 15→14、`full` 的三种说法各写一份）。
 //
 // 分工（与 `src/prompt-layers.js` 的层归属配套）：

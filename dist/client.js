@@ -2589,7 +2589,7 @@
         const goalBody = goalState === null ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "没有平台目标状态（goal 服务不可用，或任务尚未派发/已收口）。") : /* @__PURE__ */ h("div", { className: "orch-kv" }, [
           ["目标", textOf2(goalState.objective) || "（未记录）"],
           ["阶段", GOAL_PHASE_LABEL2[goalState.phase] || goalState.phase || "未知"],
-          ["续轮", `${GOAL_ACTIVATION_LABEL2[goalState.activation] || goalState.activation || "未知"}（插件声明式接入，恒为不自动续轮）`],
+          ["续轮", `${GOAL_ACTIVATION_LABEL2[goalState.activation] || goalState.activation || "未知"}（默认不续轮；续轮由宿主 goal 轮次驱动，面板不改）`],
           ["轮次", goalState.roundsStarted === null || goalState.roundsStarted === void 0 ? "-" : `${goalState.roundsStarted}/${goalState.maxGoalRounds === null || goalState.maxGoalRounds === void 0 ? "?" : goalState.maxGoalRounds}`],
           ["修订", goalState.revision === null || goalState.revision === void 0 ? "-" : String(goalState.revision)]
         ].flatMap(([key, value]) => [

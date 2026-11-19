@@ -1,8 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
 import { openLedger, createTask, getTask, setTaskGoalState } from '../src/ledger.js'
 import {
-  GOAL_CAPABILITY_METHODS, createGoalBridge, goalStateOf, missingGoalMethods, objectiveForMessage,
+  GOAL_CAPABILITY_METHODS, createGoalBridge, goalStateOf, missingGoalMethods, normalizeGoalRounds, objectiveForMessage,
 } from '../src/goal.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
@@ -17,10 +18,11 @@ function fakeGoals() {
       return state.view
     },
     create(agent, request) {
-      calls.push(['create', agent.id, request.objective])
+      // P2-2：goalRounds>0 时桥会带 maxGoalRounds；记下来断言「续跑委托宿主 driver」。
+      calls.push(['create', agent.id, request.objective, request.maxGoalRounds ?? null])
       state.view = {
         id: 'goal-1', revision: 1, objective: request.objective, phase: 'active',
-        activation: 'armed', maxGoalRounds: 256, roundsStarted: 0, createdAt: 1, updatedAt: 1,
+        activation: 'armed', maxGoalRounds: request.maxGoalRounds ?? 256, roundsStarted: 0, createdAt: 1, updatedAt: 1,
       }
       return state.view
     },
@@ -30,13 +32,16 @@ function fakeGoals() {
       return state.view
     },
     edit(agent, ref, request) {
-      calls.push(['edit', agent.id, ref, request.objective])
+      calls.push(['edit', agent.id, ref, request])
       if (ref.revision !== state.view.revision) {
         const error = new Error('stale goal ref')
         error.code = 'GOAL_STALE_REVISION'
         throw error
       }
-      state.view = { ...state.view, revision: state.view.revision + 1, objective: request.objective }
+      const next = { ...state.view, revision: state.view.revision + 1 }
+      if (request.objective !== undefined) next.objective = request.objective
+      if (request.maxGoalRounds !== undefined) next.maxGoalRounds = request.maxGoalRounds
+      state.view = next
       return state.view
     },
     complete(agent, ref) {
@@ -66,15 +71,20 @@ function fakeAgents(initial = []) {
   }
 }
 
-async function setup({ goals = fakeGoals(), agents = fakeAgents(['s-1']), onAgentCreated, onWarn } = {}) {
+async function setup({ goals = fakeGoals(), agents = fakeAgents(['s-1']), onAgentCreated, onWarn, onEvent, goalRounds } = {}) {
   const db = await openLedger(tempDir())
-  const task = createTask(db, { brief: sampleBrief({ title: '目标任务', goal: '完成目标' }), coordinatorSession: 'c-1' })
+  const task = createTask(db, {
+    brief: sampleBrief({ title: '目标任务', goal: '完成目标' }),
+    coordinatorSession: 'c-1',
+    ...(goalRounds === undefined ? {} : { goalRounds }),
+  })
   const bridge = createGoalBridge({
     db,
     goals: () => goals,
     agents: () => agents,
     onAgentCreated,
     onWarn,
+    onEvent,
     waitMs: 20,
   })
   return { db, task, bridge, goals, agents }
@@ -101,6 +111,8 @@ test('attach：create 后立刻 disarm（顺序固定），并把只读镜像写
   const { db, task, bridge, goals } = await setup()
   const state = await bridge.attach(task.id, 's-1', '完成目标')
   assert.deepEqual(goals.calls.map(call => call[0]), ['get', 'create', 'disarm'])
+  // goalRounds=0（默认）：create 不带 maxGoalRounds —— 与 P2-2 之前逐字一致。
+  assert.equal(goals.calls[1][3], null)
   assert.equal(state.phase, 'active')
   assert.equal(state.activation, 'disarmed')
   const stored = getTask(db, task.id).goal_state
@@ -108,6 +120,83 @@ test('attach：create 后立刻 disarm（顺序固定），并把只读镜像写
   assert.equal(stored.activation, 'disarmed')
   assert.equal(stored.objective, '完成目标')
   db.close()
+})
+
+test('P2-2 normalizeGoalRounds：只认 0–50 的整数，其余返回 undefined（不静默降级成 0）', () => {
+  assert.equal(normalizeGoalRounds(undefined), 0)
+  assert.equal(normalizeGoalRounds(null), 0)
+  assert.equal(normalizeGoalRounds(0), 0)
+  assert.equal(normalizeGoalRounds(1), 1)
+  assert.equal(normalizeGoalRounds(50), 50)
+  for (const bad of [-1, 51, 1.5, '3', Number.NaN, Infinity, {}, []]) {
+    assert.equal(normalizeGoalRounds(bad), undefined, `${JSON.stringify(bad)} 应被拒绝`)
+  }
+})
+
+test('P2-2 attach：goalRounds=3 时 create 带 maxGoalRounds 并保持 armed（续跑交给宿主 driver）', async () => {
+  const { db, task, bridge, goals } = await setup({ goalRounds: 3 })
+  const state = await bridge.attach(task.id, 's-1', '完成目标')
+  // 关键断言：不 disarm（arm 着才轮得到 dsh-goal-round-driver），create 入参 maxGoalRounds=3。
+  assert.deepEqual(goals.calls.map(call => call[0]), ['get', 'create'])
+  assert.equal(goals.calls[1][3], 3)
+  assert.equal(state.activation, 'armed')
+  assert.equal(state.maxGoalRounds, 3)
+  const stored = getTask(db, task.id).goal_state
+  assert.equal(stored.activation, 'armed')
+  assert.equal(stored.maxGoalRounds, 3)
+  db.close()
+})
+
+test('P2-2 attach：goalRounds>0 但平台只给 disarmed → 记 goal.degraded，不假装续跑', async () => {
+  const events = []
+  const goals = fakeGoals()
+  const create = goals.create
+  goals.create = (agent, request) => ({ ...create(agent, request), activation: 'disarmed' })
+  const { db, task, bridge } = await setup({ goals, goalRounds: 4, onEvent: (event, fields) => events.push([event, fields]) })
+  const state = await bridge.attach(task.id, 's-1', '完成目标')
+  assert.equal(state.activation, 'disarmed')
+  const degraded = events.find(([event]) => event === 'goal.degraded')
+  assert.ok(degraded !== undefined, '缺 armed 时必须留一条降级事件')
+  assert.equal(degraded[1].detail.reason, 'not-armed')
+  assert.equal(degraded[1].detail.goalRounds, 4)
+  // 平台没 arm ≠ 插件注入消息：台账镜像如实写 disarmed，task_status 会显示「不自动续轮」。
+  assert.equal(getTask(db, task.id).goal_state.activation, 'disarmed')
+  db.close()
+})
+
+test('P2-2 update：goalRounds>0 保留 armed 并同步 maxGoalRounds；goalRounds=0 压回 disarmed', async () => {
+  const rounds = await setup({ goalRounds: 3 })
+  await rounds.bridge.attach(rounds.task.id, 's-1', '原目标')
+  rounds.goals.calls.length = 0
+  const armed = await rounds.bridge.update(rounds.task.id, 's-1', '原目标\n\n最新指示：换方向')
+  // 文本变了 → edit；轮次没变 → 不重复 edit；armed 保持（不 disarm）。
+  assert.deepEqual(rounds.goals.calls.map(call => call[0]), ['get', 'edit'])
+  assert.equal(rounds.goals.calls[1][3].maxGoalRounds, undefined, '目标文本变更不该顺手改轮次预算')
+  assert.equal(armed.activation, 'armed')
+  assert.match(armed.objective, /换方向/)
+  rounds.db.close()
+
+  const plain = await setup()
+  await plain.bridge.attach(plain.task.id, 's-1', '原目标')
+  plain.goals.state.view = { ...plain.goals.state.view, activation: 'armed' }
+  plain.goals.calls.length = 0
+  const disarmed = await plain.bridge.update(plain.task.id, 's-1', '原目标')
+  assert.deepEqual(plain.goals.calls.map(call => call[0]), ['get', 'disarm'])
+  assert.equal(disarmed.activation, 'disarmed')
+  plain.db.close()
+})
+
+test('P2-2 静态：src/ 与 index.js 不再引用自建续跑器（模块 / 注入器 / turn-stopping 订阅）', () => {
+  const root = new URL('../', import.meta.url)
+  const files = readdirSync(new URL('src/', root)).filter(name => name.endsWith('.js')).map(name => `src/${name}`)
+  files.push('index.js')
+  assert.equal(files.includes('src/keepalive.js'), false, 'src/keepalive.js 应已删除')
+  for (const file of files) {
+    const text = readFileSync(new URL(file, root), 'utf8')
+    for (const pattern of [/agent\/turn-stopping/, /createKeepAlive/, /keepAliveSkipReason/, /keepAliveText/, /hasPendingInput/, /GOAL_DONE_PHASES/]) {
+      assert.doesNotMatch(text, pattern, `${file} 仍引用 ${pattern}（自建续跑器应已收敛到宿主 goal）`)
+    }
+  }
 })
 
 test('attach：目标已存在时只 edit（文本变化）+ 保持 disarmed，不重复 create', async () => {

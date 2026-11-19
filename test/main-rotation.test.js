@@ -378,8 +378,8 @@ test('配置键契约：7 个键、默认值、区间与 loadConfig 接线一致
   }
   // 归一化幂等：loadConfig 出来的配置再归一化一次不变。
   assert.deepEqual(normalizeRotationConfig(config), { ...ROTATION_DEFAULTS })
-  // 总量口径：41 → 35（P1-A 删掉 backend + 5 个 rotate* 键）。
-  assert.equal(Object.keys(config).length, 35)
+  // 总量口径：41 → 35（P1-A）→ 28（P2-2 删 keepAlive×4 + 三个固定成常量的阈值键）。
+  assert.equal(Object.keys(config).length, 28)
 })
 
 test('settings 键名固定（S3 动作/恢复的四把事实 + 只读的 checkedAt）', () => {

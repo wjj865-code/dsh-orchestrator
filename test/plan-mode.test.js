@@ -16,7 +16,6 @@ import { renderTaskDetail } from '../src/task-detail.js'
 import {
   PLAN_STATE_LABEL, PLAN_FIRST_DETAIL, EXIT_PLAN_MODE_DENIAL, planListMarker, planStatusLine,
 } from '../src/plan-mode.js'
-import { keepAliveSkipReason } from '../src/keepalive.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -61,21 +60,6 @@ test('P8 exit_plan_mode 拒绝文案指向 task_report blocked（不是 exit_pla
   assert.match(PLAN_FIRST_DETAIL, /唯一.*写入口/)
   assert.match(EXIT_PLAN_MODE_DENIAL, /plan_save/)
   assert.match(EXIT_PLAN_MODE_DENIAL, /reports\/plans\/<taskId>\.md/)
-})
-
-test('P8 keep-alive：等批准的计划任务（waiting_user）不会被当成可续跑', async () => {
-  const db = await openLedger(tempDir())
-  const task = planTaskRow(db, { status: 'waiting_user' })
-  assert.equal(task.status, 'waiting_user')
-  assert.equal(keepAliveSkipReason({
-    enabled: true,
-    agentStatus: 'running',
-    task,
-    goalState: { phase: 'active' },
-    rounds: 0,
-    maxRounds: 8,
-  }), 'task-not-running')
-  db.close()
 })
 
 // —— 二、台账：两列 + 旧库补列 + 终态收口 ——

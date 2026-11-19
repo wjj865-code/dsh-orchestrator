@@ -8,6 +8,9 @@ import { taskCard } from '../src/card.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+// P2-2：合并窗口是固定常量（配置键已删）；冒烟里用测试旁路压到毫秒级，语义（合并成一条）不变。
+process.env.DSH_ORCH_NOTIFY_MERGE_MS = '5'
+
 test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通知 → 确认完成', async () => {
   const home = mkdtempSync(join(tmpdir(), 'orch-smoke-'))
   const previous = process.env.DSH_HOME
@@ -54,7 +57,7 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
     },
   }
   try {
-    await apply(ctx, { coordinatorSession: 's-1', mergeWindowMs: 5 })
+    await apply(ctx, { coordinatorSession: 's-1' })
     const byName = Object.fromEntries(tools.map(tool => [tool.name, tool]))
     const created = await byName.task_create.execute({
       title: '修复空数据文案',

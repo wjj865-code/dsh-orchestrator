@@ -1323,7 +1323,7 @@ export function createViews({
             {[
               ['目标', textOf(goalState.objective) || '（未记录）'],
               ['阶段', GOAL_PHASE_LABEL[goalState.phase] || goalState.phase || '未知'],
-              ['续轮', `${GOAL_ACTIVATION_LABEL[goalState.activation] || goalState.activation || '未知'}（插件声明式接入，恒为不自动续轮）`],
+              ['续轮', `${GOAL_ACTIVATION_LABEL[goalState.activation] || goalState.activation || '未知'}（默认不续轮；续轮由宿主 goal 轮次驱动，面板不改）`],
               ['轮次', goalState.roundsStarted === null || goalState.roundsStarted === undefined
                 ? '-'
                 : `${goalState.roundsStarted}/${goalState.maxGoalRounds === null || goalState.maxGoalRounds === undefined ? '?' : goalState.maxGoalRounds}`],

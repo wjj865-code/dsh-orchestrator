@@ -22,7 +22,6 @@ import { createStartupReconciler } from './src/reconcile.js'
 import { createRotationService } from './src/main-rotation.js'
 import { createIdleWatchdog } from './src/watchdog.js'
 import { createGoalBridge } from './src/goal.js'
-import { createKeepAlive } from './src/keepalive.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
@@ -423,7 +422,6 @@ export async function apply(ctx, rawConfig = {}) {
       const preferences = config.preferencesInject === false
         ? ''
         : renderPreferenceBlock(loadPreferences(db), {
-          maxItems: config.preferencesMaxItems,
           maxChars: config.preferencesMaxChars,
         })
       return [renderCoordinatorPolicy(config), preferences, capability]
@@ -476,8 +474,9 @@ export async function apply(ctx, rawConfig = {}) {
       if (event === 'subagent.settled' || event === 'subagent.failed') queue?.pump()
     },
   })
+  // P2-2：合并窗口是 notify.js 里的固定常量（配置键 mergeWindowMs 已删）——5 秒属于 UX 阈值，
+  // 不是策略；通知仍按任务合并，只是不再有「现场可调」这一层。
   const notifier = createNotifier({
-    mergeWindowMs: config.mergeWindowMs,
     onWarn: warnings,
     record: entry => addNotification(db, entry),
     onEvent: (event, fields) => logger.log(event, {
@@ -575,19 +574,8 @@ export async function apply(ctx, rawConfig = {}) {
     },
   })
 
-  // 回合间 keep-alive（K2）：`agent/turn-stopping` 时给「running 且平台 goal 未完成」的子会话
-  // 同步投递下一轮（默认 steer 进 next-step），让 loop 在回合尾部接着跑而不进 idle；
-  // agent 不 idle，S1 的结算观察器就没有机会在轮次之间 dispose，竞态窗口被消除。
-  // 默认关闭（config.keepAlive），轮数预算落台账（tasks.keep_alive_rounds），进入 running 时归零。
-  // goal 状态读 live 视图（goalBridge.stateOf），读不到就退回台账镜像；没有 goal 的任务不续跑。
-  const keepAlive = createKeepAlive({
-    db,
-    config,
-    logger,
-    goalState: task => goalBridge.stateOf(task.id, task.session_id) ?? task.goal_state ?? null,
-  })
-  // 订阅必须早于任何子会话回合结束；放在 settlement 之后、watchdog 之前（不依赖队列/看门狗）。
-  const keepAliveDisposer = keepAlive.start(ctx)
+  // 续跑（P2-2）：不再有自建 keep-alive 注入器——goalRounds > 0 的任务由 goalBridge 在 create 时
+  // 带 maxGoalRounds 并保持 armed，轮次由宿主 dsh-goal-round-driver 驱动；0（默认）仍 create 后立刻 disarm。
 
   // 两段式终态（D1）的确认兜底：delivered 超过 deliveredTimeoutMinutes 自动收成 done。
   // 与工具 task_message action:close / 面板「确认交付」共用 closeDelivered，副作用顺序完全一致。
@@ -780,7 +768,7 @@ export async function apply(ctx, rawConfig = {}) {
     try { deliveredSweeper.stop() } catch { /* 超时巡检清理失败不阻断卸载 */ }
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
-    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, keepAliveDisposer, routeDisposer].reverse()) {
+    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, routeDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
     // 卸载期间的收尾也不能变成未处理拒绝（宿主会判 fatal load failure）。

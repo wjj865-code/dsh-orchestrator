@@ -27,6 +27,23 @@ export function levelOf(status) {
 /** present 单次调用的产品上限（平台硬上限 8：reports/t0.1-probes.md D6）。 */
 const PRESENT_MAX_FILES = 4
 
+/**
+ * 完成通知的合并窗口（毫秒）。P2-2 起**固定**：配置键 `mergeWindowMs` 已删除——
+ * 5 秒是 UX 阈值（同批任务合并成一条消息），不是需要现场调参的策略。
+ */
+export const NOTIFY_MERGE_WINDOW_MS = 5000
+
+/**
+ * 合并窗口的生效值：生产恒为 {@link NOTIFY_MERGE_WINDOW_MS}。
+ *
+ * 唯一的旁路是环境变量 `DSH_ORCH_NOTIFY_MERGE_MS`（单测/冒烟用）：观察「合并后的一条消息」
+ * 不必真等 5 秒。它**只调窗口、不改语义**，也不进插件配置面（配置键已删，不再有用户可调项）。
+ */
+export function notifyMergeWindowMs(env = process.env) {
+  const raw = Number(env?.DSH_ORCH_NOTIFY_MERGE_MS)
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : NOTIFY_MERGE_WINDOW_MS
+}
+
 /** 非交付项的分类文案：告诉模型「为什么这条没进交付候选」。 */
 const SKIP_LABEL = {
   directory: '目录',
@@ -173,7 +190,7 @@ const deliveredBatchHint = batch => (batch.some(item => item.status === 'deliver
   ? `\n  ${DELIVERED_HINT}`
   : '')
 
-export function createNotifier({ send, record = () => {}, mergeWindowMs = 5000, onWarn = () => {}, onEvent = () => {} }) {
+export function createNotifier({ send, record = () => {}, mergeWindowMs = notifyMergeWindowMs(), onWarn = () => {}, onEvent = () => {} }) {
   let buffer = []
   let timer = null
 

@@ -28,18 +28,26 @@
 - **经验文件是快照，不是台账（T1）**：`lessons/<项目>-<hash>.md` 每次派发覆盖为本次命中的事实层记忆；无历史版本、不参与快照、无保留期。手删后 `task_detail` 指针显示「已丢失」（下次派发重建）；要改记忆用 `memory_note` / `context({mode:'history'})`。写文件失败时经验改为只出现在 `task_detail` 的内联块。
 - **`task_detail` 只读且只给自己**：按创建时 `brief_json` 返回目标/验收/经验，前置与产物按**当前**台账现读；主会话或别的子会话调用被拒。它不写消息、不改状态，不能用来「续派」或「修正」任务。
 - **终态收敛的边界**：`done→complete`；`stop/retry/orphaned/failed→clear`。孤儿/失败时子 agent 往往已不在注册表，平台侧不会真的 `clear`，插件只把台账镜像标成 `cleared` 供面板显示。
-- **外部重新 arm 的窗口**：插件只在 spawn/续派/终态钩子上保证 `disarmed`；别的组件把同一子会话重新 `arm` 时不会实时压回，下一次钩子才处理，中间平台可能自动续轮。
+- **外部重新 arm 的窗口**：`goalRounds=0` 的任务只在 spawn/续派/终态钩子上保证 `disarmed`；别的组件（宿主 `/goal resume`）把同一子会话重新 `arm` 时不会实时压回，下一次钩子才处理，中间平台可能自动续轮。`goalRounds>0` 时 armed 是预期状态。
 - **面板只读**：面板与 `task_status` 能看 goal 的 phase/activation/轮次/修订，但没有暂停/恢复/清除的按钮或工具；调整目标请 `task_message`。
 
-## 回合间 keep-alive（K2）
+## 自动续跑（P2-2：委托宿主 goal）
 
-- **默认关闭，且需要平台 goal**：`keepAlive` 只认显式 `true`；`ctx.goals` 缺失或到结算都没 attach 成功时没有 `goal_state`，一律不注入（否则没人判定「目标完成」，只能跑到轮数上限）。判定只看 phase 不是 `complete`/`cleared`。
-- **只在正常结束路径生效**：`agent/turn-stopping` 只在 turn 正常收尾时派发；`aborted`（stop/父级 dispose）、`error`、blocked 都不经过它，所以 keep-alive 不能阻止显式停止、救不回异常回合；`max-tokens` 的最终结算原因仍由 `turn/end` 决定。
-- **续跑是宿主替子会话开工**：注入 `role:'user'` 消息（`source.kind='orchestrator-keepalive'`），子会话可能继续调工具、继续花钱；轮数上限只是「不再主动续」，不是成本控制，也不限制单轮工作量。自定义 source 在真实 Web UI/历史压缩里的表现尚未真机验证。
-- **不和 armed goal 混用**：keep-alive 期间 agent 不 idle，平台 `goal-round-driver` 等不到 idle，`roundsStarted`/`maxGoalRounds` 不推进；预算只有台账的 `keep_alive_rounds`。
-- **监听器必须吞错**：`turn-stopping` 是 serial 且被 await，监听器抛错会打断当前回合；实现全量 try/catch，注入失败只记日志并算掉一轮（宁可少续）。
-- **进程重启不跨回合**：keep-alive 只在进程内生效；重启后任务仍 `running` 但 agent 不在的走对账 → `orphaned`。`keep_alive_rounds` 只读保留，不阻止人工续派/重派。
-- **多驱动叠加**：别的插件也监听 `turn-stopping` 时 inbox 会叠加；本插件发现 `nextStep`/`nextTurn` 非空就不再注入，但阻止不了别人注入。
+- **默认不续跑**：`goalRounds` 默认 0 —— 派发后 `create` 立刻 `disarm`，与旧行为完全一致。要续跑必须按任务显式传
+  `task_create({ goalRounds: N })`（1–50）；配置面上的 `keepAlive*` 四键已删除（弃用警告 + 按默认运行）。
+- **续跑能力属于宿主，不属于插件**：插件只把平台 goal 建成 armed 并给 `maxGoalRounds`，之后由
+  `dsh-goal-round-driver` 在回合结束后续轮。旧宿主没有这个 driver（或裁剪 profile 没挂）时**不会续跑**，
+  插件只记一条 `goal.degraded`，不注入消息、不模拟续跑。
+- **轮次预算不归插件管**：`tasks.keep_alive_rounds` 停写（列保留兼容旧库），进度看平台 goal 的
+  `roundsStarted` / `maxGoalRounds`（`task_status` 的「目标轮次 x/y」、面板只读抽屉）。
+- **跑满预算就停**：`maxGoalRounds` 是「最多续几轮」，不是成本上限；单轮工作量、工具调用次数都不受它约束，
+  子会话仍可能继续花钱。要更少就传更小的 `goalRounds`。
+- **计划模式不接受 `goalRounds`**：计划任务每轮结束都要停下来等人批准，自动续轮会绕过批准闸门；批准后用
+  `task_message` 续派。
+- **外部 re-arm 不实时压回**：`goalRounds=0` 的任务只在 spawn/续派/终态钩子上压 `disarmed`；别的组件（宿主 `/goal resume`）
+  把同一子会话重新 arm 时，下一次钩子才处理，中间平台可能自动续轮。
+- **多驱动叠加已不存在**：插件不再订阅 `agent/turn-stopping`，也就不会和别的插件抢 inbox；
+  两条注入器叠着跑的问题随自建层一起删掉了。
 
 ## 编排
 
@@ -47,7 +55,7 @@
 - **同写域并发防护是「事后判定 + 可绕过」的护栏，不是文件锁**：`sameDirGuard=require` 只在 `task_create` 那一刻按台账判定，三条放行路（关闭/停止旧任务、`worktree:true`、`allowConcurrent:true`）；显式放行后两个子会话仍会同时写，冲突要人兜；也不拦同一任务内部的并行写。
 - 判定是**路径字面量**比较（绝对路径相等/父子目录），不解析符号链接与 `..` 之外的挂载点/大小写语义；两个不同路径指向同一实体目录（bind mount/软链）时判不出来。`writeScopes` 是声明不是事实。`sameDirGuard=off` 等于退回旧的只打一行 advisory。
 - **防护只覆盖 `task_create`**：`task_message({action:'retry'})` 与面板「重派」按原 brief/target 新起任务，不走这条判定；重派前先 `task_list` 看同目录任务。
-- `priority` 只影响队列顺序，不抢占正在运行的子会话。`stallRounds` 达到阈值只提醒一次，没有二次升级阶梯。
+- `priority` 只影响队列顺序，不抢占正在运行的子会话。连续 3 次 progress 无变化只提醒一次（固定口径，配置键 `stallRounds` 已删），没有二次升级阶梯。
 - 空闲看门狗（W1）只告警一次、不改状态也不 kill；去重表在内存，重启后允许再报一次。阈值只看台账心跳/消息/状态时间，长时间跑测试的单回合可能被误判「可能卡住」——先用 `task_status` 核对。
 - 面板组进度是 `task_list({group})` 文本 + 行内徽标，不是独立分组看板。
 

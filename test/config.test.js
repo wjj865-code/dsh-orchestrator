@@ -6,9 +6,7 @@ import { loadConfig } from '../src/config.js'
 test('loadConfig 填默认值', () => {
   const config = loadConfig({})
   assert.equal(config.staleMinutes, 30)
-  assert.equal(config.stallRounds, 3)
   assert.equal(config.maxActive, undefined)
-  assert.equal(config.mergeWindowMs, 5000)
   assert.equal(config.spawnProvider, 'spawn')
   assert.equal(config.workerPreset, 'dsh-orchestrator-worker')
   assert.equal(config.coordinatorSession, undefined)
@@ -40,28 +38,26 @@ test('digestAt 只接受 HH:MM，非法值关闭；时区可空', () => {
 })
 
 test('loadConfig 覆盖合法值、忽略非法值', () => {
-  const config = loadConfig({ staleMinutes: 10, stallRounds: -1, mergeWindowMs: 0 })
+  const config = loadConfig({ staleMinutes: 10, memoryLimit: 0 })
   assert.equal(config.staleMinutes, 10)
-  assert.equal(config.stallRounds, 3)
-  assert.equal(config.mergeWindowMs, 5000)
+  assert.equal(config.memoryLimit, 3)
 })
 
 test('loadConfig 无参调用返回默认值', () => {
   const config = loadConfig()
   assert.equal(config.staleMinutes, 30)
-  assert.equal(config.stallRounds, 3)
-  assert.equal(config.mergeWindowMs, 5000)
+  assert.equal(config.memoryLimit, 3)
 })
 
 test('loadConfig 对 NaN / Infinity / null / 字符串 / 零一律回落', () => {
   const config = loadConfig({
     staleMinutes: Number.NaN,
-    stallRounds: Infinity,
-    mergeWindowMs: '30',
+    memoryLimit: Infinity,
+    snapshotRetentionDays: '30',
   })
   assert.equal(config.staleMinutes, 30)
-  assert.equal(config.stallRounds, 3)
-  assert.equal(config.mergeWindowMs, 5000)
+  assert.equal(config.memoryLimit, 3)
+  assert.equal(config.snapshotRetentionDays, 7)
 })
 
 test('coordinatorSession 只接受非空字符串', () => {
@@ -122,12 +118,19 @@ test('空闲看门狗：非法分钟数回落默认，超界夹到 1–1440', ()
   assert.equal(clamped.watchdogIdleMinutes, 1)
 })
 
-test('配置面总数 35（P1-A 收缩后）：loadConfig 不泄漏未声明的键', () => {
+test('配置面总数 28（P2-2 收缩后）：loadConfig 不泄漏未声明的键', () => {
   const config = loadConfig({})
-  assert.equal(Object.keys(config).length, 35, `实际 ${Object.keys(config).length} 个键：${Object.keys(config).join(',')}`)
+  assert.equal(Object.keys(config).length, 28, `实际 ${Object.keys(config).length} 个键：${Object.keys(config).join(',')}`)
   assert.equal('backend' in config, false, 'backend 键已删除（team 后端先于它删除）')
   for (const key of ['rotateAfterTasks', 'rotateAfterSessions', 'rotateAfterContextTokens', 'rotateAfterDiskMiB', 'rotateCheckIntervalHours']) {
     assert.equal(key in config, false, `${key} 已删除`)
+  }
+  // P2-2：自建续跑器删除 + 三个阈值固定成常量后，这 7 个键不再出现在配置面上。
+  for (const key of ['keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt']) {
+    assert.equal(key in config, false, `${key} 已删除（续跑改 task_create.goalRounds）`)
+  }
+  for (const key of ['mergeWindowMs', 'stallRounds', 'preferencesMaxItems']) {
+    assert.equal(key in config, false, `${key} 已固定成常量`)
   }
 })
 

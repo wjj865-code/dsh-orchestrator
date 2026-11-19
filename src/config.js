@@ -4,10 +4,10 @@ import { DEFAULT_BRANCH_PREFIX, WORKTREE_POLICIES } from './worktree-request.js'
 import { guardModeOf } from './write-guard.js'
 import { DELIVERED_TIMEOUT_MINUTES } from './delivered.js'
 import { normalizeRotationConfig } from './main-rotation.js'
-import { DEFAULT_MAX_CHARS as DEFAULT_PREFERENCE_MAX_CHARS, DEFAULT_MAX_ITEMS as DEFAULT_PREFERENCE_MAX_ITEMS } from './preferences.js'
+import { DEFAULT_MAX_CHARS as DEFAULT_PREFERENCE_MAX_CHARS } from './preferences.js'
 
 /**
- * 已删除的配置键（P1-A 配置面收缩 41 → 35）→ 迁移提示。
+ * 已删除的配置键（P1-A 41 → 35、P2-2 35 → 28）→ 迁移提示。
  * 读到就 warn 一次（进程级按 key 去重），**值一律不回填**：旧配置不会「看起来还在」，
  * 而是明确告诉用户该改什么/哪个键已经不起作用。迁移说明见 CHANGELOG「未发布」段。
  */
@@ -18,6 +18,15 @@ export const DEPRECATED_KEYS = Object.freeze({
   rotateAfterContextTokens: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
   rotateAfterDiskMiB: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
   rotateCheckIntervalHours: '检查节流已删除：每次打开主会话都会现算（没有「一天最多查一次」了）',
+  // P2-2：自建 keep-alive 续跑器删除，续跑改为委托宿主 goal 轮次驱动（task_create.goalRounds）。
+  keepAlive: '续跑改由宿主 goal 轮次驱动：删掉本键，要续跑请用 task_create({ goalRounds: N })（默认 0 = 不续跑）',
+  keepAliveMode: '续跑不再由插件注入消息：宿主 goal driver 的回合形态不归插件管',
+  keepAliveMaxRounds: '轮数预算改由 task_create({ goalRounds: N })（1–50，默认 0 = 不续跑）按任务声明',
+  keepAlivePrompt: '插件不再生成续跑提示：目标正文与「最新指示」都在平台 goal 里，由宿主 driver 续轮',
+  // P2-2：三个纯阈值/安全阀固定成常量（现场没有调参需求，留着只会变成「同一事实两处配置」）。
+  mergeWindowMs: '完成通知的合并窗口固定 5000 ms（通知仍按任务合并，只是不再可调）',
+  stallRounds: '「连续 N 次 progress 无变化」的提醒口径固定为 3 次',
+  preferencesMaxItems: '偏好段条数上限固定 12 条（字数主约束 preferencesMaxChars 仍可配）',
 })
 
 const warnedDeprecated = new Set()
@@ -41,8 +50,6 @@ function warnDeprecatedKeys(raw, onWarn) {
 
 const DEFAULTS = {
   staleMinutes: 30,
-  stallRounds: 3,
-  mergeWindowMs: 5000,
   memoryLimit: 3,
   snapshotRetentionDays: 7,
   watchdogIntervalMinutes: DEFAULT_WATCHDOG_INTERVAL_MINUTES,
@@ -99,14 +106,8 @@ export function loadConfig(raw = {}, { onWarn } = {}) {
   // 两段式终态（D1）：交付后等确认的超时（分钟，1–1440）；超时自动收成 done。
   // 设成 1 分钟约等于退回「交付即完成」的旧行为，作为现场降级旋钮。
   config.deliveredTimeoutMinutes = minutes(raw?.deliveredTimeoutMinutes, DELIVERED_TIMEOUT_MINUTES)
-  // 回合间 keep-alive（K2）：默认关闭——升级后行为不能突变，也不能替用户决定「自动续跑」。
-  // 开启后只对「running + 平台 goal 未完成」的子任务在 turn-stopping 时注入下一轮，轮数上限 1–50。
-  config.keepAlive = raw?.keepAlive === true  // 默认 steer（同 turn 再走一步，平台 turn-stopping 文档契约）；followup 是「新一轮」，会写 turn/end。
-  config.keepAliveMode = raw?.keepAliveMode === 'followup' ? 'followup' : 'steer'
-  config.keepAliveMaxRounds = Number.isFinite(raw?.keepAliveMaxRounds)
-    ? Math.min(50, Math.max(1, Math.floor(raw.keepAliveMaxRounds)))
-    : 8
-  config.keepAlivePrompt = nonEmpty(raw?.keepAlivePrompt, '')
+  // 回合间续跑（P2-2）：不再有 keepAlive* 配置——续跑交给宿主 goal 轮次驱动，
+  // 按任务用 task_create({ goalRounds }) 声明（默认 0 = 不续跑，与旧默认完全一致）。
   // 同写域并发防护：同一 target 目录 / 同一写域上再派一个**未隔离**的可写任务时怎么处理。
   // require（默认）= 拒绝并给可操作错误（三条出路：task_message({action:'close'}) / worktree:true / allowConcurrent:true）；
   // warn = 只给强警告照常创建；off = 关闭（writeScopes 退回旧的 advisory 提示）。
@@ -122,14 +123,12 @@ export function loadConfig(raw = {}, { onWarn } = {}) {
     : 7
   // 偏好（审计 §5.3 待定项 3）：**字数为主约束、条数为安全阀**。
   // 纯条数防不住「一条 2000 字」，纯字数防不住「100 条各 10 字」的碎片化。
+  // 条数上限 P2-2 起固定为 preferences.js 的 DEFAULT_MAX_ITEMS（12），只留字数可配。
   // preferencesInject:false 让整段消失（默认开：出厂种子就是给协调者用的）。
   config.preferencesInject = raw?.preferencesInject !== false
   config.preferencesMaxChars = Number.isFinite(raw?.preferencesMaxChars)
     ? Math.min(4000, Math.max(200, Math.floor(raw.preferencesMaxChars)))
     : DEFAULT_PREFERENCE_MAX_CHARS
-  config.preferencesMaxItems = Number.isFinite(raw?.preferencesMaxItems)
-    ? Math.min(20, Math.max(1, Math.floor(raw.preferencesMaxItems)))
-    : DEFAULT_PREFERENCE_MAX_ITEMS
   // 主会话轮换（G1 S1，P1-A 收缩到 7 个键）：总开关 + 两个触发阈值（主日志体积 / 运行天数）
   // + 保护（冷却/最小龄/闲置）+ 归档开关。默认值、合法区间与非法回落都在 src/main-rotation.js 的
   // normalizeRotationConfig 里，这里只负责挂到 config 上。

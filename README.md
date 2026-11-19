@@ -325,7 +325,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
   `memories`（`context({mode:'history'})` 查不到），避免同一件事存两份。带 `project` 的偏好仍是项目约定，写 `memories`、
   随 `task_detail` 注入子会话。
   - 出厂预制两条：跑包管理器/写 HOME 缓存 → 派任务传 `access:'full'`；worktree 任务验收含装依赖/构建 → 同样传 full。
-  - 预算：`preferencesMaxChars`（默认 1200）+ `preferencesMaxItems`（默认 12）；超限按优先级保留并在段尾写明「另有 N 条未展示」。
+  - 预算：`preferencesMaxChars`（默认 1200）为主约束，条数上限固定 12（安全阀，P2-2 起不可配）；超限按优先级保留并在段尾写明「另有 N 条未展示」。
   - `preferencesInject:false` 关掉整段。偏好只是提示词文本，**不能**用来放宽沙箱/审批/工具边界。
 
 ### 收件箱与日报
@@ -375,12 +375,21 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 > 请创建每天北京时间 09:00 的自动化，投递到本主会话：先查 task_list，已有同组任务在跑就只报告；否则派一个明确授权的只读检查任务。不修改已有自动化。
 
-### 可选能力：平台 goal 与回合间 keep-alive
+### 可选能力：平台 goal（含可选的自动续跑）
 
-两者都不参与普通编排（goal 只是只读镜像，keep-alive 默认关）：
+平台有 `ctx.goals` 时，插件把子任务目标同步成子会话的**平台 goal**，并且是它唯一的写方：
 
-- **平台 goal（只读镜像）**：派发后把 `task_create.goal` 同步成子会话的平台 goal 并**立即 disarm**（不会自动续跑）。`task_message` 把消息并成「最新指示」并 `edit`；确认完成时 `complete`，停止/重派/失败时 `clear`。平台没有 goal 服务时静默降级。子会话用 `get_goal` 读，`task_detail` 也有创建时的目标快照。
-- **回合间 keep-alive（默认关）**：`keepAlive: true` 时订阅 `agent/turn-stopping`，在回合边界给「`running` 且平台 goal 未完成」的子会话注入下一轮，轮数上限 `keepAliveMaxRounds`（默认 8）。默认 `steer`（同一回合再走一步）。它是宿主替子会话开工，不是成本控制。
+- **默认不续跑（`goalRounds` 默认 0）**：派发后只 `create` + 立刻 `disarm`，goal 是只读镜子，不会驱动子会话多跑一轮——
+  与旧行为完全一致。`task_message` 把消息并成「最新指示」并 `edit`（不改变 armed/disarmed），确认完成时 `complete`，
+  停止/重派/失败时 `clear`。
+- **要续跑就按任务显式开**：`task_create({ goalRounds: 8 })`（1–50）。插件在 `create` 时带 `maxGoalRounds` 并**保持 armed**，
+  之后由宿主的 `dsh-goal-round-driver` 在回合结束后自动续轮，跑满预算就停；插件**不注入消息、不模拟续跑、也不持有轮次预算**
+  （`task_status` 的「目标轮次 x/y」直接读平台 goal 的 `roundsStarted` / `maxGoalRounds`）。
+- **降级**：平台没有 goal 服务、或宿主没把 driver 接上（旧宿主）时，goal 钩子静默 no-op / 记一条 `goal.degraded`，
+  任务照常派发与结算，只是**不会自动续跑**。计划模式（`planFirst`）不接受 `goalRounds`：批准闸门不能被续轮绕过。
+- 子会话用 `get_goal` 读实时目标，`task_detail` 另有创建时的目标快照。
+
+旧配置里的 `keepAlive*` 四个键已删除（启动时各给一条弃用警告、按默认值运行）；迁移方式见 [CHANGELOG](CHANGELOG.md#未发布)。
 
 ## 工具清单
 
@@ -388,9 +397,9 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 | 工具 | 作用 |
 |---|---|
-| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent`（显式放行同写域并发）/ `checks`（机器可判定验收：交付前执行，失败拒绝交付） |
+| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent`（显式放行同写域并发）/ `checks`（机器可判定验收：交付前执行，失败拒绝交付）/ `goalRounds`（续跑轮次预算，默认 0 = 不续跑，由宿主 goal driver 驱动） |
 | `task_list` | 活跃任务/历史任务（`active` / `group` 过滤看组进度）；`view:'inbox'` 是收件箱：待决、待确认、失败/丢失、长时间没动静 |
-| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条 check 的退出码/耗时）、最近消息、最新返回（`include:'full'` 看全文） |
+| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条 check 的退出码/耗时）、目标状态与轮次（`x/y`）、最近消息、最新返回（`include:'full'` 看全文） |
 | `task_message` | 子任务动作统一入口。`action:'message'`（默认）续派消息（含「待确认」上的追问，复用原会话；排队/等前置返回提示）；`action:'stop'` 停止任务（运行中/排队/等前置/待确认）；`action:'retry'` 重建 failed/orphaned（保留编排字段）；`action:'close'` 把「已交付待确认」确认成 `done`（终态） |
 | `context` | 读上下文（只读）。`mode:'history'`（默认）查插件记忆、历史任务、平台历史会话；`mode:'project'` 读项目白名单文件、顶层结构、最近任务、相关记忆；`mode:'workspaces'` 看已登记工作区与仓库采样索引 |
 | `memory_note` | 记一条跨任务有效的决策/经验；`kind:'preference'` 不传 `project` 时写进协调者偏好（立即生效） |
@@ -453,24 +462,17 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（生成器与说明已移出主包，见 [tools/debug-preset/README.md](tools/debug-preset/README.md)，不随 npm 包发货） |
 | `staleMinutes` | `30` | 多久无动静标陈旧 / stall 提醒间隔 |
 | `deliveredTimeoutMinutes` | `60` | 「已交付待确认」多久没确认就自动 `done`（1–1440；设成 1 约等于「交付即完成」的旧行为） |
-| `stallRounds` | `3` | 连续 progress 达阈值后提醒一次「可能卡住」 |
 | `idleWatchdog` | `true` | 空闲看门狗，只告警 |
 | `watchdogIntervalMinutes` | `5` | 看门狗巡检间隔（1–1440） |
 | `watchdogIdleMinutes` | `15` | 判空闲阈值（1–1440，同一段空闲每任务只报一次） |
-| `keepAlive` | `false` | 回合间续跑开关（需要 `ctx.goals`） |
-| `keepAliveMode` | `steer` | `steer`（同回合再走一步）/ `followup`（新回合） |
-| `keepAliveMaxRounds` | `8` | 每段 activation 的续跑轮数上限（1–50） |
-| `keepAlivePrompt` | `''` | 覆盖默认续跑提示 |
 | `digestAt` | `''` | 每日日报 `HH:MM`；空 = 关闭 |
 | `digestTimeZone` | `''` | 日报时区；空 = 系统时区 |
 | `maxQueue` | `50` | `pending` + `waiting_dep` 安全阀 |
 | `autoResumeQueue` | `true` | 重启后自动恢复排队任务 |
-| `mergeWindowMs` | `5000` | 完成通知合并窗口 |
 | `memoryInject` | `true` | 新任务是否注入事实层记忆 |
 | `memoryLimit` | `3` | 注入记忆条数（1–10） |
 | `preferencesInject` | `true` | 是否把协调者偏好段（`settings.orchestrator_preferences`）注入 L1 提示词 |
-| `preferencesMaxChars` | `1200` | 偏好段字数上限，超限按优先级截断并写明被截条数 |
-| `preferencesMaxItems` | `12` | 偏好段条数上限 |
+| `preferencesMaxChars` | `1200` | 偏好段字数上限，超限按优先级截断并写明被截条数（条数上限固定 12） |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
 | `sameDirGuard` | `require` | 同写域并发防护：`require`（默认，拒绝）/ `warn`（只警告）/ `off`（关闭）；见「同写域并发防护」 |
 | `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，漏传时兜底 |
@@ -484,7 +486,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | `rotateIdleMinutes` | `10` | 多久没交互才算「空下来」（1–1440） |
 | `rotateArchiveOld` | `true` | 轮换后是否归档旧主会话（**不可逆**）；`false` = 只改名退役 |
 
-> **配置面 41 → 35（P1-A）**：`backend` 与 `rotateAfterTasks` / `rotateAfterSessions` / `rotateAfterContextTokens` / `rotateAfterDiskMiB` / `rotateCheckIntervalHours` 已删除。老 profile 里留着也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#02102026-11-19)。
+> **配置面 41 → 35 → 28**：P1-A 删了 `backend` 与 5 个 `rotate*` 键；P2-2 又删了续跑四键（`keepAlive` / `keepAliveMode` / `keepAliveMaxRounds` / `keepAlivePrompt`，续跑改用 `task_create({ goalRounds })`）和三个固定成常量的阈值键（`mergeWindowMs` / `stallRounds` / `preferencesMaxItems`）。老 profile 里留着也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#未发布)。
 
 > **调试预设 `orch-debug`（可选安装）**：生成器与说明已移出主包，在开发仓库的 `tools/debug-preset/`（不随 npm 包发货）。
 > 装一次：`node tools/debug-preset/cli.mjs` → `plugin_manager` 的 `install_bundle` → 配 `workerPreset: orch-debug` → 彻底重启 DSH；
@@ -533,7 +535,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | 想马上换一次主会话 | 没有强制按钮：配 `mainRotation: 'auto'`，调低 `rotateAfterDays` / `rotateMinAgeHours` / `rotateCooldownHours` / `rotateIdleMinutes`，收掉活跃任务后再打开主会话 |
 | 子任务报 done 后一直「待确认」 | 正常：默认保持待确认等用户拍板；要收尾就 `task_message({action:'close'})`，或等 `deliveredTimeoutMinutes` 超时自动完成 |
 | 任务停在「会话丢失」 | 子会话只在没报过 progress 时自动交付；上报过 progress 的回合异常结束落 `orphaned`。先用 `task_status` 看进展，需要接着做就 `task_message({action:'retry'})` |
-| 提示「配置键 X 已删除」 | 老 profile 里的已删键（`backend` / 5 个 `rotate*`）：按提示删掉即可，插件已按默认值运行（迁移见 [CHANGELOG](CHANGELOG.md#02102026-11-19)） |
+| 提示「配置键 X 已删除」 | 老 profile 里的已删键（`backend` / 5 个 `rotate*` / `keepAlive*` 四键 / `mergeWindowMs` / `stallRounds` / `preferencesMaxItems`）：按提示删掉即可，插件已按默认值运行（迁移见 [CHANGELOG](CHANGELOG.md#未发布)） |
 | 日志提示 `workerPreset` 回落 | 预设 id 只能用小写字母/数字/连字符；改值后彻底重启 |
 | 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制；确实要写仓库外用 `access:'full'` 或 CI |
 | 子任务没有 `cordis_*` 工具 | 确认 `orch-debug` bundle 已装、`workerPreset: orch-debug`、已彻底重启（生成器在 [tools/debug-preset/README.md](tools/debug-preset/README.md)，不随包发货） |

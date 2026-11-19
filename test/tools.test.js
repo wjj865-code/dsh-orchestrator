@@ -904,6 +904,28 @@ test('task_create 拒绝不存在的绝对目录', async () => {
   db.close()
 })
 
+// P2-2：续跑改成「按任务声明 goalRounds」——参数校验必须在建任务前做完，且默认 0 = 行为不变。
+test('task_create.goalRounds：默认 0、只认 0–50 整数、与 planFirst 互斥', async () => {
+  const { db, tools } = await setup()
+  const decimal = await call(tools, 'task_create', { ...sampleBrief({ title: 'g1' }), goalRounds: 8.5 })
+  assert.match(decimal, /goalRounds 只接受 0–50 的整数/)
+  const tooBig = await call(tools, 'task_create', { ...sampleBrief({ title: 'g2' }), goalRounds: 51 })
+  assert.match(tooBig, /goalRounds 只接受 0–50 的整数/)
+  const plan = await call(tools, 'task_create', { ...sampleBrief({ title: 'g3' }), planFirst: true, goalRounds: 3 })
+  assert.match(plan, /计划模式（planFirst）不接受 goalRounds/)
+  assert.equal(listTasks(db).length, 0, '非法参数不该建任务')
+  const ok = await call(tools, 'task_create', { ...sampleBrief({ title: 'g4' }), goalRounds: 5 })
+  assert.match(ok, /续跑：goalRounds=5/)
+  const withRounds = listTasks(db).find(item => item.title === 'g4')
+  assert.equal(withRounds.goal_rounds, 5)
+  assert.equal(withRounds.keep_alive_rounds, 0, '旧列停写')
+  // 默认不传 = 0：回执里不出现续跑行，台账按 0 落库（与 P2-2 之前的行为一致）。
+  const none = await call(tools, 'task_create', { ...sampleBrief({ title: 'g5' }) })
+  assert.equal(none.includes('续跑：goalRounds='), false)
+  assert.equal(listTasks(db).find(item => item.title === 'g5').goal_rounds, 0)
+  db.close()
+})
+
 
 test('不传 target：唯一命中工作区 → target_dir 落工作区目录，详情里能看到工作目录', async () => {
   const target = tempDir()

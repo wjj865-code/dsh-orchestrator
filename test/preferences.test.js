@@ -164,21 +164,20 @@ test('偏好预算默认值：字数为主（1200）+ 条数为安全阀（12）
   assert.match(line, /上限 12 条 \/ 1200 字/)
 })
 
-test('config：偏好三个键的默认值与夹取', () => {
+test('config：偏好只留 inject 开关与字数上限（条数上限 P2-2 固定成常量）', () => {
   const defaults = loadConfig({})
   assert.equal(defaults.preferencesInject, true)
   assert.equal(defaults.preferencesMaxChars, DEFAULT_MAX_CHARS)
-  assert.equal(defaults.preferencesMaxItems, DEFAULT_MAX_ITEMS)
+  // P2-2：preferencesMaxItems 已删（固定 12 条安全阀），配置面不该再有这个键。
+  assert.equal('preferencesMaxItems' in defaults, false)
   // 只有显式 false 才关。
   assert.equal(loadConfig({ preferencesInject: false }).preferencesInject, false)
   assert.equal(loadConfig({ preferencesInject: 'no' }).preferencesInject, true)
   // 越界夹到边界。
-  assert.equal(loadConfig({ preferencesMaxItems: 999 }).preferencesMaxItems, 20)
-  assert.equal(loadConfig({ preferencesMaxItems: 0 }).preferencesMaxItems, 1)
   assert.equal(loadConfig({ preferencesMaxChars: 99999 }).preferencesMaxChars, 4000)
   assert.equal(loadConfig({ preferencesMaxChars: 1 }).preferencesMaxChars, 200)
   // 非法值回落默认。
-  assert.equal(loadConfig({ preferencesMaxItems: 'x' }).preferencesMaxItems, DEFAULT_MAX_ITEMS)
+  assert.equal(loadConfig({ preferencesMaxChars: 'x' }).preferencesMaxChars, DEFAULT_MAX_CHARS)
 })
 
 test('偏好存 settings 单键（不新建表、不需要迁移）', async () => {

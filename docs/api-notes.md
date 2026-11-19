@@ -104,7 +104,7 @@ const member = { id: childId, name, description, provider, context, phase: 'prov
 - `AgentRegistry.runWithInitiator` 第一行是 `if (this.initiatorState !== "active") throw new Error(DISPOSED_INITIATOR_MESSAGE)`，文案就是 `agent initiator scope is disposed`；`disposeInitiators()` 在服务 effect 卸载时把状态置 `disposed`。
 - `steer()` 先 `inbox.splice` 再 `wakeDriver`，所以真机现象是「seq 101 有注入记录，但通知行 `failed`、协调者没起回合」：消息已经进 inbox，进程在收尾，驱动器不允许再启动。
 - 因此这是 **headless 一次性进程在 5 秒合并窗口内退出** 的收尾竞态，不是 sender 离队（B 已用 `agent.steer` 绕开 roster），也不是生产长驻进程的路径。长驻进程里 `AgentRegistry` 保持 active，`steer` 会正常唤醒。
-- 状态保持 `failed` + reason 是正确审计：注入发生了，但没有回合消费它。headless 冒烟若要在收尾前看到 `delivered`，需让进程在最后一条回报后活过 `mergeWindowMs`。
+- 状态保持 `failed` + reason 是正确审计：注入发生了，但没有回合消费它。headless 冒烟若要在收尾前看到 `delivered`，需让进程在最后一条回报后活过通知合并窗口（固定 5 秒；单测可用 `DSH_ORCH_NOTIFY_MERGE_MS` 旁路）。
 - source 仍用 `{kind:'agent-message', form:'relay', senderSessionId}`，因为 sender scope 不在这条失败路径上；换成 `orchestrator-notification` 不能解决进程收尾。
 
 ## 7. 主会话（固定入口 + 预设开启，替代自动绑定）

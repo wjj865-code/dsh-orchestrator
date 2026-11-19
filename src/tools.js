@@ -32,7 +32,7 @@ import { preferenceSavedHint, projectPreferenceSavedHint, upsertPreference } fro
 import { artifactLines } from './notify.js'
 import { CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered, closeReasonLabel } from './delivered.js'
 import { toolFailure } from './action-errors.js'
-import { objectiveForMessage } from './goal.js'
+import { objectiveForMessage, normalizeGoalRounds } from './goal.js'
 import { followupGate, stopIsIdempotent } from './panel-gates.js'
 import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, planStatusLine } from './plan-mode.js'
 import { MAX_PLAN_CHARS, isSafePlanTaskId, planSavedNote, writePlanDocument } from './plan-doc.js'
@@ -576,6 +576,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       planState: task.plan_first === true ? 'planning' : 'none',
       // per-task 访问级别跟着原任务走（重派是同一次尝试的延续，不该静默降级成默认策略）。
       access: task.access === 'full' ? 'full' : null,
+      // P2-2：续跑预算同样跟着原任务走（重派不改续跑语义）。
+      goalRounds: task.goal_rounds ?? 0,
       worktree: retryWorktree,
       retryOf: task.id,
       dependsOn: depends.ids,
@@ -801,6 +803,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       },
       dependsOn: strList('前置任务编号数组；依赖全部完成后才派发；任一前置失败则本任务失败'),
       group: str('可选分组名，如“登录改造”；面板按组汇总进度'),
+      goalRounds: {
+        type: 'number',
+        description: '可选：续跑轮次预算（0–50，默认 0 = 不续跑，与旧行为一致）。>0 时把平台 goal 以 '
+          + 'maxGoalRounds=N 保持 armed，由宿主 goal 轮次驱动在回合结束后自动续轮（插件不注入消息、不模拟续跑）；'
+          + '轮次与进度看 task_status 的「目标轮次」。计划模式（planFirst）不接受本参数',
+      },
       writeScopes: strList('可选写域（目录/文件路径）；与活跃未隔离任务重叠时按配置 sameDirGuard 拒绝或警告（不是文件锁）'),
       priority: { type: 'number', description: '优先级，-10..10，默认 0；高的先派发' },
       allowConcurrent: { type: 'boolean', description: '显式放行同写域并发：默认不传时，目标目录（或写域）与活跃未隔离任务冲突会被拒绝；只在用户明确要求并发写同一目录时传 true，放行后返回里会标注并发风险' },
@@ -843,7 +851,20 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         log('task.create.rejected', { agentId, detail: { reason: 'access-plan-conflict', callId } })
         return '完整访问（access:"full"）与计划模式（planFirst）互斥：计划阶段靠只读沙箱硬拦写操作，批准后才切回可写。请先 planFirst 探索，批准后再决定要不要派完整访问任务。'
       }
-      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, readOnly, planFirst, access: fullAccess ? 'full' : null, callId } })
+      // P2-2：续跑轮次预算。只认 0–50 的整数；非法值明确拒绝，不静默降级成 0
+      // （「我配了续跑但它没跑」是最难排的一类问题）。
+      const goalRounds = normalizeGoalRounds(args.goalRounds)
+      if (goalRounds === undefined) {
+        log('task.create.rejected', { agentId, detail: { reason: 'goal-rounds', value: args.goalRounds ?? null, callId } })
+        return `goalRounds 只接受 0–50 的整数（0 = 不续跑，也是默认值）：收到的是 ${JSON.stringify(args.goalRounds)}。`
+      }
+      // 计划模式 + 自动续跑互斥：计划任务每轮都要停下来等批准，续轮会绕过「批准」这道闸门。
+      if (goalRounds > 0 && planFirst) {
+        log('task.create.rejected', { agentId, detail: { reason: 'goal-rounds-plan-conflict', callId } })
+        return '计划模式（planFirst）不接受 goalRounds：计划任务每轮结束都要停下来等批准，自动续轮会绕过批准闸门。'
+          + '先 planFirst 探索、批准后用 task_message 续派；或直接派执行任务并配 goalRounds。'
+      }
+      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, readOnly, planFirst, access: fullAccess ? 'full' : null, goalRounds, callId } })
       const errors = validateBrief(args)
       if (errors.length > 0) {
         log('task.create.rejected', { agentId, detail: { reason: 'validation', message: errors.join('；'), callId } })
@@ -1088,6 +1109,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         targetDir: effectiveTarget,
         readOnly,
         planFirst,
+        goalRounds,
         access: fullAccess ? 'full' : null,
         worktree: worktreeRecord,
         dependsOn: depends.ids,
@@ -1122,6 +1144,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           worktree: worktreeRecord?.state ?? 'none',
           worktreeSource: worktreeRecord?.source ?? null,
           checks: checks.length,
+          goalRounds,
         },
       })
       const rendered = renderBriefForTask(task)
@@ -1141,6 +1164,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const checksNote = checks.length === 0
         ? ''
         : `验收：已配置 ${checks.length} 条可执行检查（交付前在任务目录自动执行；未通过则拒绝交付、任务保持进行中）。`
+      // P2-2：续跑是显式开的——回执写清楚「轮次由宿主 driver 驱动」，别让人以为插件在自己续。
+      const goalRoundsNote = goalRounds > 0
+        ? `续跑：goalRounds=${goalRounds}（平台 goal 保持 armed，由宿主 goal 轮次驱动；进度看 task_status 的「目标轮次」）。`
+        : ''
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
       if (current.live === false) {
         const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
@@ -1156,7 +1183,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           base: worktreeRecord?.base,
           hint: worktreeHint,
         })
-        const notes = [dependencyNote, checksNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
+        const notes = [dependencyNote, checksNote, goalRoundsNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
         log('task.dep.waiting', { taskId: task.id, detail: { dependsOn: depends.ids, callId } })
         return `任务「${taskLabelWithId(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
       }
@@ -1173,7 +1200,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         error: resultTask?.status === 'failed' ? resultTask.error : undefined,
         hint: worktreeHint,
       })
-      const notes = [invalidHint(), inferredNote, planNote, checksNote, accessNote, ...worktreeLines, conflictNote, dependencyNote]
+      const notes = [invalidHint(), inferredNote, planNote, checksNote, goalRoundsNote, accessNote, ...worktreeLines, conflictNote, dependencyNote]
         .filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       if (resultTask?.status === 'running') {
@@ -1265,16 +1292,23 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       } else if (checksOf(task).length > 0) {
         lines.push(`验收：已配置 ${checksOf(task).length} 条可执行检查（交付前自动执行，未通过拒绝交付）`)
       }
-      // 平台 goal 只读状态（G1）：让协调者不用打开面板也能确认目标生命周期。
+      // 平台 goal 只读状态（G1 / P2-2）：让协调者不用打开面板也能确认目标生命周期与续跑进度。
       if (task.goal_state !== null && task.goal_state !== undefined) {
         const phase = { active: '进行中', paused: '已暂停', blocked: '受阻', complete: '已完成', cleared: '已清除' }[task.goal_state.phase] ?? task.goal_state.phase ?? '未知'
-        const activation = task.goal_state.activation === 'armed' ? '自动续轮已启用（异常）' : '不自动续轮'
+        // armed 在 P2-2 后是「显式要续跑」的正常状态（goalRounds>0），不再是异常。
+        const activation = task.goal_state.activation === 'armed'
+          ? '自动续轮（宿主 goal 轮次驱动）'
+          : '不自动续轮'
         lines.push(`目标状态：${phase}｜${activation}${task.goal_state.revision === undefined ? '' : `｜修订 ${task.goal_state.revision}`}`)
-      }
-      // K2：keep-alive 续跑计数（只在真的续过时显示；预算按每段 activation 归零）。
-      if ((task.keep_alive_rounds ?? 0) > 0) {
-        const limit = config?.keepAliveMaxRounds
-        lines.push(`续跑：keep-alive 已注入 ${task.keep_alive_rounds}${Number.isFinite(limit) ? `/${limit}` : ''} 轮${config?.keepAlive === true && task.status === 'running' ? '（仍在续跑）' : ''}`)
+        // 轮次真源是平台 goal（插件不持有预算）：有进度就报 x/y，方便判断「续跑到底跑没跑」。
+        const roundsStarted = Number.isFinite(task.goal_state.roundsStarted) ? task.goal_state.roundsStarted : 0
+        const maxRounds = Number.isFinite(task.goal_state.maxGoalRounds) ? task.goal_state.maxGoalRounds : null
+        if (roundsStarted > 0 || (task.goal_state.activation === 'armed' && maxRounds !== null)) {
+          lines.push(`目标轮次：${roundsStarted}/${maxRounds ?? '?'}${task.goal_state.activation === 'armed' ? '（续跑中）' : ''}`)
+        }
+      } else if ((task.goal_rounds ?? 0) > 0) {
+        // 配了续跑但平台还没有 goal（能力缺失/子会话未起）：如实说清「现在没在续」，不假装。
+        lines.push(`续跑：已配置 goalRounds=${task.goal_rounds}，但平台 goal 尚未建立（当前不会自动续轮）`)
       }
       if (task.depends_on.length > 0 && task.status !== 'waiting_dep') {
         lines.push(`前置任务：${task.depends_on.map(id => {
@@ -1632,7 +1666,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       let progressInfo
       if (args.status === 'progress') {
         progressInfo = recordProgress(db, next.id, {
-          stallRounds: config?.stallRounds ?? 3,
+          // P2-2：stall 口径固定 3 次（配置键 stallRounds 已删），这里只传 stale 窗口。
           staleMinutes: config?.staleMinutes ?? 30,
         })
         if (progressInfo !== undefined) next = progressInfo.task

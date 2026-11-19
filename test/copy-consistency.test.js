@@ -10,7 +10,6 @@ import { renderCoordinatorPolicy } from '../index.js'
 import { renderBrief } from '../src/brief.js'
 import { renderTaskDetail } from '../src/task-detail.js'
 import { DELIVERED_HINT, PRESENT_HINT } from '../src/notify.js'
-import { DEFAULT_KEEPALIVE_PROMPT } from '../src/keepalive.js'
 import { DELIVERY_NOT_FINAL } from '../src/prompt-layers.js'
 import {
   EXIT_PLAN_MODE_DENIAL, PLAN_FIRST_DETAIL, PLAN_PHASE_LINES, PLAN_STATE_LABEL, PLAN_STATUS_LINES,
@@ -119,11 +118,6 @@ test('present 口径：通知里的交付指令与协调者 policy 一致（1-4 
   assert.match(PRESENT_HINT, /1-4 个最关键的/)
   assert.match(renderCoordinatorPolicy({}), /1-4 个最关键的产物/)
   assertNoConflicts('PRESENT_HINT', PRESENT_HINT)
-})
-
-test('keep-alive 提示不把 done 说成任务结束', () => {
-  assert.match(DEFAULT_KEEPALIVE_PROMPT, /已交付待确认/)
-  assertNoConflicts('keep-alive prompt', DEFAULT_KEEPALIVE_PROMPT)
 })
 
 test('README 与预设同口径：默认保持待确认、工具数 10、升级要重启', () => {
@@ -261,7 +255,6 @@ test('交付文案只有一处真源：brief / 详情 / 通知 / 分层常量引
   const policy = renderCoordinatorPolicy({})
   assert.ok(policy.includes(DELIVERY_LINES.state))
   assert.ok(policy.includes(DELIVERY_LINES.notFinal))
-  assert.ok(DEFAULT_KEEPALIVE_PROMPT.includes(DELIVERY_LINES.state))
 })
 
 test('完整访问文案只有一处真源：brief 行 / 详情标签 / 详情纪律 / 创建回执同源', () => {
