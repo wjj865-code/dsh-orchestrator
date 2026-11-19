@@ -26,9 +26,28 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
   const spawned = []
   const sent = []
   const tools = []
+  const subagentsService = {
+    async startActivation(spec) {
+      spawned.push(spec)
+      return {
+        childId: teammate.id,
+        messageId: 'msg-1',
+        result: Promise.resolve({ output: [], stopReason: 'completed' }),
+        dispose: async () => {},
+      }
+    },
+    async sendMessage(sender, target, content, options) { sent.push({ sender, target, content, options }) },
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
   const ctx = {
     logger: { warn() {} },
-    get: () => ({ get: id => (id === coordinator.id ? coordinator : undefined) }),
+    // host-capabilities 一律经 ctx.get 取服务：subagents 也得走这里（真 cordis 的 `ctx.get` 对
+    // inject 里声明的服务同样返回实例），其余服务沿用冒烟用的 agents 替身。
+    get(name) {
+      if (name === 'subagents') return subagentsService
+      return { get: id => (id === coordinator.id ? coordinator : undefined) }
+    },
     tools: { register(tool) { tools.push(tool); return () => {} } },
     on: () => () => {},
     effect: () => () => {},
@@ -41,20 +60,7 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
       async interrupt() {},
       listMembers() { return [] },
     },
-    subagents: {
-      async startActivation(spec) {
-        spawned.push(spec)
-        return {
-          childId: teammate.id,
-          messageId: 'msg-1',
-          result: Promise.resolve({ output: [], stopReason: 'completed' }),
-          dispose: async () => {},
-        }
-      },
-      async sendMessage(sender, target, content, options) { sent.push({ sender, target, content, options }) },
-      async interruptByParent() {},
-      async listChildren() { return [] },
-    },
+    subagents: subagentsService,
   }
   try {
     await apply(ctx, { coordinatorSession: 's-1' })

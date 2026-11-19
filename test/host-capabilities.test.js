@@ -223,6 +223,34 @@ test('agentTeams 取服务：cordis 未 inject 时读属性必抛，访问器只
   assert.equal(throwing.report().couplings.find(row => row.id === 'team-board').available, false)
 })
 
+test('可选服务统一经 ctx.get（goals / agents / subagents / schedule / connection）：cordis 下不抛、缺失返回 undefined', () => {
+  const OPTIONAL = ['goals', 'agents', 'subagents', 'schedule', 'connection', 'sandboxPolicy', 'planMode']
+  const bare = cordisCtx()
+  // 前提：这些服务属性在真 cordis 里都是「没 inject 就读必抛」（agents/subagents 目前恰好在 inject 里，
+  // 但访问器不该依赖这一点——统一走 ctx.get 才不会随 inject 列表漂移而回归）。
+  for (const name of OPTIONAL) {
+    assert.throws(() => bare[name], /cannot get property .* without inject/)
+  }
+
+  const missing = createHostCapabilities(bare)
+  for (const accessor of OPTIONAL) {
+    assert.equal(missing[accessor](), undefined, `${accessor}() 缺失时应返回 undefined，而不是漏出 cordis 的 inject 抛错`)
+  }
+  // goals 不属于 10 类 coupling：它缺失不能让 report 虚报，team-api 也如实缺失。
+  const report = missing.report()
+  assert.equal(report.total, 10)
+  assert.equal(report.available, 2)
+  assert.equal(report.couplings.find(row => row.id === 'team-api').available, false)
+
+  // 服务经 ctx.get 拿得到：goals 返回实例（goal 桥才可能可用），agents+subagents 让 team-api 计为可用。
+  const goals = { get() {}, create() {}, disarm() {}, edit() {}, complete() {}, clear() {} }
+  const present = createHostCapabilities(cordisCtx({ services: { goals, agents: { get() { return undefined } }, subagents: {} } }))
+  assert.equal(present.goals(), goals)
+  assert.equal(present.agents(), present.service('agents'))
+  assert.equal(present.report().couplings.find(row => row.id === 'team-api').available, true)
+  assert.equal(present.report().available, 3, 'panel-slots / log-path / team-api，goals 不参与计数')
+})
+
 test('文档同口径：docs/compat.md 写明 10 类 coupling id 与声明基线', async () => {
   const doc = await readFile(new URL('../docs/compat.md', import.meta.url), 'utf8')
   for (const id of COUPLING_IDS) {

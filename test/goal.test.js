@@ -71,7 +71,7 @@ function fakeAgents(initial = []) {
   }
 }
 
-async function setup({ goals = fakeGoals(), agents = fakeAgents(['s-1']), onAgentCreated, onWarn, onEvent, goalRounds } = {}) {
+async function setup({ goals = fakeGoals(), goalsAccessor, agents = fakeAgents(['s-1']), onAgentCreated, onWarn, onEvent, goalRounds } = {}) {
   const db = await openLedger(tempDir())
   const task = createTask(db, {
     brief: sampleBrief({ title: '目标任务', goal: '完成目标' }),
@@ -80,7 +80,7 @@ async function setup({ goals = fakeGoals(), agents = fakeAgents(['s-1']), onAgen
   })
   const bridge = createGoalBridge({
     db,
-    goals: () => goals,
+    goals: goalsAccessor ?? (() => goals),
     agents: () => agents,
     onAgentCreated,
     onWarn,
@@ -295,6 +295,35 @@ test('能力缺失：所有钩子静默 no-op（不抛、不写镜像、不 warn
   assert.equal(await bridge.update(task.id, 's-1', '目标2'), undefined)
   assert.equal(await bridge.complete(task.id, 's-1'), undefined)
   assert.equal(await bridge.clear(task.id, 's-1'), undefined)
+  assert.equal(getTask(db, task.id).goal_state, null)
+  assert.deepEqual(warnings, [])
+  db.close()
+})
+
+test('服务访问器本身抛错（cordis 未 inject 读属性 / host.goals() 抛）：同样整段降级、不崩', async () => {
+  const warnings = []
+  const { db, task, bridge } = await setup({
+    goalsAccessor: () => { throw new Error('cannot get property "goals" without inject') },
+    onWarn: message => warnings.push(message),
+  })
+  assert.equal(bridge.available(), false)
+  assert.equal(bridge.missing().length, GOAL_CAPABILITY_METHODS.length)
+  assert.equal(await bridge.attach(task.id, 's-1', '目标'), undefined)
+  assert.equal(await bridge.update(task.id, 's-1', '目标2'), undefined)
+  assert.equal(await bridge.complete(task.id, 's-1'), undefined)
+  assert.equal(await bridge.clear(task.id, 's-1'), undefined)
+  assert.equal(bridge.stateOf(task.id, 's-1'), null)
+  assert.equal(getTask(db, task.id).goal_state, null)
+  assert.deepEqual(warnings, [], '能力缺失不打扰用户')
+  db.close()
+})
+
+test('服务访问器返回 undefined（宿主没注册 goals）：与缺方法同口径降级', async () => {
+  const warnings = []
+  const { db, task, bridge } = await setup({ goalsAccessor: () => undefined, onWarn: message => warnings.push(message) })
+  assert.equal(bridge.available(), false)
+  assert.deepEqual(bridge.missing(), GOAL_CAPABILITY_METHODS)
+  assert.equal(await bridge.attach(task.id, 's-1', '目标'), undefined)
   assert.equal(getTask(db, task.id).goal_state, null)
   assert.deepEqual(warnings, [])
   db.close()

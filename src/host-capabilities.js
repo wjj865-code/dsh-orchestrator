@@ -177,11 +177,17 @@ export function createHostCapabilities(ctx, { onWarn = () => {}, env = process.e
       return undefined
     }
   }
+  // 取服务只有一条路：`service()`（= 带 try/catch 的 `ctx.get`），**不读 `ctx.<服务名>` 属性**。
+  // cordis 的 get trap 对没写进 index.js `inject` 的服务属性直接抛
+  // `cannot get property "x" without inject`，于是 `ctx?.x ?? service('x')` 里 `??` 右边永远走不到，
+  // 整类能力在真机上静默降级（P2-4 的 `agentTeams` 就是这么坏的，`goals` 同款：真机上 goal 桥
+  // 一直拿到 undefined、goalRounds 永不 arm）。`agents` / `subagents` 当前虽在 inject 里
+  // （属性读不抛），也统一走 service()：一个入口、一个降级口径，不给下一个可选服务留坏样板。
   const host = {
     service,
     warnOnce,
-    agents: () => ctx?.agents ?? service('agents'),
-    subagents: () => ctx?.subagents ?? service('subagents'),
+    agents: () => service('agents'),
+    subagents: () => service('subagents'),
     sessionController: () => service('sessionController'),
     sessions: () => service('sessions'),
     agentPresets: () => service('agentPresets'),
@@ -192,9 +198,9 @@ export function createHostCapabilities(ctx, { onWarn = () => {}, env = process.e
     connection: () => service('connection'),
     sandboxPolicy: () => service('sandboxPolicy'),
     planMode: () => service('planMode'),
-    goals: () => ctx?.goals ?? service('goals'),
+    goals: () => service('goals'),
     // P2-4（D6）：官方 Team 任务板（rc.5 的 @deepseek-ai/dsh-agent-team 注册为 agentTeams）。
-    // **只走 `ctx.get`**：`agentTeams` 不在 index.js 的 inject 里，cordis 的 get trap 对未 inject 的
+    // **只走 `service()`**：`agentTeams` 不在 index.js 的 inject 里，cordis 的 get trap 对未 inject 的
     // 服务**属性**读取必抛 `cannot get property "agentTeams" without inject`（真机探针证过：
     // `ctx.get('settings')` 有对象、`ctx.settings` 同样抛）。以前写成 `ctx?.agentTeams ?? service(...)`，
     // 于是 `??` 右边永远走不到、每次 snapshot 都拿一条 cordis 内部报错，官方板在任何宿主都不渲染。

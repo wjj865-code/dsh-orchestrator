@@ -98,6 +98,22 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       listMembers() { return [] },
     })
     : undefined
+  // 真 cordis 的 `ctx.get('subagents')` 对 inject 里声明的服务同样返回实例；host-capabilities 现在
+  // 统一经 service()（= ctx.get）取 agents/subagents，所以替身也得两条路都给（属性读仍保留，兼容老测试）。
+  const subagentsService = subagentsOverride ?? {
+    async startActivation(spec) {
+      const childId = spawnResult?.member?.id ?? 'm-1'
+      return {
+        childId,
+        messageId: 'msg-1',
+        result: Promise.resolve({ output: [], stopReason: 'completed' }),
+        dispose: async () => {},
+      }
+    },
+    async sendMessage(sender, target, content, options) { sent.push([sender, { target, content, options }]) },
+    async interruptByParent() {},
+    async listChildren() { return [{ id: spawnResult?.member?.id ?? 'm-1', mode: 'continuable', label: 'x', activity: 'inactive' }] },
+  }
   const ctx = {
     logger: {
       warn(message) { warnings.push(message) },
@@ -120,6 +136,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       if (name === 'workspaceChanges') return workspaceChanges
       if (name === 'goals') return goals
       if (name === 'agentTeams') return agentTeamsService
+      if (name === 'subagents') return subagentsService
       return undefined
     },
     ...(withInject
@@ -127,20 +144,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       : {}),
     on(event, handler) { return on(event, handler) },
     effect(callback) { disposers.push(callback()); return () => {} },
-    subagents: subagentsOverride ?? {
-      async startActivation(spec) {
-        const childId = spawnResult?.member?.id ?? 'm-1'
-        return {
-          childId,
-          messageId: 'msg-1',
-          result: Promise.resolve({ output: [], stopReason: 'completed' }),
-          dispose: async () => {},
-        }
-      },
-      async sendMessage(sender, target, content, options) { sent.push([sender, { target, content, options }]) },
-      async interruptByParent() {},
-      async listChildren() { return [{ id: spawnResult?.member?.id ?? 'm-1', mode: 'continuable', label: 'x', activity: 'inactive' }] },
-    },
+    subagents: subagentsService,
   }
   return { ctx, registered, routes, injections, warnings, infos, listeners, sent, disposers, agent, live, guards, promptContexts }
 }

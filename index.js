@@ -318,7 +318,11 @@ export async function apply(ctx, rawConfig = {}) {
     if (agent === undefined || agent.id !== resolvedCoordinatorId()) return ''
     const missing = []
     try {
-      if ((host.schedule() ?? ctx.schedule) === undefined) missing.push('schedule 服务')
+      // schedule 不在 inject 里：读 `ctx.schedule` 属性必抛 cordis 的 inject 错，
+      // 只走 host.schedule()（内部 = 带 try/catch 的 ctx.get，服务不存在/抛错都返回 undefined）。
+      if (host.schedule() === undefined) missing.push('schedule 服务')
+      // tools 在 index.js 的 inject 里（根 ctx 属性读安全），不是可选服务；agent.ctx 是宿主给的
+      // agent 作用域，取不到就由外层 try 兜底为「能力检查失败」，不换成 service()（会拿到全局工具表）。
       const tools = agent.ctx?.tools ?? ctx.tools
       for (const name of SCHEDULE_TOOLS) {
         if (typeof tools?.get !== 'function' || tools.get(name, agent) === undefined) missing.push(name)
@@ -829,7 +833,9 @@ export async function apply(ctx, rawConfig = {}) {
       scope.effect?.(() => () => { try { dispose?.() } catch { /* 卸载期失败不阻断 */ } })
     })
   } else {
-    routeDisposer = installRoute(host.connection() ?? ctx.connection)
+    // connection 不在 inject 里（首选用 ctx.inject(['connection']) 拿 scope）：读 `ctx.connection` 属性必抛，
+    // 旧写法 `host.connection() ?? ctx.connection` 会把「缺 connection」变成装配期异常，所以只走 host.connection()。
+    routeDisposer = installRoute(host.connection())
     if (routeDisposer === undefined) {
       warnings('dsh-orchestrator: 缺少 connection 服务，/api/orchestrator 面板路由不可用')
     }
