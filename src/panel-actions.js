@@ -96,11 +96,16 @@ const followupFailure = task => {
   }
 }
 
-export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge, cleanupWorktree }) {
+export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge, cleanupWorktree, teamBoard }) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志不能影响 UI 动作 */ }
   }
   const current = () => typeof coordinatorStatus === 'function' ? coordinatorStatus() : { id: undefined, live: true }
+  // P2-4（D6）：官方 Team 板关联视图。读失败只让这一块消失，不能让抽屉 500。
+  const teamOf = task => {
+    if (typeof teamBoard !== 'function') return null
+    try { return teamBoard(task) } catch { return null }
+  }
 
   const detailOf = taskId => {
     const task = getTask(db, String(taskId ?? ''))
@@ -165,6 +170,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         closeReasonLabel: task.close_reason === null || task.close_reason === undefined ? null : closeReasonLabel(task.close_reason),
         // P2-3 交接契约 v1：完整交接对象（谁/何时确认、轮次、验收与产物证据）；没交付过是 null。
         handoff: handoffOfTask(db, task),
+        // P2-4（D6）：官方 Team 板关联视图（台账 id/revision + 官方当前行，只读）；没关联是 null。
+        // 读不到官方板时退化成「只有台账那一半 + degraded」，抽屉照样能打开。
+        teamTask: teamOf(task),
         // P2-1 A1：交付前机器验收的完整证据（spec + 每条 check 的退出码/耗时/输出尾部）；没跑过是 null。
         acceptance: task.acceptance ?? null,
         // 面板按钮可见性与动作门控同源（src/panel-gates.js）：前端只读这三个字段，不抄状态表。

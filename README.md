@@ -397,9 +397,9 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 | 工具 | 作用 |
 |---|---|
-| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent`（显式放行同写域并发）/ `checks`（机器可判定验收：交付前执行，失败拒绝交付）/ `goalRounds`（续跑轮次预算，默认 0 = 不续跑，由宿主 goal driver 驱动） |
+| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent`（显式放行同写域并发）/ `checks`（机器可判定验收：交付前执行，失败拒绝交付）/ `goalRounds`（续跑轮次预算，默认 0 = 不续跑，由宿主 goal driver 驱动）/ `teamTaskId`（关联官方 Team 板任务，确认交付时按 CAS 反写 `complete`） |
 | `task_list` | 活跃任务/历史任务（`active` / `group` 过滤看组进度）；`view:'inbox'` 是收件箱：待决、待确认、失败/丢失、长时间没动静 |
-| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条 check 的退出码/耗时）、目标状态与轮次（`x/y`）、最近消息、最新返回（`include:'full'` 看全文） |
+| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条 check 的退出码/耗时）、目标状态与轮次（`x/y`）、官方 Team 关联、最近消息、最新返回（`include:'full'` 看全文） |
 | `task_message` | 子任务动作统一入口。`action:'message'`（默认）续派消息（含「待确认」上的追问，复用原会话；排队/等前置返回提示）；`action:'stop'` 停止任务（运行中/排队/等前置/待确认）；`action:'retry'` 重建 failed/orphaned（保留编排字段）；`action:'close'` 把「已交付待确认」确认成 `done`（终态） |
 | `context` | 读上下文（只读）。`mode:'history'`（默认）查插件记忆、历史任务、平台历史会话；`mode:'project'` 读项目白名单文件、顶层结构、最近任务、相关记忆；`mode:'workspaces'` 看已登记工作区与仓库采样索引 |
 | `memory_note` | 记一条跨任务有效的决策/经验；`kind:'preference'` 不传 `project` 时写进协调者偏好（立即生效） |
@@ -548,7 +548,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 | 文档 | 内容 |
 |---|---|
-| [docs/compat.md](docs/compat.md) | 宿主兼容基线（rc.3–rc.5）、9 类能力探测与降级、rc.3 冒烟 3 条 |
+| [docs/compat.md](docs/compat.md) | 宿主兼容基线（rc.3–rc.5）、10 类能力探测与降级、rc.3 冒烟 3 条 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 内部设计：模块划分、状态机、派发、结算、对账、面板与消息块、落盘 |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | 平台/沙箱/计划/worktree/通知/UI 的完整限制清单 |
 | [docs/testing.md](docs/testing.md) | 测试与复核：怎么跑、门禁、断言口径、历史复核索引、真机矩阵 |

@@ -1,7 +1,7 @@
 // P0-2b：宿主能力访问层的单测（首片：版本探测 / settings / 日志路径）。
 //
 // 为什么单测重点在「缺什么」而不是「有什么」：这一层的价值是**能力缺失时不崩、不静默改行为**。
-// 所以每个用例都从空上下文 / 坏服务 / 坏清单出发，再补正例；另外锁住 9 类 coupling id，
+// 所以每个用例都从空上下文 / 坏服务 / 坏清单出发，再补正例；另外锁住 10 类 coupling id，
 // 防止文档（docs/compat.md）与代码悄悄漂移。
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -19,20 +19,20 @@ import {
   versionStatus,
 } from '../src/host-capabilities.js'
 
-/** 9 类宿主耦合点的稳定 id（与 docs/compat.md 的表同口径）。 */
+/** 10 类宿主耦合点的稳定 id（与 docs/compat.md 的表同口径）。 */
 const COUPLING_IDS = [
   'team-api', 'session-create', 'settings', 'registry', 'token-meter',
-  'session-query', 'panel-slots', 'log-path', 'version',
+  'session-query', 'panel-slots', 'log-path', 'version', 'team-board',
 ]
 
 const quiet = () => []
 
-test('空上下文：9 类访问器全部降级、不抛；report 如实报缺失', () => {
+test('空上下文：10 类访问器全部降级、不抛；report 如实报缺失', () => {
   const host = createHostCapabilities({})
   for (const accessor of [
     'agents', 'subagents', 'sessionController', 'sessions', 'agentPresets', 'settings',
     'workspaceRegistry', 'tokenMeter', 'sessionQuery', 'connection', 'sandboxPolicy',
-    'planMode', 'goals', 'schedule', 'sessionPersistence', 'workspaceChanges',
+    'planMode', 'goals', 'schedule', 'sessionPersistence', 'workspaceChanges', 'agentTeams',
   ]) {
     assert.equal(host[accessor](), undefined, `${accessor} 缺失时应返回 undefined，而不是抛`)
   }
@@ -40,10 +40,10 @@ test('空上下文：9 类访问器全部降级、不抛；report 如实报缺�
   assert.equal(typeof host.stateDir(), 'string')
 
   const report = host.report()
-  assert.equal(report.total, 9)
+  assert.equal(report.total, 10)
   assert.deepEqual(report.couplings.map(row => row.id), COUPLING_IDS)
   assert.equal(report.available, 2, '空上下文只有「面板 slot」「日志路径」天然可用')
-  assert.deepEqual(report.missing, ['team-api', 'session-create', 'settings', 'registry', 'token-meter', 'session-query', 'version'])
+  assert.deepEqual(report.missing, ['team-api', 'session-create', 'settings', 'registry', 'token-meter', 'session-query', 'version', 'team-board'])
   assert.equal(report.version.status, 'unknown')
 })
 
@@ -164,7 +164,31 @@ test('版本自检接入点：基线内 ok、越界给 below/above、探测不�
   assert.equal(unknown.report().couplings.find(item => item.id === 'version').available, false)
 })
 
-test('文档同口径：docs/compat.md 写明 9 类 coupling id 与声明基线', async () => {
+test('第 10 类 team-board：只探测 isEnabled/listTasks，形状不全就如实报缺失', () => {
+  // 完整形状：可用。
+  const full = { isEnabled: () => true, listTasks: () => [] }
+  const host = createHostCapabilities({ get: name => (name === 'agentTeams' ? full : undefined) })
+  assert.equal(host.agentTeams(), full)
+  assert.equal(host.report().couplings.find(item => item.id === 'team-board').available, true)
+  assert.equal(host.report().available, 3, '空上下文 + agentTeams 完整 = 面板 slot / 日志路径 / team-board')
+
+  // 只有成员 API 的旧形状（rc.3 的 spawnTeammate 那套）不算可用：我们只读任务板。
+  const legacy = { spawnTeammate() {}, listMembers() { return [] } }
+  const old = createHostCapabilities({ get: name => (name === 'agentTeams' ? legacy : undefined) })
+  assert.equal(old.report().couplings.find(item => item.id === 'team-board').available, false)
+  assert.equal(old.report().couplings.find(item => item.id === 'team-api').available, false)
+
+  // ctx.agentTeams 直接挂载（测试/旧装配）也认。
+  const mounted = createHostCapabilities({ agentTeams: full })
+  assert.equal(mounted.report().couplings.find(item => item.id === 'team-board').available, true)
+
+  // ctx.get 抛错（加载/卸载中）不影响探测：按不可用处理，不上抛。
+  const throwing = createHostCapabilities({ get() { throw new Error('waiting for service') } })
+  assert.equal(throwing.agentTeams(), undefined)
+  assert.equal(throwing.report().couplings.find(item => item.id === 'team-board').available, false)
+})
+
+test('文档同口径：docs/compat.md 写明 10 类 coupling id 与声明基线', async () => {
   const doc = await readFile(new URL('../docs/compat.md', import.meta.url), 'utf8')
   for (const id of COUPLING_IDS) {
     assert.ok(doc.includes(id), `docs/compat.md 缺少 coupling id：${id}`)
@@ -173,6 +197,9 @@ test('文档同口径：docs/compat.md 写明 9 类 coupling id 与声明基线'
     assert.ok(doc.includes(version), `docs/compat.md 缺少基线版本：${version}`)
   }
   assert.match(doc, />=0\.2\.2-rc\.3 <0\.3\.0/)
+  // 9 → 10 的口径同步：文档里不能再写旧数量，否则排障时会去数「少的那一类」。
+  assert.doesNotMatch(doc, /能力探测与降级（9 类）/)
+  assert.match(doc, /能力探测与降级（10 类）/)
 })
 
 test('README 与访问层同口径：首屏声明 rc.3–rc.5 基线（CI 侧锁住声明漂移）', async () => {

@@ -243,3 +243,16 @@ test('task_detail：前置任务按当前台账现读（创建时还没完成的
   assert.match(after, /已完成：前置做完/)
   db.close()
 })
+
+test('task_detail：关联了官方 Team 任务时如实说「只读关联、不要操作官方板」（P2-4）', async () => {
+  const { db, tools } = await setup()
+  const task = seed(db, { extra: { teamTask: { id: 'task-3', revision: 2 } } })
+  const text = await tools.task_detail.execute({ task_id: task.id }, { agent: { id: task.session_id } })
+  assert.match(text, /官方 Team 任务：task-3（只读关联；不要操作官方任务板/)
+  assert.match(text, /确认交付时由协调者按 CAS 反写/)
+  // 没关联的普通任务不出现这一行（旧输出逐字不变）。
+  const plain = seed(db, { sessionId: 'c-9', brief: briefOf({ title: '普通任务' }) })
+  const plainText = await tools.task_detail.execute({ task_id: plain.id }, { agent: { id: plain.session_id } })
+  assert.doesNotMatch(plainText, /官方 Team 任务/)
+  db.close()
+})

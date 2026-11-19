@@ -70,6 +70,8 @@ async function setup(options = {}) {
     logger: options.logger,
     goalBridge: options.goalBridge,
     stateDir: options.stateDir,
+    // P2-4（D6）：官方 Team 板关联（不传 = 未装配，task_create.teamTaskId 会明确拒绝）。
+    teamBoard: options.teamBoard,
   }).map(tool => [tool.name, tool]))
   return { db, dispatcher, queue, notifier, tools }
 }
@@ -1771,5 +1773,92 @@ test('task_report schema 没有命令字段：验收命令只能来自协调者�
   }
   assert.equal(tools.task_create.parameters.properties.checks.type, 'array')
   assert.match(JSON.stringify(tools.task_create.parameters.properties.checks), /argv 数组/)
+  db.close()
+})
+
+// —— P2-4（D6）：官方 Team 板只读关联 ——
+// task_create 只做**只读**校验并把官方任务 id/revision 记进台账；反写发生在确认交付时（见 team-board/delivered 测试）。
+
+const fakeTeamBoard = ({ fail } = {}) => {
+  const calls = []
+  return {
+    calls,
+    link(agent, teamTaskId) {
+      calls.push(['link', agent?.id ?? null, teamTaskId])
+      if (fail !== undefined) return fail
+      return { ok: true, task: { id: teamTaskId, revision: 2, status: 'in_progress', subject: '官方任务' }, note: '' }
+    },
+  }
+}
+
+test('task_create.teamTaskId：只读校验并记 revision（brief 快照与台账都有），响应里有「官方板」提示', async () => {
+  const board = fakeTeamBoard()
+  const { db, tools } = await setup({ teamBoard: board })
+  const text = await call(tools, 'task_create', { ...sampleBrief({ title: '关联官方板' }), teamTaskId: ' task-3 ' })
+  assert.match(text, /已派发/)
+  assert.match(text, /官方板：已关联「task-3」/)
+  assert.deepEqual(board.calls, [['link', 's-1', 'task-3']], '只读调用一次，且带的是协调者 agent')
+  const task = listTasks(db).find(item => item.title === '关联官方板')
+  assert.equal(task.team_task_id, 'task-3')
+  assert.equal(task.team_task_revision, 2)
+  assert.equal(task.brief.teamTaskId, ' task-3 ', 'brief 保留原始入参快照（与其它参数同口径）')
+  db.close()
+})
+
+test('task_create.teamTaskId：官方板拒绝/未装配时明确报错、不建任务、不派发', async () => {
+  // 未装配（宿主缺 agentTeams）：不静默忽略参数。
+  const noBoard = await setup()
+  const first = await call(noBoard.tools, 'task_create', { ...sampleBrief({ title: '没装配' }), teamTaskId: 'task-3' })
+  assert.match(first, /官方 Team 任务关联失败/)
+  assert.match(first, /agentTeams/)
+  assert.equal(listTasks(noBoard.db).length, 0)
+  assert.equal(noBoard.dispatcher.calls.length, 0)
+  noBoard.db.close()
+
+  // 官方板明确拒绝（不存在/已完成/未开启）：原样转达原因。
+  const rejected = await setup({
+    teamBoard: fakeTeamBoard({ fail: { ok: false, code: 'TEAM_TASK_NOT_FOUND', reason: '官方板上没有任务「task-9」；现有：task-3' } }),
+  })
+  const second = await call(rejected.tools, 'task_create', { ...sampleBrief({ title: '不存在' }), teamTaskId: 'task-9' })
+  assert.match(second, /官方 Team 任务关联失败：官方板上没有任务「task-9」/)
+  assert.equal(listTasks(rejected.db).length, 0)
+  rejected.db.close()
+})
+
+test('task_create.teamTaskId：空串等价于没传（普通任务行为逐字不变）', async () => {
+  const board = fakeTeamBoard()
+  const { db, tools } = await setup({ teamBoard: board })
+  const text = await call(tools, 'task_create', { ...sampleBrief({ title: '没关联' }), teamTaskId: '   ' })
+  assert.match(text, /已派发/)
+  assert.doesNotMatch(text, /官方板/)
+  assert.deepEqual(board.calls, [])
+  assert.equal(listTasks(db).find(item => item.title === '没关联').team_task_id, null)
+  db.close()
+})
+
+test('task_status：关联了官方任务才多一行（带创建时 revision 与 CAS 说明）', async () => {
+  const { db, tools } = await setup({ teamBoard: fakeTeamBoard() })
+  await call(tools, 'task_create', { ...sampleBrief({ title: '关联状态' }), teamTaskId: 'task-3' })
+  const linked = listTasks(db).find(item => item.title === '关联状态')
+  const linkedText = await call(tools, 'task_status', { task_id: linked.id })
+  assert.match(linkedText, /官方 Team 任务：task-3（创建时 revision 2；确认交付时按 CAS 反写完成，冲突只提示）/)
+
+  await call(tools, 'task_create', sampleBrief({ title: '没关联状态' }))
+  const plain = listTasks(db).find(item => item.title === '没关联状态')
+  const plainText = await call(tools, 'task_status', { task_id: plain.id })
+  assert.doesNotMatch(plainText, /官方 Team 任务/)
+  db.close()
+})
+
+test('task_message retry：官方板关联跟着原任务复制（重派不丢确认反写目标）', async () => {
+  const { db, tools } = await setup({ teamBoard: fakeTeamBoard() })
+  await call(tools, 'task_create', { ...sampleBrief({ title: '重派关联' }), teamTaskId: 'task-3' })
+  const original = listTasks(db).find(item => item.title === '重派关联')
+  transition(db, original.id, 'failed', { error: 'boom' })
+  const text = await call(tools, 'task_message', { action: 'retry', task_id: original.id })
+  assert.match(text, /已重派/)
+  const retried = listTasks(db).find(item => item.id !== original.id && item.title === '重派关联')
+  assert.equal(retried.team_task_id, 'task-3')
+  assert.equal(retried.team_task_revision, 2)
   db.close()
 })

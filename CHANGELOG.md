@@ -68,6 +68,51 @@ mainRotation 默认 off）；`check:client` / `check:docs`（配置表 35 键）
 
 ## 未发布
 
+**P2-4：官方 Team 板只读互通 + 确认反写（CAS）**（`feat: P2-4 官方 Team 板只读 + 确认反写（CAS）`，单 commit，未 bump / 未 tag）
+
+把官方 Team 任务板**只读**接进插件视图；插件任务若显式关联官方板任务（`task_create.teamTaskId`），
+确认交付时按 CAS 反写官方任务 `complete`。**方向已定：D6 优先，不做 workspace 第二后端**——官方板挂在 subagent 树上，
+派发改走 root 工作区会话就整段失效，所以本片不新增 root 派发路径、不新增配置键、不接管官方派发与生命周期。
+
+### 能力变化
+
+1. **面板/快照能看到官方板**：`snapshot.teamBoard = { enabled, rows, degraded }`，`rows[]` 只读
+   （`id / revision / subject / status / statusLabel / owner / blockedBy / writeScopes / ready`，不含 `description`）。
+   抽屉与 `task_status` 能看任务的官方关联；官方板本身在插件里**没有可操作入口**。
+2. **可选关联**：`task_create({ teamTaskId: 'task-3' })`——只读校验任务存在并记下 revision（CAS 基线）。
+   官方任务不存在 / 已完成 / Team 未开启时**明确报错**，不静默忽略参数。
+3. **确认反写**：任务被**人/协调者确认**完成（工具 / 面板两条路径，`acceptedBy` 为 `coordinator` / `panel`）→
+   `updateTask({ action:'complete', expectedRevision })`。`expectedRevision` 不符时**只重读一次、只再试一次**，
+   仍冲突就记 `team.board.stale` 并提示，不重试轰炸；**失败只 warn，不回滚本地 done**。
+   **超时自动完成不反写**（那不是人的确认）：只记 `team.board.skipped`（`reason: timeout`），官方板一次都不写。
+4. **降级**：服务缺失 / 形状变了 / Team 未开启 → `enabled:false` 或 `degraded`，面板隐藏该分区，
+   现有编排流程零变化；未开启官方 Team 的用户完全无感。
+
+### 代码
+
+- **新增** `src/team-board.js`：只读快照（`readTeamBoard`）、关联校验（`linkBoardTask`）、CAS 反写（`confirmOnBoard`）、
+  关联视图（`teamLinkView`）与进程级确认 sink（`setTeamBoardSink` / `emitTeamBoardConfirm`）。
+- **宿主能力**：`src/host-capabilities.js` 加 `agentTeams()` 惰性访问器与第 10 类耦合 `team-board`
+  （`isEnabled` + `listTasks` 探测）；`report()` 的 `total` 9 → 10。
+- **台账**：新列 `team_task_id` / `team_task_revision`（旧库启动 ALTER 补齐，存量行 NULL = 没关联）；
+  `createTask` 接受 `teamTask`，重派复制关联。
+- **接线**：`delivered.js` 在 `closeDelivered` 成功后 emit 反写（旁路，异常吞掉；`acceptedBy='timeout'` 时
+  index 的 sink 只记 `team.board.skipped`、**不调用** `updateTask`）；`host-route.js` snapshot 加 `teamBoard`
+  与任务行 `teamTask`；`panel-actions.js` detail 加 `teamTask`；`tools.js` 的 `task_create.teamTaskId`、`task_status` 关联行；
+  `task-detail.js` 告知子会话「官方任务只是只读关联，不要操作官方板」。
+
+### 测试
+
+新增 `test/team-board.test.js`（fake `agentTeams`：只读行透传、`enabled:false` 不读板、服务缺失/抛错降级、
+CAS 成功 / 冲突重读一次 / 二次冲突停手、不触发派发、确认后 sink 触发且 sink 抛错不挡 done）；
+`test/host-capabilities.test.js`（10 类 + `team-board` 探测 + 文档同口径）、`test/host-route.test.js`（snapshot 的
+`teamBoard` 与降级形状）、`test/tools.test.js`（`teamTaskId` 成功/失败/重派复制/`task_status` 行）、
+`test/index.test.js`（缺 `agentTeams` 仍能 apply、快照只读行、协调者确认反写 CAS、官方报错只 warn，
+以及**超时自动完成不调 `updateTask`、只记 `team.board.skipped`（reason: timeout）**）。
+
+> 同批「未发布」里还有 P2-1（`task_create.checks` 可执行验收）与 P2-3（交接契约 v1），细节见
+> `docs/ARCHITECTURE.md` 对应小节；本片只改 D6。
+
 **P2-2：删自建 keepAlive、goal 收敛为单一写方、配置 35 → 28**（`refactor: P2-2 …`，单 commit，未 bump / 未 tag）
 
 这一版把「续跑」从插件自己实现改成交给宿主：删掉 `src/keepalive.js`（246 行，订阅 `agent/turn-stopping` 注入下一轮），

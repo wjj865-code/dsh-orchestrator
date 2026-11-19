@@ -1,4 +1,4 @@
-// P0-2b：宿主能力访问层 = 9 类宿主耦合点的**唯一入口**（计划 §7.1 / §7.2）。
+// P0-2b：宿主能力访问层 = 10 类宿主耦合点的**唯一入口**（计划 §7.1 / §7.2）。
 //
 // 为什么需要这一层：宿主每个 rc 都可能在动服务形状、槽位名与安装布局，而插件历史上把这些
 // 直接摊在 index.js / dispatch.js / client 里摸（`ctx.get('x')`、`process.env.DSH_HOME`、
@@ -7,11 +7,11 @@
 // 收敛规则（§7.2）：
 //   1. 业务模块只吃这里返回的值，不再写裸 `ctx.get(`、不再直接读 `DSH_HOME`；
 //   2. 一律惰性取值：cordis 并发加载，apply 早期服务还没就绪，取值失败返回 undefined 而不是抛；
-//   3. 能力缺失要**可见**：`report()` 给出 9 行现状（供日志/面板诊断行），warn 每进程只一次；
+//   3. 能力缺失要**可见**：`report()` 给出 10 行现状（供日志/面板诊断行），warn 每进程只一次；
 //      绝不「模拟成功」。
 //
-// P0-2b 首片只接线 3 个点（版本探测 / settings / 日志路径），其余 6 类先提供访问器与探测行，
-// 消费点分批迁移；剩余清单见 docs/compat.md。
+// P0-2b 首片只接线 3 个点（版本探测 / settings / 日志路径）；P2-4 接入第 10 类 `agentTeams`
+// （官方 Team 板只读 + 确认反写，消费方是 src/team-board.js）。剩余清单见 docs/compat.md。
 
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -126,7 +126,7 @@ export function readHostVersion({ env = process.env, argv = process.argv, readTe
   return { version: undefined, source: 'unknown' }
 }
 
-// 9 类宿主耦合点：id 稳定（日志/面板/文档共用），label 给人看，probe 只查存在性、不执行业务。
+// 10 类宿主耦合点：id 稳定（日志/面板/文档共用），label 给人看，probe 只查存在性、不执行业务。
 const COUPLINGS = Object.freeze([
   { id: 'team-api', label: '团队 / 子代理 API（agents · subagents）', probe: host => host.agents() !== undefined && host.subagents() !== undefined },
   { id: 'session-create', label: '会话创建（sessionController · agentPresets）', probe: host => host.sessionController() !== undefined || host.agentPresets() !== undefined },
@@ -137,6 +137,18 @@ const COUPLINGS = Object.freeze([
   { id: 'panel-slots', label: '面板 slot', probe: host => host.slots().length > 0 },
   { id: 'log-path', label: '日志 / 状态路径', probe: host => host.stateDir() !== '' },
   { id: 'version', label: '宿主版本探测', probe: host => host.version().status !== 'unknown' },
+  // P2-4（D6）：官方 Team 任务板。只读探测 isEnabled/listTasks 两个方法——
+  // 缺服务/形状变了就整段降级（面板隐藏该分区），不模拟、也不新增派发路径。
+  {
+    id: 'team-board',
+    label: '官方 Team 任务板（agentTeams.isEnabled / listTasks）',
+    probe: host => {
+      const teams = host.agentTeams()
+      return teams !== undefined && teams !== null
+        && typeof teams.isEnabled === 'function'
+        && typeof teams.listTasks === 'function'
+    },
+  },
 ])
 
 /**
@@ -181,6 +193,9 @@ export function createHostCapabilities(ctx, { onWarn = () => {}, env = process.e
     sandboxPolicy: () => service('sandboxPolicy'),
     planMode: () => service('planMode'),
     goals: () => ctx?.goals ?? service('goals'),
+    // P2-4（D6）：官方 Team 任务板（rc.5 的 @deepseek-ai/dsh-agent-team 注册为 agentTeams）。
+    // 服务缺失返回 undefined；消费方（src/team-board.js）自己判 isEnabled/listTasks 是否存在。
+    agentTeams: () => ctx?.agentTeams ?? service('agentTeams'),
     schedule: () => service('schedule'),
     sessionPersistence: () => service('sessionPersistence'),
     workspaceChanges: () => service('workspaceChanges'),

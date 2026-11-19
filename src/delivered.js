@@ -12,6 +12,9 @@ import { statusLabel } from './state.js'
 // P2-3 交接契约 v1：确认人/确认时间在这里落库，`task.handoff.confirmed` 也只在这里上报一次
 // （幂等关闭走已 done 的 early return，不会再写第二条事件）。
 import { acceptedByOf, emitHandoffConfirmed } from './handoff.js'
+// P2-4（D6）：确认成功 → 可选反写官方 Team 板（只有任务显式关联了 `team_task_id` 才动）。
+// 上报器是进程级 sink（index.js 接一次），没接 / 没关联 / 官方不可用时都是静默 no-op。
+import { emitTeamBoardConfirm } from './team-board.js'
 
 /** 交付后等确认的默认超时（分钟）；`config.deliveredTimeoutMinutes` 可覆盖（1–1440）。 */
 export const DELIVERED_TIMEOUT_MINUTES = 60
@@ -99,6 +102,10 @@ export function closeDelivered({
   log('task.delivered.closed', { taskId: next.id, sessionId: sessionId ?? null, detail: { reason, acceptedBy } })
   // 交接契约 v1：确认事件只在这里发一次（already 分支已提前返回，重复确认不会重复发）。
   try { emitHandoffConfirmed(next) } catch { /* 事件失败是旁路，不影响已落库的 done */ }
+  // P2-4（D6）：反写官方 Team 板（CAS，只对显式关联的任务；失败只 warn，不回滚本地 done）。
+  // 把 `acceptedBy` 一并交出去：**超时自动完成不是人的确认**，sweeper 那条路只记 skip、不反写官方板。
+  // 放在最后：本地状态已经落库，反写再怎么样都只是「官方板上多一次提醒」。
+  try { emitTeamBoardConfirm(next, { acceptedBy }) } catch { /* 反写是旁路，绝不能影响已落库的 done */ }
   return { ok: true, task: next, already: false }
 }
 

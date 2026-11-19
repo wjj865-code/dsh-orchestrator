@@ -37,6 +37,8 @@ function setup(options = {}) {
     config: options.config ?? {},
     coordinatorStatus: options.coordinatorStatus ?? (() => ({ id: 's-1', live: true })),
     logger: { log() {} },
+    // P2-4（D6）：官方 Team 板关联视图（不传 = 未装配，detail 里 teamTask 为 null）。
+    teamBoard: options.teamBoard,
   })
   return {
     async init() {
@@ -72,6 +74,32 @@ test('detail 返回 brief/消息/产物/依赖', async () => {
   assert.equal(detail.task.artifacts.length, 1)
   assert.equal(detail.dependencies[0].status, 'done')
   assert.equal(detail.messages.some(row => row.text === '继续'), true)
+  db.close()
+})
+
+test('detail 带官方 Team 关联（P2-4）：没关联是 null；有关联给台账 + 官方当前行；读视图抛错也不 500', async () => {
+  const teamBoard = task => task.team_task_id === null
+    ? null
+    : { id: task.team_task_id, revision: task.team_task_revision, enabled: true, row: { id: task.team_task_id, status: 'in_progress' }, degraded: null }
+  const env = setup({ teamBoard })
+  const { db, actions } = await env.init()
+  const plain = runningTask(db, '没关联')
+  assert.equal(actions.detail(plain.id).task.teamTask, null)
+  const linked = runningTask(db, '有关联', { teamTask: { id: 'task-3', revision: 2 } })
+  const view = actions.detail(linked.id).task.teamTask
+  assert.equal(view.id, 'task-3')
+  assert.equal(view.revision, 2)
+  assert.equal(view.row.status, 'in_progress')
+  db.close()
+})
+
+test('detail 的官方 Team 关联视图抛错时退化为 null（抽屉照常打开）', async () => {
+  const env = setup({ teamBoard: () => { throw new Error('boom') } })
+  const { db, actions } = await env.init()
+  const task = runningTask(db, '抛错')
+  const detail = actions.detail(task.id)
+  assert.equal(detail.ok, true)
+  assert.equal(detail.task.teamTask, null)
   db.close()
 })
 

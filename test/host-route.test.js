@@ -114,6 +114,57 @@ test('snapshot 带 P1 字段：依赖/分组/写域/优先级', async () => {
   db.close()
 })
 
+test('snapshot 带官方 Team 板只读快照（P2-4）：默认降级、可注入只读行、读抛错也不 500', async () => {
+  const db = await openLedger(tempDir())
+  // 1) 未装配：稳定降级形状（面板据此隐藏该分区，不假装「没有官方板」）。
+  const plain = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-1', live: true }) })
+  const plainBody = await (await plain(request({ endpoint: 'snapshot' }))).json()
+  assert.equal(plainBody.teamBoard.enabled, false)
+  assert.deepEqual(plainBody.teamBoard.rows, [])
+  assert.equal(plainBody.teamBoard.degraded.code, 'TEAM_BOARD_UNAVAILABLE')
+
+  // 2) 装配只读视图：行原样下发（只读分区不改台账）。
+  const rows = [{
+    id: 'task-3', revision: 2, subject: '官方任务', status: 'in_progress', statusLabel: '进行中',
+    owner: 'w-1', blockedBy: [], writeScopes: ['src/'], ready: false,
+  }]
+  const before = counts(db)
+  const wired = createHostRoute({
+    db,
+    coordinatorStatus: () => ({ id: 's-1', live: true }),
+    teamBoard: () => ({ enabled: true, rows, degraded: null }),
+  })
+  const body = await (await wired(request({ endpoint: 'snapshot' }))).json()
+  assert.deepEqual(body.teamBoard, { enabled: true, rows, degraded: null })
+  assert.deepEqual(counts(db), before, 'snapshot 不应写库')
+
+  // 3) 读板抛错：降级而不是 500（快照是面板轮询入口，不能因为一块只读分区挂掉）。
+  const broken = createHostRoute({
+    db,
+    coordinatorStatus: () => ({ id: 's-1', live: true }),
+    teamBoard: () => { throw new Error('boom') },
+  })
+  const response = await broken(request({ endpoint: 'snapshot' }))
+  assert.equal(response.status, 200)
+  assert.equal((await response.json()).teamBoard.degraded.code, 'TEAM_BOARD_READ_FAILED')
+  db.close()
+})
+
+test('snapshot 任务行带官方 Team 关联（teamTask）：没关联是 null，有关联带创建时 revision', async () => {
+  const db = await openLedger(tempDir())
+  const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-1', live: true }) })
+  const plain = createTask(db, { brief: sampleBrief({ title: '没关联' }), coordinatorSession: 's-1' })
+  const linked = createTask(db, {
+    brief: sampleBrief({ title: '有关联' }),
+    coordinatorSession: 's-1',
+    teamTask: { id: 'task-3', revision: 2 },
+  })
+  const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  assert.equal(body.tasks.find(item => item.id === plain.id).teamTask, null)
+  assert.deepEqual(body.tasks.find(item => item.id === linked.id).teamTask, { id: 'task-3', revision: 2 })
+  db.close()
+})
+
 test('未知端点返回 400，不泄漏内部错误', async () => {
   const { db, handler } = await setup()
   const response = await handler(request({ endpoint: 'delete-everything' }))

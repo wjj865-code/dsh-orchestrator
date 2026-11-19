@@ -33,6 +33,8 @@ import { artifactLines } from './notify.js'
 import { CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered, closeReasonLabel } from './delivered.js'
 // P2-3 交接契约 v1：`task_status` 的「交接」段与面板/JSONL 同源（src/handoff.js 是唯一字段真源）。
 import { handoffOfTask, handoffStatusLines } from './handoff.js'
+// P2-4（D6）：官方 Team 板只读关联（校验/展示在这里，反写在 closeDelivered 的 sink 里）。
+import { TEAM_BOARD_UNAVAILABLE, teamLinkStatusLine } from './team-board.js'
 import { toolFailure } from './action-errors.js'
 import { objectiveForMessage, normalizeGoalRounds } from './goal.js'
 import { followupGate, stopIsIdempotent } from './panel-gates.js'
@@ -122,7 +124,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, stateDir, worktree, cleanupWorktree, runAcceptance = runChecks }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, teamBoard, stateDir, worktree, cleanupWorktree, runAcceptance = runChecks }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   // P9：宿主侧 git 能力（测试注入 fake；生产用 execFile）。普通任务一次都不会调用它。
@@ -581,6 +583,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       // P2-2：续跑预算同样跟着原任务走（重派不改续跑语义）。
       goalRounds: task.goal_rounds ?? 0,
       worktree: retryWorktree,
+      // P2-4：官方 Team 板关联跟着原任务走（重派是同一次尝试的延续；CAS 基线仍用创建时的 revision，
+      // 真冲突时反写会重读一次再试一次，不会因为重派就永远写不进去）。
+      teamTask: task.team_task_id === null ? null : { id: task.team_task_id, revision: task.team_task_revision },
       retryOf: task.id,
       dependsOn: depends.ids,
       groupId: task.group_id,
@@ -797,6 +802,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       },
       refs: strList('背景资料，如文件路径，可空'),
       user_verbatim: str('用户原话，可空'),
+      teamTaskId: str('可选：关联官方 Team 板上的任务 id（如 task-3，只在官方 Agent Teams 开启时可用）。'
+        + '只读校验任务存在并记下当前 revision；确认交付时按 CAS（expectedRevision）把该官方任务标 complete，'
+        + '冲突只提示、不重试轰炸，也不接管官方派发/生命周期'),
       target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
       readOnly: { type: 'boolean', description: '只读任务：子会话沙箱 read-only（读正常，写文件/写 shell 被拒）；默认 false，只在明确需要时传 true' },
       planFirst: { type: 'boolean', description: '计划模式：子会话先只读探索并上报计划，批准后再执行；与 readOnly 互斥；默认 false' },
@@ -888,6 +896,24 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         log('task.create.rejected', { agentId, detail: { reason: 'checks-readonly-conflict', callId } })
         return '只读任务不接受 checks：验收命令在插件宿主进程里执行（不是子会话沙箱），无法保证「只读」。'
           + '要跑测试/构建就别传 readOnly:true；真要只读核对，把结论写进 acceptance 由人看。'
+      }
+      // P2-4（D6）：可选关联官方 Team 板任务。**只读**校验（任务存在 + 当前 revision），不 claim、不改官方任务；
+      // 关联只写进我们自己的台账（team_task_id / team_task_revision），确认交付时才按 CAS 反写 complete。
+      // 官方不可用/未开启时明确拒绝，不静默忽略参数（用户以为关联上了、结果什么都没发生最糟）。
+      const teamTaskIdText = typeof args.teamTaskId === 'string' ? args.teamTaskId.trim() : ''
+      let teamTask = null
+      let teamTaskNote = ''
+      if (teamTaskIdText !== '') {
+        const linked = typeof teamBoard?.link === 'function'
+          ? teamBoard.link(exec?.agent, teamTaskIdText)
+          : { ok: false, code: TEAM_BOARD_UNAVAILABLE, reason: '插件没有装配官方 Team 板读取（宿主缺 agentTeams 服务）' }
+        if (linked.ok !== true) {
+          log('task.create.rejected', { agentId, detail: { reason: 'team-task', code: linked.code, callId } })
+          return `官方 Team 任务关联失败：${linked.reason}。`
+        }
+        teamTask = { id: linked.task.id, revision: linked.task.revision }
+        teamTaskNote = `官方板：已关联「${teamTask.id}」（创建时 revision ${teamTask.revision ?? '未知'}）；`
+          + `确认交付时按 CAS 反写完成，冲突只提示、不阻塞本地交付。${linked.note === '' ? '' : `\n${linked.note}`}`
       }
       // 显式 target 先归一：空串/全空白等价于没传（模型常用 "" 表示没有），不能把空串当目录写库。
       const targetText = typeof args.target === 'string' ? args.target.trim() : ''
@@ -1116,6 +1142,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         goalRounds,
         access: fullAccess ? 'full' : null,
         worktree: worktreeRecord,
+        // P2-4（D6）：官方 Team 板关联（可选）；没传就是 null，行为与之前完全一致。
+        teamTask,
         dependsOn: depends.ids,
         groupId,
         writeScopes,
@@ -1149,6 +1177,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           worktreeSource: worktreeRecord?.source ?? null,
           checks: checks.length,
           goalRounds,
+          // P2-4：关联了官方板任务才多这个字段（没关联与旧日志逐字一致）。
+          ...(teamTask === null ? {} : { teamTaskId: teamTask.id, teamTaskRevision: teamTask.revision }),
         },
       })
       const rendered = renderBriefForTask(task)
@@ -1187,7 +1217,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           base: worktreeRecord?.base,
           hint: worktreeHint,
         })
-        const notes = [dependencyNote, checksNote, goalRoundsNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
+        const notes = [dependencyNote, checksNote, goalRoundsNote, teamTaskNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
         log('task.dep.waiting', { taskId: task.id, detail: { dependsOn: depends.ids, callId } })
         return `任务「${taskLabelWithId(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
       }
@@ -1204,7 +1234,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         error: resultTask?.status === 'failed' ? resultTask.error : undefined,
         hint: worktreeHint,
       })
-      const notes = [invalidHint(), inferredNote, planNote, checksNote, goalRoundsNote, accessNote, ...worktreeLines, conflictNote, dependencyNote]
+      const notes = [invalidHint(), inferredNote, planNote, checksNote, goalRoundsNote, teamTaskNote, accessNote, ...worktreeLines, conflictNote, dependencyNote]
         .filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       if (resultTask?.status === 'running') {
@@ -1292,6 +1322,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       // P2-3 交接契约 v1：谁确认/何时确认/几轮——没交付过的任务没有交接段（返回空数组）。
       lines.push(...handoffStatusLines(handoffOfTask(db, task)))
+      // P2-4（D6）：关联了官方 Team 板任务才多这一行（没关联与旧输出逐字一致）。
+      const teamLine = teamLinkStatusLine(task)
+      if (teamLine !== '') lines.push(teamLine)
       // P2-1 A1：交付前机器验收——有结果就逐条列（退出码/耗时/截断），没跑过但配了检查也要说清。
       if (task.acceptance !== null) {
         lines.push(...acceptanceStatusLines(task.acceptance))

@@ -10,6 +10,8 @@ import { ACTIVE_STATUSES, canClose, canDelete, canFollowup } from './panel-gates
 import { statusesWith } from './status-facts.js'
 // P2-3 交接契约 v1：snapshot 只下发精简版（谁/何时确认 + 验收是否通过），完整证据在 detail 端点。
 import { handoffSnapshot } from './handoff.js'
+// P2-4（D6）：官方 Team 板**只读**快照。服务缺失/未开启/读失败都只降级，绝不让快照 500。
+import { TEAM_BOARD_UNAVAILABLE } from './team-board.js'
 
 const ENDPOINTS = new Set(['snapshot', 'session-role'])
 const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message', 'close', 'delete'])
@@ -23,9 +25,22 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleMinutes = 30, limit = 200, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, openMain, panel, teamBoard, staleMinutes = 30, limit = 200, now = Date.now }) {
   // message 请求级幂等：按 (taskId, clientRequestId) 去重，只在进程内（重启失效，见 request-dedupe.js）。
   const dedupe = createRequestDedupe({ max: 200 })
+  // 官方 Team 板：读失败也只降级（快照是面板的轮询入口，不能因为一块只读分区 500）。
+  const boardSnapshot = () => {
+    if (typeof teamBoard !== 'function') {
+      return { enabled: false, rows: [], degraded: { code: TEAM_BOARD_UNAVAILABLE, message: '未装配官方 Team 板读取（宿主缺 agentTeams 服务）' } }
+    }
+    try {
+      const view = teamBoard()
+      if (view !== null && typeof view === 'object') return view
+      return { enabled: false, rows: [], degraded: { code: TEAM_BOARD_UNAVAILABLE, message: '官方 Team 板读取返回空' } }
+    } catch (error) {
+      return { enabled: false, rows: [], degraded: { code: 'TEAM_BOARD_READ_FAILED', message: error?.message ?? String(error) } }
+    }
+  }
   const snapshot = () => {
     const status = coordinatorStatus?.() ?? {}
     const at = now()
@@ -48,6 +63,9 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
       },
       // 「待你决定」计数：等你确认/要授权/已交付待确认——三种都需要人（或协调者）拍板。
       inboxCount: tasks.filter(task => INBOX_STATUSES.has(task.status)).length,
+      // P2-4（D6）：官方 Team 板只读快照（`enabled:false` 时面板隐藏该分区；
+      // `degraded` 有值表示「服务在但读不到」，面板显示只读提示而不是装作没有）。
+      teamBoard: boardSnapshot(),
       tasks: tasks.map(task => {
         const card = taskCard(task)
         return {
@@ -84,6 +102,10 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
           closeReason: task.close_reason ?? null,
           // P2-3 交接契约 v1（精简）：契约版本 + 交付/确认时间 + 确认方式 + 验收结论；没交接是 null。
           handoff: handoffSnapshot(task),
+          // P2-4（D6）：官方 Team 板关联（创建时读到的 CAS 基线）；没关联是 null。
+          teamTask: task.team_task_id === null
+            ? null
+            : { id: task.team_task_id, revision: task.team_task_revision ?? null },
           // P2-1 A1：验收摘要（列表/卡片小标用；完整证据在面板 detail 端点）。
           acceptance: task.acceptance === null || task.acceptance === undefined
             ? null

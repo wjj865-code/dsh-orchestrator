@@ -20,7 +20,7 @@
 |---|---|---|
 | `0.2.2-rc.3` | 本机 desktop 真机实测（P0-1 及之前）+ `docs/probes/*` 契约探针 | 基线内。`agentTeams` 成员 API 已移除 → P0-1 删掉 team 后端 |
 | `0.2.2-rc.4` | 未单独实测 | 同 minor；**按基线内声明，不代表已逐项验证** |
-| `0.2.2-rc.5` | P0-2b 静态复核本机 desktop 安装包（asar 内 338 个 `@deepseek-ai/*` 全为 `0.2.2-rc.5`） | 9 类耦合点的服务仍在（`settings` / `token-meter` / `session-query-sqlite` / 工作区 registry / `plan-mode` / `goal` / `subagent` 系）；`app-boot` 新增 `engines.dsh` 插件兼容预检（本包尚未声明该字段，见 §5） |
+| `0.2.2-rc.5` | P0-2b 静态复核本机 desktop 安装包（asar 内 338 个 `@deepseek-ai/*` 全为 `0.2.2-rc.5`）；P2-4 复核 `dsh-agent-team` 的任务板契约 | 10 类耦合点的服务仍在（`settings` / `token-meter` / `session-query-sqlite` / 工作区 registry / `plan-mode` / `goal` / `agentTeams` 任务板 / `subagent` 系）；`app-boot` 新增 `engines.dsh` 插件兼容预检（本包尚未声明该字段，见 §5） |
 
 ## 3. rc.3 冒烟 3 条（本地可跑）
 
@@ -28,10 +28,10 @@
 
 ```bash
 pnpm test && pnpm run check:client && pnpm run check-version
-node --test test/host-capabilities.test.js      # 9 类访问器 + 版本基线 + 文档同口径
+node --test test/host-capabilities.test.js      # 10 类访问器 + 版本基线 + 文档同口径
 ```
 
-再确认本次加载的宿主版本与 9 类能力（插件每次加载写一行 `host.capabilities`）：
+再确认本次加载的宿主版本与 10 类能力（插件每次加载写一行 `host.capabilities`）：
 
 ```powershell
 # Windows / Desktop
@@ -40,7 +40,7 @@ Select-String -Path "$env:DSH_HOME\state\orchestrator\logs\orchestrator-$(Get-Da
 grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%F).jsonl"
 ```
 
-期望：`version` 为 `0.2.2-rc.3`/`-rc.5`、`versionStatus: inside`、`available: 9`（`missing: []`）。缺项时按 §4 的降级行为判读，不要当成「偶发失败」。
+期望：`version` 为 `0.2.2-rc.3`/`-rc.5`、`versionStatus: inside`、`available: 10`（`missing: []`）。缺项时按 §4 的降级行为判读，不要当成「偶发失败」。
 
 **冒烟 1：派 3 个活 → 交付确认 → 追问复用同一子会话**
 协调者会话里说：*「用 task_create 给三个不同目录各派一个只读任务，标题分别 call-A/B/C」* → 期望 `task_list` 出现 3 行、`task_status` 可查；让其中一个 `task_report(done)` → 状态变「已交付待确认」；`task_message` 追问 → **同一个 sessionId** 继续；`task_message({action:'close'})` → `done`。
@@ -54,9 +54,9 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 `task_create({ worktree: true, target: <git 仓库> })` → 期望返回 `worktree` 块（检出目录 + 分支名 `orch/<taskId>`），产物落在检出目录、不在用户工作树。
 失败判据：报「缺少 git」/ 检出目录不存在 = 宿主 git 能力或 cwd 形状变了，记 `session-create` 行。
 
-## 4. 能力探测与降级（9 类）
+## 4. 能力探测与降级（10 类）
 
-`src/host-capabilities.js` 是**唯一**允许摸宿主的地方（`ctx.get` / `DSH_HOME` / 槽位名 / 安装清单）。`report()` 每次现算（服务晚加载能被看到），首片只接线三处：日志路径、版本探测、`settings` 探针。
+`src/host-capabilities.js` 是**唯一**允许摸宿主的地方（`ctx.get` / `DSH_HOME` / 槽位名 / 安装清单）。`report()` 每次现算（服务晚加载能被看到），首片只接线三处：日志路径、版本探测、`settings` 探针；P2-4 接线第 10 类 `agentTeams`（官方 Team 板只读互通）。
 
 | id | 宿主来源 | 缺失后果 | 降级行为 | 首片接线 |
 |---|---|---|---|---|
@@ -69,12 +69,13 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 | `panel-slots` | 槽位名 `main` / `sidebar.panellist` / `conversation.header.leading` / `conversation.chat.turnTail` | 面板入口不渲染（历史「真实宿主永不渲染」） | 退到 `main` 单槽；入口隐藏但不报错 | 访问器就绪，下一片 |
 | `log-path` | `$DSH_HOME`（空白按未设置）→ `<home>/state/orchestrator` | 日志/台账写不进去 | 台账打不开即加载失败（这是硬依赖，不是降级项） | **已接线** |
 | `version` | 环境变量 `DSH_HOST_VERSION`/`DSH_VERSION`，其次 asar 内 `<root>/app.asar/<inner>/package.json` | 无从判越界 | `unknown`，不告警；功能照常 | **已接线** |
+| `team-board` | `agentTeams.isEnabled` / `listTasks`（确认反写另需 `updateTask`） | 看不到官方板、确认时不能反写 | 整段降级：`snapshot.teamBoard = {enabled:false, rows:[], degraded}`，面板隐藏该分区；确认交付照常完成，只记 `team.board.skipped` | **已接线**（P2-4） |
 
 日志字段：`host.capabilities` 的 `detail` = `{ version, versionSource, versionStatus, available, total, missing[] }`。
 
 ## 5. 已知缺口（P0 剩余，按优先级）
 
 1. **消费点迁移（6 类）**：`dispatch.js` 仍裸取 `ctx.get('agentPresets')` / `ctx.get('planMode')`；客户端槽位名与 `TurnLocation` 语义仍在 `client/src` 里硬编码（`client.js:226/247/252/267`、`logic.js:233-247`）。迁移完加静态断言：业务模块出现裸 `ctx.get(` 即测试失败。
-2. **面板诊断行**：把 `report()` 渲染成「宿主能力 9/9，缺失 X」一行（复用 `index.js` 里 `checkScheduleCapability` 的降级文案模式）。
+2. **面板诊断行**：把 `report()` 渲染成「宿主能力 10/10，缺失 X」一行（复用 `index.js` 里 `checkScheduleCapability` 的降级文案模式）。
 3. **`engines.dsh` 声明**：rc.5 的 `app-boot` 会按 `engines.dsh`（否则 `peerDependencies` 里的 `@deepseek-ai/dsh-*`）做加载前兼容预检；本包尚未声明。加之前要确认 rc.3 是否会因此拒载。
 4. **CI 宿主矩阵**：当前 CI 跑单测 + 构建 + 版本断言（不装宿主），rc.3 冒烟是真机手工；把 §3 变成 CI 作业（装 `@deepseek-ai/dsh-base@0.2.2-rc.3` 跑契约探针）留待后续。

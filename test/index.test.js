@@ -65,7 +65,7 @@ function fakeGoalService() {
   }
 }
 
-function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, connection, sessionController, workspaces, goals, sessions, workspaceChanges } = {}) {
+function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, agentTeams: agentTeamsOverride, connection, sessionController, workspaces, goals, sessions, workspaceChanges } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
   const routes = []
@@ -117,7 +117,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
     effect(callback) { disposers.push(callback()); return () => {} },
     ...(withAgentTeams
       ? {
-        agentTeams: {
+        agentTeams: agentTeamsOverride ?? {
           async spawnTeammate() { return spawnResult },
           async sendMessage(sender, input) { sent.push([sender, input]) },
           async interrupt() {},
@@ -1335,6 +1335,152 @@ test('注册 /api/orchestrator 只读路由：POST + buffered + snapshot', withH
   const body = await response.json()
   assert.equal(body.ok, true)
   assert.deepEqual(body.mainSession, { id: 's-1', live: true })
+  // P2-4（D6）：没装 agentTeams 板 API 时快照里是稳定降级形状（面板隐藏该分区，不影响现有流程）。
+  assert.equal(body.teamBoard.enabled, false)
+  assert.deepEqual(body.teamBoard.rows, [])
+  assert.equal(body.teamBoard.degraded.code, 'TEAM_BOARD_UNAVAILABLE')
+}))
+
+// —— P2-4（D6）：官方 Team 板只读快照 + 确认交付反写（CAS） ——
+
+/** 与 rc.5 同形状的 fake：只读行 + CAS 更新；记录每次调用，用于断言「没有派发、没有越权写」。 */
+function fakeBoardService(overrides = {}) {
+  const calls = []
+  const tasks = [{
+    id: 'task-3', revision: 2, subject: '官方任务', description: '16 KiB 正文不进快照',
+    status: 'in_progress', blockedBy: [], writeScopes: [], ready: false, writeScopeWarnings: [],
+  }]
+  return {
+    calls,
+    isEnabled(agent) { calls.push(['isEnabled', agent?.id ?? null]); return overrides.enabled ?? true },
+    listTasks() { calls.push(['listTasks']); return tasks.map(task => ({ ...task })) },
+    async updateTask(agent, request) {
+      calls.push(['updateTask', request])
+      if (overrides.failUpdate !== undefined) throw overrides.failUpdate
+      return { ...tasks[0], revision: request.expectedRevision + 1, status: 'completed' }
+    },
+  }
+}
+
+/** 本进程写过的全部运行日志（按天分文件；测试只关心事件名与字段在不在）。 */
+const logsOf = home => {
+  const dir = join(home, 'state', 'orchestrator', 'logs')
+  return readdirSync(dir)
+    .filter(name => name.endsWith('.jsonl'))
+    .map(name => readFileSync(join(dir, name), 'utf8'))
+    .join('\n')
+}
+
+test('P2-4 快照：装了官方板就下发只读行，且读板不创建任务、不调 updateTask', withHome(async () => {
+  const s1 = makeAgent('s-1')
+  const agentTeams = fakeBoardService()
+  const f = fakeCtx({ agents: [s1], agentTeams })
+  await apply(f.ctx, { coordinatorSession: 's-1' })
+  const route = f.routes.find(spec => spec.path === '/api/orchestrator')
+  const body = await (await route.fetch(new Request('http://localhost/api/orchestrator', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ endpoint: 'snapshot' }),
+  }))).json()
+  assert.equal(body.teamBoard.enabled, true)
+  assert.deepEqual(body.teamBoard.rows.map(row => row.id), ['task-3'])
+  assert.equal('description' in body.teamBoard.rows[0], false)
+  // 只读：快照只调 isEnabled/listTasks，绝不写官方板。
+  assert.deepEqual(agentTeams.calls.filter(([kind]) => kind === 'updateTask'), [])
+  assert.equal(f.registered.length, 10, '没有新增工具面')
+  await f.disposers.at(-1)?.()
+}))
+
+test('P2-4 反写：task_create(teamTaskId) → 确认交付 → updateTask({action:"complete", expectedRevision})', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const agentTeams = fakeBoardService()
+  const f = fakeCtx({ agents: [s1], agentTeams })
+  const { getTask: readTask, transition: move } = await import('../src/ledger.js')
+  await apply(f.ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  const created = await byName.task_create.execute(
+    { title: '反写任务', goal: '把结果写回官方板', acceptance: ['a'], teamTaskId: 'task-3' },
+    { agent: s1 },
+  )
+  assert.match(created, /官方板：已关联「task-3」/)
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = ledger.prepare('SELECT * FROM tasks').get()
+  assert.equal(task.team_task_id, 'task-3')
+  assert.equal(task.team_task_revision, 2)
+  // 推到「已交付待确认」（task_report done 要子会话身份；反写只挂在 closeDelivered 上，路径无关）。
+  if (readTask(ledger, task.id).status !== 'running') move(ledger, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  move(ledger, task.id, 'delivered')
+  const closed = await byName.task_message.execute({ action: 'close', task_id: task.id }, { agent: s1 })
+  assert.match(closed, /已确认完成/)
+  await wait(20)
+  const updates = agentTeams.calls.filter(([kind]) => kind === 'updateTask').map(([, request]) => request)
+  assert.deepEqual(updates, [{ taskId: 'task-3', expectedRevision: 2, action: 'complete' }])
+  assert.equal(readTask(ledger, task.id).status, 'done')
+  // 反写没有变成第二条派发路径：全程只有 task_create 那一次 spawn。
+  assert.equal(f.sent.length, 0, '反写不往会话里注入消息')
+  ledger.close()
+  await f.disposers.at(-1)?.()
+}))
+
+test('P2-4 反写失败只 warn：官方板报错时本地任务照常 done，日志记 confirm-failed', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const agentTeams = fakeBoardService({ failUpdate: Object.assign(new Error('only an in-progress task can complete'), { code: 'TEAM_TASK_INVALID_TRANSITION' }) })
+  const f = fakeCtx({ agents: [s1], agentTeams })
+  const { getTask: readTask, transition: move } = await import('../src/ledger.js')
+  await apply(f.ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '反写失败', goal: 'g', acceptance: ['a'], teamTaskId: 'task-3' }, { agent: s1 })
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = ledger.prepare('SELECT * FROM tasks').get()
+  if (readTask(ledger, task.id).status !== 'running') move(ledger, task.id, 'running', { sessionId: 'c-2', target: 'c-2' })
+  move(ledger, task.id, 'delivered')
+  const closed = await byName.task_message.execute({ action: 'close', task_id: task.id }, { agent: s1 })
+  assert.match(closed, /已确认完成/, '本地交付不受反写失败影响')
+  await wait(20)
+  assert.equal(readTask(ledger, task.id).status, 'done')
+  assert.ok(f.warnings.some(message => /官方 Team 板未反写成功/.test(message)), f.warnings.join(' | '))
+  assert.match(logsOf(home), /team\.board\.confirm-failed/)
+  ledger.close()
+  await f.disposers.at(-1)?.()
+}))
+
+test('P2-4 反写：超时自动完成不反写官方板（本地 done，日志 team.board.skipped 原因 timeout）', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const agentTeams = fakeBoardService()
+  const f = fakeCtx({ agents: [s1], agentTeams })
+  const { closeDelivered, CLOSE_REASONS } = await import('../src/delivered.js')
+  const { getTask: readTask, transition: move } = await import('../src/ledger.js')
+  await apply(f.ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '超时不反写', goal: 'g', acceptance: ['a'], teamTaskId: 'task-3' }, { agent: s1 })
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  const task = ledger.prepare('SELECT * FROM tasks').get()
+  if (readTask(ledger, task.id).status !== 'running') move(ledger, task.id, 'running', { sessionId: 'c-3', target: 'c-3' })
+  move(ledger, task.id, 'delivered')
+  // 模拟 delivered sweeper：它调的就是 closeDelivered({ reason:'timeout', by:'timeout' })。
+  const outcome = closeDelivered({
+    db: ledger,
+    taskId: task.id,
+    reason: CLOSE_REASONS.timeout,
+    by: 'timeout',
+    releaseSession: () => {},
+    completeGoal: () => {},
+    cleanupWorktree: () => {},
+    pump: () => {},
+  })
+  assert.equal(outcome.ok, true)
+  await wait(20)
+  assert.equal(readTask(ledger, task.id).status, 'done', '超时照常收成本地 done')
+  assert.deepEqual(
+    agentTeams.calls.filter(([kind]) => kind === 'updateTask'),
+    [],
+    '超时不是人的确认：官方板一次都不写',
+  )
+  assert.equal(f.warnings.some(message => /官方 Team 板未反写成功/.test(message)), false, '超时跳过是正常降级，不该 warn')
+  const log = logsOf(home)
+  assert.match(log, /team\.board\.skipped/)
+  assert.match(log, /"reason":"timeout"/)
+  assert.doesNotMatch(log, /team\.board\.confirmed/, '没有任何成功反写事件')
+  ledger.close()
+  await f.disposers.at(-1)?.()
 }))
 
 test('connection 晚于插件加载：ctx.inject 就绪后仍注册只读路由', withHome(async () => {

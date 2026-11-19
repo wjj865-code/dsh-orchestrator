@@ -119,6 +119,11 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   // P9：隔离任务说明「在哪个检出/分支、产物不在用户工作树、合并由用户决定」。
   const worktreeLines = worktreeDetailLines(task)
   if (worktreeLines.length > 0) lines.push(...worktreeLines)
+  // P2-4（D6）：关联了官方 Team 板任务时如实告诉子会话「它只是只读关联」——
+  // 子会话不该去 claim/complete 官方任务（确认反写是协调者的动作，走 CAS）。
+  if (typeof task.team_task_id === 'string' && task.team_task_id !== '') {
+    lines.push(`官方 Team 任务：${task.team_task_id}（只读关联；不要操作官方任务板，确认交付时由协调者按 CAS 反写）`)
+  }
   if (Array.isArray(brief.workspaceIndexEntries)) {
     lines.push(`【工作区名单】仅扫描这些DSH已登记目录，不全盘递归搜git：\n${JSON.stringify(brief.workspaceIndexEntries)}`)
     lines.push(`【只读索引脚本】${brief.workspaceIndexScript}\n用 node 脚本路径 + 上述名单JSON作为一个参数执行（正确引用，勿拼shell）；stdout即完整JSON。只读，不fetch/pull、不写文件，单项失败继续，remote去凭证。用 task_report({status:'done',workspace_index:完整JSON字符串,summary:'索引已扫描'}) 回报；宿主验证名单并存settings快照，不允许memory_note越权。采样非实时、歧义列候选。`)

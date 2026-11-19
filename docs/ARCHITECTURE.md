@@ -267,6 +267,32 @@
 
 **为什么没有「只标记不阻断」**：计划阶段已拍板选「阻断」（P2 计划 §9 待拍板 3）：验收的价值在于退出码，允许 `delivered + ok:false` 等于又回到自述。需要宽松时用 `skipIfMissing`（环境差异）或把检查写宽，而不是绕过闸门。
 
+## 官方 Team 板互通（D6：只读 + 确认反写）
+
+**方向已定：D6 优先，不做 workspace 第二后端。** 官方 Team 板挂在 **subagent 树**上（`subagents.rootOf(caller)` 才能定位），
+一旦派发改走 root 工作区会话，插件任务就脱离 Team 树、D6 直接失效；因此本片**不新增任何 root 会话派发路径**，也**不新增配置键**。
+D6 只做两件事：把官方板**只读**接进插件视图；插件任务被确认交付时**可选地**把关联的官方任务标 `complete`。
+
+| 项 | 规格 |
+|---|---|
+| 宿主契约 | `agentTeams.isEnabled(caller)` / `listTasks(caller)` / `updateTask(caller, { taskId, expectedRevision, action })`（rc.5 `@deepseek-ai/dsh-agent-team`）；全部经 `host-capabilities` 的 `agentTeams()` 惰性取，`report()` 第 10 类 `team-board` 只探测 `isEnabled` + `listTasks` |
+| 只读快照 | `snapshot.teamBoard = { enabled, rows, degraded }`；`rows[] = { id, revision, subject, status, statusLabel, owner, blockedBy, writeScopes, ready }`（**不含 description**：官方允许 16 KiB 正文，每帧下发会把快照撑大）。`enabled:false` 时**不调用** `listTasks` |
+| 关联 | `task_create.teamTaskId`（可选）：只读校验任务存在（`listTasks`）并记 `tasks.team_task_id` / `team_task_revision`（CAS 基线）。不 claim、不改官方任务；重派复制这两列 |
+| 反写 | **人/协调者确认**（`closeDelivered` 成功且 `acceptedBy ≠ timeout`）→ `updateTask({ action:'complete', expectedRevision })`；只对**显式关联**的任务，只由协调者（Team Lead）发起。超时自动完成**不反写**，只记 `team.board.skipped`（`reason: timeout`） |
+| CAS | `expectedRevision` = 创建时读到的 revision；`TEAM_TASK_STALE_REVISION` 只**重读一次**（`listTasks`）再试**一次**，仍冲突就停手记 `team.board.stale`，不重试轰炸 |
+| 降级 | 服务缺失/形状变了/`isEnabled` 抛错 → `degraded.code=TEAM_BOARD_UNAVAILABLE`；Team 未开启 → `enabled:false, degraded:null`；反写失败/冲突**只 warn + 日志**，本地 `done` 已落库、不回滚 |
+| 事件 | `team.board.confirmed`（成功，含 `revision`/`reRead`）、`team.board.stale`（冲突放弃）、`team.board.confirm-failed`（官方拒绝/异常）、`team.board.skipped`（未关联/服务缺失/未开启，正常降级） |
+| 边界 | 不接管官方派发/认领/生命周期；不把官方任务同步进我们的台账；不做 workspace 后端。官方板在面板里是**只读分区**（渲染由 P2-5 接手，本片只给数据） |
+
+**为什么 CAS 是硬要求**：官方板可能同时被 Lead 与 teammate 操作；不带 `expectedRevision` 的 `complete` 会覆盖别人刚做的
+`claim` / `edit`。反过来「冲突就自动改到最新再写」也危险——那等于替别人拍板，所以只重读一次、只再试一次。
+
+**为什么失败只 warn**：交付是本地状态机的事实，官方板只是并行看板；为了一个看板写失败把已确认的任务回滚成
+`delivered`，会让「用户已经确认过」这件事消失——那比看板没更新严重得多。
+
+**为什么超时自动完成不反写**：超时是「没人确认」的兜底，不是人的判断。让它去改官方板，等于系统替别人把
+共享看板上的任务标完成；所以 `acceptedBy: 'timeout'` 只记一条 `team.board.skipped`，`updateTask` 一次都不调。
+
 ## 状态事实源（`src/status-facts.js`）
 
 0.19.x 的 `state.js` 有唯一转移表，但**状态集合**被复制到 9 个模块，并已产生三处真实不一致

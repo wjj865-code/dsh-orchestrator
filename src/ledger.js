@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
   worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT,
   delivered_at INTEGER, close_reason TEXT, acceptance_json TEXT,
-  accepted_by TEXT, accepted_at INTEGER
+  accepted_by TEXT, accepted_at INTEGER,
+  team_task_id TEXT, team_task_revision INTEGER
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -101,6 +102,10 @@ export async function openLedger(stateDir) {
     // 旧库/存量行都是 NULL：读出来是「没确认记录」，面板与 task_status 按「未确认」显示，存量行一律不动。
     if (!taskColumns.includes('accepted_by')) db.exec('ALTER TABLE tasks ADD COLUMN accepted_by TEXT')
     if (!taskColumns.includes('accepted_at')) db.exec('ALTER TABLE tasks ADD COLUMN accepted_at INTEGER')
+    // P2-4（D6）：可选关联官方 Team 板任务 —— id 与「创建时读到的 revision」（确认反写时的 CAS 基线）。
+    // 旧库/存量行都是 NULL = 没关联官方任务，确认时不做任何反写。
+    if (!taskColumns.includes('team_task_id')) db.exec('ALTER TABLE tasks ADD COLUMN team_task_id TEXT')
+    if (!taskColumns.includes('team_task_revision')) db.exec('ALTER TABLE tasks ADD COLUMN team_task_revision INTEGER')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -210,6 +215,9 @@ const taskOf = row => row === undefined ? undefined : ({
   // P2-3 交接契约：确认人（coordinator / panel / timeout）与确认时间；未确认（含存量行）都是 null。
   accepted_by: typeof row.accepted_by === 'string' && row.accepted_by !== '' ? row.accepted_by : null,
   accepted_at: Number.isFinite(row.accepted_at) ? row.accepted_at : null,
+  // P2-4（D6）：官方 Team 板关联（可选）。id 为空/旧库 → null = 没关联，确认时不反写。
+  team_task_id: typeof row.team_task_id === 'string' && row.team_task_id !== '' ? row.team_task_id : null,
+  team_task_revision: Number.isSafeInteger(row.team_task_revision) && row.team_task_revision >= 0 ? row.team_task_revision : null,
 })
 
 export function createTask(db, {
@@ -225,6 +233,8 @@ export function createTask(db, {
   access = null,
   // P9：隔离请求/结果快照（path/branch/repoRoot/base/mode/source/state）。
   worktree = null,
+  // P2-4（D6）：可选关联官方 Team 板任务 `{ id, revision }`（revision = 创建时读到的 CAS 基线）。
+  teamTask = null,
   retryOf = null,
   dependsOn = [],
   groupId = null,
@@ -239,12 +249,15 @@ export function createTask(db, {
     ? planState
     : (plan ? 'planning' : 'none')
   const wt = worktree !== null && typeof worktree === 'object' ? worktree : {}
+  const team = teamTask !== null && typeof teamTask === 'object' && typeof teamTask.id === 'string' && teamTask.id !== ''
+    ? { id: teamTask.id, revision: Number.isSafeInteger(teamTask.revision) && teamTask.revision >= 0 ? teamTask.revision : null }
+    : null
   db.prepare(`INSERT INTO tasks
     (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of,
      depends_json, group_id, write_scopes_json, priority, plan_first, plan_state, access,
      worktree_path, worktree_branch, repo_root, worktree_base, worktree_mode, worktree_source, worktree_state,
-     goal_rounds, created_at, updated_at, last_event_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     goal_rounds, team_task_id, team_task_revision, created_at, updated_at, last_event_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id, String(brief.title), String(brief.goal), JSON.stringify(brief), status,
       String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null,
@@ -255,6 +268,7 @@ export function createTask(db, {
       wt.path ?? null, wt.branch ?? null, wt.repoRoot ?? null, wt.base ?? null,
       wt.mode ?? null, wt.source ?? null, wt.state ?? null,
       Number.isFinite(goalRounds) && goalRounds > 0 ? Math.trunc(goalRounds) : 0,
+      team?.id ?? null, team?.revision ?? null,
       now, now, now,
     )
   return getTask(db, id)

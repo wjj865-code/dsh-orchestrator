@@ -27,6 +27,10 @@ import { injectNotification } from './src/inject.js'
 import { createLogger } from './src/log.js'
 // P2-3 交接契约 v1：JSONL 事件（交付 / 确认）落 $DSH_HOME/state/orchestrator/handoff/。
 import { createHandoffLog, emitHandoffDelivered, setHandoffSink } from './src/handoff.js'
+// P2-4（D6）：官方 Team 板只读快照 + 确认交付时的 CAS 反写（服务缺失/未开启一律降级）。
+import {
+  confirmOnBoard, linkBoardTask, readTeamBoard, setTeamBoardSink, teamLinkView,
+} from './src/team-board.js'
 import { loadPreferences, renderPreferenceBlock } from './src/preferences.js'
 import { PRESENT_LIMIT_TEXT } from './src/prompt-layers.js'
 // P1-C 文案单源：协调者 policy 里的计划/交付口径引用 src/copy.js，避免与 L2/L3 说法漂移。
@@ -49,6 +53,7 @@ const WAIT_AGENT_DENIAL = '协调者禁止阻塞等待：不要调用 wait_agent
 const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则（优先于平台默认的 Team Lead 等待要求）：
 - 禁止使用 wait_agent 或任何阻塞等待、轮询；不要 sleep，不要反复查询来等子任务。
 - 禁止调用 spawn_teammate / send_message / list_agents / interrupt_agent / team_task_create / team_task_get / team_task_list / team_task_update：派活只能走 task_create，查进度只能 task_list / task_status，不要直接派队友或操作团队任务板。
+- 官方 Team 板是**只读**的：snapshot.teamBoard 里能看到官方任务（id/revision/状态/负责人），但你不操作官方板。只有要把我们的任务对齐到某个官方任务时，才在 task_create 里传 teamTaskId（如 'task-3'）：插件只读校验并记下 revision，确认交付时按 CAS 反写该官方任务 complete。反写失败/冲突只提示，不重试轰炸、不影响本地交付。
 - 工具表里可能仍列出这些团队工具（agent-scope 自注册，预设层删不掉），看到也不要调用；执行层会直接拒绝并返回原因。
 - 查看进度只用 task_list / task_status。
 - 原生自动化管理用 schedule_create / schedule_list / schedule_view / schedule_edit；不造调度器，不用文件、shell 或 HTTP 绕过缺失能力。schedule_create 必填 title/prompt/rrule/target；schedule_list 用 active/limit/offset 分页；schedule_view 用 id；schedule_edit 用 id 与 action:update|delete，暂停/恢复用 active:false|true，不存在独立 schedule_delete/pause 工具。
@@ -159,8 +164,8 @@ export async function apply(ctx, rawConfig = {}) {
   const flatConfig = unwrapVolatile(rawConfig)
   // 已删除的配置键（P1-A 41 → 35）在加载时各 warn 一次：旧 profile 不用改也能跑，但用户能看见哪个键失效了。
   const config = loadConfig(flatConfig, { onWarn: warnings })
-  // P0-2b：宿主耦合统一走访问层（9 类）。首片接线「日志路径 + 版本自检」，其余访问器已就绪、
-  // 消费点分批迁移（剩余清单见 docs/compat.md）；这里不改变任何既有行为。
+  // P0-2b：宿主耦合统一走访问层（10 类）。首片接线「日志路径 + 版本自检」，P2-4 接线 `agentTeams`
+  // （官方 Team 板只读互通）；其余访问器已就绪、消费点分批迁移（剩余清单见 docs/compat.md）。这里不改变任何既有行为。
   const host = createHostCapabilities(ctx, { onWarn: warnings })
   const dir = host.stateDir()
   const db = await openLedger(dir)
@@ -241,6 +246,71 @@ export async function apply(ctx, rawConfig = {}) {
     const id = resolvedCoordinatorId()
     return { id, live: id !== undefined && resolveCoordinator() !== undefined }
   }
+
+  // P2-4（D6）：官方 Team 板只读视图 + 可选反写。三件事都只碰 `agentTeams` 的只读方法
+  // （`isEnabled/listTasks`）与唯一的 `updateTask({action:'complete'})`——不接管官方派发/生命周期，
+  // 也不新增任何 root 会话派发路径（计划 §6：D6 优先，不做 workspace 第二后端）。
+  // 读一律用**当前协调者的活 agent**（官方 API 要的是 caller，不是 session id）；未加载时按降级返回。
+  const teamBoard = {
+    read: agent => readTeamBoard({ agentTeams: host.agentTeams(), agent }),
+    link: (agent, teamTaskId) => linkBoardTask({ agentTeams: host.agentTeams(), agent, teamTaskId }),
+    linkView: task => teamLinkView({ agentTeams: host.agentTeams(), agent: resolveCoordinator(), task }),
+  }
+  // 确认反写的进程级 sink：工具 / 面板 / 超时三条路径共用 `closeDelivered`，这里接一次就全覆盖。
+  // 失败只 warn + 记日志，绝不回滚本地 done（`closeDelivered` 早已把状态落库）。
+  // **超时自动完成不反写**：`acceptedBy='timeout'` 不是人的确认，官方板上不该被「没人看过的超时」改状态；
+  // 只记一条 `team.board.skipped`（reason: timeout）留痕，别的什么也不做。
+  const disposeTeamBoardSink = setTeamBoardSink((task, context) => {
+    if (context?.acceptedBy === 'timeout') {
+      if (typeof task.team_task_id === 'string' && task.team_task_id !== '') {
+        logger.log('team.board.skipped', {
+          taskId: task.id,
+          detail: {
+            code: 'TEAM_BOARD_TIMEOUT',
+            reason: 'timeout',
+            message: '超时自动完成不是人的确认，不反写官方 Team 板',
+            teamTaskId: task.team_task_id,
+          },
+        })
+      }
+      return null
+    }
+    const attempt = confirmOnBoard({ agentTeams: host.agentTeams(), agent: resolveCoordinator(), task })
+    return Promise.resolve(attempt).then(outcome => {
+      if (outcome?.ok === true) {
+        logger.log('team.board.confirmed', {
+          taskId: task.id,
+          detail: {
+            teamTaskId: outcome.taskId ?? null,
+            revision: outcome.revision ?? null,
+            fromRevision: outcome.fromRevision ?? null,
+            reRead: outcome.reRead === true,
+            acceptedBy: context?.acceptedBy ?? null,
+          },
+        })
+        return outcome
+      }
+      if (outcome?.skipped === true) {
+        // 没关联 / 服务缺失 / Team 未开启：正常降级，只记日志（确认完成这一下不该吓用户）。
+        logger.log('team.board.skipped', {
+          taskId: task.id,
+          detail: { code: outcome?.code ?? null, reason: outcome?.reason ?? null },
+        })
+        return outcome
+      }
+      // 冲突或官方拒绝：报告即可，不重试轰炸；本地任务照常完成。
+      const stale = outcome?.code === 'TEAM_TASK_STALE_REVISION'
+      logger.log(stale ? 'team.board.stale' : 'team.board.confirm-failed', {
+        taskId: task.id,
+        detail: { teamTaskId: task.team_task_id ?? null, code: outcome?.code ?? null, reason: outcome?.reason ?? null },
+      })
+      warnings(`dsh-orchestrator: 官方 Team 板未反写成功（${outcome?.reason ?? outcome?.code ?? '未知原因'}）；本地任务已照常完成`)
+      return outcome
+    }).catch(error => {
+      logger.log('team.board.confirm-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } })
+      return null
+    })
+  })
 
   // 只检查定义/服务，不执行自动化；回合边界重查，晚加载或恢复后不永久缓存 unavailable。
   const scheduleCapability = new WeakMap()
@@ -663,6 +733,8 @@ export async function apply(ctx, rawConfig = {}) {
     goalBridge,
     // L1：经验文件落在插件唯一写入根下的 lessons/，子会话可 read。
     stateDir: dir,
+    // P2-4（D6）：官方 Team 板只读关联（task_create.teamTaskId 的校验与记录）。
+    teamBoard,
     // P9：worktree 能力共享同一份服务（recentDays 取配置），终态清理由 index 统一注入。
     worktree: worktreeService,
     cleanupWorktree,
@@ -708,6 +780,8 @@ export async function apply(ctx, rawConfig = {}) {
     logger,
     goalBridge,
     cleanupWorktree,
+    // P2-4（D6）：抽屉里的「官方 Team 任务」关联视图（只读）。
+    teamBoard: task => teamBoard.linkView(task),
   })
 
   // 客户端面板路由：鉴权由 connection 服务统一负责；snapshot 只查台账；
@@ -718,6 +792,8 @@ export async function apply(ctx, rawConfig = {}) {
       db,
       coordinatorStatus,
       panel,
+      // P2-4（D6）：官方 Team 板只读快照（服务缺失/未开启/读失败都在 handler 里降级）。
+      teamBoard: () => teamBoard.read(resolveCoordinator()),
       openMain: async () => {
         const result = await mainSession.open()
         if (result?.ok === true && typeof result.sessionId === 'string') {
@@ -778,6 +854,7 @@ export async function apply(ctx, rawConfig = {}) {
     try { watchdog.stop() } catch { /* 看门狗清理失败不阻断卸载 */ }
     try { deliveredSweeper.stop() } catch { /* 超时巡检清理失败不阻断卸载 */ }
     try { disposeHandoffSink() } catch { /* 交接事件 sink 解绑失败不阻断卸载 */ }
+    try { disposeTeamBoardSink() } catch { /* 官方板反写 sink 解绑失败不阻断卸载 */ }
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
     for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, routeDisposer].reverse()) {
