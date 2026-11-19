@@ -69,7 +69,7 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 | `panel-slots` | 槽位名 `main` / `sidebar.panellist` / `conversation.header.leading` / `conversation.chat.turnTail` | 面板入口不渲染（历史「真实宿主永不渲染」） | 退到 `main` 单槽；入口隐藏但不报错 | 访问器就绪，下一片 |
 | `log-path` | `$DSH_HOME`（空白按未设置）→ `<home>/state/orchestrator` | 日志/台账写不进去 | 台账打不开即加载失败（这是硬依赖，不是降级项） | **已接线** |
 | `version` | 环境变量 `DSH_HOST_VERSION`/`DSH_VERSION`，其次 asar 内 `<root>/app.asar/<inner>/package.json` | 无从判越界 | `unknown`，不告警；功能照常 | **已接线** |
-| `team-board` | `agentTeams.isEnabled` / `listTasks`（确认反写另需 `updateTask`） | 看不到官方板、确认时不能反写 | 整段降级：`snapshot.teamBoard = {enabled:false, rows:[], degraded}`，面板隐藏该分区；确认交付照常完成，只记 `team.board.skipped` | **已接线**（P2-4） |
+| `team-board` | `agentTeams.isEnabled` / `listTasks`（确认反写另需 `updateTask`） | 看不到官方板、确认时不能反写 | 整段降级：`snapshot.teamBoard = {enabled:false, rows:[], degraded}`，`enabled !== true` 时面板**整区隐藏（不显示提示条）**；确认交付照常完成，只记 `team.board.skipped` | **已接线**（P2-4） |
 
 日志字段：`host.capabilities` 的 `detail` = `{ version, versionSource, versionStatus, available, total, missing[] }`。
 

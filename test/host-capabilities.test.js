@@ -27,6 +27,22 @@ const COUPLING_IDS = [
 
 const quiet = () => []
 
+/**
+ * cordis 风格上下文：**未写进本插件 inject 的服务属性，读取时由 reflect 的 get trap 直接抛**
+ * （真机报错原文 `cannot get property "agentTeams" without inject`）。这里用 Proxy 复刻这个陷阱，
+ * 锁住「访问器只准走 ctx.get，绝不再摸 ctx.<服务名> 属性」——普通对象替身拦不住这类回归
+ * （属性存在就静默返回、不存在就静默 undefined，两种都不像 cordis）。
+ */
+const cordisCtx = ({ services = {}, get } = {}) => new Proxy(
+  { get: get ?? (name => services[name]) },
+  {
+    get(target, property, receiver) {
+      if (Reflect.has(target, property)) return Reflect.get(target, property, receiver)
+      throw new Error(`cannot get property "${String(property)}" without inject`)
+    },
+  },
+)
+
 test('空上下文：10 类访问器全部降级、不抛；report 如实报缺失', () => {
   const host = createHostCapabilities({})
   for (const accessor of [
@@ -178,14 +194,33 @@ test('第 10 类 team-board：只探测 isEnabled/listTasks，形状不全就如
   assert.equal(old.report().couplings.find(item => item.id === 'team-board').available, false)
   assert.equal(old.report().couplings.find(item => item.id === 'team-api').available, false)
 
-  // ctx.agentTeams 直接挂载（测试/旧装配）也认。
-  const mounted = createHostCapabilities({ agentTeams: full })
-  assert.equal(mounted.report().couplings.find(item => item.id === 'team-board').available, true)
-
   // ctx.get 抛错（加载/卸载中）不影响探测：按不可用处理，不上抛。
   const throwing = createHostCapabilities({ get() { throw new Error('waiting for service') } })
   assert.equal(throwing.agentTeams(), undefined)
   assert.equal(throwing.report().couplings.find(item => item.id === 'team-board').available, false)
+})
+
+test('agentTeams 取服务：cordis 未 inject 时读属性必抛，访问器只走 ctx.get（不抛、返回 undefined）', () => {
+  const full = { isEnabled: () => true, listTasks: () => [], updateTask: async () => ({}) }
+  const bare = cordisCtx()
+  // 前提：cordis 对未 inject 的服务属性读取必抛（真机同款报错）。这是本用例要防的回归形态。
+  assert.throws(() => bare.agentTeams, /cannot get property "agentTeams" without inject/)
+
+  const missing = createHostCapabilities(bare)
+  assert.equal(missing.agentTeams(), undefined, '服务不存在：安全返回 undefined，而不是把 cordis 的抛错漏出去')
+  assert.equal(missing.report().couplings.find(row => row.id === 'team-board').available, false)
+  assert.equal(missing.report().available, 2, '只有面板 slot / 日志路径天然可用')
+
+  // 服务存在（走 ctx.get）→ 返回实例，report 第 10 类为可用。
+  const present = createHostCapabilities(cordisCtx({ services: { agentTeams: full } }))
+  assert.equal(present.agentTeams(), full)
+  assert.equal(present.report().couplings.find(row => row.id === 'team-board').available, true)
+  assert.equal(present.report().available, 3)
+
+  // cordis 在加载/卸载中抛错：同样只降级，不上抛。
+  const throwing = createHostCapabilities(cordisCtx({ get() { throw new Error('waiting for service') } }))
+  assert.equal(throwing.agentTeams(), undefined)
+  assert.equal(throwing.report().couplings.find(row => row.id === 'team-board').available, false)
 })
 
 test('文档同口径：docs/compat.md 写明 10 类 coupling id 与声明基线', async () => {

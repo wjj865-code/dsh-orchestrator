@@ -1155,7 +1155,7 @@ const boardRowOf = (id, extra = {}) => ({
   owner: 'lead', blockedBy: [], writeScopes: [], ready: true, ...extra,
 })
 
-test('P2-5 官方 Team（只读）分区：enabled 才渲染、行不可操作、disabled 隐藏、degraded 只提示', () => {
+test('P2-5 官方 Team（只读）分区：enabled 才渲染、行不可操作、disabled 隐藏、enabled 且读不到才提示', () => {
   const { hooks, panel, resetHooks } = panelOf()
   const render = (tasks = [], teamBoard = undefined) => {
     resetHooks()
@@ -1202,8 +1202,16 @@ test('P2-5 官方 Team（只读）分区：enabled 才渲染、行不可操作�
   // enabled:false → 整区不渲染（官方 Team 没开，面板不该冒出一块空板）。
   const disabled = render([], { enabled: false, rows: [], degraded: null })
   assert.doesNotMatch(textAll(disabled), /官方 Team（只读）/)
-  // 服务在但读不到 → 一条只读提示，不假装没有，也不显示表格。
-  const degraded = render([], { enabled: false, rows: [], degraded: { code: 'TEAM_BOARD_READ_FAILED', message: '读官方 Team 板失败：boom' } })
+  // enabled:false + degraded（服务缺失/形状变了/Team 未开启）→ 同样整区不渲染、**不刷提示条**：
+  // 没装或没开官方 Team 的用户不该被一条「读不到」打扰（与 docs/compat.md「面板隐藏该分区」同口径）。
+  const disabledDegraded = render([], {
+    enabled: false,
+    rows: [],
+    degraded: { code: 'TEAM_BOARD_UNAVAILABLE', message: '宿主没有 agentTeams 服务（未安装 Agent Teams）' },
+  })
+  assert.doesNotMatch(textAll(disabledDegraded), /官方 Team/)
+  // Team 开着（enabled:true）但这次 listTasks 没读成 → 一条只读提示，不假装没有，也不显示表格。
+  const degraded = render([], { enabled: true, rows: [], degraded: { code: 'TEAM_BOARD_READ_FAILED', message: '读官方 Team 板失败：boom' } })
   assert.match(textAll(degraded), /官方 Team 板暂时读不到：读官方 Team 板失败：boom/)
   assert.doesNotMatch(textAll(degraded), /官方 Team（只读）/)
   // 首帧（snapshot=null）没有分区，也不抛。

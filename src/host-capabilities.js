@@ -194,8 +194,13 @@ export function createHostCapabilities(ctx, { onWarn = () => {}, env = process.e
     planMode: () => service('planMode'),
     goals: () => ctx?.goals ?? service('goals'),
     // P2-4（D6）：官方 Team 任务板（rc.5 的 @deepseek-ai/dsh-agent-team 注册为 agentTeams）。
-    // 服务缺失返回 undefined；消费方（src/team-board.js）自己判 isEnabled/listTasks 是否存在。
-    agentTeams: () => ctx?.agentTeams ?? service('agentTeams'),
+    // **只走 `ctx.get`**：`agentTeams` 不在 index.js 的 inject 里，cordis 的 get trap 对未 inject 的
+    // 服务**属性**读取必抛 `cannot get property "agentTeams" without inject`（真机探针证过：
+    // `ctx.get('settings')` 有对象、`ctx.settings` 同样抛）。以前写成 `ctx?.agentTeams ?? service(...)`，
+    // 于是 `??` 右边永远走不到、每次 snapshot 都拿一条 cordis 内部报错，官方板在任何宿主都不渲染。
+    // `service()` 自带 try/catch：服务不存在与 ctx.get 抛错都按「当前不可用」返回 undefined；
+    // 消费方（src/team-board.js）据此给友好降级（没装 Agent Teams / Team 未开启）。
+    agentTeams: () => service('agentTeams'),
     schedule: () => service('schedule'),
     sessionPersistence: () => service('sessionPersistence'),
     workspaceChanges: () => service('workspaceChanges'),

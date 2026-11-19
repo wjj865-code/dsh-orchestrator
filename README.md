@@ -67,6 +67,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 
 - 动作条：停止 / 确认交付 / 重派 / 打开子会话 / 删除（都带二次确认）；产物预览复用宿主右侧栏（Markdown / 代码 / 图片 / PDF / Office）。
 - 面板**没有「追加消息」按钮**：续派与计划批准统一走协调者 `task_message`。
+- 装了官方 Agent Teams 且 Team 模式开着时，任务列表上方多一块可折叠的「官方 Team（只读）」分区（行内没有按钮，认领/完成只能在官方 Team 里做）；Team 未开启或宿主没有该服务时**整块不显示**（不刷提示条），Team 开着但这一次没读到时才给一条降级提示。
 - 颜色、圆角、阴影、动效全部取宿主 `--dsw-*` token，深浅色自动跟随；交互细节见 [ARCHITECTURE](docs/ARCHITECTURE.md#面板与详情ui-u2)。
 
 ## 工具清单

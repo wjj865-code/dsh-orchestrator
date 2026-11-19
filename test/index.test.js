@@ -87,6 +87,17 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
   const disposers = []
   const guards = []
   const promptContexts = []
+  // 官方 Team 服务**只经 `ctx.get` 暴露**：真 cordis 里 `agentTeams` 不在本插件 inject 中，
+  // 读 `ctx.agentTeams` 会抛 `cannot get property "agentTeams" without inject`（P2-4 修复后
+  // src/host-capabilities.js 的 agentTeams() 只走 ctx.get，这里也照同一形状装配）。
+  const agentTeamsService = withAgentTeams
+    ? (agentTeamsOverride ?? {
+      async spawnTeammate() { return spawnResult },
+      async sendMessage(sender, input) { sent.push([sender, input]) },
+      async interrupt() {},
+      listMembers() { return [] },
+    })
+    : undefined
   const ctx = {
     logger: {
       warn(message) { warnings.push(message) },
@@ -108,6 +119,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       if (name === 'sessions') return sessions
       if (name === 'workspaceChanges') return workspaceChanges
       if (name === 'goals') return goals
+      if (name === 'agentTeams') return agentTeamsService
       return undefined
     },
     ...(withInject
@@ -115,16 +127,6 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       : {}),
     on(event, handler) { return on(event, handler) },
     effect(callback) { disposers.push(callback()); return () => {} },
-    ...(withAgentTeams
-      ? {
-        agentTeams: agentTeamsOverride ?? {
-          async spawnTeammate() { return spawnResult },
-          async sendMessage(sender, input) { sent.push([sender, input]) },
-          async interrupt() {},
-          listMembers() { return [] },
-        },
-      }
-      : {}),
     subagents: subagentsOverride ?? {
       async startActivation(spec) {
         const childId = spawnResult?.member?.id ?? 'm-1'

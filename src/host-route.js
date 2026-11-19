@@ -63,8 +63,8 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, teamBo
       },
       // 「待你决定」计数：等你确认/要授权/已交付待确认——三种都需要人（或协调者）拍板。
       inboxCount: tasks.filter(task => INBOX_STATUSES.has(task.status)).length,
-      // P2-4（D6）：官方 Team 板只读快照（`enabled:false` 时面板隐藏该分区；
-      // `degraded` 有值表示「服务在但读不到」，面板显示只读提示而不是装作没有）。
+      // P2-4（D6）：官方 Team 板只读快照（`enabled !== true` 时面板**整区隐藏**，含服务缺失/Team 未开启；
+      // `enabled:true` 且 `degraded` 有值表示「Team 开着但这次 listTasks 没读成」，面板显示只读提示而不是装作没有）。
       teamBoard: boardSnapshot(),
       tasks: tasks.map(task => {
         const card = taskCard(task)

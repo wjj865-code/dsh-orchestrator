@@ -1095,18 +1095,18 @@ export function createViews({
     }
 
     // ---- P2-5（S9′）：官方 Team（只读）分区 ----
-    // 数据来自 snapshot.teamBoard（P2-4 的只读投影）：`enabled !== true` 时整区不渲染；
-    // `degraded` 有值只给一条只读提示（服务在但读不到，不假装没有）。
-    // 行内**没有任何按钮**：认领/完成只能在官方 Team 里做，插件绝不越权。
+    // 数据来自 snapshot.teamBoard（P2-4 的只读投影）：`enabled !== true` 时**整区不渲染**——
+    // 服务缺失/形状变了/Team 未开启都不该在面板上刷存在感（与 docs/compat.md「面板隐藏该分区」同口径）。
+    // 只有 `enabled === true`（Team 真的开着）但 `degraded` 有值（这次 listTasks 没读成）才给一条只读提示，
+    // 不假装没有。行内**没有任何按钮**：认领/完成只能在官方 Team 里做，插件绝不越权。
     // 折叠壳复用抽屉的 detailSection（同一份 collapsedSections 状态），不另写一套可折叠 DOM。
     const boardView = () => {
       const board = snapshot === null ? null : snapshot.teamBoard
       if (board === null || board === undefined) return null
+      if (board.enabled !== true) return null
       const degraded = board.degraded ?? null
-      if (board.enabled !== true) {
-        return degraded === null
-          ? null
-          : <Banner tone="notice" icon="alert">{`官方 Team 板暂时读不到：${degraded.message || degraded.code}`}</Banner>
+      if (degraded !== null) {
+        return <Banner tone="notice" icon="alert">{`官方 Team 板暂时读不到：${degraded.message || degraded.code}`}</Banner>
       }
       const rows = Array.isArray(board.rows) ? board.rows : []
       const body = rows.length === 0
