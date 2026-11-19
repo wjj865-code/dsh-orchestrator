@@ -207,7 +207,7 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 
 | 参数 | 作用 |
 |---|---|
-| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**。`plan_save` 把计划写进 `reports/plans/<taskId>.md`（计划阶段唯一写入口），再 `blocked` 上报摘要 + 路径；批准后续派切回可写。与 `readOnly` 互斥 |
+| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**。`plan_save` 把计划写进 `reports/plans/<taskId>.md`（计划阶段唯一写入口），再 `blocked` 上报摘要 + 路径；**计划批准必须由用户拍板**（协调者转交摘要+路径并用 `ask_user_question` 请批准，**协调者不得自行批准**），你明确批准后才续派切回可写。与 `readOnly` 互斥 |
 | `readOnly` | 只读任务：只认显式 `true`，续派也**不会**转可写 |
 | `access: 'full'` | 这一条任务跑在 `danger-full-access`：沙箱不限制写入、`bash`/`pwsh` 解封。只接受 `'full'`，不继承、不改部署默认；与 `readOnly`/`planFirst` 互斥 |
 | `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup` | 在 `<repo>/.agents/worktrees/<taskId>` 独立检出里干活，产物在分支上、**合并由你决定**；多活跃分支且没给基线时先返回候选让你选 |
@@ -216,6 +216,8 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | `allowConcurrent` | 显式放行同写域并发（返回里标注风险并记日志） |
 
 worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖，可以执行安装命令（`pnpm install` / `npm install` / `uv sync`），**只安装不升级**。
+
+计划任务的批准是**人工闸门**：子会话 `blocked` 后，协调者把计划摘要 + 文档路径转交给你，并用 `ask_user_question` 请你明确**批准 / 调整**（options 至少「批准执行 / 调整计划」）——**协调者不得自行批准**，不会自己判断「计划没问题」就直接续派。答「调整」：修改点原样转回同一子会话先出修订版计划（消息里会写明「只修订计划、不要开始实现」），再请你拍板；不回答就一直是「计划中」，协调者不续派、不代批。
 
 ### 交付口径：`present` 与 `read_workspace`
 

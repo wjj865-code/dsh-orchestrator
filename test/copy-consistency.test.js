@@ -92,6 +92,42 @@ test('协调者 policy：需要拍板必须用 ask_user_question 结构化提问
   assertNoConflicts('COORDINATOR_POLICY', policy)
 })
 
+test('协调者 policy：计划批准必须用户拍板，禁止协调者自行批准（含直接续派实现）', () => {
+  const policy = renderCoordinatorPolicy({})
+  // 硬规则：blocked 计划必须先转交摘要 + 路径，再必须结构化提问请用户批准。
+  assert.match(policy, /计划批准必须由用户拍板/)
+  assert.match(policy, /必须用 ask_user_question 结构化提问/)
+  assert.match(policy, /批准执行 \/ 调整计划/)
+  // 禁止代批：不得自行批准，也不得把沉默/含糊回应当默认批准。
+  assert.match(policy, /协调者不得自行批准/)
+  assert.match(policy, /禁止代批/)
+  assert.match(policy, /不得推断/)
+  // 三个分支都写清：批准才可续派 / 调整转回重出计划 / 未回答保持 blocked。
+  assert.match(policy, /用户答「批准」/)
+  assert.match(policy, /用户答「调整」/)
+  assert.match(policy, /用户没回答/)
+  assert.match(policy, /保持 blocked/)
+  assert.match(policy, /只修订计划、不要开始实现/)
+  // 反向口径：不允许「计划默认批准 / 不问用户就续派实现」这类授权句式。
+  for (const pattern of [/默认视为批准/, /自动批准计划/, /计划无需(?:用户)?批准/]) {
+    assert.doesNotMatch(policy, pattern, `policy 出现「协调者代批计划」的授权口径：${pattern}`)
+  }
+  assertNoConflicts('COORDINATOR_POLICY', policy)
+})
+
+test('README / ARCHITECTURE 与预设同口径：计划批准是人工闸门', () => {
+  const docs = [['README.md', readFileSync(new URL('../README.md', import.meta.url), 'utf8')],
+    ['docs/ARCHITECTURE.md', readFileSync(new URL('../docs/ARCHITECTURE.md', import.meta.url), 'utf8')]]
+  for (const [file, text] of docs) {
+    assert.match(text, /计划批准必须由用户拍板/, `${file} 没写「计划批准必须由用户拍板」`)
+    assert.match(text, /协调者不得自行批准/, `${file} 没写「协调者不得自行批准」`)
+    assert.match(text, /ask_user_question/, `${file} 没写用 ask_user_question 请用户批准`)
+    assert.match(text, /批准执行 \/ 调整计划/, `${file} 没写清「批准执行 / 调整计划」两个分支`)
+  }
+  // 计划模式的技术小节要把「调整也得重新拍板」讲明，避免把第一次批准当成修订版授权。
+  assert.match(docs[1][1], /只修订计划、不要开始实现/)
+})
+
 test('协调者 policy：能直接回答就不派任务（只有新鲜取证/写文件/跨仓库才委派）', () => {
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /能直接回答就不派任务/)

@@ -370,6 +370,8 @@
 - **进入**：`queue.pump` 从台账透传 `plan_first` 给 `dispatcher.spawn`；派发时复用 `ensureReadOnly`（压首回合窗口），再用**子 agent 作用域**的 `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 缺失只 warn（降级为只有只读沙箱）。批准前**不注册** target 可写根。
 - **计划落盘（`plan_save`）**：计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：`src/plan-doc.js` 只做纯函数——`planDocPath()` 算出 `<主会话工作区>/reports/plans/<taskId>.md`（没有 `path` 入参；编号白名单 + `relative()` 包含性校验把 `..`/绝对路径/盘符拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头，`writePlanDocument()` 只做一次 mkdir + 覆盖写。写完登记为任务产物。子会话拿到结果后只上报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**。
 - **出口**：`plan_save` 落盘 → `task_report blocked` 上报摘要 + 路径 → 用户决定 → `task_message` 续派，**不用** `exit_plan_mode`（子会话没有直接人类）。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`（插件根的 guard 是全局的，会误伤协调者）。
+- **批准闸门（人工，协调者不得自行批准）**：**计划批准必须由用户拍板**——计划任务 `blocked` 后，协调者必须把摘要 + 计划文档路径转交用户，并用 `ask_user_question` 请用户明确批准（options 至少「批准执行 / 调整计划」）；**协调者不得自行批准**——不得自己判断计划没问题就直接 `task_message` 续派实现，也不得把用户沉默、含糊回应当成批准。只有用户消息里明确批准才可续派（续派成功才走下面的「退出（批准）」）；用户答「调整」则把修改点原样转回同一个子会话，让它先出修订版计划（消息里写明「只修订计划、不要开始实现」）并再 `blocked` 一次，重新请用户拍板；用户没回答就保持「计划中」，协调者不续派、不代批。
+- **调整路径的已知口径**：`task_message` 在计划中任务上本身即「批准」（投递成功 → 沙箱 `workspace-write` + `plan_state='approved'`），所以「调整」那一轮已经切回可写；约束只能落在消息措辞上（只修订计划），修订版再次 `blocked` 后仍必须由用户重新拍板——不能拿第一次的批准当实现对修订版的授权。
 - **退出（批准）**：投递成功、任务回到 `running` 后 `sandbox/mode = workspace-write` + `planMode.set(agent,false)` + 台账 `plan_state='approved'`，同时补登记 target 可写根；投递失败不碰 plan 状态。
 - **停止/终态**：释放 guard；还在 `planning` 就结束的收口成 `rejected`，已 `approved` 的保留。
 - **台账视图**：`plan_first` + `plan_state`（`none`/`planning`/`approved`/`rejected`）；面板「计划中」小标与抽屉「计划」行；非计划任务不下发任何计划字样。`planFirst` 与 `readOnly` 创建期互斥。
