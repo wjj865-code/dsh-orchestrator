@@ -1,10 +1,94 @@
 # Changelog
 
-## 未发布
+## 0.24.0（2026-11-20）
 
-### 恢复轮换检查节流（默认一天一次）· `feat: 恢复轮换检查节流`
+0.23.1 之后的 **minor 版**，四片合发（按提交从新到旧）：**config-schema 兜底解析 + 显式告警**（`Config` 解析失败
+不再静默降级，配置卡片不再「连空壳都没有」）、**resume 复用原会话**（`task_message` 新增 `action:'resume'`：失败 /
+孤儿 / 超时交付在**原 `task_id` + 原子会话**上冷恢复；`retry` 仍是新任务 + 新会话）、**计划批准必须由用户拍板**
+（协调者转交摘要 + 路径并用 `ask_user_question` 请批准，**不得自行批准**）、**恢复轮换检查节流**（打开主会话不再
+每次都做采集 + 判定，默认 24 小时一次）。
+本版**没有默认值翻面**：轮换默认仍是 0.23.1 的 `auto`，`resume` 是新增动作、`message` / `retry` / `stop` / `close`
+口径不变；配置面 **28 → 29**（`rotateCheckIntervalHours` 从弃用名单移回正式配置）。
 
-> 单片一 commit；本节记录尚未发版的改动，发版时并入对应版本段。
+### config-schema 兜底解析 + 显式告警（`e1cc338`）
+
+#### 修正
+
+1. **根因：`Config` 解析失败会静默降级，配置卡片「连空壳都没有」**。宿主 `SettingsForms.describe()` 只在
+   `entry.fiber.runtime.Config` 非空时列命名空间；插件加载时若 `@deepseek-ai/schemastery` 解析失败，旧实现
+   `catch { return undefined }` → `Config = undefined` → `describe` 里没有 `orchestrator` 命名空间 → 客户端
+   `forms.whileServed(['orchestrator'])` 永不触发、`plugins.bundle.config` 槽位根本没注册——页面零报错
+   （`whileServed` 的设计就是「不服务即无痕」）。ESM 模块缓存决定进程内不会重试，所以「重启后可能自己好」，
+   下次再踩也查不到原因。
+2. **兜底解析**：主路径 `createRequire(import.meta.url)` 失败后按「最可能命中」顺序试锚点——`DSH_PROFILE_DIR` /
+   `DSH_HOME` / `DSH_INSTALL_DIR`（profile 的 `node_modules` 里通常有一份）、宿主进程 argv 里带斜杠的路径（CLI 宿主是
+   `…/app.asar/dsh/…`）、Electron 布局 `<exe>/resources/{app.asar,app.asar.unpacked}/dsh`、`process.resourcesPath`、
+   `DSH_NODE_EXECUTABLE` 同源推导；保序去重、只留真实存在的路径，目录锚点补假文件名再交给 `createRequire`
+   （asar 路径在纯 node 下 `existsSync` 为 false，自然被跳过）。
+3. **显式告警（恰好一次）**：全部失败时 `console.warn` 一次，文案含用户可见后果（配置卡片将不显示）、插件仍可用、
+   缺的包名、试过的位置、首个错误原因——不再静默。
+4. **诊断快照** `configSchemaDiagnostics`：`{ available, source: 'plugin'|'host'|'unavailable', anchor, packageName,
+   attempts[] }`，深冻结，供日志与测试取证。
+5. **不该吵的时候不吵**：主路径命中时不碰兜底、不告警；走兜底成功也不告警（卡片还在，别吓用户）。
+
+#### 验证
+
+`pnpm test`（当时 1,089 条 / 1,084 pass / 5 skip / 0 fail）+ `check:client` + `check:client-size`（91.9 KB / 预算
+95.0 KB）+ `check:version` + `check:docs`（1,495 / 1,800 行）+ `npm pack --dry-run`；新增 `test/config-schema.test.js`
+7 条锁住：主路径命中（`source='plugin'`、零兜底、零告警）、宿主目录命中（记锚点、补假文件名、保留失败证据、
+不告警）、全失败（`Config=undefined`、`source='unavailable'`、**恰好一次** warn、文案含后果/包名/位置数/首个原因）、
+坏包形状与 ESM 互操作、`schemaAnchors` 保序去重与 `DSH_*` / argv / Electron 布局覆盖、真实模块加载子进程取证
+（无 schemastery + 无锚点 → warn 打到 stderr，非静默）。
+真机（临时 `DSH_HOME` + profile `e2e`，用 `pnpm pack` 产物安装＝等价 npm 安装，安装副本没有本地 `node_modules`、
+profile 也没有 schemastery ⇒ 只剩兜底路径）：`POST /api/settings/describe` → **23 个命名空间、`hasOrchestrator: true`**；
+无头 Chrome 打开插件页「任务编排」→ `[data-orchestrator-config]` 存在、**7 组 / 29 行**，宿主日志无降级 warn。
+
+### resume 复用原会话（后端）（`cb82116`）
+
+#### 变更
+
+1. **`task_message` 新增 `action:'resume'`**：在**原 `task_id` + 原子会话**上冷恢复（复用 `dispatch.send` 那条链），
+   续跑提示只讲「接着做什么、别重做、跑偏就上报」，不复述任务详情（详情在 `task_detail`、原文在会话历史里）。
+   与 `retry` 的分工写进 `src/resume.js` 顶部：「resume = 同 `task_id` + 同子会话（失败 / 额度中断 / 重启孤儿的默认
+   出口）；retry = 新任务 + 新子会话（污染、换检出/权限、不可达时用）」。
+2. **状态口径一律走能力表**：`status-facts` 的 `CAPS` 加 `resume` 位（10 个状态统一），新增 failed / orphaned / done
+   → running 三条入边（done 另有 `close_reason='timeout'` 行级白名单）；**`cancelled` 刻意不复活**。
+3. **判定与阈值单一来源**：`resumeGate(task, { history })` 是纯函数（不碰台账）——状态能力 + done 白名单 +
+   `target` 缺失（`no_session`）+ 检出已清理（`checkout_cleaned`）；历史消息 **> 60 条只建议 retry、不拦截**
+   （`RESUME_HISTORY_THRESHOLD`，软阈值：硬拦会把「额度中断的长任务」正好挡在最需要续跑的那类之外，反而逼出新派）。
+4. **台账两列**：`resume_count` / `last_stop_reason`（旧库 `ALTER` + 回读归一）；新增 `incrementResumeCount` /
+   `countTaskMessages`；结算与启动对账把 `stopReason` 落 `last_stop_reason`；孤儿汇总通知的默认出口改成 resume。
+5. **投递失败只报错回退，绝不静默新建任务**：`RESUME_NOT_ALLOWED` / `RESUME_CLOSED` / `RESUME_NO_SESSION` /
+   `RESUME_CHECKOUT_CLEANED` / `RESUME_UNREACHABLE` / `RESUME_DELIVERY_FAILED`，文案统一指向 retry；成功后
+   `attempts` 与 `resume_count` 自增、清死因 / `close_reason` / 旧问题，沙箱 / 可写根 / goal 由 `dispatch.send` 幂等补。
+6. **文档同步**：README 工具表·状态表·排障、`docs/ARCHITECTURE.md` 能力表·动作·对账、`docs/LIMITATIONS.md` 边界。
+
+#### 验证
+
+`pnpm test`（当时 1,082 pass / 5 skip / 0 fail，含 `pretest` 的 build + client size 91.9 KB + `check:docs`
+1,501 / 1,800 行）；新增 `test/resume.test.js`：同子会话 id 冷恢复、orphaned、timeout done、不可达 / 投递失败回退、
+重复 resume 幂等、阈值建议；`state` / `status-property` / `ledger` 用例随新边与新能力位更新。
+
+### 计划批准必须由用户拍板（`96d2c51`）
+
+#### 变更
+
+1. **计划批准是最硬的人工闸门**：`planFirst` 任务 `blocked` 后，协调者把计划摘要 + `reports/plans/<taskId>.md` 路径
+   原样转交用户，并**必须用 `ask_user_question` 结构化提问**（options 至少「批准执行 / 调整计划」）；
+   **协调者不得自行批准**——不得自己判断「计划没问题 / 用户应该会同意」就直接续派，也不得把用户沉默、含糊回应或
+   自己的默认当成批准。
+2. **答「调整」**：修改点原样转回**同一个子会话**先出修订版计划（追加消息里写明「只修订计划、不要开始实现」），
+   再次 `blocked` 后重新走到「转交摘要 + `ask_user_question` 请批准」；**用户不回答**：任务保持 `waiting_user`
+   （计划中），不续派、不代批。
+3. **只改提示词与文档**：`index.js` 的 `COORDINATOR_POLICY`、README 的 `planFirst` 行与「计划任务批准」段、
+   `docs/ARCHITECTURE.md` 两行、`test/copy-consistency.test.js` 新增断言；状态机、工具入参、`dist/` 未动。
+
+#### 验证
+
+`pnpm test` 全绿（新增断言锁住 policy 与 README 的「批准只认用户的话」「不得代批」「不回答就不续派」口径），
+`check:docs` 行数在预算内。
+
+### 恢复轮换检查节流（默认一天一次）（`2a6c885`）
 
 #### 变更
 
@@ -35,11 +119,17 @@
 #### 验证
 
 `pnpm test`（1,080 条 / 1,075 pass / 5 skip / 0 fail）+ `pnpm run check:client` + `pnpm run check:client-size`
-（91.9 KB / 预算 95.0 KB）+ `pnpm run check:version` + `pnpm run check:docs`（1,491 / 1,800 行）+ `npm pack --dry-run`
-（不 push / 不打 tag / 不 bump 版本）；
+（91.9 KB / 预算 95.0 KB）+ `pnpm run check:version` + `pnpm run check:docs`（1,491 / 1,800 行）+ `npm pack --dry-run`；
 新增用例锁住：**未到间隔跳过且零采集**（`persistence.locate` 调用数为 0、无 `main.rotation.decided`、只写
 `main.rotation.check.skipped`）、**到点检查并记录时间戳**、**首次无记录视为需检查**、**边界夹取**（0.5→1、
 1e6→168、非数字/非正数回落 24）、**与冷却叠加**（冷却期内检查照做、`blockedBy:['cooldown']`、时间戳照记）。
+
+### 发版门禁（0.24.0 实跑，各片「验证」里的数字是当时快照）
+
+`pnpm test` **1,094 条 / 1,089 pass / 5 skip / 0 fail**（5 条 skip 是本机建不了符号链接的显式跳过，与 0.23.x 同因）+
+`check:client` + `check:client-size`（**91.9 KB / 94,150 B**，预算 95.0 KB，余 3.1 KB）+ `check:version`（`0.24.0`）
++ `check:docs`（**1,501 / 1,800** 行；配置表 29 键、工具表 10 个）+ `npm pack --dry-run`（**78 个文件 / 535.7 kB**）全绿；
+`dist/` 在 `pnpm build` 前后无 diff；`git status` 除本版版本/文档三文件外无改动。
 
 ## 0.23.1（2026-11-20）
 
