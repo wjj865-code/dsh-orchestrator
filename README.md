@@ -2,7 +2,7 @@
 
 > **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目标目录里把活干完，进度与结论落进持久台账，浏览器里有任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.20.1`）
+- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.21.0`）
 - 仓库：<https://github.com/wjj865-code/dsh-orchestrator>
 - License：MIT｜Node `>= 22.15`（`engines`）｜DSH 兼容基线 `0.2.2-rc.3` – `rc.5`（CI 与真机实测在 `rc.3`，Web 表面为主，Desktop 同构）
 
@@ -25,7 +25,7 @@
 1. DSH → 插件 → **添加插件**，粘贴：
 
    ```text
-   @wjj865-code/dsh-orchestrator@0.20.1
+   @wjj865-code/dsh-orchestrator@0.21.0
    ```
 
 2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）。
@@ -446,7 +446,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | `rotateIdleMinutes` | `10` | 多久没交互才算「空下来」（1–1440） |
 | `rotateArchiveOld` | `true` | 轮换后是否归档旧主会话（**不可逆**）；`false` = 只改名退役 |
 
-> **配置面 41 → 35（P1-A）**：`backend` 与 `rotateAfterTasks` / `rotateAfterSessions` / `rotateAfterContextTokens` / `rotateAfterDiskMiB` / `rotateCheckIntervalHours` 已删除。老 profile 里留着也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#未发布)。
+> **配置面 41 → 35（P1-A）**：`backend` 与 `rotateAfterTasks` / `rotateAfterSessions` / `rotateAfterContextTokens` / `rotateAfterDiskMiB` / `rotateCheckIntervalHours` 已删除。老 profile 里留着也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#02102026-11-19)。
 
 > **调试预设 `orch-debug`（可选安装）**：生成器与说明已移出主包，在开发仓库的 `tools/debug-preset/`（不随 npm 包发货）。
 > 装一次：`node tools/debug-preset/cli.mjs` → `plugin_manager` 的 `install_bundle` → 配 `workerPreset: orch-debug` → 彻底重启 DSH；
@@ -484,8 +484,8 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 | 现象 | 处理 |
 |---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.20.1`；**彻底退出 DSH 再启动**（刷新页面无效） |
-| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.20.1` 显式版本；维护者侧可主动同步镜像（见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#发版)） |
+| 侧栏没有「主会话」 | 确认装的是 `0.21.0`；**彻底退出 DSH 再启动**（刷新页面无效） |
+| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.21.0` 显式版本；维护者侧可主动同步镜像（见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#发版)） |
 | 会话头没有「任务」入口 | 只在主会话显示：确认当前会话就是侧栏「主会话」打开的；没建就点「打开主会话」 |
 | 点产物「预览」没有右侧栏 | 宿主要装 `ui-sidebar-right` 与 `ui-sidebar-documentpreview`；缺了会提示「右侧栏不可用（原因）…」，产物库那一行会退回面板内预览，任务卡/抽屉只提示去产物页看或复制路径 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页与 `logs/` |
@@ -495,7 +495,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | 想马上换一次主会话 | 没有强制按钮：配 `mainRotation: 'auto'`，调低 `rotateAfterDays` / `rotateMinAgeHours` / `rotateCooldownHours` / `rotateIdleMinutes`，收掉活跃任务后再打开主会话 |
 | 子任务报 done 后一直「待确认」 | 正常：默认保持待确认等用户拍板；要收尾就 `task_message({action:'close'})`，或等 `deliveredTimeoutMinutes` 超时自动完成 |
 | 任务停在「会话丢失」 | 子会话只在没报过 progress 时自动交付；上报过 progress 的回合异常结束落 `orphaned`。先用 `task_status` 看进展，需要接着做就 `task_message({action:'retry'})` |
-| 提示「配置键 X 已删除」 | 老 profile 里的已删键（`backend` / 5 个 `rotate*`）：按提示删掉即可，插件已按默认值运行（迁移见 [CHANGELOG](CHANGELOG.md#未发布)） |
+| 提示「配置键 X 已删除」 | 老 profile 里的已删键（`backend` / 5 个 `rotate*`）：按提示删掉即可，插件已按默认值运行（迁移见 [CHANGELOG](CHANGELOG.md#02102026-11-19)） |
 | 日志提示 `workerPreset` 回落 | 预设 id 只能用小写字母/数字/连字符；改值后彻底重启 |
 | 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制；确实要写仓库外用 `access:'full'` 或 CI |
 | 子任务没有 `cordis_*` 工具 | 确认 `orch-debug` bundle 已装、`workerPreset: orch-debug`、已彻底重启（生成器在 [tools/debug-preset/README.md](tools/debug-preset/README.md)，不随包发货） |

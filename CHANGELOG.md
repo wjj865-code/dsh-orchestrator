@@ -1,8 +1,34 @@
 # Changelog
 
-## 未发布
+## 0.21.0（2026-11-19）
 
-> 本段随下一次发版并进版本号；**当前未 bump**（`package.json` 仍是 0.20.1）。
+这一版把 **P1 五片整体发出**：配置面 **41 → 35**、工具面 **15 → 10**（旧名给迁移提示）、文案收口到**单一真源**、
+文档 **3,128 → 1,985 行**（`check-docs` 进 CI）、调试预设**移出主包**（−1,476 行不再随包发货）。
+相对 0.20.1 是 **minor**：运行时契约（`task_report` / `task_detail` / `plan_save`、台账结构、沙箱注入、面板、通知分级）没变，
+但有两处**升级须知**值得先看一眼：
+
+1. **`mainRotation` 默认从 `auto` 改成 `off`**：升级后不再自动换主会话；要自动换就显式配 `mainRotation: 'auto'`。
+   被删掉的 6 个轮换键留在老 profile 里不会报错（启动时各给一条弃用警告，按默认值运行）。
+2. **六个旧工具名已删**：`task_stop` / `task_retry` / `task_close` / `task_inbox` / `history_search` / `project_context`。
+   照旧名调用会拿到一条**可读迁移提示**（「已删除 + 改成什么 + 原来干什么」），不是「未知工具」；
+   自定义提示词、`AGENTS.md` 与外部脚本里的旧名需要一次性手工替换（映射表见 P1-B）。
+
+**五片一览**
+
+| 片 | 一句话 | 用户可见变化 |
+|---|---|---|
+| P1-A | 配置 41 → 35，轮换只剩两个因子 | `mainRotation` 默认 `off`；6 个旧键弃用警告 |
+| P1-B | 工具 15 → 10，旧名给迁移提示 | 模型侧选择面 12 → 7；旧名提示可读 |
+| P1-C | 三组文案收口到 `src/copy.js` | 无行为变化，只是同一件事不再有第二套说法 |
+| P1-D | 文档 3,128 → 1,985 行，三篇合并删除 | 三个旧文档链接失效（内容已迁入） |
+| P1-E | 调试预设生成器移出主包 | 普通使用者无感；维护者命令改为 `node tools/debug-preset/cli.mjs` |
+
+**发版验证**：`pnpm test` 982 例（977 pass / 5 skip / 0 fail，`pretest` 含 `vite build` + `check:docs`）、
+`pnpm run check:client`、`pnpm run check:version`、`node scripts/check-docs.mjs`（1,987 行 / 预算 2,250）、
+`npm pack --dry-run`（72 个文件，含 `docs/testing.md`，不含 DETAIL/UI/qa-checklist/调试预设）全部通过。
+
+> 下面五节原在「未发布」段里逐片记录；各节末尾「不 bump 版本 / 不 push / 不打 tag」是那一片单独提交时的边界，
+> 本版已五片合并发布，阅读时以本节为准。
 
 ### P1-A：配置面收缩 41 → 35（refactor(config)）
 
@@ -37,48 +63,6 @@
 - 文档：README 配置表 / 轮换章节 / 排障、`docs/ARCHITECTURE.md` 轮换节、`docs/LIMITATIONS.md`、`docs/api-notes.md`、`docs/compat.md` 同步。
 
 **测试**：`pnpm test` 969 例全绿（净减 6 例：删掉 M1/M2/M4/M6 与检查节流用例，新增弃用键用例与「只剩两个因子」边界）。
-
-### P1-E：调试预设外移（refactor(debug-preset)）
-
-调试预设生成器从主包外移到开发仓库的 `tools/debug-preset/`：**移出 1,476 行**（`src/debug-preset.js` 626、
-`test/debug-preset.test.js` 465、`docs/DEBUG-PRESET.md` 263、`scripts/orch-debug-preset.mjs` 122），
-`npm pack` 不再包含这些文件。插件运行时行为不变：`config.workerPreset` 仍原样透传给宿主，`orch-debug` 照旧可用。
-
-#### 改了什么
-
-- 移动（保留 git 历史）：`src/debug-preset.js` → `tools/debug-preset/src/debug-preset.js`；
-  `scripts/orch-debug-preset.mjs` → `tools/debug-preset/cli.mjs`；
-  `test/debug-preset.test.js` → `tools/debug-preset/test/debug-preset.test.js`；
-  `docs/DEBUG-PRESET.md` → `tools/debug-preset/README.md`。
-- 新增 `tools/debug-preset/package.json`（`generate` / `check` / `test` 三个 script，private）。
-- `package.json`：删 `files` 里的 `docs/DEBUG-PRESET.md`，删 `preset:debug` / `preset:debug:check` 两个 script；
-  `tools/` 不在 `files` 白名单里，天然不随包发货。
-- 文案：生成器/检查器提示从 `pnpm run preset:debug` 改为 `node tools/debug-preset/cli.mjs`；
-  README（配置表 + 排障 + 文档表）、`docs/ARCHITECTURE.md`、`docs/LIMITATIONS.md`、`docs/CONTRIBUTING.md` 的指向同步。
-- 测试：主包 `pnpm test` 不再跑这 26 例（用例数 −26，代码行 −465）；外移工具的用例一条没删，
-  改由 `node --test tools/debug-preset/test/debug-preset.test.js`（或 `pnpm --dir tools/debug-preset test`）运行。
-  主包新增断言：`package.json.files` 不含 `docs/DEBUG-PRESET.md`、两个旧 script 已删、`tools/debug-preset/` 四件套在位。
-
-#### 安装（需要调试子会话时，维护者手动装）
-
-1. `git clone https://github.com/wjj865-code/dsh-orchestrator.git`，在仓库根执行 `node tools/debug-preset/cli.mjs`
-   （或 `pnpm --dir tools/debug-preset generate`）生成 bundle；
-2. 用 `plugin_manager` 的 `install_bundle` 装生成目录；
-3. 配置 `workerPreset: orch-debug`，**彻底退出 DSH 再启动**；
-4. DSH 升级后先 `node tools/debug-preset/cli.mjs --check` 看漂移，再重新生成 + 重装 + 重启。
-
-完整步骤（含手工合并 profile 补丁的备选路径）见 `tools/debug-preset/README.md`。
-
-#### 回退
-
-- 只停用调试能力：`workerPreset` 改回 `dsh-orchestrator-worker`（或 `plugin_manager remove_bundle`）→ 重启。
-- 恢复「随包发货」形态：`git revert` 本 commit，生成器、测试、两个 npm script 与 `docs/DEBUG-PRESET.md` 全部回到主包。
-
-#### 影响与不做的事
-
-- 普通使用者无感：不配 `workerPreset` 时派发行为不变；已经装好的 `orch-debug` bundle 继续可用（插件运行时不 import 生成器）。
-- 维护者工作流变化：`pnpm run preset:debug` / `preset:debug:check` 不再存在，改用上面的命令；这些文件不再随 npm 包装到本地。
-- 不做：不 bump 版本、不改 `workerPreset` 透传语义、不改 `cordis.patch.yml`、不删已安装 bundle、不动面板。
 
 ### P1-B：工具面 15 → 10（refactor(tools)）
 
@@ -221,6 +205,48 @@ check-docs 报「多 135 行」并列出最大几篇；旧文档里指向已删�
 
 **用户可见影响**：三个旧文档链接失效（README 已同步）；信息不丢（迁入 ARCHITECTURE / testing / LIMITATIONS）。
 **不做**：不重写 README 首屏（≤1,800 行预算仍留 P2）、不删 CHANGELOG、不动源码行为；不 bump 版本、不 push、不打 tag。
+
+### P1-E：调试预设外移（refactor(debug-preset)）
+
+调试预设生成器从主包外移到开发仓库的 `tools/debug-preset/`：**移出 1,476 行**（`src/debug-preset.js` 626、
+`test/debug-preset.test.js` 465、`docs/DEBUG-PRESET.md` 263、`scripts/orch-debug-preset.mjs` 122），
+`npm pack` 不再包含这些文件。插件运行时行为不变：`config.workerPreset` 仍原样透传给宿主，`orch-debug` 照旧可用。
+
+#### 改了什么
+
+- 移动（保留 git 历史）：`src/debug-preset.js` → `tools/debug-preset/src/debug-preset.js`；
+  `scripts/orch-debug-preset.mjs` → `tools/debug-preset/cli.mjs`；
+  `test/debug-preset.test.js` → `tools/debug-preset/test/debug-preset.test.js`；
+  `docs/DEBUG-PRESET.md` → `tools/debug-preset/README.md`。
+- 新增 `tools/debug-preset/package.json`（`generate` / `check` / `test` 三个 script，private）。
+- `package.json`：删 `files` 里的 `docs/DEBUG-PRESET.md`，删 `preset:debug` / `preset:debug:check` 两个 script；
+  `tools/` 不在 `files` 白名单里，天然不随包发货。
+- 文案：生成器/检查器提示从 `pnpm run preset:debug` 改为 `node tools/debug-preset/cli.mjs`；
+  README（配置表 + 排障 + 文档表）、`docs/ARCHITECTURE.md`、`docs/LIMITATIONS.md`、`docs/CONTRIBUTING.md` 的指向同步。
+- 测试：主包 `pnpm test` 不再跑这 26 例（用例数 −26，代码行 −465）；外移工具的用例一条没删，
+  改由 `node --test tools/debug-preset/test/debug-preset.test.js`（或 `pnpm --dir tools/debug-preset test`）运行。
+  主包新增断言：`package.json.files` 不含 `docs/DEBUG-PRESET.md`、两个旧 script 已删、`tools/debug-preset/` 四件套在位。
+
+#### 安装（需要调试子会话时，维护者手动装）
+
+1. `git clone https://github.com/wjj865-code/dsh-orchestrator.git`，在仓库根执行 `node tools/debug-preset/cli.mjs`
+   （或 `pnpm --dir tools/debug-preset generate`）生成 bundle；
+2. 用 `plugin_manager` 的 `install_bundle` 装生成目录；
+3. 配置 `workerPreset: orch-debug`，**彻底退出 DSH 再启动**；
+4. DSH 升级后先 `node tools/debug-preset/cli.mjs --check` 看漂移，再重新生成 + 重装 + 重启。
+
+完整步骤（含手工合并 profile 补丁的备选路径）见 `tools/debug-preset/README.md`。
+
+#### 回退
+
+- 只停用调试能力：`workerPreset` 改回 `dsh-orchestrator-worker`（或 `plugin_manager remove_bundle`）→ 重启。
+- 恢复「随包发货」形态：`git revert` 本 commit，生成器、测试、两个 npm script 与 `docs/DEBUG-PRESET.md` 全部回到主包。
+
+#### 影响与不做的事
+
+- 普通使用者无感：不配 `workerPreset` 时派发行为不变；已经装好的 `orch-debug` bundle 继续可用（插件运行时不 import 生成器）。
+- 维护者工作流变化：`pnpm run preset:debug` / `preset:debug:check` 不再存在，改用上面的命令；这些文件不再随 npm 包装到本地。
+- 不做：不 bump 版本、不改 `workerPreset` 透传语义、不改 `cordis.patch.yml`、不删已安装 bundle、不动面板。
 
 ## 0.20.1（2026-11-17）
 

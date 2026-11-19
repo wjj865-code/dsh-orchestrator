@@ -131,10 +131,12 @@
 | T1 brief 纯指引 | brief 只给编号+指引，详情走 `task_detail`；经验只留指针；越权拒绝 | CHANGELOG `0.19.0`；`test/task-detail.test.js` |
 | 状态事实源 | `STATUS_CAPS` 单表、删三条死边、`failed` 非流程终态、worktree 转移校验 | CHANGELOG `0.19.2` |
 | 自动绑定回归 | 协调者会话失效/未绑定文案、`open-main` 互斥、面板三态 | CHANGELOG `0.19.x` |
-| P0 版本口径 | README/CHANGELOG/package.json 三处一致 + `CHANGELOG` 进 files | `scripts/check-version.mjs`；CHANGELOG `0.20.1` |
-| P1-A 配置收缩 | 41→35 键、弃用警告去重、轮换只剩两因子、默认 `off` | CHANGELOG 顶部「未发布」；`test/config-deprecated.test.js` |
-| P1-B 工具面 | 15→10、旧名迁移提示、文案面三处同步、输出逐字等价 | CHANGELOG 顶部；`test/tool-migrations.test.js` |
-| P1-C 文案单源 | 计划文案单一真源、10k 步属性测试、检索委托 `sessionQuery` | CHANGELOG 顶部；`test/status-property.test.js` |
+| P0 版本口径 | README/CHANGELOG/package.json 三处一致 + `CHANGELOG` 进 files | `scripts/check-version.mjs`；CHANGELOG `0.21.0` |
+| P1-A 配置收缩 | 41→35 键、弃用警告去重、轮换只剩两因子、默认 `off` | CHANGELOG `0.21.0`；`test/config-deprecated.test.js` |
+| P1-B 工具面 | 15→10、旧名迁移提示、文案面三处同步、输出逐字等价 | CHANGELOG `0.21.0`；`test/tool-migrations.test.js` |
+| P1-C 文案单源 | 计划文案单一真源、12k 步状态迁移 + 10k 组文案属性测试 | CHANGELOG `0.21.0`；`test/status-property.test.js` |
+| P1-D 文档合并 | 文档 3,128→1,985 行、README 配置表/工具表与代码同源、内链可达 | `scripts/check-docs.mjs`（预算 2,250）；CHANGELOG `0.21.0` |
+| P1-E 调试预设外移 | 生成器/测试/文档移出主包、`files` 不含 `docs/DEBUG-PRESET.md`、`tools/debug-preset/` 四件套 | CHANGELOG `0.21.0`；`node tools/debug-preset/cli.mjs --check` |
 | 外部依赖 | ds-bot Bot 模式不撤外部 root 会话皮肤、rc.3 子会话沙箱根=父目录、团队工具残留 | CHANGELOG `0.13.0`/`0.14.0`；[LIMITATIONS](LIMITATIONS.md) |
 
 ## 7. 真机复核清单（装 profile + 彻底重启后逐条勾）
