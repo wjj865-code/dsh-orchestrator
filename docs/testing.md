@@ -10,10 +10,11 @@
 
 | 命令 | 作用 | 判据 |
 | --- | --- | --- |
-| `pnpm test` | `pretest` = `pnpm run build` + `check:docs`，然后 `node --test … "test/*.test.js"` | 0 fail；pass 数与用例数一致；无未说明的 skip；进程正常退出不挂起 |
+| `pnpm test` | `pretest` = `pnpm run build` + `check:client-size` + `check:docs`，然后 `node --test … "test/*.test.js"` | 0 fail；pass 数与用例数一致；无未说明的 skip；进程正常退出不挂起 |
 | `pnpm run check:client` | `node --check dist/client.js`（构建产物语法） | exit 0 |
+| `pnpm run check:client-size` | `dist/client.js` 字节数 ≤ **95 KiB**（`scripts/check-client-size.mjs`） | exit 0 |
 | `pnpm run check:version` | `package.json` / README / CHANGELOG 三处版本口径 | exit 0 |
-| `pnpm run check:docs` | 文档行数预算 + README 配置表/工具表/文档链接 + 内链可达 | exit 0（详见 §3.4） |
+| `pnpm run check:docs` | 文档行数预算（**1,800**）+ README 首屏结构 + 配置表/工具表/文档链接 + 内链可达 | exit 0（详见 §3.4） |
 | `npm pack --dry-run` | 包内容与 `package.json.files` | 含 `README`/`CHANGELOG`/`docs/testing.md`，不含被删文档与调试预设 |
 | `node --test test/<file>.test.js` | 单文件复跑（先跑 `pnpm run build`，客户端用例读 `dist/client.js`） | 同上 |
 | `node docs/probes/<probe>.mjs` | 宿主契约探针（升级 DSH 后按 `docs/probes/` 逐条重跑） | 探针自报 PASS/FAIL |
@@ -36,7 +37,8 @@
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 中文可读；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面 |
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
 | G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` allow | 配置 28 键；全局工具 10 个（协调者 7 + 子会话 3）；allow 名单与工具表一致 |
-| G9 | 文档面 | `pnpm run check:docs` | 见 §3.4 |
+| G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、配置表/工具表同源、内链可达） |
+| G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **95 KiB**；超了先删重复渲染/样式，不抬预算 |
 
 ## 3. 断言口径（测试怎么写）
 
@@ -64,16 +66,19 @@
 
 ### 3.4 `scripts/check-docs.mjs` 校验什么
 
-1. **行数预算**：`README.md` + `docs/*.md`（顶层，不含 `docs/superpowers/`、`docs/probes/`）总行数 ≤ **2250**；
-   超了直接打印「哪一篇超、差多少」，并列出各文件行数。
-2. **README 配置表 == 代码**：表格里反引号键集合必须与 `loadConfig({})` 的键集合完全一致（缺一行/多一行都红）。
-3. **README 工具表 == 代码**：`## 工具清单` 两张表的工具名集合必须与 `createTools()` 逐名一致。
-4. **包内文档**：`package.json.files` 里的 `docs/*.md` 必须真实存在（防止发出去 404）。
-5. **相对链接可达**：README 与 `docs/*.md` 里的 `.md` 相对链接（含锚点）必须指向存在的文件/标题。
+1. **行数预算**：`README.md` + `docs/*.md`（顶层，不含 `docs/superpowers/`、`docs/probes/`）总行数 ≤ **1800**；
+   超了直接打印「多几行、最大的是哪几篇」，并列出各文件行数。P2-6 从 2,250 降到 1,800：预算不是目标，是天花板。
+2. **README 首屏结构**：前 60 行必须有一句话定位、兼容基线（含 `rc.5`）、带版本号的安装命令、demo 入口；
+   README 不许再出现已删除的 `keepAlive*` 配置键（迁移只在 CHANGELOG / LIMITATIONS 里讲）。
+3. **README 配置表 == 代码**：表格里反引号键集合必须与 `loadConfig({})` 的键集合完全一致（缺一行/多一行都红）。
+4. **README 工具表 == 代码**：`## 工具清单` 两张表的工具名集合必须与 `createTools()` 逐名一致。
+5. **包内文档**：`package.json.files` 里的 `docs/*.md` 必须真实存在（防止发出去 404）。
+6. **相对链接可达**：README 与 `docs/*.md` 里的 `.md` 相对链接（含锚点）必须指向存在的文件/标题。
+7. **交接契约字段同源**：`docs/ARCHITECTURE.md` 的「契约字段」表必须与 `src/handoff.js` 的 `HANDOFF_FIELDS` 逐字一致，事件名逐个出现。
 
 ### 3.5 用例规模
 
-- 58 个 `test/*.test.js`、约 1.1 万行、900+ 条 `test()`（`pnpm test` 会打印总数）。
+- 60 个 `test/*.test.js`、约 2.1 万行、1,041 条 `test()`（1,036 pass / 5 skip，`pnpm test` 会打印总数）。
 - 大文件：`client.test.js`（U2 客户端）、`index.test.js`（装配）、`tools.test.js`（工具面）、`main-rotation.test.js`（轮换）。
 
 ## 4. 已知 flaky / 环境限制
@@ -139,6 +144,11 @@
 | P1-E 调试预设外移 | 生成器/测试/文档移出主包、`files` 不含 `docs/DEBUG-PRESET.md`、`tools/debug-preset/` 四件套 | CHANGELOG `0.21.0`；`node tools/debug-preset/cli.mjs --check` |
 | P2-2 续跑委托宿主 goal | 28 键（再删 7 键各一条弃用警告）、`goalRounds=0` create+disarm / `>0` create 带 maxGoalRounds 且保持 armed、`src/` 无 `turn-stopping` 订阅 | `test/config-deprecated.test.js`、`test/goal.test.js`、`test/index.test.js` |
 | P2-2 通知合并窗口 | 配置键删除后仍按 5 秒合并；测试用 `DSH_ORCH_NOTIFY_MERGE_MS` 旁路（只调窗口，不改语义） | `test/notify.test.js`、`test/index.test.js` |
+| P2-1 可执行验收 | `task_create.checks`（1–5 条、argv、超时/跳过）、交付前执行且失败阻断、`readOnly` 拒绝配检查、台账 `acceptance_json` ALTER 幂等 | `test/acceptance.test.js`、`test/tools.test.js`、`test/ledger.test.js` |
+| P2-3 交接契约 v1 | 三条确认路径的 `acceptedBy`、事件各一次、幂等关闭、存量行 NULL、字段表与代码同源 | `test/handoff.test.js`、`test/host-route.test.js`、`scripts/check-docs.mjs` |
+| P2-4 官方 Team 板 | 只读快照透传 `revision`、`enabled:false` 不读板、CAS 冲突只重读一次、超时自动完成不反写 | `test/team-board.test.js`、`test/index.test.js` |
+| P2-5 面板 S9′ | esbuild minify + ≤95 KiB 闸门、官方板只读分区、交接区块、验收小标 | `test/client-build.test.js`、`test/client.test.js` |
+| P2-6 文档收口 | 文档 ≤1,800 行（预算常量与失败提示同改）、README 首屏重写 + 结构断言、P2 变更入档 | `scripts/check-docs.mjs`、本文件 §3.4 |
 | 外部依赖 | ds-bot Bot 模式不撤外部 root 会话皮肤、rc.3 子会话沙箱根=父目录、团队工具残留 | CHANGELOG `0.13.0`/`0.14.0`；[LIMITATIONS](LIMITATIONS.md) |
 
 ## 7. 真机复核清单（装 profile + 彻底重启后逐条勾）
@@ -157,6 +167,7 @@
 | 6 | 点产物「预览」 | 主栏切回会话、右侧栏打开该文件 Tab；缺侧栏时给可读原因 |
 | 7 | 无 cookie / 跨站 Origin 调 `/api/orchestrator` | 401 / 403 |
 | 8 | 停宿主后看面板 | 5s 内「台账暂不可用」，恢复后刷新或等 30s 自动恢复 |
+| 9 | 官方 Team 开启时打开面板 | 出现「官方 Team（只读）」折叠分区；行内**没有**按钮；关掉 Team 后整区不渲染 |
 
 ### 7.2 任务流
 
@@ -172,6 +183,8 @@
 | 8 | 多分支仓库不给 `worktreeBase` | 任务不创建、返回候选，带基线重调后建树 |
 | 9 | 同目录并发派两条 | 默认拒绝并给三条出路；`allowConcurrent:true` 放行并标风险 |
 | 10 | 主会话轮换（`mainRotation:'auto'` + 低阈值） | 命中一次：旧会话改名「已退役」并归档；日志有 `main.rotation.decided` |
+| 11 | 配了 `checks` 的任务报 done | 全过才「待确认」并显示「验收 N/N」；有失败项即拒绝交付、任务仍「进行中」、回执给退出码与输出尾部 |
+| 12 | 关联官方板的任务被**人**确认交付 | 官方任务按 CAS 标 `complete`；超时自动完成时官方板**不变**，日志有 `team.board.skipped` |
 
 ### 7.3 取证
 

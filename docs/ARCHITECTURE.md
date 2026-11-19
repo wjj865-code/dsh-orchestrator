@@ -5,155 +5,54 @@
 ## 角色
 
 - **协调者**：唯一主会话，固定入口；只拆任务、派子会话、看回报，不读写文件、不执行命令。
-- **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；能力不受限，另有三个插件工具：`task_report`（回报）、`task_detail`（只读任务创建详情）与 `plan_save`（计划任务的计划落盘，见「计划阶段（P8）」）。
+- **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；能力不受限，另有三个插件工具：`task_report`（回报）、`task_detail`（只读创建详情）与 `plan_save`（计划落盘）。
 - **客户端**：侧栏「主会话」入口（始终可见）+ 会话头「任务」面板（仅主会话可见）；只读快照 + 面板动作。
 
 ## 主会话
 
-解析顺序：
-
-1. `config.coordinatorSession`（显式覆盖，不写台账）
-2. 台账 `settings.main_session_id`
-3. 未打开：`task_*` 返回「尚未打开主会话」
-
-`open-main` 会确保「指挥舱」工作区存在，用协调者预设 `dsh-orchestrator-coordinator` 创建会话，`rename` 成「主会话」，写入 `settings.main_session_id`，然后跳到该会话。
-
-复用判定以台账 `settings.main_session_preset` 为准；UI 空白会话可能被 rebind 成默认预设，插件会在 `agent/created` 和复用前调用 `agentPresets.select` 拉回，失败只记日志并由 guard 兜底。
+解析顺序：`config.coordinatorSession`（显式覆盖，不写台账）→ 台账 `settings.main_session_id` → 未打开（`task_*` 返回「尚未打开主会话」）。`open-main` 确保「指挥舱」工作区存在，用协调者预设创建会话、`rename` 成「主会话」、写指针，再跳到该会话。复用判定以台账 `settings.main_session_preset` 为准；UI 空白会话可能被 rebind 成默认预设，插件在 `agent/created` 与复用前调 `agentPresets.select` 拉回，失败只记日志并由 guard 兜底。
 
 ### 首次打开与工作区索引
 
-- `main-session.js` 仅新建主会话写 `settings.main_onboarding:<id>=pending`，旧主会话/配置覆盖不会因升级补初始化。复用既有 open in-flight 锁；`onboarding.js` 用 settings CAS pending→sending→sent 防并发重复，注入失败退 pending、打开结果给错误，重开可重试。不在 apply 自动唤醒历史主会话。
-- index 在成功 open/主会话晚加载后由 onboarding **await guardPreset 恢复成功**再CAS投递，缺选择服务/恢复失败留pending并返回可见错误，不用固定2秒延迟猜就绪；复用 `injectNotification`（agent.steer）启动模型轮次；prompt 要求先能力介绍再走现有 task_create 只读任务，不直接替模型扫描或绕过台账。sent 表示消息已入队，不保证模型已介绍/派发；进程在发送和标记之间崩溃有不确定窗口，不盲自动重投。
-- task_create 对「工作区与仓库索引」只读任务捕获 workspaceRegistry.list 的 id/title/path 到 brief，task_detail 提供名单与随包 scripts/workspace-index.mjs。worker 仅扫描登记目录，复用 runGit 的 execFile/timeout，读取 repoRoot/branch/HEAD/origin/commonDir，单项失败继续，不 fetch/pull、不写文件。
-- task_report.workspace_index 仅接受该任务本人 done 的完整 JSON，按创建时名单验证覆盖并使用名单真 title/path，remote 再脱敏，以同SAVEPOINT写既有 settings.workspace_repo_index及workspace_index_saved:<taskId>成功标记，不改 memories 或 workspaceRegistry。S1仅索引completed缺本任务成功标记时落failed（task_message({action:'retry'})可重试），防止遗漏/非法回报后自然误交付；普通任务与已交付只补消息路径不变。context({mode:'project'})(workspaces:true) 返回全部注册映射与采样索引；指定项目附快照，歧义列候选、不猜路径。
-- 不新增工具、索引服务、调度服务或数据库迁移，不改变 worker 默认工具/沙箱；索引数据只作采样事实，读取受限记录 unavailable。重新索引通过正常只读任务派发，失败可见且可 task_message({action:'retry'})。
+- 只有**新建**主会话写 `settings.main_onboarding:<id>=pending`（旧主会话/配置覆盖不补初始化）；CAS `pending→sending→sent` 防并发重复，注入失败退 `pending`。
+- 投递前必须 await `guardPreset` 恢复成功，不用固定延时猜就绪；`sent` 只表示消息已入队，不保证模型已介绍/派发（进程在发送与标记之间崩溃有不确定窗口，不盲重投）。
+- 索引任务只扫 `workspaceRegistry.list()` 登记的目录：读 `repoRoot/branch/HEAD/origin/commonDir`，单项失败继续，不 fetch/pull、不写文件，remote 去凭证。`task_report.workspace_index` 仅接受本任务 `done` 的完整 JSON，按创建时名单校验覆盖，与 `settings.workspace_repo_index` 同事务写入，不覆盖 `memories`。
 
 ### 原生自动化工具面
 
-- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，allow 显式保留 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；`preset-tools.js` 仍用增量 deny 补集。`index.js` 的 runtime restrict 与 guard 不再拒绝这四工具，其余文件、shell、团队和子会话专属禁止项不变。
-- 这四工具由原生包在预设 scope 等待 Schedule 服务后注册，不进入 `createTools`，插件全局工具数仍为 10（P1-B 起；含 `read_workspace`）。default worker 不新增挂载，不新增 host global plane 工具或 schema 包装。
-- **工具面（P1-B：15 → 10）**：`createTools` 返回 10 个（协调者 7 + 子会话 3）。旧的 6 个入口并进三个工具：`task_message` 的 `action`（message/stop/retry/close）、`task_list` 的 `view`（list/inbox）、新工具 `context` 的 `mode`（history/project/workspaces）。旧名**不注册**、不在 allow 名单里，但 `index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）；子会话契约 `task_report` / `task_detail` / `plan_save` 名字不变。
-- 缺能力诊断仅针对唯一主会话：打开/非 running 创建/idle/下一轮 policy 渲染检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule` 服务。缺失状态去重 warning + policy 提示，边界重新检查可恢复；不等待 Loader preset list、不改运行回合工具表，也不调用真实自动化 API。
-- 本次自动编排只支持 `target:this_session`，Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new/new_once` 创建 ordinary root Session（当前 cwd/composed preset），不是委托 worker，也不是第二协调者；非唯一主 id 被现有 `requireMain` 拒绝，不改变 main_session_id。
-- 沿用原生 Host-wide 管理与用户明确授权提示、RRULE、updatedAt/expectedUpdatedAt 冲突保护；审批提示是模型约束，不是新增硬门禁。委托 depth 校验仍由宿主负责，`access:full` 不增加工具或解除 `subagent_session`。
-- 使用方法和失败恢复见 [README 原生自动化](../README.md#主会话原生自动化)，契约与宿主验证边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。不修改日报、dispatch、ledger、默认沙箱或 UI。
+- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，allow 显式保留 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；`preset-tools.js` 仍用增量 deny 补集。这四工具不进入 `createTools`，插件全局工具数仍为 10。
+- **工具面（P1-B：15 → 10）**：`createTools` 返回 10 个（协调者 7 + 子会话 3）。旧入口并进三个工具：`task_message` 的 `action`、`task_list` 的 `view`、新工具 `context` 的 `mode`。旧名**不注册**、不在 allow 名单，`index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）。
+- 缺能力诊断只针对唯一主会话：检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule`，缺失去重 warn + policy 提示；不改运行回合工具表，也不模拟自动化。
+- 只支持 `target:this_session`：Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new`/`new_once` 创建普通 root 会话，不是委托 worker、也不是第二协调者；**非唯一主** id 被 `requireMain` 拒绝。**默认 worker 不新增**挂载；`access:full` 不增加工具、不解除 `subagent_session`。沿用 Host-wide 管理、用户**明确授权**、RRULE 与 `expectedUpdatedAt` 冲突保护；用法见 [README 原生自动化](../README.md#主会话原生自动化)，边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。
 
 ### 入口可见性（U1）
 
-- **任务入口（会话头「任务」按钮）只在主会话显示**：`client/src/gate.js` 的 `createMainViewGate` 判「当前会话是不是主会话」。
-  - 当前会话信号：`uiSession.adapter.current.getSnapshot().key`（优先），取不到退 `sessions.list.getSnapshot().byId` 里
-    `retainedBy.mainView > 0` 的会话 id（与 ds-bot 的 `shownSession()` 同口径）。
-  - 身份判定：POST `/api/orchestrator` 的 `session-role` → `src/host-route.js` 用 `coordinatorStatus().id` 与请求里的 `sessionId`
-    走 `src/session-role.js` 的 `isMainSession`；信号与 `task_*` 工具、通知投递同源（台账 `main_session_id`）。
-  - 渲染：`conversation.header.leading` 的 inject 暴露 `hooks.mainView`，`HeaderButton` 在 `useMainView` 为 false/缺失时返回 `null`。
-  - 降级（fail-closed）：没有当前会话 id、宿主路由不可用、HTTP/JSON 失败、响应不是 `ok:true` 一律隐藏；失败结果不缓存，
-    换会话立即重判，另有 5 秒兜底轮询重试。同一会话的明确答案缓存，避免会话列表频繁刷新时刷请求。
-- **侧栏「◈ 主会话」跳转入口始终注册/可见**，不参与主会话判定：它是首次创建主会话的引导入口，不能因为「还没有主会话」而消失。
-- 面板主体仍然注册为 `main` keyed 槽位（`key:'orchestrator'`）；入口隐藏不等于面板消失，`selectPanel('orchestrator')` 仍可用（供其他入口/排障）。
+- **会话头「任务」入口只在主会话显示**：`client/src/gate.js` 取当前会话 id → POST `session-role` → `src/session-role.js` 的 `isMainSession`（与 `task_*`、通知投递同源：台账 `main_session_id`）。
+- 降级 fail-closed：没有会话 id、路由不可用、HTTP/JSON 失败、`ok:false` 一律隐藏；失败不缓存，换会话立即重判，另有 5 秒兜底轮询；同会话的明确答案缓存。
+- 侧栏「◈ 主会话」始终可见、不参与判定（它是首次创建主会话的引导入口）；面板主体仍注册为 `main` 槽位，入口隐藏不等于面板消失。
 
 ## 主会话轮换（G1）
 
-主会话是唯一协调者，跑久了上下文与日志只会更大。轮换 = 把旧主会话退役、换一个干净会话继续当协调者；台账、任务、记忆、产物都不搬。**判定与动作严格分离**，且判定只有一个调用点：`main-session.openOnce()`。
+主会话是唯一协调者，跑久了上下文与日志只会更大。轮换 = 把旧主会话退役、换一个干净会话继续；台账、任务、记忆、产物都不搬。**判定与动作严格分离**，判定只有一个调用点：`main-session.openOnce()`（启动、`agent/created`、面板轮询都不判定）。
 
-### 模块与接线
-
-| 位置 | 职责 |
-|---|---|
-| `src/main-rotation.js` | 全部轮换逻辑：S1 纯判定 `evaluateRotation`；S2 采集 `collectRotationMetrics`（locate + stat）+ settings 键读写 + `inspectRotationPending` 只读判定；S3 动作面 `createRotationService`（marker / 时间戳 / 审计 / 旧会话处置 / `recoverPendingRotation`） |
-| `src/config.js` | `loadConfig` 直接 `Object.assign(config, normalizeRotationConfig(raw))`，**7 个键**的默认值/区间/回落都在 S1（P1-A 从 12 删到 7） |
-| `src/main-session.js` | `openOnce()` 是**唯一**判定点：`rotation.evaluate({ mainSessionId, liveAgent, source:'open' })` → `decision.due === true` 才 `rotateMain()`，否则照旧走复用分支 |
-| `index.js` | 装配 `createRotationService`（平台服务全是**惰性 getter**：`sessionPersistence` / `catalog` / `sessionController.rename` / `workspaceRegistry.archiveSession`）；`apply()` 启动时调一次 `rotation.recoverPending({ pointer })` 补完上次崩溃的轮换；`open-main` 响应里对新 id 跑 `ensureDigestFor` |
-
-判定**不在**启动、`agent/created`、面板轮询里跑，也没有定时器；settings 里不存任何判定结论，`snapshot` 不下发「建议轮换」（S4 曾接过这三处，已按「判定收敛到打开那一次」回退）。
-
-### 判定
-
-`evaluateRotation(input)` 是纯函数（不读库、不读盘、不看时钟，`now` 由调用方给），输入 = 台账快照 + 配置 + 时间：
-
-- 判定只在旧主会话 **live** 时做：`openOnce` 里 `live === undefined` 走既有「隐式重建」路径，不做判定，`agent/created` 也不补判——所以重启后第一次打开是重建，不是轮换。
-
-- **触发因子（P1-A 只剩两个，顺序固定）**：`main-log`（主会话日志 MiB）→ `age`（`since` 起算小时）。`tasks` / `sessions` / `context-tokens` / `disk` 四个因子连同它们的阈值键一起删除（采集从「读台账 + `listSnapshots` + 逐个 `stat` + `tokenMeter.measure`」缩成一次 `locate` + `stat`）。任一 `value >= threshold` 进 `triggers`/`reasons`。
-- **保护规则（12 个 code，`ROTATION_BLOCKS` 定优先级，`blockedBy[0]` 即首要原因）**：`mode-off`、`coordinator-override`、`spawn-provider`、`active-tasks`（`waiting_dep`/`pending`/`running`/`waiting_user`/`waiting_auth`）、`delivered-pending`、`delivered-artifacts`、`agent-running`、`recent-activity`（`logMtimeAt` 距今 < `rotateIdleMinutes`）、`active-children`（catalog 里 `activity==='active'`）、`min-age`、`cooldown`（距 `main_rotation_at` < `rotateCooldownHours`；从未轮换视为满足）、`metrics-degraded`（**两个因子全缺**才 fail-closed，缺一个只记 `degraded`）。
-- **结论**：`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；龄/冷却/闲置一律由时间戳现算，不信任调用方传小时数。`mainRotation` **默认 `off`**，拼错也回落 `off`。
-
-采集（S2）只读：`locate`+`stat` 拿主会话日志体积与 mtime（顺带给 P4）；每项独立 `try/catch`，失败记 `degraded` 并给 `null`（**未知 ≠ 0**，0 会被当成「很干净」而漏判）。`since` 先读 `settings.main_session_created_at`，退 `header.createdAt`，都拿不到时 `age` 降级。判定整体异常 → `evaluate` 返回 `null`（调用方视为「本次不换」，打开主会话照常）。
-
-> P1-A 删掉了 S7 检查节流（`rotateCheckIntervalHours` + `settings.main_rotation_checked_at`）：采集只剩一次 `locate` + `stat`，节流的解释成本高于收益。每次打开主会话都现算；旧库里的 `main_rotation_checked_at` 仍被 `readRotationState` 读出（无害），但不再写、不再参与判定。
-
-
-### 动作时序（顺序即回退边界，改顺序前先读 `src/main-rotation.js` 顶部注释）
-
-1. `ensureWorkspace()`（指挥舱工作区）+ `sessionController.create({ workspaceId, agentPreset: 协调者预设 })`。**失败 = 零处置**（F2）：不写 marker、不动指针、不碰旧会话，`open()` 返回可读错误。
-2. `beginRotationMarker` 写 `main_rotation_pending = {newId, oldId, at, reasons}`：**先 marker、后切指针**，它是崩溃后区分「空白残留」与「指针已切、只差处置」的唯一锚点。写不进只记 `main.rotation.marker.failed`，不放弃这次轮换。
-3. `setMainSessionId(newId)` 切指针（单条 UPSERT）。失败 = 轮换没发生（F3）：`discard` 尽力归档空白新会话 + 清 marker，返回「轮换失败，旧主会话仍可用」。**指针切换后不再回滚**——回滚等于把人踢回旧会话又换了一次主会话。
-4. `setMainSessionPreset` + `markRotationTimes` 写 `main_session_created_at` / `main_rotation_at`；失败只记 `main.rotation.commit.failed`（少了防抖时间戳，轮换已成立）。
-5. `settings.main_onboarding:<newId> = 'sent'`：跳过首次介绍与「工作区与仓库索引」任务，避免每次轮换多派一个重复索引任务。
-6. `sessionController.rename(newId, '主会话')`；失败只记日志。
-7. `disposeOldMainSession`：先 `rename(oldId, '主会话（已退役 YYYY-MM-DD HH:MM）')`，再 `archive(oldId)`（`rotateArchiveOld:false` 时 `archiveOld=undefined`，只改名）。两步各自降级：rename 失败不影响归档，archive 失败只留「旧会话还在列表里」，轮换仍成立。
-8. `recordRotation` 写审计 `main_rotation_last`（`old/new/at/triggers/reasons/metrics/renamed/archived/recovered`）并清 marker；写失败则 marker 留着，下次启动幂等补完（rename 是覆盖标题、archive 幂等）。
-9. 记 `freshMain = {sessionId, at}`：新会话还没 live 的 **60 秒窗口**内再点「打开主会话」直接交回同一个 id，不给「不 live 就新建」留双建。
-
-并发：`open()` 的 in-flight Promise 复用保证多个入口只建一次；`evaluate` 本身只读。**判定与动作之间不复查**（保护规则挡的是判定时刻的状态）。
-
-### 崩溃恢复（`recoverPendingRotation`，`apply()` 启动时跑一次，永不抛）
-
-| marker 状态 | 条件 | 处理 |
-|---|---|---|
-| `none` / `unknown` | 没有 marker / 启动早期还没有指针 | 无事可做 |
-| `invalid` | `newId` 不是非空字符串 | 只告警 + 清 marker，**绝不猜 id 去归档**（不可逆） |
-| `abandoned` | `marker.newId !== 指针` | 死在切指针之前：旧指针一直有效，新会话是空白残留 → 尽力归档 + 清 marker，不回滚指针 |
-| `complete` | `marker.newId === 指针` | 指针已切：补缺失的时间戳（按 `marker.at`）、补 `onboarding=sent`、对旧会话补「改名 + 归档」、写审计 `recovered:true`、清 marker（幂等） |
-
-### settings 键（只存事实，不存结论）
-
-| 键 | 语义 |
-|---|---|
-| `main_session_created_at` | 当前主会话起点（`age` 因子的 `since`） |
-| `main_rotation_at` | 上次轮换时刻（冷却期起点；从未轮换 = 无键） |
-| `main_rotation_last` | 审计记录（事后排查唯一入口：换了谁、为什么、改名/归档成没成、是否恢复补完） |
-| `main_rotation_pending` | 崩溃锚点（转瞬即逝，收尾清掉） |
-| `main_rotation_checked_at` | **已废弃（只读）**：P1-A 删检查节流后不再写；旧库里的值仍被 `readRotationState` 读出来，不参与判定 |
-
-五个键统一走 `readRotationState` / `writeRotationState`（`null` 删键、对象存 JSON、`undefined` 不动）。
-
-### 日志（`logs/YYYY-MM-DD.jsonl`）
-
-- `main.rotation.decided`：每次检查都写（`source`、`due`、`triggers`、`blockedBy`、`degraded`、指标、`since`/`sinceSource`）——复盘「为什么换 / 为什么没换」。
-- `main.session.rotated`：轮换成功（old/new/triggers/renamed/archived/marker/audit）。
-- 失败/降级：`main.rotation.failed`、`pointer-failed`、`commit.failed`、`onboarding.failed`、`audit.failed`、`marker.failed`、`marker.clear.failed`、`rename.ok|failed`、`archive`、`discard`、`metrics.degraded`、`recovered-complete|abandoned|invalid|failed`。
-
-冒烟（临时台账 + 桩平台动作，不碰真实主会话）：矩阵覆盖 not-due 零副作用、open-main 命中路径、create 失败零处置、
-指针写失败、只退役不归档、60s 窗口、崩溃恢复 complete/abandoned、配置归一化与纯判定契约（含「只剩两个因子」的边界）；
-用例在 `test/main-rotation.test.js` 与 `test/main-session.test.js`；探针脚本是一次性验证件，不入库。
+- **模块**：`src/main-rotation.js`（纯判定 `evaluateRotation` / 采集 `collectRotationMetrics` / 动作面 `createRotationService` / 崩溃恢复）、`src/config.js`（轮换相关的 7 个键：`mainRotation` + 6 个 `rotate*`，默认值与回落都在 `normalizeRotationConfig`）、`src/main-session.js`（唯一判定点）、`index.js`（装配 + `apply()` 时 `recoverPending`）。
+- **判定**：只在旧主会话 **live** 时做（重启后第一次打开是隐式重建，不是轮换）。触发因子两个：`main-log`（日志 MiB）→ `age`（运行天数）。12 个保护 code 按 `ROTATION_BLOCKS` 排优先级：`mode-off`、`coordinator-override`、`spawn-provider`、`active-tasks`、`delivered-pending`、`delivered-artifacts`、`agent-running`、`recent-activity`、`active-children`、`min-age`、`cooldown`、`metrics-degraded`（两个因子全缺才 fail-closed，缺一个只记 `degraded`）。`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；`mainRotation` **默认 `off`**，拼错也回落 `off`。
+- **动作时序**（顺序即回退边界）：建新会话（失败 = 零处置）→ 写 marker `main_rotation_pending`（先 marker 后切指针，崩溃恢复的唯一锚点）→ 切指针（失败 = 轮换没发生，指针切换后不回滚）→ 写时间戳 → `onboarding=sent`（跳过首次介绍）→ 改名 → 退役旧会话（先改名再归档，各自降级）→ 写审计 `main_rotation_last` → 记 `freshMain`（60 秒窗口内再打开交回同一 id）。
+- **崩溃恢复**：`abandoned`（marker.newId ≠ 指针）= 死在切指针前，尽力归档空白残留；`complete` = 指针已切，补时间戳 / onboarding / 旧会话处置，幂等；`invalid` 只清 marker + 告警，**绝不猜 id 去归档**。
+- **settings 键只存事实**：`main_session_created_at` / `main_rotation_at` / `main_rotation_last`（审计，只留最近一条）/ `main_rotation_pending`；`main_rotation_checked_at` 已废弃（只读）。
+- **日志**：`main.rotation.decided`（每次判定都写）、`main.session.rotated`、以及 `failed` / `marker.*` / `metrics.degraded` / `recovered-*` 等降级项。逐条边界见 [LIMITATIONS](LIMITATIONS.md#主会话轮换g1)。
 
 ## 队列与并发
 
-平台有 `maxActiveSubagents` 上限（默认 8），满了抛 `ACTIVATION_LIMIT_REACHED` 且平台不排队。插件自己维护队列：
-
-- `task_create` 只做校验、去重、落库、入队；派发异步。
-- 容量满时任务保持 `pending`，按 2s/5s/10s/30s 退避重试。
-- 唤醒：子会话结算、任务终态、`task_message({action:'stop'})`、插件启动、协调者 `agent/created`。
-- 高优先级先派；同优先级按创建时间 FIFO。
-- 子会话创建的非容量错误才标 `failed` 并推通知，不留幽灵 `pending`。
-- 子会话预设由 `config.workerPreset` 决定（默认 `dsh-orchestrator-worker`），`dispatch` 只在 `spawn` provider 上传 `agentPreset`；续派/冷恢复沿用会话创建时记下的预设。调试用的 `orch-debug` 副本**不在本包内**（P1-E 已外移）：生成器与说明在开发仓库 `tools/debug-preset/`（`cli.mjs` + `README.md`），生成后走 bundle 安装；插件运行时只透传预设 id。
+平台有 `maxActiveSubagents` 上限（默认 8），满了抛 `ACTIVATION_LIMIT_REACHED` 且平台不排队，插件自己维护队列：`task_create` 只校验、去重、落库、入队，派发异步；容量满保持 `pending`，按 2s/5s/10s/30s 退避重试；唤醒 = 子会话结算、任务终态、`stop`、插件启动、协调者 `agent/created`；高优先级先派，同级 FIFO；只有子会话创建的非容量错误才标 `failed` 并推通知（不留幽灵 `pending`）。子会话预设由 `config.workerPreset` 决定，`dispatch` 只在 `spawn` provider 上传 `agentPreset`；续派/冷恢复沿用会话创建时记下的预设。调试用的 `orch-debug` 副本不在本包内（P1-E 已外移）。
 
 ## 依赖 / 分组 / 写域 / 优先级
 
 - `dependsOn` 最多 20 个，必须指向已存在且不是 `failed/cancelled/orphaned` 的任务；创建时不接受未来 id，因此不会成环。
-- 前置未完成 → `waiting_dep`；`queue.pump` 前先做晋升：
-  - 全部 `done` → `pending` 入队；
-  - 任一失败/取消/丢失/不存在 → 下游 `failed`，错误写明原因；
-  - 晋升是循环的，失败会沿依赖链传播。
-- 前置任务摘要与产物不在派发时预渲染：子会话用 `task_detail` 按**当前**台账现读（依赖可能在创建之后才完成），见下文「brief 纯指引（T1）」。
-- `group` 只用于展示/过滤，`task_list({group})` 给出完成数。
-- `priority` 为 `-10..10`，只影响队列顺序。
-- **同写域并发防护**（`src/write-guard.js`，默认拒绝）：`task_create` 在「去重 / 容量 / worktree 决定」之后、`createTask` 之前的**同一个同步段**里判定——
-  新任务 target 与活跃未隔离任务的 target 相同或互相包含，或两者 `writeScopes` 重叠 → 按 `config.sameDirGuard` 处理：
-  `require`（默认）拒绝并返回可操作错误、`warn` 只给强警告、`off` 关闭（`writeScopes` 退回一行 advisory）。
-  不参与判定：`readOnly` 任务（不写文件）、`requested`/`created`/`reused` 隔离任务（各自检出；`requested` 是派发时建检出的待建状态，`target_dir` 还没换算但任务注定在检出里跑）、`dependsOn` 链上祖先（等它们 `done` 才派发）、终态任务。
-  例外是 `degraded`（目标不是 git 仓库而降级）：它仍在原工作树里写，必须继续占目录。
-  `delivered` 算活跃（还占目录）；唯一显式放行开关是 `task_create.allowConcurrent:true`，放行时返回带「并发风险」并记 `task.create.concurrent-write`。
-  拒绝对应 `task.create.rejected`（`reason: same-dir | write-scope`）。
+- 前置未完成 → `waiting_dep`；`queue.pump` 前先晋升：全部 `done` → `pending` 入队；任一失败/取消/丢失/不存在 → 下游 `failed`（写明原因）；晋升是循环的，失败沿依赖链传播。
+- 前置任务摘要与产物不在派发时预渲染：子会话用 `task_detail` 按**当前**台账现读。
+- `group` 只用于展示/过滤；`priority` 只影响队列顺序。
+- **同写域并发防护**（`src/write-guard.js`，默认拒绝）：`task_create` 在「去重 / 容量 / worktree 决定」之后、`createTask` 之前的**同一个同步段**里判定——新任务 target 与活跃未隔离任务的 target 相同或互相包含，或两者 `writeScopes` 重叠 → 按 `config.sameDirGuard` 处理（`require` 拒绝 / `warn` 只警告 / `off` 关闭）。不参与判定：`readOnly`、`requested/created/reused` 隔离任务、`dependsOn` 祖先、终态任务。例外是 `degraded`（不是 git 仓库而降级）：仍在原工作树里写，必须继续占目录。`delivered` 算活跃；唯一显式放行是 `allowConcurrent:true`（记 `task.create.concurrent-write`）。拒绝对应 `task.create.rejected`（`reason: same-dir | write-scope`）。
 
 ## 回报、通知、收件箱、日报
 
@@ -161,33 +60,33 @@
 
 | status | 通知级别 | 说明 |
 |---|---|---|
-| progress | silent | 只更新台账；连续 3 次（固定口径，配置键 `stallRounds` 已删）才推一次 `stalled` |
-| done | notify | 落「已交付待确认」（`delivered`）；5 秒合并窗口后注入协调者，带确认/追问动作指令 |
+| progress | silent | 只更新台账；连续 3 次（固定口径）才推一次 `stalled` |
+| done | notify | 落「已交付待确认」（`delivered`）；5 秒合并窗口后注入协调者 |
 | blocked | interrupt | 立即投递，可带 `question` / `options` |
 | needs_auth | interrupt | 立即投递，可带 `question` / `options` |
 
+- 通知走 `agent.steer` 直插协调者，不经过 Team 的 `sendMessage`；每次投递写 `notifications` 行（`delivered`/`failed`/`skipped`，合并后续行 `merged_into` 指向首条）。
+- `task_list({view:'inbox'})` 汇总待决、失败/丢失、长时间没动静；问题/选项来自台账 `question` / `question_options_json`，`progress`/`done`/`task_message` 会清掉旧问题。
+- **卡住提醒**：连续 3 次 progress 且距上次提醒超过 `staleMinutes` 推一次「可能卡住」。
+- 日报：`digestAt`（HH:MM）开启后在主会话上维护一条每日 `schedule`，到点提示协调者汇总；主会话重建/时区变化会重建，配置为空会删除。
+
 ## 两段式终态（D1：交付 → 确认）
 
-`done` 是不可逆终态，但「子会话说做完了」不等于「用户验收过」。为既保留 `done` 的审计语义、又给追问留窗口，状态机在 `running` 与 `done` 之间加了 `delivered`（已交付待确认）：
+`done` 是不可逆终态，但「子会话说做完了」不等于「用户验收过」。状态机在 `running` 与 `done` 之间加了 `delivered`（已交付待确认）：
 
 - **进入**：`task_report done`，或结算 `completed` 且没上报过 progress（`SETTLE_MAP`）。
-- **出口 1 · 确认**：协调者 `task_message({action:'close'})`（或面板「确认交付」）→ `done`，`close_reason=coordinator`；超过 `deliveredTimeoutMinutes`（默认 60）由 sweeper 自动收成 `done`，`close_reason=timeout`。
+- **出口 1 · 确认**：`task_message({action:'close'})`（或面板「确认交付」）→ `done`，`close_reason=coordinator`；超过 `deliveredTimeoutMinutes`（默认 60）由 sweeper 自动收成 `done`，`close_reason=timeout`。
 - **出口 2 · 追问**：`task_message` 投递成功 → `running`，复用同一个子会话（**可写根不释放**），完成后再次交付。
-- **出口 3 · 停止/丢失**：`task_message({action:'stop'})` → `cancelled`；追问时子会话不可达 → `orphaned`。
-- 归属：`delivered` 是活跃状态（`listTasks(active)`、面板门控、`inboxCount` 都算），但不是终态。
-  状态集合与转移表只有一份：`src/status-facts.js` 的 `STATUS_CAPS` / `TRANSITIONS`，其余模块（`panel-gates` /
-  `tools` / `panel-actions` / `settlement` / `reconcile` / `watchdog` / `main-rotation` / `ledger` 的 SQL /
-  `host-route`）全部从它派生，不再各写本地 Set（见下「状态事实源」）。
-- 依赖就绪仍只认 `done`（`deps.js`）：交付不等于确认，下游要等确认/超时；正常情况协调者收到通知几秒内就确认。
-- goal 不收口：`delivered` 期间 `goal_state` 保持 active+disarmed，追问时 `edit` 正常；只有 `done` 才 `complete`。
-- 对账：`delivered` 不参与 S2 的 liveness/catalog 检查（成果已落库，等确认即可），超时 sweeper 兜底，重启不会卡死。
-- 审计：`tasks.delivered_at` 记录本次交付时间（追问后再交付会重写，超时从新时间起算），`tasks.close_reason` 记录关闭原因；`messages` 里 `kind='close'` 一行写「协调者确认 / 超时自动完成」。
-- 关闭三条路径（工具 / 面板 / 超时）共用 `src/delivered.js` 的 `closeDelivered`，副作用顺序固定：迁移 + 审计消息 → 释放可写根 → goal 收口 → 按档位清检出 → 唤醒队列。
-- 通知去重：进入 `delivered` 发一条（带 `task_message({action:'close'})`/`task_message` 指令），确认/超时**不再发**通知，只在台账写审计消息。
+- **出口 3 · 停止/丢失**：`stop` → `cancelled`；追问时子会话不可达 → `orphaned`。
+- 归属：`delivered` 是活跃状态（`listTasks(active)`、面板门控、`inboxCount` 都算），但不是终态；状态集合与转移表只有一份（`src/status-facts.js`，见下「状态事实源」）。
+- 依赖就绪仍只认 `done`；goal 不收口（`delivered` 期间保持 active + disarmed，只有 `done` 才 `complete`）；对账不查 `delivered` 的 liveness（成果已落库，超时 sweeper 兜底）。
+- 审计：`tasks.delivered_at` 记录本次交付时间（追问后再交付会重写），`close_reason` 记关闭原因，`messages` 里 `kind='close'` 写「协调者确认 / 超时自动完成」。
+- 三条关闭路径（工具 / 面板 / 超时）共用 `src/delivered.js` 的 `closeDelivered`，副作用顺序固定：迁移 + 审计消息 → 释放可写根 → goal 收口 → 按档位清检出 → 唤醒队列。
+- 通知去重：进入 `delivered` 发一条（带 `close`/追问指令），确认/超时**不再发**通知，只写审计消息。
 
 ## 交接契约 v1（D2：`acceptedBy` / `acceptedAt` + JSONL）
 
-「交付 → 确认 / 追问 → 完成」是插件独有的一段语义（官方宿主没有），v1 把它从内部状态机提升为**可被外部消费的只读契约**：稳定字段 + 版本号 + JSONL 审计事件。**v1 只做数据契约与事件，不做进程内订阅 API**（回调/事件总线留 v2，取决于宿主事件契约，见 P2 计划 §9 待拍板 4）。
+「交付 → 确认 / 追问 → 完成」是插件独有的一段语义（官方宿主没有），v1 把它从内部状态机提升为**可被外部消费的只读契约**：稳定字段 + 版本号 + JSONL 审计事件。**v1 只做数据契约与事件，不做进程内订阅 API**（回调/事件总线留 v2）。
 
 三条确认路径各自带 `by`，落库与事件只在 `closeDelivered` 一处写：
 
@@ -195,7 +94,7 @@
 |---|---|---|
 | `task_message({action:'close'})`（`src/tools.js`） | `coordinator` | `coordinator` |
 | 面板「确认交付」（`src/panel-actions.js`） | `panel` | `coordinator` |
-| 超时 sweeper（`src/delivered.js`，`deliveredTimeoutMinutes`） | `timeout` | `timeout` |
+| 超时 sweeper（`src/delivered.js`） | `timeout` | `timeout` |
 
 ### 契约字段
 
@@ -210,41 +109,34 @@
 | `deliveredAt` | number \| null | 交付时间（毫秒时间戳；追问后再交付会重写，超时从新时间起算） |
 | `acceptedAt` | number \| null | 确认时间（毫秒）；未确认是 null |
 | `acceptedBy` | `coordinator` \| `panel` \| `timeout` \| null | 谁确认的；未确认是 null |
-| `rounds` | object | `{ turns, followups }`：派发/续派次数（台账 `attempts`）与追问次数（`kind='followup'` 消息数） |
+| `rounds` | object | `{ turns, followups }`：派发/续派次数与追问次数 |
 | `evidence` | object | `{ acceptance, artifacts }`：A1 的验收记录原样（没跑过 null）与已登记产物 |
 | `status` | string | 当前状态（`delivered` / `done` / …） |
 | `closeReason` | `coordinator` \| `timeout` \| null | 关闭原因（台账原文） |
 
 **没有交接 = `null`**：从没交付过的任务（pending / running / failed / 存量 done）没有 `handoff`（不是空壳对象）；「交付了但没确认」是 `acceptedAt: null` + `acceptedBy: null`，两者必须能区分。
 
-三个视图粒度不同、字段同源：面板 snapshot 只下发精简版 `{contract, deliveredAt, acceptedAt, acceptedBy, acceptedByLabel, acceptanceOk}`（快照不给证据，避免变大）；`task_status` 渲染「交接 / 交接轮次」两行；面板 detail 与 JSONL 事件给完整契约对象。
+三个视图粒度不同、字段同源：面板 snapshot 只下发精简版 `{contract, deliveredAt, acceptedAt, acceptedBy, acceptedByLabel, acceptanceOk}`（不给证据，避免快照变大）；`task_status` 渲染「交接 / 交接轮次」两行；面板 detail 与 JSONL 事件给完整契约对象。
 
 ### JSONL 事件
 
-落 `$DSH_HOME/state/orchestrator/handoff/handoff-YYYY-MM-DD.jsonl`（**不进仓库、不写台账 messages**）：按天分文件、单文件超 5 MiB 换新（`handoff-YYYY-MM-DD.2.jsonl`）、保留 30 天，与运行日志共用 `src/log.js` 的同一套轮转实现。
+落 `$DSH_HOME/state/orchestrator/handoff/handoff-YYYY-MM-DD.jsonl`（**不进仓库、不写台账 messages**）：按天分文件、单文件超 5 MiB 换新、保留 30 天，与运行日志共用 `src/log.js` 的同一套轮转实现。
 
 | 事件 | 何时写 | 幂等 |
 |---|---|---|
 | `task.handoff.delivered` | 任务进入 `delivered`（`transition` 观察者；`task_report done` 与结算 `completed` 两条路都覆盖） | 每次交付一条（追问后再交付是新的一次交付） |
-| `task.handoff.confirmed` | `closeDelivered` 落库成功后（三条确认路径共用） | 只发一次：重复确认走 `already` 分支提前返回，不写第二条 |
+| `task.handoff.confirmed` | `closeDelivered` 落库成功后（三条确认路径共用） | 只发一次：重复确认走 `already` 分支提前返回 |
 
-一行一个 JSON 对象（与运行日志同格式，字段固定）：
-
-```json
-{"at":"2026-11-19T13:37:44.172Z","event":"task.handoff.delivered","taskId":"t-1a2b3c4d","sessionId":"c-1234","detail":{"contract":1,"handoff":{"contract":1,"taskId":"t-1a2b3c4d","sessionId":"c-1234","title":"示例","deliveredAt":1763108264172,"acceptedAt":null,"acceptedBy":null,"rounds":{"turns":1,"followups":0},"evidence":{"acceptance":null,"artifacts":[]},"status":"delivered","closeReason":null}}}
-{"at":"2026-11-19T13:40:02.010Z","event":"task.handoff.confirmed","taskId":"t-1a2b3c4d","sessionId":"c-1234","detail":{"contract":1,"handoff":{"contract":1,"taskId":"t-1a2b3c4d","sessionId":"c-1234","title":"示例","deliveredAt":1763108264172,"acceptedAt":1763108402010,"acceptedBy":"panel","rounds":{"turns":1,"followups":0},"evidence":{"acceptance":null,"artifacts":[]},"status":"done","closeReason":"coordinator"}}}
-```
-
-消费方式：按行 `JSON.parse`，按 `event` 过滤；文件**只追加不改写**，重复投递由读方按 `(event, taskId, deliveredAt)` 去重（见 [api-notes](api-notes.md) 的 jq 示例）。
+一行一个 JSON 对象：`{"at":"ISO","event":"…","taskId":"t-…","sessionId":"c-…","detail":{"contract":1,"handoff":{…完整契约对象…}}}`。消费方式：按行 `JSON.parse`、按 `event` 过滤；文件只追加不改写，重复投递由读方按 `(event, taskId, deliveredAt)` 去重（`jq` 示例见仓库内 `docs/api-notes.md`，该文件不随包发布）。
 
 ### 兼容性与边界
 
 - **字段只增不改**：v1 冻结字段名与语义；改名/改语义必须升 `contract`，读方见到不认识的版本应忽略而不是猜。
-- **幂等**：`closeDelivered` 的 `already` 分支不写 accepted_*、不发事件；并发确认（工具与面板撞车）只会有一次真实写入。
-- **超时也是确认**：超时 sweeper 走同一条 `closeDelivered`，`acceptedBy: 'timeout'`、`close_reason: 'timeout'`，事件照发——「没人确认」与「超时自动完成」必须能区分。
-- **存量行**：`accepted_by` / `accepted_at` 由旧库启动时 ALTER 补列，存量行 NULL → `acceptedBy/acceptedAt` 为 null；v1 之前已 `done` 的存量任务（没有 `delivered_at`）直接没有 `handoff`，面板与 `task_status` 按「没有交接记录」显示，不猜。
+- **幂等**：`already` 分支不写 accepted_*、不发事件；并发确认（工具与面板撞车）只会有一次真实写入。
+- **超时也是确认**：超时走同一条 `closeDelivered`，`acceptedBy: 'timeout'`、`close_reason: 'timeout'`，事件照发——「没人确认」与「超时自动完成」必须能区分。
+- **存量行**：`accepted_by` / `accepted_at` 旧库启动时 ALTER 补列，存量行 NULL；v1 之前已 `done` 的存量任务直接没有 `handoff`，面板与 `task_status` 按「没有交接记录」显示，不猜。
 - **失败是旁路**：事件写入失败只 warn 一次，不影响迁移/确认（JSONL 是审计旁路，不是交付的前置条件）。
-- **不做订阅 API**：v1 的消费方式是「读文件」；进程内可订阅 API（回调、事件总线）留 v2，不在这片偷偷长大。
+- **不做订阅 API**：v1 的消费方式是「读文件」；进程内可订阅 API 留 v2。
 
 ## 机器可判定验收（A1：`task_create.checks`）
 
@@ -258,409 +150,212 @@
 | 超时 | 先 SIGTERM，5 秒后 SIGKILL；结果 `timedOut:true`、`exitCode:null` |
 | 输出 | stdout / stderr 各只留最后 4 KiB，超出标 `truncated`；失败回执给最后 10 行 |
 | 台账 | `tasks.acceptance_json`：`{ spec, ranAt, cwd, ok, total, passed, skipped, failed, results[] }`；旧库启动时 ALTER 补列，存量行 NULL = 没跑过 |
-| 消息 | 每次跑都写 `messages.kind='acceptance'`（通过写「验收通过」、失败写完整失败清单） |
+| 消息 | 每次跑都写 `messages.kind='acceptance'`（通过写「验收通过」，失败写完整失败清单） |
 | 面板 | detail 端点下发完整证据，抽屉「验收」区块逐条显示；`task_status` 有验收段；snapshot 只下发摘要（计数/ranAt） |
 
-**安全边界**（不做假安全，如实声明）：命令只来自协调者的 `task_create`（写进 brief 快照），`task_report` 没有任何命令参数，子会话无法注入或覆盖；执行用 `spawn(argv[0], argv.slice(1), { shell:false })`，不经 cmd.exe / sh 拼串；cwd 固定为 `worktree_path ?? target_dir`，**不继承主会话目录**（没有 target 的任务在创建阶段就拒绝配 `checks`）；**`readOnly:true` 的任务拒绝配 `checks`**（宿主进程执行保证不了只读，不允许它成为只读任务的后门）；环境变量继承插件进程（命令来自协调者，按宿主权限执行）；检查跑在**插件宿主进程**里，不是子会话沙箱——隔离任务只是 cwd 在检出目录，权限仍来自宿主。
+**安全边界**（不做假安全，如实声明）：命令只来自协调者的 `task_create`（写进 brief 快照），`task_report` 没有任何命令参数，子会话无法注入或覆盖；执行用 `spawn(argv[0], argv.slice(1), { shell:false })`，不经 cmd.exe / sh 拼串；cwd 固定为 `worktree_path ?? target_dir`，**不继承主会话目录**（没有 target 的任务创建阶段就拒绝配 `checks`）；**`readOnly:true` 的任务拒绝配 `checks`**（宿主进程执行保证不了只读）；环境变量继承插件进程；检查跑在**插件宿主进程**里，不是子会话沙箱——隔离任务只是 cwd 在检出目录，权限仍来自宿主。
 
-**失败语义**：状态不迁移（保持 `running`/原状态）、不登记产物、不发交付通知；只落验收证据与 `kind='acceptance'` 消息，返回可读失败清单。子会话修完重报 `done`（会重跑），或报 `blocked`。确认交付（`task_message({action:'close'})`）与超时 sweeper **都不重跑**检查——确认是人的动作，不是再验一次。brief 里的 `checks` 无法解析时同样**拒绝交付**（fail-closed），不静默当成「没配检查」。
+**失败语义**：状态不迁移（保持 `running`）、不登记产物、不发交付通知；只落验收证据与 `kind='acceptance'` 消息，返回可读失败清单。子会话修完重报 `done`（会重跑），或报 `blocked`。确认交付与超时 sweeper **都不重跑**检查——确认是人的动作，不是再验一次。brief 里的 `checks` 无法解析时同样**拒绝交付**（fail-closed）。
 
-**为什么没有「只标记不阻断」**：计划阶段已拍板选「阻断」（P2 计划 §9 待拍板 3）：验收的价值在于退出码，允许 `delivered + ok:false` 等于又回到自述。需要宽松时用 `skipIfMissing`（环境差异）或把检查写宽，而不是绕过闸门。
+**为什么没有「只标记不阻断」**：验收的价值在于退出码，允许 `delivered + ok:false` 等于又回到自述。需要宽松时用 `skipIfMissing`（环境差异）或把检查写宽，而不是绕过闸门。
 
 ## 官方 Team 板互通（D6：只读 + 确认反写）
 
-**方向已定：D6 优先，不做 workspace 第二后端。** 官方 Team 板挂在 **subagent 树**上（`subagents.rootOf(caller)` 才能定位），
-一旦派发改走 root 工作区会话，插件任务就脱离 Team 树、D6 直接失效；因此本片**不新增任何 root 会话派发路径**，也**不新增配置键**。
-D6 只做两件事：把官方板**只读**接进插件视图；插件任务被确认交付时**可选地**把关联的官方任务标 `complete`。
+**方向已定：D6 优先，不做 workspace 第二后端。** 官方 Team 板挂在 **subagent 树**上（`subagents.rootOf(caller)` 才能定位），一旦派发改走 root 工作区会话，插件任务就脱离 Team 树、D6 直接失效；因此本片**不新增任何 root 会话派发路径**，也**不新增配置键**。D6 只做两件事：把官方板**只读**接进插件视图；插件任务被确认交付时**可选地**把关联的官方任务标 `complete`。
 
 | 项 | 规格 |
 |---|---|
 | 宿主契约 | `agentTeams.isEnabled(caller)` / `listTasks(caller)` / `updateTask(caller, { taskId, expectedRevision, action })`（rc.5 `@deepseek-ai/dsh-agent-team`）；全部经 `host-capabilities` 的 `agentTeams()` 惰性取，`report()` 第 10 类 `team-board` 只探测 `isEnabled` + `listTasks` |
 | 只读快照 | `snapshot.teamBoard = { enabled, rows, degraded }`；`rows[] = { id, revision, subject, status, statusLabel, owner, blockedBy, writeScopes, ready }`（**不含 description**：官方允许 16 KiB 正文，每帧下发会把快照撑大）。`enabled:false` 时**不调用** `listTasks` |
-| 关联 | `task_create.teamTaskId`（可选）：只读校验任务存在（`listTasks`）并记 `tasks.team_task_id` / `team_task_revision`（CAS 基线）。不 claim、不改官方任务；重派复制这两列 |
-| 反写 | **人/协调者确认**（`closeDelivered` 成功且 `acceptedBy ≠ timeout`）→ `updateTask({ action:'complete', expectedRevision })`；只对**显式关联**的任务，只由协调者（Team Lead）发起。超时自动完成**不反写**，只记 `team.board.skipped`（`reason: timeout`） |
-| CAS | `expectedRevision` = 创建时读到的 revision；`TEAM_TASK_STALE_REVISION` 只**重读一次**（`listTasks`）再试**一次**，仍冲突就停手记 `team.board.stale`，不重试轰炸 |
+| 关联 | `task_create.teamTaskId`（可选）：只读校验存在并记 `tasks.team_task_id` / `team_task_revision`（CAS 基线）。不 claim、不改官方任务；重派复制这两列 |
+| 反写 | **人/协调者确认**（`closeDelivered` 成功且 `acceptedBy ≠ timeout`）→ `updateTask({ action:'complete', expectedRevision })`；只对**显式关联**的任务、只由协调者（Team Lead）发起。超时自动完成**不反写**，只记 `team.board.skipped`（`reason: timeout`） |
+| CAS | `expectedRevision` = 创建时读到的 revision；`TEAM_TASK_STALE_REVISION` 只**重读一次**再试**一次**，仍冲突就停手记 `team.board.stale`，不重试轰炸 |
 | 降级 | 服务缺失/形状变了/`isEnabled` 抛错 → `degraded.code=TEAM_BOARD_UNAVAILABLE`；Team 未开启 → `enabled:false, degraded:null`；反写失败/冲突**只 warn + 日志**，本地 `done` 已落库、不回滚 |
-| 事件 | `team.board.confirmed`（成功，含 `revision`/`reRead`）、`team.board.stale`（冲突放弃）、`team.board.confirm-failed`（官方拒绝/异常）、`team.board.skipped`（未关联/服务缺失/未开启，正常降级） |
-| 边界 | 不接管官方派发/认领/生命周期；不把官方任务同步进我们的台账；不做 workspace 后端。官方板在面板里是**只读分区**（渲染由 P2-5 接手，本片只给数据） |
+| 事件 | `team.board.confirmed`（成功）、`team.board.stale`（冲突放弃）、`team.board.confirm-failed`（官方拒绝/异常）、`team.board.skipped`（未关联/服务缺失/未开启） |
+| 边界 | 不接管官方派发/认领/生命周期；不把官方任务同步进台账；不做 workspace 后端。面板里官方板是**只读分区**（行内没有按钮） |
 
-**为什么 CAS 是硬要求**：官方板可能同时被 Lead 与 teammate 操作；不带 `expectedRevision` 的 `complete` 会覆盖别人刚做的
-`claim` / `edit`。反过来「冲突就自动改到最新再写」也危险——那等于替别人拍板，所以只重读一次、只再试一次。
+**为什么 CAS 是硬要求**：官方板可能同时被 Lead 与 teammate 操作；不带 `expectedRevision` 的 `complete` 会覆盖别人刚做的 `claim` / `edit`。反过来「冲突就自动改到最新再写」也危险——那等于替别人拍板，所以只重读一次、只再试一次。
 
-**为什么失败只 warn**：交付是本地状态机的事实，官方板只是并行看板；为了一个看板写失败把已确认的任务回滚成
-`delivered`，会让「用户已经确认过」这件事消失——那比看板没更新严重得多。
+**为什么失败只 warn**：交付是本地状态机的事实，官方板只是并行看板；为了一个看板写失败把已确认的任务回滚成 `delivered`，会让「用户已经确认过」这件事消失。
 
-**为什么超时自动完成不反写**：超时是「没人确认」的兜底，不是人的判断。让它去改官方板，等于系统替别人把
-共享看板上的任务标完成；所以 `acceptedBy: 'timeout'` 只记一条 `team.board.skipped`，`updateTask` 一次都不调。
+**为什么超时自动完成不反写**：超时是「没人确认」的兜底，不是人的判断。让它去改官方板，等于系统替别人把共享看板上的任务标完成；所以只记一条 `team.board.skipped`，`updateTask` 一次都不调。
 
 ## 状态事实源（`src/status-facts.js`）
 
-0.19.x 的 `state.js` 有唯一转移表，但**状态集合**被复制到 9 个模块，并已产生三处真实不一致
-（`RESUME_STATUS` 含 `failed` 而面板不含、两套「终态」名字几乎一样、面板 stop 把 `failed` 改成 `cancelled`）。
-现在只有一个判定点：
+0.19.x 的状态集合被复制到 9 个模块并产生过三处真实不一致，现在只有一个判定点：
 
 | 能力字段 | 回答什么问题 | 谁用 |
 |---|---|---|
 | `active` | 还算「没落终态」吗？ | `listTasks(active)`、面板筛选、`ledger` 的 SQL |
-| `followup` / `resumable` | 能续派吗 / 续派后要迁回 running 吗？ | `task_message`、面板「追加」 |
-| `deletable` / `retryable` | 能删吗 / 能重派吗？ | 面板删除、`task_message({action:'retry'})` |
-| `terminal` / `releases` | 是流程终态吗 / 要释放可写根与 goal 吗？ | `task_message({action:'close'})` 判定、结算收尾、**面板与工具的 stop 幂等判定** |
+| `followup` / `resumable` | 能续派吗 / 续派后要迁回 running 吗？ | `task_message`、面板 |
+| `deletable` / `retryable` | 能删吗 / 能重派吗？ | 面板删除、`retry` |
+| `terminal` / `releases` | 是流程终态吗 / 要释放可写根与 goal 吗？ | `close` 判定、结算收尾、面板与工具的 stop 幂等判定 |
 | `waiting` | 是等人（用户/授权）的停顿态吗？ | 续派即批准计划 |
 | `rotationActive` | 会阻断主会话轮换吗？ | `main-rotation`（**刻意不含 `delivered`**） |
 | `liveness` / `catalog` / `watchdog` | 要对账活着吗 / 要查目录吗 / 要巡检空闲吗？ | `reconcile`、`watchdog` |
 | `planSettled` | 计划任务进这个状态要收口 `plan_state` 吗？ | `ledger.transition` |
 
-- **三条不可达边已删**（`running → done`、`failed → running`、`orphaned → pending`）：它们自加入起就没有调用点，
-  而 `test/state.test.js` 的 10×10 矩阵曾把它们写成 `allowed`——**测试在保护死代码**。矩阵现在从 `TRANSITIONS` 派生，
-  另有正向用例断言这三条边必须被拒。
-- **`failed` 的语义分开了**：`terminal:false`（还能重派，用户视角不是流程走完）但 `releases:true`（要释放资源）。
-  面板与工具的 stop 幂等判定改用 `releases`，不再把失败任务改成「已取消」。
-- **迁移有审计日志了**：`transition` 是全部状态变化的唯一入口（19 个调用点），`index.js` 通过
-  `setTransitionObserver` 挂一次 `task.transition` 日志（`{taskId, from, to, reason, closeReason}`），
-  「这个任务为什么从 running 变 orphaned」可以直接从日志还原。
+- **三条不可达边已删**（`running→done`、`failed→running`、`orphaned→pending`）：它们自加入起就没有调用点，而测试曾把它们写成 `allowed`——**测试在保护死代码**。矩阵现在从 `TRANSITIONS` 派生，另有正向用例断言这三条边必须被拒。
+- **`failed` 的语义分开了**：`terminal:false`（还能重派）但 `releases:true`（要释放资源）；stop 幂等判定改用 `releases`，不再把失败任务改成「已取消」。
+- **迁移有审计日志**：`transition` 是全部状态变化的唯一入口，`index.js` 挂一次 `task.transition` 日志（`{taskId, from, to, reason, closeReason}`）。
 
 ## worktree 状态事实源（`src/worktree-facts.js`）
 
-`worktree_state` 的 8 个状态曾有 **7 份独立列表**（占不占目录、要不要建树、有没有检出、显不显示小标、
-要不要重派、要不要通知、清理前置）。语义差异是**合理**的，但没有任何一处解释这些差异，每次加状态要改 7 处
-（0.17.0 的 P1「`requested` 被误当占用目录」就是第一次爆发）。现在是一张 `WORKTREE_STATE_CAPS` 表 + 派生列表：
+`worktree_state` 的 8 个状态曾有 7 份独立列表（占不占目录、要不要建树、有没有检出、显不显示小标、要不要重派、要不要通知、清理前置）。现在是一张 `WORKTREE_STATE_CAPS` 表 + 派生列表：
 
 | 能力 | 含哪些状态 | 语义 |
 |---|---|---|
 | `occupiesTarget` | none / degraded / rejected / failed / cleaned | 仍在原工作树里写，参与同写域判定 |
 | `needsCreate` | requested | 派发前要真建检出 |
-| `hasCheckout` | created / reused / cleaned | 台账里有检出路径（cleaned 的目录已删，仅历史可查） |
-| `showsBadge` | created / reused / cleaned | 面板小标（`cleaned` 额外排除，列表小标只在真隔离时出现） |
+| `hasCheckout` | created / reused / cleaned | 台账里有检出路径（cleaned 的目录已删） |
+| `showsBadge` | created / reused / cleaned | 面板小标 |
 | `retryable` | created / reused / failed / cleaned | 重派时沿用/重建检出 |
 | `notifyIsolated` | created / reused / cleaned | 通知里说「产物在检出目录」 |
 
-`setTaskWorktree` 现在校验 `WORKTREE_TRANSITIONS`（非法转移抛错，同 `tasks.status` 的做法）；同状态重复写入是幂等的。
-叶子模块（不 import 任何东西）是刻意的：`worktree.js` 与 `worktree-request.js` 本来就互相引用，能力表放在
-其中一边会在模块求值期撞 TDZ。
+`setTaskWorktree` 校验 `WORKTREE_TRANSITIONS`（非法转移抛错）；同状态重复写入幂等。叶子模块（不 import 任何东西）是刻意为之：`worktree.js` 与 `worktree-request.js` 互相引用，能力表放在其中一边会在模块求值期撞 TDZ。
 
 ## 提示词分层（`src/prompt-layers.js`）
 
-五层文本各有独占职责，**一条口径只许有一个所有者层**；跨层共享的用同一常量（逐字一致）：
+五层文本各有独占职责，**一条口径只许有一个所有者层**：
 
 | 层 | 载体 | 生命周期 | 唯一职责 |
 |---|---|---|---|
 | **L1** | `ctx.systemPrompt.context().text`（`index.js`） | 每回合重渲染 | 协调者行为规则：**能直接答就不委派**、工具可用/禁用、交付与确认口径（**不主动问「能否关闭」**，只在真歧义/不可逆/远端写授权时提问）、`present`/`read_workspace` 用法、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
 | **L2** | 派发消息（`src/brief.js`） | 每次派发/续派 | 只指路：任务编号、访问级别、worktree 装依赖提示、`task_detail` 指引、执行中/交付时怎么回报 |
 | **L3** | 子会话按需调用（`src/task-detail.js`） | 按需 | 任务创建详情 + 完成动作 |
-| **L4** | 一次性 `agent.steer`（`src/onboarding.js`） | 仅新主会话首次 | 只开场：一句话自我介绍 + 派索引任务（**能力边界一条都不重复**） |
+| **L4** | 一次性 `agent.steer`（`src/onboarding.js`） | 仅新主会话首次 | 只开场：一句话自我介绍 + 派索引任务（能力边界一条都不重复） |
 | 旁路 | 通知（`src/notify.js`） | 每次通知 | 只讲「现在要你做什么」的动作指令 |
 
-- **L4 从 708 字瘦到 525 字**：删掉 6 条与 L1 重复的能力边界（只协调不写文件 / 原生 read-glob 被拒 /
-  read_workspace 边界 / 默认 worker 无自动化 / full 只改单任务沙箱）。理由：L1 每回合都在且不会被 compaction 吃掉，
-  onboarding 是一次性 user message、轮换时还会被 `main-session` 直接标 `sent` 跳过；两处都写 = 每次改 policy 都要同步改它
-  （已漂移过：`1dc6bd4` 一次改了 4 处文案）。
-- **三处矛盾已修**：① 文档不再声称交付时可以带结构化选项（实现明确不支持：`done` 会清空 `question`/`options`）；② brief 的 `CONFIRM_HINT` 与
-  task_detail 的 `FINISH_HINT` 统一成「summary = 结论 + 改了什么/改了哪些文件/怎么验证的 + 待确认要点」，同源 `SUMMARY_FIELDS`；
-  ③ 文档里的 brief 行数改为「4 行基准，full/隔离各加一行 → 4–6 行」，与 `renderBrief` 一致（`docs/testing.md` 有锁定断言）。
-- **偏好归 L1 末尾**（`src/preferences.js`）：存 `settings.orchestrator_preferences` 单键 JSON，每回合现渲染；
-  字数 1200 为主约束、条数 12 为安全阀；超限**显式告知**被截条数；全局偏好只写 settings（**不双写 memories**），
-  项目偏好只写 memories（随 `task_detail` 注入子会话）。偏好只是提示词文本，不进 config、不改 dispatch、不碰沙箱。
+- L4 从 708 字瘦到 525 字（删掉与 L1 重复的 6 条能力边界）：L1 每回合都在且不会被 compaction 吃掉，onboarding 是一次性消息、轮换时还会被直接标 `sent` 跳过；两处都写 = 每次改 policy 都要同步改它（已漂移过）。
+- **三处矛盾已修**：① 文档不再声称交付时可以带结构化选项（`done` 会清空 `question`/`options`）；② brief 的 `CONFIRM_HINT` 与 task_detail 的 `FINISH_HINT` 统一成「结论 + 改了什么/改了哪些文件/怎么验证的 + 待确认要点」，同源 `SUMMARY_FIELDS`；③ 文档里的 brief 行数改为「4 行基准，full/隔离各加一行 → 4–6 行」（`docs/testing.md` 有锁定断言）。
+- **偏好归 L1 末尾**（`src/preferences.js`）：存 `settings.orchestrator_preferences` 单键 JSON，每回合现渲染；字数 1200 为主约束、条数 12 为安全阀；超限**显式告知**被截条数；全局偏好只写 settings（不双写 memories），项目偏好只写 memories。偏好只是提示词文本，不进 config、不改 dispatch、不碰沙箱。
 
 ## 文案单源（`src/copy.js`）
 
-分层解决「谁该说什么」，本模块解决「这句话写在哪」。同一件事（计划阶段怎么落盘、交付不是终态、完整访问是什么）
-原先在 8 个模块各写一遍（`plan-mode` / `plan-doc` / `task-detail` / `tools` / `notify` / `prompt-layers` /
-`write-guard` 等），改一处其余就跟不上；P1-C 起**跨模块共享的句子只在 `src/copy.js` 定义一次**：
+分层解决「谁该说什么」，本模块解决「这句话写在哪」。跨模块共享的句子只在 `src/copy.js` 定义一次：
 
 | 文案域 | 真源常量 | 复用到 |
 |---|---|---|
-| 计划阶段 | `PLAN_PHASE_LINES`（原子句）/ `PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `PLAN_STATUS_LINES` / `planDocPathText()` / `planCreateReceipt()` / `PLAN_SAVE_TOOL_DESC` / `planSavedNextStep` | `task-detail`（L3）、`plan-mode`（门面转发）、`plan-doc`（落盘回执）、`tools`（`task_create` 回执 + `plan_save` 描述）、`dispatch`（`exit_plan_mode` 拒绝）、`index.js`（L1 policy 插值） |
-| 两段式终态 | `DELIVERY_LINES`（状态名/非终态/追问/确认/超时）/ `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`（L3 完成动作）、`brief`（L2 回报指引）、`notify`（通知动作指令）、`prompt-layers`（跨层口径）、`write-guard`、`tools`（回执/状态行/收件箱）、`deps` / `main-rotation` / `tool-migrations`（状态名） |
-| 完整访问 | `ACCESS_FULL.label` / `.briefLine` / `.workerHint` / `.createNote` | `brief`（L2 行）、`task-detail`（标签与纪律）、`tools`（`task_create` 回执与 `task_status` 行） |
-
-约定（写新文案前先自问）：
+| 计划阶段 | `PLAN_PHASE_LINES` / `PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `PLAN_STATUS_LINES` / `planDocPathText()` / `planCreateReceipt()` / `PLAN_SAVE_TOOL_DESC` / `planSavedNextStep` | `task-detail`（L3）、`plan-mode`、`plan-doc`、`tools`、`dispatch`、`index.js` |
+| 两段式终态 | `DELIVERY_LINES` / `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`、`brief`、`notify`、`prompt-layers`、`write-guard`、`tools`、`deps` / `main-rotation` / `tool-migrations` |
+| 完整访问 | `ACCESS_FULL.label` / `.briefLine` / `.workerHint` / `.createNote` | `brief`、`task-detail`、`tools` |
 
 1. **判据**：这句话会不会在第二个模块出现？会 → 放 `copy.js`；不会 → 留在本层（协调者规则归 L1、面板短标签归客户端）。
-2. `copy.js` 是**叶子**：不 import 任何模块，谁都能引用而不引入环；`plan-mode.js` 仍对外转发计划域常量，
-   调用方既可以 `import { PLAN_FIRST_DETAIL } from './plan-mode.js'`，也可以直接从 `copy.js` 取（同一对象引用）。
-3. 客户端是浏览器 bundle、**不能** import 服务端模块：面板的 `STATUS_LABEL` / `PLAN_STATE_LABEL` 仍各存一份字面量，
-   由 `test/copy-consistency.test.js` 的**同值断言**兜住漂移（漂了就红）。
-4. 静态断言守着「别再抄一份」：`唯一允许的写入口` / `3–8 行摘要` / `计划文档绝对路径 + 待拍板问题清单` /
-   `不要自行宣告任务结束` / `danger-full-access：文件沙箱不限制写入` 这些标记只许出现在 `src/copy.js`。
+2. `copy.js` 是**叶子**：不 import 任何模块，谁都能引用而不引入环。
+3. 客户端是浏览器 bundle、**不能** import 服务端模块：面板的 `STATUS_LABEL` / `PLAN_STATE_LABEL` 仍各存一份字面量，由 `test/copy-consistency.test.js` 的**同值断言**兜住漂移。
+4. 静态断言守着「别再抄一份」：`唯一允许的写入口`、`3–8 行摘要`、`不要自行宣告任务结束` 等标记只许出现在 `src/copy.js`。
 
 ## 属性测试（`test/status-property.test.js`）
 
-状态机与文案拼装用**固定种子的随机路径**验证，而不是再抄一遍 10×10 矩阵（那由 `test/state.test.js` 锁静态表）：
-
-| 用例 | 规模 | 断言 |
-|---|---|---|
-| 随机迁移 | 12,000 步（seed `0x9e3779b9`，可复现：同种子路径逐条相同） | 每步 `canTransition`/`nextStatus` 与 `TRANSITIONS` 逐位一致；非法边必抛错；走到终态即「重启新任务」，12k 步覆盖全部 10 个状态；< 2s |
-| 能力位不变量 | 每个到达状态 | 能力位齐全且是布尔；非活跃态只能迁到非活跃态（终态闭包）；`terminal ⇒ !followup`；`releases ⇒ !active`；`rotationActive/waiting ⇒ active`；`followup ⇒ 有回 running 的边`；`retryable ⇒ 不能原地复活`；无出边 ⇒ 必须是流程终态 |
-| 文案随机组合 | 10,000 组任务字段（只读 × 完整访问 × 计划 × 四种 plan_state × 隔离 × 编排字段） | 同输入渲染两次逐字相同；只读与完整访问互斥；计划说明恰一段且逐字等于 `PLAN_FIRST_DETAIL`；「已交付待确认」恰出现一次；四条分支都被覆盖 |
-
-失败信息带种子与步号：把种子抄进新用例即可复现同一条路径（不依赖机器/时间）。
+状态机与文案拼装用**固定种子的随机路径**验证，而不是再抄一遍 10×10 矩阵（那由 `test/state.test.js` 锁静态表）：随机迁移 12,000 步（seed `0x9e3779b9`，可复现、< 2s）断言每条边与 `TRANSITIONS` 逐位一致、非法边必抛错；能力位不变量（`terminal ⇒ !followup`、`releases ⇒ !active`、终态闭包等）；文案随机组合 10,000 组断言同输入渲染两次逐字相同。失败信息带种子与步号，抄进新用例即可复现。
 
 ## 结算闭环（S1）
 
-子会话不一定都会回报：模型可能忘了 `task_report`，也可能被打断或起不来。`src/settlement.js` 消费平台的**结算**信号，把 `running` 推到终态（自然结束先落 `delivered`），用户不再看到「永远在跑」的幽灵任务：
+子会话不一定都会回报：模型可能忘了 `task_report`，也可能被打断或起不来。`src/settlement.js` 消费平台的**结算**信号，把 `running` 推到终态（自然结束先落 `delivered`）：
 
 | 事件源 | 覆盖 |
 |---|---|
 | `dispatch.js` 的 `subagent.settled` / `subagent.failed` | 本次派发的那一次 activation |
-| 平台 `subagent/end`（`local === true`） | 含 `task_message` / 冷恢复起的新 activation（派发侧的 `result` 只覆盖第一次） |
+| 平台 `subagent/end`（`local === true`） | 含 `task_message` / 冷恢复起的新 activation |
 
-映射（`SETTLE_MAP` / `mapSettle`）：
+（映射 `SETTLE_MAP`：`completed` 且没上报过 progress → `delivered`；`completed` 但上报过 progress → `orphaned`；`aborted` → `cancelled`；`error`/`max-tokens`/`refusal` → `failed`；缺失/未知 → `orphaned`。）
 
-| stopReason | 台账 | 死因 / 通知 |
-|---|---|---|
-| `completed` 且没上报过 progress | `delivered` | 无死因；自动交付还会补一次产物收集，等 `task_message({action:'close'})`/超时收成 `done` |
-| `completed` 但上报过 progress | `orphaned` | 回合结束却没报终态（可重派） |
-| `aborted` | `cancelled` | 被子会话中断（`dispose` / interrupt / 父级取消） |
-| `error` / `max-tokens` / `refusal` | `failed` | 异常结束 / 输出截断 / 被策略拒绝 |
-| 缺失或未知 | `orphaned` | 结算原因未知，按会话丢失处理 |
-
-- 只改 `running` 的状态：`waiting_user` / `waiting_auth`（子任务自己报了 blocked/needs_auth）与已有终态都不改，重复结算天然幂等。
-- **例外：`delivered` / `done` 上要补写最后一条消息**。`task_report done` 会先把任务推到 `delivered`，本回合结束时到达的结算已经不在 `running`；旧实现直接 `skipped`，导致 `tasks.last_message_json` 永远为空（真实台账 104/104 done 全缺）。现在这两个状态走「只补消息」分支：落消息、不改状态、不发通知、不写 settle 行、不释放。
+- 只改 `running` 的状态：`waiting_user` / `waiting_auth` 与已有终态都不改，重复结算天然幂等。
+- **例外：`delivered` / `done` 上要补写最后一条消息**（`task_report done` 先把任务推到 `delivered`，本回合结束时到达的结算已不在 `running`）：落消息、不改状态、不发通知、不写 settle 行、不释放。
 - 只有真终态（`done`/`cancelled`/`failed`/`orphaned`）才释放可写根、收敛 goal、写 `settle` 消息；`delivered` 保留会话给追问用。
-- 每次结算写一条 `settle` 消息 + `tasks.error` 死因 + 一条 `system` 通知（`cancelled`/`orphaned` 也走合并窗口），并唤醒队列补位。
-- 取证与时序见 `docs/probes/stop-reason-probe.md`（真机 7 场景）。
+- 每次结算写一条 `settle` 消息 + `tasks.error` 死因 + 一条 `system` 通知，并唤醒队列补位。取证与时序见 `docs/probes/stop-reason-probe.md`。
 
 ### 最新返回消息（B1）
 
-两路事件都自带子会话最后一条 assistant 消息（`subagent/result.output` / 平台 `subagent/end.lastAssistantMessage`），结算时顺手落进台账，主会话用 `task_status` 就能读到「它最后说了什么」，不必打开子会话历史：
-
-| 情况 | 存储 | `task_status` 默认 | `include: 'full'` |
-|---|---|---|---|
-| 正文 ≤ 64 KiB | `tasks.last_message_json.text`（内联） | 正文（超 1200 字给预览 + 截断提示） | 正文全文 |
-| 正文 > 64 KiB | `<state>/reports/<taskId>.md`，台账只留 `path` + `summary` | `reports` 路径 + 240 字摘要 | 读文件给全文（文件缺失时给摘要 + 失败原因） |
-| 空输出 / `subagent.failed` | 不写（不拿空记录覆盖上一次） | 不显示该区块 | 同左 |
-
-- 摘要（`summarizeText`）仍走原口径：压空白、240 字截断；通知与死因只用摘要，不改文案长度。
-- 日志只留 240 字摘要（`detail.output`），完整正文经事件上的非日志字段 `lastMessage` 交给结算；两者分开，避免 jsonl 单行被正文撑大。
-- **时序（B1 修复）**：`task_report done` 在回合中途把任务推到 `delivered`，本回合真正结束（`turn/end` 之后 13–46ms）才到结算事件。旧实现用「只认 `running`」把这条事件整条丢弃，`last_message` 永远为空（真实台账 104 条 done 全缺、唯一一条是 aborted 中途中断）。现在 `delivered`/`done` 上走「只补消息」分支：落消息但不改状态、不发通知、不写 `settle` 行、不释放可写根；更晚 activation 的正文可以覆盖旧的（它才是「最后一段话」）。
-- 幂等：`setTaskLastMessage` 按正文 `digest` 兜一层——同一段正文重复落库不重写行、不动 `updated_at`，文件按任务编号覆盖，不会堆一堆副本；`delivered`/`done` 的补写也只靠这一层去重。
-- 文件落盘失败时降级内联（宁可撑大一行台账，也不丢模型最后说的话），`reports/` 目录按需创建、启动时不建。
-
-- 通知走 `agent.steer` 直插协调者，不经过 Team 的 `sendMessage`。
-- 每次投递写 `notifications`：`delivered` / `failed`（带 reason）/ `skipped`；合并后续行 `merged_into` 指向首条。
-- `task_list({view:'inbox'})` 汇总待决、失败/丢失、长时间没动静；问题/选项来自台账 `question` / `question_options_json`。
-- `progress`/`done`/`task_message` 会清掉旧问题。
-- **卡住提醒**：连续 3 次 progress（固定口径，配置键 `stallRounds` 已删）且距上次提醒超过 `staleMinutes`，推一次「可能卡住」。
-- `digestAt`（HH:MM）开启后，主会话上维护一条每日 `schedule`；到点提示协调者调用 `task_list({view:'inbox'})` + `task_list` 汇总。主会话重建/时区变化会重建，配置为空会删除。
+两路事件都自带子会话最后一条 assistant 消息，结算时顺手落账：正文 ≤ 64 KiB 内联 `tasks.last_message_json.text`（`task_status` 默认给预览、`include:'full'` 给全文）；更大写 `<state>/reports/<taskId>.md`（台账只留 `path` + 240 字摘要）；空输出不写（不拿空记录覆盖上一次）。摘要压空白、240 字截断；日志只留摘要，完整正文经事件上的非日志字段交给结算，避免 jsonl 单行被撑大。`setTaskLastMessage` 按正文 `digest` 幂等（重复落库不重写行、不动 `updated_at`），文件落盘失败时降级内联。
 
 ## 启动对账（S2）
 
-进程重启/崩溃后，子会话的结算事件可能没人消费，台账会留下「running 但实际没人在跑」的幽灵。`src/reconcile.js` 在插件 `apply()` 启动时和协调者 `agent/created` 晚加载时各对一次账：
+进程重启/崩溃后，子会话的结算事件可能没人消费，台账会留下「running 但实际没人在跑」的幽灵。`src/reconcile.js` 在 `apply()` 与协调者 `agent/created` 晚加载时各对一次账：
 
-- **活跃性对账只认 `running`**：`agents.get(session_id)` 不存在 → `orphaned`（死因「进程重启后子会话没有在运行的回合」）；
-- `catalog` 里查不到 `session_id` → `orphaned`（可能已被删除）；查 `running` / `waiting_*`，`waiting_dep` 完全没有子会话、不参与也不误标；
-- `waiting_user` / `waiting_auth` 不 live 但 catalog 有 → 保持原状态（故意停下，靠 `task_message` 冷恢复）；
-- catalog 读失败只 warn，`running` 的 liveness 判定照做；标记前重读状态，已落终态的不覆盖，重复启动幂等；
-- 标记完发**一条汇总通知**（任务名 + id，超过 10 条折叠「另有 N 个」）。启动时协调者还没加载导致投递 `skipped` 时保留待发，`agent/created` 后补发一次，不重复打扰。
+- 活跃性对账只认 `running`：`agents.get(session_id)` 不存在 → `orphaned`；catalog 查不到 → `orphaned`；`waiting_user`/`waiting_auth` 不 live 但 catalog 有 → 保持原状态（靠 `task_message` 冷恢复）。
+- catalog 读失败只 warn，`running` 的 liveness 判定照做；标记前重读状态，已落终态的不覆盖，重复启动幂等。
+- 标记完发**一条汇总通知**（超过 10 条折叠）；启动时协调者还没加载导致投递 `skipped` 时保留待发，`agent/created` 后补发一次。
 
 ## 空闲看门狗（W1）
 
-结算/对账管「没人跑却挂着 running」，但**有人在跑、却长时间没进展**的回合仍要人来看。`src/watchdog.js` 每 `watchdogIntervalMinutes`（默认 5 分钟）巡检一次台账：
-
-- 只看 `running`：`waiting_user` / `waiting_auth` 是故意停下的、`delivered` 已交付待确认，终态不在范围；
-- 判定数据源三源取最新（`lastActivityAt`）：`tasks.last_event_at`（心跳：progress、产物/问题更新等 touch）、`tasks.updated_at`（状态变化）、`messages.at`（最近一条回报消息）；最新活动早于 `watchdogIdleMinutes`（默认 15 分钟）即判空闲；
-- **只告警**：一条 `stalled` 汇总通知（超过 10 条折叠），**不改状态、不 kill、不重派**，也不写任务表；
-- 去重：同一段空闲每个任务只报一次；出现更新的活动（活动水位抬高）后允许再报一次，任务离开 `running` 就从去重表移除；去重表在内存，重启后允许再报一次；
-- 启动时放在 S2 对账之后：先让「进程重启后没人跑」的 `running` 落 `orphaned`，避免同一任务既报丢失又报卡住；
-- 关闭：`idleWatchdog:false`；插件卸载先 `stop()` 再关台账，定时器不会在 `db.close()` 后继续巡检。
+结算/对账管「没人跑却挂着 running」，但**有人在跑、却长时间没进展**的回合仍要人来看。`src/watchdog.js` 每 `watchdogIntervalMinutes`（默认 5）巡检一次：只看 `running`；判定数据源三源取最新（`last_event_at` / `updated_at` / `messages.at`），最新活动早于 `watchdogIdleMinutes`（默认 15）即判空闲；**只告警**（一条 `stalled` 汇总通知，超过 10 条折叠），不改状态、不 kill、不重派；同一段空闲每任务只报一次（去重表在内存）；启动时放在 S2 之后，避免同一任务既报丢失又报卡住；`idleWatchdog:false` 可关。
 
 ## 子会话目标（G1）与续跑（P2-2）
 
-平台有完整的 `ctx.goals` 子系统（durable `goal/change` + 进程内 activation + `dsh-goal-round-driver`）。
-**插件是子任务 goal 的唯一写方**：只做 `create` / `edit` / `complete` / `clear`（外加只读 `get` 做镜像与降级），
-续跑能力完全委托宿主 driver —— 自建的 `agent/turn-stopping` 注入器（`src/keepalive.js`，246 行）已删除。
+平台有完整的 `ctx.goals` 子系统（durable `goal/change` + 进程内 activation + `dsh-goal-round-driver`）。**插件是子任务 goal 的唯一写方**：只做 `create` / `edit` / `complete` / `clear`（外加只读 `get` 做镜像与降级），续跑完全委托宿主 driver——自建的 `agent/turn-stopping` 注入器（`src/keepalive.js`，246 行）已删除。
 
-- **spawn（默认 `goalRounds: 0`）**：`dispatch.spawn` 成功拿到 childId 后，`src/goal.js` 的桥在子 agent 进注册表时执行
-  `create(agent, { objective })`，**紧接着** `disarm(agent)`，顺序固定；子会话目标 = `tasks.goal`。
-  这就是 P2-2 之前的行为：goal 只当只读镜子，不驱动续轮。
-- **spawn（`goalRounds: N`，1–50）**：`create(agent, { objective, maxGoalRounds: N })` 后**不 disarm**，
-  goal 保持 armed；回合结束后由宿主的 `dsh-goal-round-driver` 按预算续轮，跑到 `maxGoalRounds` 自行停。
-  插件**不注入消息、不写轮次预算**（`tasks.keep_alive_rounds` 停写、列保留兼容旧库），轮次真源是
-  `goal.roundsStarted` / `goal.maxGoalRounds`（台账只存只读镜像 `goal_state_json`）。
-  派发层不需要新参数：桥按 `taskId` 从台账读 `goal_rounds`（`task_create` 写入、重派复制）。
-- **task_message / 面板追加**：投递成功后用 `objectiveForMessage(task.goal, message)` 得到「原目标 + 最新指示」，
-  文本变了才 `edit`（`edit` 不改 activation）；`maxGoalRounds` 变了才随 `edit` 一起同步。
-  `goalRounds=0` 时若发现 goal 是 armed（宿主 `/goal resume` 或上一段 activation 的残留），压回 `disarmed`——
-  「默认不续跑」是硬约束，不靠运气。目标文本上限 2000 字符。
-- **done**：`task_report done` 与结算自动 `done` 走 `complete`；**stop/cancelled/failed/orphaned/retry** 走 `clear`。没有 live agent（冷恢复/孤儿）时只收口台账镜像，平台侧不调用。
-- **台账/面板只读**：每次成功变更把裁剪后的 `{id,revision,objective,phase,activation,roundsStarted,maxGoalRounds,updatedAt}` 写进 `tasks.goal_state_json`；snapshot 只下发生命周期字段（不含 objective），详情抽屉展示完整只读状态，面板没有任何 goal 写操作。`task_status` 直接渲染「目标状态」+「目标轮次 x/y」。
-- **静默降级**：`ctx.goals` 缺失或方法不全时 `createGoalBridge` 的所有钩子 no-op，不 warn、不阻塞派发/续派/结算、不写镜像；
-  `goalRounds>0` 但平台没 arm（旧宿主没有 driver）时记一条 `goal.degraded`（`reason: 'not-armed'`），
-  `task_status` 显示「不自动续轮」——**不模拟续跑**。
-- **子会话可读**：`dsh-orchestrator-worker` 预设带一行 `tool-goal`（`@deepseek-ai/dsh-tool-goal`）。web-app 层把 host plane 的 `tool-goal` 行 `disabled: true`、改由预设挂载，而 `goals` 服务仍在 host plane（`dsh-base` 的 `goal` / `goal-round-driver` 行），所以子会话拿得到 `get_goal` 读到本任务目标；`create_goal` / `update_goal` 因平台权限校验（`requireDirectHuman`：需要顶层 agent 的**直接人类**回合）在子会话里必然被拒，等于只读。
-  平台**不会**把 objective 注入系统提示或消息（`dsh-goal` 的 inject 只有 `agents` / `sessionProjections`），所以 `get_goal` 是子会话读**实时目标（含「最新指示」）**的途径；创建时的目标快照另由 `task_detail` 提供（T1）。不挂这行时子会话仍能从 `task_detail` 拿到创建时的目标，但读不到之后 `task_message` 并进去的最新指示。
+- **spawn（默认 `goalRounds: 0`）**：`dispatch.spawn` 拿到 childId 后，`src/goal.js` 的桥在子 agent 进注册表时 `create(agent, { objective })`，**紧接着** `disarm(agent)`，顺序固定；goal 只当只读镜子，不驱动续轮。
+- **spawn（`goalRounds: N`，1–50）**：`create(agent, { objective, maxGoalRounds: N })` 后**不 disarm**，由宿主 driver 按预算续轮，跑满自行停。插件**不注入消息、不写轮次预算**（`tasks.keep_alive_rounds` 停写、列保留兼容旧库），轮次真源是 `goal.roundsStarted` / `goal.maxGoalRounds`。派发层不需要新参数：桥按 `taskId` 从台账读 `goal_rounds`。
+- **task_message / 面板**：投递成功后用 `objectiveForMessage(task.goal, message)` 得到「原目标 + 最新指示」，文本变了才 `edit`；`goalRounds=0` 时若发现 goal 是 armed（宿主 `/goal resume` 或上一段 activation 残留），压回 `disarmed`——「默认不续跑」是硬约束，不靠运气。目标文本上限 2000 字符。
+- **done**：`task_report done` 与结算自动 `done` 走 `complete`；**stop/cancelled/failed/orphaned/retry** 走 `clear`。没有 live agent 时只收口台账镜像，平台侧不调用。
+- **台账/面板只读**：每次成功变更把裁剪后的 `{id,revision,objective,phase,activation,roundsStarted,maxGoalRounds,updatedAt}` 写进 `tasks.goal_state_json`；snapshot 只下发生命周期字段（不含 objective），面板没有任何 goal 写操作。
+- **静默降级**：`ctx.goals` 缺失或方法不全时所有钩子 no-op；`goalRounds>0` 但平台没 arm（旧宿主没有 driver）时记一条 `goal.degraded`（`reason:'not-armed'`），`task_status` 显示「不自动续轮」——**不模拟续跑**。
+- **子会话可读**：worker 预设带一行 `tool-goal`，子会话用 `get_goal` 读实时目标；`create_goal`/`update_goal` 因 `requireDirectHuman` 在子会话里必然被拒，等于只读。平台不把 objective 注入系统提示，创建时的目标快照另由 `task_detail` 提供。
 
-> 为什么删掉自建层：旧实现是「先把平台 goal disarm 掉，再自己订阅 `agent/turn-stopping` 注入下一轮」——
-> 一个宿主私有契约点（rc 级）+ 一套与宿主 driver 重复的轮次预算。P2-2 把这两件事都还给了平台：
-> 宿主升级 driver 时插件不需要跟着改，插件也不再有机会「续跑与结算打架」（K1 探针的结论只留在探针报告里）。
+> 为什么删掉自建层：旧实现是「先把平台 goal disarm 掉，再自己订阅 `agent/turn-stopping` 注入下一轮」——一个宿主私有契约点（rc 级）+ 一套与宿主 driver 重复的轮次预算。P2-2 把这两件事都还给了平台。
 
 ## brief 纯指引（T1）
 
 派发给子会话的 brief 只回答「你是谁、去哪读详情」，创建详情全部留在台账、由子会话用 `task_detail` 现取：
 
-- **brief 形态**：`renderBrief({ taskId, access, worktreeState })` 输出四行（完整访问任务多一行【访问级别】，隔离任务多一行【worktree 依赖】）——
-  `【任务编号】t-xxxxxxxx` + `【任务详情】先调 task_detail（参数 task_id 填上面的任务编号）读取完整任务详情：…`
-  + `【执行中待确认】…` + `【确认方式】…`。
-  目标、验收、约束、背景、用户原话、工作目录/权限、经验/前置任务/产物都不再内联；也不再有「`get_goal` 不可用」的兜底文本。
-- **三段常驻提示**（都不越权改交付口径，措辞只讲「怎么做」；都明确「不等于已获授权」，不给绕过推送前双审查的口子）：
-  - `BLOCKED_HINT`（【执行中待确认】，**所有任务都有**）：执行中遇到需要用户拍板的决策点（业务取舍、范围变更、不可逆操作、方案歧义等）
-    用 `task_report blocked` 上报「问题 + 选项建议」，协调者用 `ask_user_question` 问用户、拿到答复后 `task_message` 续派；
-    明确三种不许（不自行假设用户意图、不阻塞等待、不等不到回复就跳过）。它排在【确认方式】之前——
-    这条是**执行期**就要用的，不能只出现在交付环节。
-  - `CONFIRM_HINT`（【确认方式】，所有任务都有）：**交付时**不要只在正文里问——把待确认要点写进 `summary`。
-    **不能**让子会话去调 `ask_user_question`——平台的 `assertLiveRoot` 对 `session.header.origin === 'subagent'`
-    直接抛 `DELEGATED_CALLER`（human interaction is unavailable while the calling agent is owned by another live agent），
-    子会话是 `subagents.startActivation({ parent })` 起的 subagent，必然撞墙。
-    注意 `done` 会清掉 `question`/`options`（`task_report` 里 `progress`/`done` 都走 `clearTaskQuestion`），
-    所以交付阶段的要点只能走 `summary`；要结构化选项就得在执行中走 `blocked`/`needs_auth`（提示三）。
-    问用户始终由协调者做（子会话调不通），但协调者**不会为「任务能否关闭」提问**：交付后任务保持「已交付待确认」、
-    等 `deliveredTimeoutMinutes` 超时自动完成，用户要改再 `task_message` 追问；待确认/关闭语义仍只在 `task_detail` 与协调者 policy 里定义。
-  - `WORKTREE_INSTALL_HINT`（【worktree 依赖】，只有隔离任务有）：检出目录没有 `node_modules`/虚拟环境，可以执行安装命令
-    （`pnpm install` / `npm install` / `uv sync` 等），**只安装不升级**（不改依赖声明与版本）。
-    触发条件是台账 `worktree_state ∈ ISOLATED_WORKTREE_STATES`（`requested` / `created` / `reused`，与同写域防护共用同一份列表）；
-    `none` / `degraded`（不是 git 仓库，仍在原工作树里跑）不给——那里依赖齐全，加了只是噪音。
-  目标正文仍在平台 goal（G1 `attach`）里，子会话也可以 `get_goal` 读；`task_detail` 读的是创建时 `brief_json` 快照，两条路互不依赖。
-- **task_detail（只读）**：`src/task-detail.js` 的 `renderTaskDetail` 渲染
-  任务编号/标题/状态 → 目标全文（保留换行）→ 工作目录 + 可写/只读提示 → `【验收标准】`/`【约束】`/`【背景资料】`/`【用户原话】`
-  → 编排（分组/优先级/写域，只在非默认时出现）→ `【前置任务】`（复用 `deps.upstreamBrief`，按**当前**台账现读状态/最近回报/产物）
-  → `【经验文件】<路径>（N 条）｜可 read 全文`（写文件失败时退回内联块）→ `【已有产物】`（路径/标签/存在性）→ 完成口径。
-  实现只读台账：不写消息、不改状态/时间戳；经验文件只 `stat` 存在性，正文交给子会话自己的 `read`。
-- **越权拒绝**：`task_detail` 只允许任务自己的子会话（`exec.agent.id` 或 `exec.agent.session.id` 等于 `tasks.session_id`）；
-  主会话或别的子会话调用返回「读取被拒绝…主会话查任务用 task_status」，并记 `task.detail.rejected` 日志。
-- **经验不再进提示词**：`task_create` 命中事实层记忆时 `buildLessonBlock` 照旧写
-  `$DSH_HOME/state/orchestrator/lessons/<项目目录名>-<key 短 hash>.md`，但只把指针 `{ path, count }`（或降级时的 `{ inline }`）
-  存进 `brief.experience`，由 `task_detail` 给出。`stateDir` 缺失/写文件失败 → 内联块只出现在详情里；无命中 → 不建文件、详情无经验小节。
-- **重派同口径**：`task_message({action:'retry'})` 与面板 `retry` 都用 `renderBrief({ taskId: 新任务编号 })` 重渲染，`task.brief` 快照（含经验指针）整体复制。
-- **挂载链**：`task_detail` 和其它 `task_*` 一样由 `index.js` 的 `createTools(...).map(tool => ctx.tools.register(tool))` 注册成 host plane 全局工具
-  （`index.js:430-441`）；`cordis.patch.yml` 的 `dsh-orchestrator-worker` 预设**不挂** `preset-tools`、不做 allow/deny 收窄，
-  所以子会话工具表直接继承它（与 `task_report` 同一条路）。协调者预设的 `preset-tools` 白名单不含 `task_detail`，执行层 `COORDINATOR_DENY` 也把它列为子会话专属工具，
-  所以主会话看不到/调不到它；即便某个 profile 例外地暴露出来，工具内的 owner 校验仍会拒绝。
-- **队列兜底**：`queue.pump` 优先用落库的 brief 消息；没有（直接建台账/旧数据）时用 `renderBrief({ taskId })` 兜底，不再拼 `【任务】标题 + 目标`。
-- 接线：`index.js` 把插件写入根作为 `createTools({ stateDir })` 传入；`memoryInject:false` 时整段跳过。`context({mode:'project'})` 仍用内联记忆块（协调者读，不走文件）。
-
+- **形态**：`renderBrief({ taskId, access, worktreeState })` 输出四行（完整访问多一行【访问级别】，隔离任务多一行【worktree 依赖】）——`【任务编号】t-xxxxxxxx` + `【任务详情】先调 task_detail…` + `【执行中待确认】…` + `【确认方式】…`。目标、验收、约束、背景、用户原话、工作目录/权限、经验/前置/产物都不内联。
+- **三段常驻提示**（都讲「怎么做」，都明确「不等于已获授权」）：`BLOCKED_HINT`（执行中要拍板 → `blocked` 上报「问题 + 选项」，协调者问用户后续派）、`CONFIRM_HINT`（交付时把待确认要点写进 `summary`；子会话**不能**调 `ask_user_question`——平台对 `origin === 'subagent'` 抛 `DELEGATED_CALLER`；`done` 会清空 `question`/`options`；交付后协调者**不会为「任务能否关闭」提问**，任务保持「已交付待确认」、等 `deliveredTimeoutMinutes` 超时自动完成，用户要改再 `task_message` 追问）、`WORKTREE_INSTALL_HINT`（隔离任务：可以装依赖，**只安装不升级**）。
+- **task_detail（只读）**：`src/task-detail.js` 渲染编号/标题/状态 → 目标全文 → 工作目录 + 可写/只读提示 → `【验收标准】`/`【可执行检查】`/`【约束】`/`【背景资料】`/`【用户原话】` → 编排（非默认才出现）→ `【前置任务】`（按**当前**台账现读）→ `【经验文件】<路径>（N 条）` → `【已有产物】` → 完成口径。实现只读台账：不写消息、不改状态/时间戳。
+- **越权拒绝**：只允许任务自己的子会话；主会话或别的子会话调用返回「读取被拒绝…主会话查任务用 task_status」，并记 `task.detail.rejected`。
+- **挂载链**：和其它 `task_*` 一样由 `index.js` 注册成 host plane 全局工具；协调者预设的 allow 名单不含 `task_detail`，执行层 `COORDINATOR_DENY` 也把它列为子会话专属，主会话看不到/调不到。
+- **重派同口径**：`retry` 用 `renderBrief({ taskId: 新任务编号 })` 重渲染，`task.brief` 快照整体复制；队列兜底也用 `renderBrief`，不再拼「【任务】标题 + 目标」。
 
 ## 产物
 
-- `task_report.artifacts: [{path,label?}]`，相对路径按 `target_dir`（无则主会话目录）解析。
-- 只 `stat` 存在性，非法条目静默丢弃，不阻断任务完成。
-- 同一任务多次回报按 `path` 合并：不同路径保留，同路径后报覆盖，最多 50 条。
-- **done 自动收集**：`task_report done` 时若报错方 Session 有 `workspace/changes` 事件，用 `workspaceChanges.summary(sessionId, seq)` 汇总所有回合的改动文件（相对路径按摘要 `cwd` 解析），按路径去重后与显式产物合并；显式产物标签优先，单任务仍受 50 条上限。
-- 当前回合的摘要要等 turn stopping 才追加，`index.js` 监听 `session/event` 的 `workspace/changes`，在摘要服务登记后（微任务）把新增路径补进已 done 的任务；没有 `workspaceChanges` 服务或会话已释放时自动收集为空，不影响显式产物。
-- 面板「产物」筛选调用 `artifacts` 端点并打开产物库：可按项目（目标目录末段）或日期分组，复制路径、文本预览（前 64 KiB）、打开子会话/详情；详情抽屉显示路径/标签/存在性。
+- `task_report.artifacts: [{path,label?}]`，相对路径按 `target_dir`（无则主会话目录）解析；只 `stat` 存在性，非法条目静默丢弃，不阻断完成；同任务多次回报按 `path` 合并（最多 50 条）。
+- **done 自动收集**：`task_report done` 时若 Session 有 `workspace/changes` 事件，用 `workspaceChanges.summary()` 汇总所有回合的改动文件，按路径去重后与显式产物合并；当前回合的摘要要等 turn stopping，`index.js` 监听 `session/event` 在摘要服务登记后补收。
+- 面板「产物」筛选打开产物库：按项目（目标目录末段）或日期分组、复制路径、文本预览（前 64 KiB）、打开子会话/详情。
 
 ### 协调者读产物（`read_workspace`）
 
-子会话产物按契约落在 **target 目录**内（仓库、worktree 检出），只有一部分落在主会话工作区
-（`$DSH_HOME/state/orchestrator/workspace`，如 `reports/`、`diag/`）。所以边界是**两个判据的并集**：
-工作区包含性 **OR** 已登记产物（台账 `tasks.artifacts_json`）。协调者要看正文不必再派子任务。
+子会话产物按契约落在 **target 目录**内，只有一部分落在主会话工作区（`$DSH_HOME/state/orchestrator/workspace`）。所以边界是**两个判据的并集**：工作区包含性 **OR** 已登记产物（台账 `tasks.artifacts_json`）。
 
-- **为什么不开放原生 `read`/`glob`**：平台读路径没有白名单——`dsh-fs-sandbox` 只给写操作加栅栏（`Reads pass through untouched: every mode permits reading.`），
-  `dsh-fs-local` 的 `cwd` 只是相对路径基准（`a resolution default, NOT a containment boundary`），`glob` 直接 spawn ripgrep 用 `--no-ignore --hidden` 全树枚举。
-  给协调者开原生 `read` = 给它全盘可读的宿主进程读者（含 `~/.dsh/.credentials.yaml`），叠加 IM 双向同步还会外发。所以自建一条只读工作区的入口。
-- **实现分层**：`src/read-workspace.js` 是纯函数 + 一次有界读（路径判定、行窗口切分、目录列条目、二进制识别、文案渲染）；
-  `src/tools.js` 的 `read_workspace` 只做 `requireMain` 身份校验、调用、审计日志（`workspace.read` / `workspace.read.rejected`）。
-- **判据分层**：`src/artifact-location.js` 是产物的唯一合法性判据（`registeredArtifacts` / `registeredMatch` /
-  `deliverableOf`）；`src/read-workspace.js` 消费它，`src/notify.js` 的可交付性判定（present 口径）也用它。
-  四条产物读取路径（`read_workspace` / `preview` / 右侧栏 / `present`）从此对「什么算合法产物」同源。
-- **闸**（`resolveWorkspaceTarget`）：① 形状（空 / NUL / `~` 拒绝，不做家目录展开）；② `realpathSync` 真实路径包含性（挡符号链接逃逸，含中间目录是链接；同时吃掉工作区根自身在符号链接下的差异，如 macOS `/var` → `/private/var`）；
-  ③ 真实路径解析失败时退回词法包含性，把「越界」与「不存在」分开报，不把安全边界说成普通错误；
-  ④ 前两道都不放行时查**已登记产物**（文件本身或已登记目录的子树）——命中才允许，且登记表不借符号链接放行。
-- **体积与截断**：单文件 > 4 MB 直接拒绝（不整块读入，提示让子会话写摘要）；正文按行窗口返回（默认 400 行 / 上限 2000 行，单次 ≤ 64 K 字符），
-  截断给 `nextOffset` 续读；单行本身超上限时截断该行并标 `truncatedLine`，`nextOffset` 仍指向**下一行**（截断的是这一行，不是读不下去；返回 null 会被误读成文件到头）。目录只列一层、最多 200 项，指向工作区外或断链的符号链接条目标 `readable:false`。
-- **不用于校验存在性**：存在性仍由插件与子任务保证，`present` 只列真实文件；`read_workspace` 是「看内容」的入口，不是 stat 替身。
+- **为什么不开放原生 `read`/`glob`**：平台读路径没有白名单——`dsh-fs-sandbox` 只给写操作加栅栏，`dsh-fs-local` 的 `cwd` 只是相对路径基准，`glob` 直接 spawn ripgrep 全树枚举。给协调者开原生 `read` = 给它全盘可读的宿主进程读者（含 `~/.dsh/.credentials.yaml`），叠加 IM 双向同步还会外发。
+- **实现分层**：`src/read-workspace.js` 是纯函数 + 一次有界读（路径判定、行窗口切分、目录列条目、二进制识别、文案渲染）；`src/tools.js` 只做 `requireMain` 身份校验、调用、审计日志。
+- **判据分层**：`src/artifact-location.js` 是产物唯一合法性判据（`registeredArtifacts` / `registeredMatch` / `deliverableOf`）；`read_workspace`、`preview`、右侧栏、`present` 四条路径对「什么算合法产物」同源。
+- **闸**：① 形状（空 / NUL / `~` 拒绝，不做家目录展开）；② `realpathSync` 真实路径包含性（挡符号链接逃逸）；③ 解析失败时退回词法包含性，把「越界」与「不存在」分开报；④ 都不放行时查**已登记产物**（文件本身或已登记目录子树），登记表不借符号链接放行。
+- **体积与截断**：单文件 > 4 MB 直接拒绝；正文按行窗口返回（默认 400 行 / 上限 2000 行，单次 ≤ 64 K 字符），截断给 `nextOffset`；单行超上限时截断该行并标 `truncatedLine`。目录只列一层、最多 200 项。
 
 ## 只读子任务
 
-`readOnly:true`（只认显式 true）会在 `agent/created` 一到就给子会话 append `sandbox/mode {mode:'read-only'}`，激活后再幂等补一次；续派/重启会再补。只读任务不注册 target 可写根。
+`readOnly:true`（只认显式 true）在 `agent/created` 一到就给子会话 append `sandbox/mode {mode:'read-only'}`，激活后再幂等补一次，续派/重启会再补；只读任务不注册 target 可写根。
 
 ## per-task 完整访问（`access:'full'`）
 
-`access:'full'`（只认显式 `'full'`）**复用只读的整条注入路径**，只是模式换成 `danger-full-access`：
-`ensureSandboxMode(childId, mode)` 在 `agent/created` 一到就 append `sandbox/mode {mode, source:'delegation'}`
-（`source` 与平台把父会话覆盖种进子会话时的事件形状一致），激活返回后再幂等补一次，续派/冷恢复再补；
-`taskOf` 只把 `tasks.access='full'` 当真，其它值一律按默认（NULL = 沿用会话策略）。
-不传 → 一次 append 都没有、不碰默认配置、不碰父会话，也不注册/撤销任何额外授权；完整访问任务照旧登记
-target 可写根（`danger-full-access` 下用不上，只当注入失败时的兜底）。`readOnly`/`planFirst` 优先且创建期互斥。
-视图：brief `【访问级别】完整`、`task_detail`
-「访问级别：完整」、`task_list`「·完整访问」、`task_status`「访问级别：完整」、通知标题「（完整访问）」、
-日志 `subagent.full-access` + `task.create.created.detail.access`。
+`access:'full'`（只认显式 `'full'`）**复用只读的整条注入路径**，只是模式换成 `danger-full-access`：`ensureSandboxMode(childId, mode)` 在 `agent/created` 一到就 append（`source:'delegation'`），激活返回后再幂等补一次，续派/冷恢复再补；`taskOf` 只把 `tasks.access='full'` 当真。不传 → 一次 append 都没有、不碰默认配置、不碰父会话。视图：brief `【访问级别】完整`、`task_detail`「访问级别：完整」、`task_list`「·完整访问」、`task_status`「访问级别：完整」、通知标题「（完整访问）」、日志 `subagent.full-access`。
 
 ## 计划阶段（P8）
 
-`planFirst:true` 的任务 = **只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**。不开 `planFirst` 的任务行为一字不改。
+`planFirst:true` 的任务 = **只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**；不开 `planFirst` 的任务行为一字不改。
 
-- **进入**：`queue.pump` 从台账 `task.plan_first` 透传给 `dispatcher.spawn`；派发时复用 `ensureReadOnly`
-  （`agent/created` 一到先设、激活后幂等补，压首回合窗口），再用 **子 agent 作用域**的
-  `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode。`planMode` 服务缺失/拿不到只 warn，
-  降级为「只有只读沙箱」，派发不受影响。计划任务在批准前**不注册 target 可写根**。
-- **计划落盘（`plan_save`）**：计划阶段是只读沙箱，子会话没有任何写文件的手段，长计划也塞不进
-  `task_report.question`（上限 500 字）。所以计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：
-  `src/plan-doc.js` 只做纯函数——`planDocPath()` 把 `<主会话工作区>/reports/plans/<taskId>.md` 算出来
-  （没有 `path` 入参；编号形状白名单 `^t-[0-9a-z]{4,32}$` + `relative()` 包含性校验，两道闸把
-  `..`/绝对路径/盘符/跨目录拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头
-  （任务名/编号/目标/落盘时间），`writePlanDocument()` 只做一次 mkdir + 覆盖写。
-  写完走 `setTaskArtifacts` 登记为任务产物（通知、`task_status`、面板抽屉都从台账产物读，不另开视图）；
-  越权（非本任务子会话）、非计划任务、空正文、超 `MAX_PLAN_CHARS` 都在 `src/tools.js` 拒绝并给可读原因。
-  子会话拿到结果后只上报**3–8 行摘要 + 文档绝对路径 + 待拍板清单**。
-- **出口**：子会话只读探索后先 `plan_save` 落盘计划，再用 `task_report blocked` 上报摘要 + 路径，走既有的
-  blocked → 通知 → 用户 → `task_message` 续派闭环，**不用** `exit_plan_mode`（子会话没有直接人类，
-  批准请求会悬空）。插件在子会话 **agent 作用域** `agent.ctx.tools.guard` 拒绝 `exit_plan_mode`：
-  插件根的 `ctx.tools.guard` 是全局的，会误伤协调者，所以不能注册在那里。
-- **退出（批准）**：协调者 `task_message` 或面板「追加」投递成功、任务从 `waiting_user`/`waiting_auth`
-  回到 `running` 之后，`session.append('sandbox/mode', {mode:'workspace-write'})` +
-  `planMode.set(agent, false)` + 台账 `plan_state='approved'`；同时补登记 target 可写根
-  （rc.3 子会话 `header.cwd` 是父会话目录）。投递失败路径不碰 plan 状态（任务仍等你决定）。
-- **停止/终态**：`task_message({action:'stop'})` 与结算/对账进终态时释放 guard；还在 `planning` 就结束的 `plan_state` 收口成
-  `rejected`，已 `approved` 的保留（历史里能看出批准过）。
-- **台账视图**：`plan_first`（0/1）+ `plan_state`（`none` / `planning` / `approved` / `rejected`）。
-  运行期真相在平台会话日志的 `plan/mode` 事件（重启/压缩由平台投影恢复），台账只是编排视图；
-  两者以续派/终态事件对齐，面板显示台账视图。
-- **面板/工具视图**：`snapshot` / `detail` 下发 `planFirst` / `planState`；任务卡「计划中」小标 +
-  「计划·…」chip、抽屉概览「计划」行；`task_list` 给「·计划中」标记，`task_status` 给「计划：」行。
-  非计划任务不下发任何计划字样。
-- **互斥**：`planFirst` 与 `readOnly` 在 `task_create` 创建期拒绝（只读任务永远不切回可写）。
+- **进入**：`queue.pump` 从台账透传 `plan_first` 给 `dispatcher.spawn`；派发时复用 `ensureReadOnly`（压首回合窗口），再用**子 agent 作用域**的 `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 缺失只 warn（降级为只有只读沙箱）。批准前**不注册** target 可写根。
+- **计划落盘（`plan_save`）**：计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：`src/plan-doc.js` 只做纯函数——`planDocPath()` 算出 `<主会话工作区>/reports/plans/<taskId>.md`（没有 `path` 入参；编号白名单 + `relative()` 包含性校验把 `..`/绝对路径/盘符拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头，`writePlanDocument()` 只做一次 mkdir + 覆盖写。写完登记为任务产物。子会话拿到结果后只上报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**。
+- **出口**：`plan_save` 落盘 → `task_report blocked` 上报摘要 + 路径 → 用户决定 → `task_message` 续派，**不用** `exit_plan_mode`（子会话没有直接人类）。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`（插件根的 guard 是全局的，会误伤协调者）。
+- **退出（批准）**：投递成功、任务回到 `running` 后 `sandbox/mode = workspace-write` + `planMode.set(agent,false)` + 台账 `plan_state='approved'`，同时补登记 target 可写根；投递失败不碰 plan 状态。
+- **停止/终态**：释放 guard；还在 `planning` 就结束的收口成 `rejected`，已 `approved` 的保留。
+- **台账视图**：`plan_first` + `plan_state`（`none`/`planning`/`approved`/`rejected`）；面板「计划中」小标与抽屉「计划」行；非计划任务不下发任何计划字样。`planFirst` 与 `readOnly` 创建期互斥。
 
 ## worktree 隔离（P9）
 
 `task_create({ worktree: true })` 时插件在**宿主进程**建检出，子会话在检出目录里干活；不开 `worktree` 的任务行为一字不改（**一次 git 都不调**）。
 
-- **声明只有结构化两处**（v2，零自然语言解析）：profile 配置 `worktreePolicy` / `worktreeBranchPrefix` /
-  `worktreeRecentDays`（用户级默认，渲染进协调者 policy），以及 `task_create.worktree*` 字段（任务级决定）。
-  插件**不读** `AGENTS.md`、**不解析**自然语言、**不缓存**指令文件：「要不要隔离」由协调者判断
-  （DSH 的 `dsh-agent-instructions` 负责把用户级/工作区级指引注入它的上下文）。
-- **模块**：`src/worktree.js` = 宿主侧 git 能力（`probeRepo` / `create` / `remove` / `ensureExcluded` / 分支名校验 /
-  `prepareTaskWorktree` / `cleanupTaskWorktree` / `retryWorktreeOf`）；`src/worktree-request.js` = 结构化请求校验 +
-  机械映射（`parseWorktreeRequest` / `decideWorktreeIntent` / `decideWorktreeFacts`）与全部展示文案（纯函数）。
-- **创建期（`task_create`）**：先做互斥校验（`readOnly` / `planFirst`）与复用查找（`worktreeMode:'continue'` 按同
-  `group` / `dependsOn` 找台账里已建好的检出）；真要建时才 `probeRepo`（普通任务零 git 调用）→ 非仓库 `degrade`；
-  基线：显式 `worktreeBase` 要 `rev-parse --verify` 通过、缺省时 n=0 用默认分支 / n=1 用那条 / **n≥2 返回
-  `needsBranchChoice` 且不落库**（协调者去 `ask_user_question`，拿到答案带 `worktreeBase` 重调）。落库七列
-  （`worktree_path` / `_branch` / `repo_root` / `_base` / `_mode` / `_source` / `_state`），`state='requested'`。
-- **派发期（`queue.pump` → `prepareTaskWorktree`）**：`git worktree add -b <branch> <repo>/.agents/worktrees/<taskId> <base>`
-  ——**永远 -b 新分支**（直接检出已在主工作树检出的基线会被 git 拒绝）；`reused` 不调 git，只换算路径。
-  `target_dir` 换成「检出目录 + 原 target 相对 repoRoot 的偏移」→ 子会话的 target 可写根天然覆盖（既有
-  `ensureWritableRoot` 机制）；检出目录必须在仓库内，否则 `.git/worktrees` 的写入不成立。
-  建树失败标 `failed` 并写原因（**不静默降级**），非仓库才 `degraded`。
-- **`.git/info/exclude`**：建树成功后把 `.agents/` 追加到 `.git/info/exclude`（幂等；不动用户被跟踪的 `.gitignore`；
-  不可写只 warn）。
-- **清理三档**：`worktreeCleanup` 默认 `off`（全部保留）；`checkout-only` 只 `worktree remove`；`full` 连分支一起删
-  （有未合并提交时保留分支并提示）。清理在终态（结算 / `task_message({action:'stop'})` / 面板 stop）异步跑，失败只记日志、不改终态。
-- **重派**：`task_message({action:'retry'})` / 面板重派在有检出且目录还在时复用（`state='reused'`），被清理过按原基线重建。
-- **产物语义**：产物在检出目录里，**用户工作树没有这些改动**；通知 / `task_status` / 面板 / README 四处标注
-  「分支 X / 检出 Y / 合并由你决定」。平台没有合并工具，插件也不提供。
-- **视图**：`snapshot` / `detail` 下发 `worktreeState/Branch/Path/Base/Source`；任务卡「隔离」小标 + 「隔离·…」chip、
-  抽屉概览「隔离」行；`task_list`「·隔离」、`task_status`「隔离：」行（含决定者 task/config/default）。
+- **声明只有结构化两处**：profile 配置 `worktreePolicy` / `worktreeBranchPrefix` / `worktreeRecentDays`，以及 `task_create.worktree*` 字段。插件**不读** `AGENTS.md`、**不解析**自然语言：「要不要隔离」由协调者判断。
+- **模块**：`src/worktree.js` = 宿主侧 git 能力（`probeRepo` / `create` / `remove` / `ensureExcluded` / 分支名校验 / `prepareTaskWorktree` / `cleanupTaskWorktree` / `retryWorktreeOf`）；`src/worktree-request.js` = 结构化请求校验 + 机械映射 + 展示文案（纯函数）。
+- **创建期**：先互斥校验（`readOnly`/`planFirst`）与复用查找（`worktreeMode:'continue'`）；真要建时才 `probeRepo`（普通任务零 git 调用）→ 非仓库 `degrade`；基线：显式 `worktreeBase` 要 `rev-parse --verify` 通过、缺省时 n=0 用默认分支 / n=1 用那条 / **n≥2 返回 `needsBranchChoice` 且不落库**。落库七列（`worktree_path` / `_branch` / `repo_root` / `_base` / `_mode` / `_source` / `_state`），`state='requested'`。
+- **派发期**：`git worktree add -b <branch> <repo>/.agents/worktrees/<taskId> <base>`——**永远 -b 新分支**（直接检出已在主工作树检出的基线会被 git 拒绝）；`reused` 不调 git，只换算路径；`target_dir` 换成「检出目录 + 原 target 相对 repoRoot 的偏移」。建树失败标 `failed` 并写原因（不静默降级）。
+- **`.git/info/exclude`**：建树成功后把 `.agents/` 追加进去（幂等、不动 `.gitignore`；不可写只 warn）。
+- **清理三档**：`off`（默认，全留）/ `checkout-only`（只 `worktree remove`）/ `full`（连分支一起删，有未合并提交会提示）；在终态异步跑，失败只记日志。
+- **产物语义**：产物在检出目录里，**用户工作树没有这些改动**；平台没有合并工具，插件也不提供。
 
 ## 目标目录推断
 
-不传 `target` 时，用 `title` + `goal` 匹配 `workspaceRegistry.list()` 的显示名与路径末段：
-
-- 精确名优先；否则子串层。
-- 纯 ASCII 键至少 3 个字母数字，CJK 至少 2 字。
-- 通用末段（workspace/documents/document/desktop/default/src/app/tmp）不参与路径末段匹配。
-- 子串包含消歧：被更具体名字严格包含的泛命中丢弃。
-- 唯一命中写 `target_dir`；多命中不建任务，列候选；无命中沿用主会话目录。
-- `workspaceRegistry` 不可用时按无工作区降级。
+不传 `target` 时，用 `title` + `goal` 匹配 `workspaceRegistry.list()` 的显示名与路径末段：精确名优先、否则子串层；纯 ASCII 键至少 3 个字母数字，CJK 至少 2 字；通用末段（workspace/documents/desktop/default/src/app/tmp）不参与匹配；被更具体名字严格包含的泛命中丢弃；唯一命中写 `target_dir`，多命中不建任务、列候选，无命中沿用主会话目录；registry 不可用时按无工作区降级。
 
 ## 路由与面板
 
@@ -668,192 +363,61 @@ target 可写根（`danger-full-access` 下用不上，只当注入失败时的�
 
 | endpoint | 作用 |
 |---|---|
-| `snapshot` | 只读快照 |
+| `snapshot` | 只读快照（含 `handoff` 精简版、`teamBoard`、任务行 `acceptance` 摘要） |
 | `open-main` | 创建/打开主会话 |
-| `detail` | 任务详情、消息、依赖、产物、最新回复（B1） |
+| `detail` | 任务详情、消息、依赖、产物、最新回复、交接、官方板关联 |
 | `artifacts` | 产物汇总（项目/日期分组所需字段） |
 | `preview` | 预览台账里登记的文本产物（前 64 KiB） |
-| `stop` | 停止任务 |
-| `retry` | 重派 failed/orphaned |
-| `message` | 追加消息（仅可续派状态，见 `src/panel-gates.js`；**面板已无「追加」按钮**，只有协调者 `task_message` 在走） |
-| `delete` | 删除终态任务（台账级联清 messages/notifications） |
+| `stop` / `retry` / `message` / `delete` | 面板动作（门控见 `src/panel-gates.js`；`message` 仅可续派状态，但面板已无「追加」按钮） |
 
-面板 2s 轮询，连续失败退避 30s；任务卡「详情/停止/重派/删除/打开子会话」，「删除」只在终态显示（`canDelete` 由服务端判定并随 snapshot/detail 下发，见下节）；「产物」筛选打开产物库（按项目/日期分组，预览/复制/打开子会话/详情）。
-
-> 面板不再有「追加」按钮：旧实现点击后走 `window.prompt`，而 Electron 渲染进程把 `window.prompt` 换成抛错桩
-> （`prompt() is not supported.`），从来没有真正发出过请求。`canFollowup` 仍随快照下发（服务端门控不变），只是
-> 前端不再渲染这个入口；续派与计划批准统一由协调者 `task_message` 完成。
+面板 2s 轮询，连续失败退避 30s；`canDelete` 由服务端判定并随 snapshot/detail 下发。
 
 ## 面板与详情（UI U2）
 
-面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件，视觉与交互规范见下（原 `docs/UI.md` 已合并进本节与「界面与消息块」）。四件事值得记在架构里：
+面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件。四件事值得记在架构里：
 
-- **构建链与产物路径（P7，T7.2 已切生效入口）**：客户端源码在 `client/src/**`（ESM），由 `vite.client.config.mjs`
-  构建成 `dist/client.js`（iife classic script，配 `dist/client.js.map`），**产物入库**。平台 `clientExportOf()` 读
-  `package.json` 的 `exports["./client"]`，把那个文件**原样** serve 成 `/plugins/<id>/client.js`；路由只服务
-  这一个 JS（+ 同名 `.map`），`.css` 一律 404 → 样式必须 `?inline` 回 JS。当前 `exports["./client"]` 已指向
-  **`./dist/client.js`**（`files` 含 `dist/`），根目录不再有手写 `client.js`；改 UI = 改 `client/src/` + `pnpm run build`
-  （`pnpm test` 经 `pretest` 自动构建）。源码分模块：`index.js`（只注册 factory）→ `client.js`（装配 + `apply` +
-  `__test`）→ `views.js`（面板/抽屉/启动器）→ `ui.js`（展示件）、`styles.css`（样式表）、`logic.js`（纯函数）、
-  `api.js`（宿主 HTTP 契约）、`gate.js`（任务入口闸门）、`constants.js`（文案/常量）。
-- **样式表怎么进来的**：产物是 classic script（不能 `import` CSS），所以 `styles.css` 在构建期被 `?inline`
-  内联成 `STYLE_TEXT` 字符串，`ensureStyles()` 在 `apply()` 里按 `#dsh-orchestrator-styles` 去重注入 `<style>`。颜色/圆角/阴影/动效
-  全部取宿主 `@deepseek-ai/dsh-client-ui-theme` 的 `--dsw-*` / `--ds-*` token，深浅色由宿主写在
-  `body[data-ds-dark-theme]` 的 alias token 决定，面板不做任何主题判断。
-- **三段式**：① 顶部命令栏（标题/主会话状态/搜索/刷新/打开主会话）② 中部工作区（筛选轨 + 任务卡列表 / 产物库）
-  ③ 右侧详情抽屉。抽屉常驻挂载、`data-open` 驱动 `transform` 过渡；`Esc`/遮罩/关闭按钮都能收起。
-  列表侧把纯逻辑提到组件外（`countTasks` / `matchesFilter` / `matchesQuery` / `groupArtifacts`），单测直接断言行为。
-- **详情抽屉 7 区块**：概览、**最新回复**（B1，`detail.task.lastMessage`）、**brief**（验收/约束/背景/用户原话，
-  结构化列表）、**目标状态**（G1，只读）、**消息**（最近 20 条；`followup` 标待发/已投递/投递失败）、
-  **依赖**（上游前置 + 下游依赖本任务，各带状态与错误）、**产物**（路径/标签/存在性，路径可一键复制）。
-  每个区块都可折叠（`aria-expanded` + `0fr↔1fr` 过渡），都有空态。底部动作条：停止（内联二次确认）/重派/打开子会话/删除（仅终态，内联二次确认）。
-  投递状态落在 `messages.meta_json.delivery`（pending → delivered/failed，只改 meta 不加行）；A3 之前的旧消息按紧随其后的 `delivery_failed` 行推断。
-- **按钮可见性与动作门控同源**：`src/panel-gates.js` 是唯一判定（`followupGate` / `deleteGate`）。
-  服务端面板动作与 `task_message` 工具都先过它；`snapshot`/`detail` 再把 `canFollowup` / `canDelete`
-  下发给客户端，`client/src/views.js` 只读这两个布尔值渲染按钮（`canFollowup` 目前没有消费方），不另抄一份状态表——避免「按钮在、点了 409」或反过来的分叉。
-  续派 = `running` / `waiting_user` / `waiting_auth` 且已有子会话；删除 = `done` / `failed` / `cancelled` / `orphaned`
-  且没有活跃下游依赖。删除只清台账行（任务 + messages + notifications），不删产物文件与 memories（见 LIMITATIONS）。
+- **构建链与产物路径**：客户端源码在 `client/src/**`（ESM），由 `vite.client.config.mjs` 构建成 `dist/client.js`（iife classic script + `.map`），**产物入库**。平台按 `exports["./client"]` 把该文件原样 serve 成 `/plugins/<id>/client.js`，路由只服务这一个 JS（+ 同名 `.map`），`.css` 一律 404 → 样式必须 `?inline` 回 JS（构建期内联成 `STYLE_TEXT`，`ensureStyles()` 按 id 去重注入）。改 UI = 改 `client/src/` + `pnpm run build`。
+- **体积闸门（P2-5）**：默认开 esbuild minify（`sourcemap: true` 保留；`CLIENT_MINIFY=0 pnpm run build` 出可读产物），产物 ≤ **95 KiB** 由 `scripts/check-client-size.mjs` 断言，挂在 `pretest` 与 `prepublishOnly`。源码分模块：`index.js`（只注册 factory）→ `client.js`（装配 + `apply` + `__test`）→ `views.js`（面板/抽屉/启动器）→ `ui.js`（展示件）、`styles.css`、`logic.js`（纯函数）、`api.js`（宿主 HTTP 契约）、`gate.js`（入口闸门）、`constants.js`（文案/常量）。
+- **三段式与抽屉**：顶部命令栏（标题/主会话状态/搜索/刷新/打开主会话 + 4 张指标卡）、中部（筛选轨 + 任务卡列表 / 产物库）、右侧详情抽屉（概览、最新回复、Brief、验收、交接、目标状态、消息、依赖、产物）。抽屉常驻挂载、`data-open` 驱动 `transform` 过渡；每区块可折叠（`aria-expanded` + `0fr↔1fr`）都有空态。列表侧纯逻辑提到组件外（`countTasks` / `matchesFilter` / `matchesQuery` / `groupArtifacts`），单测直接断言行为。
+- **按钮可见性与动作门控同源**：`src/panel-gates.js` 是唯一判定（`followupGate` / `deleteGate`），服务端面板动作与 `task_message` 都先过它，`snapshot`/`detail` 把 `canFollowup` / `canDelete` 下发，客户端只读这两个布尔值渲染按钮。删除 = 终态且没有活跃下游依赖，只清台账行（任务 + messages + notifications），不删产物文件与 memories。
+- **P2 的只读视图**：官方 Team 板分区（折叠、行内无按钮、`enabled:false` 不渲染）、抽屉「交接」区块（契约版本/交付与确认时间/谁确认/轮次/验收结论/官方板关联）、任务卡「验收 2/2」小标（来自 `snapshot.tasks[].acceptance`）。
 
 ### 产物预览复用宿主右侧栏（U2.1）
 
-产物预览不自建视图：`client/src/client.js` 的 `openArtifactPreview(path)` 把面板里的点击转成宿主右侧栏的一次
-`ctx.sidebarRight.openResource(address)` 调用，Tab 类型由宿主的 `@deepseek-ai/dsh-client-ui-sidebar-documentpreview`
-（`kind:'text'`）认领，Markdown / 代码 / 图片 / PDF / Office 都有渲染器。
+产物预览不自建视图：`openArtifactPreview(path)` 转成宿主的 `ctx.sidebarRight.openResource(address)`，Tab 类型由 `dsh-client-ui-sidebar-documentpreview`（`kind:'text'`）认领，Markdown / 代码 / 图片 / PDF / Office 都有渲染器。
 
-- **地址**：`client/src/logic.js` 的 `fileAddressOf(sessionId, path)` 拼
-  `dsh-resource://file/session/<encodeURIComponent(sessionId)>/<逐段编码 path>`，与
-  `@deepseek-ai/dsh-util-workspace-path` 的 `sessionFileAddress` 逐条对齐（`:` 保持字面以兼容盘符）。
-  预览类型只认领 `session` 作用域（`absolute` 不会被认领），所以地址必须带会话 id。
-- **必须先切回会话**：右侧栏按 Session 挂载；任务面板占主栏时 `ctx.sidebarRight.mounted` 是 `undefined`，
-  直接 `openResource` 会抛 `sidebarRight: no session surface is mounted`。因此顺序固定为
-  `ctx.layout.selectPanel(null)` → `openResource`。
-- **探测前置、失败提示不依赖面板存活**：`openArtifactPreview` 先做完全部可用性探测（侧栏服务是否有
-  `openResource`、地址是否拼得出），只有探测全通过才 `selectPanel(null)`；`openResource` 抛错时若刚切过面板就
-  `selectPanel(PANEL_ID)` 切回来，再返回 `{ ok:false, reason, message }`。时序不靠轮询 `mounted` 的宏任务轮数
-  （早期实现的 4 轮 `setTimeout(0)` 已删）——座位没就绪就让宿主抛错、如实上报，避免静默失败。
-- **降级分四档**：`sidebar-missing`（旧 profile 没装侧栏）/ `no-session`（拿不到当前会话 id）/
-  `bad-path`（路径为空或编码不出地址）/ `host-refused`（宿主抛错，带原始 message）。`views.js` 的 `previewInSidebar` 按 reason 给出可区分的中文提示；
-  产物库行额外回退旧 `preview` 端点 + `previewBlock`（行内预览），任务卡 / 抽屉只提示「到产物页看或复制路径」。
-- **产物登记校验不绕开**：服务端 `preview` 端点只读「本任务已登记产物」（`panel-actions.js` 先查
-  `task.artifacts` 再读盘）；右侧栏链路是宿主直接读文件、不过这道校验，所以 `views.js` 的
-  `isRegisteredArtifact(path)` 在前端做等价校验——只允许快照卡片 / 产物库 / 详情抽屉这三个**服务端下发来源**
-  里出现过的路径。
-- **`fileAddressOf` 不 trim**：宿主 `sessionFileAddress` 也不 trim；POSIX 允许路径首尾带空格，
-  trim 会静默改写调用方的合法路径。
-- **不接管宿主几何**：宽度（首次 45% 视口、按 Session 记忆、上限 70%、保底 300px、可拖拽）、折叠、
-  多 Tab / 分栏、`<768px` 自动全屏都由宿主 `ui-layout` + `ui-sidebar-right` + dockkit 负责，插件不存任何预览状态。
-- **与 present 同源**：聊天交付卡片的预览也走 `ctx.sidebarRight.openResource(fileAddressFor(...))`，
-  面板打开的 Tab 与交付卡片落在同一个右侧栏，`reports/` 等绝对路径语义不变。
-- 依赖声明：`package.json` 的 `dsh.client.inject` 增加 `@deepseek-ai/dsh-client-ui-sidebar-right` 与
-  `@deepseek-ai/dsh-client-ui-sidebar-documentpreview`（**只是预取提示**，见下）；客户端的 `inject` 数组**不加**
-  `sidebarRight`——它用 `serviceOf('sidebarRight')` 现取，与 `uiSession`/`sessions` 同一口径。写进 `inject` 会让 cordis
-  在服务缺失时卡住 `apply`，那就没有「缺侧栏 → 提示 + 产物库行内回退」这条路了。
+- **地址**：`fileAddressOf(sessionId, path)` 拼 `dsh-resource://file/session/<id>/<逐段编码 path>`，与宿主的 `sessionFileAddress` 逐条对齐（`: ` 保持字面以兼容盘符）；只认领 `session` 作用域，所以必须带会话 id、且不 trim。
+- **必须先切回会话**：右侧栏按 Session 挂载，面板占主栏时直接 `openResource` 会抛 `no session surface is mounted`；顺序固定为 `ctx.layout.selectPanel(null)` → `openResource`。探测全通过才切面板，`openResource` 抛错时切回来并返回 `{ok:false, reason, message}`——不靠轮询 `mounted` 猜时序。
+- **降级四档**：`sidebar-missing` / `no-session` / `bad-path` / `host-refused`；产物库行额外回退旧 `preview` 端点 + 行内预览。
+- **登记校验不绕开**：服务端 `preview` 只读本任务已登记产物；右侧栏是宿主直接读文件，所以前端用 `isRegisteredArtifact(path)` 做等价校验（只允许快照卡片 / 产物库 / 抽屉三个服务端下发来源出现过的路径）。
+- **不接管宿主几何**：宽度、折叠、多 Tab、`<768px` 全屏都由宿主负责，插件不存预览状态；交付卡片的预览走同一个右侧栏。
 
 ### 界面与消息块（合并自原 UI.md）
 
-- **三段式布局**：① 顶部命令栏 `.orch-topbar`（标题 + 主会话状态点、搜索、刷新、打开主会话）与 `.orch-metrics` 4 张指标卡
-  （进行中/待你决定/已完成/失败，点击即切筛选）；② 中部 `.orch-body`：`.orch-rail` 筛选轨（7 项、带计数徽标）+
-  `.orch-main`（提示条 + 任务卡列表 / 产物库）；③ 右侧 `.orch-layer > .orch-scrim + .orch-drawer`。
-  抽屉**常驻挂载**、只切 `data-open`（关闭是 `transform: translateX(102%)` 滑出，不是卸载，否则没有动画）；遮罩走 `--dsw-alias-bg-mask-1`。
-  窄屏：≤860px 筛选轨变横向条、指标两列；≤640px 抽屉铺满。
-- **代码位置**：`client/src/views.js`（`topbar` / `metrics` / `rail` / `alerts` / `renderTask` / `artifactView` / `listView` /
-  `drawerContent` / `drawerBody`）、`client/src/styles.css`（整张样式表）、`client/src/ui.js`（图标 / 徽标 / 空态 / 骨架）、
-  `client/src/logic.js`（纯函数：`matchesQuery` / `matchesFilter` / `groupArtifacts`）、`client/src/feed.js`（chip 快照源）。
-- **设计 token**：颜色/圆角/阴影/动效全部取宿主 `@deepseek-ai/dsh-client-ui-theme` 的 `--dsw-*` / `--ds-*`，**不写死颜色**；
-  深浅色由宿主把 alias token 绑到 `body[data-ds-dark-theme]`，面板只读 token。每处 `var()` 都带兜底值。常用对照：
-
-  | 用途 | token |
-  | --- | --- |
-  | 画布 / 顶栏抽屉头尾 / 卡片聚焦面 | `--dsw-alias-bg-base`、`--dsw-alias-bg-layer-1`、`--dsw-alias-bg-layer-2` |
-  | 卡片底色 / hover | `--dsw-alias-card-fill` / `--dsw-alias-card-fill-hover` |
-  | 文字三档 | `--dsw-alias-label-primary/secondary/tertiary` |
-  | 描边三档 / 选中 | `--dsw-alias-border-l1/l2/l3`、`--dsw-alias-border-selected` |
-  | 交互层 / 危险悬停 | `--dsw-alias-interactive-bg-hover(-active)`、`-hover-danger` |
-  | 主按钮 | `--dsw-alias-button-primary-fill` + `--dsw-alias-label-primary-inverted` |
-  | 圆角 / 阴影 | `--dsw-radius-xs/sm/md/lg`、`--dsw-shadow-lv1`、`--dsw-elevation-prominent` |
-  | 骨架 / 遮罩 / 焦点环 | `--dsw-alias-bg-skeleton`、`--dsw-alias-bg-mask-1`、`--dsw-focus-ring-color` |
-  | 代码块 / 气泡 / 状态语义色 | `--dsw-alias-markdown-code-block`、`--dsw-specific-bubble`、`--dsw-alias-state-success/error/warn/business-primary` |
-  | 动效曲线 / 时长 | `--ds-ease-in-out`、`--ds-transition-duration(-fast/-slow)` |
-
-  > 旧 bug：U2 之前用 `--dsw-alias-color-success` 这类宿主 token 表里**不存在**的变量（一直走 fallback、深色下颜色发脏）；
-  > 现在统一成 `--dsw-alias-state-*` / `--dsw-alias-label-*` 语义 token，测试里有 `doesNotMatch` 守着。
-- **交互**：hover（卡片底色+描边+`--dsw-shadow-lv1`、指标上浮 1px、按钮/入口无描边）；抽屉滑入滑出、`0fr↔1fr` 折叠、
-  chevron 旋转、内容入场 `orch-slide-in`、骨架 `orch-shimmer`、按钮 `transform: scale(.985)` 按下反馈；
-  二次确认（停止 / 确认交付 / 删除）用 `.orch-confirm` 两步，不用 `window.confirm`；空态 / 加载态 / 错误态齐备
-  （快照错误带重试、动作错误带 code、产物加载失败、右侧栏不可用）；`Esc` 关抽屉、`aria-expanded/pressed/hidden/label`、
-  `:focus-visible` 焦点环；`prefers-reduced-motion: reduce` 关掉全部动画与过渡。
-- **会话头入口**：注册在 `conversation.header.leading`（单席位、不带 id），仅主会话显示（闸门见「入口可见性」）。
-  视觉与面板顶栏同一套语言，按钮本身不画外框（与协调者预设标签、子智能体计数一致）：高 26px、内边距 0 4px、透明底、
-  `--dsw-alias-label-primary` 半粗字；图标块 `.orch-entry-mark` 18×18、`--dsw-radius-xs` 圆角、`--dsw-specific-bubble` 底 +
-  `--dsw-alias-state-business-primary` 前景，内含 `ui.js` 的三横线内联 SVG。
+- **布局与 token**：`.orch-topbar` + `.orch-metrics`（4 张指标卡）、`.orch-body`（`.orch-rail` 筛选轨 7 项 + 卡片列表 / 产物库）、`.orch-layer > .orch-scrim + .orch-drawer`；窄屏 ≤860px 筛选轨变横向条、≤640px 抽屉铺满。颜色/圆角/阴影/动效全部取宿主 `--dsw-*` / `--ds-*` token，**不写死颜色**，每处 `var()` 带兜底值；旧 bug 用过的 `--dsw-alias-color-*` 这类不存在的变量已统一成 `--dsw-alias-state-*` / `--dsw-alias-label-*`（测试有 `doesNotMatch` 守着）。
+- **交互**：hover、抽屉滑入滑出、`0fr↔1fr` 折叠、骨架 `orch-shimmer`、按钮按下反馈；二次确认用 `.orch-confirm` 两步（不用 `window.confirm`）；空态/加载/错误态齐备；`Esc` 关抽屉、`aria-expanded/pressed/hidden/label`、`:focus-visible` 焦点环；`prefers-reduced-motion: reduce` 关掉全部动画。
+- **会话头入口**：注册在 `conversation.header.leading`（单席位），仅主会话显示；视觉与面板顶栏同一套语言（透明底、图标块 `.orch-entry-mark`）。
 
 ### 回复底部关联任务 chip（官方 turnTail 槽位）
 
-协调者每轮回复的底部（动作行**之上**）挂一行关联任务 chip：状态图标 + 任务标题，点一下就打开面板并定位到该任务。
-它显示「这一轮回复之后这几个任务在干什么」，因此不是面板的镜像，也不进会话头。
+协调者每轮回复底部（动作行**之上**）挂一行关联任务 chip：状态图标 + 标题，点一下打开面板并定位到该任务。
 
-- **挂载与槽位契约**：槽位 `conversation.chat.turnTail`（`kind:'list'`、`scope:'session'`）；宿主 `TurnTailNodeView`
-  先 `renderSlot(...)` 再 `MessageIconActions`（复制/分支/时钟），所以 chip 天然落在动作行上方，**不碰时钟右侧、不做 DOM 注入**。
-  注册点在 `client/src/client.js`（`id: CHIP_ID`、`order: 20`，同 id 复注册才是替换）；`sessionId` 与 `useChat` 由槽位作用域自带，
-  `inject` 只给 `openTask` / `openPanel` / `chips`（共享数据源）与 `hooks:{ mainView }`。
-- **关联规则**（可解释、可断言）：
-
-  | 规则 | 内容 | 判据 |
-  | --- | --- | --- |
-  | R1 会话绑定 | 只收 `coordinatorSession === 当前 sessionId` 的任务（随快照下发） | 子会话 / 别的协调者一个都收不到 |
-  | R2 轮次 | 只挂在**最新一轮**已完成回复的尾部（`snapshot.timeline.turnOrder` 末位 === `turn`） | 历史回复不带 chip |
-  | R3 入选 | 活跃状态全收；终态只在 `lastEventAt` 落在最近 30 分钟内时收 | 「刚跑完」看得见，昨天的旧任务不翻旧账 |
-  | R4 排序截断 | `lastEventAt↓` → `updatedAt↓` → `id↑`，取前 2 个出 chip，其余折成「+N」 | 顺序确定，不受快照数组顺序影响 |
-
-- **状态映射**：台账 10 个状态压成 6 个视觉态（`client/src/constants.js` 的 `CHIP_STATE_OF` / `CHIP_STATE_VIEW`）：
-
-  | 视觉态 | 台账状态 | 图标 | 动效 | 语义色 |
-  | --- | --- | --- | --- | --- |
-  | `running` | `running` | 留缺口的圆环 | 自转 1s 线性无限（`orch-taskchip-spin`） | `info`（business） |
-  | `waiting` | `pending`、`waiting_dep` | 虚线圆（`stroke-dasharray:3 2.4`） | 无 | `muted` |
-  | `confirming` | `waiting_user`、`waiting_auth`、`delivered` | 虚线圆 | 半色 `opacity .72` + 脉冲 1.6s | `warn` |
-  | `done` | `done` | ✓ | 无 | `good` |
-  | `failed` | `failed`、`orphaned`、`missing` | ✗ | 无 | `bad` |
-  | `cancelled` | `cancelled` | 一横 | 无 | `muted` |
-
-  颜色全部走 `TONE_COLOR` 的 `--dsw-alias-*`；`prefers-reduced-motion: reduce` 下停转、停脉冲但保留形状与颜色
-  （宿主那份规则只作用于 `.orch-shell` 内，chip 在会话流里，必须自带一份）。
-- **交互**：点 chip → `openTask(id)` 记一条一次性 focus 请求 → `selectPanel(PANEL_ID)`；面板挂载时 `focus.take()` 取走 id
-  并直接开该任务详情抽屉（取走即清空，不残留弹窗）；点「+N」只打开面板不定位；`title` 与 `aria-label` 同为「任务名｜状态」；
-  长标题先按码点截 24 字（emoji 不被切半），再由 CSS `text-overflow: ellipsis` 兜底，chip 自身 `max-width: 260px`。
-- **订阅与性能**：单实例 `createTaskFeed`（`client/src/feed.js`），一条历史会话有 N 个 turn-tail 组件，只有「主会话 + 最新一轮」那行订阅；
-  首个订阅者立即拉一次、之后自排程 `setTimeout`，最后一个退订清表、卸载（`ctx.effect`）兜底 `stop()`；
-  节奏：有活跃任务 3s、全是终态 15s、请求失败退避 30s 且保留上一份快照；响应先剪成 6 个字段算签名，内容没变复用对象，
-  签名还带「终态任务是否仍在 30 分钟窗口内」一位，任务跨线时签名变一次、chip 自己消失。
-- **空状态 = 不渲染整行**：没关联、快照没到、非主会话、历史轮次都返回 `null`（不占位、不出骨架、不报错）。
-  「等前置」是活跃不是取消：`waiting_dep` 走 `waiting`（虚线静圈），不画成 `cancelled`。
+- **挂载**：槽位 `conversation.chat.turnTail`（`kind:'list'`、`scope:'session'`）；宿主 `TurnTailNodeView` 先 `renderSlot(...)` 再动作行，所以 chip 天然落在动作行上方；注册点在 `client/src/client.js`（同 id 复注册才是替换）。
+- **关联规则**：R1 只收 `coordinatorSession === 当前 sessionId` 的任务；R2 只挂最新一轮已完成回复；R3 活跃状态全收、终态只在 `lastEventAt` 最近 30 分钟内收；R4 按 `lastEventAt↓ → updatedAt↓ → id↑` 取前 2 个，其余折「+N」。
+- **状态映射**：10 个台账状态压成 6 个视觉态（`CHIP_STATE_OF` / `CHIP_STATE_VIEW`）：`running` 自转圆环、`waiting` 虚线圆、`confirming` 半色脉冲、`done` ✓、`failed` ✗、`cancelled` 一横；颜色走 `TONE_COLOR`，`prefers-reduced-motion` 下停转停脉冲但保留形状。
+- **交互与性能**：点 chip → `openTask(id)` 记一次性 focus → 打开面板并定位；「+N」只开面板；长标题按码点截 24 字。单实例 `createTaskFeed`，只有「主会话 + 最新一轮」那行订阅；节奏：有活跃任务 3s、全终态 15s、失败退避 30s；响应先剪成 6 个字段算签名，没变复用对象。空状态 = 不渲染整行。
 
 ## 插件页与面板错误码（合并自原 DETAIL.md）
 
-插件页（DSH「插件」详情）只展示一段简介与文档链接；功能点已在 README「核心概念」逐节展开，这里只留运维需要的口径：
+插件页只展示一段简介与文档链接；这里只留运维需要口径：
 
-- **协调者主会话**：固定入口，只拆任务 / 派活 / 看回报，不读写文件、不执行命令。**子任务**：独立 DSH 子会话，按目标目录运行，
-  支持只读沙箱、计划模式、续派、停止、重派。**工具面**：全局 10 个（协调者 7 + 子会话专属 3），schema 与门控在 `src/tools.js`。
-- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` /
-  `memory_note` / `read_workspace`；子会话 `task_report` / `task_detail` / `plan_save`。
-- 依赖 / 分组 / 写域 / 优先级、两段式交付、收件箱与日报的用法见 README；内部机制见本文件对应章节。
-- **面板动作与错误码同源**：面板的 stop / retry / message / delete 与 `task_message({action})` 共用 `src/action-errors.js` 的
-  code、门控语义和文案；面板失败返回 `{ ok:false, code, error }`，`host-route` 按 code 映射 HTTP 状态
-  （400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部），工具层保持可读字符串。面板把错误显示成 `动作 失败（CODE）：原因`。
-- **「能不能点」与「接不接」是同一份判定**：`src/panel-gates.js` 的 `followupGate` / `deleteGate` 同时供面板动作、`task_message`
-  与 snapshot/detail 的 `canFollowup` / `canClose` / `canDelete` 使用，客户端只读下发字段。
-- `stop`：已 cancelled/done/orphaned 再 stop 返回 `{ ok:true, already:true }`（并发双击只迁移一次）；收子会话失败不阻断取消，
-  结果带 `warnings[].code=STOP_DISPATCH_FAILED`。
-- `retry`：只允许 failed/orphaned；同一失败任务已有活跃重派时直接返回那条任务（`already:true` + `retryOf`）；
-  同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。
-- `message`：只允许 running / waiting_user / waiting_auth / delivered 且已有子会话（`delivered` 上是追问，复用原会话）；
-  终态 `MESSAGE_TASK_ENDED`、等前置 `MESSAGE_WAITING_DEP`、待派发/排队/无会话 `MESSAGE_NO_SESSION`、
-  失败任务 `MESSAGE_NOT_FOLLOWABLE`（改用重派）。面板每次点击生成 `clientRequestId`，按 `(taskId, clientRequestId)` 进程内去重；
-  没有 id 的旧客户端退回「同任务 3 秒内相同文本」窗口。投递失败 `MESSAGE_DELIVERY_FAILED`，失败记录不当已投递、窗口内可立刻重发。
-- `delete`：只允许终态（done/failed/cancelled/orphaned），活跃返回 `DELETE_TASK_ACTIVE`（先停止）；还有活跃下游返回
-  `DELETE_HAS_ACTIVE_DEPENDENTS`。成功时级联删该任务的 messages / notifications，产物文件、报告正文与 memories 不动。
-- **边界**：依赖只能指向已存在任务、不支持编辑；`writeScopes` 是冲突提示不是文件锁；`done` 不可逆、不提供 reopen；
-  协调者禁止任何阻塞等待；台账每天快照，损坏要手工恢复（[LIMITATIONS](LIMITATIONS.md)）。
+- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace`；子会话 `task_report` / `task_detail` / `plan_save`。
+- **面板动作与错误码同源**：面板 stop / retry / message / delete 与 `task_message({action})` 共用 `src/action-errors.js` 的 code 与门控；面板失败返回 `{ok:false, code, error}`，`host-route` 按 code 映射 HTTP 状态（400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部）。
+- `stop`：已结束再 stop 返回 `{ok:true, already:true}`；收子会话失败不阻断取消（`warnings[].code=STOP_DISPATCH_FAILED`）。
+- `retry`：只允许 failed/orphaned；已有活跃重派直接返回那条任务；同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。
+- `message`：只允许 running / waiting_user / waiting_auth / delivered 且已有子会话（`delivered` 上是追问）；错误码 `MESSAGE_TASK_ENDED` / `MESSAGE_WAITING_DEP` / `MESSAGE_NO_SESSION` / `MESSAGE_NOT_FOLLOWABLE` / `MESSAGE_DELIVERY_FAILED`。面板每次点击生成 `clientRequestId`，按 `(taskId, clientRequestId)` 进程内去重。
+- `delete`：只允许终态；还有活跃下游返回 `DELETE_HAS_ACTIVE_DEPENDENTS`；成功时级联删 messages / notifications，产物文件与 memories 不动。
+- **边界**：依赖只能指向已存在任务、不支持编辑；`writeScopes` 是冲突提示不是文件锁；`done` 不可逆、不提供 reopen；台账每天快照，损坏要手工恢复（见 [LIMITATIONS](LIMITATIONS.md)）。
 
 ### 插件页配置卡片
 
@@ -902,21 +466,19 @@ $DSH_HOME/state/orchestrator/
   tasks.sqlite
   snapshots/tasks-YYYY-MM-DD.sqlite
   logs/YYYY-MM-DD.jsonl
-  handoff/handoff-YYYY-MM-DD.jsonl  # P2-3 交接契约 v1 事件（task.handoff.delivered / confirmed，保留 30 天）
+  handoff/handoff-YYYY-MM-DD.jsonl  # 交接契约 v1 事件（task.handoff.*，保留 30 天）
   lessons/<项目>-<short-hash>.md   # task_detail 经验指针指向的记忆文件（每次派发覆盖）
   reports/<taskId>.md              # 超 64 KiB 的返回消息全文
-  workspace/                 # 指挥舱
+  workspace/                       # 指挥舱
 ```
 
 - 日志按天、保留 7 天、单文件超 5MB 换新；`goal`/`summary` 只留 80 字，不写 `user_verbatim`。
-- 交接事件独立目录（`handoff/`）、保留 30 天：外部订阅方可能一周才拉一次；不进仓库、不写台账 messages。
+- 交接事件独立目录、保留 30 天（外部订阅方可能一周才拉一次）；不进仓库、不写台账 messages。
 - 快照启动时生成、每 6 小时跨日检查，保留 `snapshotRetentionDays` 天；损坏不自动恢复。
-- 报问题附当天日志。
 
 ## 错误与降级
 
 - 台账损坏/不可用/被占用给中文可读错误，不泄漏 `SQLITE_` 和堆栈。
 - 协调者会话失效：`task_create` 标 `failed` 并给原因；只是未加载则任务排队等 `agent/created`。
-- 子会话不可达：`orphaned`，可重建。
-- 续派失败重试 3 次（1s/2s/4s），仍失败转 `waiting_user`。
-- 通知失败/跳过写 `notifications`，不产生未处理 rejection。
+- 子会话不可达：`orphaned`，可重建；续派失败重试 3 次（1s/2s/4s），仍失败转 `waiting_user`。
+- 能力缺失（`ctx.goals` / `agentTeams` / `schedule` / `sidebarRight`）一律「整段消失 + 可读降级」，不模拟成功。

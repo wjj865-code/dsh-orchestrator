@@ -68,6 +68,59 @@ mainRotation 默认 off）；`check:client` / `check:docs`（配置表 35 键）
 
 ## 未发布
 
+**P2 六片（0.22.0 待发）**：本段按切片倒序收录 **P2-1 ~ P2-6** 全部变更；六个 commit 各自独立可回退，**未 bump 版本 / 未 push / 未打 tag**。
+
+| 片 | commit | 一句话 |
+|---|---|---|
+| P2-6 | `docs: P2-6 文档收口（≤1800 行）+ P2 变更收录` | README 首屏重写，文档 2,152 → 1,386 行，`check-docs` 预算降到 1,800 + 首屏结构断言 |
+| P2-5 | `refactor: P2-5 面板 S9′（dist ≤95KB + 交接/官方板只读视图）` | esbuild minify：面板 129.9 → 77.6 KB，体积闸门进 `pretest` |
+| P2-4 | `feat: P2-4 官方 Team 板只读 + 确认反写（CAS）` | 官方板只读快照 + 确认交付时按 CAS 反写 `complete` |
+| P2-3 | `feat: P2-3 交接契约 v1（acceptedBy/acceptedAt + JSONL）` | 交接字段契约 + 按天 JSONL 事件，外部可消费 |
+| P2-2 | `refactor: P2-2 删自建 keepAlive、goal 收敛单写方、配置 35→28` | 续跑交宿主 goal driver；配置 35 → 28 |
+| P2-1 | `feat: P2-1 task_create.checks 机器可判定验收（失败阻断交付）` | 交付前跑退出码，失败拒绝交付 |
+
+**P2-6：文档收口（≤1,800 行）+ P2 变更收录**（`docs: P2-6 文档收口（≤1800 行）+ P2 变更收录`，单 commit，未 bump / 未 tag）
+
+文档从 **2,152 行压到 1,386 行（−766，−36%）**，预算从 2,250 降到 **1,800**；README 首屏从「安装手册」改写成「3 分钟看懂 + 3 分钟跑通」；P2-1~5 的能力变化全部补进用户文档与 CHANGELOG。
+
+### 行数前后（`scripts/check-docs.mjs` 口径）
+
+| 文件 | 前 | 后 | 动作 |
+|---|---|---|---|
+| `README.md` | 546 | **311** | 首屏重写：定位 1 句 + 兼容基线 + 安装 + 3 分钟 demo + 工具/配置表 + 概念速查 + 排障；机制细节下沉 docs |
+| `docs/ARCHITECTURE.md` | 881 | **444** | 合并面板/UI 两节；主会话轮换、brief、计划、worktree 只留机制与边界；新增 A1/D2/D6 三节 |
+| `docs/LIMITATIONS.md` | 184 | **167** | goal 两节里重复的 re-arm/降级/轮次条目合并；新增 A1/D2/D6 边界 |
+| `docs/api-notes.md` | 161 | **67** | 删与 ARCHITECTURE 重复且已过时的「主会话接法」「工作区推断」两节，只留平台探测结论 |
+| `docs/CONTRIBUTING.md` | 118 | **122** | 删与 testing.md 重复的测试策略；补 `check:client-size` 与 P2 新增模块 |
+| `docs/compat.md` | 81 | **81** | 不动（P2-4 已把 9 类同步到 10 类） |
+| `docs/testing.md` | 181 | **194** | 新增 G10 体积闸门、check-docs 新预算与首屏断言、P2-1~6 复核索引、真机矩阵 3 条 |
+| **合计** | **2,152** | **1,386** | **−766**（预算 1,800，余 414） |
+
+### 删 / 并了哪些段（删前确认已过时或已在别处）
+
+- **README**：删「目录」（短文档不需要）；「装好后的自检」并进安装一步；入口说明压成 1 条；面板表格压成一段；`read_workspace` 闸表、worktree 声明表、轮换保护表下沉到 ARCHITECTURE / LIMITATIONS（README 只留用户会踩到的边界 + 链接）。
+- **ARCHITECTURE**：合并「面板与详情（U2）」与「界面与消息块（原 UI.md）」重复的布局/交互/入口描述；主会话轮换从「模块 + 判定 + 时序 + 恢复 + settings + 日志」六小节压成一节事实清单（边界仍在 LIMITATIONS）；brief 纯指引、计划阶段、worktree 隔离只保留机制与安全边界，操作步骤交给 README。
+- **api-notes**：删「主会话（固定入口 + 预设开启）」与「工作区推断与 artifacts」两节——它们与 ARCHITECTURE「主会话」「目标目录推断」重复且停留在 rc.1/rc.3；保留仍只在本文件成立的平台探测结论（注入名、`sendMessage` 限制、restrict 缺口、`wait_agent` 禁令、schema `required`、rc.3 沙箱根缺陷）。
+- **LIMITATIONS**：合并「目标（G1）」与「自动续跑（P2-2）」两节里重复的 re-arm / 降级 / 轮次预算条目。
+- **CONTRIBUTING**：删「测试策略」（testing.md 已是唯一入口），改为两条提醒 + 门禁清单。
+
+### 新增（P2 变更收录）
+
+- **README**：`checks` 机器验收小节（argv/超时/失败语义/安全边界）、交付与确认里的验收结论、工具表的 `checks`/`goalRounds`/`teamTaskId`、配置表 28 行、`goalRounds` 续跑说明、面板的「官方 Team（只读）」/「交接」/「验收小标」。
+- **ARCHITECTURE**：新增「交接契约 v1（字段表 + JSONL + 兼容边界）」「机器可判定验收（A1）」「官方 Team 板互通（D6）」三节（P2-1/3/4 的唯一真源）。
+- **LIMITATIONS**：新增「子会话与检查（A1）」「交接契约（D2）」「官方 Team 板（D6）」三节，补写「检查跑在宿主进程」「超时不反写」「CAS 只重试一次」等真实边界。
+- **testing**：G10 面板体积闸门、check-docs 预算 1,800 + 首屏四要素、P2-1~6 历史复核索引与真机矩阵 3 条。
+- **CHANGELOG**：本段统一收录 P2-1~6（补上 P2-1 / P2-3 此前缺失的条目）。
+
+### 闸门变化
+
+- `scripts/check-docs.mjs`：`DOC_LINE_BUDGET` 2,250 → **1,800**；失败提示同时说明「多几行 / 哪几篇最大 / 先删并再下沉」；新增 **README 首屏四要素**断言（定位句、兼容基线含 `rc.5`、带版本号安装命令、demo 入口）与「README 不出现 `keepAlive`」断言（失效配置只在 CHANGELOG / LIMITATIONS 讲）。
+- **面板体积闸门**（P2-5）正式写进 `docs/testing.md`：§1 命令表 `pnpm run check:client-size`、§2 门禁 **G10**（≤ 95 KiB）。
+
+### 验证
+
+`pnpm test`（1,041 条 / 1,036 pass / 5 skip / 0 fail）+ `pnpm run check:client` + `pnpm run check:client-size` + `pnpm run check:version` + `pnpm run check:docs`（**1,386 / 1,800**）+ `npm pack --dry-run` 全绿；不改产品代码、不动 `dist/`。
+
 **P2-5：面板 S9′（dist ≤95 KB + 交接/官方板只读视图）**（`refactor: P2-5 面板 S9′（dist ≤95KB + 交接/官方板只读视图）`，单 commit，未 bump / 未 tag）
 
 面板产物从 **129.9 KB 压到 77.6 KB（−52.3 KB，−40%）**，并把 P2-3 的交接数据、P2-4 的官方 Team 板快照真正渲染出来。
@@ -154,6 +207,29 @@ CAS 成功 / 冲突重读一次 / 二次冲突停手、不触发派发、确认�
 > 同批「未发布」里还有 P2-1（`task_create.checks` 可执行验收）与 P2-3（交接契约 v1），细节见
 > `docs/ARCHITECTURE.md` 对应小节；本片只改 D6。
 
+**P2-3：交接契约 v1（`acceptedBy` / `acceptedAt` + JSONL）**（`feat: P2-3 交接契约 v1（acceptedBy/acceptedAt + JSONL）`，单 commit，未 bump / 未 tag）
+
+把「交付 → 确认 / 追问 → 完成」从插件内部状态机提升为**可被外部消费的只读契约**：稳定字段 + 版本号 + JSONL 审计事件。**v1 只做数据契约与事件，不做进程内订阅 API**（回调/事件总线留 v2）。
+
+### 能力变化
+
+1. **`handoff` 对象（`contract: 1`）**出现在 `task_status`、面板 detail 端点、JSONL 事件三处：`taskId / sessionId / title / deliveredAt / acceptedAt / acceptedBy / rounds / evidence / status / closeReason`。字段表以 `docs/ARCHITECTURE.md`「契约字段」为唯一真源，`scripts/check-docs.mjs` 与 `src/handoff.js` 的 `HANDOFF_FIELDS` 逐字对齐（发布即契约，改名必须升版本）。
+2. **三条确认路径各自带 `by`**：工具 `task_message({action:'close'})` → `coordinator`；面板「确认交付」→ `panel`；超时 sweeper → `timeout`。落库与事件只在 `closeDelivered` 一处写，重复确认走 `already` 分支（不写 accepted_*、不发第二条事件）。
+3. **每日 JSONL**：`$DSH_HOME/state/orchestrator/handoff/handoff-YYYY-MM-DD.jsonl`，事件 `task.handoff.delivered`（进入待确认）与 `task.handoff.confirmed`（确认/超时），单文件超 5 MiB 换新、保留 30 天，与运行日志共用 `src/log.js` 的轮转实现；**不进仓库、不写台账 messages**，写入失败只 warn。
+4. **视图**：snapshot 下发精简版 `{contract, deliveredAt, acceptedAt, acceptedBy, acceptedByLabel, acceptanceOk}`（不给证据，避免快照变大）；`task_status` 渲染「交接 / 交接轮次」两行；面板 detail 给完整契约对象。
+5. **存量兼容**：`accepted_by` / `accepted_at` 由旧库启动时 ALTER 补列，存量行 NULL；v1 之前已 `done` 的任务没有 `handoff`（不是空壳对象），面板显示「没有交接记录」，不猜。
+
+### 代码
+
+- **新增** `src/handoff.js`（~190 行）：`HANDOFF_CONTRACT_VERSION` / `HANDOFF_FIELDS` / `HANDOFF_EVENT` / `ACCEPTED_BY` 常量，`handoffOf` / `handoffOfTask` / `handoffSnapshot` / `handoffStatusLines`，进程级 sink（`setHandoffSink` / `emitHandoffDelivered` / `emitHandoffConfirmed`）与按天 JSONL 写入。
+- **台账**：新列 `accepted_by` / `accepted_at`（ALTER 补齐）；新增 `setTaskAccepted`。
+- **接线**：`delivered.js` 的 `closeDelivered` 成功后写确认信息并 emit `confirmed`；`index.js` 装配 sink（`transition` 观察者发 `delivered`、超时 sweeper 发 `timeout`）；`host-route.js` snapshot/detail 下发 `handoff`；`tools.js` 的 `task_status` 交接段；`panel-actions.js` 传 `by:'panel'`。
+- **文档**：`docs/ARCHITECTURE.md` 新增「交接契约 v1」全节；`docs/api-notes.md` 记外部消费方式（`jq` 示例）；`scripts/check-docs.mjs` 新增字段/事件同源断言。
+
+### 测试
+
+新增 `test/handoff.test.js`（契约字段齐全且 `contract === 1`、三条确认路径的 `acceptedBy`、重复 close 幂等且只发一次、未交付任务没有 `handoff`、存量 NULL 行渲染不炸）；`test/host-route.test.js` 断言 snapshot 的 `handoff` 精简版；`test/index.test.js` 断言 delivered/confirmed 事件接线与超时路径。
+
 **P2-2：删自建 keepAlive、goal 收敛为单一写方、配置 35 → 28**（`refactor: P2-2 …`，单 commit，未 bump / 未 tag）
 
 这一版把「续跑」从插件自己实现改成交给宿主：删掉 `src/keepalive.js`（246 行，订阅 `agent/turn-stopping` 注入下一轮），
@@ -199,6 +275,28 @@ CAS 成功 / 冲突重读一次 / 二次冲突停手、不触发派发、确认�
 `test/keepalive.test.js` 删除（330 行）；`test/goal.test.js` 新增 armed/disarmed 两组断言与静态扫描（`src/` 不得再出现
 `turn-stopping` / `createKeepAlive` 等引用）；`test/config.test.js` / `test/config-deprecated.test.js` 锁 28 键与 7 条弃用警告；
 `test/index.test.js` 用 fake goals 断言「`goalRounds=0` → create+disarm」「`goalRounds=3` → create 带 maxGoalRounds 且保持 armed」。
+
+**P2-1：`task_create.checks` 机器可判定验收（失败阻断交付）**（`feat: P2-1 task_create.checks 机器可判定验收（失败阻断交付）`，单 commit，未 bump / 未 tag）
+
+`acceptance` 是给人读的标准，`checks` 是给机器执行的证据：**子会话报 `done` 时由插件先在任务目录跑一遍检查，全过才落「已交付待确认」，任一条失败即拒绝交付**（任务保持进行中）。这让「任务做完了」第一次有了退出码证据，而不是只靠子会话自述。
+
+### 能力变化
+
+1. **`task_create` 新增 `checks`**：`[{ name?, command: string[], timeoutMs?, skipIfMissing? }]`，**1–5 条**；`command` 是 **argv 数组**（第 1 项是命令、≤16 项、单项 ≤2000 字符），按 argv 直接执行、**不经 shell**；`timeoutMs` 1s–600s（默认 120s）；`skipIfMissing` 让缺失命令记「跳过」而不是失败。
+2. **交付语义**：全过 → `delivered`，回执/通知带「验收 N/N 通过」；任一失败 → **状态不迁移**、不登记产物、不发交付通知，只落验收证据 + `kind='acceptance'` 消息，返回失败清单（失败项、退出码、最后 10 行输出）。子会话修完重报 `done`（会重跑）或报 `blocked`；确认交付与超时 sweeper **都不重跑**检查。
+3. **执行边界**：超时先 SIGTERM、5 秒后 SIGKILL（`timedOut:true`）；stdout/stderr 各只留最后 4 KiB；cwd 固定 `worktree_path ?? target_dir`，**不继承主会话目录**；**没有 `target` 或 `readOnly` 的任务拒绝配 `checks`**；命令只来自协调者的 `task_create`（`task_report` 没有任何命令参数可注入）。
+4. **如实声明**：检查跑在**插件宿主进程**（宿主权限），不是子会话沙箱——隔离任务只是 cwd 在检出目录，不做「假安全」。
+5. **视图**：`snapshot.tasks[].acceptance` 摘要（`ok/total/passed/skipped/failed/ranAt`）、`task_status` 验收段（逐条退出码/耗时）、面板抽屉「验收」区块与任务卡「验收 2/2」小标、`task_detail`/brief 的检查清单。
+
+### 代码
+
+- **新增** `src/acceptance.js`（~375 行）：`normalizeChecks`（结构/条数/超时/字符上限校验）、`runChecks`（argv spawn + 超时 + 输出尾部）、`acceptanceCountText` / 失败文案 / 详情块（纯函数 + 可注入 spawn，便于测试）。
+- **台账**：新列 `acceptance_json`（`{spec, ranAt, cwd, ok, total, passed, skipped, failed, results[]}`；旧库启动 ALTER 补齐，存量行 NULL = 没跑过），新增 `setTaskAcceptance`。
+- **接线**：`tools.js`（schema、创建期校验、`task_report done` 前执行与拒绝交付）、`brief.js` / `task-detail.js`（检查清单）、`host-route.js`（snapshot 摘要）、`panel-actions.js`（detail 证据）。
+
+### 测试
+
+新增 `test/acceptance.test.js`（normalize 边界、超时/跳过、尾部输出与截断）；`test/tools.test.js`（交付前执行、失败阻断且状态不变、无 `checks` 行为逐字不变、`readOnly` 拒绝配检查）；`test/ledger.test.js`（ALTER 幂等）；`test/client.test.js` 与 `test/panel-actions.test.js`（验收区块/小标/detail 证据）。
 
 ## 0.21.0（2026-11-19）
 

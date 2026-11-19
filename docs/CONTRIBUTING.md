@@ -17,9 +17,13 @@ index.js             插件入口：apply()、协调者系统提示（COORDINATO
 src/                 宿主侧逻辑（每个模块一个职责，见 docs/ARCHITECTURE.md）
   ledger.js          台账（SQLite）：任务/消息/通知/记忆/设置
   state.js           状态机（STATUSES / 迁移 / 文案）
-  copy.js            文案单一真源（计划/交付/完整访问的原子句，别在别处再写一份）
+  status-facts.js    状态能力表（唯一真源，别在别处再写一份 Set）
+  copy.js            文案单一真源（计划/交付/完整访问的原子句）
   tools.js           10 个工具的 schema + 文案 + 门控
-  dispatch.js        派发后端（subagent/team）、沙箱/plan/guard 注入
+  dispatch.js        派发（subagent）、沙箱/plan/guard 注入
+  acceptance.js      可执行验收（checks）runner
+  handoff.js         交接契约 v1（字段 + JSONL 事件）
+  team-board.js      官方 Team 板只读快照 + 确认反写（CAS）
   delivered.js       两段式终态：确认交付 + 超时 sweeper
   settlement.js      结算闭环（子会话结束 → 终态/交付）
   notify.js          通知分级、合并、产物交付口径（present）
@@ -27,8 +31,8 @@ src/                 宿主侧逻辑（每个模块一个职责，见 docs/ARCHI
   plan-mode.js       计划模式状态与文案
   worktree.js        git worktree 隔离（宿主侧 git）
   host-route.js      /api/orchestrator（面板只读 + 动作）
-client/src/**        面板/入口/抽屉（vite 构建成 dist/client.js）
-scripts/            镜像同步、access:'full' 离线验证、版本口径
+client/src/**        面板/入口/抽屉（vite 构建成 dist/client.js，≤95 KiB）
+scripts/             文档预算、客户端体积、版本口径、镜像同步
 tools/debug-preset/ orch-debug 预设生成器（维护者工具，不随 npm 包发货）
 cordis.patch.yml     随包预设：协调者 + worker
 test/                node:test，按模块分文件（*.test.js）
@@ -39,15 +43,16 @@ docs/                ARCHITECTURE / LIMITATIONS / testing / compat / api-notes /
 
 ```bash
 pnpm install             # 装依赖（按 pnpm-lock.yaml；CI 用 pnpm install --frozen-lockfile）
-pnpm test                # pretest 会先 pnpm run build，再跑 node --test
-pnpm run build           # client/src/** --vite--> dist/client.js（+ .map）
+pnpm test                # pretest = build + check:client-size + check:docs，再跑 node --test
+pnpm run build           # client/src/** --vite--> dist/client.js（+ .map，默认 esbuild minify）
 pnpm run check:client    # node --check dist/client.js
-pnpm run check:docs      # 文档行数预算 + README 配置表/工具表 + 内链（pretest 会跑）
+pnpm run check:client-size  # dist/client.js ≤ 95 KiB 闸门
+pnpm run check:docs      # 文档行数预算（1,800）+ README 配置表/工具表 + 内链
 pnpm run check:version   # package.json / README / CHANGELOG 版本口径
-node tools/debug-preset/cli.mjs            # 把随包「创造模式」组合复制成可安装的 orch-debug 预设（维护者工具，不随包发货）
+node tools/debug-preset/cli.mjs            # 把随包「创造模式」组合复制成可安装的 orch-debug 预设
 node tools/debug-preset/cli.mjs --check    # 升级 DSH 后查预设漂移
 node --test tools/debug-preset/test/debug-preset.test.js   # 外移工具的测试（不在 pnpm test 里）
-node scripts/verify-access-full.mjs          # 离线核对 access:'full' 整条链（台账→brief→派发→沙箱事件→通知）
+node scripts/verify-access-full.mjs          # 离线核对 access:'full' 整条链
 node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 docs/probes/ 逐条重跑）
 ```
 
@@ -66,13 +71,12 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
   `"@wjj865-code/dsh-orchestrator": "link:C:/Users/72489/Documents/dsh-orchestrator"`，
   并把包名加入 `dsh.profile.bundles`，重启 profile。
 
-## 测试策略
+## 测试与门禁
 
-- `node:test` + `assert/strict`，一个模块一个 `test/*.test.js`；`--experimental-test-isolation=none`（共享进程，省启动时间）。
-- 新增/修改行为：先补一条会红的用例，再改实现；涉及台账的用例用临时 `DSH_HOME`（见 `test/helpers.js`）。
-- 文案口径由 `test/copy-consistency.test.js` 统一锁：`done` 不是终态、协调者默认不主动 `task_message({action:'close'})`、
-  present 1-4 个、brief 不越权定义交付语义。改这些文案先跑它。
-- 全量门槛：`pnpm test` 全绿 + `pnpm run check:client` 通过（`prepublishOnly` 也是这两个）。
+测试怎么写、门禁判据、已知 flaky 与真机矩阵都在 [testing.md](testing.md)（唯一入口）；这里只提醒两条容易踩的：
+
+- 新增/修改行为先补一条会红的用例；涉及台账的用例走临时 `DSH_HOME`（`test/helpers.js`）。
+- 全量门槛：`pnpm test` 全绿 + `pnpm run check:client` + `check:client-size` + `check:version` + `check:docs`（`prepublishOnly` 同口径）。
 
 ## 发版
 

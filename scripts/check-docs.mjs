@@ -1,11 +1,12 @@
-// 文档预算与一致性断言（P1-D）。
+// 文档预算与一致性断言（P1-D，P2-6 收紧预算并加首屏结构）。
 //
 // 为什么需要它：P1 把文档砍掉一半以后，「再加一篇 / 再抄一张表」没有任何阻力，
 // 半年后又会回到 3,000 行；README 的配置表与工具表也一直靠人工同步（已经漂移过：
-// 漏了 3 个 preferences* 键）。这里把三件事变成 CI 断言：
+// 漏了 3 个 preferences* 键）。这里把四件事变成 CI 断言：
 //   1. README + 顶层 docs/*.md 总行数 ≤ DOC_LINE_BUDGET（超了直接说改哪篇）；
-//   2. README 配置表键集合 == loadConfig({}) 键集合；README 工具表 == createTools() 名单；
-//   3. package.json.files 里的 docs 都存在，文档内相对链接（含锚点）都可达。
+//   2. README 首屏（前 60 行）必须能「3 分钟看懂 + 跑通」，并清掉已删除的配置键；
+//   3. README 配置表键集合 == loadConfig({}) 键集合；README 工具表 == createTools() 名单；
+//   4. package.json.files 里的 docs 都存在，文档内相对链接（含锚点）都可达。
 //
 // 口径：预算只算 README.md + docs/ 顶层 *.md。docs/superpowers/（历史计划/规格）与
 // docs/probes/（探针脚本与说明）是维护档案，不进预算——它们只增不改，收进去等于逼人删证据。
@@ -22,8 +23,16 @@ import { HANDOFF_EVENT, HANDOFF_FIELDS } from '../src/handoff.js'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
-/** 文档总行数预算（P1 批准口径：≤2,250；最终实测远低于它）。 */
-export const DOC_LINE_BUDGET = 2250
+/**
+ * 文档总行数预算（P2-6 从 2,250 收到 1,800）。
+ *
+ * 为什么再收一次：2,250 是 P1 合并后的上限，实际很快被「每片顺手加几段」吃掉。
+ * 1,800 是「用户要看的 + 维护者必须查的」真实体量，再多就该先删重复或下沉到 docs/superpowers/。
+ */
+export const DOC_LINE_BUDGET = 1800
+
+/** README 首屏（前 60 行）必须能独立回答「这是什么、能不能装、怎么跑通」。 */
+export const README_FIRST_SCREEN_LINES = 60
 
 /** 参与预算的文件：README.md + docs 顶层 *.md（按文件名排序，输出稳定）。 */
 export function budgetFiles(root = ROOT) {
@@ -132,9 +141,25 @@ export function collectProblems(root = ROOT) {
     const heaviest = [...counts].sort((a, b) => b.lines - a.lines).slice(0, 4)
       .map(item => `${item.file}（${item.lines} 行）`).join('、')
     problems.push(
-      `文档总行数 ${total} 超过预算 ${DOC_LINE_BUDGET}（多 ${over} 行）——先删/并重复内容，别抬预算；`
+      `文档总行数 ${total} 超过预算 ${DOC_LINE_BUDGET}（多 ${over} 行）——先删/并重复段，再把维护细节下沉到 docs/superpowers/，别抬预算；`
       + `最大的几篇：${heaviest}`,
     )
+  }
+
+  // —— 1.5 README 首屏结构（P2-6） ——
+  // 首屏曾长期是「安装手册」：npm 首页前三屏都在讲怎么装，「这是什么、怎么跑通」要翻到最后。
+  // 四要素都必须在首屏，防止它慢慢长回原样；已删除的配置键也不许在 README 里教。
+  const firstScreen = read('README.md').split('\n').slice(0, README_FIRST_SCREEN_LINES).join('\n')
+  const firstScreenChecks = [
+    ['一句话定位', /一句话定位/],
+    ['兼容基线（点名 rc.5）', /兼容基线[\s\S]{0,80}rc\.5/],
+    ['带版本号的安装命令', /@wjj865-code\/dsh-orchestrator@\d+\.\d+\.\d+/],
+    ['demo 入口（三分钟看懂 / 跑通）', /三分钟(?:看懂|跑通)/],
+  ]
+  for (const [label, pattern] of firstScreenChecks) {
+    if (!pattern.test(firstScreen)) {
+      problems.push(`README 首屏（前 ${README_FIRST_SCREEN_LINES} 行）缺少${label}：首屏要能 3 分钟看懂 + 跑通，维护细节下沉到 docs/`)
+    }
   }
 
   // —— 2. README 配置表 / 工具表与代码一致 ——
@@ -158,6 +183,12 @@ export function collectProblems(root = ROOT) {
   const extraTools = tableTools.filter(name => !toolNames.includes(name))
   if (missingTools.length > 0) problems.push(`README 工具表缺少：${missingTools.join('、')}（createTools() 有 ${toolNames.length} 个）`)
   if (extraTools.length > 0) problems.push(`README 工具表多出：${extraTools.join('、')}（代码里没有这些工具）`)
+
+  // README 不教已删除的配置键：`keepAlive*` 四键 P2-2 起失效，迁移只在 CHANGELOG / LIMITATIONS 里讲。
+  // 反例是「排障表里顺手写一句旧键名」——用户照着改也改不回来，只会以为还能用。
+  if (/keepAlive/.test(readme)) {
+    problems.push('README 仍出现已删除的 keepAlive 配置键：迁移说明放 CHANGELOG / LIMITATIONS，README 不教失效配置')
+  }
 
   // —— 3. package.json.files 里的 docs 都在 ——
   const pkg = JSON.parse(read('package.json'))
