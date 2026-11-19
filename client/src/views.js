@@ -1242,6 +1242,78 @@ export function createViews({
           </div>
         )
 
+      // 3.5) P2-1 A1：交付前机器验收（task_create.checks）。记录由插件在 task_report done 前写入；
+      // 没配检查的任务显示空态，配了但没交付过的任务显示「待执行」清单。
+      const acceptanceRecord = task.acceptance !== null && typeof task.acceptance === 'object' && !Array.isArray(task.acceptance)
+        ? task.acceptance
+        : null
+      const checkSpec = Array.isArray(acceptanceRecord?.spec) && acceptanceRecord.spec.length > 0
+        ? acceptanceRecord.spec
+        : (Array.isArray(brief.checks) ? brief.checks : [])
+      const checkResults = Array.isArray(acceptanceRecord?.results) ? acceptanceRecord.results : []
+      const commandOf = argv => (Array.isArray(argv) ? argv : [])
+        .map(arg => /\s/.test(String(arg)) ? `"${arg}"` : String(arg))
+        .join(' ')
+      const acceptanceHint = acceptanceRecord === null
+        ? (checkSpec.length > 0 ? `${checkSpec.length} 条待执行` : '')
+        : `${acceptanceRecord.passed || 0}/${acceptanceRecord.total || 0} 通过`
+      const acceptanceBody = checkSpec.length === 0 && acceptanceRecord === null
+        ? <div className="orch-muted">{'这条任务没有配置可执行检查（task_create.checks）：交付只凭子会话自述。'}</div>
+        : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div className="orch-card-meta">
+              {acceptanceRecord === null
+                ? <Badge tone="muted">{'未执行（交付前自动跑）'}</Badge>
+                : <Badge tone={acceptanceRecord.ok === true ? 'good' : 'bad'}>{acceptanceRecord.ok === true ? '验收通过' : '验收未通过'}</Badge>}
+              {acceptanceRecord?.ranAt ? <span className="orch-msg-at">{timeLabel(acceptanceRecord.ranAt)}</span> : null}
+              {typeof acceptanceRecord?.cwd === 'string' && acceptanceRecord.cwd !== ''
+                ? <span className="orch-msg-at">{`目录 ${acceptanceRecord.cwd}`}</span>
+                : null}
+            </div>
+            {checkSpec.length === 0 ? null : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {checkSpec.map((check, index) => {
+                  const result = checkResults.find(item => item && item.name === check.name) ?? checkResults[index] ?? null
+                  const tone = result === null
+                    ? 'muted'
+                    : (result.ok === true ? 'good' : (result.skipped === true ? 'muted' : 'bad'))
+                  const state = result === null
+                    ? '未执行'
+                    : (result.ok === true
+                      ? '通过'
+                      : (result.skipped === true
+                        ? '已跳过'
+                        : (result.timedOut === true
+                          ? '超时'
+                          : `失败（退出码 ${result.exitCode === null || result.exitCode === undefined ? '?' : result.exitCode}）`)))
+                  const details = result === null ? [] : [`${result.durationMs}ms`]
+                  if (result?.error === 'ENOENT') details.push('命令不存在')
+                  if (result?.truncated === true) details.push('输出已截断')
+                  return (
+                    <div key={`${check.name}:${index}`} className="orch-artifact">
+                      <span className="orch-dot" style={{ background: TONE_COLOR[tone], color: TONE_COLOR[tone] }} />
+                      <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }} title={commandOf(check.command)}>
+                        {`${check.name}：${commandOf(check.command)}`}
+                      </span>
+                      {details.length > 0 ? <span className="orch-muted">{details.join('｜')}</span> : null}
+                      <Badge tone={tone}>{state}</Badge>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            {checkResults.filter(item => item?.outputTail && (item.ok !== true || item.truncated === true)).map(item => (
+              <div key={`output:${item.name}`}>
+                <div className="orch-kv-key">{`${item.name} 输出尾部：`}</div>
+                <pre className="orch-pre">{String(item.outputTail)}</pre>
+              </div>
+            ))}
+            <div className="orch-muted">
+              {'未通过时任务不会交付（状态不变），修复后重报 done；需要拍板就报 blocked。检查在插件宿主进程里执行（不是子会话沙箱），cwd 固定为任务目录。'}
+            </div>
+          </div>
+        )
+
       // 4) 平台 goal（只读）：phase/activation/轮次，插件自动维护；面板没有改目标的按钮。
       const goalState = task.goalState !== null && typeof task.goalState === 'object' ? task.goalState : null
       const goalBody = goalState === null
@@ -1365,6 +1437,7 @@ export function createViews({
           {detailSection('概览', '概览', '', overviewBody)}
           {detailSection('最新回复', '最新回复', lastMessage === null ? '' : timeLabel(lastMessage.at), lastMessageBody)}
           {detailSection('Brief', 'Brief', acceptance.length > 0 ? `验收 ${acceptance.length} 条` : '', briefBody)}
+          {detailSection('验收', '验收', acceptanceHint, acceptanceBody)}
           {detailSection('目标状态', '目标状态', goalState === null ? '' : (GOAL_PHASE_LABEL[goalState.phase] || goalState.phase || ''), goalBody)}
           {detailSection('消息', '消息', messages.length > 0 ? `${messages.length} 条` : '', messageBody)}
           {detailSection('依赖', '依赖', `上游 ${dependencies.length} · 下游 ${dependents.length}`, depBody)}

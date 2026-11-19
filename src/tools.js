@@ -17,9 +17,13 @@ import {
 } from './memory.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages, setMessageDelivery,
-  setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
+  setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
 } from './ledger.js'
+import {
+  acceptanceFailureText, acceptancePassText, acceptanceStatusLines,
+  checksOf, executionDirOf, normalizeChecks, runChecks, specOf,
+} from './acceptance.js'
 import { collectWorkspaceArtifacts } from './artifact-collect.js'
 import { formatBytes, PREVIEW_CHARS, readLastMessage } from './last-message.js'
 import { DEFAULT_LINES, MAX_LINES, readWorkspaceFile, renderWorkspaceRead } from './read-workspace.js'
@@ -116,7 +120,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, stateDir, worktree, cleanupWorktree }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, stateDir, worktree, cleanupWorktree, runAcceptance = runChecks }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   // P9：宿主侧 git 能力（测试注入 fake；生产用 execFile）。普通任务一次都不会调用它。
@@ -760,11 +764,31 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   }
 
   return [
-    wrap('task_create', '创建一个子任务：建台账、检查活跃上限、渲染 brief 派生一个子会话。description 由你写清目标与验收。', objectSchema({
+    wrap('task_create', '创建一个子任务：建台账、检查活跃上限、渲染 brief 派生一个子会话。description 由你写清目标与验收；可用 checks 配机器可判定验收（交付前自动执行）。', objectSchema({
       title: str('一句话任务名，卡片上显示'),
       goal: str('要达成的目标，一两句话'),
       constraints: strList('约束，可空'),
       acceptance: strList('验收标准，至少一条'),
+      checks: {
+        type: 'array',
+        description: '可选：机器可判定验收（交付前由插件执行，失败即拒绝交付、任务保持进行中）。1–5 条；'
+          + '每条 { name?, command: argv 数组（如 ["node","--test"]）, timeoutMs?（1000–600000，默认 120000）, skipIfMissing? }。'
+          + '命令在任务 target / worktree 目录里按 argv 直接执行（不经 shell）；task_report 没有任何参数能覆盖它',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: str('检查名（缺省 check-1..check-5；同一任务内必须唯一）'),
+            command: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'argv 数组：第 1 项是命令、其余是参数（每项 ≤2000 字符，最多 16 项）。不接受 shell 字符串',
+            },
+            timeoutMs: { type: 'number', description: '超时毫秒（1000–600000，默认 120000）；超时先 SIGTERM、5 秒后 SIGKILL' },
+            skipIfMissing: { type: 'boolean', description: '命令不存在（ENOENT）时跳过这条而不是判失败（防「机器上没装 pnpm」卡死交付）' },
+          },
+        },
+      },
       refs: strList('背景资料，如文件路径，可空'),
       user_verbatim: str('用户原话，可空'),
       target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
@@ -825,6 +849,21 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         log('task.create.rejected', { agentId, detail: { reason: 'validation', message: errors.join('；'), callId } })
         return `任务描述不完整：${errors.join('；')}。补齐后再派。`
       }
+      // P2-1 A1：机器可判定验收。校验在派发前做完（避免建了任务才发现命令写错），
+      // 规范化后的 spec 写进 brief 快照——子会话只能读到它，不能改它。
+      const normalizedChecks = normalizeChecks(args.checks)
+      if (normalizedChecks.ok !== true) {
+        log('task.create.rejected', { agentId, detail: { reason: 'checks', message: normalizedChecks.error, callId } })
+        return `checks 不合法：${normalizedChecks.error}。`
+      }
+      const checks = normalizedChecks.checks
+      // 只读任务语义是「这个子会话不写」，而检查是**宿主进程**执行（不是子会话沙箱），
+      // 没法保证命令只读——两者放在一起等于给只读任务开一条写后门。要么别只读，要么别配检查。
+      if (readOnly && checks.length > 0) {
+        log('task.create.rejected', { agentId, detail: { reason: 'checks-readonly-conflict', callId } })
+        return '只读任务不接受 checks：验收命令在插件宿主进程里执行（不是子会话沙箱），无法保证「只读」。'
+          + '要跑测试/构建就别传 readOnly:true；真要只读核对，把结论写进 acceptance 由人看。'
+      }
       // 显式 target 先归一：空串/全空白等价于没传（模型常用 "" 表示没有），不能把空串当目录写库。
       const targetText = typeof args.target === 'string' ? args.target.trim() : ''
       const targetError = validateTargetDir(targetText)
@@ -850,6 +889,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
             detail: { workspaceId: match.workspace.id, path: match.workspace.path, callId },
           })
         }
+      }
+      // 验收命令只在任务自己的目录里跑（安全边界）：没有 target 就没有执行目录，不建任务。
+      if (checks.length > 0 && effectiveTarget === undefined) {
+        log('task.create.rejected', { agentId, detail: { reason: 'checks-without-target', callId } })
+        return 'checks 需要 target 目录：验收命令只在任务目标目录（或 worktree 检出）里执行，不继承主会话目录。'
+          + '请给 target 绝对路径后再派；没有目标目录就不传 checks。'
       }
       const current = status()
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
@@ -983,9 +1028,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           }
         } catch { /* 记忆检索失败不能阻止派任务 */ }
       }
-      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读/计划/完整访问/经验才写入标记。
+      // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读/计划/完整访问/经验/验收才写入标记。
       const brief = {
         ...args,
+        // 存规范化后的 spec（command 仍是 argv 数组 + 毫秒超时），不存原始入参：快照要稳定可重放。
+        checks: checks.length > 0 ? specOf(checks) : undefined,
         target: effectiveTarget,
         ...(readOnly ? { readOnly: true } : {}),
         ...(planFirst ? { planFirst: true } : {}),
@@ -1074,6 +1121,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           status: initialStatus,
           worktree: worktreeRecord?.state ?? 'none',
           worktreeSource: worktreeRecord?.source ?? null,
+          checks: checks.length,
         },
       })
       const rendered = renderBriefForTask(task)
@@ -1090,6 +1138,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const dependencyNote = depends.ids.length === 0 ? '' : `前置任务：${depNames}`
       // 完整访问在返回里明说：用户/协调者要能一眼看出这次子会话不在沙箱里跑。
       const accessNote = fullAccess ? ACCESS_FULL.createNote : ''
+      const checksNote = checks.length === 0
+        ? ''
+        : `验收：已配置 ${checks.length} 条可执行检查（交付前在任务目录自动执行；未通过则拒绝交付、任务保持进行中）。`
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
       if (current.live === false) {
         const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
@@ -1105,7 +1156,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           base: worktreeRecord?.base,
           hint: worktreeHint,
         })
-        const notes = [dependencyNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
+        const notes = [dependencyNote, checksNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
         log('task.dep.waiting', { taskId: task.id, detail: { dependsOn: depends.ids, callId } })
         return `任务「${taskLabelWithId(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
       }
@@ -1122,7 +1173,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         error: resultTask?.status === 'failed' ? resultTask.error : undefined,
         hint: worktreeHint,
       })
-      const notes = [invalidHint(), inferredNote, planNote, accessNote, ...worktreeLines, conflictNote, dependencyNote]
+      const notes = [invalidHint(), inferredNote, planNote, checksNote, accessNote, ...worktreeLines, conflictNote, dependencyNote]
         .filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       if (resultTask?.status === 'running') {
@@ -1207,6 +1258,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       if (task.close_reason !== null && task.close_reason !== undefined) {
         lines.push(`关闭：${closeReasonLabel(task.close_reason)}`)
+      }
+      // P2-1 A1：交付前机器验收——有结果就逐条列（退出码/耗时/截断），没跑过但配了检查也要说清。
+      if (task.acceptance !== null) {
+        lines.push(...acceptanceStatusLines(task.acceptance))
+      } else if (checksOf(task).length > 0) {
+        lines.push(`验收：已配置 ${checksOf(task).length} 条可执行检查（交付前自动执行，未通过拒绝交付）`)
       }
       // 平台 goal 只读状态（G1）：让协调者不用打开面板也能确认目标生命周期。
       if (task.goal_state !== null && task.goal_state !== undefined) {
@@ -1408,7 +1465,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return `已记住（${hint.title ?? '全局'}）。`
     }),
 
-    wrap('task_report', '子任务每轮结束必须调用：progress（有进展未完成）、done（完成）、blocked（卡住等人决定）、needs_auth（需要授权）。协调者据此决定是否打扰用户。', objectSchema({
+    wrap('task_report', '子任务每轮结束必须调用：progress（有进展未完成）、done（完成；配置了 checks 的任务会先在任务目录自动执行验收，未通过则拒绝交付、任务保持进行中）、blocked（卡住等人决定）、needs_auth（需要授权）。协调者据此决定是否打扰用户。', objectSchema({
       task_id: str('任务编号，创建时给过'),
       status: { type: 'string', enum: REPORT_STATUS, description: 'progress / done / blocked / needs_auth' },
       summary: str('一句话说明这轮做了什么'),
@@ -1449,6 +1506,67 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (args.status === 'done' && Array.isArray(task.brief?.workspaceIndexEntries) && args.workspace_index === undefined) {
         return '索引任务必须用 workspace_index 回报完整JSON；尚未交付，请补充回报。'
       }
+      // 两段式终态：重复 done 不重跑验收、不重复迁移（保持既有幂等）。
+      const settled = task.status === 'delivered' || task.status === 'done'
+      const deliveredNow = args.status === 'done' && !settled
+      // P2-1 A1：交付前机器验收。命令只来自 brief 快照（协调者写入 task_create），
+      // task_report 没有任何命令参数——子会话无法注入/覆盖要跑的东西。
+      // 失败 = 拒绝交付：不迁移状态、不登记产物、不发交付通知；只落验收证据 + kind:'acceptance' 消息。
+      let acceptanceNotice = ''
+      // 校验失败 = 配置坏了：拒绝交付（fail-closed），不静默当成「没配检查」。
+      const normalizedChecks = normalizeChecks(task?.brief?.checks ?? task?.acceptance?.spec)
+      if (deliveredNow && normalizedChecks.ok !== true) {
+        const failure = `验收配置不可解析：${normalizedChecks.error}。未执行检查，拒绝交付（状态不变）；请协调者修正 checks 后重派。`
+        addMessage(db, task.id, { kind: 'acceptance', rendered: failure })
+        log('task.acceptance.invalid', {
+          taskId: task.id,
+          detail: { message: normalizedChecks.error, callId: exec?.callId },
+        })
+        return failure
+      }
+      const checks = normalizedChecks.ok === true ? normalizedChecks.checks : []
+      if (deliveredNow && checks.length > 0) {
+        const result = await runAcceptance({ checks, cwd: executionDirOf(task) })
+        setTaskAcceptance(db, task.id, {
+          spec: specOf(checks),
+          ranAt: result.ranAt,
+          cwd: result.cwd,
+          ok: result.ok,
+          total: result.total,
+          passed: result.passed,
+          skipped: result.skipped,
+          failed: result.failed,
+          results: result.results,
+        })
+        log('task.acceptance', {
+          taskId: task.id,
+          agentId: exec?.agent?.id,
+          detail: {
+            ok: result.ok,
+            total: result.total,
+            passed: result.passed,
+            skipped: result.skipped,
+            failed: result.failed,
+            checks: checks.map(item => item.name),
+            cwd: result.cwd,
+            callId: exec?.callId,
+          },
+        })
+        if (result.ok !== true) {
+          const failureText = acceptanceFailureText(result)
+          addMessage(db, task.id, { kind: 'report', rendered: `[done] ${args.summary ?? ''}` })
+          addMessage(db, task.id, { kind: 'acceptance', rendered: failureText })
+          log('task.acceptance.rejected', {
+            taskId: task.id,
+            detail: {
+              failed: result.results.filter(item => item.ok !== true && item.skipped !== true).map(item => item.name),
+              callId: exec?.callId,
+            },
+          })
+          return failureText
+        }
+        acceptanceNotice = acceptancePassText(result)
+      }
       // 显式产物优先；done 时再用 workspaceChanges 摘要补齐整轮改动文件（同路径去重，显式标签覆盖自动标签）。
       const normalized = normalizeArtifacts(task, args.artifacts)
       let artifacts = normalized.artifacts
@@ -1481,11 +1599,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         })
       }
       addMessage(db, task.id, { kind: 'report', rendered: `[${args.status}] ${args.summary ?? ''}` })
+      if (acceptanceNotice !== '') addMessage(db, task.id, { kind: 'acceptance', rendered: acceptanceNotice })
       let next = task
       // 两段式终态：子会话报 done 先落 delivered（已交付待确认），协调者 task_close / 超时才收成 done。
       // 已经在 delivered/done 上的回报是重复/迟到事件：只记消息，不迁移、不重复通知。
-      const settled = task.status === 'delivered' || task.status === 'done'
-      const deliveredNow = args.status === 'done' && !settled
       if (args.status === 'done') {
         if (deliveredNow) {
           // blocked/needs_auth 之后子任务直接交付：先回到 running，再走合法迁移到 delivered。
@@ -1592,7 +1709,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (args.status === 'done' && !deliveredNow) {
         return `已记录任务「${labelFor(next)}」的重复 done 回报（当前${labelOf(next.status)}，未重复迁移）。${hint === '' ? '' : `\n${hint}`}`
       }
-      const deliveredNote = deliveredNow ? deliveredReceiptNote : ''
+      const deliveredNote = deliveredNow
+        ? `${deliveredReceiptNote}${acceptanceNotice === '' ? '' : `\n${acceptanceNotice}`}`
+        : ''
       return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${deliveredNote}${hint === '' ? '' : `\n${hint}`}`
     }),
 

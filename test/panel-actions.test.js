@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   openLedger, createTask, getTask, listTasks, transition, addMessage, addNotification,
-  setTaskArtifacts, setTaskLastMessage,
+  setTaskAcceptance, setTaskArtifacts, setTaskLastMessage,
 } from '../src/ledger.js'
 import { createPanelActions } from '../src/panel-actions.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
@@ -847,5 +847,32 @@ test('delivered 追问失败：保持 delivered 只记原因，不降级', async
   const after = getTask(db, task.id)
   assert.equal(after.status, 'delivered')
   assert.match(after.error, /投递超时/)
+  db.close()
+})
+
+test('P2-1 面板详情下发验收证据（没跑过是 null）', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const task = runningTask(db, '验收任务')
+  assert.equal(actions.detail(task.id).task.acceptance, null)
+  setTaskAcceptance(db, task.id, {
+    spec: [{ name: '单测', command: ['node', '--test'], timeoutMs: 120000, skipIfMissing: false }],
+    ranAt: 1_700_000_000_000,
+    cwd: 'C:/work',
+    ok: true,
+    total: 1,
+    passed: 1,
+    skipped: 0,
+    failed: 0,
+    results: [{
+      name: '单测', command: 'node --test', argv: ['node', '--test'], exitCode: 0, signal: null,
+      timedOut: false, skipped: false, missing: false, truncated: false, durationMs: 12,
+      outputTail: 'ok', error: null, ok: true,
+    }],
+  })
+  const detail = actions.detail(task.id)
+  assert.equal(detail.task.acceptance.ok, true)
+  assert.equal(detail.task.acceptance.results[0].name, '单测')
+  assert.equal(detail.task.acceptance.spec[0].command[0], 'node')
   db.close()
 })

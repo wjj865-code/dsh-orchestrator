@@ -706,7 +706,7 @@ test('U2 交互：hover / 过渡动画 / 骨架加载态 / 空态 / 错误态 / 
   assert.match(source, /detailSection\('最新回复'/)
   // 区块签名是 (key, title, hint, body)：标题必须显式传，少传一个参数会把提示文案当标题
   // （U2 实现时踩过：标题丢了、hint 渲染成区块体）。
-  for (const title of ['概览', '最新回复', 'Brief', '目标状态', '消息', '依赖', '产物']) {
+  for (const title of ['概览', '最新回复', 'Brief', '验收', '目标状态', '消息', '依赖', '产物']) {
     assert.match(source, new RegExp(`detailSection\\('${title}', '${title}'`), `${title} 必须同时作为 key 与标题传入`)
   }
 })
@@ -1050,6 +1050,75 @@ test('抽屉动作条同源门控：「追加消息」已移除；进行中不�
     return flattenText(panel.component({ openSession: () => {} }))
   })()
   assert.match(drawerText, /先「停止」/)
+})
+
+// P2-1 A1：抽屉「验收」区块——配置了 checks 的任务显示检查清单；交付前跑过则逐条给退出码/耗时/输出尾部。
+// 数据只来自服务端（detail.task.acceptance / brief.checks），前端不自己算「过没过」。
+test('P2-1 验收区块：抽屉显示检查清单、失败输出尾部、通过标记与空态', () => {
+  const { loaded, ctx, registrations, resetHooks, hooks } = load()
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  // Badge/Chip 是函数组件，需要按 React 语义带 children 展开才能读到文案。
+  const textOf = node => {
+    if (node === null || node === undefined) return ''
+    if (typeof node === 'string') return node
+    if (typeof node === 'number') return String(node)
+    if (Array.isArray(node)) return node.map(textOf).join('')
+    if (typeof node !== 'object') return ''
+    if (typeof node.type === 'function') return textOf(node.type({ ...(node.props ?? {}), children: node.children }))
+    return textOf(node.children)
+  }
+  const checkSpec = [{ name: '单测', command: ['node', '--test'], timeoutMs: 120000, skipIfMissing: false }]
+  const detailOf = ({ acceptance = null, brief = { title: 't-acc', goal: 'g', acceptance: ['机器可判定'], checks: checkSpec } } = {}) => ({
+    ok: true,
+    task: {
+      id: 't-acc', title: 't-acc', status: 'running', goal: 'g', targetDir: 'C:/work', target: 'c-1',
+      readOnly: false, group: null, priority: 0, dependsOn: [], writeScopes: [], question: null,
+      options: [], error: null, createdAt: 0, updatedAt: 0, artifacts: [], brief, goalState: null,
+      lastMessage: null, acceptance, canFollowup: false, canDelete: false,
+    },
+    dependencies: [], dependents: [], messages: [],
+  })
+  const render = detail => {
+    resetHooks()
+    hooks.slots[0] = snapshotOf([])
+    hooks.slots[10] = detail
+    hooks.slots[13] = detail.task.id
+    return textOf(panel.component({ openSession: () => {} }))
+  }
+  const record = (patch, result) => ({
+    spec: checkSpec, ranAt: 1_700_000_000_000, cwd: 'C:/work', total: 1, skipped: 0, ...patch,
+    results: [{
+      name: '单测', command: 'node --test', exitCode: 0, durationMs: 5, ok: true,
+      outputTail: '', truncated: false, ...result,
+    }],
+  })
+  const failed = render(detailOf({
+    acceptance: record({ ok: false, passed: 0, failed: 1 }, { exitCode: 1, ok: false, truncated: true, outputTail: 'FAIL: boom' }),
+  }))
+  assert.match(failed, /验收未通过/)
+  assert.match(failed, /单测：node --test/)
+  assert.match(failed, /退出码 1/)
+  assert.match(failed, /输出尾部/)
+  assert.match(failed, /FAIL: boom/)
+  assert.match(failed, /状态不变/)
+  assert.match(failed, /宿主进程/)
+
+  const passed = render(detailOf({ acceptance: record({ ok: true, passed: 1, failed: 0 }) }))
+  assert.match(passed, /验收通过/)
+  assert.doesNotMatch(passed, /验收未通过/)
+  assert.doesNotMatch(passed, /输出尾部/)
+
+  const pending = render(detailOf())
+  assert.match(pending, /未执行（交付前自动跑）/)
+  assert.match(pending, /单测：node --test/)
+
+  const none = render(detailOf({ brief: { title: 't-acc', goal: 'g', acceptance: ['机器可判定'] } }))
+  assert.match(none, /没有配置可执行检查/)
+  // 源码层：只读下发字段，不自己发命令、不自己判「过没过」。
+  assert.match(source, /task\.acceptance/)
+  assert.match(source, /const commandOf = argv =>/)
+  assert.match(source, /acceptance: '验收'/)
 })
 
 // F4 回归（0.13.0 冒烟发现）：面板「隔离」小标未接线 —— views.js 从 createViews 的参数里

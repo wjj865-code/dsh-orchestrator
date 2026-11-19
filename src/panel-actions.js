@@ -161,6 +161,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         deliveredAt: task.delivered_at ?? null,
         closeReason: task.close_reason ?? null,
         closeReasonLabel: task.close_reason === null || task.close_reason === undefined ? null : closeReasonLabel(task.close_reason),
+        // P2-1 A1：交付前机器验收的完整证据（spec + 每条 check 的退出码/耗时/输出尾部）；没跑过是 null。
+        acceptance: task.acceptance ?? null,
         // 面板按钮可见性与动作门控同源（src/panel-gates.js）：前端只读这三个字段，不抄状态表。
         canFollowup: canFollowup(task),
         canClose: canClose(task),

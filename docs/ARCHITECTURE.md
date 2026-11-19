@@ -185,6 +185,27 @@
 - 关闭三条路径（工具 / 面板 / 超时）共用 `src/delivered.js` 的 `closeDelivered`，副作用顺序固定：迁移 + 审计消息 → 释放可写根 → goal 收口 → 按档位清检出 → 唤醒队列。
 - 通知去重：进入 `delivered` 发一条（带 `task_message({action:'close'})`/`task_message` 指令），确认/超时**不再发**通知，只在台账写审计消息。
 
+## 机器可判定验收（A1：`task_create.checks`）
+
+`acceptance` 是给人读的标准，`checks` 是给机器执行的证据：**子会话报 `done` 时由插件先跑检查，全过才落 `delivered`，任一条失败即拒绝交付**。这让「任务做完了」不再只靠子会话自述。
+
+| 项 | 规格 |
+|---|---|
+| 结构 | `[{ name?, command: string[], timeoutMs?, skipIfMissing? }]`，1–5 条；`command` 是 **argv 数组**（第 1 项是命令），不接受 shell 字符串 |
+| 上限 | 单项参数 ≤2000 字符、整条 ≤4000 字符、argv ≤16 项；`timeoutMs` 1000–600000（默认 120000） |
+| 通过 | 退出码 0（且未超时、无 spawn 错误）；`skipIfMissing:true` 时命令不存在（ENOENT）记「跳过」，不算失败 |
+| 超时 | 先 SIGTERM，5 秒后 SIGKILL；结果 `timedOut:true`、`exitCode:null` |
+| 输出 | stdout / stderr 各只留最后 4 KiB，超出标 `truncated`；失败回执给最后 10 行 |
+| 台账 | `tasks.acceptance_json`：`{ spec, ranAt, cwd, ok, total, passed, skipped, failed, results[] }`；旧库启动时 ALTER 补列，存量行 NULL = 没跑过 |
+| 消息 | 每次跑都写 `messages.kind='acceptance'`（通过写「验收通过」、失败写完整失败清单） |
+| 面板 | detail 端点下发完整证据，抽屉「验收」区块逐条显示；`task_status` 有验收段；snapshot 只下发摘要（计数/ranAt） |
+
+**安全边界**（不做假安全，如实声明）：命令只来自协调者的 `task_create`（写进 brief 快照），`task_report` 没有任何命令参数，子会话无法注入或覆盖；执行用 `spawn(argv[0], argv.slice(1), { shell:false })`，不经 cmd.exe / sh 拼串；cwd 固定为 `worktree_path ?? target_dir`，**不继承主会话目录**（没有 target 的任务在创建阶段就拒绝配 `checks`）；**`readOnly:true` 的任务拒绝配 `checks`**（宿主进程执行保证不了只读，不允许它成为只读任务的后门）；环境变量继承插件进程（命令来自协调者，按宿主权限执行）；检查跑在**插件宿主进程**里，不是子会话沙箱——隔离任务只是 cwd 在检出目录，权限仍来自宿主。
+
+**失败语义**：状态不迁移（保持 `running`/原状态）、不登记产物、不发交付通知；只落验收证据与 `kind='acceptance'` 消息，返回可读失败清单。子会话修完重报 `done`（会重跑），或报 `blocked`。确认交付（`task_message({action:'close'})`）与超时 sweeper **都不重跑**检查——确认是人的动作，不是再验一次。brief 里的 `checks` 无法解析时同样**拒绝交付**（fail-closed），不静默当成「没配检查」。
+
+**为什么没有「只标记不阻断」**：计划阶段已拍板选「阻断」（P2 计划 §9 待拍板 3）：验收的价值在于退出码，允许 `delivered + ok:false` 等于又回到自述。需要宽松时用 `skipIfMissing`（环境差异）或把检查写宽，而不是绕过闸门。
+
 ## 状态事实源（`src/status-facts.js`）
 
 0.19.x 的 `state.js` 有唯一转移表，但**状态集合**被复制到 9 个模块，并已产生三处真实不一致

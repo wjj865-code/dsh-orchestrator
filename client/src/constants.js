@@ -64,7 +64,7 @@ export const STATUS_TONE = {
 // 消息类型与 followup 的投递状态（与 src/panel-actions.js 的 delivery 字段一一对应）。
 export const MESSAGE_KIND_LABEL = {
   brief: '任务简报', followup: '追加消息', delivery_failed: '投递失败', report: '回报', progress: '进展',
-  settle: '结算',
+  settle: '结算', acceptance: '验收',
 }
 export const DELIVERY_LABEL = { pending: '待发', delivered: '已投递', failed: '投递失败' }
 export const DELIVERY_TONE = { pending: 'warn', delivered: 'good', failed: 'bad' }

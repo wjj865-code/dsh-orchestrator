@@ -107,6 +107,28 @@ task_create({
 })
 ```
 
+### 2.1 机器可判定验收（`checks`，可选）
+
+`acceptance` 是给人看的验收标准；`checks` 是**给机器执行**的：子会话报 `done` 时由插件先在任务目录里跑一遍，全过才落「待确认」，任一条失败就**拒绝交付**（任务保持「进行中」，回执带失败清单、退出码与输出尾部）。
+
+```js
+task_create({
+  title: '修复空数据文案',
+  goal: '空窗口时报表给出明确说明',
+  acceptance: ['窗口没有记录时给出说明'],
+  target: '/abs/path/to/repo',
+  checks: [
+    { name: '单测', command: ['pnpm', 'test'], timeoutMs: 300000 },
+    { name: '类型检查', command: ['pnpm', 'exec', 'tsc', '--noEmit'] },
+  ],
+})
+```
+
+- 每条：`name`（可空，缺省 `check-1..`）、`command`（**argv 数组**，第 1 项是命令）、`timeoutMs`（1000–600000，默认 120000）、`skipIfMissing`（命令不存在时跳过而不是判失败）。最多 5 条。
+- **安全边界**：命令只来自协调者的 `task_create`（子会话在 `task_report` 上没有任何命令参数可注入/覆盖）；按 argv 直接执行、**不经 shell**；cwd 固定为任务自己的 target 目录（worktree 任务为检出目录），不继承主会话目录；超时先 SIGTERM、5 秒后 SIGKILL；stdout/stderr 各只留最后 4 KiB 进台账。检查跑在**插件宿主进程**里（宿主权限），不是子会话沙箱。
+- 失败后：修完重新 `task_report({status:'done'})`，或需要拍板就 `blocked`；确认交付（`task_message({action:'close'})`）不会重跑检查。
+- 没配 `checks` 的任务行为与以前完全一致；`checks` 需要 `target`（没有目标目录就不执行），且**只读任务不接受 `checks`**（命令在宿主进程执行、保证不了只读）。
+
 ### 3. 看进度
 
 - 协调者不阻塞等待：进度用 `task_list` / `task_status` / `task_list({view:'inbox'})`，子任务完成会主动通知（`agent.steer` 注入，5 秒合并）。
@@ -118,6 +140,7 @@ task_create({
 
 - **默认保持待确认，不主动关闭**：追问窗口留着，用户看完结果常还要改。协调者只在用户明确说「确认 / 没问题 / 不用再改」，或确实需要终态（要派依赖它的任务、要删任务、要收尾）时才 `task_message({ action: 'close' })`。
 - **不主动问「任务能不能关闭」**：协调者交付后只汇报结果、产物与注意事项，不再用 `ask_user_question` 追问「确认 / 要改？」——任务保持待确认、等超时自然完成，比催用户当场表态更省事。协调者只在真需要拍板时才提问（方案歧义/业务取舍、不可逆操作、远端写授权），且多条待拍板合并成一条清单一次问完。
+- **配了 `checks` 的任务先过机器验收**：报 `done` 时插件在任务目录执行检查，失败即拒绝交付（状态保持「进行中」，回执与面板「验收」区块给出失败清单/退出码/输出尾部），修完重报或报 `blocked`。
 - 要改/补充：协调者 `task_message` **复用同一个子会话**，任务回到 `running`，完成后会再交付一次。（面板不再提供「追加」按钮，见下节。）
 - 一直不确认：超过 `deliveredTimeoutMinutes`（默认 60 分钟）自动收成 `done`（`close_reason=timeout`）。
 - 面板「待你决定」筛选与收件箱都包含 `delivered`，任务卡/抽屉有「待确认」小标、交付时间与关闭原因。
@@ -131,7 +154,7 @@ task_create({
 | 顶部命令栏 | 标题 + 主会话状态点、任务搜索、刷新、打开主会话；4 张指标卡（进行中/待你决定/已完成/失败，点击即切筛选） |
 | 中部工作区 | 左侧筛选轨（带计数徽标）+ 任务卡列表；切到「产物」变成产物库（按项目/日期分组、可预览/复制） |
 | 产物预览 | 点「预览」或产物路径 → **主栏切回会话、会话右侧栏打开该文件**（Markdown/代码/图片/PDF/Office 由宿主渲染；宽度/多 Tab/折叠由宿主右侧栏负责） |
-| 右侧详情抽屉 | 遮罩、`Esc`、关闭按钮都能收起；7 个可折叠区块：概览、最新回复、Brief、目标状态、消息、依赖、产物 |
+| 右侧详情抽屉 | 遮罩、`Esc`、关闭按钮都能收起；8 个可折叠区块：概览、最新回复、Brief、验收、目标状态、消息、依赖、产物 |
 
 - 颜色/圆角/阴影/动效全部取宿主 `--dsw-*` token，深浅色主题自动跟随。
 - 底部动作条：停止（二次确认）/ 确认交付（仅「待确认」，二次确认）/ 重派 / 打开子会话 / 删除（仅终态、二次确认，级联清台账）。可见性与后端门控同源（`src/panel-gates.js`）。
@@ -365,9 +388,9 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 | 工具 | 作用 |
 |---|---|
-| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent`（显式放行同写域并发） |
+| `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent`（显式放行同写域并发）/ `checks`（机器可判定验收：交付前执行，失败拒绝交付） |
 | `task_list` | 活跃任务/历史任务（`active` / `group` 过滤看组进度）；`view:'inbox'` 是收件箱：待决、待确认、失败/丢失、长时间没动静 |
-| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、最近消息、最新返回（`include:'full'` 看全文） |
+| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条 check 的退出码/耗时）、最近消息、最新返回（`include:'full'` 看全文） |
 | `task_message` | 子任务动作统一入口。`action:'message'`（默认）续派消息（含「待确认」上的追问，复用原会话；排队/等前置返回提示）；`action:'stop'` 停止任务（运行中/排队/等前置/待确认）；`action:'retry'` 重建 failed/orphaned（保留编排字段）；`action:'close'` 把「已交付待确认」确认成 `done`（终态） |
 | `context` | 读上下文（只读）。`mode:'history'`（默认）查插件记忆、历史任务、平台历史会话；`mode:'project'` 读项目白名单文件、顶层结构、最近任务、相关记忆；`mode:'workspaces'` 看已登记工作区与仓库采样索引 |
 | `memory_note` | 记一条跨任务有效的决策/经验；`kind:'preference'` 不传 `project` 时写进协调者偏好（立即生效） |
@@ -377,8 +400,8 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 | 工具 | 作用 |
 |---|---|
-| `task_report` | `progress` / `done` / `blocked` / `needs_auth`；可带 `question` / `options` / `artifacts`。`done` 落「已交付待确认」，等确认或追问 |
-| `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物；越权会被拒 |
+| `task_report` | `progress` / `done` / `blocked` / `needs_auth`；可带 `question` / `options` / `artifacts`。`done` 落「已交付待确认」，等确认或追问；任务配了 `checks` 时先自动执行验收，失败则拒绝交付（任务保持进行中） |
+| `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收标准、可执行检查、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物；越权会被拒 |
 | `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为产物（计划阶段唯一写入口） |
 
 - 10 个工具**全局注册**，worker 预设不做工具收窄，子会话直接继承。

@@ -7,6 +7,7 @@ import { statusLabel } from './state.js'
 import { SUMMARY_FIELDS } from './brief.js'
 import { PLAN_FIRST_DETAIL, isPlanTask, planStateOf, PLAN_STATE_LABEL } from './plan-mode.js'
 import { ACCESS_FULL, finishHint } from './copy.js'
+import { acceptanceDetailBlock, checksOf } from './acceptance.js'
 import { worktreeDetailLines, worktreeHasCap } from './worktree-request.js'
 
 const text = value => typeof value === 'string' ? value.trim() : ''
@@ -124,6 +125,9 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   }
   const acceptance = list(brief.acceptance)
   if (acceptance.length > 0) lines.push(`【验收标准】\n${acceptance.map(item => `- ${single(item)}`).join('\n')}`)
+  // P2-1 A1：机器可判定验收——子会话一开始就知道「交付前会被跑什么」，不必等被拒一次才补。
+  const checksBlock = acceptanceDetailBlock(checksOf(task))
+  if (checksBlock !== '') lines.push(checksBlock)
   const constraints = list(brief.constraints)
   if (constraints.length > 0) lines.push(`【约束】${constraints.map(item => `- ${single(item)}`).join('；')}`)
   const refs = list(brief.refs)

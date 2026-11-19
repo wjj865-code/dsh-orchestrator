@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts, setTaskLastMessage } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts, setTaskLastMessage, setTaskAcceptance } from '../src/ledger.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -506,4 +506,59 @@ test('deleteTask：删任务行并级联 messages/notifications，返回删除�
   // 幂等：再删一次返回 undefined，不抛错。
   assert.equal(deleteTask(db, task.id), undefined)
   db.close()
+})
+
+test('P2-1 验收记录：acceptance_json 列、旧库自动补列、坏 JSON 当没有', async () => {
+  const dir = tempDir()
+  const db = await openLedger(dir)
+  const cols = db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+  assert.ok(cols.includes('acceptance_json'))
+  const task = createTask(db, { brief: sampleBrief({ title: '验收' }), coordinatorSession: 's-1' })
+  assert.equal(task.acceptance, null, '没跑过验收就是 null')
+
+  const record = {
+    spec: [{ name: 'c1', command: ['node', '--test'], timeoutMs: 120000, skipIfMissing: false }],
+    ranAt: 1_700_000_000_000,
+    cwd: 'C:/work',
+    ok: false,
+    total: 1,
+    passed: 0,
+    skipped: 0,
+    failed: 1,
+    results: [{
+      name: 'c1', command: 'node --test', argv: ['node', '--test'], exitCode: 1, signal: null,
+      timedOut: false, skipped: false, missing: false, truncated: true, durationMs: 42,
+      outputTail: 'FAIL', error: null, ok: false,
+    }],
+  }
+  const saved = setTaskAcceptance(db, task.id, record)
+  assert.equal(saved.acceptance.ok, false)
+  assert.equal(saved.acceptance.results[0].exitCode, 1)
+  assert.equal(saved.acceptance.results[0].truncated, true)
+  assert.equal(getTask(db, task.id).acceptance.cwd, 'C:/work')
+
+  // 手改坏 JSON / 缺 results：读取侧当「没跑过」，不让面板与 task_status 崩。
+  db.prepare("UPDATE tasks SET acceptance_json = '{bad' WHERE id = ?").run(task.id)
+  assert.equal(getTask(db, task.id).acceptance, null)
+  db.prepare('UPDATE tasks SET acceptance_json = ? WHERE id = ?').run(JSON.stringify({ ok: true }), task.id)
+  assert.equal(getTask(db, task.id).acceptance, null)
+  db.close()
+
+  // 旧库补列 + 存量行 NULL → null。
+  const { DatabaseSync } = await import('node:sqlite')
+  const legacyDir = tempDir()
+  const legacy = new DatabaseSync(join(legacyDir, 'tasks.sqlite'))
+  legacy.exec(`CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
+    status TEXT NOT NULL, session_id TEXT, target TEXT, coordinator_session TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER)`)
+  legacy.prepare('INSERT INTO tasks (id,title,goal,brief_json,status,coordinator_session,created_at,updated_at,last_event_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('t-old', 'old', 'g', '{}', 'done', 's-1', 1, 1, 1)
+  legacy.close()
+  const migrated = await openLedger(legacyDir)
+  const legacyCols = migrated.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+  assert.ok(legacyCols.includes('acceptance_json'))
+  assert.equal(getTask(migrated, 't-old').acceptance, null)
+  migrated.close()
 })

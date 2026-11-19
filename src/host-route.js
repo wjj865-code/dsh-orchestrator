@@ -80,6 +80,17 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, staleM
           // delivered 两段式：交付时间 / 关闭原因（供面板显示「待确认」「协调者确认/超时」）。
           deliveredAt: task.delivered_at ?? null,
           closeReason: task.close_reason ?? null,
+          // P2-1 A1：验收摘要（列表/卡片小标用；完整证据在面板 detail 端点）。
+          acceptance: task.acceptance === null || task.acceptance === undefined
+            ? null
+            : {
+              ok: task.acceptance.ok === true,
+              total: Number.isFinite(task.acceptance.total) ? task.acceptance.total : 0,
+              passed: Number.isFinite(task.acceptance.passed) ? task.acceptance.passed : 0,
+              skipped: Number.isFinite(task.acceptance.skipped) ? task.acceptance.skipped : 0,
+              failed: Number.isFinite(task.acceptance.failed) ? task.acceptance.failed : 0,
+              ranAt: Number.isFinite(task.acceptance.ranAt) ? task.acceptance.ranAt : null,
+            },
           // 面板按钮可见性与后端门控同源（src/panel-gates.js）：前端只读这三个布尔值。
           canFollowup: canFollowup(task),
           canClose: canClose(task),

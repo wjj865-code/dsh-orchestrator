@@ -8,7 +8,7 @@ import { GLOBAL_PROJECT, searchMemories, projectKeyOf } from '../src/memory.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import { captureLastMessage } from '../src/last-message.js'
-import { tempDir, sampleBrief, markDone } from './helpers.js'
+import { tempDir, sampleBrief, markDone, canSpawnWithPipes, PIPE_SPAWN_SKIP_REASON } from './helpers.js'
 
 function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity } = {}) {
   let counter = 0
@@ -1581,4 +1581,173 @@ test('M1 写入即蒸馏：memory_note 去代码块与命令日志，长文本�
   // 幂等：蒸馏后的同一条不会重复写
   const again = await call(tools, 'memory_note', { text: raw, kind: 'lesson' })
   assert.match(again, /已经记过/)
+})
+
+test('没传 checks：brief 不写 checks 键、没有验收记录，行为与今天一致', async () => {
+  const { db, dispatcher, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '无检查', target: tempDir() }))
+  const task = listTasks(db).find(item => item.title === '无检查')
+  assert.equal('checks' in task.brief, false)
+  assert.equal(task.acceptance, null)
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id } })
+  assert.equal(getTask(db, task.id).status, 'delivered')
+  assert.equal(dispatcher.calls.some(row => row[0] === 'spawn'), true)
+  db.close()
+})
+
+test('task_create.checks：全部通过才交付，验收证据入台账、kind=acceptance 消息、task_status 可见', async t => {
+  if (!canSpawnWithPipes()) return t.skip(PIPE_SPAWN_SKIP_REASON)
+  const { db, tools } = await setup()
+  const target = tempDir()
+  const created = await call(tools, 'task_create', sampleBrief({
+    title: '带验收',
+    target,
+    checks: [{ name: '单测', command: [process.execPath, '-e', 'process.exit(0)'] }],
+  }))
+  assert.match(created, /验收：已配置 1 条可执行检查/)
+  const task = listTasks(db).find(item => item.title === '带验收')
+  assert.equal(getTask(db, task.id).acceptance, null, '创建时不跑检查')
+  const detail = await call(tools, 'task_detail', { task_id: task.id }, { agent: { id: task.session_id } })
+  assert.match(detail, /【可执行检查】/)
+  assert.match(detail, /单测：/)
+
+  const text = await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '改完了' }, { agent: { id: task.session_id } })
+  assert.match(text, /验收：1\/1 通过/)
+  const after = getTask(db, task.id)
+  assert.equal(after.status, 'delivered')
+  assert.equal(after.acceptance.ok, true)
+  assert.equal(after.acceptance.total, 1)
+  assert.equal(after.acceptance.passed, 1)
+  assert.equal(after.acceptance.results[0].name, '单测')
+  assert.equal(after.acceptance.results[0].exitCode, 0)
+  assert.equal(after.acceptance.cwd, target)
+  const acceptanceMessage = recentMessages(db, task.id, 10).find(row => row.kind === 'acceptance')
+  assert.ok(acceptanceMessage, '通过也要留一条 kind=acceptance 消息（证据）')
+  assert.match(acceptanceMessage.rendered, /验收通过/)
+  const status = await call(tools, 'task_status', { task_id: task.id })
+  assert.match(status, /验收：1\/1 通过/)
+  db.close()
+})
+
+test('task_create.checks：任一失败即拒绝交付（保持 running、不登记产物、不发交付通知）', async t => {
+  if (!canSpawnWithPipes()) return t.skip(PIPE_SPAWN_SKIP_REASON)
+  const { db, notifier, tools } = await setup()
+  const target = tempDir()
+  await call(tools, 'task_create', sampleBrief({
+    title: '会失败',
+    target,
+    checks: [{
+      name: '单测',
+      command: [process.execPath, '-e', 'console.error("boom");process.exit(2)'],
+    }],
+    artifacts: undefined,
+  }))
+  const task = listTasks(db).find(item => item.title === '会失败')
+  const text = await call(tools, 'task_report', {
+    task_id: task.id,
+    status: 'done',
+    summary: '完成',
+    artifacts: [{ path: 'out.md', label: '结果' }],
+  }, { agent: { id: task.session_id } })
+  assert.match(text, /验收未通过/)
+  assert.match(text, /退出码 2/)
+  assert.match(text, /boom/)
+  assert.match(text, /状态不变/)
+  const after = getTask(db, task.id)
+  assert.equal(after.status, 'running', '拒绝交付：状态不变')
+  assert.equal(after.delivered_at, null)
+  assert.equal(after.acceptance.ok, false)
+  assert.equal(after.acceptance.results[0].exitCode, 2)
+  assert.deepEqual(after.artifacts, [], '拒绝交付时不登记产物')
+  assert.ok(recentMessages(db, task.id, 10).some(row => row.kind === 'acceptance'))
+  assert.equal(notifier.pushed.some(item => item.status === 'delivered'), false, '拒绝交付不发交付通知')
+  db.close()
+})
+
+test('task_create.checks：命令不存在默认拒绝；skipIfMissing:true 跳过而不卡交付', async t => {
+  if (!canSpawnWithPipes()) return t.skip(PIPE_SPAWN_SKIP_REASON)
+  const target = tempDir()
+  const strict = await setup()
+  await call(strict.tools, 'task_create', sampleBrief({
+    title: '缺命令', target, checks: [{ name: '缺', command: ['orch-definitely-no-such-command-xyz'] }],
+  }))
+  const strictTask = listTasks(strict.db).find(item => item.title === '缺命令')
+  const strictText = await call(strict.tools, 'task_report', {
+    task_id: strictTask.id, status: 'done', summary: '完成',
+  }, { agent: { id: strictTask.session_id } })
+  assert.match(strictText, /命令不存在/)
+  assert.equal(getTask(strict.db, strictTask.id).status, 'running')
+  strict.db.close()
+
+  const lenient = await setup()
+  await call(lenient.tools, 'task_create', sampleBrief({
+    title: '缺命令跳过',
+    target,
+    checks: [{ name: '缺', command: ['orch-definitely-no-such-command-xyz'], skipIfMissing: true }],
+  }))
+  const lenientTask = listTasks(lenient.db).find(item => item.title === '缺命令跳过')
+  const lenientText = await call(lenient.tools, 'task_report', {
+    task_id: lenientTask.id, status: 'done', summary: '完成',
+  }, { agent: { id: lenientTask.session_id } })
+  assert.match(lenientText, /验收：0\/1 通过（跳过 1 条）/)
+  const after = getTask(lenient.db, lenientTask.id)
+  assert.equal(after.status, 'delivered')
+  assert.equal(after.acceptance.skipped, 1)
+  lenient.db.close()
+})
+
+test('task_create.checks：非法形状 / 没有 target 直接报错且不建任务、不 spawn', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const bad = await call(tools, 'task_create', sampleBrief({
+    title: '坏检查', target: tempDir(), checks: [{ command: 'pnpm test' }],
+  }))
+  assert.match(bad, /checks 不合法/)
+  assert.match(bad, /argv 数组/)
+  const noTarget = await call(tools, 'task_create', sampleBrief({ title: '没目录', checks: [{ command: ['node'] }] }))
+  assert.match(noTarget, /checks 需要 target/)
+  const badTimeout = await call(tools, 'task_create', sampleBrief({
+    title: '坏超时', target: tempDir(), checks: [{ command: ['node'], timeoutMs: 999 }],
+  }))
+  assert.match(badTimeout, /timeoutMs 必须在/)
+  assert.equal(listTasks(db).length, 0)
+  assert.equal(dispatcher.calls.length, 0)
+  db.close()
+})
+
+test('task_report：brief 里的 checks 坏了 → 拒绝交付（fail-closed），不静默当没配', async () => {
+  const { db, tools } = await setup()
+  const task = createTask(db, {
+    brief: { title: '坏验收', goal: 'g', acceptance: ['a'], checks: [{ command: 'pnpm test' }] },
+    coordinatorSession: 's-1',
+  })
+  transition(db, task.id, 'running', { sessionId: 'c-bad', target: 'c-bad' })
+  const text = await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: 'c-bad' } })
+  assert.match(text, /验收配置不可解析/)
+  assert.match(text, /argv 数组/)
+  assert.equal(getTask(db, task.id).status, 'running')
+  assert.equal(getTask(db, task.id).acceptance, null)
+  assert.ok(recentMessages(db, task.id, 10).some(row => row.kind === 'acceptance'))
+  db.close()
+})
+
+test('task_create.checks：与只读/沙箱策略一致——readOnly 任务不接受 checks', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const text = await call(tools, 'task_create', sampleBrief({
+    title: '只读带检查', readOnly: true, target: tempDir(), checks: [{ command: ['node', '--test'] }],
+  }))
+  assert.match(text, /只读任务不接受 checks/)
+  assert.equal(listTasks(db).length, 0)
+  assert.equal(dispatcher.calls.length, 0)
+  db.close()
+})
+
+test('task_report schema 没有命令字段：验收命令只能来自协调者的 task_create', async () => {
+  const { db, tools } = await setup()
+  const keys = Object.keys(tools.task_report.parameters.properties)
+  for (const forbidden of ['command', 'checks', 'acceptance', 'argv', 'timeoutMs']) {
+    assert.equal(keys.includes(forbidden), false, `task_report 不应有 ${forbidden} 参数`)
+  }
+  assert.equal(tools.task_create.parameters.properties.checks.type, 'array')
+  assert.match(JSON.stringify(tools.task_create.parameters.properties.checks), /argv 数组/)
+  db.close()
 })

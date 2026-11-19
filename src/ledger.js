@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   access TEXT,
   worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
   worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT,
-  delivered_at INTEGER, close_reason TEXT
+  delivered_at INTEGER, close_reason TEXT, acceptance_json TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -90,6 +90,8 @@ export async function openLedger(stateDir) {
     // 旧库/存量行都是 NULL：面板与 task_status 按「没有交付/关闭记录」显示，存量 done 一律不动。
     if (!taskColumns.includes('delivered_at')) db.exec('ALTER TABLE tasks ADD COLUMN delivered_at INTEGER')
     if (!taskColumns.includes('close_reason')) db.exec('ALTER TABLE tasks ADD COLUMN close_reason TEXT')
+    // P2-1 A1 机器可判定验收：spec + 每次交付前的结果 JSON（旧库/存量行 NULL = 没跑过验收）。
+    if (!taskColumns.includes('acceptance_json')) db.exec('ALTER TABLE tasks ADD COLUMN acceptance_json TEXT')
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -149,6 +151,18 @@ const parseLastMessage = value => {
   }
 }
 
+// 验收记录（P2-1）：坏 JSON 当没有，读取方（面板 / task_status）按「没跑过验收」显示。
+const parseAcceptance = value => {
+  if (value === null || value === undefined) return null
+  try {
+    const parsed = JSON.parse(value)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    return Array.isArray(parsed.results) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 const taskOf = row => row === undefined ? undefined : ({
   ...row,
   read_only: row.read_only === 1 || row.read_only === true,
@@ -180,6 +194,8 @@ const taskOf = row => row === undefined ? undefined : ({
   // delivered 两段式：交付时间（毫秒）与关闭原因（coordinator / timeout）；旧行都是 NULL。
   delivered_at: Number.isFinite(row.delivered_at) ? row.delivered_at : null,
   close_reason: typeof row.close_reason === 'string' && row.close_reason !== '' ? row.close_reason : null,
+  // P2-1：最近一次交付前验收的结果（spec + 每条 check 的退出码/耗时/输出尾部）；没跑过是 null。
+  acceptance: parseAcceptance(row.acceptance_json),
 })
 
 export function createTask(db, {
@@ -387,6 +403,17 @@ export function setTaskGoalState(db, id, state) {
   const now = Date.now()
   db.prepare('UPDATE tasks SET goal_state_json = ?, updated_at = ? WHERE id = ?')
     .run(state === null || state === undefined ? null : JSON.stringify(state), now, id)
+  return getTask(db, id)
+}
+
+/**
+ * 记录交付前验收结果（P2-1 A1）：只写镜像列，不改状态机。
+ * 失败时状态必须保持 running（由调用方保证），这里只负责把 spec + 每条 check 的证据落库。
+ */
+export function setTaskAcceptance(db, id, record) {
+  const now = Date.now()
+  db.prepare('UPDATE tasks SET acceptance_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
+    .run(record === null || record === undefined ? null : JSON.stringify(record), now, now, id)
   return getTask(db, id)
 }
 

@@ -77,7 +77,8 @@
     delivery_failed: "投递失败",
     report: "回报",
     progress: "进展",
-    settle: "结算"
+    settle: "结算",
+    acceptance: "验收"
   };
   const DELIVERY_LABEL = { pending: "待发", delivered: "已投递", failed: "投递失败" };
   const DELIVERY_TONE = { pending: "warn", delivered: "good", failed: "bad" };
@@ -2570,6 +2571,20 @@
         const briefEmpty = briefGoal === "" && acceptance.length === 0 && constraints.length === 0 && refs.length === 0 && verbatim === "";
         const briefLists = (label, items) => /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { className: "orch-kv-key" }, label), /* @__PURE__ */ h("ul", { className: "orch-ul" }, items.map((item, index) => /* @__PURE__ */ h("li", { key: index }, item))));
         const briefBody = briefEmpty ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "这条任务没有 brief 信息。") : /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, briefGoal !== "" ? /* @__PURE__ */ h("div", { className: "orch-text" }, briefGoal) : null, acceptance.length > 0 ? briefLists("验收标准：", acceptance) : null, constraints.length > 0 ? briefLists("约束：", constraints) : null, refs.length > 0 ? briefLists("背景资料：", refs) : null, verbatim !== "" ? /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { className: "orch-kv-key" }, "用户原话："), /* @__PURE__ */ h("blockquote", { className: "orch-quote" }, verbatim)) : null);
+        const acceptanceRecord = task.acceptance !== null && typeof task.acceptance === "object" && !Array.isArray(task.acceptance) ? task.acceptance : null;
+        const checkSpec = Array.isArray(acceptanceRecord?.spec) && acceptanceRecord.spec.length > 0 ? acceptanceRecord.spec : Array.isArray(brief.checks) ? brief.checks : [];
+        const checkResults = Array.isArray(acceptanceRecord?.results) ? acceptanceRecord.results : [];
+        const commandOf = (argv) => (Array.isArray(argv) ? argv : []).map((arg) => /\s/.test(String(arg)) ? `"${arg}"` : String(arg)).join(" ");
+        const acceptanceHint = acceptanceRecord === null ? checkSpec.length > 0 ? `${checkSpec.length} 条待执行` : "" : `${acceptanceRecord.passed || 0}/${acceptanceRecord.total || 0} 通过`;
+        const acceptanceBody = checkSpec.length === 0 && acceptanceRecord === null ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "这条任务没有配置可执行检查（task_create.checks）：交付只凭子会话自述。") : /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ h("div", { className: "orch-card-meta" }, acceptanceRecord === null ? /* @__PURE__ */ h(Badge, { tone: "muted" }, "未执行（交付前自动跑）") : /* @__PURE__ */ h(Badge, { tone: acceptanceRecord.ok === true ? "good" : "bad" }, acceptanceRecord.ok === true ? "验收通过" : "验收未通过"), acceptanceRecord?.ranAt ? /* @__PURE__ */ h("span", { className: "orch-msg-at" }, timeLabel2(acceptanceRecord.ranAt)) : null, typeof acceptanceRecord?.cwd === "string" && acceptanceRecord.cwd !== "" ? /* @__PURE__ */ h("span", { className: "orch-msg-at" }, `目录 ${acceptanceRecord.cwd}`) : null), checkSpec.length === 0 ? null : /* @__PURE__ */ h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } }, checkSpec.map((check, index) => {
+          const result = checkResults.find((item) => item && item.name === check.name) ?? checkResults[index] ?? null;
+          const tone = result === null ? "muted" : result.ok === true ? "good" : result.skipped === true ? "muted" : "bad";
+          const state = result === null ? "未执行" : result.ok === true ? "通过" : result.skipped === true ? "已跳过" : result.timedOut === true ? "超时" : `失败（退出码 ${result.exitCode === null || result.exitCode === void 0 ? "?" : result.exitCode}）`;
+          const details = result === null ? [] : [`${result.durationMs}ms`];
+          if (result?.error === "ENOENT") details.push("命令不存在");
+          if (result?.truncated === true) details.push("输出已截断");
+          return /* @__PURE__ */ h("div", { key: `${check.name}:${index}`, className: "orch-artifact" }, /* @__PURE__ */ h("span", { className: "orch-dot", style: { background: TONE_COLOR2[tone], color: TONE_COLOR2[tone] } }), /* @__PURE__ */ h("span", { style: { flex: 1, minWidth: 0, overflowWrap: "anywhere" }, title: commandOf(check.command) }, `${check.name}：${commandOf(check.command)}`), details.length > 0 ? /* @__PURE__ */ h("span", { className: "orch-muted" }, details.join("｜")) : null, /* @__PURE__ */ h(Badge, { tone }, state));
+        })), checkResults.filter((item) => item?.outputTail && (item.ok !== true || item.truncated === true)).map((item) => /* @__PURE__ */ h("div", { key: `output:${item.name}` }, /* @__PURE__ */ h("div", { className: "orch-kv-key" }, `${item.name} 输出尾部：`), /* @__PURE__ */ h("pre", { className: "orch-pre" }, String(item.outputTail)))), /* @__PURE__ */ h("div", { className: "orch-muted" }, "未通过时任务不会交付（状态不变），修复后重报 done；需要拍板就报 blocked。检查在插件宿主进程里执行（不是子会话沙箱），cwd 固定为任务目录。"));
         const goalState = task.goalState !== null && typeof task.goalState === "object" ? task.goalState : null;
         const goalBody = goalState === null ? /* @__PURE__ */ h("div", { className: "orch-muted" }, "没有平台目标状态（goal 服务不可用，或任务尚未派发/已收口）。") : /* @__PURE__ */ h("div", { className: "orch-kv" }, [
           ["目标", textOf2(goalState.objective) || "（未记录）"],
@@ -2621,7 +2636,7 @@
             icon: "alert"
           },
           `需要你：${task.question}${Array.isArray(task.options) && task.options.length > 0 ? `（${task.options.join(" / ")}）` : ""}`
-        ) : null, task.error ? /* @__PURE__ */ h(Banner, { tone: "error", icon: "alert" }, `错误：${task.error}`) : null, detailSection("概览", "概览", "", overviewBody), detailSection("最新回复", "最新回复", lastMessage === null ? "" : timeLabel2(lastMessage.at), lastMessageBody), detailSection("Brief", "Brief", acceptance.length > 0 ? `验收 ${acceptance.length} 条` : "", briefBody), detailSection("目标状态", "目标状态", goalState === null ? "" : GOAL_PHASE_LABEL2[goalState.phase] || goalState.phase || "", goalBody), detailSection("消息", "消息", messages.length > 0 ? `${messages.length} 条` : "", messageBody), detailSection("依赖", "依赖", `上游 ${dependencies.length} · 下游 ${dependents.length}`, depBody), detailSection("产物", "产物", artifacts.length > 0 ? `${artifacts.length} 个` : "", artifactBody), goalNote);
+        ) : null, task.error ? /* @__PURE__ */ h(Banner, { tone: "error", icon: "alert" }, `错误：${task.error}`) : null, detailSection("概览", "概览", "", overviewBody), detailSection("最新回复", "最新回复", lastMessage === null ? "" : timeLabel2(lastMessage.at), lastMessageBody), detailSection("Brief", "Brief", acceptance.length > 0 ? `验收 ${acceptance.length} 条` : "", briefBody), detailSection("验收", "验收", acceptanceHint, acceptanceBody), detailSection("目标状态", "目标状态", goalState === null ? "" : GOAL_PHASE_LABEL2[goalState.phase] || goalState.phase || "", goalBody), detailSection("消息", "消息", messages.length > 0 ? `${messages.length} 条` : "", messageBody), detailSection("依赖", "依赖", `上游 ${dependencies.length} · 下游 ${dependents.length}`, depBody), detailSection("产物", "产物", artifacts.length > 0 ? `${artifacts.length} 个` : "", artifactBody), goalNote);
       };
       const drawerFoot = () => {
         const buttons = [
