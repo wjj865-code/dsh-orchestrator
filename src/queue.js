@@ -180,7 +180,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
           continue
         }
 
-        // spawn 在途时任务可能已被 task_stop/取消：把刚起的子会话收掉，别让它白占一个并发位，
+        // spawn 在途时任务可能已被 stop（task_message action:stop）/取消：把刚起的子会话收掉，别让它白占一个并发位，
         // 也不能把队列里后面的任务一起 shift 掉（审查 probe-queue-race）。
         const sessionId = member.sessionId ?? member.id
         const target = member.target ?? member.name

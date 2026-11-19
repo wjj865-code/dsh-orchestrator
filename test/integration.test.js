@@ -100,7 +100,7 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
     assert.equal(deliveredCard.label, '待确认')
     assert.equal(deliveredCard.tone, 'warn')
 
-    const closed = await byName.task_close.execute({ task_id: taskId }, { agent: coordinator })
+    const closed = await byName.task_message.execute({ action: 'close', task_id: taskId }, { agent: coordinator })
     assert.match(closed, /已确认完成/)
     const confirmed = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
     const stored = confirmed.prepare('SELECT status, title, close_reason FROM tasks WHERE id = ?').get(taskId)

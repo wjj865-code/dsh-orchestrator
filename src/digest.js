@@ -1,12 +1,12 @@
 // 每日日报：配置 digestAt（HH:MM）后，在协调者主会话上挂一个 schedule，
-// 到点由平台投递一条用户消息，提示协调者用 task_inbox/task_list 汇总。
+// 到点由平台投递一条用户消息，提示协调者用 task_list({ view: 'inbox' }) / task_list 汇总。
 // 没有 schedule 服务或没配置时间时完全静默，不影响插件加载。
 import { getSetting, setSetting } from './ledger.js'
 
 export const DIGEST_SCHEDULE_KEY = 'digest_schedule_id'
 export const DIGEST_SPEC_KEY = 'digest_schedule_spec'
 
-const DIGEST_PROMPT = '请调用 task_inbox 和 task_list(active:false)，汇总当前任务：今日完成、待确认、在跑、待你决定、失败与产物，用简洁中文发给我。'
+const DIGEST_PROMPT = '请调用 task_list({ view: \'inbox\' }) 和 task_list({ active: false })，汇总当前任务：今日完成、待确认、在跑、待你决定、失败与产物，用简洁中文发给我。'
 
 const specOf = (mainSessionId, config) => {
   const zone = config?.digestTimeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'

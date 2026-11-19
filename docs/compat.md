@@ -43,7 +43,7 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 期望：`version` 为 `0.2.2-rc.3`/`-rc.5`、`versionStatus: inside`、`available: 9`（`missing: []`）。缺项时按 §4 的降级行为判读，不要当成「偶发失败」。
 
 **冒烟 1：派 3 个活 → 交付确认 → 追问复用同一子会话**
-协调者会话里说：*「用 task_create 给三个不同目录各派一个只读任务，标题分别 call-A/B/C」* → 期望 `task_list` 出现 3 行、`task_status` 可查；让其中一个 `task_report(done)` → 状态变「已交付待确认」；`task_message` 追问 → **同一个 sessionId** 继续；`task_close` → `done`。
+协调者会话里说：*「用 task_create 给三个不同目录各派一个只读任务，标题分别 call-A/B/C」* → 期望 `task_list` 出现 3 行、`task_status` 可查；让其中一个 `task_report(done)` → 状态变「已交付待确认」；`task_message` 追问 → **同一个 sessionId** 继续；`task_message({action:'close'})` → `done`。
 失败判据：`task_create` 报「缺少 subagents 服务」= `team-api` 缺失（§4），不是任务本身的问题。
 
 **冒烟 2：只读任务写文件被拒**
@@ -65,7 +65,7 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 | `settings` | `settings`（宿主表单缝） | 插件配置页不可用 | 不影响任何现有功能：插件读写自己的台账 `settings` 表 | **已接线**（探针 + 报告行） |
 | `registry` | `workspaceRegistry`（归档/工作区） | 轮换归档不可用 | 轮换判 `unknown` 侧降级，不执行不可逆动作 | 访问器就绪，下一片 |
 | `token-meter` | `tokenMeter` | 当前无消费点（P1-A 删掉了轮换的上下文因子） | 无需降级：访问器保留，等后续消费点接线 | 访问器就绪，无消费点 |
-| `session-query` | `sessionQuery.searchSessions` | `history_search` 会话那一路退化 | 只用台账/记忆命中，回复里如实说明 | 访问器就绪，下一片 |
+| `session-query` | `sessionQuery.searchSessions` | `context({mode:'history'})` 会话那一路退化 | 只用台账/记忆命中，回复里如实说明 | 访问器就绪，下一片 |
 | `panel-slots` | 槽位名 `main` / `sidebar.panellist` / `conversation.header.leading` / `conversation.chat.turnTail` | 面板入口不渲染（历史「真实宿主永不渲染」） | 退到 `main` 单槽；入口隐藏但不报错 | 访问器就绪，下一片 |
 | `log-path` | `$DSH_HOME`（空白按未设置）→ `<home>/state/orchestrator` | 日志/台账写不进去 | 台账打不开即加载失败（这是硬依赖，不是降级项） | **已接线** |
 | `version` | 环境变量 `DSH_HOST_VERSION`/`DSH_VERSION`，其次 asar 内 `<root>/app.asar/<inner>/package.json` | 无从判越界 | `unknown`，不告警；功能照常 | **已接线** |

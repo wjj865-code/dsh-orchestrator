@@ -81,7 +81,7 @@ export function idleSummary(entries, { max = WATCHDOG_SUMMARY_MAX, labelFor, idl
     `空闲看门狗：${list.length} 个任务在 running，但已超过 ${minutes} 分钟没有心跳/消息/状态变化（可能卡住）：`,
     ...lines,
     ...tail,
-    '看门狗只告警、不改任务状态：用 task_status 查看，task_message 续派，或 task_stop 停掉。',
+    '看门狗只告警、不改任务状态：用 task_status 查看，task_message 续派，或 task_message({ action: "stop" }) 停掉。',
   ].join('\n')
 }
 

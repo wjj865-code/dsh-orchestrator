@@ -104,7 +104,7 @@ test('G1 工具挂钩：task_report done 只落待确认（不收口 goal），t
   await tools.task_report.execute({ task_id: task.id, status: 'done', summary: '完成了' }, { agent: { id: 'c-1' } })
   // 两段式终态：交付 ≠ 确认，goal 留到 done 再收口（追问还要 update 同一个 goal）。
   assert.deepEqual(bridge.calls, [])
-  await tools.task_close.execute({ task_id: task.id }, { agent: { id: 's-1' } })
+  await tools.task_message.execute({ action: 'close', task_id: task.id }, { agent: { id: 's-1' } })
   assert.deepEqual(bridge.calls, [['complete', task.id, 'c-1']])
   db.close()
 })
@@ -116,7 +116,7 @@ test('G1 工具挂钩：task_retry 清旧目标，新任务由派发器重新 at
     status: 'failed',
   })
   db.prepare("UPDATE tasks SET session_id = ?, target = ? WHERE id = ?").run('c-old', 'c-old', task.id)
-  const text = await tools.task_retry.execute({ task_id: task.id }, { agent: { id: 's-1' } })
+  const text = await tools.task_message.execute({ action: 'retry', task_id: task.id }, { agent: { id: 's-1' } })
   assert.match(text, /已重派为/)
   assert.deepEqual(bridge.calls, [['clear', task.id, 'c-old']])
   const spawned = dispatcher.calls.find(call => call[0] === 'spawn')
@@ -127,7 +127,7 @@ test('G1 工具挂钩：task_retry 清旧目标，新任务由派发器重新 at
 test('G1 工具挂钩：task_stop 把 taskId 传给派发器（stop 内部负责 clear）', async () => {
   const { db, dispatcher, tools } = await setup()
   const task = runningTask(db)
-  await tools.task_stop.execute({ task_id: task.id }, { agent: { id: 's-1' } })
+  await tools.task_message.execute({ action: 'stop', task_id: task.id }, { agent: { id: 's-1' } })
   const stopped = dispatcher.calls.find(call => call[0] === 'stop')
   assert.deepEqual(stopped, ['stop', 'c-1', task.id])
   db.close()

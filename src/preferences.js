@@ -8,7 +8,7 @@
 //   - 偏好是 policy 的**最后一段**：阅读顺序即优先级顺序，末尾天然表达「低于硬规则」。
 //
 // 与 memories 的关系（审计 §5.3 待定项 2 的结论）：**不双写**。
-//   `memory_note(kind:'preference')` 仍然只写 memories（供 history_search 检索），
+//   `memory_note(kind:'preference')` 仍然只写 memories（供 context 检索），
 //   渲染侧只读 `settings.orchestrator_preferences` 这一个键。理由：双写 = 两份真相，
 //   而「渲染侧从不读 memories」只是让它们不打架、不是单一事实源。
 //   代价是「记一条偏好 ≠ 偏好生效」，所以 `memory_note` 的返回文案必须说清这件事。
@@ -141,7 +141,7 @@ export function setPreferenceEnabled(db, id, enabled) {
   }
 }
 
-/** 可注入的条目：全局 + 启用 + 适用于协调者（项目级偏好属于项目约定，走 brief / project_context）。 */
+/** 可注入的条目：全局 + 启用 + 适用于协调者（项目级偏好属于项目约定，走 brief / context 的项目背景）。 */
 const injectableOf = items => (Array.isArray(items) ? items : [])
   .filter(entry => entry.enabled !== false)
   .filter(entry => text(entry.scope) === 'global')
@@ -192,7 +192,7 @@ export function renderPreferenceBlock(items, { maxItems = DEFAULT_MAX_ITEMS, max
  *
  * 一条事实只落**一处**，落哪儿由 scope 决定，不存在两份真相：
  *   - **全局偏好**（`project` 缺省 / `global`）= 协调者的行为取向 → 只写 `settings.orchestrator_preferences`，
- *     每回合注入 L1 提示词。它**不写** memories（否则就是双写），所以 `history_search` 查不到它。
+ *     每回合注入 L1 提示词。它**不写** memories（否则就是双写），所以 `context({ mode: 'history' })` 查不到它。
  *   - **项目偏好**（给了 `project`）= 项目约定 → 只写 memories，随 `task_detail` 注入子会话；
  *     它不进协调者提示词（协调者没有单一项目上下文，项目多了会撑爆 policy）。
  *
@@ -203,7 +203,7 @@ export const PREFERENCE_SCOPE_GLOBAL = 'global'
 
 /** `memory_note` 的返回文案：说清这条偏好去了哪儿、会不会生效，别让人以为「记了就生效」。 */
 export const preferenceSavedHint = title => `已保存为协调者偏好（${title ?? '全局'}）：`
-  + '每回合注入协调者提示词，改完下一回合生效；它不进 memories（history_search 查不到，避免两份真相）。'
+  + '每回合注入协调者提示词，改完下一回合生效；它不进 memories（context 检索查不到，避免两份真相）。'
   + '要停用请把对应条目 enabled 设为 false。'
 
 /** 项目偏好的返回文案：走 memories + task_detail，不进协调者提示词。 */

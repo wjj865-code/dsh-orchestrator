@@ -113,5 +113,5 @@ export async function approvePlan({ db, dispatcher, task, log = () => {} } = {})
 export function approvalNote(result) {
   if (result?.ok === true) return `计划已批准：${result.sandbox === 'workspace-write' ? '沙箱已切回可写' : '已请求切回可写'}，子会话按计划继续执行。`
   const reason = result?.reason ?? '未知原因'
-  return `计划已标记批准，但运行期切换失败：${reason}。子会话可能仍是只读；必要时 task_stop 后重派。`
+  return `计划已标记批准，但运行期切换失败：${reason}。子会话可能仍是只读；必要时 task_message({ action: 'stop' }) 后重派。`
 }

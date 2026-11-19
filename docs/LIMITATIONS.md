@@ -22,13 +22,13 @@
 - **目标不自动注入子会话**：平台的 `dsh-goal` 只管状态与投影（inject 只有 `agents` / `sessionProjections`），不往系统提示或消息里写 objective；子会话要看到**实时**目标必须自己调 `get_goal`。所以 worker 预设挂了 `tool-goal` 行——不挂这行时子会话读不到之后 `task_message` 并进去的「最新指示」（创建时的目标快照仍能从 `task_detail` 拿到）。
 - **子会话只读目标、不能改**：`dsh-orchestrator-worker` 预设的 `tool-goal` 只提供 `get_goal` 的可用路径；`create_goal` / `update_goal` 由平台 `goalToolExecution` + `requireDirectHuman` 校验，要求**顶层 agent 的直接人类回合**，子会话调用必被拒（`GOAL_TOOL_AUTHORITY_REQUIRED`）。只有协调者的 `task_message`（或面板「追加」）会触发 `edit`。目标文本 = `task.goal` + `最新指示：<消息>`，超过 2000 字符截断，只是展示用的持久状态。
 - **brief 只有编号和指引，详情要自己取（T1）**：brief 不再内联目标、验收、经验或兜底，只有 `【任务编号】` + 「先调 `task_detail` 读详情」+ 「执行中待确认用 blocked 上报」+ 「交付时给选项」。所以子会话的第一个动作应当是 `task_detail`；若它跳过这一步直接干活，只能靠 `get_goal`（实时目标）和自身上下文。前提是子会话工具表里有 `task_detail`：它由插件在 host plane 全局注册（`index.js` 的 `createTools(...).map(ctx.tools.register)`），worker 预设没有 `preset-tools` 收窄；如果你把 `workerPreset` 换成自带 allow/deny 收窄的预设、且没把 `task_detail` 列进 allow，子会话就只能靠 `get_goal` 和自己找上下文。
-- **子会话不能直接问用户**：平台的 `userQuestions.ask` 用 `assertLiveRoot` 校验调用方，`session.header.origin === 'subagent'` 一律抛 `DELEGATED_CALLER`——子会话（`subagents.startActivation({ parent })` 起的）调 `ask_user_question` 必被拒，工具在工具表里看得见但用不了。所以需要拍板时只能把问题/选项交回协调者：`blocked`/`needs_auth` 用 `task_report.question` + `options`（原样进通知与 `task_inbox`），`done` 会把 `question`/`options` 清空，要点必须写进 `summary`；真正向用户提问始终由协调者带选项完成。
+- **子会话不能直接问用户**：平台的 `userQuestions.ask` 用 `assertLiveRoot` 校验调用方，`session.header.origin === 'subagent'` 一律抛 `DELEGATED_CALLER`——子会话（`subagents.startActivation({ parent })` 起的）调 `ask_user_question` 必被拒，工具在工具表里看得见但用不了。所以需要拍板时只能把问题/选项交回协调者：`blocked`/`needs_auth` 用 `task_report.question` + `options`（原样进通知与 `task_list({view:'inbox'})`），`done` 会把 `question`/`options` 清空，要点必须写进 `summary`；真正向用户提问始终由协调者带选项完成。
   这条也是 brief 三段提示的由来：执行中「有疑问就 blocked 上报（问题 + 选项建议）」、交付时「结论 + 改了什么/改了哪些文件/怎么验证的 + 待确认要点，全写进 `summary`」、隔离任务「可装依赖但只装不升」。
   **`done` 不支持 `question`/`options`**：它们只在 `blocked`/`needs_auth` 上生效，`done` 会把它们清空（`src/tools.js` 的 `clearTaskQuestion`），也从不传给通知——交付时的选项由协调者自己组织 `ask_user_question`。
 - **`blocked` 上报不等于授权**：它只是把决策点交回协调者，用户/协调者的答复才是授权来源。子会话不能因为「已经报过 blocked」就自行推进，也不能拿 blocked 当绕过推送前双审查或人工确认门禁的手段（brief 里三段提示都写明「不等于已获授权」）。
 - **worktree 装依赖提示只是「允许装」，不是「装好」**：`【worktree 依赖】` 只在隔离任务（`requested`/`created`/`reused`）里出现，措辞限定「只安装不升级」；插件不代为执行安装，也不保证锁文件/依赖声明不变——子会话真跑 `pnpm install` 时仍以仓库锁文件为准，升级依赖版本不在这个提示的授权范围内。
-- **经验文件是快照，不是台账（T1）**：`lessons/<项目>-<hash>.md` 每次派发覆盖为「本次命中的事实层记忆」；没有历史版本、不参与每日快照、也没有保留期清理。手动删掉文件后，`task_detail` 里的指针会显示「文件已丢失」（下次派发重新生成）；要改记忆请用 `memory_note` / `history_search`，手改文件会被覆盖。写文件失败时经验以更长的内联块只出现在 `task_detail` 里（brief 长度不变，经验不会丢）。
-- **`task_detail` 只读且只给自己**：它按创建时的 `brief_json` 快照返回目标/验收/经验，前置任务/产物按**当前**台账现读；主会话或别的子会话调用会被拒绝（越权）。它不写消息、不改状态，因此也不能用它「续派」或「修正」任务——那些仍走 `task_message` / `task_stop`。
+- **经验文件是快照，不是台账（T1）**：`lessons/<项目>-<hash>.md` 每次派发覆盖为「本次命中的事实层记忆」；没有历史版本、不参与每日快照、也没有保留期清理。手动删掉文件后，`task_detail` 里的指针会显示「文件已丢失」（下次派发重新生成）；要改记忆请用 `memory_note` / `context({mode:'history'})`，手改文件会被覆盖。写文件失败时经验以更长的内联块只出现在 `task_detail` 里（brief 长度不变，经验不会丢）。
+- **`task_detail` 只读且只给自己**：它按创建时的 `brief_json` 快照返回目标/验收/经验，前置任务/产物按**当前**台账现读；主会话或别的子会话调用会被拒绝（越权）。它不写消息、不改状态，因此也不能用它「续派」或「修正」任务——那些仍走 `task_message` / `task_message({action:'stop'})`。
 - **终态收敛的边界**：`done→complete`；`stop/retry/orphaned/failed→clear`。孤儿/失败时子 agent 往往已不在注册表，平台侧不会真的调用 `clear`（平台 goal 只存在于该会话日志里，进程内也没人再驱动它），插件只把台账镜像标成 `cleared` 供面板显示。
 - **外部重新 arm 的窗口**：插件只在 spawn/续派/终态钩子上保证 `disarmed`。如果其它组件（如用户在子会话里 `/goal resume`，或宿主未来改动）把同一个子会话重新 `arm`，插件不会实时监控，下一次钩子才会再压回 `disarmed`；这中间平台可能自动续轮。
 - **面板只读**：面板与 `task_status` 能看 goal 的 phase/activation/轮次/修订，但没有暂停、恢复、清除 goal 的按钮或工具；要调整目标请直接 `task_message`。
@@ -46,12 +46,12 @@
 ## 编排
 
 - `dependsOn` 只能指向已存在的任务；没有“编辑已有任务依赖”的接口，因此也不会出现环。
-- 前置失败后，下游会被标 `failed`；要恢复需先 `task_retry` 前置，再重派下游。
-- **同写域并发防护是「事后判定 + 可绕过」的护栏，不是文件锁**：`sameDirGuard=require` 只在 `task_create` 那一刻按台账判定，放行方式有三条（`task_close`/`task_stop`、`worktree:true`、`allowConcurrent:true`）；用户显式要求并发时协调者可以传 `allowConcurrent:true`，此时两个子会话仍会同时写同一批文件，冲突要人兜。它也不拦同一任务内部的并发写（同一子会话的并行工具调用）。
+- 前置失败后，下游会被标 `failed`；要恢复需先 `task_message({action:'retry'})` 前置，再重派下游。
+- **同写域并发防护是「事后判定 + 可绕过」的护栏，不是文件锁**：`sameDirGuard=require` 只在 `task_create` 那一刻按台账判定，放行方式有三条（`task_message({action:'close'})`/`task_message({action:'stop'})`、`worktree:true`、`allowConcurrent:true`）；用户显式要求并发时协调者可以传 `allowConcurrent:true`，此时两个子会话仍会同时写同一批文件，冲突要人兜。它也不拦同一任务内部的并发写（同一子会话的并行工具调用）。
 - 判定是**路径字面量**比较（解析成绝对路径后比相等/父子目录），不解析符号链接、`..` 之外的挂载点或大小写以外的文件系统语义；两个不同路径指向同一实体目录（bind mount / 符号链接）时判不出来。
 - `writeScopes` 是**声明**不是事实：没标写域的任务只能按 target 判定，同目录以外、又没写域声明的重叠写不出护栏。
 - `sameDirGuard=off` 等于退回旧的「只打一行 advisory」行为，出事时没有任何拦截。
-- **防护只覆盖 `task_create`**：`task_retry` 与面板「重派」按原 brief/原 target 新起任务，不走这条判定。失败任务本身已释放目录，但若另一个活跃任务此时正在同一目录写，重派仍可能与它并发——重派前用 `task_list` 看一眼同目录任务。
+- **防护只覆盖 `task_create`**：`task_message({action:'retry'})` 与面板「重派」按原 brief/原 target 新起任务，不走这条判定。失败任务本身已释放目录，但若另一个活跃任务此时正在同一目录写，重派仍可能与它并发——重派前用 `task_list` 看一眼同目录任务。
 - `priority` 只影响队列顺序，不抢占正在运行的子会话。
 - `stallRounds` 达到阈值只提醒一次；没有“提醒后再无进展就二次升级”的完整阶梯。
 - 空闲看门狗（W1）只告警一次、不改状态也不 kill；同一段空闲的去重表在内存，插件重启后允许再报一次。阈值只看台账里的心跳/消息/状态时间，子会话在长回合里既不上报 progress 也几乎不落消息时（例如长时间跑测试）可能被误判为「可能卡住」——看到告警先用 `task_status` 核对，别直接当成失败。
@@ -87,7 +87,7 @@
 - 只初始化新建 main，历史主会话/显式 coordinatorSession 不补欢迎。首次注入成功仅代表消息入队；模型可能未照提示介绍/派发，应核对 task_list，不把 sent 当索引完成。重复打开不重投；投递异常保留 pending、open 返回 onboardingError，用户重开可重试。进程在发送与sent写入之间崩溃可能停在sending，不承诺exactly-once，也不盲重投。
 - 索引只覆盖创建任务时 workspaceRegistry 登记名单，不扫描全盘或未登记 git；只读默认沙箱读不到的目录记录 unavailable，不给扫描任务full。不存在、非git、无权限逐项记录，工作区增删/改名后需重新派只读索引。
 - repoRoot/branch/origin/HEAD/commonDir 是有采样时间的快照，不等于当前实时 Git 状态；remote 脱敏去 userinfo/query/fragment，未知凭证式格式隐藏，git stderr 不进入索引。不得把映射内容当作执行指令，歧义列候选。
-- task_report.workspace_index 增量为只读索引回报契约（本人done、名单覆盖），持久化在settings独立键，不覆盖用户手写memories。只读worker无需memory_note或服务权限。缺workspace列表不建任务，明确重试；完整回报缺失时不交付，S1自然completed会落failed并提示task_retry；每任务持久化成功标记和全局快照同事务写入，不依赖固定延迟。欢迎投递须await预设恢复成功，失败留pending，不用2秒sleep掩盖竞态。真实新main首次模型轮次及宿主沙箱扫描仍需加载后验证。
+- task_report.workspace_index 增量为只读索引回报契约（本人done、名单覆盖），持久化在settings独立键，不覆盖用户手写memories。只读worker无需memory_note或服务权限。缺workspace列表不建任务，明确重试；完整回报缺失时不交付，S1自然completed会落failed并提示task_message({action:'retry'})；每任务持久化成功标记和全局快照同事务写入，不依赖固定延迟。欢迎投递须await预设恢复成功，失败留pending，不用2秒sleep掩盖竞态。真实新main首次模型轮次及宿主沙箱扫描仍需加载后验证。
 
 ## 原生自动化
 
@@ -162,7 +162,7 @@
   跳过，写在那里等于白写且必然漂移。
 - **偏好不是权限通道**：它只是 `settings.orchestrator_preferences` 里的提示词文本，不进 config、不改 dispatch、
   不碰 `sandboxPolicy`；内置种子里不放任何「放宽安全边界」的条目。全局偏好**只写 settings 不写 memories**，
-  所以 `history_search` 查不到它——这是「单一事实源」的代价，`memory_note` 的返回文案会明确告知。
+  所以 `context({mode:'history'})` 查不到它——这是「单一事实源」的代价，`memory_note` 的返回文案会明确告知。
 - **偏好超限会被截断**：默认 12 条 / 1200 字，超限按 priority 降序保留并在段尾写出「另有 N 条未展示」。
   被截掉的偏好**不会生效**，也不会报错。
 
@@ -246,5 +246,5 @@
 
 - message 的 `clientRequestId` 去重只在 host-route 进程内（LRU 200 条），插件重启后失效；跨重启的严格去重需要把 id 落台账（当前 messages 表没有该列）。
 - 没有 `clientRequestId` 的旧客户端按「同任务 3 秒内相同文本」去重；3 秒内故意发两条一模一样消息会被吞掉一条。
-- 面板 stop 对已结束任务按幂等成功（`already:true`）返回；工具层 `task_stop` 保持返回「已结束，无需停止」文本。两者都是 no-op，不冲突。
+- 面板 stop 对已结束任务按幂等成功（`already:true`）返回；工具层 `task_message({action:'stop'})` 保持返回「已结束，无需停止」文本。两者都是 no-op，不冲突。
 - 面板 retry 在主会话失效时先拒绝、不建 ghost 任务；工具层历史行为是创建后标 failed 再抛错（兼容保留）。

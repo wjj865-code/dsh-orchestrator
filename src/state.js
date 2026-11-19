@@ -7,7 +7,7 @@
 // 为什么不把文案也搬进 status-facts：文案是**展示层**（中文措辞会变），能力是**语义层**（不该变）；
 // 混在一起会让「改一句文案」看起来像「改了一次状态语义」。
 //
-// 只有子会话的回报（或结算）能推进 running 之后的状态；协调者只能创建、续派、确认交付（task_close）、
+// 只有子会话的回报（或结算）能推进 running 之后的状态；协调者只能创建、续派、确认交付（task_message action:close）、
 // 停止、重派。
 import { STATUSES, canTransition, nextStatus, statusesWith } from './status-facts.js'
 

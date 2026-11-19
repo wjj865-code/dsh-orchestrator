@@ -67,7 +67,7 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
 
 - `node:test` + `assert/strict`，一个模块一个 `test/*.test.js`；`--experimental-test-isolation=none`（共享进程，省启动时间）。
 - 新增/修改行为：先补一条会红的用例，再改实现；涉及台账的用例用临时 `DSH_HOME`（见 `test/helpers.js`）。
-- 文案口径由 `test/copy-consistency.test.js` 统一锁：`done` 不是终态、协调者默认不主动 `task_close`、
+- 文案口径由 `test/copy-consistency.test.js` 统一锁：`done` 不是终态、协调者默认不主动 `task_message({action:'close'})`、
   present 1-4 个、brief 不越权定义交付语义。改这些文案先跑它。
 - 全量门槛：`pnpm test` 全绿 + `pnpm run check:client` 通过（`prepublishOnly` 也是这两个）。
 

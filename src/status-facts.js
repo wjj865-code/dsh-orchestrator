@@ -20,7 +20,7 @@
 //   deletable    —— 能删吗？（面板删除，活跃任务必须先停）
 //   terminal     —— 是「流程终态」吗？（用户看到「已经结束了」；failed 不算——它还能重派）
 //   releases     —— 进入这个状态要释放可写根与平台 goal 吗？（结算/停止的收尾动作）
-//   retryable    —— 能重派吗？（`task_retry` 与面板「重派」）
+//   retryable    —— 能重派吗？（工具 task_message action:retry 与面板「重派」）
 //   waiting      —— 是「等人（用户/授权）」的停顿态吗？（回复消息 = 批准计划）
 //   rotationActive —— 算「在跑」、会阻断主会话轮换吗？（delivered 刻意不算：它只等确认）
 //   liveness     —— 要做「子会话还活着吗」对账吗？（只有 running：其余是故意停下的）
@@ -128,7 +128,7 @@ export const statusesWith = cap => STATUSES.filter(status => hasCap(status, cap)
  *   不改任何存量行（台账里的历史 `running` 行不会因为删边而变化）；重放/核对历史数据时如需
  *   模拟「直接完成」，走 `running → delivered → done` 两步即可。
  * - `failed → running`：`followupGate` 自 0.12.0 起就拒绝 failed，`task_message` 在工具层先被拦，
- *   所以这条边自加入起就不可达；重派走的是**新建任务**（`task_retry`），不是原任务复活。
+ *   所以这条边自加入起就不可达；重派走的是**新建任务**（task_message action:retry），不是原任务复活。
  * - `orphaned → pending`：`deps.js` 只从 `waiting_dep` 晋升，从不从 `orphaned` 晋升；
  *   会话丢失的出口是重派（新任务）或取消。
  */

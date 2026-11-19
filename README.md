@@ -53,8 +53,8 @@ https://github.com/wjj865-code/dsh-orchestrator
 ### 装好后的自检
 
 1. 插件页能看到「任务编排」标题、图标和详情页。
-2. 侧栏「主会话」能打开；插件全局共 15 个工具（协调者 12 个、子会话专属 3 个），此外协调者预设提供 `present`、提问及原生自动化四工具；默认 worker 不新增自动化。
-3. 派一条任务，子会话 `task_report done` 后主会话收到「已交付待确认」通知；`task_close` 能确认成「已完成」。
+2. 侧栏「主会话」能打开；插件全局共 10 个工具（协调者 7 个、子会话专属 3 个），此外协调者预设提供 `present`、提问及原生自动化四工具；默认 worker 不新增自动化。
+3. 派一条任务，子会话 `task_report done` 后主会话收到「已交付待确认」通知；`task_message({ action: 'close' })` 能确认成「已完成」。
 4. 会话头「任务」入口只在主会话显示，切到子会话后自动隐藏。
 
 ### 入口在哪
@@ -72,9 +72,9 @@ https://github.com/wjj865-code/dsh-orchestrator
 
 侧栏「◈ 主会话」（或面板「打开主会话」）。协调者预设只做协调：没有 `read`/`write`/`bash`，也不会阻塞等待子任务。要读子会话落在工作区的产物，用受控的 `read_workspace`（只能读主会话工作区内，越界被拒，见「读工作区产物（`read_workspace`）」）。
 
-首次新建主会话会自动开启介绍轮次：先介绍能做什么及权限边界，再立即派一个只读「工作区与仓库索引」子任务。只扫描 **DSH 已登记**的工作区（标题/路径及 git 根、当前分支、origin、HEAD、commonDir），不全盘搜 git、不 fetch/pull，不写文件；非仓库/不存在/无权限单项记录，remote 去凭证。结果通过 `task_report.workspace_index` 存入插件 settings 的独立采样快照，不覆盖手写记忆。后续 `project_context({workspaces:true})` 查看全部映射，指定项目也会附仓库快照；有歧义列候选、使用前核对实时状态。
+首次新建主会话会自动开启介绍轮次：先介绍能做什么及权限边界，再立即派一个只读「工作区与仓库索引」子任务。只扫描 **DSH 已登记**的工作区（标题/路径及 git 根、当前分支、origin、HEAD、commonDir），不全盘搜 git、不 fetch/pull，不写文件；非仓库/不存在/无权限单项记录，remote 去凭证。结果通过 `task_report.workspace_index` 存入插件 settings 的独立采样快照，不覆盖手写记忆。后续 `context({mode:'workspaces'})` 查看全部映射，指定项目也会附仓库快照；有歧义列候选、使用前核对实时状态。
 
-- 每个**新建**主会话一次；重复打开/刷新/并发入口不重复，升级后历史主会话不补初始化。介绍/派发由模型执行，不承诺模型一定遵循；投递失败在打开结果显示，重新打开可重试，索引任务失败用 `task_retry`，不盲重派。
+- 每个**新建**主会话一次；重复打开/刷新/并发入口不重复，升级后历史主会话不补初始化。介绍/派发由模型执行，不承诺模型一定遵循；投递失败在打开结果显示，重新打开可重试，索引任务失败用 `task_message({action:'retry'})`，不盲重派。
 - 索引不需要 `access:full`，仍由默认只读 worker 执行，名单与脚本在 `task_detail` 给出；如果沙箱或权限读不到某工作区，记录 unavailable，不为扫描全盘升权。自动化不开放给 worker。
 - 主会话跑久了（主会话日志 > 6 MiB 或运行 > 10 天，任一命中）会在**这次打开时**判定是否换一个干净的新会话，见[主会话轮换](#主会话轮换把长到拖不动的协调者换掉)。**默认关闭**（`mainRotation: 'off'`）：升级后不会自动换，要自动换就显式配 `auto`。
 
@@ -109,14 +109,14 @@ task_create({
 
 ### 3. 看进度
 
-- 协调者不阻塞等待：进度用 `task_list` / `task_status` / `task_inbox`，子任务完成会主动通知（`agent.steer` 注入，5 秒合并）。
+- 协调者不阻塞等待：进度用 `task_list` / `task_status` / `task_list({view:'inbox'})`，子任务完成会主动通知（`agent.steer` 注入，5 秒合并）。
 - 子会话用 `task_report` 汇报：`progress`（有进展未完成）/ `done`（做完了，交付）/ `blocked`（等人决定）/ `needs_auth`（需要授权）。
 
 ### 4. 交付、确认与追问（0.14 起是两段式）
 
 子会话报 `done` **不等于**任务结束，而是落到 **`delivered`（已交付待确认）**：
 
-- **默认保持待确认，不主动关闭**：追问窗口留着，用户看完结果常还要改。协调者只在用户明确说「确认 / 没问题 / 不用再改」，或确实需要终态（要派依赖它的任务、要删任务、要收尾）时才 `task_close`。
+- **默认保持待确认，不主动关闭**：追问窗口留着，用户看完结果常还要改。协调者只在用户明确说「确认 / 没问题 / 不用再改」，或确实需要终态（要派依赖它的任务、要删任务、要收尾）时才 `task_message({ action: 'close' })`。
 - 要改/补充：协调者 `task_message` **复用同一个子会话**，任务回到 `running`，完成后会再交付一次。（面板不再提供「追加」按钮，见下节。）
 - 一直不确认：超过 `deliveredTimeoutMinutes`（默认 60 分钟）自动收成 `done`（`close_reason=timeout`）。
 - 面板「待你决定」筛选与收件箱都包含 `delivered`，任务卡/抽屉有「待确认」小标、交付时间与关闭原因。
@@ -148,15 +148,15 @@ task_create({
 | `running` | 子会话在跑 | 子会话回报 / 结算 |
 | `waiting_user` | 子会话 `blocked`，等人决定 | `task_message` 续派 → `running` |
 | `waiting_auth` | 子会话 `needs_auth`，等授权 | 同上 |
-| **`delivered`** | **已交付待确认**：成果已落库，等确认或追问 | `task_close` → `done`；`task_message` → `running`；超时 → `done` |
+| **`delivered`** | **已交付待确认**：成果已落库，等确认或追问 | `task_message({action:'close'})` → `done`；`task_message` → `running`；超时 → `done` |
 | `done` | 已完成（**不可逆终态**，不提供 reopen） | — |
-| `failed` | 失败（可 `task_retry` / 面板重派） | — |
-| `cancelled` | 被 `task_stop` 停掉 | — |
+| `failed` | 失败（可 `task_message({action:'retry'})` / 面板重派） | — |
+| `cancelled` | 被 `task_message({action:'stop'})` 停掉 | — |
 | `orphaned` | 会话丢了（上报过 progress 的回合异常结束） | 可重派 |
 
 - 依赖就绪**只认 `done`**：`delivered` 会短暂挡住下游，确认或超时后自动晋升。
 - `delivered` 是唯一允许「追问复用原会话」的收尾态；`done` 之后要改只能新派任务。
-- 面板「待你决定」与 `task_inbox` 都把 `delivered` 当待办。
+- 面板「待你决定」与 `task_list({view:'inbox'})` 都把 `delivered` 当待办。
 
 ### 依赖、分组、写域、优先级
 
@@ -176,12 +176,12 @@ task_create({
 冲突任务：
 - 「旧任务（t-1a2b3c4d）」（进行中）：/path/to/repo
 三种做法（任选其一）：
-1. 先 task_close 关闭旧任务（或 task_stop 取消），再重派；
+1. 先 task_message({action:'close'}) 关闭旧任务（或 task_message({action:'stop'}) 取消），再重派；
 2. 传 worktree:true 让新任务在独立检出里跑（推荐：两个任务可并行，合并由你决定）；
 3. 确认确实要并发写同一目录时，显式传 allowConcurrent:true 放行（冲突风险自负）。
 ```
 
-- **三条出路**，都不是「不可绕过」：`task_close` / `task_stop` 旧任务、`worktree:true` 隔离、或显式 `allowConcurrent:true`（放行时返回里标注「并发风险」，并记 `task.create.concurrent-write` 日志）。
+- **三条出路**，都不是「不可绕过」：`task_message({action:'close'|'stop'})` 旧任务、`worktree:true` 隔离、或显式 `allowConcurrent:true`（放行时返回里标注「并发风险」，并记 `task.create.concurrent-write` 日志）。
 - **不算冲突**（既有用法不受影响）：不同 target、worktree 隔离任务（在各自检出里跑——含 `requested` 待建检出状态，即因 `dependsOn` 停在等前置的隔离任务）、`dependsOn` 链上的前置任务（等它们 `done` 才派发，不会同时跑）、`readOnly` 只读任务（不写文件，既不占目录也不被拦）、已完成/已取消/失败/丢失的任务（已释放目录）。反过来，`degraded`（目标不是 git 仓库、隔离降级）仍在原工作树里写，**照常占目录**。
 - **`planFirst` 计划任务照常参与判定**：计划阶段当下是只读沙箱，但批准后会切回可写——放过去等于把冲突推迟到批准那一刻。
 - **`delivered`（待确认）算活跃**：它还占着目录。要接着改就用 `task_message` 追问原会话，不要新建同目录任务——拒绝文案也会提示这一点。
@@ -265,7 +265,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 - **与 `readOnly` / `planFirst` 互斥**；与 `worktree` 不冲突（隔离目录 vs 放开权限是两件事）。
 - **不继承**：任务级字段，不写配置、不往孙任务传；重派/追问沿用原任务的 `access`。
 - **可观测**：brief 第二行「【访问级别】完整」、`task_detail`/`task_status` 明写、通知标题带「（完整访问）」、台账 `tasks.access` 审计。
-- **风险**：等于把该子会话的写权限交给模型——它能改任何用户能改的文件。用完正常进终态，`task_stop` 照样能收。
+- **风险**：等于把该子会话的写权限交给模型——它能改任何用户能改的文件。用完正常进终态，`task_message({action:'stop'})` 照样能收。
 
 ### 隔离任务：`worktree`
 
@@ -294,10 +294,10 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 - **日志层**：`done` 摘要写进 `task-log`（一行一条），**只归档、永不注入**任务详情。
 - **事实层**：摘要里带经验/教训标记的分句蒸馏成 `lesson`，加上 `decision` / `preference` / `note` 原子事实，才随 `task_create` 写进 `lessons/` 记忆文件、由 `task_detail` 给出路径；`memoryLimit` 控制注入条数（默认 3）。
-- **检索**：`history_search` 查插件记忆/历史任务/平台历史会话；`project_context` 读项目白名单文件、顶层结构、最近任务；`memory_note` 记一条跨任务有效的决策/经验。
+- **检索**：`context({mode:'history'})` 查插件记忆/历史任务/平台历史会话；`context({mode:'project'})` 读项目白名单文件、顶层结构、最近任务；`memory_note` 记一条跨任务有效的决策/经验。
 - **偏好是另一条路**（不进 `memories`）：`memory_note({ kind:'preference' })` **不传 `project`** 时写进协调者偏好
   （`settings.orchestrator_preferences`），**每回合注入协调者提示词**，改完下一回合生效，不用重启。它不进
-  `memories`（`history_search` 查不到），避免同一件事存两份。带 `project` 的偏好仍是项目约定，写 `memories`、
+  `memories`（`context({mode:'history'})` 查不到），避免同一件事存两份。带 `project` 的偏好仍是项目约定，写 `memories`、
   随 `task_detail` 注入子会话。
   - 出厂预制两条：跑包管理器/写 HOME 缓存 → 派任务传 `access:'full'`；worktree 任务验收含装依赖/构建 → 同样传 full。
   - 预算：`preferencesMaxChars`（默认 1200）+ `preferencesMaxItems`（默认 12）；超限按优先级保留并在段尾写明「另有 N 条未展示」。
@@ -305,7 +305,7 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 ### 收件箱与日报
 
-- `task_inbox` / 面板「待你决定」：待你决定、待确认（`delivered`）、失败/丢失、长时间没动静。
+- `task_list({view:'inbox'})` / 面板「待你决定」：待你决定、待确认（`delivered`）、失败/丢失、长时间没动静。
 - `blocked` / `needs_auth` 可带 `question` + `options`，显示在通知、详情与面板。
 - 日报默认关闭；profile 配 `digestAt: '09:00'`（`digestTimeZone` 可选）后，打开主会话自动挂 schedule，到点汇总完成/在跑/待决定/失败/产物。
 - 空闲看门狗默认开：`running` 长时间无心跳/消息/状态变化时告警一次，只告警、不改状态、不 kill。
@@ -332,13 +332,13 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 **风险（开之前先看）**
 
 - **归档不可逆**：默认 `rotateArchiveOld: true`，轮换会把旧主会话改名成「主会话（已退役 YYYY-MM-DD HH:MM）」并**交给平台归档**（从会话列表隐藏）。平台没有 unarchive，归档后在 UI 里**无法恢复**。只想留个回看入口就配 `rotateArchiveOld: false`，那时只改名不归档。
-- **换的是协调者身份，不搬历史**：活跃任务、待确认任务都会挡住轮换，但轮换之后旧会话里没处理完的追问不会再自动回来；跟进用面板 / `task_list` / `task_inbox`。
+- **换的是协调者身份，不搬历史**：活跃任务、待确认任务都会挡住轮换，但轮换之后旧会话里没处理完的追问不会再自动回来；跟进用面板 / `task_list` / `task_list({view:'inbox'})`。
 - **崩溃可能留中间态**：插件启动时会按 `settings.main_rotation_pending` 补完或清理（补处置旧会话 / 归档空白残留），失败只告警、下次启动重试；极端情况下旧会话可能还留在列表里。
 - **只有打开主会话才判定**：一直不打开就永远不换；反过来说，重启 DSH、刷新页面、面板 2 秒轮询都不会触发轮换（P1 删掉了「一天最多查一次」的检查节流，每次打开都现算）。
 
 ### 主会话原生自动化
 
-协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 15 个工具。当前契约核实于 DSH **0.2.2-rc.3**，升级宿主需复核，不能据此保证未来版本兼容。
+协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 10 个工具。当前契约核实于 DSH **0.2.2-rc.3**，升级宿主需复核，不能据此保证未来版本兼容。
 
 | 原生工具 | 用法 |
 |---|---|
@@ -366,20 +366,15 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 
 ## 工具清单
 
-协调者（12 个）：
+协调者（7 个）：
 
 | 工具 | 作用 |
 |---|---|
 | `task_create` | 建任务并派发；支持 `dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent`（显式放行同写域并发） |
-| `task_list` | 活跃任务/历史任务；`group` 过滤看组进度 |
+| `task_list` | 活跃任务/历史任务（`active` / `group` 过滤看组进度）；`view:'inbox'` 是收件箱：待决、待确认、失败/丢失、长时间没动静 |
 | `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、最近消息、最新返回（`include:'full'` 看全文） |
-| `task_message` | 续派消息（含「待确认」上的追问，复用原会话）；排队/等前置会返回提示 |
-| `task_close` | 把「已交付待确认」（`delivered`）确认成已完成（`done`，终态） |
-| `task_stop` | 停止任务（运行中/排队/等前置/待确认） |
-| `task_retry` | 重建 failed/orphaned，保留编排字段 |
-| `task_inbox` | 收件箱：待决、待确认、失败/丢失、长时间没动静 |
-| `history_search` | 查插件记忆、历史任务、平台历史会话 |
-| `project_context` | 只读项目白名单文件、顶层结构、最近任务、相关记忆 |
+| `task_message` | 子任务动作统一入口。`action:'message'`（默认）续派消息（含「待确认」上的追问，复用原会话；排队/等前置返回提示）；`action:'stop'` 停止任务（运行中/排队/等前置/待确认）；`action:'retry'` 重建 failed/orphaned（保留编排字段）；`action:'close'` 把「已交付待确认」确认成 `done`（终态） |
+| `context` | 读上下文（只读）。`mode:'history'`（默认）查插件记忆、历史任务、平台历史会话；`mode:'project'` 读项目白名单文件、顶层结构、最近任务、相关记忆；`mode:'workspaces'` 看已登记工作区与仓库采样索引 |
 | `memory_note` | 记一条跨任务有效的决策/经验；`kind:'preference'` 不传 `project` 时写进协调者偏好（立即生效） |
 | `read_workspace` | 读产物正文：**主会话工作区内**的文件/目录，或**任务已登记**的产物（子会话产物通常写在 target 目录内）；未登记/越界/`../` 穿越/符号链接逃逸被拒；大文件按行窗口截断给续读 `offset` |
 
@@ -391,8 +386,8 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物；越权会被拒 |
 | `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为产物（计划阶段唯一写入口） |
 
-- 15 个工具**全局注册**，worker 预设不做工具收窄，子会话直接继承。
-- `task_close` / `task_retry` / `task_inbox` / `history_search` / `project_context` / `memory_note` 仅主会话可调；`task_detail` / `task_report` / `plan_save` 只对任务自己的子会话开放（`plan_save` 还要求任务是计划任务）。
+- 10 个工具**全局注册**，worker 预设不做工具收窄，子会话直接继承。
+- `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace` 仅主会话可调；`task_detail` / `task_report` / `plan_save` 只对任务自己的子会话开放（`plan_save` 还要求任务是计划任务）。
 - 派发给子会话的 **brief 是纯指引**（4 行：任务编号 +「先调 `task_detail`」+「执行中待确认用 blocked 上报」+「交付时怎么回报」；
   `access:'full'` 与 worktree 隔离任务各多一行，所以是 4–6 行），目标全文、验收、经验、前置、产物都不内联进提示词。
   - **执行中**遇到要用户拍板的事：`task_report blocked` 上报「问题 + 选项建议」，协调者用 `ask_user_question` 问用户后 `task_message` 续派；不自行假设、不阻塞等待。
@@ -400,6 +395,22 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
     所以选项要在执行中就用 `blocked` 给出，交付时的选项由协调者自己组织）。
   - 子会话直接调 `ask_user_question` 会被平台以 `DELEGATED_CALLER` 拒绝，问用户始终由协调者带选项做。
   worktree 隔离任务额外多一行：检出目录没有依赖，可以执行安装命令（`pnpm install` / `npm install` / `uv sync` 等），**只安装不升级**。
+
+### 工具迁移映射（P1-B：15 → 10）
+
+工具面收缩到 10 个（协调者 12 → 7，子会话 3 → 3，子会话名字不变）。**旧名已删除**（不注册、不在 allow 名单里），
+照旧名调用会拿到一条可读迁移提示（「已删除 + 改成什么」），不会静默失败；按这张表改一遍就能跑：
+
+| 旧工具名 | 现在怎么调 | 备注 |
+|---|---|---|
+| `task_stop` | `task_message({ task_id, action: 'stop' })` | 停止任务，行为不变 |
+| `task_retry` | `task_message({ task_id, action: 'retry' })` | 重派 failed/orphaned，新任务编号、旧任务留审计 |
+| `task_close` | `task_message({ task_id, action: 'close' })` | 确认「已交付待确认」→ `done` |
+| `task_inbox` | `task_list({ view: 'inbox' })` | 收件箱，输出与旧工具逐字一致 |
+| `history_search` | `context({ mode: 'history', query, project?, limit? })` | 跨项目历史检索 |
+| `project_context` | `context({ mode: 'project', target, query? })` | 项目背景；只要工作区与仓库索引用 `context({ mode: 'workspaces' })` |
+
+名字不变的：协调者 `task_create` / `task_status` / `memory_note` / `read_workspace`，子会话 `task_report` / `task_detail` / `plan_save`（子会话契约是 in-band 的，不做改名）。
 
 ## 配置
 
@@ -502,8 +513,8 @@ read_workspace({ path: 'reports/big.md', offset: 401, limit: 400 })     // 续�
 | 主会话突然变成新的、旧会话变成「主会话（已退役 …）」 | 主会话轮换命中（只在你配了 `mainRotation: 'auto'` 时才会）：旧会话已归档（**不可逆**）。不想再换就删掉该配置或配 `off` 并彻底重启 DSH；只想保留回看入口配 `rotateArchiveOld: false` |
 | 打开主会话后什么都没换 | 正常：看日志 `main.rotation.decided` 的 `blockedBy` 第一条（`min-age` / `cooldown` / `active-tasks` / `delivered-pending` / `mode-off`…）；采不到的指标在 `degraded` 里 |
 | 想马上换一次主会话 | 没有强制按钮：配 `mainRotation: 'auto'`，调低 `rotateAfterDays` / `rotateMinAgeHours` / `rotateCooldownHours` / `rotateIdleMinutes`，收掉活跃任务后再打开主会话 |
-| 子任务报 done 后一直「待确认」 | 正常：默认保持待确认等用户拍板；要收尾就 `task_close`，或等 `deliveredTimeoutMinutes` 超时自动完成 |
-| 任务停在「会话丢失」 | 子会话只在没报过 progress 时自动交付；上报过 progress 的回合异常结束落 `orphaned`。先用 `task_status` 看进展，需要接着做就 `task_retry` |
+| 子任务报 done 后一直「待确认」 | 正常：默认保持待确认等用户拍板；要收尾就 `task_message({action:'close'})`，或等 `deliveredTimeoutMinutes` 超时自动完成 |
+| 任务停在「会话丢失」 | 子会话只在没报过 progress 时自动交付；上报过 progress 的回合异常结束落 `orphaned`。先用 `task_status` 看进展，需要接着做就 `task_message({action:'retry'})` |
 | 提示「配置键 X 已删除」 | 老 profile 里的已删键（`backend` / 5 个 `rotate*`）：按提示删掉即可，插件已按默认值运行（迁移见 [CHANGELOG](CHANGELOG.md#未发布)） |
 | 日志提示 `workerPreset` 回落 | 预设 id 只能用小写字母/数字/连字符；改值后彻底重启 |
 | 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制；确实要写仓库外用 `access:'full'` 或 CI |

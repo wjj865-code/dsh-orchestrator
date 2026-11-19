@@ -1,6 +1,6 @@
-// 跨项目记忆：task_report done 自动沉淀，协调者可用 history_search / memory_note 读写。
+// 跨项目记忆：task_report done 自动沉淀，协调者可用 context({ mode: 'history' }) / memory_note 读写。
 // 存储是台账同库的 memories 表；检索用关键词（CJK 二元组 + ASCII 词）+ 项目过滤，
-// 不依赖平台 sessionQuery，sessionQuery 只作为 history_search 的补充来源。
+// 不依赖平台 sessionQuery，sessionQuery 只作为 context({ mode: 'history' }) 的补充来源。
 //
 // M1 记忆分层（2026-11-15）：
 // - 日志层 task-log（旧版本写成 task-done）：任务完成记录，只归档，**永不注入 brief**；
@@ -40,7 +40,7 @@ export function memoryLayerOf(kind) {
 
 export const isInjectableKind = kind => memoryLayerOf(kind) === MEMORY_LAYERS.fact
 
-/** 展示用短标签：注入块和 history_search 都标出来源层。 */
+/** 展示用短标签：注入块和 context 检索结果都标出来源层。 */
 export function memoryKindLabel(kind) {
   const key = String(kind ?? '')
   return KIND_LABELS[key] ?? (memoryLayerOf(key) === MEMORY_LAYERS.log ? '日志' : '记忆')
@@ -223,7 +223,7 @@ export function addMemory(db, {
 
 /**
  * 按项目 + 关键词检索；无关键词时返回最近记忆。
- * kinds 可限定分层（brief 注入只取事实层）；不传则各层都查（history_search 要能翻日志）。
+ * kinds 可限定分层（brief 注入只取事实层）；不传则各层都查（context 检索要能翻日志）。
  * 结果按关键词命中数、kind 权重、时间排序，并更新 last_used/use_count。
  */
 export function searchMemories(db, { projectKey = GLOBAL_PROJECT, query = '', limit = 5, kinds } = {}) {
@@ -278,7 +278,7 @@ const dayOf = createdAt => {
 }
 const inlineMemoryLine = row => `- ${dayOf(row.createdAt)}[${memoryKindLabel(row.kind)}] ${clip(row.text, 300)}`
 
-/** 内联记忆块（project_context / 降级路径用）：每条一行，总长受 maxChars 约束。 */
+/** 内联记忆块（context 的项目背景 / 降级路径用）：每条一行，总长受 maxChars 约束。 */
 export function memoryBlockFromRows(rows, { maxChars = MAX_MEMORY_BLOCK } = {}) {
   const list = Array.isArray(rows) ? rows : []
   if (list.length === 0) return ''
@@ -337,7 +337,7 @@ export function renderLessonFile({ projectKey = GLOBAL_PROJECT, rows = [], now =
     `# 项目经验：${key === GLOBAL_PROJECT ? '全局（跨项目）' : key}`,
     '',
     '> 由 dsh-orchestrator 自动生成（台账 memories 事实层）。brief 里只给摘要和本文件路径，',
-    '> 这里才是完整内容；要改记忆请用 memory_note / history_search，手改会在下次派发时被覆盖。',
+    '> 这里才是完整内容；要改记忆请用 memory_note / context({ mode: \'history\' })，手改会在下次派发时被覆盖。',
     ...(stamp === '' ? [] : [`> 生成时间：${stamp}`]),
     '',
   ]

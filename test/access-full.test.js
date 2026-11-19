@@ -157,7 +157,7 @@ test("access:'full'：续派与重派都沿用完整访问（不静默降级成�
 
   // 重派：新任务沿用原任务的 access，brief 也带上访问级别。
   transition(db, task.id, 'failed', { error: '测试失败' })
-  const retry = await call(tools, 'task_retry', { task_id: task.id })
+  const retry = await call(tools, 'task_message', { action: 'retry', task_id: task.id })
   assert.match(retry, /已重派/)
   const retried = listTasks(db).filter(item => item.retry_of === task.id)
   assert.equal(retried.length, 1)

@@ -62,7 +62,7 @@ test('索引缺完整持久化时自然completed落failed；成功证据按任�
   const pushed = []
   const reporter = createSettlementReporter({ db, notifier: { push: item => pushed.push(item) } })
   assert.equal(reporter.report({ taskId: incomplete.id, stopReason: 'completed' }).to, 'failed')
-  assert.match(getTask(db, incomplete.id).error, /task_retry/)
+  assert.match(getTask(db, incomplete.id).error, /task_message\(\{ action: "retry" \}\)/)
   assert.equal(reporter.report({ taskId: incomplete.id, stopReason: 'completed' }).action, 'skipped')
   assert.equal(reporter.report({ taskId: saved.id, stopReason: 'completed' }).to, 'delivered', '全局索引被其他任务覆盖不影响本任务成功标记')
   assert.deepEqual(pushed.map(item => item.status), ['failed', 'delivered'])

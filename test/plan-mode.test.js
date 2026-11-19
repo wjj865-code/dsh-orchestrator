@@ -300,7 +300,7 @@ test('P8 task_message：running 中的计划任务收到普通消息不算批准
 test('P8 task_stop：停止计划任务 → rejected，并释放子会话', async () => {
   const { db, dispatcher, tools } = await setupTools()
   const task = planTaskRow(db, { status: 'waiting_user' })
-  const text = await mainCall(tools, 'task_stop', { task_id: task.id })
+  const text = await mainCall(tools, 'task_message', { action: 'stop', task_id: task.id })
   assert.match(text, /已停止/)
   const stopped = getTask(db, task.id)
   assert.equal(stopped.status, 'cancelled')
@@ -313,7 +313,7 @@ test('P8 task_retry：计划任务重派后重新进入计划阶段', async () =
   const { db, dispatcher, tools } = await setupTools()
   const task = planTaskRow(db, { status: 'running' })
   transition(db, task.id, 'failed', { error: '炸了' })
-  const text = await mainCall(tools, 'task_retry', { task_id: task.id })
+  const text = await mainCall(tools, 'task_message', { action: 'retry', task_id: task.id })
   assert.match(text, /已重派/)
   const retried = listTasks(db, { active: true }).find(item => item.retry_of === task.id)
   assert.equal(retried.plan_first, true)

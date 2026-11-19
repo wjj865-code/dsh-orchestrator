@@ -316,14 +316,14 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     const depends = validateDepends(db, task.depends_on)
     if (depends.ok === false) return panelFailure('RETRY_DEPENDS_INVALID', { reason: depends.error })
     const status = current()
-    // 与工具层 task_retry 的口径差异：面板在主会话失效时先拒绝，避免建一条必失败的 ghost；
+    // 与工具层重派（task_message action:retry）的口径差异：面板在主会话失效时先拒绝，避免建一条必失败的 ghost；
     // 工具层保持历史行为（创建后标 failed 再抛错），两边错误码/文案仍共用 action-errors。
     if (status.live === false) return panelFailure('MAIN_SESSION_UNAVAILABLE')
     const depState = dependencyState(db, { depends_on: depends.ids })
     // G1：旧尝试进入终态，清掉平台 goal；新任务派发时会重新 create+disarm。
     void goalBridge?.clear?.(task.id, task.session_id)
     let retried
-    // P9：隔离任务重派复用原检出（与工具层 task_retry 同一口径，见 worktree.js retryWorktreeOf）。
+    // P9：隔离任务重派复用原检出（与工具层重派同一口径，见 worktree.js retryWorktreeOf）。
     const retryWorktree = retryWorktreeOf(task)
     try {
       retried = createTask(db, {
@@ -334,7 +334,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         // P8：计划任务重派后重新走计划阶段（新会话要重新探索/批准）。
         planFirst: task.plan_first === true,
         planState: task.plan_first === true ? 'planning' : 'none',
-        // per-task 访问级别跟着原任务走（与工具层 task_retry 同口径）。
+        // per-task 访问级别跟着原任务走（与工具层重派同口径）。
         access: task.access === 'full' ? 'full' : null,
         worktree: retryWorktree,
         retryOf: task.id,
@@ -429,7 +429,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     return { ok: true, taskId: task.id, ...(plan === undefined ? {} : { plan }) }
   }
 
-  // 确认交付（delivered → done）：与工具 task_close 共用 closeDelivered，二次确认在 client。
+  // 确认交付（delivered → done）：与工具 task_message action:close 共用 closeDelivered，二次确认在 client。
   const close = async taskId => {
     const task = getTask(db, String(taskId ?? ''))
     if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })

@@ -25,13 +25,14 @@
 - `main-session.js` 仅新建主会话写 `settings.main_onboarding:<id>=pending`，旧主会话/配置覆盖不会因升级补初始化。复用既有 open in-flight 锁；`onboarding.js` 用 settings CAS pending→sending→sent 防并发重复，注入失败退 pending、打开结果给错误，重开可重试。不在 apply 自动唤醒历史主会话。
 - index 在成功 open/主会话晚加载后由 onboarding **await guardPreset 恢复成功**再CAS投递，缺选择服务/恢复失败留pending并返回可见错误，不用固定2秒延迟猜就绪；复用 `injectNotification`（agent.steer）启动模型轮次；prompt 要求先能力介绍再走现有 task_create 只读任务，不直接替模型扫描或绕过台账。sent 表示消息已入队，不保证模型已介绍/派发；进程在发送和标记之间崩溃有不确定窗口，不盲自动重投。
 - task_create 对「工作区与仓库索引」只读任务捕获 workspaceRegistry.list 的 id/title/path 到 brief，task_detail 提供名单与随包 scripts/workspace-index.mjs。worker 仅扫描登记目录，复用 runGit 的 execFile/timeout，读取 repoRoot/branch/HEAD/origin/commonDir，单项失败继续，不 fetch/pull、不写文件。
-- task_report.workspace_index 仅接受该任务本人 done 的完整 JSON，按创建时名单验证覆盖并使用名单真 title/path，remote 再脱敏，以同SAVEPOINT写既有 settings.workspace_repo_index及workspace_index_saved:<taskId>成功标记，不改 memories 或 workspaceRegistry。S1仅索引completed缺本任务成功标记时落failed（task_retry可重试），防止遗漏/非法回报后自然误交付；普通任务与已交付只补消息路径不变。project_context(workspaces:true) 返回全部注册映射与采样索引；指定项目附快照，歧义列候选、不猜路径。
-- 不新增工具、索引服务、调度服务或数据库迁移，不改变 worker 默认工具/沙箱；索引数据只作采样事实，读取受限记录 unavailable。重新索引通过正常只读任务派发，失败可见且可 task_retry。
+- task_report.workspace_index 仅接受该任务本人 done 的完整 JSON，按创建时名单验证覆盖并使用名单真 title/path，remote 再脱敏，以同SAVEPOINT写既有 settings.workspace_repo_index及workspace_index_saved:<taskId>成功标记，不改 memories 或 workspaceRegistry。S1仅索引completed缺本任务成功标记时落failed（task_message({action:'retry'})可重试），防止遗漏/非法回报后自然误交付；普通任务与已交付只补消息路径不变。context({mode:'project'})(workspaces:true) 返回全部注册映射与采样索引；指定项目附快照，歧义列候选、不猜路径。
+- 不新增工具、索引服务、调度服务或数据库迁移，不改变 worker 默认工具/沙箱；索引数据只作采样事实，读取受限记录 unavailable。重新索引通过正常只读任务派发，失败可见且可 task_message({action:'retry'})。
 
 ### 原生自动化工具面
 
 - `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，allow 显式保留 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；`preset-tools.js` 仍用增量 deny 补集。`index.js` 的 runtime restrict 与 guard 不再拒绝这四工具，其余文件、shell、团队和子会话专属禁止项不变。
-- 这四工具由原生包在预设 scope 等待 Schedule 服务后注册，不进入 `createTools`，插件全局工具数仍为 15（含 `read_workspace`）。default worker 不新增挂载，不新增 host global plane 工具或 schema 包装。
+- 这四工具由原生包在预设 scope 等待 Schedule 服务后注册，不进入 `createTools`，插件全局工具数仍为 10（P1-B 起；含 `read_workspace`）。default worker 不新增挂载，不新增 host global plane 工具或 schema 包装。
+- **工具面（P1-B：15 → 10）**：`createTools` 返回 10 个（协调者 7 + 子会话 3）。旧的 6 个入口并进三个工具：`task_message` 的 `action`（message/stop/retry/close）、`task_list` 的 `view`（list/inbox）、新工具 `context` 的 `mode`（history/project/workspaces）。旧名**不注册**、不在 allow 名单里，但 `index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）；子会话契约 `task_report` / `task_detail` / `plan_save` 名字不变。
 - 缺能力诊断仅针对唯一主会话：打开/非 running 创建/idle/下一轮 policy 渲染检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule` 服务。缺失状态去重 warning + policy 提示，边界重新检查可恢复；不等待 Loader preset list、不改运行回合工具表，也不调用真实自动化 API。
 - 本次自动编排只支持 `target:this_session`，Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new/new_once` 创建 ordinary root Session（当前 cwd/composed preset），不是委托 worker，也不是第二协调者；非唯一主 id 被现有 `requireMain` 拒绝，不改变 main_session_id。
 - 沿用原生 Host-wide 管理与用户明确授权提示、RRULE、updatedAt/expectedUpdatedAt 冲突保护；审批提示是模型约束，不是新增硬门禁。委托 depth 校验仍由宿主负责，`access:full` 不增加工具或解除 `subagent_session`。
@@ -131,7 +132,7 @@
 
 - `task_create` 只做校验、去重、落库、入队；派发异步。
 - 容量满时任务保持 `pending`，按 2s/5s/10s/30s 退避重试。
-- 唤醒：子会话结算、任务终态、`task_stop`、插件启动、协调者 `agent/created`。
+- 唤醒：子会话结算、任务终态、`task_message({action:'stop'})`、插件启动、协调者 `agent/created`。
 - 高优先级先派；同优先级按创建时间 FIFO。
 - 子会话创建的非容量错误才标 `failed` 并推通知，不留幽灵 `pending`。
 - 子会话预设由 `config.workerPreset` 决定（默认 `dsh-orchestrator-worker`），`dispatch` 只在 `spawn` provider 上传 `agentPreset`；续派/冷恢复沿用会话创建时记下的预设。调试用的 `orch-debug` 副本**不在本包内**（P1-E 已外移）：生成器与说明在开发仓库 `tools/debug-preset/`（`cli.mjs` + `README.md`），生成后走 bundle 安装；插件运行时只透传预设 id。
@@ -170,9 +171,9 @@
 `done` 是不可逆终态，但「子会话说做完了」不等于「用户验收过」。为既保留 `done` 的审计语义、又给追问留窗口，状态机在 `running` 与 `done` 之间加了 `delivered`（已交付待确认）：
 
 - **进入**：`task_report done`，或结算 `completed` 且没上报过 progress（`SETTLE_MAP`）。
-- **出口 1 · 确认**：协调者 `task_close`（或面板「确认交付」）→ `done`，`close_reason=coordinator`；超过 `deliveredTimeoutMinutes`（默认 60）由 sweeper 自动收成 `done`，`close_reason=timeout`。
+- **出口 1 · 确认**：协调者 `task_message({action:'close'})`（或面板「确认交付」）→ `done`，`close_reason=coordinator`；超过 `deliveredTimeoutMinutes`（默认 60）由 sweeper 自动收成 `done`，`close_reason=timeout`。
 - **出口 2 · 追问**：`task_message` 投递成功 → `running`，复用同一个子会话（**可写根不释放**），完成后再次交付。
-- **出口 3 · 停止/丢失**：`task_stop` → `cancelled`；追问时子会话不可达 → `orphaned`。
+- **出口 3 · 停止/丢失**：`task_message({action:'stop'})` → `cancelled`；追问时子会话不可达 → `orphaned`。
 - 归属：`delivered` 是活跃状态（`listTasks(active)`、面板门控、`inboxCount` 都算），但不是终态。
   状态集合与转移表只有一份：`src/status-facts.js` 的 `STATUS_CAPS` / `TRANSITIONS`，其余模块（`panel-gates` /
   `tools` / `panel-actions` / `settlement` / `reconcile` / `watchdog` / `main-rotation` / `ledger` 的 SQL /
@@ -182,7 +183,7 @@
 - 对账：`delivered` 不参与 S2 的 liveness/catalog 检查（成果已落库，等确认即可），超时 sweeper 兜底，重启不会卡死。
 - 审计：`tasks.delivered_at` 记录本次交付时间（追问后再交付会重写，超时从新时间起算），`tasks.close_reason` 记录关闭原因；`messages` 里 `kind='close'` 一行写「协调者确认 / 超时自动完成」。
 - 关闭三条路径（工具 / 面板 / 超时）共用 `src/delivered.js` 的 `closeDelivered`，副作用顺序固定：迁移 + 审计消息 → 释放可写根 → goal 收口 → 按档位清检出 → 唤醒队列。
-- 通知去重：进入 `delivered` 发一条（带 `task_close`/`task_message` 指令），确认/超时**不再发**通知，只在台账写审计消息。
+- 通知去重：进入 `delivered` 发一条（带 `task_message({action:'close'})`/`task_message` 指令），确认/超时**不再发**通知，只在台账写审计消息。
 
 ## 状态事实源（`src/status-facts.js`）
 
@@ -194,8 +195,8 @@
 |---|---|---|
 | `active` | 还算「没落终态」吗？ | `listTasks(active)`、面板筛选、`ledger` 的 SQL |
 | `followup` / `resumable` | 能续派吗 / 续派后要迁回 running 吗？ | `task_message`、面板「追加」 |
-| `deletable` / `retryable` | 能删吗 / 能重派吗？ | 面板删除、`task_retry` |
-| `terminal` / `releases` | 是流程终态吗 / 要释放可写根与 goal 吗？ | `task_close` 判定、结算收尾、**面板与工具的 stop 幂等判定** |
+| `deletable` / `retryable` | 能删吗 / 能重派吗？ | 面板删除、`task_message({action:'retry'})` |
+| `terminal` / `releases` | 是流程终态吗 / 要释放可写根与 goal 吗？ | `task_message({action:'close'})` 判定、结算收尾、**面板与工具的 stop 幂等判定** |
 | `waiting` | 是等人（用户/授权）的停顿态吗？ | 续派即批准计划 |
 | `rotationActive` | 会阻断主会话轮换吗？ | `main-rotation`（**刻意不含 `delivered`**） |
 | `liveness` / `catalog` / `watchdog` | 要对账活着吗 / 要查目录吗 / 要巡检空闲吗？ | `reconcile`、`watchdog` |
@@ -265,7 +266,7 @@
 
 | stopReason | 台账 | 死因 / 通知 |
 |---|---|---|
-| `completed` 且没上报过 progress | `delivered` | 无死因；自动交付还会补一次产物收集，等 `task_close`/超时收成 `done` |
+| `completed` 且没上报过 progress | `delivered` | 无死因；自动交付还会补一次产物收集，等 `task_message({action:'close'})`/超时收成 `done` |
 | `completed` 但上报过 progress | `orphaned` | 回合结束却没报终态（可重派） |
 | `aborted` | `cancelled` | 被子会话中断（`dispose` / interrupt / 父级取消） |
 | `error` / `max-tokens` / `refusal` | `failed` | 异常结束 / 输出截断 / 被策略拒绝 |
@@ -295,10 +296,10 @@
 
 - 通知走 `agent.steer` 直插协调者，不经过 Team 的 `sendMessage`。
 - 每次投递写 `notifications`：`delivered` / `failed`（带 reason）/ `skipped`；合并后续行 `merged_into` 指向首条。
-- `task_inbox` 汇总待决、失败/丢失、长时间没动静；问题/选项来自台账 `question` / `question_options_json`。
+- `task_list({view:'inbox'})` 汇总待决、失败/丢失、长时间没动静；问题/选项来自台账 `question` / `question_options_json`。
 - `progress`/`done`/`task_message` 会清掉旧问题。
 - `stallRounds`：连续 progress 达到阈值且距上次提醒超过 `staleMinutes`，推一次「可能卡住」。
-- `digestAt`（HH:MM）开启后，主会话上维护一条每日 `schedule`；到点提示协调者调用 `task_inbox` + `task_list` 汇总。主会话重建/时区变化会重建，配置为空会删除。
+- `digestAt`（HH:MM）开启后，主会话上维护一条每日 `schedule`；到点提示协调者调用 `task_list({view:'inbox'})` + `task_list` 汇总。主会话重建/时区变化会重建，配置为空会删除。
 
 ## 启动对账（S2）
 
@@ -385,13 +386,13 @@
 - **经验不再进提示词**：`task_create` 命中事实层记忆时 `buildLessonBlock` 照旧写
   `$DSH_HOME/state/orchestrator/lessons/<项目目录名>-<key 短 hash>.md`，但只把指针 `{ path, count }`（或降级时的 `{ inline }`）
   存进 `brief.experience`，由 `task_detail` 给出。`stateDir` 缺失/写文件失败 → 内联块只出现在详情里；无命中 → 不建文件、详情无经验小节。
-- **重派同口径**：`task_retry` 与面板 `retry` 都用 `renderBrief({ taskId: 新任务编号 })` 重渲染，`task.brief` 快照（含经验指针）整体复制。
+- **重派同口径**：`task_message({action:'retry'})` 与面板 `retry` 都用 `renderBrief({ taskId: 新任务编号 })` 重渲染，`task.brief` 快照（含经验指针）整体复制。
 - **挂载链**：`task_detail` 和其它 `task_*` 一样由 `index.js` 的 `createTools(...).map(tool => ctx.tools.register(tool))` 注册成 host plane 全局工具
   （`index.js:430-441`）；`cordis.patch.yml` 的 `dsh-orchestrator-worker` 预设**不挂** `preset-tools`、不做 allow/deny 收窄，
   所以子会话工具表直接继承它（与 `task_report` 同一条路）。协调者预设的 `preset-tools` 白名单不含 `task_detail`，执行层 `COORDINATOR_DENY` 也把它列为子会话专属工具，
   所以主会话看不到/调不到它；即便某个 profile 例外地暴露出来，工具内的 owner 校验仍会拒绝。
 - **队列兜底**：`queue.pump` 优先用落库的 brief 消息；没有（直接建台账/旧数据）时用 `renderBrief({ taskId })` 兜底，不再拼 `【任务】标题 + 目标`。
-- 接线：`index.js` 把插件写入根作为 `createTools({ stateDir })` 传入；`memoryInject:false` 时整段跳过。`project_context` 仍用内联记忆块（协调者读，不走文件）。
+- 接线：`index.js` 把插件写入根作为 `createTools({ stateDir })` 传入；`memoryInject:false` 时整段跳过。`context({mode:'project'})` 仍用内联记忆块（协调者读，不走文件）。
 
 
 ## 产物
@@ -465,7 +466,7 @@ target 可写根（`danger-full-access` 下用不上，只当注入失败时的�
   回到 `running` 之后，`session.append('sandbox/mode', {mode:'workspace-write'})` +
   `planMode.set(agent, false)` + 台账 `plan_state='approved'`；同时补登记 target 可写根
   （rc.3 子会话 `header.cwd` 是父会话目录）。投递失败路径不碰 plan 状态（任务仍等你决定）。
-- **停止/终态**：`task_stop` 与结算/对账进终态时释放 guard；还在 `planning` 就结束的 `plan_state` 收口成
+- **停止/终态**：`task_message({action:'stop'})` 与结算/对账进终态时释放 guard；还在 `planning` 就结束的 `plan_state` 收口成
   `rejected`，已 `approved` 的保留（历史里能看出批准过）。
 - **台账视图**：`plan_first`（0/1）+ `plan_state`（`none` / `planning` / `approved` / `rejected`）。
   运行期真相在平台会话日志的 `plan/mode` 事件（重启/压缩由平台投影恢复），台账只是编排视图；
@@ -499,8 +500,8 @@ target 可写根（`danger-full-access` 下用不上，只当注入失败时的�
 - **`.git/info/exclude`**：建树成功后把 `.agents/` 追加到 `.git/info/exclude`（幂等；不动用户被跟踪的 `.gitignore`；
   不可写只 warn）。
 - **清理三档**：`worktreeCleanup` 默认 `off`（全部保留）；`checkout-only` 只 `worktree remove`；`full` 连分支一起删
-  （有未合并提交时保留分支并提示）。清理在终态（结算 / `task_stop` / 面板 stop）异步跑，失败只记日志、不改终态。
-- **重派**：`task_retry` / 面板重派在有检出且目录还在时复用（`state='reused'`），被清理过按原基线重建。
+  （有未合并提交时保留分支并提示）。清理在终态（结算 / `task_message({action:'stop'})` / 面板 stop）异步跑，失败只记日志、不改终态。
+- **重派**：`task_message({action:'retry'})` / 面板重派在有检出且目录还在时复用（`state='reused'`），被清理过按原基线重建。
 - **产物语义**：产物在检出目录里，**用户工作树没有这些改动**；通知 / `task_status` / 面板 / README 四处标注
   「分支 X / 检出 Y / 合并由你决定」。平台没有合并工具，插件也不提供。
 - **视图**：`snapshot` / `detail` 下发 `worktreeState/Branch/Path/Base/Source`；任务卡「隔离」小标 + 「隔离·…」chip、

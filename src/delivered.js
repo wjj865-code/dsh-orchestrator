@@ -1,5 +1,5 @@
 // delivered 两段式终态（D1）：子会话交付后停在「已交付待确认」（delivered），
-// 由协调者 `task_close`（或面板「确认交付」）确认，或超过 `deliveredTimeoutMinutes` 自动收成 done。
+// 由协调者 `task_message({ action: 'close' })`（或面板「确认交付」）确认，或超过 `deliveredTimeoutMinutes` 自动收成 done。
 // done 仍是不可逆终态；delivered 是唯一允许「追问复用原会话」的收尾态。
 //
 // 为什么单独一个模块：确认有两条触发路径（工具层 / 面板）和一条兜底（超时 sweeper），

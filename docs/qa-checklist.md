@@ -141,7 +141,7 @@
 | | 不存在 id | 可读提示 |
 | | 终态任务 | done/cancelled 上续派的行为需明确（拒绝或允许），不能原生抛错 |
 | **续派失败重试（R6）** | send 连失败（重试 3 次后仍失败） | 任务转 `waiting_user`、`error` 写失败原因、messages 有失败记录、工具返回可读文案；不整段抛异常；重复调用副作用可控 |
-| `task_stop` | 正常 | 状态 cancelled + interrupt 调用一次；文案 |
+| `task_message({action:'stop'})` | 正常 | 状态 cancelled + interrupt 调用一次；文案 |
 | | 已结束 | 可读错误、状态不变、interrupt 不再调用 |
 | `task_report` | 四状态 | progress 只 touch；done→done；blocked→waiting_user；needs_auth→waiting_auth；通知级别正确 |
 | | **回报方发送** | `task_report` 必须把 `exec.agent` 作为 sender 传给 notifier；缺 sender 时通知降级为 warn，不抛 `TEAM_SELF_MESSAGE` |
@@ -290,7 +290,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 7 | 绑定时白名单 | 绑定后查绑定 agent 的 `restrict` 调用 | 绑定会话被 deny 一次；子任务 agent 不收窄；重复不重复装 |
 | 8 | 并发首次 | 未绑定时 8 个不同会话同时 `task_create` | 只产生一个绑定（规则明确、不振荡）；所有任务指向同一协调者 |
 | 9 | 旧库迁移 | 旧库无 `settings` 表 | `openLedger` 自动建表；旧任务仍可读 |
-| 10 | 未绑定时其他写工具 | `task_message`/`task_stop` 带 exec.agent 且未绑定 | 行为明确：不绑定；可读提示或按既有逻辑执行，不能静默半执行 |
+| 10 | 未绑定时其他写工具 | `task_message`/`task_message({action:'stop'})` 带 exec.agent 且未绑定 | 行为明确：不绑定；可读提示或按既有逻辑执行，不能静默半执行 |
 
 **待明确（需拍板后写死判据）**：
 
@@ -310,13 +310,13 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 7 白名单 | 通过 | 绑定会话 deny 一次；调用方/子会话 `restrictions=0`；重复不重复装 |
 | 8 并发 | 通过 | 8 路并发只产生一个绑定；`bindSettingOnce` = `ON CONFLICT DO NOTHING` + 回读，后到不覆盖 |
 | 9 旧库迁移 | 通过 | 自动建 `settings` 表并可读写 |
-| 10 未绑定其他写工具 | 通过 | `task_message`/`task_stop` 返回「尚未绑定协调者，请先 task_create」，不写 followup、不投递、不重试、不改状态 |
+| 10 未绑定其他写工具 | 通过 | `task_message`/`task_message({action:'stop'})` 返回「尚未绑定协调者，请先 task_create」，不写 followup、不投递、不重试、不改状态 |
 
 **四条口径已关闭（`f6a1c7a`）**：
 
 1. **原子首绑**：`bindSettingOnce`（DO NOTHING + 回读）实测幂等先到先得；失效重绑 `rebindSetting` 走 `WHERE value = 旧值` CAS，旧值不符不动。
 2. **root/lead 校验**：带 `parentSession` 的子会话首绑被拒（不建任务、不套白名单）、失效重绑被拒（settings 不变）。
-3. **未绑定提示**：`task_message`/`task_stop` 只回提示，followup 0 条、`sendMessage` 0 次、状态不变。
+3. **未绑定提示**：`task_message`/`task_message({action:'stop'})` 只回提示，followup 0 条、`sendMessage` 0 次、状态不变。
 4. **重绑提示**：`task_create` 结果含「协调者会话已变更：旧 → 新」，日志区分首绑/重绑。
 
 **结论**：§16 十条全部通过 @ `f6a1c7a`；白名单真机「子会话工具数」由 Chief 冒烟复核（进程内已证 restrict 只落在绑定 agent）。
@@ -383,7 +383,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 3 | 终态不计入 | 各 8 条 `done`/`cancelled`/`failed`/`orphaned` + 新建 | 全部允许 |
 | 4 | 混合只算运行态 | 4 `running` + 4 `waiting_user`，继续建 | 还能建 4 条 `running`，第 5 条被拒（running 达 8） |
 | 5 | `pending` 计入 | 1 `pending`（spawn 失败残留）+ 7 `running` | 第 9 个被拒，占用清单含 `pending` 行 |
-| 6 | 拒绝文案 | 命中上限的返回 | 列出占用任务 `id｜标题｜状态`，数量恰好 = pending+running 集合（不列等待态），含「先 `task_stop` 或等结束」提示 |
+| 6 | 拒绝文案 | 命中上限的返回 | 列出占用任务 `id｜标题｜状态`，数量恰好 = pending+running 集合（不列等待态），含「先 `task_message({action:'stop'})` 或等结束」提示 |
 | 7 | list 语义不变 | `task_list` 默认 | 仍列出 `waiting_user`/`waiting_auth` 任务 |
 | 8 | 集合分离 | 代码复核 + 行为 | 额度集合与列表集合是两个不同查询/常量，不为省事合并 |
 | 9 | 并发不超发 | 8 个并行 `task_create` | 成功数 ≤ `maxActive`，其余拒绝且不建行 |
@@ -393,12 +393,12 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | # | 结果 | 证据 |
 | --- | --- | --- |
 | 1 | 通过 | 8 条 `waiting_user` 后第 9 个创建成功并落库；quota 只含新的 1 条 |
-| 2 | 通过 | 8 `running` 后拒绝；文案列 8 条 `id｜标题｜进行中`、含「先 task_stop 或等它们结束」；不写 tasks/messages 行 |
+| 2 | 通过 | 8 `running` 后拒绝；文案列 8 条 `id｜标题｜进行中`、含「先 task_message({action:'stop'}) 或等它们结束」；不写 tasks/messages 行 |
 | 3 | 通过 | `done`/`cancelled`/`failed`/`orphaned` 各 8 条后仍可建 |
 | 4 | 通过 | 4 running + 4 waiting_user → 再建 4 条 running 成功；第 9 条 running 被拒，占用清单不列等待态；`task_list` 仍列等待态（12 条 active） |
 | 5 | 通过 | 1 `pending`（spawn 失败残留）+ 7 running → 被拒；占用清单含 pending 行与「待派发」 |
 | 6 | 通过 | 占用清单数量/内容恰好等于 quota 集合，中文状态正确 |
-| 7 | 通过 | `task_list(active:true)` 仍含 `waiting_user`；`task_stop` 后额度立即释放（新建立即可成功） |
+| 7 | 通过 | `task_list(active:true)` 仍含 `waiting_user`；`task_message({action:'stop'})` 后额度立即释放（新建立即可成功） |
 | 8 | 通过 | `listQuotaTasks` 只 `pending`+`running`，`listTasks(active)` 语义未动，行为验证集合分离 |
 | 9 | 通过（`60d8ef9`） | 首次复验 12 并发全部成功（quota 检查在 `await bind()` 前）。修后：`bind()` 提前、额度检查与 `createTask` 同一同步段（中间无 await），12 并发 → 成功 8 / 拒绝 4、台账恰好 8 条，不超发 |
 
@@ -498,7 +498,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 2 | 完成补位不双派 | 完成一个 running 任务 | 队列按 `created_at` FIFO 补 1 个；补位任务 `session_id`=新 childId；每个任务只 spawn 一次，无双派 |
 | 3 | 队列满 `maxQueue` | 容量 1 + 队列 50 已满，再建 | 拒绝且不落库（无 tasks/messages 行）；文案可读 |
 | 4 | 重启自动入队 | `autoResumeQueue=true`（默认）预置 `queued_at` 非空与空但未超时的 pending | 启动后均重新入队并派发；`false` 时不动（文档口径） |
-| 5 | 排队任务 stop/message | `task_stop` 排队任务；`task_message` 排队任务 | stop：移出队列、`cancelled`、不 spawn；message：可读「排队中还没有子会话」、不写 messages、不转 `waiting_user` |
+| 5 | 排队任务 stop/message | `task_message({action:'stop'})` 排队任务；`task_message` 排队任务 | stop：移出队列、`cancelled`、不 spawn；message：可读「排队中还没有子会话」、不写 messages、不转 `waiting_user` |
 | 6 | 孤儿兜底 | 父会话关闭后 running 任务；`listChildren` 查询不可用 | 前者标 `orphaned`（卡片/`task_status` 可见），不留幽灵 running；后者只 warn 保留现状，不误判 orphaned；catalog 是历史≠活着 |
 | 7 | 回报归属 | 子会话 `task_report` | `task.session_id` = childId；归属校验通过；冒名仍被拒 |
 | 8 | 旧 Team 任务 | 一条真实旧数据 `sendMessage` 续派 | 结果写进文档：可续派 or 只能只读提示重建 |
@@ -515,7 +515,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 
 - 12 连建（cap=1）→ 1 running + 11 pending，无 failed、无报错，排队文案带位置；成功 `startActivation` 恰 1 次。
 - done + 结算后 FIFO 补位（补第 2 个而非第 1 个），总 spawn 2 次、childId 不重复（无双派）。
-- 排队任务 `task_stop` → cancelled、不 spawn；`task_message` → 排队提示、不写 messages、状态不变。
+- 排队任务 `task_message({action:'stop'})` → cancelled、不 spawn；`task_message` → 排队提示、不写 messages、状态不变。
 - `maxQueue=2` 第 3 个排队后拒绝且不落库；重启 `autoResumeQueue` 默认入队派发，`false` 不动。
 - catalog 读不到 → 只 warn 不误判；catalog 查不到 child → `orphaned`。
 - `task_report` 用 childId 归属通过、冒名拒绝；非容量错误（普通异常）→ `failed` + error、不留 ghost pending。
@@ -559,7 +559,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 5 | 生命周期 | 注册全部经 `ctx.slots.inject(name, …)` 包装（可撤销）；dispose 后重 apply 不重复注册、旧项消失 |
 | 6 | bundle 形态 | 无顶层 `import`/`export`（经典脚本）；`__ModuleLoader__.load({ id:'dsh-orchestrator', factory })`；factory 返回 `{inject, apply}`；`inject` 与 `apply` 实际用到的服务一致（用 `ctx.uiSession.current` 就要有 `uiSession`） |
 | 7 | 不抢 ds-bot 席位 | 注册槽位集合 ⊆ {`sidebar.panellist`, `main`, `conversation.header.leading`}；出现 `sidebar.workspaces`/`footer.action`/`brand.*`/`conversation.session.header`/`.header.actions` 即不通过；若加 `shell.overlay` 备选须另立条目并说明 id 不与 `bot-computer`/`bot` 冲突 |
-| 8 | 客户端零写入 | `client.js` 只有一条 `fetch.register`（path `/api/orchestrator`）；不含写类 endpoint/payload；不调 `task_create`/`task_stop`/绑定接口 |
+| 8 | 客户端零写入 | `client.js` 只有一条 `fetch.register`（path `/api/orchestrator`）；不含写类 endpoint/payload；不调 `task_create`/`task_message({action:'stop'})`/绑定接口 |
 
 ### B. L2 宿主路由层（`/api/orchestrator`）
 
@@ -845,7 +845,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 - `dsh-sandbox-policy/lib/index.js`：`sessionWorkspaceRoot(session) = session.header.cwd`；额外根走 `registerWritableRoot(session, dir)`（WeakMap 按 Session 对象身份）。
 
 **本版处理**：
-- `dispatch.spawn` 成功后、`sendMessage` **成功后**（续派时发送前通常解析不到子会话，恢复后才出现新 Session 对象），按 `agents.get(childId).session` 幂等注册 target 可写根；按 targetId 追加记录（同一会话 resume 前后可能有多个 Session 对象，只追加不替换），settle 不释放，`task_stop` 与终态（done/cancelled/orphaned/failed）把该 targetId 下新旧对象的 disposer 全量释放。
+- `dispatch.spawn` 成功后、`sendMessage` **成功后**（续派时发送前通常解析不到子会话，恢复后才出现新 Session 对象），按 `agents.get(childId).session` 幂等注册 target 可写根；按 targetId 追加记录（同一会话 resume 前后可能有多个 Session 对象，只追加不替换），settle 不释放，`task_message({action:'stop'})` 与终态（done/cancelled/orphaned/failed）把该 targetId 下新旧对象的 disposer 全量释放。
 - 已知边界：Windows 上只对 harness 文件工具生效，`pwsh`/`bash` 写 target 仍拒；`target` 不要用符号链接；派发首回合与冷恢复/续派首回合都有极小窗口可能先写后注册、被拒一次（下一回合可重试）。
 - 用例：`test/dispatch.test.js` 的 `rc.3 可写根：*`（对象引用同一性、settle 不释放、删除后sendMessage才恢复的补注册、投递失败不注册、终态释放新旧两个 disposer、服务或 target 缺失不炸）；`test/tools.test.js` 的 `可写根生命周期：*`、`waiting_user 续派：*`。
 
@@ -891,7 +891,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 顺序不回退 | `【任务】`→`【目标】`→`【目标兜底】`→`【工作目录】`→`【权限】只读`；target 仍只出现一次 | `brief.test.js` L1 顺序用例 + 既有 target/只读用例 |
 | 经验精简 | 完整事实写 `$DSH_HOME/state/orchestrator/lessons/<项目>-<hash8>.md`（含层标签、日期、`id`、来源、生成时间）；brief = `【历史经验】N 条｜完整内容见经验文件（可 read 全文）` + 每条 ≤64 字摘要 + `完整经验：<路径>`；同项目路径稳定 | `memory.test.js` L1 经验文件；`tools.test.js` L1 经验精简 |
 | 经验降级 | `stateDir` 缺失 / `lessons/` 被同名文件占位 → 退回内联块（含全文、无 `完整经验：`）；无命中 → 不追加小节、不建目录 | `memory.test.js` L1 降级两条 + 无命中；`tools.test.js` L1 经验降级 |
-| 重派同口径 | `task_retry` / 面板重派重渲染的 brief 与 `task_create` 一致（指引形态 + 兜底） | `tools.test.js` L1 重派 |
+| 重派同口径 | `task_message({action:'retry'})` / 面板重派重渲染的 brief 与 `task_create` 一致（指引形态 + 兜底） | `tools.test.js` L1 重派 |
 
 ## 34. T1 复核矩阵（task_detail + brief 纯指引）
 
@@ -905,7 +905,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 越权拒绝 | 主会话、别的子会话、未派发任务都拒绝；提示改用 `task_status`；不落消息 | `task-detail.test.js` 越权/未派发；`index.test.js` 全局注册 + 越权 |
 | 经验 | 创建时写记忆文件，指针 `{path,count}` 存 `brief.experience`；详情给路径+条数；`stateDir` 缺失退回内联块；无命中无小节 | `tools.test.js` T1 经验/降级/不相关；`task-detail.test.js` 可读/已丢失/内联 |
 | 前置现读 | 派发提示词不含前置摘要；`task_detail` 按当前台账给完成摘要与产物 | `tools.test.js` 依赖用例；`task-detail.test.js` 前置现读 |
-| 重派同口径 | `task_retry` 与面板 retry 都 `renderBrief({ taskId: 新编号 })`，不内联目标 | `tools.test.js` T1 重派；`panel-actions.test.js` retry brief |
+| 重派同口径 | `task_message({action:'retry'})` 与面板 retry 都 `renderBrief({ taskId: 新编号 })`，不内联目标 | `tools.test.js` T1 重派；`panel-actions.test.js` retry brief |
 | 挂载链 | 全局注册（`index.js` 的 `createTools(...).map(ctx.tools.register)`）；worker 预设不挂 `preset-tools`；协调者 allow 白名单不含 | `index.test.js` 12 工具 + `task_detail`；`config.test.js` worker 不收窄 |
 | 队列兜底 | 无 brief 消息时 `renderBrief({ taskId })`，不再拼标题+目标 | `queue.test.js` 派发提示词 |
 
@@ -923,7 +923,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | `task_create` 契约 | 只认显式 `true`（字符串不生效）；派发透传 `planFirst`；brief 仍是纯指引；工具结果带批准指引 | task_create 3 条 |
 | 互斥 | `planFirst + readOnly` 创建期拒绝、不建任务、不 spawn | task_create 互斥 |
 | 批准链路 | `task_message` 投递成功 + 回 running 后切沙箱、`plan_state=approved`；投递失败不批；running 中普通消息不批 | task_message 3 条 |
-| 停止/重派 | `task_stop` → `rejected`；`task_retry` 重新进 `planning` | task_stop / task_retry |
+| 停止/重派 | `task_message({action:'stop'})` → `rejected`；`task_message({action:'retry'})` 重新进 `planning` | task_message({action:'stop'}) / task_message({action:'retry'}) |
 | 详情文案 | 计划阶段权限显示「只读」、批准后「可写」；计划阶段说明写明只读是预期、出口是 `task_report blocked` | task_detail 纯渲染 |
 | 派发进入 | 计划任务：只读沙箱 + `planMode.set(true)` + agent 作用域 guard；`agent/created` 先路径不重复设置；非计划任务一次都不碰；服务缺失只 warn | 派发 4 条 |
 | 批准退出 | `sandbox/mode=workspace-write` + `planMode.set(false)` + 释放 guard + 补 target 可写根；拿不到会话时 `ok:false` | 批准 2 条 |
@@ -940,7 +940,7 @@ Chief 拍板走 B：直插协调者会话、保住 5 秒合并；两道护栏（
 | 子会话调 `exit_plan_mode` | 被插件拒绝，文案指向 `task_report blocked`；协调者调同名工具不受影响 |
 | 子会话 `task_report blocked` 上报计划 | 协调者收到「待你决定」通知（question/options 原样）；`task_status` 显示「计划：计划中」 |
 | 用户批准（`task_message` 或面板「追加」） | 投递成功后沙箱切回 `workspace-write`、plan mode 关闭；子会话能写文件；`plan_state=approved` |
-| 不批准直接 `task_stop` | 任务 `cancelled` + `plan_state=rejected`；子会话被中断 |
+| 不批准直接 `task_message({action:'stop'})` | 任务 `cancelled` + `plan_state=rejected`；子会话被中断 |
 | 非计划任务 | 全程无 `planMode` 调用、无「计划」字样、无 exit guard |
 | `planMode` 服务不可用（预设没挂） | 只 warn 一行；计划任务仍只读、仍能 blocked 上报；批准后仍切回可写 |
 

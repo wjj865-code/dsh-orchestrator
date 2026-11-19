@@ -47,6 +47,8 @@ const textOutput = {
   render: (_args, value) => [{ type: 'text', text: value === undefined ? '' : String(value) }],
 }
 
+const MESSAGE_ACTIONS = ['message', 'stop', 'retry', 'close']
+const CONTEXT_MODES = ['history', 'project', 'workspaces']
 const REPORT_STATUS = ['progress', 'done', 'blocked', 'needs_auth']
 const MAX_ARTIFACTS = 20
 const MAX_ARTIFACT_LABEL = 160
@@ -399,6 +401,358 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     },
   })
 
+  // —— P1-B：合并工具的内部实现（工具面 15 → 10）——
+  //
+  // 收缩只换**入口**，不换语义：stop / retry / close / inbox / history / project 六段实现原样搬到这里，
+  // 由 `task_message` 的 `action`、`task_list` 的 `view`、`context` 的 `mode` 分派。搬动时一个字都没改，
+  // 所以「同 fixture 同输出」可断言（见 test/tools.test.js 的等价用例）；旧名已删，调用时由
+  // index.js 的执行层 guard 返回可读迁移提示（src/tool-migrations.js）。
+
+  // 追加消息（原 task_message 的实现，行为不变）。
+  const messageTask = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    if (unbound()) return UNBOUND_HINT
+    const task = getTask(db, args.task_id ?? '')
+    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+    // 与面板「追加」按钮同源（src/panel-gates.js）：终态/等前置/待派发/失败/无会话各自给可执行提示。
+    const gate = followupGate(task)
+    if (gate.ok !== true) {
+      if (gate.reason === 'waiting_dep') {
+        return toolFailure('MESSAGE_WAITING_DEP', { label: labelFor(task), depends: task.depends_on.join('、') })
+      }
+      if (gate.reason === 'queued') {
+        return toolFailure('MESSAGE_QUEUED', { label: labelFor(task), ahead: Math.max(queue.position(task.id) - 1, 0) })
+      }
+      if (gate.reason === 'failed' || gate.reason === 'not_followable') {
+        return toolFailure('MESSAGE_NOT_FOLLOWABLE', { label: labelFor(task), statusLabel: labelOf(task.status) })
+      }
+      if (gate.reason === 'ended') {
+        return toolFailure('MESSAGE_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
+      }
+      return toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
+    }
+    const message = args.message ?? ''
+    // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
+    const seq = addMessage(db, task.id, { kind: 'followup', rendered: message, meta: { delivery: 'pending' } })
+    try {
+      await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, message), task.access === 'full' ? 'full' : undefined)
+    } catch (error) {
+      const reason = error?.message ?? String(error)
+      setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
+      addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
+      const current = getTask(db, task.id)
+      if (isUnreachable(error) && canTransition(current.status, 'orphaned')) {
+        log('task.orphaned', { taskId: task.id, sessionId: task.session_id, detail: { reason } })
+        transition(db, task.id, 'orphaned', { error: `子会话不可达：${reason}` })
+        releaseTaskSession(task)
+        return toolFailure('MESSAGE_UNREACHABLE', { label: labelFor(task), reason })
+      }
+      if (current.status === 'waiting_user') {
+        setTaskError(db, task.id, reason)
+      } else if (current.status === 'delivered') {
+        // 待确认任务追问失败：交付结果还在，保持 delivered 只记原因，别把它降级成等待/失败。
+        setTaskError(db, task.id, reason)
+      } else if (canTransition(current.status, 'waiting_user')) {
+        transition(db, task.id, 'waiting_user', { error: reason })
+      } else {
+        transition(db, task.id, 'failed', { error: reason })
+        releaseTaskSession(task)
+      }
+      return toolFailure('MESSAGE_DELIVERY_FAILED', { label: labelFor(task), reason })
+    }
+    setMessageDelivery(db, task.id, seq, 'delivered')
+    touchTask(db, task.id)
+    const current = getTask(db, task.id)
+    // 「等批准」状态收到续派 = 用户批准计划；先记住，投递成功回到 running 之后才切可写。
+    const wasWaiting = WAITING_STATUS.has(current.status)
+    // 「已交付待确认」上的追问：投递成功即回到 running，复用同一个子会话（可写根没释放，仍能写）。
+    const wasDelivered = current.status === 'delivered'
+    if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
+    clearTaskQuestion(db, task.id)
+    incrementAttempts(db, task.id)
+    // P8：计划阶段出口 —— 批准 = 投递成功且回到 running；失败路径不碰 plan 状态（仍在等你确认）。
+    let planNote = ''
+    if (wasWaiting && isPlanTask(task) && planStateOf(task) === 'planning') {
+      const approved = await approvePlan({ db, dispatcher, task, log })
+      planNote = `\n${approvalNote(approved)}`
+    }
+    // 只读任务的「等你确认」/「待确认」续派：沙箱仍是 read-only（契约如此，见 docs/LIMITATIONS.md）。
+    // 真机踩过：协调者拿不准这条，最后新开可写任务/新会话，原会话永远停在「等你确认」。
+    // 这里如实说清代价并给出两条出口，别让「投递成功」被误解成「已切可写」。
+    const readOnlyNote = (wasWaiting || wasDelivered) && task.read_only === true && isPlanTask(task) !== true
+      ? '\n注意：该任务是只读任务（readOnly），续派后子会话仍是 read-only 沙箱、写操作会被拒。'
+        + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，批准后同一会话会自动切回可写。'
+      : ''
+    const deliveredNote = wasDelivered
+      ? '\n该任务此前是「已交付待确认」，已回到进行中并在同一子会话继续；完成后会再次落「已交付待确认」，等你/用户确认或超时自动完成。'
+      : ''
+    return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}`
+  }
+
+  // 停止（原 task_stop 的实现，行为不变）。
+  const stopTask = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    if (unbound()) return UNBOUND_HINT
+    const task = getTask(db, args.task_id ?? '')
+    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+    // 「已收尾」判据与面板 stop 同源（stopIsIdempotent = releases 能力）：done/failed/cancelled/orphaned
+    // 都不该再迁一次。0.19.x 这里用的是不含 failed 的「流程终态」，于是对失败任务执行停止会把它
+    // 改成「已取消」，抹掉失败信息（审计 §2.3.2 第 3 条）。
+    if (stopIsIdempotent(task)) {
+      return toolFailure('STOP_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
+    }
+    if (task.status === 'pending' || task.status === 'waiting_dep') {
+      queue.remove(task.id)
+      transition(db, task.id, 'cancelled')
+      releaseTaskSession(task)
+      queue.pump()
+      cleanupWorktree?.(getTask(db, task.id))
+      return task.status === 'waiting_dep'
+        ? `任务「${labelFor(task)}」已取消（还在等待前置任务）。`
+        : `任务「${labelFor(task)}」已取消（还在排队，没有派发出去）。`
+    }
+    if (task.target !== null && task.target !== undefined) {
+      // 停止失败也要把任务标掉：用户要的是「停」，不是让 stop 抛错卡住。
+      try {
+        await dispatcher.stop(task.target, task.id)
+      } catch (error) {
+        log('task.stop.failed', { taskId: task.id, sessionId: task.session_id, detail: { reason: error?.message ?? String(error) } })
+        // dispatch.stop 的 finally 已尽力清 goal；自定义派发器/极端路径再兜一次（幂等）。
+        void goalBridge?.clear?.(task.id, task.target)
+      }
+    }
+    queue.remove(task.id)
+    transition(db, task.id, 'cancelled')
+    releaseTaskSession(task)
+    queue.pump()
+    cleanupWorktree?.(getTask(db, task.id))
+    return `任务「${labelFor(task)}」已停止。`
+  }
+
+  // 重派（原 task_retry 的实现，行为不变）。
+  const retryTask = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    if (unbound()) return UNBOUND_HINT
+    const task = getTask(db, args.task_id ?? '')
+    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id, hint: '用 task_list 查编号。' })
+    if (!RETRYABLE_STATUS.has(task.status)) {
+      return toolFailure('RETRY_NOT_ALLOWED', { label: labelFor(task), statusLabel: labelOf(task.status) })
+    }
+    const duplicate = listTasks(db, { active: true })
+      .find(item => item.title.trim() === task.title.trim() && item.goal.trim() === task.goal.trim())
+    if (duplicate !== undefined) {
+      return toolFailure('RETRY_DUPLICATE_ACTIVE', {
+        label: taskLabelWithId(duplicate),
+        statusLabel: labelOf(duplicate.status),
+      })
+    }
+    const current = status()
+    const depends = validateDepends(db, task.depends_on)
+    if (depends.ok === false) return toolFailure('RETRY_DEPENDS_INVALID', { reason: depends.error })
+    const depState = dependencyState(db, { depends_on: depends.ids })
+    // G1：旧尝试的目标到此为止（failed/orphaned），清掉后再建新任务；新子会话派发时重新 create。
+    void goalBridge?.clear?.(task.id, task.session_id)
+    // P9：隔离任务重派复用原检出（目录还在就复用，被清理过按原基线重建）；普通任务零变化。
+    const retryWorktree = retryWorktreeOf(task)
+    const retried = createTask(db, {
+      brief: task.brief,
+      coordinatorSession: current.id ?? coordinatorSession,
+      targetDir: retryWorktree === null ? task.target_dir : (task.brief?.target ?? task.target_dir),
+      readOnly: task.read_only === true,
+      // P8：计划任务重派后重新走一次计划阶段（新会话要重新探索/批准）。
+      planFirst: task.plan_first === true,
+      planState: task.plan_first === true ? 'planning' : 'none',
+      // per-task 访问级别跟着原任务走（重派是同一次尝试的延续，不该静默降级成默认策略）。
+      access: task.access === 'full' ? 'full' : null,
+      worktree: retryWorktree,
+      retryOf: task.id,
+      dependsOn: depends.ids,
+      groupId: task.group_id,
+      writeScopes: task.write_scopes,
+      priority: task.priority,
+      status: depState.ready ? 'pending' : 'waiting_dep',
+    })
+    log('task.retry', {
+      taskId: retried.id,
+      sessionId: current.id,
+      detail: { retryOf: task.id, dependsOn: depends.ids, status: retried.status, access: retried.access ?? null, callId: exec?.callId },
+    })
+    addMessage(db, retried.id, { kind: 'brief', rendered: renderBriefForTask(retried) })
+    if (current.live === false) {
+      const message = invalidHint() === '' ? toolFailure('MAIN_SESSION_UNAVAILABLE') : invalidHint()
+      log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })
+      transition(db, retried.id, 'failed', { error: message })
+      throw new Error(message)
+    }
+    if (retried.status === 'waiting_dep') {
+      return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，等待前置任务完成后派发。`
+    }
+    const outcome = await queue.enqueueAndPump(retried.id)
+    const resultTask = outcome.task
+    if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
+    const hint = invalidHint()
+    const notes = hint === '' ? '' : `\n${hint}`
+    if (resultTask?.status === 'running') {
+      return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，子会话 ${resultTask.target}。${notes}`
+    }
+    const ahead = Math.max(outcome.position - 1, 0)
+    return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，前面还有 ${ahead} 个任务在排队。${notes}`
+  }
+
+  // 确认交付（原 task_close 的实现，行为不变）。
+  const closeTask = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    if (unbound()) return UNBOUND_HINT
+    const task = getTask(db, args.task_id ?? '')
+    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+    const outcome = closeDelivered({
+      db,
+      taskId: task.id,
+      reason: CLOSE_REASONS.coordinator,
+      releaseSession: releaseTaskSession,
+      // G1：确认完成 = 目标达成，complete 并 disarm（桥内部幂等）。
+      completeGoal: closed => { void goalBridge?.complete?.(closed.id, closed.session_id) },
+      cleanupWorktree,
+      pump: () => queue.pump(),
+      logger,
+    })
+    if (outcome.ok !== true) {
+      const latest = outcome.task ?? task
+      if (outcome.reason === 'not-found') return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+      if (TERMINAL_STATUS.has(latest.status)) {
+        return toolFailure('CLOSE_TASK_ENDED', { label: labelFor(latest), statusLabel: labelOf(latest.status) })
+      }
+      return toolFailure('CLOSE_NOT_DELIVERED', { label: labelFor(latest), statusLabel: labelOf(latest.status) })
+    }
+    log('task.close', { taskId: task.id, detail: { already: outcome.already === true } })
+    return outcome.already === true
+      ? `任务「${labelFor(outcome.task)}」已完成（无需重复确认）。`
+      : `任务「${labelFor(outcome.task)}」已确认完成。`
+  }
+
+  // 收件箱（原 task_inbox 的实现，输出逐字不变）。
+  const inboxView = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    const limit = Number.isFinite(args.limit) ? Math.min(20, Math.max(1, Math.floor(args.limit))) : 10
+    const active = listTasks(db, { active: true })
+    const waiting = active
+      .filter(task => WAITING_STATUS.has(task.status))
+      .slice(0, limit)
+    // 两段式终态：已交付待确认的任务要协调者/用户拍板（确认或追问），单独一栏。
+    const confirm = active
+      .filter(task => task.status === 'delivered')
+      .slice(0, limit)
+    const failed = listTasks(db, { active: false })
+      .filter(task => task.status === 'failed' || task.status === 'orphaned')
+      .slice(0, limit)
+    const stale = active
+      .filter(task => task.status === 'running' || task.status === 'pending' || task.status === 'waiting_dep')
+      .filter(task => Date.now() - task.last_event_at > staleMinutes * 60_000)
+      .slice(0, limit)
+    if (waiting.length === 0 && confirm.length === 0 && failed.length === 0 && stale.length === 0) {
+      return '收件箱是空的，没有待你决定或需要关注的任务。'
+    }
+    const blocks = []
+    const lineOf = task => {
+      const question = task.question ? `｜问题：${short(task.question, 80)}` : ''
+      const options = task.options?.length > 0 ? `｜选项：${task.options.join(' / ')}` : ''
+      return `- ${taskLabelWithId(task)}｜${labelOf(task.status)}${question}${options}`
+    }
+    if (waiting.length > 0) blocks.push(`【待你决定】${waiting.length}\n${waiting.map(lineOf).join('\n')}`)
+    if (confirm.length > 0) {
+      blocks.push(`【待确认】${confirm.length}（已交付待确认：默认保持、等你或用户拍板；要改 task_message 追问原会话，用户确认后才 task_message({action:'close'})，超时自动完成）\n${confirm.map(lineOf).join('\n')}`)
+    }
+    if (failed.length > 0) blocks.push(`【失败/丢失】${failed.length}\n${failed.map(lineOf).join('\n')}`)
+    if (stale.length > 0) blocks.push(`【长时间没动静】${stale.length}\n${stale.map(lineOf).join('\n')}`)
+    return blocks.join('\n')
+  }
+
+  // 历史检索（原 history_search 的实现，输出逐字不变）。
+  const historyView = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    const query = String(args.query ?? '').trim()
+    if (query === '') return '给一个关键词再查历史（任务名、目标、决策或文件名）。'
+    const limit = Number.isFinite(args.limit) ? Math.min(10, Math.max(1, Math.floor(args.limit))) : 5
+    const hint = resolveProjectHint(args.project)
+    const tokens = memoryTokens(query)
+    const memories = searchMemories(db, { projectKey: hint.key, query, limit })
+    const tasks = listTasks(db, { active: false })
+      .map(task => {
+        const latest = recentMessages(db, task.id, 1)[0]?.rendered ?? ''
+        const haystack = `${task.title} ${task.goal} ${latest}`.toLowerCase()
+        const score = tokens.reduce((sum, token) => sum + haystack.split(token).length - 1, 0)
+        return { task, score }
+      })
+      .filter(item => item.score > 0)
+      .sort((left, right) => right.score - left.score || right.task.updated_at - left.task.updated_at)
+      .slice(0, limit)
+    const sessions = []
+    const service = typeof sessionQuery === 'function' ? sessionQuery() : sessionQuery
+    if (service?.searchSessions !== undefined) {
+      try {
+        const page = await service.searchSessions({ query, limit: 5 })
+        for (const hit of Array.isArray(page?.items) ? page.items : []) {
+          const id = hit?.header?.id ?? hit?.sessionId
+          if (typeof id !== 'string' || id === '') continue
+          const cwd = hit?.header?.cwd
+          if (hint.path !== undefined && typeof cwd === 'string' && projectKeyOf(cwd) !== hint.key) continue
+          sessions.push({ id, snippet: short(hit?.bestMatch?.snippet ?? hit?.snippet ?? '', 160) })
+          if (sessions.length >= 3) break
+        }
+      } catch { /* sessionQuery 不可用就只查插件自己的数据 */ }
+    }
+    const blocks = []
+    if (memories.length > 0) {
+      // 标出层：task-log 是日志层（只归档、不注入 brief），lesson/decision/preference 是事实层。
+      blocks.push(`【记忆】\n${memories.map(row => `- [${memoryKindLabel(row.kind)}] ${row.text}`).join('\n')}`)
+    }
+    if (tasks.length > 0) {
+      blocks.push(`【历史任务】\n${tasks.map(({ task }) => `- ${taskLabelWithId(task)}｜${labelOf(task.status)}｜${short(task.goal, 80)}${task.artifacts?.length > 0 ? `｜产物 ${task.artifacts.length}` : ''}`).join('\n')}`)
+    }
+    if (sessions.length > 0) {
+      blocks.push(`【历史会话】\n${sessions.map(item => `- ${item.id}${item.snippet === '' ? '' : `：${item.snippet}`}`).join('\n')}`)
+    }
+    return blocks.length > 0 ? blocks.join('\n') : '没有找到相关历史。'
+  }
+
+  // 已登记工作区 + 仓库采样索引（原 project_context({workspaces:true}) 的实现，输出逐字不变）。
+  const workspacesView = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    return `【已登记工作区】\n${workspaceList().map(item => JSON.stringify({ id: item.id, title: item.title, path: item.path })).join('\n')}\n${workspaceIndexText(loadWorkspaceIndex(db)) || '尚无仓库索引，派只读工作区与仓库索引任务。'}`
+  }
+
+  // 项目背景（原 project_context 的实现，输出逐字不变）。
+  const projectView = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    if (args.workspaces === true) return workspacesView(args, exec)
+    if (typeof args.query === 'string' && !args.target) {
+      const match = inferWorkspaceTarget({ title: args.query, goal: args.query }, workspaceList())
+      if (match.ok === false) return `匹配多个工作区，请确认 target：\n${match.candidates.map(item => `${item.title} → ${item.path}`).join('\n')}`
+    }
+    let dir
+    if (typeof args.target === 'string' && args.target.trim() !== '') {
+      const error = validateTargetDir(args.target)
+      if (error !== undefined) return `${error}。`
+      dir = resolve(args.target.trim())
+    } else {
+      const hint = resolveProjectHint(args.query)
+      dir = hint.path ?? defaultDir()
+    }
+    if (dir === undefined) return '没有可用项目目录：请给 target 绝对路径，或先打开主会话。'
+    let isDir = false
+    try { isDir = statSync(dir).isDirectory() } catch { isDir = false }
+    if (!isDir) return `项目目录不存在或不是目录：${dir}`
+    return projectContextFor(dir, String(args.query ?? ''))
+  }
+
   return [
     wrap('task_create', '创建一个子任务：建台账、检查活跃上限、渲染 brief 派生一个子会话。description 由你写清目标与验收。', objectSchema({
       title: str('一句话任务名，卡片上显示'),
@@ -521,7 +875,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           agentId,
           detail: { reason: 'queue-full', maxQueue, pending: queuedCount, callId },
         })
-        return `待派发队列已满（${maxQueue} 个），先 task_stop 或等队列消化后再派。`
+        return `待派发队列已满（${maxQueue} 个），先 task_message({ action: 'stop' }) 或等队列消化后再派。`
       }
       // P9：worktree 结构化请求（零自然语言解析）。步骤里只碰结构化字段 + 插件给的仓库事实：
       // 「要不要建」由协调者已经判断过；这里只做互斥校验、复用查找、降级、多分支询问与落库。
@@ -778,10 +1132,21 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return `任务「${taskLabelWithId(task)}」已创建，前面还有 ${ahead} 个任务在排队，轮到时自动派发。${notes === '' ? '' : `\n${notes}`}`
     }),
 
-    wrap('task_list', '列出任务。默认只列活跃任务（waiting_dep/pending/running/waiting/待确认），active=false 时连同历史一起列出；可按 group 过滤并看组进度。', objectSchema({
-      active: { type: 'boolean', description: '是否只看活跃任务，默认 true' },
-      group: str('可选：只看这个分组的任务'),
+    // P1-B：task_inbox 并入 task_list 的 view:'inbox'（输出逐字等价，入口从 2 个减到 1 个）。
+    wrap('task_list', '列出任务。view:"list"（默认）列活跃任务（waiting_dep/pending/running/waiting/待确认），active=false 连历史一起列，可按 group 过滤看组进度；view:"inbox" 是收件箱（待你决定/待确认/失败丢失/长时间没动静，只读不写台账，原 task_inbox）。', objectSchema({
+      view: { type: 'string', enum: ['list', 'inbox'], description: '视图：list（默认，任务列表）｜inbox（收件箱，吸收原 task_inbox）' },
+      active: { type: 'boolean', description: 'list 视图：是否只看活跃任务，默认 true' },
+      group: str('list 视图：可选，只看这个分组的任务'),
+      limit: { type: 'number', description: 'inbox 视图：每类最多几条，默认 10，最大 20' },
     }), async (args, exec) => {
+      const view = typeof args.view === 'string' ? args.view.trim() : ''
+      if (view === 'inbox') return inboxView(args, exec)
+      if (view !== '' && view !== 'list') {
+        return `view 只能是 list / inbox（默认 list）：收到的是 ${JSON.stringify(args.view)}。旧的 task_inbox 已并入本工具，改成 task_list({ view: 'inbox' })。`
+      }
+      if (view === '' && args.limit !== undefined) {
+        return 'limit 只在收件箱视图生效：要看「待你决定/失败/长时间没动静」请传 view: \'inbox\'（原 task_inbox 已并入本工具）。'
+      }
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
       const all = listTasks(db, { active: args.active !== false })
@@ -837,7 +1202,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         const timeout = Number.isFinite(config?.deliveredTimeoutMinutes)
           ? Math.max(1, Math.min(1440, Math.floor(config.deliveredTimeoutMinutes)))
           : DELIVERED_TIMEOUT_MINUTES
-        lines.push(`交付：已交付待确认（默认等你或用户确认：要改 task_message 追问原会话；确认完成才 task_close；超过 ${timeout} 分钟自动完成）`)
+        lines.push(`交付：已交付待确认（默认等你或用户确认：要改 task_message 追问原会话；确认完成才 task_message({ action: 'close' })；超过 ${timeout} 分钟自动完成）`)
       }
       if (task.close_reason !== null && task.close_reason !== undefined) {
         lines.push(`关闭：${closeReasonLabel(task.close_reason)}`)
@@ -906,200 +1271,32 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       })
     }),
 
-    wrap('task_message', '给已有子任务追加一条消息（续派），不新建任务。进行中/等你确认/要授权/待确认都能续派（「待确认」= 已交付待确认，追问复用原会话）。投递失败会重试 3 次，仍失败则任务转「等你确认」或保留「待确认」。', objectSchema({
+    // P1-B：task_stop / task_retry / task_close 并入本工具的 action（业务实现一字未改，只换入口）。
+    wrap('task_message', '子任务动作统一入口：action:"message"（默认）给已有子任务追加消息（续派），进行中/等你确认/要授权/待确认都能续派，投递失败会重试 3 次；action:"stop" 停止任务（运行中/排队/等前置/待确认）；action:"retry" 重派 failed/orphaned 任务（原 brief 新起一条，旧任务留审计）；action:"close" 把「已交付待确认」确认成 done。task_id 必填，message 仅 action:"message" 需要。', objectSchema({
       task_id: str('任务编号'),
-      message: str('要追加的内容'),
+      action: {
+        type: 'string',
+        enum: MESSAGE_ACTIONS,
+        description: '动作：message（默认，追加消息/续派）｜stop（停止任务，吸收原 task_stop）｜retry（重派 failed/orphaned，吸收原 task_retry）｜close（确认已交付待确认 → done，吸收原 task_close）',
+      },
+      message: str('要追加的内容（仅 action:"message" 必填）'),
     }), async (args, exec) => {
-      const denied = requireMain(exec)
-      if (denied !== undefined) return denied
-      if (unbound()) return UNBOUND_HINT
-      const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
-      // 与面板「追加」按钮同源（src/panel-gates.js）：终态/等前置/待派发/失败/无会话各自给可执行提示。
-      const gate = followupGate(task)
-      if (gate.ok !== true) {
-        if (gate.reason === 'waiting_dep') {
-          return toolFailure('MESSAGE_WAITING_DEP', { label: labelFor(task), depends: task.depends_on.join('、') })
-        }
-        if (gate.reason === 'queued') {
-          return toolFailure('MESSAGE_QUEUED', { label: labelFor(task), ahead: Math.max(queue.position(task.id) - 1, 0) })
-        }
-        if (gate.reason === 'failed' || gate.reason === 'not_followable') {
-          return toolFailure('MESSAGE_NOT_FOLLOWABLE', { label: labelFor(task), statusLabel: labelOf(task.status) })
-        }
-        if (gate.reason === 'ended') {
-          return toolFailure('MESSAGE_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
-        }
-        return toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
+      const action = typeof args.action === 'string' ? args.action.trim() : ''
+      if (action === 'stop') return stopTask(args, exec)
+      if (action === 'retry') return retryTask(args, exec)
+      if (action === 'close') return closeTask(args, exec)
+      if (action !== '' && action !== 'message') {
+        return `action 只能是 ${MESSAGE_ACTIONS.join(' / ')}（默认 message）：收到的是 ${JSON.stringify(args.action)}。`
+          + '旧的 task_stop / task_retry / task_close 已并入本工具，分别对应 action: "stop" / "retry" / "close"（映射见 CHANGELOG「P1-B 工具面 15 → 10」）。'
       }
-      const message = args.message ?? ''
-      // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
-      const seq = addMessage(db, task.id, { kind: 'followup', rendered: message, meta: { delivery: 'pending' } })
-      try {
-        await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, message), task.access === 'full' ? 'full' : undefined)
-      } catch (error) {
-        const reason = error?.message ?? String(error)
-        setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
-        addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
-        const current = getTask(db, task.id)
-        if (isUnreachable(error) && canTransition(current.status, 'orphaned')) {
-          log('task.orphaned', { taskId: task.id, sessionId: task.session_id, detail: { reason } })
-          transition(db, task.id, 'orphaned', { error: `子会话不可达：${reason}` })
-          releaseTaskSession(task)
-          return toolFailure('MESSAGE_UNREACHABLE', { label: labelFor(task), reason })
-        }
-        if (current.status === 'waiting_user') {
-          setTaskError(db, task.id, reason)
-        } else if (current.status === 'delivered') {
-          // 待确认任务追问失败：交付结果还在，保持 delivered 只记原因，别把它降级成等待/失败。
-          setTaskError(db, task.id, reason)
-        } else if (canTransition(current.status, 'waiting_user')) {
-          transition(db, task.id, 'waiting_user', { error: reason })
-        } else {
-          transition(db, task.id, 'failed', { error: reason })
-          releaseTaskSession(task)
-        }
-        return toolFailure('MESSAGE_DELIVERY_FAILED', { label: labelFor(task), reason })
+      // message 动作必须有内容：旧 task_message 允许空串（等于「什么都没说」却改了状态），这里顺手收紧，
+      // 顺带把「你是不是想 stop/retry/close」说清楚，别让旧调用只拿到一句「缺参数」。
+      const text = typeof args.message === 'string' ? args.message : ''
+      if (text.trim() === '') {
+        return 'action:"message" 需要 message（要追加的内容）。'
+          + '要停止 / 重派 / 确认完成请分别传 action: "stop" / "retry" / "close"——这三个动作吸收自已删除的 task_stop / task_retry / task_close（旧名 → 新调用见 README「工具迁移映射」）。'
       }
-      setMessageDelivery(db, task.id, seq, 'delivered')
-      touchTask(db, task.id)
-      const current = getTask(db, task.id)
-      // 「等批准」状态收到续派 = 用户批准计划；先记住，投递成功回到 running 之后才切可写。
-      const wasWaiting = WAITING_STATUS.has(current.status)
-      // 「已交付待确认」上的追问：投递成功即回到 running，复用同一个子会话（可写根没释放，仍能写）。
-      const wasDelivered = current.status === 'delivered'
-      if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
-      clearTaskQuestion(db, task.id)
-      incrementAttempts(db, task.id)
-      // P8：计划阶段出口 —— 批准 = 投递成功且回到 running；失败路径不碰 plan 状态（仍在等你确认）。
-      let planNote = ''
-      if (wasWaiting && isPlanTask(task) && planStateOf(task) === 'planning') {
-        const approved = await approvePlan({ db, dispatcher, task, log })
-        planNote = `\n${approvalNote(approved)}`
-      }
-      // 只读任务的「等你确认」/「待确认」续派：沙箱仍是 read-only（契约如此，见 docs/LIMITATIONS.md）。
-      // 真机踩过：协调者拿不准这条，最后新开可写任务/新会话，原会话永远停在「等你确认」。
-      // 这里如实说清代价并给出两条出口，别让「投递成功」被误解成「已切可写」。
-      const readOnlyNote = (wasWaiting || wasDelivered) && task.read_only === true && isPlanTask(task) !== true
-        ? '\n注意：该任务是只读任务（readOnly），续派后子会话仍是 read-only 沙箱、写操作会被拒。'
-          + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，批准后同一会话会自动切回可写。'
-        : ''
-      const deliveredNote = wasDelivered
-        ? '\n该任务此前是「已交付待确认」，已回到进行中并在同一子会话继续；完成后会再次落「已交付待确认」，等你/用户确认或超时自动完成。'
-        : ''
-      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}`
-    }),
-
-    wrap('task_stop', '停止一个子任务（会中断它的当前一轮）。', objectSchema({ task_id: str('任务编号') }), async (args, exec) => {
-      const denied = requireMain(exec)
-      if (denied !== undefined) return denied
-      if (unbound()) return UNBOUND_HINT
-      const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
-      // 「已收尾」判据与面板 stop 同源（stopIsIdempotent = releases 能力）：done/failed/cancelled/orphaned
-      // 都不该再迁一次。0.19.x 这里用的是不含 failed 的「流程终态」，于是对失败任务执行停止会把它
-      // 改成「已取消」，抹掉失败信息（审计 §2.3.2 第 3 条）。
-      if (stopIsIdempotent(task)) {
-        return toolFailure('STOP_TASK_ENDED', { label: labelFor(task), statusLabel: labelOf(task.status) })
-      }
-      if (task.status === 'pending' || task.status === 'waiting_dep') {
-        queue.remove(task.id)
-        transition(db, task.id, 'cancelled')
-        releaseTaskSession(task)
-        queue.pump()
-        cleanupWorktree?.(getTask(db, task.id))
-        return task.status === 'waiting_dep'
-          ? `任务「${labelFor(task)}」已取消（还在等待前置任务）。`
-          : `任务「${labelFor(task)}」已取消（还在排队，没有派发出去）。`
-      }
-      if (task.target !== null && task.target !== undefined) {
-        // 停止失败也要把任务标掉：用户要的是「停」，不是让 stop 抛错卡住。
-        try {
-          await dispatcher.stop(task.target, task.id)
-        } catch (error) {
-          log('task.stop.failed', { taskId: task.id, sessionId: task.session_id, detail: { reason: error?.message ?? String(error) } })
-          // dispatch.stop 的 finally 已尽力清 goal；自定义派发器/极端路径再兜一次（幂等）。
-          void goalBridge?.clear?.(task.id, task.target)
-        }
-      }
-      queue.remove(task.id)
-      transition(db, task.id, 'cancelled')
-      releaseTaskSession(task)
-      queue.pump()
-      cleanupWorktree?.(getTask(db, task.id))
-      return `任务「${labelFor(task)}」已停止。`
-    }),
-
-    wrap('task_retry', '重派一个失败或会话丢失的任务：用原 brief 新建一次尝试（新任务编号），旧任务保留审计；只有 failed/orphaned 能重派。', objectSchema({
-      task_id: str('要重派的任务编号'),
-    }), async (args, exec) => {
-      const denied = requireMain(exec)
-      if (denied !== undefined) return denied
-      if (unbound()) return UNBOUND_HINT
-      const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id, hint: '用 task_list 查编号。' })
-      if (!RETRYABLE_STATUS.has(task.status)) {
-        return toolFailure('RETRY_NOT_ALLOWED', { label: labelFor(task), statusLabel: labelOf(task.status) })
-      }
-      const duplicate = listTasks(db, { active: true })
-        .find(item => item.title.trim() === task.title.trim() && item.goal.trim() === task.goal.trim())
-      if (duplicate !== undefined) {
-        return toolFailure('RETRY_DUPLICATE_ACTIVE', {
-          label: taskLabelWithId(duplicate),
-          statusLabel: labelOf(duplicate.status),
-        })
-      }
-      const current = status()
-      const depends = validateDepends(db, task.depends_on)
-      if (depends.ok === false) return toolFailure('RETRY_DEPENDS_INVALID', { reason: depends.error })
-      const depState = dependencyState(db, { depends_on: depends.ids })
-      // G1：旧尝试的目标到此为止（failed/orphaned），清掉后再建新任务；新子会话派发时重新 create。
-      void goalBridge?.clear?.(task.id, task.session_id)
-      // P9：隔离任务重派复用原检出（目录还在就复用，被清理过按原基线重建）；普通任务零变化。
-      const retryWorktree = retryWorktreeOf(task)
-      const retried = createTask(db, {
-        brief: task.brief,
-        coordinatorSession: current.id ?? coordinatorSession,
-        targetDir: retryWorktree === null ? task.target_dir : (task.brief?.target ?? task.target_dir),
-        readOnly: task.read_only === true,
-        // P8：计划任务重派后重新走一次计划阶段（新会话要重新探索/批准）。
-        planFirst: task.plan_first === true,
-        planState: task.plan_first === true ? 'planning' : 'none',
-        // per-task 访问级别跟着原任务走（重派是同一次尝试的延续，不该静默降级成默认策略）。
-        access: task.access === 'full' ? 'full' : null,
-        worktree: retryWorktree,
-        retryOf: task.id,
-        dependsOn: depends.ids,
-        groupId: task.group_id,
-        writeScopes: task.write_scopes,
-        priority: task.priority,
-        status: depState.ready ? 'pending' : 'waiting_dep',
-      })
-      log('task.retry', {
-        taskId: retried.id,
-        sessionId: current.id,
-        detail: { retryOf: task.id, dependsOn: depends.ids, status: retried.status, access: retried.access ?? null, callId: exec?.callId },
-      })
-      addMessage(db, retried.id, { kind: 'brief', rendered: renderBriefForTask(retried) })
-      if (current.live === false) {
-        const message = invalidHint() === '' ? toolFailure('MAIN_SESSION_UNAVAILABLE') : invalidHint()
-        log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })
-        transition(db, retried.id, 'failed', { error: message })
-        throw new Error(message)
-      }
-      if (retried.status === 'waiting_dep') {
-        return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，等待前置任务完成后派发。`
-      }
-      const outcome = await queue.enqueueAndPump(retried.id)
-      const resultTask = outcome.task
-      if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
-      const hint = invalidHint()
-      const notes = hint === '' ? '' : `\n${hint}`
-      if (resultTask?.status === 'running') {
-        return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，子会话 ${resultTask.target}。${notes}`
-      }
-      const ahead = Math.max(outcome.position - 1, 0)
-      return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，前面还有 ${ahead} 个任务在排队。${notes}`
+      return messageTask(args, exec)
     }),
 
     // 受控读（协调者读产物）：平台的文件工具没有读路径白名单（沙箱只管写、cwd 不是边界、
@@ -1143,93 +1340,29 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return renderWorkspaceRead(result)
     }),
 
-    wrap('history_search', '查跨项目历史：本插件记忆、历史任务、平台历史会话。新任务开始前用它补上下文；结果只作参考，不作状态断言。', objectSchema({
-      query: str('关键词（任务名/目标/决策/文件名）'),
-      project: str('可选：项目绝对路径或工作区名；不传则查全局+当前项目'),
-      limit: { type: 'number', description: '最多几条，默认 5，最大 10' },
+    // P1-B：history_search + project_context 合并成 context（mode 区分），两段输出逐字保持原样。
+    wrap('context', '读上下文（只读，不开放任意文件读取）：mode:"history"（默认）查跨项目历史——本插件记忆、历史任务、平台历史会话，新任务开始前用它补上下文，结果只作参考不作状态断言；mode:"project" 读项目背景——README/AGENTS/package 等白名单文件、顶层结构、最近任务、相关记忆；mode:"workspaces" 返回已登记工作区与持久化仓库采样索引（不扫描全盘）。', objectSchema({
+      mode: { type: 'string', enum: CONTEXT_MODES, description: '读哪一类：history（默认，历史检索，吸收原 history_search）｜project（项目背景，吸收原 project_context）｜workspaces（已登记工作区 + 仓库索引）' },
+      query: str('history：检索关键词（任务名/目标/决策/文件名）；project：用于推断项目与匹配记忆的关键词'),
+      project: str('history：项目绝对路径或工作区名；不传则查全局+当前项目'),
+      target: str('project：项目绝对目录；不传则按 query 推断或使用主会话目录'),
+      limit: { type: 'number', description: 'history：最多几条，默认 5，最大 10' },
+      workspaces: { type: 'boolean', description: '兼容旧调用 project_context({ workspaces: true })：等价 mode:"workspaces"（新调用请直接用 mode）' },
     }), async (args, exec) => {
-      const denied = requireMain(exec)
-      if (denied !== undefined) return denied
-      const query = String(args.query ?? '').trim()
-      if (query === '') return '给一个关键词再查历史（任务名、目标、决策或文件名）。'
-      const limit = Number.isFinite(args.limit) ? Math.min(10, Math.max(1, Math.floor(args.limit))) : 5
-      const hint = resolveProjectHint(args.project)
-      const tokens = memoryTokens(query)
-      const memories = searchMemories(db, { projectKey: hint.key, query, limit })
-      const tasks = listTasks(db, { active: false })
-        .map(task => {
-          const latest = recentMessages(db, task.id, 1)[0]?.rendered ?? ''
-          const haystack = `${task.title} ${task.goal} ${latest}`.toLowerCase()
-          const score = tokens.reduce((sum, token) => sum + haystack.split(token).length - 1, 0)
-          return { task, score }
-        })
-        .filter(item => item.score > 0)
-        .sort((left, right) => right.score - left.score || right.task.updated_at - left.task.updated_at)
-        .slice(0, limit)
-      const sessions = []
-      const service = typeof sessionQuery === 'function' ? sessionQuery() : sessionQuery
-      if (service?.searchSessions !== undefined) {
-        try {
-          const page = await service.searchSessions({ query, limit: 5 })
-          for (const hit of Array.isArray(page?.items) ? page.items : []) {
-            const id = hit?.header?.id ?? hit?.sessionId
-            if (typeof id !== 'string' || id === '') continue
-            const cwd = hit?.header?.cwd
-            if (hint.path !== undefined && typeof cwd === 'string' && projectKeyOf(cwd) !== hint.key) continue
-            sessions.push({ id, snippet: short(hit?.bestMatch?.snippet ?? hit?.snippet ?? '', 160) })
-            if (sessions.length >= 3) break
-          }
-        } catch { /* sessionQuery 不可用就只查插件自己的数据 */ }
-      }
-      const blocks = []
-      if (memories.length > 0) {
-        // 标出层：task-log 是日志层（只归档、不注入 brief），lesson/decision/preference 是事实层。
-        blocks.push(`【记忆】\n${memories.map(row => `- [${memoryKindLabel(row.kind)}] ${row.text}`).join('\n')}`)
-      }
-      if (tasks.length > 0) {
-        blocks.push(`【历史任务】\n${tasks.map(({ task }) => `- ${taskLabelWithId(task)}｜${labelOf(task.status)}｜${short(task.goal, 80)}${task.artifacts?.length > 0 ? `｜产物 ${task.artifacts.length}` : ''}`).join('\n')}`)
-      }
-      if (sessions.length > 0) {
-        blocks.push(`【历史会话】\n${sessions.map(item => `- ${item.id}${item.snippet === '' ? '' : `：${item.snippet}`}`).join('\n')}`)
-      }
-      return blocks.length > 0 ? blocks.join('\n') : '没有找到相关历史。'
-    }),
-
-    wrap('project_context', '读项目背景（README/AGENTS/package 等白名单文件、顶层结构、最近任务、相关记忆）；只读，不开放任意文件读取。', objectSchema({
-      target: str('项目绝对目录；不传则按 query 推断或使用主会话目录'),
-      query: str('可选关键词，用于推断项目和匹配记忆'),
-      workspaces: { type: 'boolean', description: 'true 返回已登记工作区与持久化仓库采样索引，不扫描全盘' },
-    }), async (args, exec) => {
-      const denied = requireMain(exec)
-      if (denied !== undefined) return denied
-      if (args.workspaces === true) {
-        return `【已登记工作区】\n${workspaceList().map(item => JSON.stringify({ id: item.id, title: item.title, path: item.path })).join('\n')}\n${workspaceIndexText(loadWorkspaceIndex(db)) || '尚无仓库索引，派只读工作区与仓库索引任务。'}`
-      }
-      if (typeof args.query === 'string' && !args.target) {
-        const match = inferWorkspaceTarget({ title: args.query, goal: args.query }, workspaceList())
-        if (match.ok === false) return `匹配多个工作区，请确认 target：\n${match.candidates.map(item => `${item.title} → ${item.path}`).join('\n')}`
-      }
-      let dir
-      if (typeof args.target === 'string' && args.target.trim() !== '') {
-        const error = validateTargetDir(args.target)
-        if (error !== undefined) return `${error}。`
-        dir = resolve(args.target.trim())
-      } else {
-        const hint = resolveProjectHint(args.query)
-        dir = hint.path ?? defaultDir()
-      }
-      if (dir === undefined) return '没有可用项目目录：请给 target 绝对路径，或先打开主会话。'
-      let isDir = false
-      try { isDir = statSync(dir).isDirectory() } catch { isDir = false }
-      if (!isDir) return `项目目录不存在或不是目录：${dir}`
-      return projectContextFor(dir, String(args.query ?? ''))
+      const mode = typeof args.mode === 'string' ? args.mode.trim() : ''
+      // 旧入参形状继续可用（不静默）：workspaces:true 等价 mode:'workspaces'，只有 target 等价 mode:'project'。
+      if (mode === 'workspaces' || (mode === '' && args.workspaces === true)) return workspacesView(args, exec)
+      if (mode === 'project' || (mode === '' && typeof args.target === 'string' && args.target.trim() !== '')) return projectView(args, exec)
+      if (mode === '' || mode === 'history') return historyView(args, exec)
+      return `mode 只能是 ${CONTEXT_MODES.join(' / ')}（默认 history）：收到的是 ${JSON.stringify(args.mode)}。`
+        + '旧的 history_search → context({ mode: "history", query })；旧的 project_context → context({ mode: "project", target }) 或 context({ mode: "workspaces" })（映射见 CHANGELOG）。'
     }),
 
     // 记忆写入的**单一路由**（审计 §5.3 待定项 2 的「不双写」）：
     //   全局偏好 → 只写 settings.orchestrator_preferences（每回合注入 L1 协调者 policy）；
-    //   项目偏好 / 其它 kind → 只写 memories（随 task_detail 注入子会话 / 供 history_search 检索）。
+    //   项目偏好 / 其它 kind → 只写 memories（随 task_detail 注入子会话 / 供 context 检索）。
     // 一条事实只落一处，不存在「两份真相」。
-    wrap('memory_note', '记住一条跨任务有效的决策/经验，或一条偏好。偏好（kind:preference）不传 project 时写进协调者偏好（每回合注入提示词，立即生效）；其余写进 memories 事实层（供 history_search 与 task_detail 注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
+    wrap('memory_note', '记住一条跨任务有效的决策/经验，或一条偏好。偏好（kind:preference）不传 project 时写进协调者偏好（每回合注入提示词，立即生效）；其余写进 memories 事实层（供 context({ mode: "history" }) 与 task_detail 注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
       text: str('要记住的内容，一两句话'),
       project: str('可选：项目绝对路径或工作区名；不传记为全局'),
       kind: { type: 'string', enum: ['note', 'decision', 'preference', 'lesson'], description: '类型，默认 note' },
@@ -1272,45 +1405,6 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       })
       if (kind === 'preference') return projectPreferenceSavedHint(hint.title)
       return `已记住（${hint.title ?? '全局'}）。`
-    }),
-
-    wrap('task_inbox', '收件箱：集中看待你决定、失败/丢失、长时间没动静的任务；默认只读，不写台账。', objectSchema({
-      limit: { type: 'number', description: '每类最多几条，默认 10，最大 20' },
-    }), async (args, exec) => {
-      const denied = requireMain(exec)
-      if (denied !== undefined) return denied
-      const limit = Number.isFinite(args.limit) ? Math.min(20, Math.max(1, Math.floor(args.limit))) : 10
-      const active = listTasks(db, { active: true })
-      const waiting = active
-        .filter(task => WAITING_STATUS.has(task.status))
-        .slice(0, limit)
-      // 两段式终态：已交付待确认的任务要协调者/用户拍板（确认或追问），单独一栏。
-      const confirm = active
-        .filter(task => task.status === 'delivered')
-        .slice(0, limit)
-      const failed = listTasks(db, { active: false })
-        .filter(task => task.status === 'failed' || task.status === 'orphaned')
-        .slice(0, limit)
-      const stale = active
-        .filter(task => task.status === 'running' || task.status === 'pending' || task.status === 'waiting_dep')
-        .filter(task => Date.now() - task.last_event_at > staleMinutes * 60_000)
-        .slice(0, limit)
-      if (waiting.length === 0 && confirm.length === 0 && failed.length === 0 && stale.length === 0) {
-        return '收件箱是空的，没有待你决定或需要关注的任务。'
-      }
-      const blocks = []
-      const lineOf = task => {
-        const question = task.question ? `｜问题：${short(task.question, 80)}` : ''
-        const options = task.options?.length > 0 ? `｜选项：${task.options.join(' / ')}` : ''
-        return `- ${taskLabelWithId(task)}｜${labelOf(task.status)}${question}${options}`
-      }
-      if (waiting.length > 0) blocks.push(`【待你决定】${waiting.length}\n${waiting.map(lineOf).join('\n')}`)
-      if (confirm.length > 0) {
-        blocks.push(`【待确认】${confirm.length}（已交付待确认：默认保持、等你或用户拍板；要改 task_message 追问原会话，用户确认后才 task_close，超时自动完成）\n${confirm.map(lineOf).join('\n')}`)
-      }
-      if (failed.length > 0) blocks.push(`【失败/丢失】${failed.length}\n${failed.map(lineOf).join('\n')}`)
-      if (stale.length > 0) blocks.push(`【长时间没动静】${stale.length}\n${stale.map(lineOf).join('\n')}`)
-      return blocks.join('\n')
     }),
 
     wrap('task_report', '子任务每轮结束必须调用：progress（有进展未完成）、done（完成）、blocked（卡住等人决定）、needs_auth（需要授权）。协调者据此决定是否打扰用户。', objectSchema({
@@ -1547,38 +1641,5 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return planSavedNote(written)
     }),
 
-    // 两段式终态的确认入口：只有 delivered（已交付待确认）能收成 done。
-    wrap('task_close', '确认一条「已交付待确认」（delivered）任务为已完成（done，终态）。要改就用 task_message 追问原会话；要取消用 task_stop。', objectSchema({
-      task_id: str('任务编号'),
-    }), async (args, exec) => {
-      const denied = requireMain(exec)
-      if (denied !== undefined) return denied
-      if (unbound()) return UNBOUND_HINT
-      const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
-      const outcome = closeDelivered({
-        db,
-        taskId: task.id,
-        reason: CLOSE_REASONS.coordinator,
-        releaseSession: releaseTaskSession,
-        // G1：确认完成 = 目标达成，complete 并 disarm（桥内部幂等）。
-        completeGoal: closed => { void goalBridge?.complete?.(closed.id, closed.session_id) },
-        cleanupWorktree,
-        pump: () => queue.pump(),
-        logger,
-      })
-      if (outcome.ok !== true) {
-        const latest = outcome.task ?? task
-        if (outcome.reason === 'not-found') return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
-        if (TERMINAL_STATUS.has(latest.status)) {
-          return toolFailure('CLOSE_TASK_ENDED', { label: labelFor(latest), statusLabel: labelOf(latest.status) })
-        }
-        return toolFailure('CLOSE_NOT_DELIVERED', { label: labelFor(latest), statusLabel: labelOf(latest.status) })
-      }
-      log('task.close', { taskId: task.id, detail: { already: outcome.already === true } })
-      return outcome.already === true
-        ? `任务「${labelFor(outcome.task)}」已完成（无需重复确认）。`
-        : `任务「${labelFor(outcome.task)}」已确认完成。`
-    }),
   ]
 }

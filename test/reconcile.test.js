@@ -189,7 +189,7 @@ test('S2 汇总通知：一次只发一条，列出本轮全部孤儿任务', as
   assert.match(calls[0].text, /启动对账：2 个任务/)
   assert.match(calls[0].text, /- 甲（t-/)
   assert.match(calls[0].text, /- 乙（t-/)
-  assert.match(calls[0].text, /task_retry/)
+  assert.match(calls[0].text, /action: 'retry'/)
   assert.equal(reconciler.pendingCount(), 0)
   db.close()
 })

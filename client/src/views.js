@@ -551,7 +551,7 @@ export function createViews({
       )
       : null
 
-    // 确认交付（delivered → done）：与工具 task_close 同源，服务端 closeGate 下发 canClose。
+    // 确认交付（delivered → done）：与工具 task_message action:close 同源，服务端 closeGate 下发 canClose。
     // done 不可逆，所以与停止/删除同一套两步确认。
     const closeControl = task => {
       if (task === null || task === undefined || task.canClose !== true) return null

@@ -15,6 +15,7 @@ import { createOnboarding } from './src/onboarding.js'
 import { createDispatcher } from './src/dispatch.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
+import { legacyToolHint } from './src/tool-migrations.js'
 import { createQueue } from './src/queue.js'
 import { createStartupReconciler } from './src/reconcile.js'
 import { createRotationService } from './src/main-rotation.js'
@@ -47,17 +48,18 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 本次自动编排只支持 target:this_session：到期唤醒唯一主会话，再走 task_create。new/new_once 创建普通 root 会话并继承当前目录/预设，但非唯一主会话，不能直接 task_create；不得篡改 main_session_id、认领第二协调者或加转发桥。自动化投递成功不等于子任务完成；重复触发先用 task_list 核对，不反复重派。
 - 编辑时用最新结果的 updatedAt 作为 expectedUpdatedAt（可用时）；schedule_conflict 先 schedule_view 重读，不强行覆盖。Host 必须运行；崩溃可能重复投递，删除不撤回已排队消息，不承诺 exactly-once。
 - 默认 worker 不开放自动化；自定义预设即使露出 schema，宿主仍拒绝 delegated subagent（subagent_session）。access:full 只改变单个子会话沙箱，不增加工具、不绕过宿主委派校验或审批。缺服务/工具时明确报告当前能力缺失，不能模拟成功。
-- 派任务前可用 history_search 查跨项目记忆与历史任务，用 project_context 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
+- 派任务前可用 context({ mode: 'history', query }) 查跨项目记忆与历史任务，用 context({ mode: 'project', target }) 读项目背景；长期有效的用户决策/偏好用 memory_note 记下来。
 - 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域（与活跃未隔离任务重叠会被拒，见下「同写域并发防护」）；紧急任务用 priority（-10..10）。
 - 子任务回报产物路径后，默认用 present 展示 ${PRESENT_LIMIT_TEXT}产物（只列**已登记产物**里的真实文件、写绝对路径），不必等用户点名；没有产物就不提 present。要看产物正文（多文件产物挑着看、核对文件里到底写了什么）用 read_workspace({ path })：边界是**主会话工作区 ∪ 已登记产物**——子会话按契约把产物写在 target 目录内（仓库、worktree 检出），那些路径不在工作区里，但只要登记过就能读；未登记的同目录文件、越界、路径穿越、符号链接逃逸会被拒。present 仍只声明交付、不读文件内容。
 - 需要「看一眼产物」时先用 read_workspace，不要为此新派一个子任务；但**不要**用 read_workspace 校验产物是否真实存在（存在性由插件与子任务保证，present 只列真实文件）。
 - 需要先看方案再动手（大改、跨文件、范围不确定）时用 task_create({ planFirst: true })：子会话只读探索后先 plan_save 把计划落盘到主会话工作区的 reports/plans/<taskId>.md，再用 task_report blocked 只上报摘要 + 计划文档绝对路径 + 待拍板问题，你连路径一起转交用户；用户批准后用 task_message 续派（插件自动把沙箱切回可写）。planFirst 与 readOnly 互斥。
 - 只有构建/发版这类**确实需要越过文件沙箱**（写仓库外、跑不受沙箱限制的 bash/pwsh）的任务才传 task_create({ access: 'full' })：该子会话单独跑在 danger-full-access，**默认策略与其他任务一律不动**；access 只接受 'full'，且与 readOnly / planFirst 互斥；没有这种需求就不要传，也别因为用户说「不限制 bash」就顺手给所有任务加上。access 属于单个任务，插件不往孙任务传，也不写进任何默认配置。
 - 向用户汇报任务时用**任务名**（可附任务编号，如「计划落盘工具（t-4e573e01）」），不要只甩 t-xxxx 编号：编号是给你调工具用的，用户只认任务名。
-- 子任务回报 done 后任务状态是「待确认」（delivered，已交付待确认），**不是终态**：默认**保持待确认、不要主动 task_close**——追问窗口留着，用户看完结果常还要改；只有用户明确说「确认 / 没问题 / 不用再改」，或你确实需要终态（要派依赖它的任务、要删任务、要收尾）时才 task_close。用户要改/补充一律 task_message 追问（复用同一个子会话，不要新建任务）；一直不确认会按超时（config.deliveredTimeoutMinutes）自动完成，task_status 会写阈值。
+- 子任务回报 done 后任务状态是「待确认」（delivered，已交付待确认），**不是终态**：默认**保持待确认、不要主动 task_message({ action: 'close' })**——追问窗口留着，用户看完结果常还要改；只有用户明确说「确认 / 没问题 / 不用再改」，或你确实需要终态（要派依赖它的任务、要删任务、要收尾）时才 task_message({ action: 'close' })。用户要改/补充一律 task_message 追问（复用同一个子会话，不要新建任务）；一直不确认会按超时（config.deliveredTimeoutMinutes）自动完成，task_status 会写阈值。
 - **待确认要主动问用户，不许只挂台账**：收到交付通知的同一回合里就用 ask_user_question 问，不要等用户自己去翻面板或 task_list。每次提问带三要素：**任务名**（可附任务编号）+ **一句结果要点** + **「确认 / 要改？」**；同时有多个待确认时**合并成一条清单一次问**（每行一个任务，同样三要素），不要连发多条问题，也不要只说「有 3 个任务待确认」而不给任务名和要点。
-- **提问不等于关闭**：问完任务依旧是待确认，默认不 task_close；用户答「要改」就 task_message 追问原会话，答「确认 / 不用改」才 task_close，一直没回答就等超时自动完成——不要替用户默认确认，也不要因为已经问过就自行收尾。
-- 需要看“待你决定/失败/长时间没动静”时用 task_inbox。
+- **提问不等于关闭**：问完任务依旧是待确认，默认不 task_message({ action: 'close' })；用户答「要改」就 task_message 追问原会话，答「确认 / 不用改」才 task_message({ action: 'close' })，一直没回答就等超时自动完成——不要替用户默认确认，也不要因为已经问过就自行收尾。
+- 需要看“待你决定/失败/长时间没动静”时用 task_list({ view: 'inbox' })。
+- 工具表就这 10 个：task_create / task_list / task_status / task_detail / task_message / read_workspace / context / memory_note / task_report / plan_save。旧的 task_stop / task_retry / task_close 已并入 task_message 的 action（stop / retry / close），task_inbox 并入 task_list({ view: 'inbox' })，history_search / project_context 并入 context 的 mode（history / project / workspaces）；旧名已删除，硬调会拿到迁移提示（映射表见 README「工具迁移映射」）。
 - 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
 - 本回合没有别的事就立即结束回合；通知会开启新回合。
@@ -82,8 +84,8 @@ export function renderWorktreePolicy(config = {}) {
 - off：一律不隔离。
 - 用户当场表述或 AGENTS.md 里的要求优先于本默认；判断后传结构化字段，不要问「怎么解析文件」。
 判断流程（你做判断，插件只执行）：
-1. 读指引：上下文里 DSH 已注入用户级/工作区级 AGENTS.md；再用 project_context(<target>) 看目标仓库的 AGENTS.md（有就按它，回复里写明来源）。用户当场表述优先于文件。
-2. 拿事实：project_context 看顶层结构是不是 git 仓库；task_list 看同 group / dependsOn 链上有没有在跑的任务。isRepo/defaultBranch/recentBranches 这类仓库事实由插件在 worktree:true 的返回里给，你不要跑 git。
+1. 读指引：上下文里 DSH 已注入用户级/工作区级 AGENTS.md；再用 context({ mode: 'project', target }) 看目标仓库的 AGENTS.md（有就按它，回复里写明来源）。用户当场表述优先于文件。
+2. 拿事实：context({ mode: 'project', target }) 看顶层结构是不是 git 仓库；task_list 看同 group / dependsOn 链上有没有在跑的任务。isRepo/defaultBranch/recentBranches 这类仓库事实由插件在 worktree:true 的返回里给，你不要跑 git。
 3. 判要不要建（默认三条件，仅在用户/配置都没说死时用）：A 目标是 git 仓库 ∧ B 同一需求已有任务在执行 ∧ C 本次是新需求 → worktree:true；否则省略或传 false，并在回复里说一句原因（「不是 git 仓库」「续派复用已有检出」…）。
 4. 判基线 + 分支名：用户指定就从哪起（worktreeBase）；没说时插件给事实——近 ${days} 天 0 个活跃分支用默认分支、1 个直接用那条；**≥2 个时插件返回 needsBranchChoice 且不创建任务**，你用 ask_user_question 问用户，拿到答案后带 worktreeBase 重调 task_create。分支名默认 ${prefix}<taskId>，用户/项目有命名约定就传 worktreeBranch（非法/重名会报错，插件不改名）。
 5. 收尾标注：按返回的 worktree 块在回复里写「产物在分支 X 的检出目录 Y，合并由你决定」；hint 非空时一并解释。
@@ -97,7 +99,7 @@ export function renderWorktreePolicy(config = {}) {
  * 同写域并发防护的协调者指引（结构化配置渲染，默认 require）。
  *
  * 默认档是**拒绝**（不再是 advisory），但不是不可绕过：三条出路都在这里讲清楚
- * （task_close/task_stop 旧任务、worktree:true 隔离、显式 allowConcurrent:true），
+ * （task_message({action:'close'|'stop'}) 旧任务、worktree:true 隔离、显式 allowConcurrent:true），
  * 否则协调者被拒后会反复重试同一个调用。
  */
 export function renderWriteGuardPolicy(config = {}) {
@@ -111,7 +113,7 @@ export function renderWriteGuardPolicy(config = {}) {
 当前配置：sameDirGuard=${mode}（require | warn | off）｜${behavior}
 - 判定对象：同一 target 目录（含父子目录）或 writeScopes 重叠的**活跃未隔离**任务；只读任务、worktree 隔离任务、dependsOn 链上的前置任务都不算冲突。
 - 被拒时按顺序选一条，不要原样重试同一个调用：
-  1. 该目录确实只该有一个任务在写 → 先 task_close（待确认）或 task_stop（还在跑），再重派；
+  1. 该目录确实只该有一个任务在写 → 先 task_message({ action: 'close' })（待确认）或 task_message({ action: 'stop' })（还在跑），再重派；
   2. 两个任务要并行 → 传 worktree:true 让新任务在独立检出里跑（推荐，产物合并由你/用户决定）；
   3. 用户明确要求并发写同一目录 → 显式传 allowConcurrent:true，并把返回里的「并发风险」原话转告用户。
 - 不要为了绕过这条把任务改成 readOnly/planFirst（那会让子会话写不了文件），也不要自己改配置。
@@ -383,7 +385,13 @@ export async function apply(ctx, rawConfig = {}) {
   const DENY_HINT = toolName => `${toolName} 是协调者禁止的工具：协调者只做协调（task_*），不直接写文件、执行命令、派队友或操作团队任务（读工作区产物用 read_workspace）；查看进度用 task_list / task_status。`
   const guardDisposer = ctx.tools?.guard?.(exec => {
     const toolName = exec?.name
-    if (typeof toolName !== 'string' || !COORDINATOR_DENY.includes(toolName)) return undefined
+    if (typeof toolName !== 'string') return undefined
+    // P1-B：旧工具名已从工具表删除，但**不静默**——模型照旧 AGENTS.md / 旧提示词调 task_stop 之类时，
+    // 执行层直接把「改成什么调用」返回给它（映射表单源 src/tool-migrations.js，CHANGELOG/README 同一份）。
+    // 不限 agent：子会话拿到同样的提示也不坏事（它本来就没有这些工具）。
+    const migration = legacyToolHint(toolName)
+    if (migration !== undefined) return migration
+    if (!COORDINATOR_DENY.includes(toolName)) return undefined
     const id = resolvedCoordinatorId()
     if (id === undefined || exec.agent?.id !== id) return undefined
     return toolName === 'wait_agent' ? WAIT_AGENT_DENIAL : DENY_HINT(toolName)
@@ -570,7 +578,7 @@ export async function apply(ctx, rawConfig = {}) {
   const keepAliveDisposer = keepAlive.start(ctx)
 
   // 两段式终态（D1）的确认兜底：delivered 超过 deliveredTimeoutMinutes 自动收成 done。
-  // 与工具 task_close / 面板「确认交付」共用 closeDelivered，副作用顺序完全一致。
+  // 与工具 task_message action:close / 面板「确认交付」共用 closeDelivered，副作用顺序完全一致。
   const deliveredSweeper = createDeliveredSweeper({
     db,
     config,

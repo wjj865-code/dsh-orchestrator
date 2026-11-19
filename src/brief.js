@@ -96,7 +96,7 @@ export function renderBrief({ taskId, access, worktreeState } = {}) {
 }
 
 /**
- * 台账任务行 → 它自己的 brief（task_create / task_retry / 面板 retry / 队列兜底四个调用点共用）。
+ * 台账任务行 → 它自己的 brief（task_create / 重派（task_message action:retry）/ 面板 retry / 队列兜底四个调用点共用）。
  *
  * 字段映射只写在这里：`tasks.access` / `tasks.worktree_state` 是唯一真相，
  * 四个入口各自拼一遍参数必然漂移（此前 access 就在四处各写了一份三元表达式）。

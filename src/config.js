@@ -108,7 +108,7 @@ export function loadConfig(raw = {}, { onWarn } = {}) {
     : 8
   config.keepAlivePrompt = nonEmpty(raw?.keepAlivePrompt, '')
   // 同写域并发防护：同一 target 目录 / 同一写域上再派一个**未隔离**的可写任务时怎么处理。
-  // require（默认）= 拒绝并给可操作错误（三条出路：task_close / worktree:true / allowConcurrent:true）；
+  // require（默认）= 拒绝并给可操作错误（三条出路：task_message({action:'close'}) / worktree:true / allowConcurrent:true）；
   // warn = 只给强警告照常创建；off = 关闭（writeScopes 退回旧的 advisory 提示）。
   // 非法值（含拼错）一律回落 require —— 默认必须安全，不能因为配置写错就放开。
   config.sameDirGuard = guardModeOf(raw?.sameDirGuard)

@@ -111,7 +111,7 @@ test('③ 端到端：工具 task_stop 对 failed 任务给「已结束」，不
     coordinatorStatus: () => ({ id: 's-1', live: true }),
     logger: { log() {} },
   }).map(tool => [tool.name, tool]))
-  const text = await tools.task_stop.execute({ task_id: task.id }, { agent: { id: 's-1' } })
+  const text = await tools.task_message.execute({ action: 'stop', task_id: task.id }, { agent: { id: 's-1' } })
   assert.match(text, /已结束/)
   assert.match(text, /失败/)
   assert.equal(getTask(db, task.id).status, 'failed')

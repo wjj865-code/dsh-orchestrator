@@ -7,10 +7,10 @@
 // - 判定对象：新任务 target 与某个**活跃且未隔离**任务的 target 相同或互相包含；
 //   以及新任务 writeScopes 与活跃未隔离任务写域重叠。
 // - 三个档位 `config.sameDirGuard`：
-//   - `require`（默认）：拒绝创建，返回可操作错误（先 task_close / 改 worktree 隔离 / 传 allowConcurrent:true）；
+//   - `require`（默认）：拒绝创建，返回可操作错误（先 task_message({ action: 'close' }) / 改 worktree 隔离 / 传 allowConcurrent:true）；
 //   - `warn`：只给强警告，照常创建（返回文本 + 日志都留痕）；
 //   - `off`：完全关闭（writeScopes 退回旧的 advisory 一行提示）。
-// - 三条显式出路（都不是「硬拒」）：`allowConcurrent:true`、`worktree:true` 隔离、先 `task_close` 旧任务。
+// - 三条显式出路（都不是「硬拒」）：`allowConcurrent:true`、`worktree:true` 隔离、先 `task_message({ action: 'close' })` 旧任务。
 // - 只读任务（readOnly）永远不写文件，不参与判定（既不算冲突方，也不被拦）；
 //   `planFirst` 计划阶段虽然当下只读，但批准后会转可写，所以照常参与判定（否则批准那刻就撞了）。
 // - 隔离任务（`requested`/`created`/`reused`）在各自检出目录里跑，不算冲突方；
@@ -178,12 +178,12 @@ export function sameDirRejection({ target, conflicts = [] } = {}) {
     '冲突任务（已在独立检出里跑的任务不在此列，它们不写这个目录）：',
     ...conflicts.map(conflictLine),
     '三种做法（任选其一）：',
-    '1. 先 task_close 关闭旧任务（或 task_stop 取消），再重派；',
+    '1. 先 task_message({ action: \'close\' }) 关闭旧任务（或 task_message({ action: \'stop\' }) 取消），再重派；',
     '2. 传 worktree:true 让新任务在独立检出里跑（推荐：两个任务可并行，合并由你决定）；',
     '3. 确认确实要并发写同一目录时，显式传 allowConcurrent:true 放行（冲突风险自负）。',
   ]
   if (delivered) {
-    lines.push('提示：上面有任务处于「待确认」（已交付待确认）——那是追问窗口，不是终态；确认完成用 task_close，要继续改就用 task_message 追问原会话（不要新建任务）。')
+    lines.push('提示：上面有任务处于「待确认」（已交付待确认）——那是追问窗口，不是终态；确认完成用 task_message({ action: "close" })，要继续改就用 task_message 追问原会话（不要新建任务）。')
   }
   return lines.join('\n')
 }
@@ -195,7 +195,7 @@ export function scopeRejection({ scopes = [], conflicts = [] } = {}) {
     '冲突任务与重叠路径：',
     ...conflicts.map(({ task, scope, other }) => `- 「${taskLabelWithId(task)}」（${statusLabel(task.status)}）：重叠 ${other}（本次 ${scope}）`),
     '三种做法（任选其一）：',
-    '1. 先 task_close 关闭旧任务，再重派；',
+    '1. 先 task_message({ action: \'close\' }) 关闭旧任务，再重派；',
     '2. 传 worktree:true 隔离，或用 dependsOn 把两个任务串起来（串行写入）；',
     '3. 确认确实要并发写同一批文件时，显式传 allowConcurrent:true 放行（冲突风险自负）。',
   ].join('\n')

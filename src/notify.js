@@ -161,7 +161,7 @@ const batchHint = batch => (batch.some(hasDeliverable) ? `\n  ${PRESENT_HINT}` :
 // 两段式终态（delivered）：交付通知必须带动作指令，否则协调者只会转述「完成了」，
 // 也会忘了 task_message 追问能复用原会话（用户随后只能新派任务）。
 // 默认口径是「保持待确认、别急着关」（0.14.x 起）：关闭要用户明确确认，或等超时。
-export const DELIVERED_HINT = '默认保持待确认（别急着关闭）：要改 task_message 追问原会话（不新建任务）；用户明确说确认完成时再 task_close <任务编号>；一直不确认则超时自动完成。'
+export const DELIVERED_HINT = '默认保持待确认（别急着关闭）：要改 task_message 追问原会话（不新建任务）；用户明确说确认完成时再 task_message({ action: "close", task_id: \'<任务编号>\' })；一直不确认则超时自动完成。'
 const deliveredBlock = item => item?.status === 'delivered'
   ? `\n  交付确认：${DELIVERED_HINT.replace('<任务编号>', String(item.taskId ?? ''))}`
   : ''

@@ -1,4 +1,4 @@
-// 面板动作门控：续派（追加消息）、确认交付（task_close）与删除任务/子会话。
+// 面板动作门控：续派（追加消息）、确认交付（task_message action:close）与删除任务/子会话。
 //
 // 为什么要单独一个模块：按钮「显示不显示」和动作「接不接」必须是同一判定，
 // 否则会出现「按钮在、点了 409」或「接口能收、按钮不给」的分叉。
@@ -78,7 +78,7 @@ export const canFollowup = task => followupGate(task).ok
 
 /**
  * 确认交付门控：只有 delivered（已交付待确认）能收成 done。
- * 与工具 task_close 同源；已 done 的重复确认按幂等成功处理（closeDelivered 内部判断）。
+ * 与工具 task_message action:close 同源；已 done 的重复确认按幂等成功处理（closeDelivered 内部判断）。
  * @returns {{ok: boolean, reason: null|'not_found'|'not_delivered'}}
  */
 export function closeGate(task) {
@@ -91,7 +91,7 @@ export function closeGate(task) {
 export const canClose = task => closeGate(task).ok
 
 /**
- * 删除门控：只有终态能删；活跃任务必须先 task_stop/面板「停止」；
+ * 删除门控：只有终态能删；活跃任务必须先 task_message(action:stop)/面板「停止」；
  * 有活跃下游依赖时也不能删（删了前置，下游会按「前置不存在」直接失败，见 deps.js）。
  * @param {{activeDependents?: number}} context 活跃下游数量（snapshot/detail/动作各自现算后传入）
  * @returns {{ok: boolean, reason: null|'not_found'|'active'|'not_terminal'|'has_dependents'}}

@@ -21,13 +21,13 @@ test('状态到级别映射', () => {
   assert.equal(levelOf('weird'), 'silent')
 })
 
-test('交付通知：写「已交付待确认」并带 task_close / task_message 动作指令', async () => {
+test('交付通知：写「已交付待确认」并带 action:close / task_message 动作指令', async () => {
   const delivered = []
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 5 })
   notifier.push({ taskId: 't-close', title: '交付任务', status: 'delivered', summary: '改完了' })
   await wait(20)
   assert.match(delivered[0], /任务「交付任务」已交付待确认：改完了/)
-  assert.match(delivered[0], /task_close t-close/)
+  assert.match(delivered[0], /task_message\(\{ action: "close", task_id: 't-close' \}\)/)
   assert.match(delivered[0], /task_message 追问原会话/)
   assert.match(delivered[0], /超时自动完成/)
   // 多条合并：动作指令只在整条消息末尾写一次（这里只断言不重复刷）。
@@ -35,7 +35,7 @@ test('交付通知：写「已交付待确认」并带 task_close / task_message
   notifier.push({ taskId: 't-b', title: 'B', status: 'delivered', summary: '二' })
   await wait(20)
   assert.match(delivered[1], /2 个任务已交付待确认/)
-  assert.equal(delivered[1].match(/task_close/g).length, 1)
+  assert.equal(delivered[1].match(/action: "close"/g).length, 1)
 })
 
 test('结算异常状态的通知文案：已取消 / 会话已结束但没有终态回报', async () => {

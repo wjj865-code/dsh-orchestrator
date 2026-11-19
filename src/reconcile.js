@@ -99,10 +99,10 @@ export function reconcileSummary(tasks, { max = RECONCILE_SUMMARY_MAX, labelFor 
   const hidden = list.length - shown.length
   const tail = hidden > 0 ? [`- 另有 ${hidden} 个任务未列出`] : []
   return [
-    `启动对账：${list.length} 个任务在跑，但子会话已不活跃，已标记为会话丢失（orphaned，可 task_retry 重派）：`,
+    `启动对账：${list.length} 个任务在跑，但子会话已不活跃，已标记为会话丢失（orphaned，可 task_message({ action: 'retry' }) 重派）：`,
     ...lines,
     ...tail,
-    '详情用 task_status，全部任务用 task_list / task_inbox。',
+    '详情用 task_status，全部任务用 task_list / task_list({ view: \'inbox\' })。',
   ].join('\n')
 }
 

@@ -1,7 +1,7 @@
 // 同写域并发防护（0.16）：纯函数 + task_create 集成回归。
 //
 // 事故：协调者在同一个 target 目录并发派了两个未隔离任务，两个子会话同时写同一份工作树。
-// 这里锁住四件事：默认拒绝、三条出路（task_close / worktree / allowConcurrent）、
+// 这里锁住四件事：默认拒绝、三条出路（task_message action:close / worktree / allowConcurrent）、
 // 降级配置（warn / off）、以及既有合法场景不受影响。
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -100,7 +100,7 @@ test('判定：require 档冲突即拒绝；allowConcurrent 放行并带风险�
   assert.equal(rejected.action, 'reject')
   assert.equal(rejected.mode, 'require')
   assert.match(rejected.text, /未创建任务/)
-  assert.match(rejected.text, /task_close/)
+  assert.match(rejected.text, /action: 'close'/)
   assert.match(rejected.text, /worktree:true/)
   assert.match(rejected.text, /allowConcurrent:true/)
   assert.match(rejected.text, /旧任务/)
@@ -207,7 +207,7 @@ test('同 target 且无 worktree：默认拒绝，不建任务、不派发，错
   assert.match(second, /未创建任务/)
   assert.match(second, /目标目录/)
   assert.match(second, /旧任务/)
-  assert.match(second, /task_close/)
+  assert.match(second, /action: 'close'/)
   assert.match(second, /worktree:true/)
   assert.match(second, /allowConcurrent:true/)
   assert.equal(listTasks(db, { active: true }).length, 1)
@@ -247,7 +247,7 @@ test('旧任务关闭（done/cancelled）后可正常创建；不同 target 一�
   const first = await call('task_create', { ...sampleBrief({ title: '旧任务', goal: 'g1' }), target })
   assert.match(first, /已派发/)
   const old = listTasks(db, { active: true })[0]
-  await call('task_stop', { task_id: old.id })
+  await call('task_message', { action: 'stop', task_id: old.id })
   assert.equal(getTask(db, old.id).status, 'cancelled')
 
   const again = await call('task_create', { ...sampleBrief({ title: '接续任务', goal: 'g2' }), target })
@@ -267,7 +267,7 @@ test('已完成任务不占目录：done 之后同 target 可再派', async () =
   await call('task_create', { ...sampleBrief({ title: '前一轮', goal: 'g1' }), target })
   const first = listTasks(db, { active: true })[0]
   await call('task_report', { task_id: first.id, status: 'done', summary: '完成' }, { agent: { id: first.session_id } })
-  await call('task_close', { task_id: first.id })
+  await call('task_message', { action: 'close', task_id: first.id })
   assert.equal(getTask(db, first.id).status, 'done')
 
   const second = await call('task_create', { ...sampleBrief({ title: '下一轮', goal: 'g2' }), target })
@@ -518,13 +518,13 @@ test('schema 暴露 allowConcurrent，且 writeScopes 描述不再自称 advisor
   db.close()
 })
 
-test('重派（task_retry）不受影响：失败任务腾出目录后按原 target 重派', async () => {
+test('重派（task_message action:retry）不受影响：失败任务腾出目录后按原 target 重派', async () => {
   const { db, call } = await setup()
   const target = tempDir()
   await call('task_create', { ...sampleBrief({ title: '会失败', goal: 'g1' }), target })
   const task = listTasks(db, { active: true })[0]
   transition(db, task.id, 'failed', { error: 'boom' })
-  const retried = await call('task_retry', { task_id: task.id })
+  const retried = await call('task_message', { action: 'retry', task_id: task.id })
   assert.match(retried, /已重派/)
   assert.equal(listTasks(db, { active: true }).length, 1)
   db.close()
@@ -536,7 +536,7 @@ test('协调者 policy 渲染同写域防护：档位、三条出路、delivered
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /## 同写域并发防护/)
   assert.match(policy, /sameDirGuard=require/)
-  assert.match(policy, /task_close/)
+  assert.match(policy, /action: 'close'/)
   assert.match(policy, /worktree:true/)
   assert.match(policy, /allowConcurrent:true/)
   assert.match(policy, /delivered/)
@@ -553,7 +553,9 @@ test('README / docs 写明行为变更、配置字段与默认值、三条出路
   assert.match(readme, /sameDirGuard/)
   assert.match(readme, /`require`/)
   assert.match(readme, /allowConcurrent/)
-  assert.match(readme, /task_close/)
+  assert.match(readme, /task_message\(\{ action: 'close'/)  
+  // 迁移表里要能查到旧名与对应新调用（README「工具迁移映射」）。
+  assert.match(readme, /task_close/) 
   assert.match(readme, /worktree:true/)
   for (const file of ['docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md', 'docs/DETAIL.md']) {
     const text = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')

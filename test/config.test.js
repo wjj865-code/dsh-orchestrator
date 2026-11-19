@@ -209,8 +209,12 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   assert.match(source, /dsh-orchestrator-coordinator/)
   assert.match(source, /dsh-orchestrator-worker/)
   assert.match(source, /@wjj865-code\/dsh-orchestrator\/preset-tools/)
-  for (const tool of ['task_retry', 'task_inbox', 'history_search', 'project_context', 'memory_note', 'read_workspace']) {
+  for (const tool of ['task_create', 'task_list', 'task_status', 'task_message', 'context', 'memory_note', 'read_workspace']) {
     assert.match(source, new RegExp(`- ${tool}`), `协调者 allow 名单应包含 ${tool}`)
+  }
+  // P1-B：被合并掉的 6 个旧名必须从 allow 名单里消失（模型面 12 → 7）。
+  for (const removed of ['task_stop', 'task_retry', 'task_close', 'task_inbox', 'history_search', 'project_context']) {
+    assert.doesNotMatch(source, new RegExp(`- ${removed}\\s*$`, 'm'), `协调者 allow 名单不应再列 ${removed}`)
   }
   // 受控读只能走 read_workspace：原生 read/glob 不挂行、也不进 allow（它们没有读路径白名单）。
   assert.doesNotMatch(source, /^\s+- read\s*$/m, '协调者 allow 不得包含原生 read')

@@ -32,7 +32,7 @@ export function validateDepends(db, values) {
     const task = getTask(db, id)
     if (task === undefined) return { ok: false, error: `前置任务不存在：${id}` }
     if (FAILED_DEP.has(task.status)) {
-      return { ok: false, error: `前置任务「${taskLabelWithId(task)}」当前是${labelOf(task.status)}，不能作为依赖；先 task_retry 或新建一个可用的前置任务` }
+      return { ok: false, error: `前置任务「${taskLabelWithId(task)}」当前是${labelOf(task.status)}，不能作为依赖；先 task_message({ action: 'retry' }) 或新建一个可用的前置任务` }
     }
   }
   return { ok: true, ids }

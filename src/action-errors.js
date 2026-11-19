@@ -1,4 +1,4 @@
-// 动作错误唯一口径：面板动作（stop/retry/message）与工具层（task_stop/task_retry/task_message）
+// 动作错误唯一口径：面板动作（stop/retry/message）与工具层（task_message 的 action: stop/retry/close）
 // 共用同一套 code、门控语义和文案函数，避免两个通道各说一套。
 //
 // - 面板：失败结果 { ok:false, code, error }；HTTP 状态由 code 映射（host-route）。
@@ -26,8 +26,8 @@ export const ACTION_ERRORS = Object.freeze({
   // retry
   RETRY_NOT_ALLOWED: define({
     http: 409,
-    panel: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有失败或会话丢失的任务能重派；在跑的任务用 task_message，排队中的用 task_stop 取消后重建。`,
-    tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有失败或会话丢失的任务能重派；在跑的任务用 task_message，排队中的用 task_stop 取消后重建。`,
+    panel: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有失败或会话丢失的任务能重派；在跑的任务用 task_message，排队中的用 task_message({ action: 'stop' }) 取消后重建。`,
+    tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有失败或会话丢失的任务能重派；在跑的任务用 task_message，排队中的用 task_message({ action: 'stop' }) 取消后重建。`,
   }),
   RETRY_DUPLICATE_ACTIVE: define({
     http: 409,
@@ -61,8 +61,8 @@ export const ACTION_ERRORS = Object.freeze({
   }),
   MESSAGE_WAITING_DEP: define({
     http: 409,
-    panel: ({ label, depends }) => `任务「${label}」还在等待前置任务（${depends}），依赖完成后会派发，暂不能续派；要取消用 task_stop。`,
-    tool: ({ label, depends }) => `任务「${label}」还在等待前置任务（${depends}），依赖完成后会派发，暂不能续派；要取消用 task_stop。`,
+    panel: ({ label, depends }) => `任务「${label}」还在等待前置任务（${depends}），依赖完成后会派发，暂不能续派；要取消用 task_message({ action: 'stop' })。`,
+    tool: ({ label, depends }) => `任务「${label}」还在等待前置任务（${depends}），依赖完成后会派发，暂不能续派；要取消用 task_message({ action: 'stop' })。`,
   }),
   MESSAGE_QUEUED: define({
     http: 409,
@@ -77,7 +77,7 @@ export const ACTION_ERRORS = Object.freeze({
   MESSAGE_NOT_FOLLOWABLE: define({
     http: 409,
     panel: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，不能续派；失败任务用「重派」按原 brief 新起一条，要新工作请 task_create。`,
-    tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，不能续派；失败任务用 task_retry 按原 brief 新起一条，要新工作请 task_create。`,
+    tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，不能续派；失败任务用 task_message({ action: 'retry' }) 按原 brief 新起一条，要新工作请 task_create。`,
   }),
   MESSAGE_DELIVERY_FAILED: define({
     http: 502,
@@ -97,13 +97,13 @@ export const ACTION_ERRORS = Object.freeze({
   CLOSE_NOT_DELIVERED: define({
     http: 409,
     panel: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有「待确认」的任务能确认完成；在跑的先等它交付，卡住的用「追加」续派或「停止」取消。`,
-    tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有「待确认」的任务能确认完成；在跑的先等它交付，卡住的用 task_message 续派或 task_stop 取消。`,
+    tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有「待确认」的任务能确认完成；在跑的先等它交付，卡住的用 task_message 续派或 task_message({ action: 'stop' }) 取消。`,
   }),
   // delete：只允许删终态任务；活跃的还有子会话/队列占位，先停止。
   DELETE_TASK_ACTIVE: define({
     http: 409,
     panel: ({ label, statusLabel }) => `任务「${label}」还在${statusLabel}，不能删除；先「停止」再删。`,
-    tool: ({ label, statusLabel }) => `任务「${label}」还在${statusLabel}，不能删除；先 task_stop 再删。`,
+    tool: ({ label, statusLabel }) => `任务「${label}」还在${statusLabel}，不能删除；先 task_message({ action: 'stop' }) 再删。`,
   }),
   DELETE_HAS_ACTIVE_DEPENDENTS: define({
     http: 409,

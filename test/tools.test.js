@@ -76,19 +76,18 @@ async function setup(options = {}) {
 
 // 主会话工具默认以主会话身份调用；task_report 归子会话，保持调用方身份。
 const MAIN_TOOLS = new Set([
-  'task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_close', 'task_retry', 'task_inbox',
-  'history_search', 'project_context', 'memory_note', 'read_workspace',
+  'task_create', 'task_list', 'task_status', 'task_message', 'context', 'memory_note', 'read_workspace',
 ])
 const call = (tools, name, args, exec) => {
   const resolved = MAIN_TOOLS.has(name) ? { agent: { id: 's-1' }, ...(exec ?? {}) } : exec
   return tools[name].execute(args, resolved)
 }
 
-test('注册 15 个工具，schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
+test('注册 10 个工具（P1-B 15 → 10），schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
   const { db, tools } = await setup()
+  assert.equal(Object.keys(tools).length, 10)
   assert.deepEqual(Object.keys(tools).sort(),
-    ['history_search', 'memory_note', 'plan_save', 'project_context', 'read_workspace', 'task_close', 'task_create', 'task_detail', 'task_inbox', 'task_list',
-      'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
+    ['context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
   const walk = (value, path) => {
     if (value === null || typeof value !== 'object') return
     for (const [key, child] of Object.entries(value)) {
@@ -214,7 +213,7 @@ test('排队：task_stop 移出队列，不再派发', async () => {
   await call(tools, 'task_create', sampleBrief({ title: 'A' }))
   await call(tools, 'task_create', sampleBrief({ title: 'B' }))
   const queued = listTasks(db).find(task => task.title === 'B')
-  const text = await call(tools, 'task_stop', { task_id: queued.id })
+  const text = await call(tools, 'task_message', { action: 'stop', task_id: queued.id })
   assert.match(text, /排队/)
   assert.equal(getTask(db, queued.id).status, 'cancelled')
   assert.equal(queue.size(), 0)
@@ -318,7 +317,7 @@ test('task_list：默认只列活跃、空表文案、全量与行格式', async
   await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '做甲' }))
   const b = await call(tools, 'task_create', sampleBrief({ title: '乙', goal: '做乙' }))
   const idB = listTasks(db).find(task => task.title === '乙').id
-  await call(tools, 'task_stop', { task_id: idB })
+  await call(tools, 'task_message', { action: 'stop', task_id: idB })
   const activeText = await call(tools, 'task_list', {})
   assert.match(activeText, /甲/)
   assert.equal(activeText.includes('乙'), false)
@@ -497,7 +496,7 @@ test('对外文案：task_create/list/status 带 id，续派/停止/回报回执
   const sent = await call(tools, 'task_message', { task_id: idA, message: '继续' })
   assert.doesNotMatch(sent, /t-[0-9a-f]{8}/, '续派回执不裸露 id')
   const stoppedTask = listTasks(db).find(task => task.id !== idA)
-  const stopped = await call(tools, 'task_stop', { task_id: stoppedTask.id })
+  const stopped = await call(tools, 'task_message', { action: 'stop', task_id: stoppedTask.id })
   assert.doesNotMatch(stopped, /t-[0-9a-f]{8}/, '停止回执不裸露 id')
   // 回报通知：displayName 由 tools 用全量任务算好，带短后缀
   const report = await call(tools, 'task_report', { task_id: idA, status: 'done', summary: '完成' }, { agent: { id: (listTasks(db).find(task => task.id === idA)).session_id } })
@@ -591,8 +590,8 @@ test('task_message：终态任务拒绝续派', async () => {
   db.close()
 })
 
-// 面板优化：门控与面板按钮同源（panel-gates.followupGate）——失败任务改用 task_retry，不再续派。
-test('task_message：失败任务拒绝续派，提示改用 task_retry', async () => {
+// 面板优化：门控与面板按钮同源（panel-gates.followupGate）——失败任务改用 action:retry，不再续派。
+test('task_message：失败任务拒绝续派，提示改用 action:retry', async () => {
   const { db, dispatcher, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '失败任务' }))
   const task = listTasks(db)[0]
@@ -600,7 +599,7 @@ test('task_message：失败任务拒绝续派，提示改用 task_retry', async 
   const before = db.prepare('SELECT count(*) AS n FROM messages').get().n
   const text = await call(tools, 'task_message', { task_id: task.id, message: '继续' })
   assert.match(text, /不能续派/)
-  assert.match(text, /task_retry/)
+  assert.match(text, /action: 'retry'/)
   assert.equal(db.prepare('SELECT count(*) AS n FROM messages').get().n, before)
   assert.equal(dispatcher.calls.filter(call => call[0] === 'sendReliable').length, 0)
   db.close()
@@ -640,7 +639,7 @@ test('未打开主会话时 task_message/task_stop 给提示且不半执行', as
   assert.match(message, /尚未打开主会话/)
   assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n, 0)
 
-  const stop = await call(tools, 'task_stop', { task_id: task.id })
+  const stop = await call(tools, 'task_message', { action: 'stop', task_id: task.id })
   assert.match(stop, /尚未打开主会话/)
   assert.equal(getTask(db, task.id).status, 'running')
   assert.equal(dispatcher.calls.length, 0)
@@ -651,25 +650,25 @@ test('task_stop：cancelled + interrupt；已结束不再 interrupt', async () =
   const { db, dispatcher, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   const task = listTasks(db)[0]
-  const text = await call(tools, 'task_stop', { task_id: task.id })
+  const text = await call(tools, 'task_message', { action: 'stop', task_id: task.id })
   assert.match(text, /已停止/)
   assert.equal(getTask(db, task.id).status, 'cancelled')
   assert.ok(dispatcher.calls.some(call => call[0] === 'stop'))
-  const again = await call(tools, 'task_stop', { task_id: task.id })
+  const again = await call(tools, 'task_message', { action: 'stop', task_id: task.id })
   assert.match(again, /已结束/)
   assert.equal(dispatcher.calls.filter(call => call[0] === 'stop').length, 1)
   db.close()
 })
 
 test('可写根生命周期：done（确认后）与 cancelled 释放；delivered / blocked 保留以便续派', async () => {
-  // done：交付回报先落 delivered（不释放），task_close 确认后才释放。
+  // done：交付回报先落 delivered（不释放），task_message action:close 确认后才释放。
   const done = await setup()
   await call(done.tools, 'task_create', sampleBrief({ title: '甲' }))
   const doneTask = listTasks(done.db)[0]
   await call(done.tools, 'task_report', { task_id: doneTask.id, status: 'done', summary: '完成' }, { agent: { id: doneTask.session_id } })
   assert.equal(getTask(done.db, doneTask.id).status, 'delivered')
   assert.deepEqual(done.dispatcher.grantReleases, [])
-  const closed = await call(done.tools, 'task_close', { task_id: doneTask.id })
+  const closed = await call(done.tools, 'task_message', { action: 'close', task_id: doneTask.id })
   assert.match(closed, /已确认完成/)
   assert.equal(getTask(done.db, doneTask.id).status, 'done')
   assert.deepEqual(done.dispatcher.grantReleases, [doneTask.session_id])
@@ -687,7 +686,7 @@ test('可写根生命周期：done（确认后）与 cancelled 释放；delivere
   const stopped = await setup()
   await call(stopped.tools, 'task_create', sampleBrief({ title: '丙' }))
   const stoppedTask = listTasks(stopped.db)[0]
-  await call(stopped.tools, 'task_stop', { task_id: stoppedTask.id })
+  await call(stopped.tools, 'task_message', { action: 'stop', task_id: stoppedTask.id })
   assert.deepEqual(stopped.dispatcher.grantReleases, [stoppedTask.session_id])
   stopped.db.close()
 })
@@ -810,7 +809,7 @@ test('blocked → 续派 → 交付 → 确认闭环', async () => {
   assert.equal(getTask(db, task.id).status, 'running')
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '做完了' })
   assert.equal(getTask(db, task.id).status, 'delivered')
-  await call(tools, 'task_close', { task_id: task.id })
+  await call(tools, 'task_message', { action: 'close', task_id: task.id })
   assert.equal(getTask(db, task.id).status, 'done')
   db.close()
 })
@@ -825,7 +824,7 @@ test('needs_auth → 续派 → 交付 → 确认闭环', async () => {
   assert.equal(getTask(db, task.id).status, 'running')
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' })
   assert.equal(getTask(db, task.id).status, 'delivered')
-  await call(tools, 'task_close', { task_id: task.id })
+  await call(tools, 'task_message', { action: 'close', task_id: task.id })
   assert.equal(getTask(db, task.id).status, 'done')
   db.close()
 })
@@ -837,7 +836,7 @@ test('waiting_user 直接收到 done 回报：先回 running 再落待确认', a
   await call(tools, 'task_report', { task_id: task.id, status: 'blocked', summary: '卡住' })
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '已自行完成' })
   assert.equal(getTask(db, task.id).status, 'delivered')
-  await call(tools, 'task_close', { task_id: task.id })
+  await call(tools, 'task_message', { action: 'close', task_id: task.id })
   assert.equal(getTask(db, task.id).status, 'done')
   db.close()
 })
@@ -857,7 +856,7 @@ test('并发 8 个子任务：target/status 各归各，通知不丢', async () 
   assert.ok(listTasks(db, { active: true }).every(task => task.status === 'delivered'))
   assert.equal(notifier.pushed.length, 8)
   assert.deepEqual(new Set(notifier.pushed.map(item => item.taskId)), new Set(tasks.map(task => task.id)))
-  await Promise.all(tasks.map(task => call(tools, 'task_close', { task_id: task.id })))
+  await Promise.all(tasks.map(task => call(tools, 'task_message', { action: 'close', task_id: task.id })))
   assert.equal(listTasks(db, { active: true }).length, 0)
   db.close()
 })
@@ -1138,11 +1137,11 @@ test('多次回报的产物累积合并，不互相覆盖；同路径后报覆�
   assert.equal(saved.find(item => item.path === join(target, 'a.md')).label, 'A2')
 })
 
-test('task_retry：failed 任务用原 brief 新建一次尝试，旧任务保留审计', async () => {
+test('task_message action:retry：failed 任务用原 brief 新建一次尝试，旧任务保留审计', async () => {
   const { db, tools } = await setup()
   const old = createTask(db, { brief: sampleBrief({ title: '要重试的任务', goal: '修好' }), coordinatorSession: 's-1' })
   transition(db, old.id, 'failed', { error: '子会话创建失败' })
-  const text = await call(tools, 'task_retry', { task_id: old.id })
+  const text = await call(tools, 'task_message', { action: 'retry', task_id: old.id })
   assert.match(text, /已重派/)
   const retried = listTasks(db).find(task => task.retry_of === old.id)
   assert.ok(retried, '新任务要记录 retry_of')
@@ -1152,22 +1151,22 @@ test('task_retry：failed 任务用原 brief 新建一次尝试，旧任务保�
   assert.equal(spawned.title, '要重试的任务')
 })
 
-test('task_retry 只接受 failed/orphaned；其他状态不新建', async () => {
+test('task_message action:retry 只接受 failed/orphaned；其他状态不新建', async () => {
   const { db, tools } = await setup()
   const running = createTask(db, { brief: sampleBrief({ title: '在跑' }), coordinatorSession: 's-1' })
   transition(db, running.id, 'running', { sessionId: 'c-1', target: 'c-1' })
   const before = listTasks(db).length
-  const text = await call(tools, 'task_retry', { task_id: running.id })
+  const text = await call(tools, 'task_message', { action: 'retry', task_id: running.id })
   assert.match(text, /不能重派|只有失败/)
   assert.equal(listTasks(db).length, before)
 })
 
 test('memory_note 写入并可按关键词检索；done 回报自动沉淀', async () => {
   const { db, tools } = await setup()
-  // 决策类进 memories（可检索）：这是 history_search / task_detail 的来源。
+  // 决策类进 memories（可检索）：这是 context 检索 / task_detail 的来源。
   const noted = await call(tools, 'memory_note', { text: '用户偏好用 pnpm，不要 npm install', kind: 'decision' })
   assert.match(noted, /已记住/)
-  const found = await call(tools, 'history_search', { query: 'pnpm' })
+  const found = await call(tools, 'context', { mode: 'history', query: 'pnpm' })
   assert.match(found, /用户偏好用 pnpm/)
   // 重复写入幂等
   const again = await call(tools, 'memory_note', { text: '用户偏好用 pnpm，不要 npm install', kind: 'decision' })
@@ -1176,7 +1175,7 @@ test('memory_note 写入并可按关键词检索；done 回报自动沉淀', asy
   await call(tools, 'task_create', sampleBrief({ title: '登录修复', goal: '修复登录' }))
   const task = listTasks(db).find(item => item.title === '登录修复')
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '改用 session cookie' }, { agent: { id: task.session_id } })
-  const done = await call(tools, 'history_search', { query: 'session cookie' })
+  const done = await call(tools, 'context', { mode: 'history', query: 'session cookie' })
   assert.match(done, /登录修复/)
 })
 
@@ -1283,11 +1282,11 @@ test('T1 不相关经验：task_create 不为无关任务建经验指针，详�
   db.close()
 })
 
-test('T1 重派：task_retry 重渲染的 brief 与 task_create 同口径（任务编号 + 指引）', async () => {
+test('T1 重派：task_message action:retry 重渲染的 brief 与 task_create 同口径（任务编号 + 指引）', async () => {
   const { db, dispatcher, tools } = await setup()
   const created = createTask(db, { brief: { ...sampleBrief({ title: '重派目标' }), goal: longGoal }, coordinatorSession: 's-1' })
   transition(db, created.id, 'failed', { error: '子会话创建失败' })
-  const text = await call(tools, 'task_retry', { task_id: created.id })
+  const text = await call(tools, 'task_message', { action: 'retry', task_id: created.id })
   assert.match(text, /已重派/)
   const retried = listTasks(db).find(task => task.retry_of === created.id)
   const rendered = recentMessages(db, retried.id, 1)[0].rendered
@@ -1301,7 +1300,7 @@ test('T1 重派：task_retry 重渲染的 brief 与 task_create 同口径（任�
   db.close()
 })
 
-test('history_search 合并 memories、历史任务与 sessionQuery 结果', async () => {
+test('context mode:history 合并 memories、历史任务与 sessionQuery 结果', async () => {
   const sessionQuery = {
     async searchSessions(request) {
       assert.equal(request.query, '登录')
@@ -1313,14 +1312,14 @@ test('history_search 合并 memories、历史任务与 sessionQuery 结果', asy
   transition(db, done.id, 'running', { sessionId: 'c-1', target: 'c-1' })
   markDone(db, done.id)
   await call(tools, 'memory_note', { text: '登录用 cookie' })
-  const text = await call(tools, 'history_search', { query: '登录', limit: 5 })
+  const text = await call(tools, 'context', { mode: 'history', query: '登录', limit: 5 })
   assert.match(text, /【记忆】/)
   assert.match(text, /【历史任务】/)
   assert.match(text, /【历史会话】/)
   assert.match(text, /s-old/)
 })
 
-test('project_context 读取白名单文件与顶层结构，不读 .env，不输出任意文件', async () => {
+test('context mode:project 读取白名单文件与顶层结构，不读 .env，不输出任意文件', async () => {
   const { writeFileSync, mkdirSync } = await import('node:fs')
   const project = tempDir()
   writeFileSync(join(project, 'README.md'), '# 示例项目\n这是说明。', 'utf8')
@@ -1328,7 +1327,7 @@ test('project_context 读取白名单文件与顶层结构，不读 .env，不�
   writeFileSync(join(project, '.env'), 'SECRET=should-not-appear', 'utf8')
   mkdirSync(join(project, 'src'))
   const { tools } = await setup()
-  const text = await call(tools, 'project_context', { target: project })
+  const text = await call(tools, 'context', { mode: 'project', target: project })
   assert.match(text, /【项目】/)
   assert.match(text, /示例项目/)
   assert.match(text, /demo/)
@@ -1350,7 +1349,7 @@ test('依赖：前置未完成时建 waiting_dep、不派发；前置 done 后�
     task_id: depTask.id, status: 'done', summary: '前置已完成', artifacts: [{ path: 'dep.md', label: '前置产物' }],
   }, { agent: { id: depTask.session_id } })
   // 两段式终态：交付≠done，依赖就绪只认 done，所以这里要先确认。
-  await call(tools, 'task_close', { task_id: depTask.id })
+  await call(tools, 'task_message', { action: 'close', task_id: depTask.id })
 
   const second = await call(tools, 'task_create', {
     ...sampleBrief({ title: '下游' }), target, dependsOn: [depTask.id], group: '发布', priority: 5,
@@ -1385,7 +1384,7 @@ test('依赖：前置运行中时下游 waiting_dep，前置交付并确认后�
   await new Promise(resolve => setTimeout(resolve, 10))
   // 交付但未确认：下游仍在等（依赖就绪只认 done）。
   assert.equal(listTasks(db).find(task => task.title === '下游B').status, 'waiting_dep')
-  await call(tools, 'task_close', { task_id: dep.id })
+  await call(tools, 'task_message', { action: 'close', task_id: dep.id })
   await new Promise(resolve => setTimeout(resolve, 10))
   const promoted = listTasks(db).find(task => task.title === '下游B')
   assert.equal(promoted.status, 'running')
@@ -1397,7 +1396,7 @@ test('依赖：前置运行中时下游 waiting_dep，前置交付并确认后�
   const fourth = await call(tools, 'task_create', { ...sampleBrief({ title: '下游D' }), dependsOn: [depC.id] })
   assert.match(fourth, /等待前置任务/)
   const failedDown = listTasks(db).find(task => task.title === '下游D')
-  await call(tools, 'task_stop', { task_id: depC.id })
+  await call(tools, 'task_message', { action: 'stop', task_id: depC.id })
   await new Promise(resolve => setTimeout(resolve, 10))
   assert.equal(getTask(db, failedDown.id).status, 'failed')
   assert.match(getTask(db, failedDown.id).error, /前置任务未完成/)
@@ -1443,7 +1442,7 @@ test('依赖校验：不存在或已失败的前置任务不能作为依赖', as
   assert.match(rejected, /不能作为依赖/)
 })
 
-test('task_retry 保留依赖/分组/写域/优先级', async () => {
+test('task_message action:retry 保留依赖/分组/写域/优先级', async () => {
   const { db, tools } = await setup()
   const dep = createTask(db, { brief: sampleBrief({ title: '已完成前置' }), coordinatorSession: 's-1' })
   transition(db, dep.id, 'running', { sessionId: 'c-dep', target: 'c-dep' })
@@ -1453,7 +1452,7 @@ test('task_retry 保留依赖/分组/写域/优先级', async () => {
     dependsOn: [dep.id], groupId: 'G', writeScopes: ['src'], priority: 3, status: 'pending',
   })
   transition(db, old.id, 'failed', { error: 'boom' })
-  const text = await call(tools, 'task_retry', { task_id: old.id })
+  const text = await call(tools, 'task_message', { action: 'retry', task_id: old.id })
   assert.match(text, /已重派/)
   const retried = listTasks(db).find(task => task.retry_of === old.id)
   assert.deepEqual(retried.depends_on, [dep.id])
@@ -1462,7 +1461,7 @@ test('task_retry 保留依赖/分组/写域/优先级', async () => {
   assert.equal(retried.priority, 3)
 })
 
-test('task_inbox 汇总待你决定，并带出 blocked 的问题/选项', async () => {
+test('task_list view:inbox 汇总待你决定，并带出 blocked 的问题/选项', async () => {
   const { db, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '要拍板' }))
   const task = listTasks(db).find(item => item.title === '要拍板')
@@ -1473,7 +1472,7 @@ test('task_inbox 汇总待你决定，并带出 blocked 的问题/选项', async
   const saved = getTask(db, task.id)
   assert.equal(saved.question, '选哪个方案？')
   assert.deepEqual(saved.options, ['方案A', '方案B'])
-  const inbox = await call(tools, 'task_inbox', {})
+  const inbox = await call(tools, 'task_list', { view: 'inbox' })
   assert.match(inbox, /【待你决定】1/)
   assert.match(inbox, /选哪个方案/)
   assert.match(inbox, /方案A \/ 方案B/)
@@ -1494,7 +1493,7 @@ test('连续 progress 达到 stallRounds 时推一条「可能卡住」通知，
   assert.equal(getTask(db, task.id).progress_count, 4)
 })
 
-test('M1 分层：done 只沉淀 task-log（一行、无产物清单），不注入下个 brief，history_search 仍能查到', async () => {
+test('M1 分层：done 只沉淀 task-log（一行、无产物清单），不注入下个 brief，context 检索仍能查到', async () => {
   const { db, dispatcher, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '登录修复', goal: '修复登录' }))
   const task = listTasks(db).find(item => item.title === '登录修复')
@@ -1531,7 +1530,7 @@ test('M1 分层：done 只沉淀 task-log（一行、无产物清单），不注
   assert.doesNotMatch(detail, /替换了登录校验逻辑/)
 
   // 显式查历史时日志层可见，并标出层
-  const found = await call(tools, 'history_search', { query: '登录校验' })
+  const found = await call(tools, 'context', { mode: 'history', query: '登录校验' })
   assert.match(found, /【记忆】/)
   assert.match(found, /\[日志\]/)
   assert.match(found, /登录修复/)

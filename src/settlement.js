@@ -1,5 +1,5 @@
 // 结算上报（S1）：子会话结束/中断时自动把台账从 running 推到终态。
-// 两段式终态：自然结束先落 delivered（已交付待确认），由协调者 task_close 或超时 sweeper 收成 done；
+// 两段式终态：自然结束先落 delivered（已交付待确认），由协调者 task_message({ action: 'close' }) 或超时 sweeper 收成 done；
 // 中断/异常仍直接落 cancelled/failed/orphaned。
 // 事件源有两个，都只做同一件事（重复到达由状态机天然幂等）：
 //   1) dispatch.js 的 subagent.settled / subagent.failed（本次派发的那次 activation）；
@@ -16,7 +16,7 @@ import { notifyWorktreeOf } from './worktree-request.js'
 
 /** stopReason → 台账状态与死因。completed 只在「没有只报 progress」时算交付。 */
 export const SETTLE_MAP = {
-  // 两段式终态：子会话自然结束先落「已交付待确认」，由协调者 task_close（或超时）收成 done。
+  // 两段式终态：子会话自然结束先落「已交付待确认」，由协调者 task_message({ action: 'close' })（或超时）收成 done。
   completed: { status: 'delivered', reason: null },
   aborted: { status: 'cancelled', reason: '子会话被中断（stopReason=aborted）' },
   error: { status: 'failed', reason: '子会话异常结束（stopReason=error）' },
@@ -184,7 +184,7 @@ export function createSettlementReporter({
     const indexIncomplete = stopReason === 'completed' && Array.isArray(task.brief?.workspaceIndexEntries)
       && getSetting(db, workspaceIndexSavedKey(task.id)) === undefined
     const mapped = indexIncomplete
-      ? { status: 'failed', reason: '工作区索引未完整持久化（缺少有效 workspace_index 回报），可用 task_retry 重试', stopReason }
+      ? { status: 'failed', reason: '工作区索引未完整持久化（缺少有效 workspace_index 回报），可用 task_message({ action: "retry" }) 重试', stopReason }
       : mapSettle(stopReason, { progressCount: task.progress_count ?? 0 })
     // 完整正文（不截断）先算出来：摘要给通知/死因，正文进台账或 reports 文件。
     const fullText = typeof lastMessage === 'string' && lastMessage !== '' ? messageText(lastMessage) : messageText(output)

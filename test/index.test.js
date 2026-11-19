@@ -155,7 +155,7 @@ test('inject 不再硬依赖 agentTeams（缺服务也要能激活）', () => {
 test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subagent 可用', withHome(async () => {
   const f = fakeCtx({ withAgentTeams: false })
   await apply(f.ctx, {})
-  assert.equal(f.registered.length, 15)
+  assert.equal(f.registered.length, 10)
   assert.equal(f.routes.length, 1)
   assert.equal(f.warnings.some(message => /agentTeams|waiting for service/.test(message)), false)
 }))
@@ -165,7 +165,7 @@ test('旧配置键（backend）仍能加载：warn 一次、工具照常注册�
   resetDeprecatedKeyWarnings()
   const f = fakeCtx({ withAgentTeams: false })
   await assert.doesNotReject(() => apply(f.ctx, { backend: 'team' }))
-  assert.equal(f.registered.length, 15)
+  assert.equal(f.registered.length, 10)
   assert.ok(f.warnings.some(message => /配置键 backend 已删除/.test(message)), f.warnings.join(' | '))
 }))
 
@@ -177,12 +177,12 @@ test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {
   assert.equal(guards.length, 1)
 }))
 
-test('apply 注册 15 个工具，只写 $DSH_HOME/state/orchestrator', withHome(async home => {
+test('apply 注册 10 个工具（P1-B 15 → 10），只写 $DSH_HOME/state/orchestrator', withHome(async home => {
   const { ctx, registered } = fakeCtx()
   await apply(ctx, { coordinatorSession: 's-1' })
+  assert.equal(registered.length, 10)
   assert.deepEqual(registered.map(tool => tool.name).sort(),
-    ['history_search', 'memory_note', 'plan_save', 'project_context', 'read_workspace', 'task_close', 'task_create', 'task_detail', 'task_inbox', 'task_list',
-      'task_message', 'task_report', 'task_retry', 'task_status', 'task_stop'])
+    ['context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
   assert.deepEqual(readdirSync(home), ['state'])
   assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), ['logs', 'snapshots'])
 }))
@@ -229,7 +229,7 @@ test('apply 给 createTools 传 defaultCwd：无 target 时相对产物按主会
 test('无 coordinatorSession：warn 但工具注册；派活给「先打开主会话」提示', withHome(async () => {
   const { ctx, registered, warnings } = fakeCtx()
   await apply(ctx, {})
-  assert.equal(registered.length, 15)
+  assert.equal(registered.length, 10)
   assert.ok(warnings.some(message => /尚未打开主会话/.test(message)))
   const create = registered.find(tool => tool.name === 'task_create')
   const text = await create.execute({ title: 't', goal: 'g', acceptance: ['a'] })
@@ -424,7 +424,7 @@ test('主会话保留四个原生自动化工具，文件/团队/子任务 guard
   }
   const create = f.registered.find(tool => tool.name === 'task_create')
   assert.match(await create.execute({ title: 'new/new_once', goal: 'g', acceptance: ['a'] }, { agent: otherRoot }), /主会话/)
-  assert.equal(f.registered.length, 15, '不在 host plane 注册自动化包装')
+  assert.equal(f.registered.length, 10, '不在 host plane 注册自动化包装')
 }))
 
 test('自动化诊断在边界重查、warning 去重、恢复可见且不污染其他会话', withHome(async () => {
@@ -504,7 +504,7 @@ test('首次打开启动欢迎模型轮次，正常task_create只读索引回报
   assert.match(await byName.task_report.execute({ task_id: id, status: 'done', workspace_index: payload }, { agent: main }), /被拒绝/)
   assert.match(await byName.task_report.execute({ task_id: id, status: 'done' }, { agent: { id: 'm-1' } }), /必须用 workspace_index/)
   await byName.task_report.execute({ task_id: id, status: 'done', workspace_index: payload, summary: '索引已扫描' }, { agent: { id: 'm-1' } })
-  const context = await byName.project_context.execute({ workspaces: true }, { agent: main })
+  const context = await byName.context.execute({ mode: 'workspaces' }, { agent: main })
   assert.match(context, /项目别名/)
   assert.match(context, /采样快照（非实时/)
   assert.match(context, /not_git/)
@@ -585,12 +585,12 @@ test('绑定发生在回合中时，白名单延到 idle 后才装（当前回�
   assert.equal(other.restrictions.length, 0)
 }))
 
-test('缺 tools.guard 时 warn 不崩，15 工具照常注册', withHome(async () => {
+test('缺 tools.guard 时 warn 不崩，10 工具照常注册', withHome(async () => {
   const { ctx, warnings, registered } = fakeCtx()
   delete ctx.tools.guard
   await apply(ctx, {})
   assert.ok(warnings.some(message => /tools\.guard/.test(message)))
-  assert.equal(registered.length, 15)
+  assert.equal(registered.length, 10)
 }))
 
 test('系统提示只渲染给已绑定协调者，绑定后下一步生效', withHome(async () => {
@@ -654,9 +654,9 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
   await wait(30)
   assert.equal(sent.length, 0)
   assert.equal(coordinator.injected.length, 1)
-  // 两段式终态：交付通知写「已交付待确认」并带 task_close/task_message 动作指令。
+  // 两段式终态：交付通知写「已交付待确认」并带 action:close / task_message 动作指令。
   assert.match(coordinator.injected[0].content[0].text, /任务「甲」已交付待确认/)
-  assert.match(coordinator.injected[0].content[0].text, /task_close/)
+  assert.match(coordinator.injected[0].content[0].text, /action: "close"/)
   assert.deepEqual(coordinator.injected[0].source, { kind: 'agent-message', form: 'relay', senderSessionId: teammate.id })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))
@@ -896,7 +896,7 @@ test('S2 启动对账：running 无活跃子会话 → orphaned + 一条汇总�
   const text = s1.injected[0].content[0].text
   assert.match(text, /启动对账：1 个任务/)
   assert.match(text, /幽灵任务/)
-  assert.match(text, /task_retry/)
+  assert.match(text, /action: 'retry'/)
   await first.disposers.at(-1)?.()
 
   // 模拟再次启动：已 orphaned 的任务不再重复标记，也不再发汇总。
@@ -958,7 +958,7 @@ test('S2 启动时协调者未加载：汇总保留待发，agent/created 后补
   await disposers.at(-1)?.()
 }))
 
-test('S1：派发侧 settle completed 落「已交付待确认」，写结算消息 + 通知，task_close 收成 done', withHome(async home => {
+test('S1：派发侧 settle completed 落「已交付待确认」，写结算消息 + 通知，task_message action:close 收成 done', withHome(async home => {
   const s1 = makeAgent('s-1')
   let settle
   const subagents = {
@@ -997,7 +997,7 @@ test('S1：派发侧 settle completed 落「已交付待确认」，写结算消
   assert.equal(after.prepare("SELECT level, status FROM notifications WHERE task_id = ?").get(row.id).level, 'notify')
   after.close()
   // 协调者确认 → done；确认不再发第二条通知。
-  const closed = await byName.task_close.execute({ task_id: row.id }, { agent: s1 })
+  const closed = await byName.task_message.execute({ action: 'close', task_id: row.id }, { agent: s1 })
   assert.match(closed, /已确认完成/)
   const final = new DatabaseSync(dbPath)
   assert.equal(final.prepare('SELECT status FROM tasks WHERE id = ?').get(row.id).status, 'done')
@@ -1350,8 +1350,16 @@ test('guard 覆盖整个 COORDINATOR_DENY 名单：主会话全拒、子会话�
     assert.match(denied, toolName === 'wait_agent' ? /禁止阻塞等待/ : /协调者禁止的工具/)
     assert.equal(guard({ name: toolName, agent: sub }), undefined, `${toolName} 不应影响子会话`)
   }
-  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'task_stop', 'task_retry', 'task_inbox', 'history_search', 'project_context', 'memory_note', 'present', 'ask_user_question']) {
+  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'context', 'memory_note', 'read_workspace', 'present', 'ask_user_question']) {
     assert.equal(guard({ name: allowed, agent: main }), undefined, `${allowed} 应放行`)
+  }
+  // P1-B：旧工具名已删除，调用时执行层给「改成什么」，不是静默失败（映射表单源 src/tool-migrations.js）。
+  for (const [legacy, hint] of [['task_stop', /action: 'stop'/], ['task_retry', /action: 'retry'/], ['task_close', /action: 'close'/], ['task_inbox', /view: 'inbox'/], ['history_search', /mode: 'history'/], ['project_context', /mode: 'project'/]]) {
+    const text = guard({ name: legacy, agent: main })
+    assert.equal(typeof text, 'string', `${legacy} 应返回迁移提示`)
+    assert.match(text, /已删除/)
+    assert.match(text, hint)
+    assert.match(guard({ name: legacy, agent: sub }), /已删除/, `${legacy} 的迁移提示不挑 agent`)
   }
 }))
 

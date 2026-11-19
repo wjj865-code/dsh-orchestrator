@@ -505,7 +505,7 @@ test('P9 brief：重派隔离任务时重渲染的 brief 也带装依赖提示�
     worktree: { state: 'created', source: 'task', repoRoot, path: checkout, branch: 'orch/t-old', base: 'main', mode: 'new' },
   })
   transition(db, old.id, 'failed', { error: 'boom' })
-  await call(tools, 'task_retry', { task_id: old.id })
+  await call(tools, 'task_message', { action: 'retry', task_id: old.id })
   const retried = listTasks(db).find(task => task.retry_of === old.id)
   // 检出目录已不在 → 按原基线重建（requested → 派发后 created），仍是隔离任务。
   assert.ok(['requested', 'created', 'reused'].includes(retried.worktree_state), retried.worktree_state)

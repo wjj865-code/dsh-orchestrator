@@ -80,6 +80,58 @@
 - 维护者工作流变化：`pnpm run preset:debug` / `preset:debug:check` 不再存在，改用上面的命令；这些文件不再随 npm 包装到本地。
 - 不做：不 bump 版本、不改 `workerPreset` 透传语义、不改 `cordis.patch.yml`、不删已安装 bundle、不动面板。
 
+### P1-B：工具面 15 → 10（refactor(tools)）
+
+模型面的选择面 **12 → 7**（合计 15 → 10）：**旧名立刻删**（不注册、不在 `cordis.patch.yml` allow 名单里），
+但**不静默**——照旧名调用会拿到一条可读迁移提示（「已删除 + 改成什么 + 原来干什么」）。
+映射表的唯一真源是 `src/tool-migrations.js`（README 与本表都对齐它，测试 `test/tool-migrations.test.js` 断言三处一致）。
+
+**迁移映射（旧名 → 新调用）**
+
+| 旧名 | 新调用 | 说明 |
+|---|---|---|
+| `task_stop` | `task_message({ task_id, action: 'stop' })` | 停止任务：运行中/排队/等前置/已交付待确认都能停 |
+| `task_retry` | `task_message({ task_id, action: 'retry' })` | 重派 failed/orphaned：新任务编号、旧任务留审计 |
+| `task_close` | `task_message({ task_id, action: 'close' })` | 把「已交付待确认」确认成 `done`（走同一个 `closeDelivered`） |
+| `task_inbox` | `task_list({ view: 'inbox' })` | 收件箱：待你决定/待确认/失败丢失/长时间没动静 |
+| `history_search` | `context({ mode: 'history', query })` | 跨项目历史检索（插件记忆/历史任务/平台会话） |
+| `project_context` | `context({ mode: 'project', target })` | 项目背景；只要工作区与仓库索引用 `context({ mode: 'workspaces' })` |
+
+**合并明细**
+
+- `task_message` 新增 `action: 'message' | 'stop' | 'retry' | 'close'`（默认 `message`；`message` 仅 `action:'message'` 必填）：
+  吸收 `task_stop` / `task_retry` / `task_close`。业务实现搬成内部函数 `stopTask` / `retryTask` / `closeTask`，**一字未改**，
+  错误码（`STOP_TASK_ENDED` / `RETRY_NOT_ALLOWED` / `CLOSE_NOT_DELIVERED` …）、门控顺序、文案全部沿用。
+- `task_list` 新增 `view: 'list' | 'inbox'`（默认 `list`）：吸收 `task_inbox`，输出逐字一致（`limit` 只在 inbox 视图生效）。
+- 新工具 `context` 用 `mode: 'history' | 'project' | 'workspaces'` 吸收 `history_search` + `project_context`，两段输出逐字一致；
+  旧入参形状继续可用（`workspaces:true` → `mode:'workspaces'`，只给 `target` → `mode:'project'`）。
+- 子会话契约 `task_report` / `task_detail` / `plan_save` **名字不变**（in-band 契约稳定）。
+
+**文案面同步（漏一处就会出现「模型调用不存在的工具」）**
+
+- `index.js`：协调者 policy 全部改到新入口（`context` / `task_list view:inbox` / `task_message action:*`），并新增一行
+  「工具表就这 10 个 + 旧名映射」；执行层 `tools.guard` 增加旧名拦截 → 返回迁移提示（不挑 agent，子会话拿到同样提示）。
+- `cordis.patch.yml`：协调者 allow 名单 13 项 task 工具 → 7 项（`task_stop` / `task_close` / `task_retry` / `task_inbox` /
+  `history_search` / `project_context` 移除，`context` 加入）；4 个 schedule 与 `present` 不变。
+- 文案模块：`src/digest.js`（日报提示）、`src/notify.js`（交付 hint，改成 `task_message({ action: "close", task_id: '<任务编号>' })`）、
+  `src/action-errors.js`（5 条错误文案）、`src/onboarding.js`、`src/reconcile.js`、`src/plan-mode.js`、`src/watchdog.js`、
+  `src/write-guard.js`、`src/deps.js`、`src/settlement.js`、`src/memory.js`（经验文件里的指引）、`src/preferences.js`。
+- 文档：README 工具表（12 → 7 行）+ 新增「工具迁移映射」小节；`docs/ARCHITECTURE.md`、`docs/DETAIL.md`、`docs/LIMITATIONS.md`、
+  `docs/UI.md`、`docs/qa-checklist.md`、`docs/compat.md`、`docs/api-notes.md`、`docs/CONTRIBUTING.md` 同步工具名。
+
+**测试**
+
+- 新增 `test/tool-migrations.test.js`（4 条）：10 个工具名集合精确相等、6 个旧名各有一条映射且指向的新工具真实存在、
+  迁移提示只对旧名生效、CHANGELOG/README 两处映射表覆盖全部旧名。
+- `test/tools.test.js` 所有调用点改到新入口（`task_message action:*` / `task_list view:inbox` / `context mode:*`）；
+  `test/index.test.js` 的 guard 用例增加「旧名返回迁移提示」断言；`test/config.test.js` 断言 allow 名单不再列旧名。
+
+**用户可见影响**：协调者工具 12 → 7（模型侧更少选择）；台账、面板、通知、错误码行为不变；
+照旧名调用不再是一句「未知工具」，而是可读迁移提示；自定义提示词 / AGENTS.md 里的旧名按上表改一次即可。
+
+**不做**：不加 `legacyTools` 兼容开关（那会多一个临时配置键，且旧名会重新出现在工具表里）；不动面板
+（`panel-actions` / `host-route` / 客户端）；不删 stop/retry/close 的业务实现（只换入口）；不 bump 版本、不 push、不打 tag。
+
 ## 0.20.1（2026-11-17）
 
 这一版**只改测试，产品零变更**：`src/`、`dist/`、`index.js`、`preset-tools.js` 一行未动，不发新能力、

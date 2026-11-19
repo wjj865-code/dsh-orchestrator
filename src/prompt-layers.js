@@ -43,7 +43,7 @@ export const PROMPT_LAYERS = Object.freeze([
     audience: 'coordinator',
     owns: Object.freeze([
       '工具可用与禁用（wait_agent / 团队工具 / 原生 read-glob / schedule 四工具）',
-      '交付与确认的决策口径（done 不是终态、默认保持待确认、何时 task_close、何时追问）',
+      '交付与确认的决策口径（done 不是终态、默认保持待确认、何时 task_message({ action: "close" })、何时追问）',
       '待确认要主动问用户（任务名 + 要点 + 「确认 / 要改？」）',
       'present 与 read_workspace 的用法与边界',
       'worktree 隔离策略（renderWorktreePolicy）',
@@ -67,7 +67,7 @@ export const PROMPT_LAYERS = Object.freeze([
     ]),
     forbids: Object.freeze([
       '任务目标/验收/约束/背景/经验正文（属 L3）',
-      'task_close / delivered / 终态等协调者口径（属 L1）',
+      'action:close / delivered / 终态等协调者口径（属 L1）',
       'present、read_workspace 等协调者工具（属 L1）',
     ]),
   }),
@@ -165,7 +165,7 @@ export function layerViolations(layerId, text) {
     ],
     // L2 不许讲协调者口径。
     L2: [
-      [/task_close/, 'L1 的确认交付口径'],
+      [/task_close|action:\s*['\"]close['\"]/, 'L1 的确认交付口径'],
       [/已交付待确认/, 'L1 的两段式终态口径'],
       [/present/, 'L1 的交付工具'],
       [/read_workspace/, 'L1 的读产物口径'],
@@ -173,7 +173,7 @@ export function layerViolations(layerId, text) {
     // L3 不许重复 brief 的指路，也不许讲协调者口径。
     L3: [
       [/先调\s*task_detail/, 'L2 的指路指引'],
-      [/task_close/, 'L1 的确认交付口径'],
+      [/task_close|action:\s*['\"]close['\"]/, 'L1 的确认交付口径'],
     ],
     // 通知只讲动作，不讲能力边界。
     NOTIFY: [

@@ -61,12 +61,7 @@
                 - task_list
                 - task_status
                 - task_message
-                - task_stop
-                - task_close
-                - task_retry
-                - task_inbox
-                - history_search
-                - project_context
+                - context
                 - memory_note
                 - read_workspace
     - id: orchestrator-worker-preset
