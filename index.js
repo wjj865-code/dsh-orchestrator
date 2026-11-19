@@ -142,8 +142,9 @@ export const COORDINATOR_DENY = [
 ]
 
 export async function apply(ctx, rawConfig = {}) {
-  const config = loadConfig(rawConfig)
   const warnings = message => ctx.logger?.warn?.(message)
+  // 已删除的配置键（P1-A 41 → 35）在加载时各 warn 一次：旧 profile 不用改也能跑，但用户能看见哪个键失效了。
+  const config = loadConfig(rawConfig, { onWarn: warnings })
   // P0-2b：宿主耦合统一走访问层（9 类）。首片接线「日志路径 + 版本自检」，其余访问器已就绪、
   // 消费点分批迁移（剩余清单见 docs/compat.md）；这里不改变任何既有行为。
   const host = createHostCapabilities(ctx, { onWarn: warnings })
@@ -286,10 +287,8 @@ export async function apply(ctx, rawConfig = {}) {
     db,
     config,
     persistence: () => service('sessionPersistence'),
-    tokenMeter: () => service('tokenMeter'),
     // P8 的活跃子代理兜底：读不到就是「无法判断」，不阻塞判定。
     catalog: () => dispatcher?.catalog?.(),
-    workspaceCwd: () => join(dir, 'workspace'),
     rename: (sessionId, title) => {
       const sessions = service('sessionController')
       if (typeof sessions?.rename !== 'function') throw new Error('缺少 sessionController.rename 服务')
@@ -421,7 +420,6 @@ export async function apply(ctx, rawConfig = {}) {
   // 队列/派发器后面才创建，这里用惰性引用；事件可能早于赋值，所以都走可选调用。
   let settlement
   const dispatcher = createDispatcher({
-    backend: config.backend,
     subagents: host.subagents(),
     getAgent: resolveCoordinator,
     provider: config.spawnProvider,

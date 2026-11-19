@@ -1,19 +1,19 @@
-// S1 判定内核单测：12 个配置键 + evaluateRotation 纯函数（M1–M6 因子、P1–P10 保护、冷却/最小龄）。
-// S2 采集层单测：M1–M6 采集/降级、settings 键读写、pending 只读判定。
+// S1 判定内核单测：7 个配置键 + evaluateRotation 纯函数（main-log / age 两因子、P1–P10 保护、冷却/最小龄）。
+// S2 采集层单测：locate + stat 采集/降级、settings 键读写、pending 只读判定。
 // S3 动作台账面单测：marker/时间戳/审计/旧会话处置 + 崩溃恢复（F6/F7）；平台动作一律以函数注入，
 // 真正的「open() 里建会话 + 切指针」在 test/main-session.test.js。
-// S7 检查节流单测：rotateCheckIntervalHours / main_rotation_checked_at（「查不查」≠「换不换」）。
+// P1-A 收缩：M1/M2/M4/M6 四个因子与 S7 检查节流已删除，对应用例一并删除（阈值语义只在剩下的两因子上验）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   MAIN_ROTATION_AT_KEY, MAIN_ROTATION_CHECKED_AT_KEY, MAIN_ROTATION_LAST_KEY, MAIN_ROTATION_PENDING_KEY,
   MAIN_SESSION_CREATED_AT_KEY, ROTATION_BLOCKS, ROTATION_DEFAULTS, ROTATION_LIMITS, ROTATION_TRIGGERS,
-  beginRotationMarker, clearRotationMarker, collectRotationMetrics, createRotationService, disposeOldMainSession,
+  beginRotationMarker, collectRotationMetrics, createRotationService, disposeOldMainSession,
   evaluateRotation, inspectRotationPending, markRotationTimes,
   normalizeRotationConfig, readRotationState, recordRotation, recoverPendingRotation, retiredMainSessionTitle,
-  rotationCheckWindow, rotationHeadline, writeRotationState,
+  rotationHeadline, writeRotationState,
 } from '../src/main-rotation.js'
-import { createTask, getSetting, openLedger, setSetting } from '../src/ledger.js'
+import { getSetting, openLedger, setSetting } from '../src/ledger.js'
 import { onboardingKey } from '../src/onboarding.js'
 import { loadConfig } from '../src/config.js'
 import { tempDir } from './helpers.js'
@@ -22,9 +22,9 @@ const MINUTE = 60_000
 const HOUR = 3_600_000
 const NOW = 1_760_000_000_000
 const MIB = 1024 * 1024
-const BASE_METRICS = { tasksSince: 10, sessionsSince: 5, mainLogMiB: 0.5, contextTokens: 10_000, diskMiB: 20 }
+/** 健康基线：日志 0.5 MiB（< 6）、龄 40h（> 最小龄 12h、< 240h）、上次轮换 50h 前（> 冷却 48h）。 */
+const BASE_METRICS = { mainLogMiB: 0.5 }
 
-/** 健康基线：龄 40h（> 最小龄 12h）、上次轮换 50h 前（> 冷却 48h）、所有因子都没到阈值、无保护命中。 */
 const baseInput = (overrides = {}) => {
   const { metrics, ...rest } = overrides
   return {
@@ -41,10 +41,10 @@ const baseInput = (overrides = {}) => {
   }
 }
 
-/** 六因子同时命中的输入（用于 off/保护/优先级用例：有触发但被挡住）。 */
+/** 两个因子同时命中的输入（用于 off/保护/优先级用例：有触发但被挡住）。 */
 const allTriggersInput = (overrides = {}) => baseInput({
   since: NOW - 240 * HOUR,
-  metrics: { tasksSince: 500, sessionsSince: 200, mainLogMiB: 10, contextTokens: 200_000, diskMiB: 600 },
+  metrics: { mainLogMiB: 10 },
   ...overrides,
 })
 
@@ -62,8 +62,7 @@ test('默认配置：健康输入不轮换，输出契约字段齐全', () => {
   assert.equal(decision.lastRotatedAt, NOW - 50 * HOUR)
   assert.deepEqual(decision.degraded, [])
   assert.deepEqual(Object.keys(decision.metrics).sort(), [
-    'ageHours', 'contextTokens', 'diskMiB', 'hoursSinceRotation', 'idleMinutes',
-    'mainLogMiB', 'sessionsSince', 'tasksSince',
+    'ageHours', 'hoursSinceRotation', 'idleMinutes', 'mainLogMiB',
   ])
   assert.equal(decision.metrics.ageHours, 40)
   assert.equal(decision.metrics.hoursSinceRotation, 50)
@@ -71,7 +70,7 @@ test('默认配置：健康输入不轮换，输出契约字段齐全', () => {
 })
 
 test('纯函数：同一输入同一结论，不改入参，输出可安全丢弃', () => {
-  const input = baseInput({ metrics: { tasksSince: 120 } })
+  const input = baseInput({ metrics: { mainLogMiB: 6 } })
   const snapshot = JSON.stringify(input)
   const first = evaluateRotation(input)
   const second = evaluateRotation(input)
@@ -79,20 +78,16 @@ test('纯函数：同一输入同一结论，不改入参，输出可安全丢�
   assert.equal(JSON.stringify(input), snapshot)
   // 返回值是本次判定的独立快照：改它不影响下一次。
   first.reasons.length = 0
-  first.metrics.tasksSince = 0
+  first.metrics.mainLogMiB = 0
   const third = evaluateRotation(input)
   assert.equal(third.due, true)
   assert.equal(third.reasons.length, 1)
 })
 
-test('每个触发因子单独命中都能 due（M1–M6）', () => {
+test('每个触发因子单独命中都能 due（只剩 main-log / age）', () => {
   const cases = [
-    ['tasks', baseInput({ metrics: { tasksSince: 120 } })],
-    ['sessions', baseInput({ metrics: { sessionsSince: 80 } })],
     ['main-log', baseInput({ metrics: { mainLogMiB: 6 } })],
-    ['context-tokens', baseInput({ metrics: { contextTokens: 150_000 } })],
     ['age', baseInput({ since: NOW - 240 * HOUR })],
-    ['disk', baseInput({ metrics: { diskMiB: 512 } })],
   ]
   for (const [code, input] of cases) {
     const decision = evaluateRotation(input)
@@ -103,16 +98,18 @@ test('每个触发因子单独命中都能 due（M1–M6）', () => {
     assert.match(decision.reasons[0].text, /阈值/, `${code} 文案要带阈值`)
     assert.deepEqual(decision.blockedBy, [], `${code} 不应被保护挡住`)
   }
+  // 已删除的四个因子即使调用方硬塞进来也不再参与判定。
+  const removed = evaluateRotation(baseInput({
+    metrics: { mainLogMiB: 0.1, tasksSince: 999, sessionsSince: 999, contextTokens: 9e6, diskMiB: 9e6 },
+  }))
+  assert.equal(removed.due, false)
+  assert.deepEqual(removed.triggers, [])
 })
 
 test('阈值边界：略小于不触发，等于/超过触发（>= 口径）', () => {
   const cases = [
-    ['tasks', value => baseInput({ metrics: { tasksSince: value } }), 119, 120],
-    ['sessions', value => baseInput({ metrics: { sessionsSince: value } }), 79, 80],
     ['main-log', value => baseInput({ metrics: { mainLogMiB: value } }), 5.99, 6],
-    ['context-tokens', value => baseInput({ metrics: { contextTokens: value } }), 149_999, 150_000],
     ['age', value => baseInput({ since: NOW - value * HOUR }), 239.5, 240],
-    ['disk', value => baseInput({ metrics: { diskMiB: value } }), 511, 512],
   ]
   for (const [code, build, below, at] of cases) {
     assert.equal(evaluateRotation(build(below)).triggers.includes(code), false, `${code}: ${below} 不该触发`)
@@ -121,7 +118,8 @@ test('阈值边界：略小于不触发，等于/超过触发（>= 口径）', (
   }
 })
 
-test('多因子同时命中：每个因子只记一条，顺序稳定（M1→M6）', () => {
+test('多因子同时命中：每个因子只记一条，顺序稳定（main-log → age）', () => {
+  assert.deepEqual(ROTATION_TRIGGERS, ['main-log', 'age'])
   const decision = evaluateRotation(allTriggersInput())
   assert.equal(decision.due, true)
   assert.deepEqual(decision.triggers, ROTATION_TRIGGERS)
@@ -145,13 +143,15 @@ test('没有触发因子即使有保护也算「不需要轮换」：due=false�
   assert.match(decision.blockedBy[0].text, /1 个活跃任务/)
 })
 
-test('off 模式：因子照算，但永不 due（只检测不动作）', () => {
+test('off 模式（默认）：因子照算，但永不 due（只检测不动作）', () => {
   const decision = evaluateRotation(allTriggersInput({ config: { mainRotation: 'off', spawnProvider: 'spawn' } }))
   assert.equal(decision.mode, 'off')
   assert.equal(decision.due, false)
   // 仍然把「本来会命中」的因子报出来，方便日志核对关闭期间本会轮换几次。
   assert.deepEqual(decision.triggers, ROTATION_TRIGGERS)
   assert.equal(decision.blockedBy[0].code, 'mode-off')
+  // 默认（不传配置）就是 off：升级后不会自动换主会话。
+  assert.equal(evaluateRotation(allTriggersInput({ config: {} })).due, false)
 })
 
 test('P6/P7：配置覆盖会话与 fork provider 都不轮换', () => {
@@ -226,6 +226,8 @@ test('P4：日志闲置边界（< rotateIdleMinutes 阻塞，等于不阻塞）'
     logMtimeAt: NOW - 6 * MINUTE,
   }))
   assert.equal(custom.due, true)
+  // 日志定位失败（mtime 未知）时这条保护缺席，不当成「刚聊完」。
+  assert.equal(evaluateRotation(allTriggersInput({ logMtimeAt: undefined })).due, true)
 })
 
 test('P8：子会话目录里有活跃子代理时阻塞；目录缺失不算阻塞', () => {
@@ -271,52 +273,51 @@ test('P9 冷却期：< 阻塞，= 通过，从未轮换视为满足', () => {
   assert.equal(never.metrics.hoursSinceRotation, null)
 })
 
-test('P10：所有触发指标都拿不到 → fail-closed，只记 degraded', () => {
-  const decision = evaluateRotation({ now: NOW, config: {}, tasks: [] })
+test('P10：两个触发指标都拿不到 → fail-closed，只记 degraded', () => {
+  const decision = evaluateRotation({ now: NOW, config: { mainRotation: 'auto' }, tasks: [] })
   assert.equal(decision.due, false)
   assert.deepEqual(decision.triggers, [])
   assert.deepEqual(codesOf(decision.blockedBy), ['metrics-degraded'])
   assert.deepEqual(decision.degraded, [...ROTATION_TRIGGERS])
   for (const value of Object.values(decision.metrics)) assert.equal(value, null)
   // 调用方已知的采集失败与本次缺席合并去重。
-  const merged = evaluateRotation({ now: NOW, config: {}, degraded: ['main-log', 'tokens'] })
+  const merged = evaluateRotation({ now: NOW, config: { mainRotation: 'auto' }, degraded: ['main-log', 'tokens'] })
   assert.deepEqual(merged.degraded, [...ROTATION_TRIGGERS, 'tokens'])
 })
 
-test('指标部分缺失：其余因子照常判定（不是 fail-closed）', () => {
-  // since 拿不到 → M1/M2/M5 缺席，但 M3 日志体积仍能命中。
+test('指标部分缺失：另一个因子照常判定（不是 fail-closed）', () => {
+  // since 拿不到 → age 缺席，但 main-log 仍能命中。
   const decision = evaluateRotation({
     now: NOW,
-    config: {},
+    config: { mainRotation: 'auto' },
     since: undefined,
-    metrics: { mainLogMiB: 7, diskMiB: 20 },
+    metrics: { mainLogMiB: 7 },
     logMtimeAt: NOW - 30 * MINUTE,
   })
   assert.equal(decision.due, true)
   assert.deepEqual(decision.triggers, ['main-log'])
   assert.deepEqual(decision.blockedBy, [])
-  assert.deepEqual(decision.degraded, ['tasks', 'sessions', 'context-tokens', 'age'])
-  // 没有 since 时 metrics 里 tasksSince 即使传了也不能用（口径不可信）。
-  const untrusted = evaluateRotation({
+  assert.deepEqual(decision.degraded, ['age'])
+  // 反过来：locate 失败（main-log 未知）但龄还在，就只按龄判定。
+  const aged = evaluateRotation({
     now: NOW,
-    config: {},
-    metrics: { tasksSince: 999, mainLogMiB: 0.1 },
+    config: { mainRotation: 'auto' },
+    since: NOW - 240 * HOUR,
+    metrics: {},
+    logMtimeAt: NOW - 30 * MINUTE,
   })
-  assert.equal(untrusted.due, false)
-  assert.equal(untrusted.metrics.tasksSince, null)
+  assert.equal(aged.due, true)
+  assert.deepEqual(aged.triggers, ['age'])
+  assert.deepEqual(aged.degraded, ['main-log'])
 })
 
 test('非法/坏配置在判定内回落或夹取，不抛错', () => {
-  // 0 → 回落默认 120；119 个任务不触发。
-  assert.equal(evaluateRotation(baseInput({ config: { rotateAfterTasks: 0 }, metrics: { tasksSince: 119 } })).due, false)
-  // 合法小阈值 → 命中。
-  assert.equal(evaluateRotation(baseInput({ config: { rotateAfterTasks: 119 }, metrics: { tasksSince: 119 } })).due, true)
   // 字符串不算数字 → 回落默认 6 MiB。
-  assert.equal(evaluateRotation(baseInput({ config: { rotateAfterMainLogMiB: '1' }, metrics: { mainLogMiB: 6 } })).due, true)
+  assert.equal(evaluateRotation(baseInput({ config: { mainRotation: 'auto', rotateAfterMainLogMiB: '1' }, metrics: { mainLogMiB: 6 } })).due, true)
   // 越界夹到上界 4096 → 6 MiB 不再命中。
-  assert.equal(evaluateRotation(baseInput({ config: { rotateAfterMainLogMiB: 1e9 }, metrics: { mainLogMiB: 6 } })).due, false)
-  // 负数回落默认 10 天 → 240h 命中。
-  assert.equal(evaluateRotation(baseInput({ config: { rotateAfterDays: -1 }, since: NOW - 240 * HOUR })).due, true)
+  assert.equal(evaluateRotation(baseInput({ config: { mainRotation: 'auto', rotateAfterMainLogMiB: 1e9 }, metrics: { mainLogMiB: 6 } })).due, false)
+  // 负数回落默认 10 天（= 240h）→ 240h 命中。
+  assert.equal(evaluateRotation(baseInput({ config: { mainRotation: 'auto', rotateAfterDays: -1 }, since: NOW - 240 * HOUR })).due, true)
   // config 整个是 null 也不崩。
   assert.doesNotThrow(() => evaluateRotation(baseInput({ config: null })))
   // 时间戳是 NaN 当「没有」处理。
@@ -344,7 +345,7 @@ test('保护规则优先级：配置层 → 状态层 → 时间层，全部命�
       { id: 't-pending', status: 'pending', artifacts: [] },
       { id: 't-delivered', status: 'delivered', artifacts: ['reports/a.md'] },
     ],
-    metrics: { tasksSince: 500 },
+    metrics: { mainLogMiB: 10 },
   }))
   assert.equal(decision.due, false)
   assert.deepEqual(codesOf(decision.blockedBy), [
@@ -365,22 +366,23 @@ test('一句话文案：due 列原因、被挡给首要原因、无事可说不�
   assert.equal(rotationHeadline(undefined), '主会话轮换：尚未判定')
 })
 
-test('配置键契约：12 个键、默认值、区间与 loadConfig 接线一致', () => {
+test('配置键契约：7 个键、默认值、区间与 loadConfig 接线一致', () => {
   assert.deepEqual(Object.keys(ROTATION_DEFAULTS).sort(), [
-    'mainRotation', 'rotateAfterContextTokens', 'rotateAfterDays', 'rotateAfterDiskMiB',
-    'rotateAfterMainLogMiB', 'rotateAfterSessions', 'rotateAfterTasks', 'rotateArchiveOld',
-    'rotateCheckIntervalHours', 'rotateCooldownHours', 'rotateIdleMinutes', 'rotateMinAgeHours',
+    'mainRotation', 'rotateAfterDays', 'rotateAfterMainLogMiB', 'rotateArchiveOld',
+    'rotateCooldownHours', 'rotateIdleMinutes', 'rotateMinAgeHours',
   ])
-  assert.equal(Object.keys(ROTATION_LIMITS).length, 10, '除总开关与归档开关外都是数值键')
+  assert.equal(Object.keys(ROTATION_LIMITS).length, 5, '除总开关与归档开关外都是数值键')
   const config = loadConfig({})
   for (const [key, value] of Object.entries(ROTATION_DEFAULTS)) {
     assert.equal(config[key], value, `loadConfig 应挂上 ${key}`)
   }
   // 归一化幂等：loadConfig 出来的配置再归一化一次不变。
   assert.deepEqual(normalizeRotationConfig(config), { ...ROTATION_DEFAULTS })
+  // 总量口径：41 → 35（P1-A 删掉 backend + 5 个 rotate* 键）。
+  assert.equal(Object.keys(config).length, 35)
 })
 
-test('settings 键名固定（S3 动作/恢复与 S7 节流读写这五个键）', () => {
+test('settings 键名固定（S3 动作/恢复的四把事实 + 只读的 checkedAt）', () => {
   assert.deepEqual(
     {
       created: MAIN_SESSION_CREATED_AT_KEY,
@@ -406,22 +408,17 @@ test('settings 键名固定（S3 动作/恢复与 S7 节流读写这五个键）
 })
 
 // ---------------------------------------------------------------------------
-// S2：指标采集层（M1–M6，逐项降级）+ settings 键读写 + snapshot 只读形状
+// S2：指标采集层（locate + stat，逐项降级）+ settings 键读写 + snapshot 只读形状
 // ---------------------------------------------------------------------------
 
 const openTestLedger = () => openLedger(tempDir())
 
 const headerOf = (id, cwd, createdAt) => ({ id, cwd, createdAt })
 
-const fakePersistence = ({ headers = [], fail = {} } = {}) => {
-  const calls = { listSnapshots: 0, locate: 0 }
+const fakePersistence = ({ fail = {} } = {}) => {
+  const calls = { locate: 0 }
   return {
     calls,
-    async listSnapshots() {
-      calls.listSnapshots += 1
-      if (fail.listSnapshots) throw new Error(fail.listSnapshots)
-      return headers.map(header => ({ header, revision: 'rev-1' }))
-    },
     locate(meta) {
       calls.locate += 1
       if (fail.locate) throw new Error(fail.locate)
@@ -440,111 +437,68 @@ const statFrom = (sizes, { mtimeMs = NOW - 30 * MINUTE } = {}) => async path => 
   return { size: sizes[path], mtimeMs }
 }
 
-/** 造任务并钉住 created_at（M1 口径要可构造）。 */
-const makeTaskAt = (db, createdAt, title = 't') => {
-  const task = createTask(db, { brief: { title, goal: 'g', acceptance: ['a'] }, coordinatorSession: 's-1' })
-  db.prepare('UPDATE tasks SET created_at = ? WHERE id = ?').run(createdAt, task.id)
-  return task
-}
-
 const rowCounts = db => ({
   tasks: db.prepare('SELECT count(*) AS n FROM tasks').get().n,
   settings: db.prepare('SELECT count(*) AS n FROM settings').get().n,
 })
 
-test('S2 采集：M1–M6 全量成功，指标按口径算，采集本身零写入', async () => {
+test('S2 采集：locate + stat 成功，指标按口径算，采集本身零写入', async () => {
   const db = await openTestLedger()
   const since = NOW - 10 * HOUR
   setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(since))
-  makeTaskAt(db, since - HOUR, '旧任务')
-  makeTaskAt(db, since + HOUR, '新任务')
   const mainHeader = headerOf('s-1', 'C:/ws', since - 2 * HOUR)
-  const persistence = fakePersistence({
-    headers: [
-      mainHeader,
-      headerOf('c-1', 'C:/ws', since + MINUTE),
-      headerOf('c-0', 'C:/ws', since - MINUTE),
-      headerOf('o-1', 'C:/other', since + MINUTE),
-    ],
-  })
-  const sizes = {
-    'C:/sessions/s-1.jsonl': 2 * MIB,
-    'C:/sessions/c-1.jsonl': 1 * MIB,
-    'C:/sessions/c-0.jsonl': 3 * MIB,
-    'C:/sessions/o-1.jsonl': 9 * MIB,
-  }
   const before = rowCounts(db)
   const collected = await collectRotationMetrics({
     db,
-    persistence,
-    tokenMeter: { measure: () => ({ totalTokens: 12_345 }) },
-    mainSessionId: 's-1',
+    persistence: fakePersistence(),
     mainSession: { header: mainHeader },
-    workspaceCwd: 'C:/ws',
-    now: NOW,
-    statFile: statFrom(sizes),
+    statFile: statFrom({ 'C:/sessions/s-1.jsonl': 2 * MIB }),
   })
   assert.equal(collected.since, since)
   assert.equal(collected.sinceSource, 'settings')
-  assert.deepEqual(collected.metrics, {
-    tasksSince: 1,
-    sessionsSince: 1,
-    mainLogMiB: 2,
-    // M6 只统计 cwd=指挥舱：2 + 1 + 3 = 6 MiB（别的 cwd 的 9 MiB 不算）。
-    contextTokens: 12_345,
-    diskMiB: 6,
-  })
+  assert.deepEqual(collected.metrics, { mainLogMiB: 2 })
   assert.deepEqual(collected.degraded, [])
-  assert.equal(collected.scanned, 4)
-  assert.equal(collected.logMtimeAt, NOW - 30 * MINUTE)
+  assert.equal(collected.logMtimeAt, NOW - 30 * MINUTE, 'mtime 顺带给 P4')
   // 采集只读：台账/settings 行数不变。
   assert.deepEqual(rowCounts(db), before)
   db.close()
 })
 
-test('S2 采集：settings 缺 created_at 时退 header.createdAt；都缺则整组降级为未知', async () => {
+test('S2 采集：settings 缺 created_at 时退 header.createdAt；都缺则龄未知', async () => {
   const db = await openTestLedger()
   const headerAt = NOW - 20 * HOUR
-  makeTaskAt(db, headerAt + HOUR)
   const mainHeader = headerOf('s-1', 'C:/ws', headerAt)
   const collected = await collectRotationMetrics({
     db,
-    persistence: fakePersistence({ headers: [mainHeader] }),
-    mainSessionId: 's-1',
+    persistence: fakePersistence(),
     mainSession: { header: mainHeader },
-    workspaceCwd: 'C:/ws',
-    now: NOW,
     statFile: statFrom({ 'C:/sessions/s-1.jsonl': MIB }),
   })
   assert.equal(collected.since, headerAt)
   assert.equal(collected.sinceSource, 'header')
-  assert.equal(collected.metrics.tasksSince, 1)
+  assert.equal(collected.metrics.mainLogMiB, 1)
 
-  // 既没有 settings 也没有 header（没有 live 会话、persistence 缺失）→ M1/M2/M5 未知。
+  // 既没有 settings 也没有 header（没有 live 会话）→ 龄未知（不是「刚建」）。
   const db2 = await openTestLedger()
-  const unknown = await collectRotationMetrics({ db: db2, now: NOW })
+  const unknown = await collectRotationMetrics({ db: db2 })
   assert.equal(unknown.since, null)
   assert.equal(unknown.sinceSource, null)
-  assert.equal(unknown.metrics.tasksSince, null)
-  assert.equal(unknown.metrics.sessionsSince, null)
-  for (const factor of ['tasks', 'sessions', 'age']) assert.ok(unknown.degraded.includes(factor), factor)
+  assert.equal(unknown.metrics.mainLogMiB, null)
+  assert.ok(unknown.degraded.includes('age'), 'age 应记 degraded')
+  assert.ok(unknown.degraded.includes('main-log'), 'main-log 应记 degraded')
   db.close()
   db2.close()
 })
 
-test('S2 采集：服务全缺失时每项降级为 null（未知，不是 0）并 fail-closed', async () => {
+test('S2 采集：服务全缺失时两项降级为 null（未知，不是 0）并 fail-closed', async () => {
   const db = await openTestLedger()
-  const collected = await collectRotationMetrics({ db, now: NOW })
-  assert.deepEqual(collected.metrics, {
-    tasksSince: null, sessionsSince: null, mainLogMiB: null, contextTokens: null, diskMiB: null,
-  })
-  for (const factor of ['sessions', 'disk', 'tasks', 'age', 'main-log', 'context-tokens']) {
-    assert.ok(collected.degraded.includes(factor), `${factor} 应记 degraded`)
-  }
-  // 六指标全未知 → 判定 fail-closed（不轮换），且面板看得见 degraded。
+  const collected = await collectRotationMetrics({ db })
+  assert.deepEqual(collected.metrics, { mainLogMiB: null })
+  assert.deepEqual([...collected.degraded].sort(), ['age', 'main-log'])
+  // 两指标全未知 → 判定 fail-closed（不轮换），且日志看得见 degraded。
   const decision = evaluateRotation({
     now: NOW,
-    config: {},
+    config: { mainRotation: 'auto' },
     since: collected.since ?? undefined,
     metrics: collected.metrics,
     degraded: collected.degraded,
@@ -552,8 +506,7 @@ test('S2 采集：服务全缺失时每项降级为 null（未知，不是 0）�
   assert.equal(decision.due, false)
   assert.deepEqual(decision.blockedBy.map(item => item.code), ['metrics-degraded'])
   assert.deepEqual(decision.metrics, {
-    tasksSince: null, sessionsSince: null, mainLogMiB: null, contextTokens: null,
-    ageHours: null, diskMiB: null, hoursSinceRotation: null, idleMinutes: null,
+    mainLogMiB: null, ageHours: null, hoursSinceRotation: null, idleMinutes: null,
   })
   db.close()
 })
@@ -563,66 +516,35 @@ test('S2 采集：单项失败只降级该项，其余照算（不互相拖累�
   const since = NOW - 30 * HOUR
   setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(since))
   const mainHeader = headerOf('s-1', 'C:/ws', since)
-  const persistence = fakePersistence({ headers: [mainHeader], fail: { listSnapshots: '清单读取失败' } })
-  const collected = await collectRotationMetrics({
-    db,
-    persistence,
-    tokenMeter: { measure: () => { throw new Error('meter boom') } },
-    mainSessionId: 's-1',
-    mainSession: { header: mainHeader },
-    workspaceCwd: 'C:/ws',
-    now: NOW,
-    statFile: statFrom({ 'C:/sessions/s-1.jsonl': 1024 }),
-  })
-  // M1 仍可算（没有任务 = 0，这是真实计数）；M3 仍可算；M2/M6 因 listSnapshots 失败降级；M4 因测量抛错降级。
-  assert.equal(collected.metrics.tasksSince, 0)
-  assert.equal(collected.metrics.mainLogMiB, 1024 / MIB)
-  assert.equal(collected.metrics.sessionsSince, null)
-  assert.equal(collected.metrics.diskMiB, null)
-  assert.equal(collected.metrics.contextTokens, null)
-  for (const factor of ['sessions', 'disk', 'context-tokens']) assert.ok(collected.degraded.includes(factor), factor)
-  assert.equal(collected.degraded.includes('tasks'), false)
-  assert.equal(collected.degraded.includes('main-log'), false)
-
-  // stat 失败只降级 main-log（M6 也已因清单失败而降级）。
+  // stat 失败 → 只降级 main-log；since 仍从 settings 拿到。
   const statBroken = await collectRotationMetrics({
     db,
-    persistence: fakePersistence({ headers: [mainHeader] }),
-    mainSessionId: 's-1',
+    persistence: fakePersistence(),
     mainSession: { header: mainHeader },
-    workspaceCwd: 'C:/ws',
-    now: NOW,
     statFile: async () => { throw new Error('stat boom') },
   })
   assert.equal(statBroken.metrics.mainLogMiB, null)
-  assert.ok(statBroken.degraded.includes('main-log'))
-  // M6 有目标会话但每条 stat 都失败 → 数值未知 + degraded（不是 0）。
-  assert.equal(statBroken.metrics.diskMiB, null)
-  assert.ok(statBroken.degraded.includes('disk'))
-  db.close()
-})
+  assert.deepEqual(statBroken.degraded, ['main-log'])
+  assert.equal(statBroken.since, since)
 
-test('S2 采集：measure 返回不含 totalTokens 时按未知处理', async () => {
-  const db = await openTestLedger()
-  const since = NOW - 30 * HOUR
-  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(since))
-  const mainHeader = headerOf('s-1', 'C:/ws', since)
-  const collected = await collectRotationMetrics({
+  // 缺 persistence → main-log 降级；龄照算。
+  const noPersistence = await collectRotationMetrics({ db, mainSession: { header: mainHeader } })
+  assert.equal(noPersistence.metrics.mainLogMiB, null)
+  assert.deepEqual(noPersistence.degraded, ['main-log'])
+
+  // locate 抛错 → 同样只降级 main-log。
+  const locateBroken = await collectRotationMetrics({
     db,
-    persistence: fakePersistence({ headers: [mainHeader] }),
-    tokenMeter: { measure: () => ({ surfaceTokens: 10 }) },
-    mainSessionId: 's-1',
+    persistence: fakePersistence({ fail: { locate: 'locate boom' } }),
     mainSession: { header: mainHeader },
-    workspaceCwd: 'C:/ws',
-    now: NOW,
     statFile: statFrom({ 'C:/sessions/s-1.jsonl': MIB }),
   })
-  assert.equal(collected.metrics.contextTokens, null)
-  assert.ok(collected.degraded.includes('context-tokens'))
+  assert.equal(locateBroken.metrics.mainLogMiB, null)
+  assert.deepEqual(locateBroken.degraded, ['main-log'])
   db.close()
 })
 
-test('S2 evaluate：采集 + 纯判定；除检查时间戳外不写 settings、不建会话、不留 marker', async () => {
+test('S2 evaluate：采集 + 纯判定；不写任何 settings 键、不建会话、不留 marker', async () => {
   const db = await openTestLedger()
   const since = NOW - 30 * HOUR
   setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(since))
@@ -631,8 +553,7 @@ test('S2 evaluate：采集 + 纯判定；除检查时间戳外不写 settings、
   const rotation = createRotationService({
     db,
     config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    persistence: fakePersistence({ headers: [mainHeader] }),
-    workspaceCwd: 'C:/ws',
+    persistence: fakePersistence(),
     now: () => NOW,
     statFile: statFrom({ 'C:/sessions/s-1.jsonl': 8 * MIB }),
     log: (event, fields) => events.push([event, fields]),
@@ -645,36 +566,30 @@ test('S2 evaluate：采集 + 纯判定；除检查时间戳外不写 settings、
   })
   assert.equal(decision.due, true)
   assert.deepEqual(decision.triggers, ['main-log'])
-  // 判定本身不写派生状态（没有 due 标记）：动作面的四个键一个都没写。
+  // 判定本身不写派生状态（没有 due 标记、也不再写检查时间戳）。
   assert.equal(getSetting(db, 'main_session_id'), undefined)
   assert.equal(getSetting(db, MAIN_ROTATION_AT_KEY), undefined)
   assert.equal(getSetting(db, MAIN_ROTATION_LAST_KEY), undefined)
   assert.equal(getSetting(db, MAIN_ROTATION_PENDING_KEY), undefined)
-  // due=true 时也不写检查时间戳（S7）：动作可能失败，记了就把重试压到下一个间隔之后。
-  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), undefined)
-  // 决策日志（事后复盘入口）带 triggers/blockedBy/metrics 与本次检查时刻。
+  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), undefined, 'P1-A 起不再写检查时间戳')
+  // 决策日志（事后复盘入口）带 triggers/blockedBy/metrics 与 since 口径。
   const decided = events.find(([event]) => event === 'main.rotation.decided')
   assert.ok(decided, '应写 main.rotation.decided')
   assert.equal(decided[1].detail.due, true)
   assert.deepEqual(decided[1].detail.triggers, ['main-log'])
   assert.equal(decided[1].detail.source, 'open')
-  assert.equal(decided[1].detail.checkedAt, NOW)
-  assert.equal(decided[1].detail.checkRecorded, false)
+  assert.equal(decided[1].detail.since, since)
   db.close()
 })
 
 test('S2 evaluate：配置覆盖 / 未打开主会话都短路为 null，零采集', async () => {
   const db = await openTestLedger()
   const events = []
-  let listed = 0
-  const persistence = {
-    listSnapshots: async () => { listed += 1; return [] },
-    locate: () => ({ path: 'C:/sessions/x.jsonl' }),
-  }
-  const options = { db, persistence, workspaceCwd: 'C:/ws', now: () => NOW, log: (event, fields) => events.push([event, fields]) }
+  const persistence = fakePersistence()
+  const options = { db, persistence, now: () => NOW, log: (event, fields) => events.push([event, fields]) }
   assert.equal(await createRotationService({ ...options, config: { coordinatorSession: 's-override' } }).evaluate({ mainSessionId: 's-override' }), null)
   assert.equal(await createRotationService({ ...options, config: {} }).evaluate({ mainSessionId: undefined }), null)
-  assert.equal(listed, 0, '两条短路都不该走到采集')
+  assert.equal(persistence.calls.locate, 0, '两条短路都不该走到采集')
   assert.equal(events.length, 0, '没判定就不该有判定日志')
   db.close()
 })
@@ -696,223 +611,6 @@ test('S2 evaluate：整体异常 fail-closed（返回 null、不抛，只 warn +
   assert.equal(events[0][0], 'main.rotation.failed')
 })
 
-// ---------------------------------------------------------------------------
-// S7：检查节流（rotateCheckIntervalHours / main_rotation_checked_at）
-//
-// 它只回答「这次打开要不要花开销做检查」，与 rotateCooldownHours / rotateMinAgeHours
-// （判定里的「该不该换」）互不替代。跳过用 persistence 的调用计数证明「零采集」，
-// 用日志证明跳过的是哪一次、以及为什么不重复判定。
-// ---------------------------------------------------------------------------
-
-test('S7 节流：距上次检查 < 间隔 → 直接跳过，零采集零判定（只记一条跳过日志）', async () => {
-  const db = await openTestLedger()
-  const since = NOW - 30 * HOUR
-  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(since))
-  setSetting(db, MAIN_ROTATION_CHECKED_AT_KEY, String(NOW - HOUR))
-  const mainHeader = headerOf('s-1', 'C:/ws', since)
-  const persistence = fakePersistence({ headers: [mainHeader] })
-  const events = []
-  const rotation = createRotationService({
-    db,
-    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    persistence,
-    workspaceCwd: 'C:/ws',
-    now: () => NOW,
-    statFile: statFrom({ 'C:/sessions/s-1.jsonl': 8 * MIB }),
-    log: (event, fields) => events.push([event, fields]),
-  })
-  const decision = await rotation.evaluate({
-    mainSessionId: 's-1',
-    liveAgent: { status: 'idle', session: { header: mainHeader } },
-    source: 'open',
-  })
-  assert.equal(decision.skipped, true)
-  assert.equal(decision.skipReason, 'check-interval')
-  assert.equal(decision.due, false)
-  assert.deepEqual(decision.triggers, [])
-  assert.equal(decision.check.intervalHours, 24)
-  assert.equal(decision.check.lastCheckedAt, NOW - HOUR)
-  assert.equal(decision.check.nextCheckAt, NOW + 23 * HOUR)
-  assert.equal(decision.check.elapsedHours, 1)
-  // 零采集：一次 listSnapshots / locate 都没打（否则「打开主会话」又慢回去了）。
-  assert.equal(persistence.calls.listSnapshots, 0)
-  assert.equal(persistence.calls.locate, 0)
-  // 只写跳过日志：不写 main.rotation.decided（没判定就没有结论）。
-  assert.deepEqual(events.map(([event]) => event), ['main.rotation.check.skipped'])
-  assert.equal(events[0][1].detail.source, 'open')
-  // 跳过不刷新检查时间（否则永远轮不到下一次真正检查）。
-  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), String(NOW - HOUR))
-  db.close()
-})
-
-test('S7 节流：首次（无记录）必须检查，检查后写时间戳；紧接着再打开直接跳过', async () => {
-  const db = await openTestLedger()
-  const since = NOW - 30 * HOUR
-  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(since))
-  const mainHeader = headerOf('s-1', 'C:/ws', since)
-  const persistence = fakePersistence({ headers: [mainHeader] })
-  const events = []
-  const rotation = createRotationService({
-    db,
-    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    persistence,
-    workspaceCwd: 'C:/ws',
-    now: () => NOW,
-    // 1 MiB 日志：不命中任何因子，检查结论是「不需要换」——这种检查才消费节流。
-    statFile: statFrom({ 'C:/sessions/s-1.jsonl': 1 * MIB }),
-    log: (event, fields) => events.push([event, fields]),
-  })
-  const input = { mainSessionId: 's-1', liveAgent: { status: 'idle', session: { header: mainHeader } }, source: 'open' }
-  const first = await rotation.evaluate(input)
-  assert.equal(first.skipped, undefined, '没有检查记录 → 视为需检查')
-  assert.equal(first.due, false, '健康主会话：检查了但不需要换')
-  assert.deepEqual(first.triggers, [])
-  assert.equal(persistence.calls.listSnapshots, 1)
-  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), String(NOW), '检查跑完且不需要换 → 记时间')
-  // 同一天再打开：只读一个 settings 键就返回，采集/判定都不跑。
-  const second = await rotation.evaluate(input)
-  assert.equal(second.skipped, true)
-  assert.equal(persistence.calls.listSnapshots, 1, '第二次不再采集')
-  assert.equal(persistence.calls.locate, 2, 'locate 次数不变：只来自第一次检查（M3/M6 各一次）')
-  const names = events.map(([event]) => event)
-  assert.ok(names.includes('main.rotation.decided'), '第一次真的判定了')
-  assert.equal(names.at(-1), 'main.rotation.check.skipped', '第二次只写跳过日志')
-  assert.equal(names.filter(name => name === 'main.rotation.decided').length, 1, '跳过不重复判定')
-  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), String(NOW), '没检查就不刷新')
-  db.close()
-})
-
-test('S7 节流：需要换（due）时不记检查时间 → 轮换失败/崩溃后下次打开还能重试', async () => {
-  const db = await openTestLedger()
-  const since = NOW - 30 * HOUR
-  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(since))
-  const mainHeader = headerOf('s-1', 'C:/ws', since)
-  const persistence = fakePersistence({ headers: [mainHeader] })
-  const rotation = createRotationService({
-    db,
-    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    persistence,
-    workspaceCwd: 'C:/ws',
-    now: () => NOW,
-    statFile: statFrom({ 'C:/sessions/s-1.jsonl': 8 * MIB }),
-  })
-  const input = { mainSessionId: 's-1', liveAgent: { status: 'idle', session: { header: mainHeader } }, source: 'open' }
-  const first = await rotation.evaluate(input)
-  assert.equal(first.due, true, '8 MiB 主会话日志命中 main-log')
-  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), undefined, '该换但动作还没做 → 不消费节流')
-  // 动作没成功（create 失败 / 切指针失败 / 进程崩了）时，下一次打开必须重新检查，而不是被挡 24 小时。
-  const second = await rotation.evaluate(input)
-  assert.equal(second.skipped, undefined)
-  assert.equal(second.due, true)
-  assert.equal(persistence.calls.listSnapshots, 2, '重试会重新采集')
-  db.close()
-})
-
-test('S7 闸门（纯函数）：到点才算（>= 口径）、首检、时钟回拨都走「该检查」', () => {
-  const base = { now: NOW }
-  // 首次 / 坏时间戳 → 需检查（firstCheck）。
-  assert.deepEqual(rotationCheckWindow(base), {
-    shouldCheck: true, firstCheck: true, intervalHours: 24, lastCheckedAt: null, nextCheckAt: null, elapsedHours: null,
-  })
-  assert.equal(rotationCheckWindow({ ...base, lastCheckedAt: Number.NaN }).firstCheck, true)
-  for (const lastCheckedAt of [NOW, NOW - 1, NOW - 24 * HOUR + 1]) {
-    assert.equal(rotationCheckWindow({ ...base, lastCheckedAt, intervalHours: 24 }).shouldCheck, false, String(lastCheckedAt))
-  }
-  const onTime = rotationCheckWindow({ ...base, lastCheckedAt: NOW - 24 * HOUR, intervalHours: 24 })
-  assert.equal(onTime.shouldCheck, true, '恰好到点要检查')
-  assert.equal(onTime.firstCheck, false)
-  assert.equal(onTime.elapsedHours, 24)
-  assert.equal(onTime.nextCheckAt, NOW)
-  // 时钟回拨（记录在未来）不能把检查冻结到时钟追上来：按「该检查」处理（检查完会覆盖记录）。
-  assert.equal(rotationCheckWindow({ ...base, lastCheckedAt: NOW + 5 * MINUTE, intervalHours: 24 }).shouldCheck, true)
-  // 配置口径复用同一个归一化：非法回落 24、越界夹取 1–168、小数取整。
-  const interval = intervalHours => rotationCheckWindow({ ...base, lastCheckedAt: NOW - 10 * HOUR, intervalHours }).intervalHours
-  assert.equal(interval(undefined), 24)
-  assert.equal(interval('12'), 24, '字符串不算数字')
-  assert.equal(interval(0), 24, '非正数回落默认')
-  assert.equal(interval(1e9), 168, '越界夹到上界')
-  assert.equal(interval(0.5), 1, '正小数夹到下界并取整')
-  // 没到间隔就不查：10h 前检查、间隔 12h → 跳过；间隔 4h → 到点检查。
-  assert.equal(rotationCheckWindow({ ...base, lastCheckedAt: NOW - 10 * HOUR, intervalHours: 12 }).shouldCheck, false)
-  assert.equal(rotationCheckWindow({ ...base, lastCheckedAt: NOW - 10 * HOUR, intervalHours: 4 }).shouldCheck, true)
-})
-
-test('S7 配置边界：rotateCheckIntervalHours 默认 24，1–168 夹取，非法回落', () => {
-  assert.equal(loadConfig({}).rotateCheckIntervalHours, 24)
-  assert.equal(loadConfig({ rotateCheckIntervalHours: 4 }).rotateCheckIntervalHours, 4)
-  assert.equal(loadConfig({ rotateCheckIntervalHours: 1 }).rotateCheckIntervalHours, 1)
-  assert.equal(loadConfig({ rotateCheckIntervalHours: 168 }).rotateCheckIntervalHours, 168)
-  assert.equal(loadConfig({ rotateCheckIntervalHours: 0.5 }).rotateCheckIntervalHours, 1)
-  assert.equal(loadConfig({ rotateCheckIntervalHours: 9999 }).rotateCheckIntervalHours, 168)
-  for (const bad of ['4', null, Number.NaN, Infinity, -3, 0, true, {}, []]) {
-    assert.equal(loadConfig({ rotateCheckIntervalHours: bad }).rotateCheckIntervalHours, 24, String(bad))
-  }
-})
-
-test('S7 与冷却叠加：节流只决定「查不查」，冷却仍决定「换不换」', async () => {
-  const since = NOW - 40 * HOUR // rotateAfterDays:1 → 阈值 24h，M5 命中
-  const make = async (rotatedAt, checkedAt) => {
-    const db = await openTestLedger()
-    setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(since))
-    setSetting(db, MAIN_ROTATION_AT_KEY, String(rotatedAt))
-    setSetting(db, MAIN_ROTATION_CHECKED_AT_KEY, String(checkedAt))
-    const events = []
-    const rotation = createRotationService({
-      db,
-      config: { mainRotation: 'auto', spawnProvider: 'spawn', rotateAfterDays: 1 },
-      workspaceCwd: 'C:/ws',
-      now: () => NOW,
-      log: (event, fields) => events.push([event, fields]),
-    })
-    return { db, events, rotation, input: { mainSessionId: 's-1', liveAgent: { status: 'idle' }, source: 'open' } }
-  }
-
-  // 冷却期内（1h 前刚换过）+ 检查到点（25h 前查过）→ 真的检查，但被冷却挡住。
-  const cooling = await make(NOW - HOUR, NOW - 25 * HOUR)
-  const first = await cooling.rotation.evaluate(cooling.input)
-  assert.equal(first.skipped, undefined, '25h 前检查过 → 到点，要真的查')
-  assert.deepEqual(first.triggers, ['age'])
-  assert.equal(first.due, false, '冷却期内不换')
-  assert.ok(first.blockedBy.map(item => item.code).includes('cooldown'))
-  assert.equal(getSetting(cooling.db, MAIN_ROTATION_CHECKED_AT_KEY), String(NOW), '查完刷新检查时间')
-  // 立刻再打开：连查都不查（所以也不会重算一次冷却）——省掉的就是这一段开销。
-  const second = await cooling.rotation.evaluate(cooling.input)
-  assert.equal(second.skipped, true)
-  assert.deepEqual(second.blockedBy, [], '跳过不产出判定结论')
-  cooling.db.close()
-
-  // 冷却过期（49h 前换过）+ 检查到点 → 才 due：两个闸门各管一件事，缺一不可。
-  const ready = await make(NOW - 49 * HOUR, NOW - 25 * HOUR)
-  const due = await ready.rotation.evaluate(ready.input)
-  assert.equal(due.skipped, undefined)
-  assert.equal(due.due, true)
-  assert.deepEqual(due.triggers, ['age'])
-  ready.db.close()
-})
-
-test('S7 节流：检查整体异常不写时间戳（下次打开重试，而不是被动等一个间隔）', async () => {
-  const db = await openTestLedger()
-  setSetting(db, MAIN_SESSION_CREATED_AT_KEY, String(NOW - 30 * HOUR))
-  const events = []
-  let calls = 0
-  const rotation = createRotationService({
-    db,
-    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    workspaceCwd: 'C:/ws',
-    now: () => { calls += 1; if (calls === 1) throw new Error('clock boom'); return NOW },
-    log: (event, fields) => events.push([event, fields]),
-  })
-  const failed = await rotation.evaluate({ mainSessionId: 's-1', source: 'open' })
-  assert.equal(failed, null)
-  assert.equal(events[0][0], 'main.rotation.failed')
-  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), undefined, '检查没跑完不记时间')
-  // 下一次打开重新检查（不用等一个间隔）。
-  const retried = await rotation.evaluate({ mainSessionId: 's-1', source: 'open' })
-  assert.equal(retried.skipped, undefined)
-  assert.equal(getSetting(db, MAIN_ROTATION_CHECKED_AT_KEY), String(NOW))
-  db.close()
-})
-
 test('S2 settings 键读写与 pending marker 只读判定（S2 只算不执行）', async () => {
   const db = await openTestLedger()
   assert.deepEqual(readRotationState(db), { createdAt: null, rotatedAt: null, last: null, pending: null, checkedAt: null })
@@ -920,6 +618,7 @@ test('S2 settings 键读写与 pending marker 只读判定（S2 只算不执行�
   setSetting(db, MAIN_ROTATION_AT_KEY, String(NOW - MINUTE))
   setSetting(db, MAIN_ROTATION_LAST_KEY, JSON.stringify({ old: 'a', new: 'b', at: NOW }))
   setSetting(db, MAIN_ROTATION_PENDING_KEY, JSON.stringify({ newId: 'new-1', oldId: 'old-1', at: NOW }))
+  // 旧库里的检查节流键仍能读出来（不清理、也不参与判定）。
   setSetting(db, MAIN_ROTATION_CHECKED_AT_KEY, String(NOW - 2 * HOUR))
   const state = readRotationState(db)
   assert.equal(state.createdAt, NOW - HOUR)
@@ -979,8 +678,8 @@ test('S3 退役标题：本地时间 YYYY-MM-DD HH:mm，形状固定', () => {
 
 test('S3 marker/时间戳/审计：键形状、降级与一次收口（marker 清掉）', async () => {
   const db = await openTestLedger()
-  const marker = beginRotationMarker({ db, oldId: 'old-1', newId: 'new-1', at: NOW, reasons: [{ code: 'age' }, 'tasks', { nope: true }] })
-  assert.deepEqual(marker, { newId: 'new-1', oldId: 'old-1', at: NOW, reasons: ['age', 'tasks'] })
+  const marker = beginRotationMarker({ db, oldId: 'old-1', newId: 'new-1', at: NOW, reasons: [{ code: 'age' }, 'main-log', { nope: true }] })
+  assert.deepEqual(marker, { newId: 'new-1', oldId: 'old-1', at: NOW, reasons: ['age', 'main-log'] })
   assert.deepEqual(readRotationState(db).pending, marker)
   // marker 写不进去只记日志、不抛（崩溃恢复锚点缺失，但轮换本身不该因此放弃）。
   const events = []
@@ -1129,4 +828,3 @@ test('S3 恢复：marker 坏了只清不清账、无 marker/无指针是 no-op�
   assert.equal(broken.state, 'error')
   assert.match(brokenWarns[0], /主会话轮换恢复失败/)
 })
-

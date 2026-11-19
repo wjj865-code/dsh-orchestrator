@@ -1,5 +1,41 @@
 # Changelog
 
+## 未发布
+
+### P1-A：配置面收缩 41 → 35（refactor(config)）
+
+配置面从 **41 个键收缩到 35 个**，同时把主会话轮换降级成「两个因子 + 默认关闭」。
+起因是「同一个事实在多处配置」：六个轮换因子里有四个（子任务数 / 子会话数 / 上下文 token / 日志总占用）
+都在描述「主会话有点大了」，但它们的采集成本（读台账 + `listSnapshots` + 逐个 `stat` + `tokenMeter.measure`）
+远高于一次 `locate` + `stat`；而三个时间参数（查不查 / 换不换 / 冷却）谁管什么，一直是支持成本最高的一段。
+
+**删掉的 6 个键**（老 profile 里留着不影响加载：启动时各给一条弃用警告，按默认值运行）
+
+| 键 | 迁移 |
+|---|---|
+| `backend` | 派发只剩 subagent 一条路（team 后端在 P0-1 已随平台 API 删除）：删掉该键即可，行为不变 |
+| `rotateAfterTasks` | 因子删除：改用 `rotateAfterMainLogMiB`（日志体积）或 `rotateAfterDays`（龄） |
+| `rotateAfterSessions` | 同上 |
+| `rotateAfterContextTokens` | 同上 |
+| `rotateAfterDiskMiB` | 同上（日志总占用与主日志体积高度相关） |
+| `rotateCheckIntervalHours` | 检查节流删除：现在**每次打开主会话都现算**（一次 `locate` + `stat`），调低阈值后下一次打开即生效 |
+
+**行为变化（升级须知）**
+
+- `mainRotation` **默认从 `auto` 改成 `off`**：升级后不再自动换主会话。要自动换就显式配 `mainRotation: 'auto'`。
+- 触发因子只剩 `main-log`（默认 6 MiB）与 `age`（默认 10 天）；十二条保护、`rotateIdleMinutes`、`rotateArchiveOld` 全部保留。
+- 采不到的指标仍记 `degraded`（未知 ≠ 0）；两个因子都拿不到时 fail-closed 不换。
+
+**代码**
+
+- `src/main-rotation.js`：`ROTATION_DEFAULTS` / `ROTATION_LIMITS` 12 → 7，`ROTATION_TRIGGERS` 6 → 2；删 `rotationCheckWindow` 与 `evaluate` 里的节流闸门；`collectRotationMetrics` 只留 `locate` + `stat`（`settings.main_rotation_checked_at` 只读不写，旧库无害）。
+- `src/config.js`：删 `backend`；新增 `DEPRECATED_KEYS` 弃用警告（进程级去重、值不回填）与 `resetDeprecatedKeyWarnings()`。
+- `src/dispatch.js`：删 `TEAM_REMOVED_MESSAGE` 与占位派发器，`createDispatcher` 只剩 subagent。
+- `index.js` / `src/tools.js`：去掉 `backend` 与 `tokenMeter` 接线。
+- 文档：README 配置表 / 轮换章节 / 排障、`docs/ARCHITECTURE.md` 轮换节、`docs/LIMITATIONS.md`、`docs/api-notes.md`、`docs/compat.md` 同步。
+
+**测试**：`pnpm test` 995 例全绿（净减 6 例：删掉 M1/M2/M4/M6 与检查节流用例，新增弃用键用例与「只剩两个因子」边界）。
+
 ## 0.20.1（2026-11-17）
 
 这一版**只改测试，产品零变更**：`src/`、`dist/`、`index.js`、`preset-tools.js` 一行未动，不发新能力、

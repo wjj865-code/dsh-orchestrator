@@ -154,7 +154,6 @@ test('createDispatcher 接线：onAgentCreated 被转发，只读任务经生产
   const env = readOnlyEnv()
   let seen = false
   const dispatcher = createDispatcher({
-    backend: 'subagent',
     subagents: env.subagents,
     agent,
     agents: env.services.agents,
@@ -255,7 +254,7 @@ test('access:full：缺 sandboxPolicy 服务也不炸，不影响派发', async 
   assert.ok(member.id)
 })
 
-const sub = options => createDispatcher({ backend: 'subagent', ...options })
+const sub = options => createDispatcher({ ...options })
 const agent = { id: 'a1', session: { id: 's1', header: { cwd: 'C:\\work' } } }
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
@@ -602,22 +601,6 @@ test('subagent：activation.result 被拒时发 subagent.failed（带 taskId 与
   assert.equal(typeof original, 'function')
 })
 
-test('team：backend:team 已移除，插件不炸但派发返回同一条可读错误', async () => {
-  const warnings = []
-  const dispatcher = createDispatcher({ backend: 'team', agent, onWarn: message => warnings.push(message) })
-  await assert.rejects(() => dispatcher.spawn({ prompt: 'p' }), /team 后端已移除.*backend 改回 subagent/)
-  await assert.rejects(() => dispatcher.send('m1', 'x'), /backend 改回 subagent/)
-  // members 没人用，降级为空即可；catalog 必须抛错，否则对账会把 running 全误标 orphaned。
-  assert.deepEqual(await dispatcher.members(), [])
-  await assert.rejects(() => dispatcher.catalog(), /backend 改回 subagent/)
-  assert.equal(warnings.length, 1)
-  assert.match(warnings[0], /team 后端已移除/)
-})
-
-test('team：宿主即使还留着 agentTeams 成员 API，也走同一条移除文案（不再探测）', async () => {
-  const dispatcher = createDispatcher({ backend: 'team', agentTeams: { spawnTeammate() {} }, agent })
-  await assert.rejects(() => dispatcher.spawn({ prompt: 'p' }), /team 后端已移除/)
-})
 test('subagent：spawn 失败把错误原样抛出并记 requested 事件', async () => {
   const service = fakeSubagents({ failStart: true })
   const events = []
@@ -666,7 +649,7 @@ test('subagent：catalog/members 用 listChildren，失败时 members 降级为�
   assert.deepEqual(await broken.members(), [])
 })
 
-test('默认 backend 是 subagent', async () => {
+test('createDispatcher 只剩 subagent 一条路：不传 backend 也能直接派发', async () => {
   const service = fakeSubagents()
   const dispatcher = createDispatcher({ subagents: service, agent })
   await dispatcher.spawn({ label: 'x', prompt: 'p' })

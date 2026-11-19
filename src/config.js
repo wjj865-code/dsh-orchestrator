@@ -6,6 +6,39 @@ import { DELIVERED_TIMEOUT_MINUTES } from './delivered.js'
 import { normalizeRotationConfig } from './main-rotation.js'
 import { DEFAULT_MAX_CHARS as DEFAULT_PREFERENCE_MAX_CHARS, DEFAULT_MAX_ITEMS as DEFAULT_PREFERENCE_MAX_ITEMS } from './preferences.js'
 
+/**
+ * 已删除的配置键（P1-A 配置面收缩 41 → 35）→ 迁移提示。
+ * 读到就 warn 一次（进程级按 key 去重），**值一律不回填**：旧配置不会「看起来还在」，
+ * 而是明确告诉用户该改什么/哪个键已经不起作用。迁移说明见 CHANGELOG「未发布」段。
+ */
+export const DEPRECATED_KEYS = Object.freeze({
+  backend: '派发后端只剩 subagent；team 后端在 P0-1 已随平台 API 删除',
+  rotateAfterTasks: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
+  rotateAfterSessions: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
+  rotateAfterContextTokens: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
+  rotateAfterDiskMiB: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
+  rotateCheckIntervalHours: '检查节流已删除：每次打开主会话都会现算（没有「一天最多查一次」了）',
+})
+
+const warnedDeprecated = new Set()
+
+/** 测试用：清空「已 warn 过」的去重表（去重是进程级的，会跨用例生效）。 */
+export function resetDeprecatedKeyWarnings() {
+  warnedDeprecated.clear()
+}
+
+/** 命中旧键就各键 warn 一次；没有 onWarn（纯函数场景/单测）就静默。 */
+function warnDeprecatedKeys(raw, onWarn) {
+  if (typeof onWarn !== 'function') return
+  if (raw === null || typeof raw !== 'object') return
+  for (const [key, note] of Object.entries(DEPRECATED_KEYS)) {
+    if (!Object.prototype.hasOwnProperty.call(raw, key)) continue
+    if (warnedDeprecated.has(key)) continue
+    warnedDeprecated.add(key)
+    onWarn(`dsh-orchestrator: 配置键 ${key} 已删除（${note}）；本次按默认值运行，请从 profile 里删掉它`)
+  }
+}
+
 const DEFAULTS = {
   staleMinutes: 30,
   stallRounds: 3,
@@ -33,7 +66,8 @@ const minutes = (value, fallback) => {
   return valid === undefined ? fallback : Math.min(1440, Math.max(1, Math.floor(valid)))
 }
 
-export function loadConfig(raw = {}) {
+export function loadConfig(raw = {}, { onWarn } = {}) {
+  warnDeprecatedKeys(raw, onWarn)
   const config = { ...DEFAULTS }
   for (const key of Object.keys(DEFAULTS)) {
     config[key] = positive(raw?.[key], DEFAULTS[key])
@@ -42,7 +76,6 @@ export function loadConfig(raw = {}) {
   // workerPreset 透传给子会话启动（dispatch 的 agentPreset 通道）；只认合法 preset id。
   const workerPreset = nonEmpty(raw?.workerPreset, DEFAULT_WORKER_PRESET)
   config.workerPreset = PRESET_ID.test(workerPreset) ? workerPreset : DEFAULT_WORKER_PRESET
-  config.backend = raw?.backend === 'team' ? 'team' : 'subagent'
   config.maxQueue = Number.isFinite(raw?.maxQueue) && raw.maxQueue >= 1 ? Math.floor(raw.maxQueue) : 50
   config.autoResumeQueue = raw?.autoResumeQueue !== false
   config.coordinatorSession = nonEmpty(raw?.coordinatorSession, undefined)
@@ -97,10 +130,9 @@ export function loadConfig(raw = {}) {
   config.preferencesMaxItems = Number.isFinite(raw?.preferencesMaxItems)
     ? Math.min(20, Math.max(1, Math.floor(raw.preferencesMaxItems)))
     : DEFAULT_PREFERENCE_MAX_ITEMS
-  // 主会话轮换（G1 S1）：12 个键（总开关 + 六个因子阈值 + 冷却/最小龄/闲置/检查节流 + 归档开关）
-  // 的默认值、合法区间与非法回落都在 src/main-rotation.js 的 normalizeRotationConfig 里，
-  // 这里只负责挂到 config 上。rotateCheckIntervalHours 是「多久才做一次检查」的节流，
-  // 与 rotateCooldownHours / rotateMinAgeHours（判定里的保护）不是一回事。
+  // 主会话轮换（G1 S1，P1-A 收缩到 7 个键）：总开关 + 两个触发阈值（主日志体积 / 运行天数）
+  // + 保护（冷却/最小龄/闲置）+ 归档开关。默认值、合法区间与非法回落都在 src/main-rotation.js 的
+  // normalizeRotationConfig 里，这里只负责挂到 config 上。
   Object.assign(config, normalizeRotationConfig(raw))
   return config
 }

@@ -2,27 +2,22 @@
 //
 // 为什么判定要单独一个纯函数：
 //   轮换的副作用不可逆（旧主会话会改名，并被平台归档，而平台没有 unarchive API），
-//   所以判据必须能脱离台账/磁盘/tokenMeter 单独单测：同一份「台账快照 + 配置 + 时间」
+//   所以判据必须能脱离台账/磁盘单独单测：同一份「台账快照 + 配置 + 时间」
 //   必须得到同一个结论；事后也能靠 main.rotation.decided 日志复盘「这次为什么换 / 为什么没换」。
 //
-// 本文件范围：
-//   - S1：12 个配置键的默认值、合法区间与归一化（config.js 的 loadConfig 直接复用 normalizeRotationConfig）；
-//     evaluateRotation()：M1–M6 六个触发因子 + P1–P10 十条保护 + 冷却/最小龄 + 原因文案
-//   - S2：指标采集层（collectRotationMetrics：台账/persistence/tokenMeter/stat，每项 try/catch，
+// 本文件范围（P1-A 收缩后：配置键 12 → 7、触发因子 6 → 2）：
+//   - S1：7 个配置键的默认值、合法区间与归一化（config.js 的 loadConfig 直接复用 normalizeRotationConfig）；
+//     evaluateRotation()：main-log / age 两个触发因子 + P1–P10 十二条保护 + 冷却/最小龄 + 原因文案
+//   - S2：指标采集层（collectRotationMetrics：locate + stat，每项 try/catch，
 //     拿不到就是「未知」而不是 0）、settings 键读写（readRotationState / writeRotationState）、
 //     inspectRotationPending()（崩溃恢复 marker 的只读判定）
 //   - S3：轮换动作面（createRotationService：采集 + 判定 + 动作 + 崩溃恢复，平台服务由调用方注入）
-//   - S7（检查节流）：rotateCheckIntervalHours + settings.main_rotation_checked_at。
-//     evaluate() 在采集之前先问「距上次检查够久了吗」，没到间隔就整段跳过（零采集、零判定）。
-//     注意它**不是**轮换条件：
-//       - rotateCheckIntervalHours（默认 24h）= 「这次打开要不要花开销做检查」的闸门；
-//       - rotateCooldownHours / rotateMinAgeHours = 判定里的保护规则，决定「该不该换」。
-//     两者叠加才完整：节流只决定「查不查」，冷却/最小龄只决定「换不换」；检查被跳过时
-//     上一次的 blocks（比如还在冷却期）不会重算，因为它们本来就是「此刻的事实」，下次检查再看。
+//   - S7（检查节流）已在 P1-A 删除：采集只剩一次 locate + stat，节流的收益小于解释成本。
+//     settings.main_rotation_checked_at 仍被 readRotationState 读出来（旧库无害），但不再写、不再参与判定。
 //
 // 判定只在「打开主会话」时发生一次（main-session 的 openOnce → createRotationService.evaluate）：
 // 不写 due 标记、不在启动/加载时后台检测、面板也不暴露判定结果——省掉一整套派生状态与展示链路。
-// 唯一写进 settings 的是检查时间戳（main_rotation_checked_at），它是节流的事实依据，不是判定结论。
+// 判定本身不写任何 settings 键：结论只进 main.rotation.decided 日志（P1-A 起连检查时间戳也不写了）。
 import { stat } from 'node:fs/promises'
 import { deleteSetting, getSetting, listTasks, setSetting } from './ledger.js'
 import { onboardingKey } from './onboarding.js'
@@ -33,25 +28,18 @@ const HOUR_MS = 3_600_000
 const MIB = 1024 * 1024
 
 /**
- * 12 个配置键的默认值（计划 §3.3 + 检查节流）。
- * `mainRotation` 是总开关：auto = 判定并（S3 起）动作；off = 只检测、不动作。
- * `rotateArchiveOld` = 轮换后是否把旧主会话交给平台归档（不可逆，S3 才用）。
+ * 7 个配置键的默认值（P1-A 收缩：12 → 7）。
+ * `mainRotation` 是总开关：auto = 判定并动作；off = 只检测、不动作。
+ * **默认 off**：升级后不再自动换主会话，要换必须显式配 `mainRotation: 'auto'`。
+ * `rotateArchiveOld` = 轮换后是否把旧主会话交给平台归档（不可逆）。
  */
 export const ROTATION_DEFAULTS = Object.freeze({
-  mainRotation: 'auto',
-  rotateAfterTasks: 120,
-  rotateAfterSessions: 80,
+  mainRotation: 'off',
   rotateAfterMainLogMiB: 6,
-  rotateAfterContextTokens: 150_000,
   rotateAfterDays: 10,
-  rotateAfterDiskMiB: 512,
   rotateCooldownHours: 48,
   rotateMinAgeHours: 12,
   rotateIdleMinutes: 10,
-  // 检查节流（S7）：打开主会话时「最多每 N 小时做一次采集 + 判定」，默认一天一次。
-  // 与 rotateCooldownHours / rotateMinAgeHours 不是一回事：那两个是判定里的保护（该不该换），
-  // 这个只决定「这次打开要不要花开销检查」（查不查）。
-  rotateCheckIntervalHours: 24,
   rotateArchiveOld: true,
 })
 
@@ -60,38 +48,32 @@ export const ROTATION_DEFAULTS = Object.freeze({
  * 归一化口径与其它配置一致：非数字/非正数回落默认，有限但越界的值夹到边界（不报错）。
  */
 export const ROTATION_LIMITS = Object.freeze({
-  rotateAfterTasks: Object.freeze([1, 10_000, true]),
-  rotateAfterSessions: Object.freeze([1, 10_000, true]),
   rotateAfterMainLogMiB: Object.freeze([0.5, 4096, false]),
-  rotateAfterContextTokens: Object.freeze([1_000, 2_000_000, true]),
   rotateAfterDays: Object.freeze([1, 365, true]),
-  rotateAfterDiskMiB: Object.freeze([16, 1_048_576, true]),
   rotateCooldownHours: Object.freeze([1, 720, true]),
   rotateMinAgeHours: Object.freeze([1, 720, true]),
   rotateIdleMinutes: Object.freeze([1, 1440, true]),
-  // 1 小时 ≈ 退回「每次打开都检查」的旧行为；168 = 一周，再长就失去轮换的时效性。
-  rotateCheckIntervalHours: Object.freeze([1, 168, true]),
 })
 
-/** 总开关合法取值；拼错/其它值一律回落 auto（默认必须安全：不能因为配置写错就永久不换）。 */
+/** 总开关合法取值；拼错/其它值一律回落 off（默认必须安全：不能因为配置写错就自动换掉协调者）。 */
 export const MAIN_ROTATION_MODES = Object.freeze(['auto', 'off'])
 
 /**
  * settings 键名（与台账 settings 表共用）。
- * 只存「起点 / 冷却 / 审计 / 崩溃锚点 / 检查节流」五个事实，不存任何判定结论（判定每次打开主会话时现算）。
+ * 只存「起点 / 冷却 / 审计 / 崩溃锚点」四个事实，不存任何判定结论（判定每次打开主会话时现算）。
  */
 export const MAIN_SESSION_CREATED_AT_KEY = 'main_session_created_at'
 export const MAIN_ROTATION_AT_KEY = 'main_rotation_at'
 export const MAIN_ROTATION_LAST_KEY = 'main_rotation_last'
 export const MAIN_ROTATION_PENDING_KEY = 'main_rotation_pending'
-// 检查节流（S7）：上次真正做过「采集 + 判定」的时刻。只影响「多久才查一次」，不影响判定结论。
+// 检查节流（S7）已随 P1-A 删除：这个键只在读侧保留（旧库里的值无害、也不清理），不再写、不再参与判定。
 export const MAIN_ROTATION_CHECKED_AT_KEY = 'main_rotation_checked_at'
 
 /**
- * 触发因子的固定顺序（M1→M6，与计划 §3.1 一致）。
+ * 触发因子的固定顺序（P1-A 只剩两个：主日志体积、运行天数）。
  * reasons 按这个顺序输出，同一因子最多出现一次；顺序稳定才能做日志 diff 与单测断言。
  */
-export const ROTATION_TRIGGERS = Object.freeze(['tasks', 'sessions', 'main-log', 'context-tokens', 'age', 'disk'])
+export const ROTATION_TRIGGERS = Object.freeze(['main-log', 'age'])
 
 /**
  * 保护规则的展示/日志优先级：越靠前越「根本」，blockedBy[0] 即首要原因。
@@ -129,13 +111,14 @@ const fmt = value => {
 }
 
 /**
- * 把（可能是手写的、可能是 loadConfig 产物的）配置归一化成 12 个键。
+ * 把（可能是手写的、可能是 loadConfig 产物的）配置归一化成 7 个键。
  * 幂等：loadConfig 里再调一次也不会改变结果。
  */
 export function normalizeRotationConfig(raw = {}) {
   const source = raw !== null && typeof raw === 'object' ? raw : {}
   const config = {
-    mainRotation: source.mainRotation === 'off' ? 'off' : 'auto',
+    // 默认 off（P1-A）：只有显式 'auto' 才开；拼错保持「不开」，不能因为写错就自动换掉协调者。
+    mainRotation: source.mainRotation === 'auto' ? 'auto' : 'off',
     // 与 memoryInject / idleWatchdog 同口径：只有显式 false 才关，拼错保持默认（这里默认开）。
     rotateArchiveOld: source.rotateArchiveOld !== false,
   }
@@ -151,60 +134,9 @@ export function normalizeRotationConfig(raw = {}) {
   return config
 }
 
-/**
- * 检查节流闸门（S7，纯函数）：这次打开主会话要不要真的做「采集 + 判定」。
- *
- * 口径：
- *   - 从没有记录（首次 / 升级后第一次打开）→ 必须检查（`firstCheck`），检查完才写时间戳；
- *   - 距上次检查 < 间隔 → 跳过（`shouldCheck:false`），调用方**零采集、零判定**；
- *   - 到点（`elapsed >= 间隔`）→ 检查；
- *   - 时钟回拨（记录时间在 `now` 之后）→ 不信任，按「该检查」处理，检查完用当前时间覆盖记录，
- *     否则一次回拨会把检查冻结到时钟重新走过记录点为止。
- *
- * 与 rotateCooldownHours / rotateMinAgeHours 的区别：这个函数只回答「查不查」，
- * 不参与「换不换」——判定里的冷却/最小龄照旧由 evaluateRotation 管。
- *
- * @param {object} input
- * @param {number} [input.now] 当前时刻（ms）；缺省 Date.now()
- * @param {number|null} [input.lastCheckedAt] 上次检查时刻（ms，来自 main_rotation_checked_at）；从没检查过传 null/undefined
- * @param {number} [input.intervalHours] 间隔小时数（配置原值，内部按 1–168 归一化，非法回落 24）
- * @returns {{shouldCheck:boolean, firstCheck:boolean, intervalHours:number,
- *   lastCheckedAt:number|null, nextCheckAt:number|null, elapsedHours:number|null}}
- */
-export function rotationCheckWindow({ now, lastCheckedAt, intervalHours } = {}) {
-  const at = Number.isFinite(now) ? now : Date.now()
-  // 归一化只走一处：非法值回落默认、越界夹取都与判定里的配置口径一致。
-  const interval = normalizeRotationConfig({ rotateCheckIntervalHours: intervalHours }).rotateCheckIntervalHours
-  const intervalMs = interval * HOUR_MS
-  const checked = Number.isFinite(lastCheckedAt) ? lastCheckedAt : undefined
-  if (checked === undefined) {
-    return {
-      shouldCheck: true,
-      firstCheck: true,
-      intervalHours: interval,
-      lastCheckedAt: null,
-      nextCheckAt: null,
-      elapsedHours: null,
-    }
-  }
-  const elapsed = at - checked
-  return {
-    shouldCheck: elapsed < 0 || elapsed >= intervalMs,
-    firstCheck: false,
-    intervalHours: interval,
-    lastCheckedAt: checked,
-    nextCheckAt: checked + intervalMs,
-    elapsedHours: Math.max(0, elapsed / HOUR_MS),
-  }
-}
-
 const TRIGGER_TEXT = {
-  tasks: (value, threshold) => `自上次轮换以来新增子任务 ${fmt(value)} 个（阈值 ${threshold}）`,
-  sessions: (value, threshold) => `自上次轮换以来新增子会话 ${fmt(value)} 个（阈值 ${threshold}）`,
   'main-log': (value, threshold) => `主会话日志 ${fmt(value)} MiB（阈值 ${fmt(threshold)} MiB）`,
-  'context-tokens': (value, threshold) => `当前上下文 ${fmt(value)} token（阈值 ${fmt(threshold)}）`,
   age: (value, threshold) => `主会话已运行 ${fmt(value)} 小时（阈值 ${fmt(threshold)} 小时）`,
-  disk: (value, threshold) => `会话日志占用 ${fmt(value)} MiB（阈值 ${fmt(threshold)} MiB）`,
 }
 
 /**
@@ -213,10 +145,10 @@ const TRIGGER_TEXT = {
  *
  * @param {object} input
  * @param {number} [input.now] 判定时刻（ms）；缺省 Date.now()
- * @param {object} [input.config] loadConfig 结果或手写配置（内部按 12 个键归一化，非法值回落）
+ * @param {object} [input.config] loadConfig 结果或手写配置（内部按 7 个键归一化，非法值回落）
  * @param {number} [input.since] 当前主会话起点（ms，来自 main_session_created_at，退 header.createdAt）
  * @param {number} [input.lastRotatedAt] 上次轮换时刻（ms，来自 main_rotation_at）；从未轮换传 undefined
- * @param {object} [input.metrics] 采集结果：tasksSince/sessionsSince/mainLogMiB/contextTokens/diskMiB
+ * @param {object} [input.metrics] 采集结果：mainLogMiB（其余字段已随 P1-A 删除，传了也不看）
  * @param {object[]} [input.tasks] 台账任务全量（listTasks），用于 P1/P2/P5
  * @param {string} [input.agentStatus] 主会话 live agent 的 status（'running' 时 P3 阻塞）
  * @param {number} [input.logMtimeAt] 主会话日志 mtime（ms），用于 P4「刚有交互」
@@ -251,23 +183,15 @@ export function evaluateRotation({
   const idleMinutes = Number.isFinite(logMtimeAt) ? Math.max(0, (at - logMtimeAt) / MINUTE_MS) : undefined
   const hoursSinceRotation = rotatedAt === undefined ? undefined : Math.max(0, (at - rotatedAt) / HOUR_MS)
 
-  // ---- 触发因子（M1–M6）----
-  // 拿不到数值 = 该因子缺席（降级），不是 0：不能因为 tokenMeter 没挂就以为上下文很干净。
+  // ---- 触发因子（main-log / age）----
+  // 拿不到数值 = 该因子缺席（降级），不是 0：不能因为 locate 失败就以为日志很小。
   const factorValue = {
-    tasks: startedAt !== undefined && Number.isFinite(metrics?.tasksSince) ? metrics.tasksSince : undefined,
-    sessions: startedAt !== undefined && Number.isFinite(metrics?.sessionsSince) ? metrics.sessionsSince : undefined,
     'main-log': Number.isFinite(metrics?.mainLogMiB) ? metrics.mainLogMiB : undefined,
-    'context-tokens': Number.isFinite(metrics?.contextTokens) ? metrics.contextTokens : undefined,
     age: ageHours,
-    disk: Number.isFinite(metrics?.diskMiB) ? metrics.diskMiB : undefined,
   }
   const threshold = {
-    tasks: cfg.rotateAfterTasks,
-    sessions: cfg.rotateAfterSessions,
     'main-log': cfg.rotateAfterMainLogMiB,
-    'context-tokens': cfg.rotateAfterContextTokens,
     age: cfg.rotateAfterDays * 24,
-    disk: cfg.rotateAfterDiskMiB,
   }
   const triggers = []
   const reasons = []
@@ -342,7 +266,7 @@ export function evaluateRotation({
   }
 
   const blockedBy = ROTATION_BLOCKS.filter(code => blocked.has(code)).map(code => blocked.get(code))
-  // 缺席因子按 M1→M6 排在前面，调用方补充的采集失败码跟在后面（去重，顺序稳定）。
+  // 缺席因子按 ROTATION_TRIGGERS 顺序排在前面，调用方补充的采集失败码跟在后面（去重，顺序稳定）。
   const degradedOut = [...new Set([
     ...missing,
     ...(Array.isArray(degraded) ? degraded.filter(code => typeof code === 'string' && code !== '') : []),
@@ -356,12 +280,8 @@ export function evaluateRotation({
     blockedBy,
     blockCount: blockedBy.length,
     metrics: {
-      tasksSince: factorValue.tasks ?? null,
-      sessionsSince: factorValue.sessions ?? null,
       mainLogMiB: factorValue['main-log'] ?? null,
-      contextTokens: factorValue['context-tokens'] ?? null,
       ageHours: ageHours ?? null,
-      diskMiB: factorValue.disk ?? null,
       hoursSinceRotation: hoursSinceRotation ?? null,
       idleMinutes: idleMinutes ?? null,
     },
@@ -390,11 +310,10 @@ export function rotationHeadline(decision) {
 // ---------------------------------------------------------------------------
 // S2：指标采集 + settings 键读写
 //
-// 三条硬约束（计划 §13 S2 / §3.1）：
+// 三条硬约束（P1-A 收缩后仍然成立）：
 //   1. 采集只读：不写台账、不写 settings、不建会话、不动指针（写 settings 是轮换动作的事）；
-//   2. 失败降级为「未知」：任一服务缺失/抛错只记 degraded，不填 0——0 会被当成「很干净」而漏判；
-//   3. 采集只在「打开主会话」那一次跑、且先过检查节流（S7：没到间隔连采集都不进）：
-//      不进面板 2s 轮询、不加定时器。
+//   2. 失败降级为「未知」：服务缺失/抛错只记 degraded，不填 0——0 会被当成「很干净」而漏判；
+//   3. 采集只在「打开主会话」那一次跑：不进面板 2s 轮询、不加定时器。
 // ---------------------------------------------------------------------------
 
 const millisOf = value => {
@@ -416,9 +335,6 @@ const objectOf = value => {
   }
 }
 
-/** 路径比较口径：统一分隔符、去尾斜杠；不做大小写折叠（不同平台的路径语义不在这里猜）。 */
-const pathKey = value => (typeof value === 'string' ? value.replace(/\\/g, '/').replace(/\/+$/, '') : '')
-
 const errorText = error => `${error?.message ?? error}`
 
 const defaultStatFile = async path => {
@@ -428,6 +344,7 @@ const defaultStatFile = async path => {
 
 /**
  * 读五个 settings 键（只读）。缺键/坏值一律为 null，由调用方按「未知」处理。
+ * `checkedAt` 只读不写：检查节流已随 P1-A 删除，旧库里的值留着无害。
  * @returns {{createdAt:number|null, rotatedAt:number|null, last:object|null, pending:object|null,
  *   checkedAt:number|null}}
  */
@@ -491,73 +408,39 @@ export function inspectRotationPending(state, pointer) {
 }
 
 /**
- * 采集 M1–M6 六项指标。每项独立 try/catch：失败记 degraded，值给 null（未知，不是 0）。
+ * 采集轮换需要的两项事实（P1-A 收缩后只剩两项）：
+ *   - 主日志体积：`persistence.locate` → `stat`（压缩后大小）；顺带拿 mtime 给 P4「刚有交互」
+ *   - 起点 `since`：age 因子的输入（settings 优先，退 header.createdAt）
+ * 每项独立 try/catch：失败记 degraded，值给 null（未知，不是 0）。
  * 只读：不写台账/settings/磁盘；结果只交给判定函数，不落任何 settings 键。
  *
  * @param {object} opts
  * @param {object} opts.db 台账
- * @param {object} [opts.persistence] 平台 sessionPersistence（listSnapshots/locate）；缺失则 M2/M3/M6 降级
- * @param {object} [opts.tokenMeter] 平台 tokenMeter（measure(session).totalTokens）；缺失或无 live 会话则 M4 降级
- * @param {string} [opts.mainSessionId] 当前主会话 id
+ * @param {object} [opts.persistence] 平台 sessionPersistence（只用到 locate）；缺失则 main-log 降级
  * @param {object} [opts.mainSession] live session（agent.session），启动时通常没有
- * @param {string} [opts.workspaceCwd] 指挥舱目录（header.cwd 缺失时兜底做 M2/M6 过滤）
- * @param {number} [opts.now] 采集时刻（ms）
  * @param {Function} [opts.statFile] stat 注入（单测用）；默认 fs/promises.stat
  * @param {Function} [opts.log] 结构化日志
  * @returns {Promise<{since:number|null, sinceSource:string|null, logMtimeAt:number|null,
- *   metrics:{tasksSince:number|null, sessionsSince:number|null, mainLogMiB:number|null,
- *     contextTokens:number|null, diskMiB:number|null}, degraded:string[], scanned:number}>}
+ *   metrics:{mainLogMiB:number|null}, degraded:string[]}>}
  */
 export async function collectRotationMetrics({
   db,
   persistence,
-  tokenMeter,
-  mainSessionId,
   mainSession,
-  workspaceCwd,
-  now = Date.now(),
   statFile = defaultStatFile,
   log = () => {},
 } = {}) {
   const degraded = new Set()
-  const metrics = {
-    tasksSince: null,
-    sessionsSince: null,
-    mainLogMiB: null,
-    contextTokens: null,
-    diskMiB: null,
-  }
+  const metrics = { mainLogMiB: null }
   const degrade = (factor, error) => {
     degraded.add(factor)
     log('main.rotation.metrics.degraded', { detail: { factor, error: errorText(error) } })
   }
 
-  // ---- 一次 listSnapshots 供 M2（自轮换以来新增会话）与 M6（会话日志总占用）共用 ----
-  let snapshots = null
-  const canListSnapshots = persistence !== null && typeof persistence === 'object' && typeof persistence.listSnapshots === 'function'
-  if (canListSnapshots) {
-    try {
-      const listed = await persistence.listSnapshots()
-      if (Array.isArray(listed)) snapshots = listed
-      else degrade('sessions', new Error('listSnapshots 返回的不是数组'))
-    } catch (error) {
-      degrade('sessions', error)
-      degrade('disk', error)
-    }
-  } else {
-    const missing = new Error('缺少 sessionPersistence 服务（listSnapshots）')
-    degrade('sessions', missing)
-    degrade('disk', missing)
-  }
+  // ---- 主会话 header：只有 live 会话能给（采集只在「打开主会话」那一次跑）----
+  const header = mainSession?.header !== null && typeof mainSession?.header === 'object' ? mainSession.header : undefined
 
-  // ---- 主会话 header：live 优先，其次从快照里按指针找回（M3 定位、since 回退、cwd 过滤都要用）----
-  let header = mainSession?.header !== null && typeof mainSession?.header === 'object' ? mainSession.header : undefined
-  if (snapshots !== null && typeof mainSessionId === 'string' && mainSessionId !== '') {
-    const found = snapshots.find(entry => entry?.header?.id === mainSessionId)?.header
-    if (found !== null && typeof found === 'object') header = { ...found, ...(header ?? {}) }
-  }
-
-  // ---- since（M1/M2/M5 的起点）：settings 优先，退 header.createdAt；都拿不到就整组降级 ----
+  // ---- since（age 的起点）：settings 优先，退 header.createdAt；都拿不到就降级 ----
   let since = null
   let sinceSource = null
   try {
@@ -567,7 +450,7 @@ export async function collectRotationMetrics({
       sinceSource = 'settings'
     }
   } catch (error) {
-    degrade('tasks', error)
+    degrade('age', error)
   }
   if (since === null && header !== undefined) {
     const headerAt = millisOf(header.createdAt)
@@ -577,41 +460,11 @@ export async function collectRotationMetrics({
     }
   }
   if (since === null) {
-    // 起点未知 = M1/M2/M5 都不可信；不是 0 个任务/0 个会话。
-    for (const factor of ['tasks', 'sessions', 'age']) degraded.add(factor)
+    // 起点未知 = 龄不可信；不是「刚建的会话」。
+    degraded.add('age')
   }
 
-  const cwdKey = pathKey(typeof header?.cwd === 'string' && header.cwd !== '' ? header.cwd : workspaceCwd)
-
-  // ---- M1：自轮换以来的子任务数（台账 created_at >= since）----
-  if (since !== null) {
-    try {
-      const tasks = listTasks(db)
-      metrics.tasksSince = tasks.filter(task => {
-        const createdAt = millisOf(task?.created_at)
-        return createdAt !== null && createdAt >= since
-      }).length
-    } catch (error) {
-      degrade('tasks', error)
-    }
-  }
-
-  // ---- M2：自轮换以来的子会话数（header.createdAt >= since 且 cwd 是指挥舱）----
-  if (snapshots !== null && since !== null && cwdKey !== '') {
-    try {
-      metrics.sessionsSince = snapshots.filter(entry => {
-        const sessionHeader = entry?.header
-        const createdAt = millisOf(sessionHeader?.createdAt)
-        return createdAt !== null && createdAt >= since && pathKey(sessionHeader?.cwd) === cwdKey
-      }).length
-    } catch (error) {
-      degrade('sessions', error)
-    }
-  } else if (snapshots !== null && cwdKey === '') {
-    degrade('sessions', new Error('不知道指挥舱目录，无法按 cwd 过滤会话'))
-  }
-
-  // ---- M3：主会话日志体积（locate → stat，压缩后大小）；顺带拿 mtime 给 P4 ----
+  // ---- 主日志体积（locate → stat，压缩后大小）；顺带拿 mtime 给 P4 ----
   let logMtimeAt = null
   const canLocate = persistence !== null && typeof persistence === 'object' && typeof persistence.locate === 'function'
   if (canLocate && header !== undefined && typeof header.id === 'string' && typeof header.cwd === 'string') {
@@ -630,59 +483,7 @@ export async function collectRotationMetrics({
     degrade('main-log', new Error(canLocate ? '拿不到主会话 header（id/cwd）' : '缺少 sessionPersistence 服务（locate）'))
   }
 
-  // ---- M4：当前上下文 token（仅 live 会话）----
-  const canMeasure = tokenMeter !== null && typeof tokenMeter === 'object' && typeof tokenMeter.measure === 'function'
-  if (canMeasure && mainSession !== undefined && mainSession !== null) {
-    try {
-      const measurement = await tokenMeter.measure(mainSession)
-      const total = measurement?.totalTokens
-      if (!Number.isFinite(total)) throw new Error('measure 没有返回 totalTokens')
-      metrics.contextTokens = total
-    } catch (error) {
-      degrade('context-tokens', error)
-    }
-  } else {
-    degrade('context-tokens', new Error(canMeasure ? '主会话未加载，无法测量上下文' : '缺少 tokenMeter 服务'))
-  }
-
-  // ---- M6：插件会话日志总占用（cwd=指挥舱的全部会话逐个 stat）----
-  if (snapshots !== null && cwdKey !== '' && canLocate) {
-    let total = 0
-    let matched = 0
-    let failed = 0
-    for (const entry of snapshots) {
-      const sessionHeader = entry?.header
-      if (pathKey(sessionHeader?.cwd) !== cwdKey) continue
-      matched += 1
-      try {
-        const located = persistence.locate({ id: sessionHeader.id, cwd: sessionHeader.cwd })
-        const info = await statFile(located?.path)
-        if (!Number.isFinite(info?.size)) throw new Error('stat 没有返回 size')
-        total += info.size
-      } catch {
-        // 单个日志读不到（并发删除/权限）不炸整次采集；有失败就标 degraded，数值只是下界。
-        failed += 1
-      }
-    }
-    if (matched > 0 && failed < matched) metrics.diskMiB = total / MIB
-    if (failed > 0) {
-      degraded.add('disk')
-      log('main.rotation.metrics.degraded', { detail: { factor: 'disk', error: `${failed} 个会话日志 stat 失败（数值为下界）` } })
-    }
-    if (matched === 0) degrade('disk', new Error('没有 cwd=指挥舱的会话日志，占用无法统计'))
-  } else if (snapshots !== null && cwdKey !== '') {
-    // canLocate 为 false
-    degrade('disk', new Error('缺少 sessionPersistence 服务（locate）'))
-  }
-
-  return {
-    since,
-    sinceSource,
-    logMtimeAt,
-    metrics,
-    degraded: [...degraded],
-    scanned: snapshots?.length ?? 0,
-  }
+  return { since, sinceSource, logMtimeAt, metrics, degraded: [...degraded] }
 }
 
 // ---------------------------------------------------------------------------
@@ -739,7 +540,7 @@ export function beginRotationMarker({ db, oldId, newId, at, reasons, log = () =>
 
 /**
  * 指针切换后写两个时间戳（计划 §5.1 第 8 步）：
- *   main_session_created_at = 新会话起点（M1/M2/M5 的 since）
+ *   main_session_created_at = 新会话起点（age 因子的 since）
  *   main_rotation_at        = 冷却期起点
  * 会抛（台账异常交调用方决定是否降级）；抛出不回滚指针——轮换已成立，只是少了防抖时间戳。
  */
@@ -930,22 +731,19 @@ export async function recoverPendingRotation({ db, pointer, rename, archive, arc
 /**
  * 轮换动作面（S3）：把「台账读写 + 可注入的平台动作」绑成一个服务给 main-session / index 用。
  *
- * 分工（计划 §5.1）：
+ * 分工：
  *   - main-session.openOnce() 调 evaluate（采集 + 纯判定）→ due 时自己 create，再依次 begin / commitTimes / disposeOld / finish；
  *   - index 启动时调 recoverPending（补完上次崩溃）；
- *   - 平台服务（persistence/tokenMeter/rename/archive）一律**惰性**取：cordis 并发加载时 apply 早期可能还没有。
+ *   - 平台服务（persistence/rename/archive）一律**惰性**取：cordis 并发加载时 apply 早期可能还没有。
  *
  * evaluate 只读（判定纯函数是 evaluateRotation），也不建会话（create 归 main-session，权限与错误文案都留在那儿）。
- * 唯一的例外是检查节流的时间戳（main_rotation_checked_at）：它记「上次真正检查是什么时候」，
- * 是节流的事实依据，不是判定结论；写失败只记日志、不影响本次判定。
+ * P1-A 删掉了检查节流（S7）：采集只剩一次 locate + stat，每次打开主会话都现算，不再写 main_rotation_checked_at。
  */
 export function createRotationService({
   db,
   config = {},
   persistence,
-  tokenMeter,
   catalog,
-  workspaceCwd,
   rename,
   archive,
   now = () => Date.now(),
@@ -959,19 +757,14 @@ export function createRotationService({
   /**
    * 采集 + 判定，返回 decision；任何异常 → null（调用方视为「本次不轮换」）。
    *
-   * 这是**唯一**的判定入口（main-session.openOnce 在「打开主会话」时调一次）。
-   * 顺序（改顺序前先读顶部 S7 注释）：
-   *   1. 配置覆盖 / 没有主会话 id → null（连检查都不做）；
-   *   2. **检查节流**（S7）：距上次检查 < rotateCheckIntervalHours → 返回 `{skipped:true}`，
-   *      零采集、零判定、不读台账、不碰平台服务——打开主会话的开销就只剩一次 settings 读；
-   *   3. 到点才采集 + 判定；结论为「不需要换」时写 main_rotation_checked_at（下次打开才会跳过）。
-   *      due=true **不写**：动作还在后面（create/切指针可能失败、进程可能崩），
-   *      记了会把重试压到下一个间隔之后。
+   * 这是**唯一**的判定入口（main-session.openOnce 在「打开主会话」时调一次）：
+   *   1. 配置覆盖 / 没有主会话 id → null（连检测都不做）；
+   *   2. 采集（locate + stat，拿不到就降级为「未知」）+ 纯判定；
+   *   3. 判定结论只进审计日志，不落任何 settings 键（P1-A 起也不再有检查时间戳）。
    *
    * 不写判定结论、不建会话、不改指针、不留 due 标记；动作用下面的 begin/commitTimes/disposeOld/finish。
    * 平台服务是**惰性 getter**（cordis 并发加载期 `ctx.get` 可能抛），所以 try/catch 是契约的一部分，
-   * 不是保险丝：判定失败只有一个语义——这次不换，打开主会话照常走复用分支；且**不写检查时间戳**，
-   * 下次打开会重试（一次失败的检查不该把下一次检查压到 24 小时之后）。
+   * 不是保险丝：判定失败只有一个语义——这次不换，打开主会话照常走复用分支，下次打开会重试。
    */
   const evaluate = async ({ mainSessionId, liveAgent, source = 'open' } = {}) => {
     try {
@@ -980,52 +773,10 @@ export function createRotationService({
       if (typeof mainSessionId !== 'string' || mainSessionId === '') return null
       const at = now()
       const state = readRotationState(db)
-      // ---- 检查节流（S7）：只读一个键就能决定「这次不查」，比采集便宜几个数量级 ----
-      const gate = rotationCheckWindow({
-        now: at,
-        lastCheckedAt: state.checkedAt,
-        intervalHours: config?.rotateCheckIntervalHours,
-      })
-      if (gate.shouldCheck !== true) {
-        // 跳过也是事实：写一条日志，事后能解释「为什么这次打开没查」。
-        log('main.rotation.check.skipped', {
-          detail: {
-            source,
-            intervalHours: gate.intervalHours,
-            checkedAt: gate.lastCheckedAt,
-            nextCheckAt: gate.nextCheckAt,
-            elapsedHours: gate.elapsedHours,
-          },
-        })
-        return {
-          due: false,
-          skipped: true,
-          skipReason: 'check-interval',
-          mode: normalizeRotationConfig(config).mainRotation,
-          triggers: [],
-          reasons: [],
-          blockedBy: [],
-          blockCount: 0,
-          metrics: {},
-          degraded: [],
-          evaluatedAt: at,
-          lastRotatedAt: state.rotatedAt,
-          check: {
-            intervalHours: gate.intervalHours,
-            lastCheckedAt: gate.lastCheckedAt,
-            nextCheckAt: gate.nextCheckAt,
-            elapsedHours: gate.elapsedHours,
-          },
-        }
-      }
       const collected = await collectRotationMetrics({
         db,
         persistence: resolve(persistence),
-        tokenMeter: resolve(tokenMeter),
-        mainSessionId,
         mainSession: liveAgent?.session,
-        workspaceCwd: resolve(workspaceCwd),
-        now: at,
         statFile,
         log,
       })
@@ -1058,17 +809,6 @@ export function createRotationService({
         catalog: catalogEntries,
         degraded: collected.degraded,
       })
-      // 检查跑完才记时间戳：下一次打开在间隔内会直接跳过（写失败只降级，不影响本次判定）。
-      // 但**只在「不需要换」时记**：due=true 时动作还在后面（create / 切指针都可能失败，进程也可能崩），
-      // 提前记时间戳会把重试压到下一个间隔之后；失败的那次轮换应该下次打开就能重来。
-      const checkRecorded = decision.due !== true
-      if (checkRecorded) {
-        try {
-          writeRotationState(db, { checkedAt: at })
-        } catch (error) {
-          log('main.rotation.check.record-failed', { detail: { checkedAt: at, error: errorText(error) } })
-        }
-      }
       // 判定结论只进审计日志（事后复盘「为什么换 / 为什么没换」），不落任何 settings 键。
       log('main.rotation.decided', {
         detail: {
@@ -1080,9 +820,6 @@ export function createRotationService({
           metrics: decision.metrics,
           since: collected.since,
           sinceSource: collected.sinceSource,
-          scanned: collected.scanned,
-          checkedAt: at,
-          checkRecorded,
         },
       })
       return decision

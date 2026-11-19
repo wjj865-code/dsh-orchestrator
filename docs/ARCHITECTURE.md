@@ -58,10 +58,10 @@
 
 | 位置 | 职责 |
 |---|---|
-| `src/main-rotation.js` | 全部轮换逻辑：S1 纯判定 `evaluateRotation`；S2 采集 `collectRotationMetrics` + settings 键读写 + `inspectRotationPending` 只读判定；S3 动作面 `createRotationService`（marker / 时间戳 / 审计 / 旧会话处置 / `recoverPendingRotation`）；S7 检查节流 `rotationCheckWindow`（纯函数）+ 在 `evaluate` 采集之前的那道闸门 |
-| `src/config.js` | `loadConfig` 直接 `Object.assign(config, normalizeRotationConfig(raw))`，12 个键的默认值/区间/回落都在 S1 |
-| `src/main-session.js` | `openOnce()` 是**唯一**判定点：`rotation.evaluate({ mainSessionId, liveAgent, source:'open' })` → `decision.due === true` 才 `rotateMain()`，否则照旧走复用分支（`decision.skipped === true` 时什么都不用做） |
-| `index.js` | 装配 `createRotationService`（平台服务全是**惰性 getter**：`sessionPersistence` / `tokenMeter` / `catalog` / `sessionController.rename` / `workspaceRegistry.archiveSession`）；`apply()` 启动时调一次 `rotation.recoverPending({ pointer })` 补完上次崩溃的轮换；`open-main` 响应里对新 id 跑 `ensureDigestFor` |
+| `src/main-rotation.js` | 全部轮换逻辑：S1 纯判定 `evaluateRotation`；S2 采集 `collectRotationMetrics`（locate + stat）+ settings 键读写 + `inspectRotationPending` 只读判定；S3 动作面 `createRotationService`（marker / 时间戳 / 审计 / 旧会话处置 / `recoverPendingRotation`） |
+| `src/config.js` | `loadConfig` 直接 `Object.assign(config, normalizeRotationConfig(raw))`，**7 个键**的默认值/区间/回落都在 S1（P1-A 从 12 删到 7） |
+| `src/main-session.js` | `openOnce()` 是**唯一**判定点：`rotation.evaluate({ mainSessionId, liveAgent, source:'open' })` → `decision.due === true` 才 `rotateMain()`，否则照旧走复用分支 |
+| `index.js` | 装配 `createRotationService`（平台服务全是**惰性 getter**：`sessionPersistence` / `catalog` / `sessionController.rename` / `workspaceRegistry.archiveSession`）；`apply()` 启动时调一次 `rotation.recoverPending({ pointer })` 补完上次崩溃的轮换；`open-main` 响应里对新 id 跑 `ensureDigestFor` |
 
 判定**不在**启动、`agent/created`、面板轮询里跑，也没有定时器；settings 里不存任何判定结论，`snapshot` 不下发「建议轮换」（S4 曾接过这三处，已按「判定收敛到打开那一次」回退）。
 
@@ -71,32 +71,14 @@
 
 - 判定只在旧主会话 **live** 时做：`openOnce` 里 `live === undefined` 走既有「隐式重建」路径，不做判定，`agent/created` 也不补判——所以重启后第一次打开是重建，不是轮换。
 
-- **触发因子（M1→M6，顺序固定）**：`tasks`（自 since 新增子任务）→ `sessions`（新增子会话，按 `header.cwd` 过滤指挥舱）→ `main-log`（主会话日志 MiB）→ `context-tokens`（live 会话的 `tokenMeter.measure().totalTokens`）→ `age`（`since` 起算小时）→ `disk`（指挥舱全部会话日志合计 MiB）。任一 `value >= threshold` 进 `triggers`/`reasons`。
-- **保护规则（12 个 code，`ROTATION_BLOCKS` 定优先级，`blockedBy[0]` 即首要原因）**：`mode-off`、`coordinator-override`、`spawn-provider`、`active-tasks`（`waiting_dep`/`pending`/`running`/`waiting_user`/`waiting_auth`）、`delivered-pending`、`delivered-artifacts`、`agent-running`、`recent-activity`（`logMtimeAt` 距今 < `rotateIdleMinutes`）、`active-children`（catalog 里 `activity==='active'`）、`min-age`、`cooldown`（距 `main_rotation_at` < `rotateCooldownHours`；从未轮换视为满足）、`metrics-degraded`（**六项全缺**才 fail-closed，缺一两项只记 `degraded`）。
-- **结论**：`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；龄/冷却/闲置一律由时间戳现算，不信任调用方传小时数。
+- **触发因子（P1-A 只剩两个，顺序固定）**：`main-log`（主会话日志 MiB）→ `age`（`since` 起算小时）。`tasks` / `sessions` / `context-tokens` / `disk` 四个因子连同它们的阈值键一起删除（采集从「读台账 + `listSnapshots` + 逐个 `stat` + `tokenMeter.measure`」缩成一次 `locate` + `stat`）。任一 `value >= threshold` 进 `triggers`/`reasons`。
+- **保护规则（12 个 code，`ROTATION_BLOCKS` 定优先级，`blockedBy[0]` 即首要原因）**：`mode-off`、`coordinator-override`、`spawn-provider`、`active-tasks`（`waiting_dep`/`pending`/`running`/`waiting_user`/`waiting_auth`）、`delivered-pending`、`delivered-artifacts`、`agent-running`、`recent-activity`（`logMtimeAt` 距今 < `rotateIdleMinutes`）、`active-children`（catalog 里 `activity==='active'`）、`min-age`、`cooldown`（距 `main_rotation_at` < `rotateCooldownHours`；从未轮换视为满足）、`metrics-degraded`（**两个因子全缺**才 fail-closed，缺一个只记 `degraded`）。
+- **结论**：`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；龄/冷却/闲置一律由时间戳现算，不信任调用方传小时数。`mainRotation` **默认 `off`**，拼错也回落 `off`。
 
-采集（S2）只读：一次 `persistence.listSnapshots()` 供 M2/M6 共用，`locate`+`stat` 拿 M3 体积与 mtime（顺带给 P4）；每项独立 `try/catch`，失败记 `degraded` 并给 `null`（**未知 ≠ 0**，0 会被当成「很干净」而漏判）。`since` 先读 `settings.main_session_created_at`，退 `header.createdAt`，都拿不到时 M1/M2/M5 一起降级。判定整体异常 → `evaluate` 返回 `null`（调用方视为「本次不换」，打开主会话照常）。
+采集（S2）只读：`locate`+`stat` 拿主会话日志体积与 mtime（顺带给 P4）；每项独立 `try/catch`，失败记 `degraded` 并给 `null`（**未知 ≠ 0**，0 会被当成「很干净」而漏判）。`since` 先读 `settings.main_session_created_at`，退 `header.createdAt`，都拿不到时 `age` 降级。判定整体异常 → `evaluate` 返回 `null`（调用方视为「本次不换」，打开主会话照常）。
 
-### 检查节流（S7：`rotateCheckIntervalHours` / `main_rotation_checked_at`）
+> P1-A 删掉了 S7 检查节流（`rotateCheckIntervalHours` + `settings.main_rotation_checked_at`）：采集只剩一次 `locate` + `stat`，节流的解释成本高于收益。每次打开主会话都现算；旧库里的 `main_rotation_checked_at` 仍被 `readRotationState` 读出（无害），但不再写、不再参与判定。
 
-采集要读台账 + `listSnapshots()` + 逐个 `stat` 会话日志，随手一开主会话就查一次很浪费。所以 `createRotationService.evaluate` 的顺序是：
-
-1. 配置覆盖 `coordinatorSession` / 没有主会话 id → 直接 `null`（连检查都不做）；
-2. **检查节流闸门**：读 `settings.main_rotation_checked_at`，交给纯函数 `rotationCheckWindow({ now, lastCheckedAt, intervalHours })`；
-   - `shouldCheck === false`（距上次检查 < `rotateCheckIntervalHours`）→ 返回 `{ due:false, skipped:true, skipReason:'check-interval', check:{…} }`，
-     **不采集、不读台账、不判定、不碰平台服务**，只写一条 `main.rotation.check.skipped` 日志；
-   - 没有记录（首次 / 升级后第一次打开）或到点（`elapsed >= 间隔`，`>=` 口径）→ 继续；
-   - 记录时间在未来（时钟回拨）→ 不信任，按「该检查」处理，检查完用当前时间覆盖，避免把检查冻结到时钟追上来；
-3. 采集 + 判定，**结论为「不需要换」时**才写 `main_rotation_checked_at = now`（写失败只记 `main.rotation.check.record-failed`，不影响本次判定）；
-   `due === true` **不写**——动作（create / 切指针）还在后面，失败或崩溃后下一次打开要能重试，不能被自己刚记的时间戳挡一个间隔；
-   检查整体异常（`evaluate` 落 `catch`）同样**不写**时间戳 → 下次打开重试。
-
-口径边界（三个时间参数各管一件事，别混）：
-- `rotateCheckIntervalHours`（默认 24，1–168）——**查不查**：这次打开要不要花开销做检查；
-- `rotateCooldownHours`（默认 48）——**换不换**：距上次轮换不足冷却就挡 `cooldown`，但检查照做；
-- `rotateMinAgeHours`（默认 12）——**换不换**：主会话跑得不够久就挡 `min-age`，同样不拦检查。
-
-`skipped` 的返回**不是判定结论**（`triggers`/`blockedBy` 都是空），所以它也不会把上一次的 blocks 重算一遍；要看「为什么没换」得看真正检查那次的 `main.rotation.decided`。轮换动作之后的下一次打开会再检查一次（因为 `due` 那次没记时间戳），那之后才按间隔节流——这是「失败/崩溃能重试」的代价，换来节流不会被一次没做完的检查消费。
 
 ### 动作时序（顺序即回退边界，改顺序前先读 `src/main-rotation.js` 顶部注释）
 
@@ -125,25 +107,23 @@
 
 | 键 | 语义 |
 |---|---|
-| `main_session_created_at` | 当前主会话起点（M1/M2/M5 的 `since`） |
+| `main_session_created_at` | 当前主会话起点（`age` 因子的 `since`） |
 | `main_rotation_at` | 上次轮换时刻（冷却期起点；从未轮换 = 无键） |
 | `main_rotation_last` | 审计记录（事后排查唯一入口：换了谁、为什么、改名/归档成没成、是否恢复补完） |
 | `main_rotation_pending` | 崩溃锚点（转瞬即逝，收尾清掉） |
-| `main_rotation_checked_at` | 上次真正做过「采集 + 判定」的时刻（S7 检查节流；不是判定结论，也不代表轮换过） |
+| `main_rotation_checked_at` | **已废弃（只读）**：P1-A 删检查节流后不再写；旧库里的值仍被 `readRotationState` 读出来，不参与判定 |
 
 五个键统一走 `readRotationState` / `writeRotationState`（`null` 删键、对象存 JSON、`undefined` 不动）。
 
 ### 日志（`logs/YYYY-MM-DD.jsonl`）
 
-- `main.rotation.decided`：每次**真正检查**都写（`source`、`due`、`triggers`、`blockedBy`、`degraded`、指标、`since`/`sinceSource`/`scanned`、`checkedAt`、`checkRecorded`）——复盘「为什么换 / 为什么没换」，以及这次检查有没有消费节流。
-- `main.rotation.check.skipped`：检查节流跳过（`intervalHours`、`checkedAt`、`nextCheckAt`、`elapsedHours`）——复盘「这次打开为什么没查」；跳过不写 `decided`。
+- `main.rotation.decided`：每次检查都写（`source`、`due`、`triggers`、`blockedBy`、`degraded`、指标、`since`/`sinceSource`）——复盘「为什么换 / 为什么没换」。
 - `main.session.rotated`：轮换成功（old/new/triggers/renamed/archived/marker/audit）。
-- 失败/降级：`main.rotation.failed`、`check.record-failed`（节流时间戳写不进，只降级）、`pointer-failed`、`commit.failed`、`onboarding.failed`、`audit.failed`、`marker.failed`、`marker.clear.failed`、`rename.ok|failed`、`archive`、`discard`、`metrics.degraded`、`recovered-complete|abandoned|invalid|failed`。
+- 失败/降级：`main.rotation.failed`、`pointer-failed`、`commit.failed`、`onboarding.failed`、`audit.failed`、`marker.failed`、`marker.clear.failed`、`rename.ok|failed`、`archive`、`discard`、`metrics.degraded`、`recovered-complete|abandoned|invalid|failed`。
 
-冒烟（临时台账 + 桩平台动作，不碰真实主会话）：13 项矩阵覆盖 not-due 零副作用、open-main 命中路径、create 失败零处置、
-指针写失败、只退役不归档、60s 窗口、崩溃恢复 complete/abandoned、配置归一化与纯判定契约；S7 检查节流的跳过/首检/到点/
-越界夹取/与冷却叠加在 `test/main-rotation.test.js` 的 S7 用例组与 `test/main-session.test.js` 的「检查节流」用例里；
-探针脚本是一次性验证件，不入库。
+冒烟（临时台账 + 桩平台动作，不碰真实主会话）：矩阵覆盖 not-due 零副作用、open-main 命中路径、create 失败零处置、
+指针写失败、只退役不归档、60s 窗口、崩溃恢复 complete/abandoned、配置归一化与纯判定契约（含「只剩两个因子」的边界）；
+用例在 `test/main-rotation.test.js` 与 `test/main-session.test.js`；探针脚本是一次性验证件，不入库。
 
 ## 队列与并发
 
@@ -446,7 +426,7 @@
 
 ## 只读子任务
 
-`readOnly:true`（只认显式 true）会在 `agent/created` 一到就给子会话 append `sandbox/mode {mode:'read-only'}`，激活后再幂等补一次；续派/重启会再补。只读任务不注册 target 可写根。`backend:'team'` 没有会话级只读通道，会返回可读错误。
+`readOnly:true`（只认显式 true）会在 `agent/created` 一到就给子会话 append `sandbox/mode {mode:'read-only'}`，激活后再幂等补一次；续派/重启会再补。只读任务不注册 target 可写根。
 
 ## per-task 完整访问（`access:'full'`）
 
@@ -455,8 +435,8 @@
 （`source` 与平台把父会话覆盖种进子会话时的事件形状一致），激活返回后再幂等补一次，续派/冷恢复再补；
 `taskOf` 只把 `tasks.access='full'` 当真，其它值一律按默认（NULL = 沿用会话策略）。
 不传 → 一次 append 都没有、不碰默认配置、不碰父会话，也不注册/撤销任何额外授权；完整访问任务照旧登记
-target 可写根（`danger-full-access` 下用不上，只当注入失败时的兜底）。`readOnly`/`planFirst` 优先且创建期互斥；
-`backend:'team'` 没有会话级沙箱写入口，返回可读错误。视图：brief `【访问级别】完整`、`task_detail`
+target 可写根（`danger-full-access` 下用不上，只当注入失败时的兜底）。`readOnly`/`planFirst` 优先且创建期互斥。
+视图：brief `【访问级别】完整`、`task_detail`
 「访问级别：完整」、`task_list`「·完整访问」、`task_status`「访问级别：完整」、通知标题「（完整访问）」、
 日志 `subagent.full-access` + `task.create.created.detail.access`。
 

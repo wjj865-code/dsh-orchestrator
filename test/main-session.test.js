@@ -369,8 +369,8 @@ test('presetFor 用 session.header.agentPreset 兜底', async () => {
 // G1 S3：轮换动作（create → marker → 切指针 → 跳过 onboarding → 旧会话改名+归档 → 审计）
 //
 // 用**真** createRotationService（只注入假的平台动作）：判定/采集仍是真实现，所以「due」由
-// 「主会话龄 ≥ 默认 10 天」命中 M5 构造——其余因子因没挂 persistence/tokenMeter 降级，
-// 而 degraded 不会让 age 因子失效（P10 只在「所有因子都拿不到」时 fail-closed）。
+// 「主会话龄 ≥ 默认 10 天」命中 age 因子构造——main-log 因没挂 persistence 降级，
+// 而 degraded 不会让 age 因子失效（P10 只在「两个因子都拿不到」时 fail-closed）。
 // ---------------------------------------------------------------------------
 const DAY = 24 * 3_600_000
 const RETIRED_TITLE = /^主会话（已退役 \d{4}-\d{2}-\d{2} \d{2}:\d{2}）$/
@@ -385,7 +385,6 @@ const agedMain = async db => {
 const rotationFor = (db, f, { archived = [], config = {}, log = () => {}, onWarn } = {}) => createRotationService({
   db,
   config: { mainRotation: 'auto', spawnProvider: 'spawn', ...config },
-  workspaceCwd: 'C:/ws',
   rename: async (sessionId, title) => f.sessionController.rename({ sessionId, title }),
   archive: async sessionId => archived.push(sessionId),
   log,
@@ -569,7 +568,6 @@ test('S3 归档失败降级：只改名，轮换仍成立', async () => {
   const rotation = createRotationService({
     db,
     config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    workspaceCwd: 'C:/ws',
     rename: async (sessionId, title) => f.sessionController.rename({ sessionId, title }),
     archive: async () => { throw new Error('workspace/unknown-session') },
     onWarn: message => warnings.push(message),
@@ -666,46 +664,3 @@ test('S3 轮换后新会话尚未 live：窗口内再 open 不重复建（不给
   db.close()
 })
 
-test('G1 检查节流：距上次检查不足间隔不再判定（打开只复用，不建会话不改名不归档）', async () => {
-  // 同一份「该换」的台账（龄 30 天），只把上次检查时间挪到 1 小时前：打开必须什么都不做。
-  const throttled = await ledger()
-  await agedMain(throttled)
-  setMainSessionPreset(throttled, PRESET_ID)
-  setSetting(throttled, 'main_rotation_checked_at', String(Date.now() - 3_600_000))
-  const f = fake({ live: new Set(['session-old']) })
-  const archived = []
-  const logs = []
-  const rotation = rotationFor(throttled, f, { archived, log: (event, detail) => logs.push([event, detail]) })
-  const main = createMainSession({
-    db: throttled, config: {}, agents: f.agents, sessionController: f.sessionController,
-    workspaces: f.workspaces, rotation, workspacePath: 'C:/ws', log: (event, detail) => logs.push([event, detail]),
-  })
-  const result = await main.open()
-  assert.equal(result.ok, true)
-  assert.equal(result.sessionId, 'session-old', '节流内照旧复用当前主会话')
-  assert.equal(result.rotated, undefined, '节流内不轮换')
-  assert.equal(f.created.length, 0, '一次会话都不建')
-  assert.deepEqual(f.renamed, [])
-  assert.deepEqual(archived, [])
-  assert.ok(logs.some(([event]) => event === 'main.rotation.check.skipped'), '跳过要留日志（事后能解释为什么没查）')
-  assert.equal(logs.some(([event]) => event === 'main.rotation.decided'), false, '跳过 = 不判定')
-  throttled.close()
-
-  // 到点（25 小时前检查过）→ 真的判定并轮换：节流只是「查的频率」，不是「不换」。
-  const dueDb = await ledger()
-  await agedMain(dueDb)
-  setMainSessionPreset(dueDb, PRESET_ID)
-  setSetting(dueDb, 'main_rotation_checked_at', String(Date.now() - 25 * 3_600_000))
-  const f2 = fake({ live: new Set(['session-old']) })
-  const archived2 = []
-  const rotation2 = rotationFor(dueDb, f2, { archived: archived2 })
-  const main2 = createMainSession({
-    db: dueDb, config: {}, agents: f2.agents, sessionController: f2.sessionController,
-    workspaces: f2.workspaces, rotation: rotation2, workspacePath: 'C:/ws',
-  })
-  const rotated = await main2.open()
-  assert.equal(rotated.rotated, true)
-  assert.equal(rotated.sessionId, 'session-main-new')
-  assert.deepEqual(archived2, ['session-old'])
-  dueDb.close()
-})

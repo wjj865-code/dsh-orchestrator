@@ -64,7 +64,7 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 | `session-create` | `sessionController` / `agentPresets`（含只读沙箱 `sandbox/mode`） | 打不开主会话、只读档不生效 | 报「缺 sessionController.rename/select」；任务可建但无法开会话 | 访问器就绪，下一片 |
 | `settings` | `settings`（宿主表单缝） | 插件配置页不可用 | 不影响任何现有功能：插件读写自己的台账 `settings` 表 | **已接线**（探针 + 报告行） |
 | `registry` | `workspaceRegistry`（归档/工作区） | 轮换归档不可用 | 轮换判 `unknown` 侧降级，不执行不可逆动作 | 访问器就绪，下一片 |
-| `token-meter` | `tokenMeter` | 轮换拿不到 token 指标 | 指标当「未知」，不按 0 处理 | 访问器就绪，下一片 |
+| `token-meter` | `tokenMeter` | 当前无消费点（P1-A 删掉了轮换的上下文因子） | 无需降级：访问器保留，等后续消费点接线 | 访问器就绪，无消费点 |
 | `session-query` | `sessionQuery.searchSessions` | `history_search` 会话那一路退化 | 只用台账/记忆命中，回复里如实说明 | 访问器就绪，下一片 |
 | `panel-slots` | 槽位名 `main` / `sidebar.panellist` / `conversation.header.leading` / `conversation.chat.turnTail` | 面板入口不渲染（历史「真实宿主永不渲染」） | 退到 `main` 单槽；入口隐藏但不报错 | 访问器就绪，下一片 |
 | `log-path` | `$DSH_HOME`（空白按未设置）→ `<home>/state/orchestrator` | 日志/台账写不进去 | 台账打不开即加载失败（这是硬依赖，不是降级项） | **已接线** |

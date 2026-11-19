@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply, inject, name, COORDINATOR_DENY } from '../index.js'
+import { resetDeprecatedKeyWarnings } from '../src/config.js'
 import { openLedger, listTasks } from '../src/ledger.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -159,11 +160,13 @@ test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subag
   assert.equal(f.warnings.some(message => /agentTeams|waiting for service/.test(message)), false)
 }))
 
-test('profile 没有 agentTeams 且 backend=team：apply 不炸，派发返回可读错误', withHome(async () => {
+test('旧配置键（backend）仍能加载：warn 一次、工具照常注册、按默认值运行', withHome(async () => {
+  // P1-A：backend 键已删除（team 后端在 P0-1 删除）。旧 profile 不改也能跑，但必须看到弃用提示。
+  resetDeprecatedKeyWarnings()
   const f = fakeCtx({ withAgentTeams: false })
   await assert.doesNotReject(() => apply(f.ctx, { backend: 'team' }))
   assert.equal(f.registered.length, 15)
-  assert.ok(f.warnings.some(message => /team 后端已移除/.test(message)), f.warnings.join(' | '))
+  assert.ok(f.warnings.some(message => /配置键 backend 已删除/.test(message)), f.warnings.join(' | '))
 }))
 
 test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {
@@ -1536,7 +1539,8 @@ test('轮换只在「打开主会话」时判定一次：启动/agent-created �
       archiveSession: async id => archived.push(id),
     },
   })
-  await apply(f.ctx, {})
+  // P1-A 起轮换默认 off：这里显式开 auto，验证「打开主会话」是唯一判定点。
+  await apply(f.ctx, { mainRotation: 'auto' })
   // 启动 + 主会话加载都只做对账/恢复：不判定、不建会话、不写任何轮换键。
   f.listeners.get('agent/created')({ agent: s1 })
   await wait(50)
@@ -1549,7 +1553,7 @@ test('轮换只在「打开主会话」时判定一次：启动/agent-created �
   assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('main_session_id').value, 'session-old')
   db.close()
 
-  // 唯一判定点：open-main → 采集 + 判定（30 天龄命中 M5）→ 轮换。
+  // 唯一判定点：open-main → 采集 + 判定（30 天龄命中 age 因子）→ 轮换。
   const response = await f.routes[0].fetch(new Request('http://x/api/orchestrator', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ endpoint: 'open-main' }),

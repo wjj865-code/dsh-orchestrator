@@ -68,14 +68,12 @@ test('catalog 读取失败：只 warn，不把 live 的 running 和 waiting 判�
   db.close()
 })
 
-test('team 后端不可用（占位派发器）：catalog 抛错走不可用分支，running 不被误标 orphaned', async () => {
+test('dispatcher.catalog 抛错（派发后端不可用口径）：走不可用分支，running 不被误标 orphaned', async () => {
   const { db, running } = await setup()
   const task = running('任务', 'c-1')
   const warnings = []
-  // 真实占位派发器：rc.3 的 agentTeams 只剩 state/transact。
+  // 没有 subagents 服务时派发器仍能构造，catalog 抛可读错误。
   const dispatcher = createDispatcher({
-    backend: 'team',
-    agentTeams: { state() {}, transact() {} },
     getAgent: () => ({ id: 's-1' }),
     onWarn: message => warnings.push(message),
   })
@@ -85,7 +83,6 @@ test('team 后端不可用（占位派发器）：catalog 抛错走不可用分�
   assert.equal(result.count, 0)
   assert.equal(getTask(db, task.id).status, 'running')
   assert.ok(warnings.some(message => /目录读取失败/.test(message)))
-  assert.ok(warnings.some(message => /backend 改回 subagent/.test(message)))
   db.close()
 })
 

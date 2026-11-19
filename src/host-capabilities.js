@@ -132,7 +132,7 @@ const COUPLINGS = Object.freeze([
   { id: 'session-create', label: '会话创建（sessionController · agentPresets）', probe: host => host.sessionController() !== undefined || host.agentPresets() !== undefined },
   { id: 'settings', label: '宿主 settings 表单缝', probe: host => host.settings() !== undefined },
   { id: 'registry', label: '工作区 registry', probe: host => host.workspaceRegistry() !== undefined },
-  { id: 'token-meter', label: 'tokenMeter（轮换指标）', probe: host => host.tokenMeter() !== undefined },
+  { id: 'token-meter', label: 'tokenMeter（当前无消费点）', probe: host => host.tokenMeter() !== undefined },
   { id: 'session-query', label: 'sessionQuery（历史检索）', probe: host => host.sessionQuery() !== undefined },
   { id: 'panel-slots', label: '面板 slot', probe: host => host.slots().length > 0 },
   { id: 'log-path', label: '日志 / 状态路径', probe: host => host.stateDir() !== '' },

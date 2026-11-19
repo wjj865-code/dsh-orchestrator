@@ -1,6 +1,6 @@
 // 派发层：把「建子会话 / 投递 / 停止」收成一个窄接口。
-// 后端：subagent（唯一实现，直连 ctx.subagents）。旧的 team 后端已随 rc.3 移除的 agentTeams
-// 成员 API 一并删除，见 TEAM_REMOVED_MESSAGE。
+// 后端：subagent（唯一实现，直连 ctx.subagents）。旧的 team 后端与 `backend` 配置键已删除
+// （P0-1 删实现，P1-A 删键与占位派发器）。
 import { randomUUID } from 'node:crypto'
 import { resolve as resolvePath } from 'node:path'
 import { messageText } from './last-message.js'
@@ -45,12 +45,6 @@ export function sameDirectory(left, right) {
     return left === right
   }
 }
-
-// team 后端已移除（P0-1）。rc.3 起平台删掉了 agentTeams 成员 API（只剩 state/transact 与团队任务板），
-// 而插件的兼容基线是 rc.3+，所以这条后端在任何受支持的宿主上都跑不起来——旧实现只是把「必然失败」
-// 包装成可读错误。`backend` 键保留一个版本：传 'team' 时插件照常加载（面板与其他能力可用），
-// 派发一律返回同一条可读错误，文案仍指明「改回 subagent」，与旧版给人的提示一致。
-export const TEAM_REMOVED_MESSAGE = 'team 后端已移除（rc.3 起平台删除了 agentTeams 成员 API）：请把 backend 改回 subagent'
 
 export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000, goalBridge }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
@@ -654,34 +648,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   }
 }
 
-// 后端不可用时的占位派发器：派发类调用返回可读错误，目录类查询降级为空（不打断面板/孤儿巡检）。
-function createUnavailableDispatcher(reason) {
-  const fail = () => { throw new Error(reason) }
-  return {
-    slug(title) {
-      return slugify(title)
-    },
-    async spawn() { fail() },
-    async send() { fail() },
-    async sendReliable() { fail() },
-    async stop() { fail() },
-    // P8：计划批准在无后端时也只能返回可读失败，不能让工具层抛未处理拒绝。
-    async approvePlan() { return { ok: false, reason } },
-    async members() { return [] },
-    // catalog 只有 reconcile 一个调用点：必须抛错让对账走「目录不可用 → known=undefined」分支。
-    // 返回 [] 会被当成「目录为空」，把所有 running/waiting 任务误标 orphaned。
-    async catalog() { fail() },
-    has() { return false },
-    releaseWritableRoots() {},
-  }
-}
-
-export function createDispatcher({ backend = 'subagent', subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge }) {
-  if (backend === 'team') {
-    // 见 TEAM_REMOVED_MESSAGE：插件照常加载（面板与其他能力照常可用），
-    // 派发一律返回同一条可读错误，而不是加载失败或抛 is not a function。
-    onWarn(`dsh-orchestrator: ${TEAM_REMOVED_MESSAGE}`)
-    return createUnavailableDispatcher(TEAM_REMOVED_MESSAGE)
-  }
+// 派发后端只剩 subagent：`backend` 键已随 P1-A 删除（P0-1 已删 team 实现），这里不再有分派。
+export function createDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge }) {
   return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge })
 }
