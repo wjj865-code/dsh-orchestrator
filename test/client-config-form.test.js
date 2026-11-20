@@ -2,9 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
-import { buildOps, isDirty, CONFIG_ENTRY_ID, CONFIG_SLOT_KEY } from '../client/src/config-logic.js'
+import { buildOps, isDirty, clampFieldNumber, CONFIG_ENTRY_ID, CONFIG_SLOT_KEY } from '../client/src/config-logic.js'
 import { CONFIG_FIELDS, EDITABLE_KEYS, FIELD_BY_KEY } from '../src/config-fields.js'
 import { loadConfig } from '../src/config.js'
+import { Config } from '../src/config-schema.js'
 
 // 客户端配置卡片：只守「保存什么」与「注册在哪」两个对外契约 + 一次四态渲染冒烟。
 // 纯函数直接 import（config-logic.js 不含 JSX）；渲染断言跑构建产物 dist/client.js。
@@ -133,6 +134,39 @@ test('保存路径：提醒阈值 buildOps 发 set、写回后 loadConfig 读到
   assert.equal(config.contextPressureThreshold, 0.75)
   // 只读键没被卡片写进去：仍然是空的（= 读台账指针）。
   assert.equal(config.coordinatorSession, undefined)
+})
+
+// ── 越界值：卡片必须自己夹，否则「写了但运行时不生效」（0.25.0 真机验证实测到） ──
+
+test('越界数字保存前夹到字段边界：写下去的值 = 运行时会读到的值', () => {
+  // 缺陷复现：字段区间 0.1–0.95，卡片原样写 0.05 → 宿主 schema `.loose()` 回落**默认** 0.4，
+  // 运行时按 0.4 跑，用户却在卡片/YAML 上看到 0.05 且标着「已覆盖」。
+  if (Config !== undefined) {
+    assert.equal(Config({ contextPressureThreshold: 0.05 }).contextPressureThreshold.get(), 0.4,
+      'schema 对越界值是回落默认（0.4），不是夹到边界——这正是卡片必须自己夹的原因')
+    assert.equal(Config({ contextPressureThreshold: 0.1 }).contextPressureThreshold.get(), 0.1,
+      '夹到边界后的值 schema 会接受')
+  }
+  const field = FIELD_BY_KEY.contextPressureThreshold
+  assert.equal(clampFieldNumber(field, 0.05), 0.1)
+  assert.equal(clampFieldNumber(field, 2), 0.95)
+
+  const saved = { contextPressureThreshold: 0.4 }
+  assert.deepEqual(buildOps({ contextPressureThreshold: 0.05 }, saved, new Set()),
+    [{ op: 'set', path: ['contextPressureThreshold'], value: 0.1 }])
+  assert.deepEqual(buildOps({ contextPressureThreshold: 3 }, saved, new Set()),
+    [{ op: 'set', path: ['contextPressureThreshold'], value: 0.95 }])
+
+  // 写下去之后：loadConfig 读到的就是 0.1（不再是默认 0.4）。
+  const persisted = { ...saved, contextPressureThreshold: 0.1 }
+  assert.equal(loadConfig(persisted).contextPressureThreshold, 0.1)
+
+  // 整数键：先四舍五入再夹（maxQueue 区间 1–10000）。
+  assert.equal(clampFieldNumber(FIELD_BY_KEY.maxQueue, 60.6), 61)
+  assert.equal(clampFieldNumber(FIELD_BY_KEY.maxQueue, 0), 1)
+  assert.equal(clampFieldNumber(FIELD_BY_KEY.maxQueue, 99999), 10000)
+  // 非数字原样返回（交给 schema/loadConfig 兜底，不在卡片里猜用户意图）。
+  assert.equal(clampFieldNumber(field, 'abc'), 'abc')
 })
 
 // ── 保存回执口径：保存只写 profile，需重载插件 / 重启 DSH 后生效 ──

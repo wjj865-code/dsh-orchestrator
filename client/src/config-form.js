@@ -60,6 +60,11 @@ export function createConfigCard({ React, h, Icon }) {
   const Row = ({ field, draft, overridden, disabled, onChange }) => {
     const value = draft[field.key]
     const isOverridden = overridden.has(field.key)
+    // 数字越界时先说清楚：宿主 schema 会「回落默认」（不是夹到边界），所以保存时会把值夹到边界。
+    // 不提示的话，用户填 0.05（区间 0.1–0.95）会看到「已覆盖」却不知道运行时用的是默认值。
+    const numeric = field.kind === 'number' ? Number(value) : Number.NaN
+    const outOfRange = field.kind === 'number' && value !== '' && value !== undefined && Number.isFinite(numeric)
+      && ((Number.isFinite(field.min) && numeric < field.min) || (Number.isFinite(field.max) && numeric > field.max))
     const common = {
       className: 'orch-cfg-input',
       disabled: disabled || field.readonly === true,
@@ -100,6 +105,11 @@ export function createConfigCard({ React, h, Icon }) {
           )}
         </div>
         {field.hint === undefined ? null : <div className="orch-cfg-hint">{field.hint}</div>}
+        {outOfRange
+          ? <div className="orch-cfg-hint orch-cfg-hint--warn">
+            {`越界：保存时会夹到边界 ${field.min ?? '−∞'}–${field.max ?? '+∞'}（越界值会被宿主 schema 回落默认，等于没改）`}
+          </div>
+          : null}
         {field.pattern !== undefined && value !== '' && !new RegExp(field.pattern).test(String(value))
           ? <div className="orch-cfg-hint orch-cfg-hint--warn">格式不符（例：09:00）；非法值保存后会回落默认</div>
           : null}

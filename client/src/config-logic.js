@@ -5,7 +5,7 @@
  * 而「保存时到底发什么操作」「什么算有改动」是这张卡片最容易出错、也最该被测试钉住的部分，
  * 不能因为文件里有 JSX 就只靠「渲染冒烟」间接覆盖。所以纯决策逻辑放这里。
  */
-import { EDITABLE_KEYS } from '../../src/config-fields.js'
+import { EDITABLE_KEYS, FIELD_BY_KEY } from '../../src/config-fields.js'
 
 /** 配置卡片在 `plugins.bundle.config` 上的 key：bundle 包名。 */
 export const CONFIG_SLOT_KEY = '@wjj865-code/dsh-orchestrator'
@@ -41,11 +41,36 @@ export const isDirty = (draft, saved) => {
 }
 
 /**
+ * 数字字段夹到字段区间（整数键先四舍五入再夹一次，避免 round 之后越界）。
+ *
+ * 为什么**必须**在保存前夹：宿主 schemastery 对越界值的处理是**回落默认**（`.loose()`），
+ * 不是夹到边界。卡片若把 0.05 原样写进 profile（字段区间是 0.1–0.95），宿主 schema 会把
+ * 它解析成默认值 0.4——用户在卡片和 YAML 上看到 0.05，运行时却按 0.4 跑，且卡片还标着
+ * 「已覆盖」。这是 0.25.0 真机验证实测到的缺陷（`contextPressureThreshold` 写 0.05 后，
+ * 插件日志里的 threshold 仍是 0.4）。夹完再写，「写下去的值 = 运行时 loadConfig 读到的值」。
+ * @param {object} field 字段规格（含 min / max / integer）。
+ * @param {unknown} value 草稿里的值。
+ * @returns {unknown} 夹到区间内的数字；非有限数字原样返回（交给 schema/loadConfig 兜底）。
+ */
+export function clampFieldNumber(field, value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return value
+  const min = Number.isFinite(field?.min) ? field.min : undefined
+  const max = Number.isFinite(field?.max) ? field.max : undefined
+  let next = field?.integer === true ? Math.round(value) : value
+  if (min !== undefined && next < min) next = min
+  if (max !== undefined && next > max) next = max
+  return next
+}
+
+/**
  * 由草稿生成 mutate 操作列表：只发**真正改了**的可编辑字段。
  *
  * 语义细节：清空一个「已覆盖」字段发 `unset`（回落组合默认、且不再算覆盖），
  * 而不是写一个「等于默认的值」——后者在 `settings.describe` 里仍会被标成「已覆盖」，
  * 用户看到的标签就错了。清空一个「本来没覆盖」的字段则不发操作。
+ *
+ * 数字字段在下发前夹到字段区间（见 {@link clampFieldNumber}）：越界值会被宿主 schema
+ * 静默丢掉并回落默认，写下去等于没改。
  * @param {Record<string, unknown>} draft 草稿。
  * @param {Record<string, unknown>} saved 生效值。
  * @param {Set<string>} overridden 已覆盖字段集合。
@@ -59,7 +84,9 @@ export function buildOps(draft, saved, overridden) {
       if (overridden.has(key)) ops.push({ op: 'unset', path: [key] })
       continue
     }
-    ops.push({ op: 'set', path: [key], value: draft[key] })
+    const field = FIELD_BY_KEY[key]
+    const value = field !== undefined && field.kind === 'number' ? clampFieldNumber(field, draft[key]) : draft[key]
+    ops.push({ op: 'set', path: [key], value })
   }
   return ops
 }
