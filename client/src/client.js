@@ -19,7 +19,7 @@ import {
   chipOpenTargetOf, isLatestTurn,
 } from './logic.js'
 import {
-  readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
+  readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce, adoptCoordinator,
 } from './api.js'
 import { createTaskFeed } from './feed.js'
 import { createMainViewGate } from './gate.js'
@@ -251,12 +251,16 @@ export const createClient = (req) => {
       name: 'sidebar.panellist', id: LAUNCHER_ID, order: 5, label: () => '主会话',
     }, LauncherIcon))
 
-    // 会话头「任务」入口：hooks.mainView 是任务入口闸门；false/未判定时组件返回 null。
+    // 会话头「任务」入口：hooks.mainView 是任务入口闸门；false/未判定时组件改渲染「设为协调者」。
+    // 0.25.0：非主会话给「设为协调者」（adopt 当前会话；服务端只切指针，旧会话保留）。
     ctx.slots.inject('conversation.header.leading', () => ctx.slots.register({
       name: 'conversation.header.leading',
       inject: () => ({
         openPanel: () => ctx.layout.selectPanel(PANEL_ID),
         hooks: { mainView },
+        adopt: adoptCoordinator,
+        readSessionId,
+        refreshRole: () => mainView.refresh(),
       }),
     }, HeaderButton))
 

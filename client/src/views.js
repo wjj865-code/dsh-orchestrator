@@ -69,12 +69,64 @@ export function createViews({
     </span>
   )
 
+  // 会话头入口（0.25.0）：
+  //   - 主会话 → 「任务」按钮（打开任务面板）；
+  //   - 非主会话 → 「设为协调者」按钮（把**当前会话**设为协调者；只切指针，旧会话保留可回看）。
+  //     这是插件唯一的手动换协调者 UI（另一条路是压力提醒卡里的「新建协调者会话」）。
+  // 两个形态共用一个槽位（conversation.header.leading 是 single），按 mainView 闸门切换。
+  const AdoptButton = ({ adopt, readSessionId, refreshRole }) => {
+    const [busy, setBusy] = React.useState(false)
+    const [error, setError] = React.useState(null)
+    const run = async () => {
+      if (busy) return
+      let sessionId
+      try { sessionId = typeof readSessionId === 'function' ? readSessionId() : undefined } catch { sessionId = undefined }
+      if (typeof sessionId !== 'string' || sessionId === '') {
+        setError('拿不到当前会话')
+        return
+      }
+      if (typeof adopt !== 'function') {
+        setError('缺少 adopt 实现')
+        return
+      }
+      setBusy(true)
+      setError(null)
+      try {
+        await adopt(sessionId)
+        if (typeof refreshRole === 'function') await refreshRole()
+      } catch (failure) {
+        setError(String((failure && failure.message) || failure))
+      } finally {
+        setBusy(false)
+      }
+    }
+    const label = busy ? '切换中…' : (error === null ? '设为协调者' : '设为协调者失败')
+    return (
+      <button
+        type="button"
+        title={error === null ? '把当前会话设为协调者（台账/任务/偏好都不搬；旧会话保留可回看）' : error}
+        aria-label="设为协调者"
+        className={`orch-btn orch-btn--entry${error === null ? '' : ' orch-btn--danger'}`}
+        onClick={run}
+        disabled={busy}
+        data-orch-adopt={error === null ? (busy ? 'busy' : 'idle') : 'error'}
+      >
+        <span className="orch-entry-mark"><Icon name="sparkle" size={12} /></span>
+        <span className="orch-entry-label">{label}</span>
+      </button>
+    )
+  }
+
   // 会话头「任务」入口：仅主会话显示。useMainView 由下面 conversation.header.leading 的 inject
-  // 以 hooks.mainView 提供；hook 缺失或未判定（默认 false）时返回 null，入口隐藏。
+  // 以 hooks.mainView 提供；hook 缺失或未判定（默认 false）时不再返回 null，而是给「设为协调者」。
   // 视觉按面板顶栏 .orch-brand 的语言：品牌色方块装内联 SVG 图标 + 半粗文字（不再用裸字符 ☰）。
-  const HeaderButton = ({ openPanel, useMainView }) => {
+  const HeaderButton = ({ openPanel, useMainView, adopt, readSessionId, refreshRole }) => {
     const visible = typeof useMainView === 'function' ? useMainView(value => value === true) : false
-    if (visible !== true) return null
+    if (visible !== true) {
+      // 非主会话：没有 adopt 能力时保持历史行为（不渲染）。
+      if (typeof adopt !== 'function') return null
+      return h(AdoptButton, { adopt, readSessionId, refreshRole })
+    }
     // props 键序/键名与迁移前一致（快照按 props 序列化顺序比对）。
     return (
       <button

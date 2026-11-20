@@ -2,7 +2,7 @@
 //
 // 为什么要有这个模块（审计 §2.3）：`state.js` 早就有唯一转移表，但**状态集合**被复制到 9 个模块
 // （`panel-gates` / `tools` / `panel-actions` / `settlement` / `reconcile` / `watchdog` /
-// `main-rotation` / `ledger` 的 SQL / `host-route`），并且已经产生三处真实不一致：
+// `ledger` 的 SQL / `host-route`），并且已经产生三处真实不一致：
 //   1. `tools.js` 的 `RESUME_STATUS` 含 `failed`，而面板层不含——但 `followupGate` 一直拒绝 failed，
 //      所以工具层那个 `failed` 是**死分支**，表达的是错误意图；
 //   2. 「流程终态」（无 `failed`）与「要释放资源的终态」（有 `failed`）名字几乎一样、语义不同；
@@ -23,7 +23,6 @@
 //   retryable    —— 能重派吗？（工具 task_message action:retry 与面板「重派」）
 //   waiting      —— 是「等人（用户/授权）」的停顿态吗？（回复消息 = 批准计划）
 //   resume       —— 能「续跑原会话」吗？（failed / orphaned / timeout 收尾的 done；与 retry 分工）
-//   rotationActive —— 算「在跑」、会阻断主会话轮换吗？（delivered 刻意不算：它只等确认）
 //   liveness     —— 要做「子会话还活着吗」对账吗？（只有 running：其余是故意停下的）
 //   catalog      —— 要查子会话目录里还在不在吗？（running + 故意停下的 waiting_*）
 //   watchdog     —— 要巡检空闲告警吗？（只有 running）
@@ -45,8 +44,7 @@ export const STATUSES = Object.freeze([
  * - `failed`：`terminal:false`（还能重派，用户视角不是「流程走完」）但 `releases:true`（要释放资源）；
  *   它 `deletable:true` 且 `retryable:true`，但 `followup:false`——子会话已结束，追问没有投递对象；
  *   但 `resume:true`：**续跑**（冷恢复原会话）是另一条路，不靠追问，靠 task_message({ action:'resume' })。
- * - `delivered`：`active:true`（还在等人确认）且 `followup:true`（追问窗口），但 `rotationActive:false`
- *   （只等确认，不该阻断轮换）。
+ * - `delivered`：`active:true`（还在等人确认）且 `followup:true`（追问窗口），但不算终态。
  * - `orphaned`：`terminal:true` 且 `retryable:true`——会话丢了可以重派，流程上它已经结束；
  *   子会话 durable 时还能 resume 回来（这是重启后「别新开一条」的默认出口）。
  * - `waiting_dep` / `pending`：`active:true` 但 `followup:false`（还没有子会话可投递）。
@@ -54,53 +52,53 @@ export const STATUSES = Object.freeze([
 export const STATUS_CAPS = Object.freeze({
   waiting_dep: Object.freeze({
     active: true, followup: false, resumable: false, deletable: false, terminal: false, releases: false,
-    retryable: false, resume: false, waiting: false, rotationActive: true, liveness: false, catalog: false,
+    retryable: false, resume: false, waiting: false, liveness: false, catalog: false,
     watchdog: false, planSettled: false,
   }),
   pending: Object.freeze({
     active: true, followup: false, resumable: false, deletable: false, terminal: false, releases: false,
-    retryable: false, resume: false, waiting: false, rotationActive: true, liveness: false, catalog: false,
+    retryable: false, resume: false, waiting: false, liveness: false, catalog: false,
     watchdog: false, planSettled: false,
   }),
   running: Object.freeze({
     active: true, followup: true, resumable: false, deletable: false, terminal: false, releases: false,
-    retryable: false, resume: false, waiting: false, rotationActive: true, liveness: true, catalog: true,
+    retryable: false, resume: false, waiting: false, liveness: true, catalog: true,
     watchdog: true, planSettled: false,
   }),
   waiting_user: Object.freeze({
     active: true, followup: true, resumable: true, deletable: false, terminal: false, releases: false,
-    retryable: false, resume: false, waiting: true, rotationActive: true, liveness: false, catalog: true,
+    retryable: false, resume: false, waiting: true, liveness: false, catalog: true,
     watchdog: false, planSettled: false,
   }),
   waiting_auth: Object.freeze({
     active: true, followup: true, resumable: true, deletable: false, terminal: false, releases: false,
-    retryable: false, resume: false, waiting: true, rotationActive: true, liveness: false, catalog: true,
+    retryable: false, resume: false, waiting: true, liveness: false, catalog: true,
     watchdog: false, planSettled: false,
   }),
   delivered: Object.freeze({
     active: true, followup: true, resumable: true, deletable: false, terminal: false, releases: false,
-    retryable: false, resume: false, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: false, resume: false, waiting: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
   // done：`resume:true` 表达「存在续跑入口」，行级白名单只认 close_reason='timeout'（见 src/resume.js）。
   done: Object.freeze({
     active: false, followup: false, resumable: false, deletable: true, terminal: true, releases: true,
-    retryable: false, resume: true, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: false, resume: true, waiting: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
   failed: Object.freeze({
     active: false, followup: false, resumable: false, deletable: true, terminal: false, releases: true,
-    retryable: true, resume: true, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: true, resume: true, waiting: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
   cancelled: Object.freeze({
     active: false, followup: false, resumable: false, deletable: true, terminal: true, releases: true,
-    retryable: false, resume: false, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: false, resume: false, waiting: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
   orphaned: Object.freeze({
     active: false, followup: false, resumable: false, deletable: true, terminal: true, releases: true,
-    retryable: true, resume: true, waiting: false, rotationActive: false, liveness: false, catalog: false,
+    retryable: true, resume: true, waiting: false, liveness: false, catalog: false,
     watchdog: false, planSettled: true,
   }),
 })
@@ -108,7 +106,7 @@ export const STATUS_CAPS = Object.freeze({
 /** 能力字段清单（派生集合与测试都按它遍历，加字段时一处生效）。 */
 export const CAP_KEYS = Object.freeze([
   'active', 'followup', 'resumable', 'deletable', 'terminal', 'releases',
-  'retryable', 'resume', 'waiting', 'rotationActive', 'liveness', 'catalog', 'watchdog', 'planSettled',
+  'retryable', 'resume', 'waiting', 'liveness', 'catalog', 'watchdog', 'planSettled',
 ])
 
 const capsOf = status => STATUS_CAPS[status]

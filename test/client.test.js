@@ -582,7 +582,10 @@ test('任务入口闸门源码：session-role 端点 + uiSession/sessions 信号
   assert.match(source, /createMainViewGate/)
   assert.match(source, /hooks: \{ mainView \}/)
   assert.match(source, /useMainView/)
-  assert.match(source, /if \(visible !== true\) return null/)
+  // 0.25.0：非主会话不再「返回 null 什么都不给」，而是给「设为协调者」入口（adopt 当前会话）。
+  assert.match(source, /if \(visible !== true\) \{/)
+  assert.match(source, /设为协调者/)
+  assert.match(source, /data-orch-adopt/)
 })
 
 // 面板首帧冒烟：client/src/views.js 里的 TasksPanel 是整个 UI 的主体，之前只有源码正则断言。

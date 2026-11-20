@@ -3,20 +3,22 @@ import { DEFAULT_WATCHDOG_IDLE_MINUTES, DEFAULT_WATCHDOG_INTERVAL_MINUTES } from
 import { DEFAULT_BRANCH_PREFIX, WORKTREE_POLICIES } from './worktree-request.js'
 import { guardModeOf } from './write-guard.js'
 import { DELIVERED_TIMEOUT_MINUTES } from './delivered.js'
-import { normalizeRotationConfig } from './main-rotation.js'
+import {
+  CONTEXT_PRESSURE_THRESHOLD_DEFAULT, CONTEXT_PRESSURE_THRESHOLD_MAX, CONTEXT_PRESSURE_THRESHOLD_MIN,
+} from './main-context.js'
 import { DEFAULT_MAX_CHARS as DEFAULT_PREFERENCE_MAX_CHARS } from './preferences.js'
 
 /**
- * 已删除的配置键（P1-A 41 → 35、P2-2 35 → 28）→ 迁移提示。
+ * 已删除的配置键（P1-A 41 → 35、P2-2 35 → 28、0.25.0 29 → 22）→ 迁移提示。
  * 读到就 warn 一次（进程级按 key 去重），**值一律不回填**：旧配置不会「看起来还在」，
  * 而是明确告诉用户该改什么/哪个键已经不起作用。迁移说明见 CHANGELOG「0.23.0」段。
  */
 export const DEPRECATED_KEYS = Object.freeze({
   backend: '派发后端只剩 subagent；team 后端在 P0-1 已随平台 API 删除',
-  rotateAfterTasks: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
-  rotateAfterSessions: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
-  rotateAfterContextTokens: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
-  rotateAfterDiskMiB: '轮换只剩「主日志体积 / 运行天数」两个触发因子',
+  rotateAfterTasks: '轮换已删除：插件不再按任务数自动换会话；上下文过长交给宿主 compaction-basic 自动压缩',
+  rotateAfterSessions: '轮换已删除：插件不再按会话数自动换会话；上下文过长交给宿主 compaction-basic 自动压缩',
+  rotateAfterContextTokens: '轮换已删除：插件不再按上下文 token 自动换会话；宿主按自己的 thresholdRatio 自动压缩',
+  rotateAfterDiskMiB: '轮换已删除：插件不再按磁盘占用自动换会话；日志 append-only 只增不减，重置靠人工换会话',
   // P2-2：自建 keep-alive 续跑器删除，续跑改为委托宿主 goal 轮次驱动（task_create.goalRounds）。
   keepAlive: '续跑改由宿主 goal 轮次驱动：删掉本键，要续跑请用 task_create({ goalRounds: N })（默认 0 = 不续跑）',
   keepAliveMode: '续跑不再由插件注入消息：宿主 goal driver 的回合形态不归插件管',
@@ -26,6 +28,15 @@ export const DEPRECATED_KEYS = Object.freeze({
   mergeWindowMs: '完成通知的合并窗口固定 5000 ms（通知仍按任务合并，只是不再可调）',
   stallRounds: '「连续 N 次 progress 无变化」的提醒口径固定为 3 次',
   preferencesMaxItems: '偏好段条数上限固定 12 条（字数主约束 preferencesMaxChars 仍可配）',
+  // 0.25.0：主会话轮换整套删除（改为「宿主自动压缩 + 插件只提醒 + 手动 adopt」）。
+  mainRotation: '主会话轮换已删除：上下文过长交给宿主 compaction-basic 自动压缩，插件只在压力到阈值时弹问题卡问你要不要换新协调者会话',
+  rotateAfterMainLogMiB: '轮换已删除：插件不再按日志体积自动换会话；要换请用会话头「设为协调者」或压力提醒卡里的「新建协调者会话」',
+  rotateAfterDays: '轮换已删除：插件不再按运行天数自动换会话',
+  rotateCooldownHours: '轮换已删除：插件不再有轮换冷却；压力提醒的去重由 main_context_alert 自己管',
+  rotateMinAgeHours: '轮换已删除：插件不再有轮换最小龄；压力提醒阈值见 contextPressureThreshold',
+  rotateIdleMinutes: '轮换已删除：插件不再有闲置判定',
+  rotateCheckIntervalHours: '轮换已删除：插件没有后台巡检，压力只在「打开主会话」时算一次',
+  rotateArchiveOld: '轮换已删除：插件不再归档/退役旧主会话（换协调者只切指针，旧会话保留可回看）',
 })
 
 const warnedDeprecated = new Set()
@@ -128,10 +139,14 @@ export function loadConfig(raw = {}, { onWarn } = {}) {
   config.preferencesMaxChars = Number.isFinite(raw?.preferencesMaxChars)
     ? Math.min(4000, Math.max(200, Math.floor(raw.preferencesMaxChars)))
     : DEFAULT_PREFERENCE_MAX_CHARS
-  // 主会话轮换（G1 S1，P1-A 收缩 + 恢复检查节流后 8 个键）：总开关 + 两个触发阈值（主日志体积 / 运行天数）
-  // + 保护（冷却/最小龄/闲置）+ 检查节流 + 归档开关。默认值、合法区间与非法回落都在 src/main-rotation.js 的
-  // normalizeRotationConfig 里，这里只负责挂到 config 上。rotateCheckIntervalHours 是「多久才做一次检查」
-  // 的节流，与 rotateCooldownHours / rotateMinAgeHours（判定里的保护）不是一回事。
-  Object.assign(config, normalizeRotationConfig(raw))
+  // 主会话上下文压力提醒（0.25.0）：**插件自己的提醒阈值**，与宿主 compaction-basic 的
+  // thresholdRatio（默认 0.8）无关——改这里不会改变宿主压缩行为，只决定什么时候弹问题卡。
+  // 口径：0.1–0.95，越界夹到边界，非法值（非数字/非正数）回落默认 0.4。
+  // 注意它**不是**判定「要不要压缩」的阈值（插件不压缩），只是提醒用户的触发点。
+  const threshold = positive(raw?.contextPressureThreshold, CONTEXT_PRESSURE_THRESHOLD_DEFAULT)
+  config.contextPressureThreshold = Math.min(
+    CONTEXT_PRESSURE_THRESHOLD_MAX,
+    Math.max(CONTEXT_PRESSURE_THRESHOLD_MIN, threshold),
+  )
   return config
 }

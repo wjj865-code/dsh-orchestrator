@@ -2,14 +2,14 @@
 
 > **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目标目录里把活干完，进度与结论落进持久台账，浏览器里有任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.24.0`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
+- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.25.0`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
 - Node `>= 22.15`（`engines`）｜DSH 兼容基线 **`0.2.2-rc.3` – `rc.5`**（CI 与真机实测在 `rc.3`，Web 表面为主，Desktop 同构）
 
 **三分钟看懂**：装插件 → 打开「主会话」→ 用自然语言说需求（协调者拆成 `task_create` 派给子会话）→ 子会话回报「已交付待确认」→ 你看面板与产物，确认或追问。下面按这个顺序走一遍。
 
 ## 安装与升级
 
-1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.24.0`。
+1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.25.0`。
 2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）：宿主侧代码在 DSH 进程启动时加载，**刷新页面不会换版本**，装完还是旧行为就是没重启。
 3. 自检：插件页有「任务编排」与详情页；侧栏「插件」下方有「◈ 主会话」；插件全局 **10 个工具**（协调者 7；子会话 4：`task_report` / `task_detail` / `plan_save` / 只读的 `context`）；派一条任务回报后主会话收到「已交付待确认」，`task_message({action:'close'})` 能收成「已完成」。
 4. 升级 = 装新版 + 彻底重启。registry 包用插件页的更新入口；从 GitHub 装（`https://github.com/wjj865-code/dsh-orchestrator`）的先卸载旧版。旧包名 `dsh-orchestrator` 与新版不兼容，先移除。
@@ -118,7 +118,7 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | 生效方式 | **重载插件或重启 DSH 后生效**：保存只把值写进当前 profile 的 `cordis.patch.yml`，运行中的插件不热重载（判定与计时器仍按启动时那份配置；台账在 SQLite 不受影响） |
 | 优先级 | 表单写 profile 层；若 home patch 或命令行 overlay 覆盖同一字段，保存被**拒绝**并提示原因 |
 | 非法值 | 一律**回落默认**，不会让插件起不来（schema 用 `.loose()` 兜底，运行时再由 `loadConfig` 二次归一化） |
-| 可编辑范围 | 轮换的 8 个键（`mainRotation` + 7 个 `rotate*`）与其余字段都可编辑；**`coordinatorSession` 只读**（运维兜底通道，填错会让协调者指向不存在的会话，仅在运维场景手改 profile YAML）；不可逆动作仍由 `rotateArchiveOld` 显式控制（`false` = 只改名） |
+| 可编辑范围 | 除 `coordinatorSession` 外全部可编辑（含 `contextPressureThreshold`）；**`coordinatorSession` 只读**（运维兜底通道，填错会让协调者指向不存在的会话，仅在运维场景手改 profile YAML） |
 
 字段规格的单一事实源是 [`src/config-fields.js`](src/config-fields.js)，schema 投影在 [`src/config-schema.js`](src/config-schema.js)，页面在 [`client/src/config-form.js`](client/src/config-form.js)——三处都只投影 `loadConfig()` 真实存在的键。
 
@@ -145,16 +145,9 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，漏传时兜底 |
 | `worktreeBranchPrefix` | `orch/` | 隔离任务分支前缀（默认名 `<prefix><taskId>`） |
 | `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（1–90） |
-| `mainRotation` | `auto` | 主会话轮换总开关：`auto`（默认，判定 + 动作）/ `off`（只检测不动作）；只有显式 `off` 才关，拼错保持默认 `auto` |
-| `rotateAfterMainLogMiB` | `6` | 主会话日志体积 MiB（0.5–4096） |
-| `rotateAfterDays` | `10` | 主会话运行天数（1–365） |
-| `rotateCooldownHours` | `48` | 两次轮换之间的冷却期（1–720） |
-| `rotateMinAgeHours` | `12` | 最小龄，防抖（1–720） |
-| `rotateIdleMinutes` | `10` | 多久没交互才算「空下来」（1–1440） |
-| `rotateCheckIntervalHours` | `24` | 打开主会话时最多多久做一次检查（采集 + 判定，1–168）；**检查节流 ≠ 轮换冷却**：冷却期内检查照做但不换 |
-| `rotateArchiveOld` | `true` | 轮换后是否归档旧主会话（**不可逆**）；`false` = 只改名退役 |
+| `contextPressureThreshold` | `0.4` | **插件自己的提醒阈值**（0.1–0.95）：主会话最近一次请求 prompt 占上下文窗口的比例达到它时，插件弹一张问题卡问「要不要换新协调者会话」。**与宿主 compaction-basic 的 thresholdRatio（0.8）无关**，改它不会改变宿主压缩行为、也不影响子会话；插件只提醒、不压缩、不自动切换 |
 
-> **配置面 41 → 35 → 28 → 29**：P1-A 删了 `backend` 与 5 个 `rotate*` 键；P2-2 又删了续跑四键（续跑改用 `task_create({ goalRounds })`）和三个固定成常量的阈值键；本批恢复 `rotateCheckIntervalHours`（检查节流，默认一天一次）。老 profile 里留着已删键也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#02302026-11-19)。
+> **配置面 41 → 35 → 28 → 29 → 22**：P1-A 删了 `backend` 与 5 个 `rotate*` 键；P2-2 又删了续跑四键（续跑改用 `task_create({ goalRounds })`）和三个固定成常量的阈值键；**0.25.0 删掉轮换的 8 个键（`mainRotation` + 7 个 `rotate*`），只留插件自己的提醒阈值 `contextPressureThreshold`**。老 profile 里留着已删键也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#02302026-11-19)。
 
 ## 核心概念
 
@@ -208,7 +201,7 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 
 | 参数 | 作用 |
 |---|---|
-| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**。`plan_save` 把计划写进 `reports/plans/<taskId>.md`（计划阶段唯一写入口），再 `blocked` 上报摘要 + 路径；**计划批准必须由用户拍板**（协调者转交摘要+路径并用 `ask_user_question` 请批准，**协调者不得自行批准**），你明确批准后才续派切回可写。与 `readOnly` 互斥 |
+| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**，四步顺序固定：①子会话只读探索 → ②`plan_save` 把计划落盘到 `reports/plans/<taskId>.md`（计划阶段唯一写入口）→ ③`blocked` 只上报摘要 + **绝对路径** + 待拍板清单 → ④协调者**先**把摘要与绝对路径回给你并 `present` 计划文档，**再**用 `ask_user_question` 请拍板（选项至少「批准执行 / 先看计划文档 / 调整计划」）；**计划批准必须由用户拍板、协调者不得自行批准**，只有你明确批准才 `task_message` 续派并切回可写。与 `readOnly` 互斥 |
 | `readOnly` | 只读任务：只认显式 `true`，续派也**不会**转可写 |
 | `access: 'full'` | 这一条任务跑在 `danger-full-access`：沙箱不限制写入、`bash`/`pwsh` 解封。只接受 `'full'`，不继承、不改部署默认；与 `readOnly`/`planFirst` 互斥 |
 | `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup` | 在 `<repo>/.agents/worktrees/<taskId>` 独立检出里干活，产物在分支上、**合并由你决定**；多活跃分支且没给基线时先返回候选让你选 |
@@ -218,7 +211,7 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 
 worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖，可以执行安装命令（`pnpm install` / `npm install` / `uv sync`），**只安装不升级**。
 
-计划任务的批准是**人工闸门**：子会话 `blocked` 后，协调者把计划摘要 + 文档路径转交给你，并用 `ask_user_question` 请你明确**批准 / 调整**（options 至少「批准执行 / 调整计划」）——**协调者不得自行批准**，不会自己判断「计划没问题」就直接续派。答「调整」：修改点原样转回同一子会话先出修订版计划（消息里会写明「只修订计划、不要开始实现」），再请你拍板；不回答就一直是「计划中」，协调者不续派、不代批。
+计划任务的批准是**人工闸门**，顺序固定四步：①子会话 `blocked` 后，协调者**先**把计划摘要与计划文档的**绝对路径**原样回给你，并用 `present` 声明该计划文档；②**再**用 `ask_user_question` 请拍板，options 至少「批准执行 / 先看计划文档 / 调整计划」——**计划批准必须由用户拍板，协调者不得自行批准**，不会自己判断「计划没问题」就直接续派；③你选「先看计划文档」，协调者只把文档正文或路径再给一遍，不续派、不催，等你的下一次明确表态回到第②步；④只有你明确「批准」，协调者才 `task_message` 续派（插件此时才把沙箱切回可写）。答「调整」：修改点原样转回同一子会话先出修订版计划（消息里会写明「只修订计划、不要开始实现」），再走回第①步重新请你拍板；不回答就一直是「计划中」，协调者不续派、不代批。
 
 ### 交付口径：`present` 与 `read_workspace`
 
@@ -241,17 +234,17 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 - 日报默认关闭；配 `digestAt: '09:00'`（`digestTimeZone` 可选）后，打开主会话自动挂 schedule，到点汇总完成/在跑/待决定/失败/产物。
 - 空闲看门狗默认开：`running` 长时间无心跳/消息/状态变化时告警一次，只告警、不改状态、不 kill。
 
-### 主会话轮换：把长到拖不动的协调者换掉
+### 主会话上下文维护：宿主自压 + 插件只提醒
 
-主会话是唯一协调者，跑久了上下文变大、会话日志变长。轮换 = 把旧主会话退役、换一个干净的新会话接着当协调者——台账、任务、经验、产物都留在原处，只有「当前协调者是哪个会话」变了。
+主会话是唯一协调者。0.25.0 起**不再有「轮换」**（不会自动归档旧会话、不会自己换人）：上下文过长交给**宿主**的 `compaction-basic` 自动压缩（每个 agent 预设都挂了它，阈值是宿主自己的 `thresholdRatio`，默认 0.8），插件只做两件事：
 
-- **没有定时器、没有后台巡检、没有面板按钮**：判定只在**你打开主会话那一次**发生（`main-session.openOnce()`），且先过**检查节流**（默认一天最多查一次），只有该换才换。
-- **检查节流（默认一天最多查一次，和轮换冷却不是一回事）**：每次检查都要读台账、`locate` + `stat` 主会话日志，随手一开就查浪费。所以判定前先看 `settings.main_rotation_checked_at`：距上次真正检查不足 `rotateCheckIntervalHours`（默认 24，区间 1–168）就**直接跳过采集与判定**——这次打开只剩一次 settings 读，日志里留一条 `main.rotation.check.skipped`。从没检查过（首次、或升级后第一次打开）视为需要检查；判定完成且结论是「不需要换」才记时间戳（需要换时不记：动作失败或进程崩了，下次打开还能重试）。三个时间参数各管一件事，别混：`rotateCheckIntervalHours` 管**查不查**；`rotateCooldownHours`（48h）与 `rotateMinAgeHours`（12h）管**换不换**（它们命中时检查照做、只是不换）。想回到「每次打开都检查」就把 `rotateCheckIntervalHours` 调成 `1`。
-- **触发因子**（任一命中即「该换」）：主会话日志体积 `rotateAfterMainLogMiB`（默认 6 MiB）、运行天数 `rotateAfterDays`（默认 10 天）。
-- **十二条保护**（任一命中就不换）：`mainRotation` 关闭、显式覆盖协调者、非 `spawn` provider、还有活跃任务、还有「已交付待确认」、待确认任务带未读产物、主会话正在跑回合、10 分钟内刚聊过、还有活跃子代理、未到最小龄（12h）、冷却期（48h）、指标全拿不到（fail-closed）。采不到的指标记「未知」，**不按 0 算**。
-- **默认 `auto`（开启）**：跑久了会在你**下一次打开主会话**时换掉（判定照旧，12 条保护任一命中就不换）。不想换就配 `mainRotation: 'off'`——仍会检测（日志 `blockedBy: ['mode-off']`），但绝不动作；插件页配置卡片里也能直接关。`off` 也受检查节流约束（一天最多一次「为什么没换」的日志）。
-- **风险**：归档**不可逆**（平台没有 unarchive；`rotateArchiveOld:false` 只改名）；换的是身份、**不搬历史**；只在打开时判定且默认一天最多查一次，重启/刷新都不触发；刚调低阈值又撞上「今天已经查过」时，把 `rotateCheckIntervalHours` 调成 `1`，或清掉 `settings.main_rotation_checked_at` 后再打开。
-- 逐条边界见 [LIMITATIONS](docs/LIMITATIONS.md#主会话轮换g1)，时序与日志见 [ARCHITECTURE](docs/ARCHITECTURE.md#主会话轮换g1)。
+- **观测**：打开主会话时算一次上下文压力（`tokenMeter.contextPressure`）与日志体积（`locate` + `stat`），留在 `/api/orchestrator` 的 `snapshot.mainSession.context` 里做诊断；日志 ≥ 16 MiB 给一次性提示。
+- **提醒**：压力达到 **`contextPressureThreshold`（默认 0.4，可在插件页配）** 时弹一张问题卡（宿主 `userQuestions`），三个选项：**新建协调者会话**（插件代建一个空白协调者会话并切过去，旧会话保留）、**继续当前会话**（本档压力不再问，下一档再问）、**稍后再说**（压力回落后才重新提醒）。同一段压力只问一次，不会每回合刷屏。
+
+- **换协调者只有两条路**：①会话头的「**设为协调者**」（把当前会话设为协调者，只切指针：不改名、不归档、旧会话随时能回去看）；②问题卡里的「新建协调者会话」。
+- **本插件不压缩**：不调用 `compactNow`、不改宿主阈值、不写预设行内 config；`/compact` 手动命令照旧可用（宿主预设自带）。
+- **日志只增不减**（append-only，压缩只减请求不减日志）：要「重置」就换新协调者会话——插件不会替你做，也没有自动清理。
+- **多会话并存**：`settings.main_session_id` 仍是唯一指针；通知、日报、`task_*` 都只认它。子会话不受影响（各自预设照旧由宿主压缩）。
 
 ### 主会话原生自动化
 
@@ -289,7 +282,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 **编排与视图**
 
 - **同写域并发默认拒绝**（`sameDirGuard`，三条出路见上）；`dependsOn` 创建后不可编辑；**`done` 不可逆、无 reopen**——要改交付物用「待确认」追问，要新工作就新派/重派。
-- **主会话轮换归档不可逆、且只在打开主会话时判定、默认一天最多查一次**（`mainRotation: 'off'` 可关、`rotateCheckIntervalHours` 可调）；判定是快照，动作前不复查。
+- **主会话不再自动换**：0.25.0 起没有「轮换」（`mainRotation`/`rotate*` 8 键已删除，只在启动时给弃用提示）；上下文过长交给宿主 compaction-basic 自动压缩，插件只在压力达到 `contextPressureThreshold` 时弹问题卡问你要不要换新协调者会话。换会话只切指针：旧会话不改名、不归档、随时可回看；日志 append-only 只增不减，重置靠人工换会话。
 - worktree 产物不在你的工作树里（合并由你决定）；计划文档只有一版、没有审批流 UI；面板轮询 2 秒、没有 SSE；产物预览依赖宿主右侧栏。
 - 结算自动收场只覆盖「一次 activation」，上报过 progress 的回合异常结束落 `orphaned`。
 
@@ -299,8 +292,8 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 | 现象 | 处理 |
 |---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.24.0`；**彻底退出 DSH 再启动**（刷新页面无效） |
-| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.24.0` 显式版本；维护者侧可主动同步镜像（见 [CONTRIBUTING](docs/CONTRIBUTING.md#发版)） |
+| 侧栏没有「主会话」 | 确认装的是 `0.25.0`；**彻底退出 DSH 再启动**（刷新页面无效） |
+| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.25.0` 显式版本；维护者侧可主动同步镜像（见 [CONTRIBUTING](docs/CONTRIBUTING.md#发版)） |
 | 会话头没有「任务」入口 | 只在主会话显示：确认当前会话就是从侧栏「主会话」打开的；没建就点「打开主会话」 |
 | 点产物「预览」没有右侧栏 | 宿主要装 `ui-sidebar-right` 与 `ui-sidebar-documentpreview`；缺了会提示原因，产物库那行退回面板内预览 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页与 `logs/` |
@@ -310,7 +303,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 | 子任务写不进 target | 确认 `permissionPreset` / target；Windows 下 `pwsh` 写 target 仍受沙箱限制；确实要写仓库外用 `access:'full'` 或 CI |
 | 台账损坏 | 用 `snapshots/` 里最新快照手工替换（不会自动恢复） |
 | Bot 模式看不到入口 | 用会话头「任务」按钮；侧栏入口只在纯 dsh 表面 |
-| 想马上换一次主会话 | 确认没被 `mainRotation: 'off'` 关掉（默认 `auto`），调低 `rotateAfterDays` / `rotateMinAgeHours` / `rotateCooldownHours` / `rotateIdleMinutes` / `rotateCheckIntervalHours`，收掉活跃任务后再打开主会话；今天已检查过就清掉 `settings.main_rotation_checked_at` |
+| 想换一个协调者会话 | 0.25.0 起没有「轮换」、也不会定时换：在指挥舱新建一个会话（选「协调者」预设）→ 会话头点「**设为协调者**」（只切指针，旧会话不改名、不归档）；或等压力问题卡出现时点「新建协调者会话」（插件代建并切过去）。日志 append-only 只增不减，插件不做自动清理 |
 
 排障细节（平台缺陷、时序竞态、已知降级）见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
 

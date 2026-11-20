@@ -80,75 +80,57 @@ const collectNodes = (node, out = []) => {
 // ── 保存契约：只发改过的可编辑字段 ────────────────────────────────
 
 test('buildOps：只发改过的可编辑字段；清空已覆盖字段发 unset；只读与字段表外的键永不写入', () => {
-  const saved = { maxQueue: 50, autoResumeQueue: false, digestAt: '09:30', mainRotation: 'auto', coordinatorSession: '' }
+  const saved = { maxQueue: 50, autoResumeQueue: false, digestAt: '09:30', contextPressureThreshold: 0.4, coordinatorSession: '' }
   const overridden = new Set(['digestAt'])
 
   // 无改动 → 无操作
   assert.deepEqual(buildOps(saved, saved, overridden), [])
 
-  // 改两个可编辑字段 + 清空一个已覆盖字段 + 改轮换总开关（本版起可编辑，必须发出去）；
+  // 改两个可编辑字段 + 清空一个已覆盖字段 + 改压力提醒阈值（可编辑，必须发出去）；
   // coordinatorSession 是只读（运维兜底通道，手改 YAML），草稿里变了也不下发。
   const draft = {
-    maxQueue: 60, autoResumeQueue: true, digestAt: '', mainRotation: 'off', coordinatorSession: 's-manual',
+    maxQueue: 60, autoResumeQueue: true, digestAt: '', contextPressureThreshold: 0.6, coordinatorSession: 's-manual',
     // 字段表里没有的键（已删键的残留）不得写回 profile。
     mergeWindowMs: 9000,
   }
-  // 顺序按字段表声明（maxQueue 在 autoResumeQueue 之前、mainRotation 在末尾），不是按草稿对象顺序。
+  // 顺序按字段表声明（maxQueue 在 autoResumeQueue 之前、contextPressureThreshold 在末尾），不是按草稿对象顺序。
   assert.deepEqual(buildOps(draft, saved, overridden), [
     { op: 'set', path: ['maxQueue'], value: 60 },
     { op: 'set', path: ['autoResumeQueue'], value: true },
     { op: 'unset', path: ['digestAt'] },
-    { op: 'set', path: ['mainRotation'], value: 'off' },
+    { op: 'set', path: ['contextPressureThreshold'], value: 0.6 },
   ])
 })
 
-test('isDirty：可编辑字段（含轮换）变化算未保存改动；只读与字段表外的键不算', () => {
-  const saved = { maxQueue: 50, rotateAfterDays: 10, coordinatorSession: '' }
-  assert.equal(isDirty({ maxQueue: 60, rotateAfterDays: 10 }, saved), true)
-  // 轮换字段本版起可编辑 → 改了就要点亮「保存」。
-  assert.equal(isDirty({ maxQueue: 50, rotateAfterDays: 1 }, saved), true)
+test('isDirty：可编辑字段（含压力提醒阈值）变化算未保存改动；只读与字段表外的键不算', () => {
+  const saved = { maxQueue: 50, contextPressureThreshold: 0.4, coordinatorSession: '' }
+  assert.equal(isDirty({ maxQueue: 60, contextPressureThreshold: 0.4 }, saved), true)
+  // 提醒阈值可编辑 → 改了就要点亮「保存」。
+  assert.equal(isDirty({ maxQueue: 50, contextPressureThreshold: 0.9 }, saved), true)
   // 只读字段变化不点亮保存按钮（改了也写不进去，别让用户白点一次）。
-  assert.equal(isDirty({ maxQueue: 50, rotateAfterDays: 10, coordinatorSession: 's-manual' }, saved), false)
-  // 字段表外的键（已删键残留）不算；检查节流已恢复成正式字段，改了就要点亮保存。
-  assert.equal(isDirty({ maxQueue: 50, rotateAfterDays: 10, mergeWindowMs: 9000 }, saved), false)
-  assert.equal(isDirty({ maxQueue: 50, rotateAfterDays: 10, rotateCheckIntervalHours: 4 }, saved), true)
+  assert.equal(isDirty({ maxQueue: 50, contextPressureThreshold: 0.4, coordinatorSession: 's-manual' }, saved), false)
+  // 字段表外的键（已删键残留）不算；已下线的轮换键也不再点亮保存。
+  assert.equal(isDirty({ maxQueue: 50, contextPressureThreshold: 0.4, mergeWindowMs: 9000 }, saved), false)
+  assert.equal(isDirty({ maxQueue: 50, contextPressureThreshold: 0.4, mainRotation: 'off' }, saved), false)
 })
 
-test('轮换保存路径：8 个可编辑键 buildOps 全发 set、写回后 loadConfig 读到新值；coordinatorSession 不下发', () => {
-  const rotationKeys = CONFIG_FIELDS.filter(field => field.group === 'rotation').map(field => field.key)
-  assert.equal(rotationKeys.length, 9, '轮换分组应恰好 9 个字段')
-  const editableKeys = rotationKeys.filter(key => key !== 'coordinatorSession')
-  assert.deepEqual(editableKeys.length, 8)
-  for (const key of editableKeys) assert.ok(EDITABLE_KEYS.includes(key), `${key} 必须可编辑`)
+test('保存路径：提醒阈值 buildOps 发 set、写回后 loadConfig 读到新值；coordinatorSession 不下发', () => {
+  const contextFields = CONFIG_FIELDS.filter(field => field.group === 'context').map(field => field.key)
+  assert.deepEqual(contextFields, ['contextPressureThreshold', 'coordinatorSession'])
+  assert.ok(EDITABLE_KEYS.includes('contextPressureThreshold'), '提醒阈值必须可编辑')
   assert.equal(EDITABLE_KEYS.includes('coordinatorSession'), false, 'coordinatorSession 只读，不得下发')
 
-  // 卡片上把 8 个可编辑键改一遍；coordinatorSession 即使草稿变了也不该进 ops。
-  const saved = {
-    coordinatorSession: '', mainRotation: 'auto', rotateAfterMainLogMiB: 6, rotateAfterDays: 10,
-    rotateCooldownHours: 48, rotateMinAgeHours: 12, rotateIdleMinutes: 10,
-    rotateCheckIntervalHours: 24, rotateArchiveOld: true,
-  }
-  const draft = {
-    coordinatorSession: 's-manual', mainRotation: 'off', rotateAfterMainLogMiB: 2.5, rotateAfterDays: 3,
-    rotateCooldownHours: 6, rotateMinAgeHours: 2, rotateIdleMinutes: 30,
-    rotateCheckIntervalHours: 6, rotateArchiveOld: false,
-  }
+  // 卡片上把阈值改掉；coordinatorSession 即使草稿变了也不该进 ops。
+  const saved = { coordinatorSession: '', contextPressureThreshold: 0.4 }
+  const draft = { coordinatorSession: 's-manual', contextPressureThreshold: 0.75 }
   const ops = buildOps(draft, saved, new Set())
-  assert.deepEqual(ops.map(op => op.path[0]), editableKeys, '8 个可编辑键都应发出 set（顺序跟字段表）')
-  assert.ok(ops.every(op => op.op === 'set'))
+  assert.deepEqual(ops, [{ op: 'set', path: ['contextPressureThreshold'], value: 0.75 }])
 
   // 保存 = 宿主把 ops 写进 profile 配置 → 插件重载 → loadConfig 归一化。这里用同一份输入验「真读到新值」。
   const persisted = { ...saved }
   for (const op of ops) persisted[op.path[0]] = op.value
   const config = loadConfig(persisted)
-  assert.equal(config.mainRotation, 'off')
-  assert.equal(config.rotateAfterMainLogMiB, 2.5)
-  assert.equal(config.rotateAfterDays, 3)
-  assert.equal(config.rotateCooldownHours, 6)
-  assert.equal(config.rotateMinAgeHours, 2)
-  assert.equal(config.rotateIdleMinutes, 30)
-  assert.equal(config.rotateCheckIntervalHours, 6)
-  assert.equal(config.rotateArchiveOld, false)
+  assert.equal(config.contextPressureThreshold, 0.75)
   // 只读键没被卡片写进去：仍然是空的（= 读台账指针）。
   assert.equal(config.coordinatorSession, undefined)
 })
@@ -235,14 +217,10 @@ test('渲染四态：loading / unavailable / ready 可写 / ready 只读', () =>
   assert.ok(roText.includes('只读') && !roText.includes('放弃改动'), '只读态应标注且无编辑动作')
 })
 
-test('可写态渲染：29 行都在，轮换 8 键可编辑、coordinatorSession 单行只读（带「只读」标记且控件禁用）', () => {
+test('可写态渲染：22 行都在，压力提醒阈值可编辑、coordinatorSession 单行只读（带「只读」标记且控件禁用）', () => {
   const snapshot = {
     status: 'ready',
-    value: {
-      coordinatorSession: '', mainRotation: 'auto', rotateAfterMainLogMiB: 6, rotateAfterDays: 10,
-      rotateCooldownHours: 48, rotateMinAgeHours: 12, rotateIdleMinutes: 10,
-      rotateCheckIntervalHours: 24, rotateArchiveOld: true,
-    },
+    value: { coordinatorSession: '', contextPressureThreshold: 0.4 },
     user: {},
     revision: 1,
     writable: true,
@@ -250,13 +228,19 @@ test('可写态渲染：29 行都在，轮换 8 键可编辑、coordinatorSessio
   const tree = expandTree(renderCard(snapshot).reg.c({ view: 'page' }))
   const nodes = collectNodes(tree)
   const rows = nodes.filter(node => node.props?.className === 'orch-cfg-row')
-  assert.equal(rows.length, CONFIG_FIELDS.length, '每个字段都应渲染一行（轮换分组默认也展开）')
+  assert.equal(rows.length, CONFIG_FIELDS.length, '每个字段都应渲染一行（主会话分组默认展开）')
 
-  const rotationFields = CONFIG_FIELDS.filter(field => field.group === 'rotation')
-  assert.equal(rotationFields.length, 9)
+  const contextFields = CONFIG_FIELDS.filter(field => field.group === 'context')
+  assert.equal(contextFields.length, 2)
   // 控件按 aria-label = 字段 label 定位（数值/字符串是 input，枚举是 select，布尔是 button[role=switch]）。
   const controlOf = field => nodes.find(node => node.props?.['aria-label'] === field.label
     && (node.type === 'input' || node.type === 'select' || node.type === 'button'))
+
+  const threshold = FIELD_BY_KEY.contextPressureThreshold
+  assert.equal(threshold.readonly, undefined, '提醒阈值不该只读')
+  const thresholdControl = controlOf(threshold)
+  assert.ok(thresholdControl !== undefined, '提醒阈值应有输入控件')
+  assert.notEqual(thresholdControl.props.disabled, true, '提醒阈值在可写态不该禁用')
 
   const override = FIELD_BY_KEY.coordinatorSession
   const overrideControl = controlOf(override)
@@ -268,23 +252,11 @@ test('可写态渲染：29 行都在，轮换 8 键可编辑、coordinatorSessio
   assert.ok(collectNodes(overrideRow).some(node => typeof node.props?.className === 'string'
     && node.props.className.includes('orch-cfg-tag--readonly')), 'coordinatorSession 那一行应有「只读」标记')
 
-  for (const field of rotationFields) {
-    if (field.key === 'coordinatorSession') continue
-    assert.notEqual(field.readonly, true, `${field.key} 不该只读`)
-    const control = controlOf(field)
-    assert.ok(control !== undefined, `${field.key} 应有输入控件`)
-    assert.notEqual(control.props.disabled, true, `${field.key} 的控件在可写态不该禁用`)
-  }
-  // 总开关渲染成 select，当前值就是默认 auto，且两个选项都在（可关得掉）。
-  const mainRotation = nodes.find(node => node.type === 'select' && node.props?.['aria-label'] === '轮换总开关')
-  assert.equal(mainRotation.props.value, 'auto')
-  assert.equal(mainRotation.props.disabled, false)
-  const options = collectNodes(mainRotation).filter(node => node.type === 'option').map(node => node.props.value)
-  assert.deepEqual(options, ['auto', 'off'])
-
-  // 「只读」标记只挂在 coordinatorSession 那一行（分组标题不再带「只读」）。
+  // 「只读」标记只挂在 coordinatorSession 那一行（分组标题不带「只读」）。
   const readonlyTaggedRows = rows.filter(row => collectNodes(row)
     .some(node => typeof node.props?.className === 'string' && node.props.className.includes('orch-cfg-tag--readonly')))
   assert.equal(readonlyTaggedRows.length, 1, '整张卡片只有 coordinatorSession 一行带「只读」标记')
-  assert.match(textOf(tree), /主会话轮换/)
+  // 分组标题沿用「主会话」，且 help 里点明与宿主 compaction-basic 的阈值无关。
+  assert.match(textOf(tree), /主会话/)
+  assert.match(textOf(tree), /compaction-basic/)
 })

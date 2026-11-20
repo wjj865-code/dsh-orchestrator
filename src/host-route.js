@@ -25,7 +25,7 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, openMain, panel, teamBoard, staleMinutes = 30, limit = 200, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession, contextSnapshot, panel, teamBoard, staleMinutes = 30, limit = 200, now = Date.now }) {
   // message 请求级幂等：按 (taskId, clientRequestId) 去重，只在进程内（重启失效，见 request-dedupe.js）。
   const dedupe = createRequestDedupe({ max: 200 })
   // 官方 Team 板：读失败也只降级（快照是面板的轮询入口，不能因为一块只读分区 500）。
@@ -44,6 +44,24 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, teamBo
   const snapshot = () => {
     const status = coordinatorStatus?.() ?? {}
     const at = now()
+    // 上下文观测（0.25.0，只读诊断）：打开主会话时算过一次，这里只读内存缓存。
+    // 注意：**面板不常驻渲染压力/阈值**（用户明确要求），这些字段只给诊断与未来 UI 用。
+    let context = null
+    try {
+      const observed = typeof contextSnapshot === 'function' ? contextSnapshot() : null
+      if (observed !== null && observed !== undefined) {
+        context = {
+          at: observed.at ?? null,
+          sessionId: observed.sessionId ?? null,
+          pressure: observed.pressure ?? null,
+          alert: observed.alert ?? null,
+          logMiB: Number.isFinite(observed.logMiB) ? observed.logMiB : null,
+          hint: observed.hint ?? { visible: false, text: '' },
+          compactions: observed.compactions ?? null,
+          probe: observed.probe ?? null,
+        }
+      }
+    } catch { context = null }
     // 活跃任务始终全量；历史只取最近 limit 条。不能先全量再 slice，否则老 running 会被截掉。
     const activeTasks = listTasks(db, { active: true })
     // 活跃下游计数：终态任务若有活跃任务依赖它，删了会让下游变「缺前置」，面板据此隐藏删除。
@@ -60,6 +78,8 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, teamBo
       mainSession: {
         id: status.id ?? null,
         live: status.live === true,
+        // 观测字段（诊断用；客户端不渲染成常驻元素）。
+        context,
       },
       // 「待你决定」计数：等你确认/要授权/已交付待确认——三种都需要人（或协调者）拍板。
       inboxCount: tasks.filter(task => INBOX_STATUSES.has(task.status)).length,
@@ -159,6 +179,22 @@ export function createHostRoute({ db, coordinatorStatus, openMain, panel, teamBo
       }
       if (result?.ok === true) return json({ ok: true, sessionId: result.sessionId, created: result.created === true }, 200)
       return json(panelFailure('OPEN_MAIN_FAILED', { reason: result?.error ?? '创建主会话失败' }), 500)
+    }
+    if (endpoint === 'adopt-session') {
+      // 0.25.0：把已有会话设为协调者（只切指针；不改名、不归档、不退役旧会话）。
+      if (typeof adoptSession !== 'function') return json(panelFailure('ADOPT_UNAVAILABLE'), 500)
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
+      if (sessionId === '') return json(panelFailure('ADOPT_NO_SESSION'), 409)
+      let result
+      try {
+        result = await adoptSession({ sessionId })
+      } catch (error) {
+        return json(panelFailure('ADOPT_FAILED', { reason: error?.message ?? error }), 500)
+      }
+      if (result?.ok === true) {
+        return json({ ok: true, sessionId: result.sessionId, previous: result.previous ?? null, unchanged: result.unchanged === true }, 200)
+      }
+      return json(panelFailure(result?.code ?? 'ADOPT_FAILED', result?.params ?? {}), panelHttpStatus({ code: result?.code ?? 'ADOPT_FAILED' }))
     }
     if (endpoint === 'session-role') {
       // 客户端面板闸门：只回答「这个会话是不是主会话」，不写台账、不建会话。

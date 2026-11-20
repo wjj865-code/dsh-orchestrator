@@ -19,7 +19,7 @@ import { createTools } from './src/tools.js'
 import { legacyToolHint } from './src/tool-migrations.js'
 import { createQueue } from './src/queue.js'
 import { createStartupReconciler } from './src/reconcile.js'
-import { createRotationService } from './src/main-rotation.js'
+import { createContextObserver, cleanupLegacyRotation, probeCompaction } from './src/main-context.js'
 import { createIdleWatchdog } from './src/watchdog.js'
 import { createGoalBridge } from './src/goal.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
@@ -67,10 +67,15 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 子任务回报产物路径后，默认用 present 展示 ${PRESENT_LIMIT_TEXT}产物（只列**已登记产物**里的真实文件、写绝对路径），不必等用户点名；没有产物就不提 present。要看产物正文（多文件产物挑着看、核对文件里到底写了什么）用 read_workspace({ path })：边界是**主会话工作区 ∪ 已登记产物**——子会话按契约把产物写在 target 目录内（仓库、worktree 检出），那些路径不在工作区里，但只要登记过就能读；未登记的同目录文件、越界、路径穿越、符号链接逃逸会被拒。present 仍只声明交付、不读文件内容。
 - 需要「看一眼产物」时先用 read_workspace，不要为此新派一个子任务；但**不要**用 read_workspace 校验产物是否真实存在（存在性由插件与子任务保证，present 只列真实文件）。
 - 需要先看方案再动手（大改、跨文件、范围不确定）时用 task_create({ planFirst: true })：子会话只读探索后先 plan_save 把计划落盘到${PLAN_SAVE_DIR}<taskId>.md，再用 task_report blocked 只上报摘要 + ${PLAN_PHASE_LINES.reportQuestion}。planFirst 与 readOnly 互斥。
-- **计划批准必须由用户拍板（最硬的人工闸门，协调者不得自行批准、禁止代批）**：收到计划任务的 blocked（摘要 + 计划文档路径）后，先把摘要与路径原样转交用户，再**必须用 ask_user_question 结构化提问**请用户明确批准（question 里带摘要与路径，options 至少「批准执行 / 调整计划」）。不得自己判断「计划没问题 / 用户应该会同意」就直接 task_message 续派实现，也不得把用户沉默、含糊回应或你的默认当成批准。
+- **计划批准必须由用户拍板（最硬的人工闸门，协调者不得自行批准、禁止代批）**：收到计划任务的 blocked（摘要 + 计划文档路径）后，严格按这四步（顺序不能换）：
+  1. **先交付**：把计划摘要与计划文档的**绝对路径**原样转给用户，并用 present 声明该计划文档（present 只声明交付、不读内容）；
+  2. **再提问**：必须用 ask_user_question 结构化提问，options **至少三项**：批准执行 / 先看计划文档 / 调整计划（可再加「放弃」）；
+  3. 用户选「先看计划文档」→ 只把文档正文（read_workspace）或路径再给一遍，不续派、不催、不替用户决定，等用户下一次明确表态后回到第 2 步；
+  4. 只有明确「批准」才续派实现。
   - 用户答「批准」（明确说批准 / 按这个做 / 可以执行）：才可以 task_message 续派实现（插件此时才把沙箱切回可写）；批准只认用户消息里的话，协调者不得推断。
-  - 用户答「调整」：把用户的修改点原样转回同一个子会话，让它先出修订版计划（追加消息里写明「只修订计划、不要开始实现」：按当前机制追加消息即被视为批准、沙箱切回可写，只能靠这句话约束子会话），子会话再次 blocked 后，重新走上面的「转交摘要 + ask_user_question 请批准」。
+  - 用户答「调整」：把用户的修改点原样转回同一个子会话，让它先出修订版计划（追加消息里写明「只修订计划、不要开始实现」：按当前机制追加消息即被视为批准、沙箱切回可写，只能靠这句话约束子会话），子会话再次 blocked 后重新回到第 1 步。
   - 用户没回答：任务保持 blocked（台账 waiting_user、计划中），不要续派、不要代批，也不要因为等太久就放行；等用户答复后再按上面的分支处理。
+  - 不得自己判断「计划没问题 / 用户应该会同意」就直接续派实现，也不得把用户沉默、含糊回应或你的默认当成批准。
 - 只有构建/发版这类**确实需要越过文件沙箱**（写仓库外、跑不受沙箱限制的 bash/pwsh）的任务才传 task_create({ access: 'full' })：该子会话单独跑在 danger-full-access，**默认策略与其他任务一律不动**；access 只接受 'full'，且与 readOnly / planFirst 互斥；没有这种需求就不要传，也别因为用户说「不限制 bash」就顺手给所有任务加上。access 属于单个任务，插件不往孙任务传，也不写进任何默认配置。
 - 向用户汇报任务时用**任务名**（可附任务编号，如「计划落盘工具（t-4e573e01）」），不要只甩 t-xxxx 编号：编号是给你调工具用的，用户只认任务名。
 - 子任务回报 done 后任务状态是「待确认」（delivered，已交付待确认），**不是终态**：默认**保持待确认、不要主动 task_message({ action: 'close' })**——追问窗口留着，用户看完结果常还要改。用户要改/补充一律 task_message 追问（复用同一个子会话，不要新建任务）；一直不确认会按超时（config.deliveredTimeoutMinutes）自动完成，task_status 会写阈值。用户主动说「确认 / 没问题 / 不用再改」，或你确实需要终态（要派依赖它的任务、要删任务、要收尾整个需求）时，直接 task_message({ action: 'close' })，**不用先问用户**。
@@ -181,6 +186,9 @@ export async function apply(ctx, rawConfig = {}) {
     warnings(`dsh-orchestrator: workerPreset=${JSON.stringify(rawWorkerPreset)} 不是合法预设 id（小写字母/数字/连字符），已回落到 ${DEFAULT_WORKER_PRESET}`)
   }
   const logger = createLogger({ stateDir: dir, onWarn: warnings })
+  // 0.25.0：轮换删除后，老 profile 里残留的 main_rotation_* / main_session_created_at 一次性清掉
+  // （marker 必须清：留着的话回滚旧版本会按它「补完轮换」去归档一个毫不相干的会话）。
+  cleanupLegacyRotation({ db, log: (event, fields) => logger.log(event, fields) })
   // 宿主自检（只诊断、不拦加载）：版本落在声明基线外时 warn 一次；能力快照等装配完成后再记。
   // 为什么只 warn：插件历史上靠「服务缺失静默不生效」吃过亏（真实宿主不渲染），宁可多一行可读诊断。
   const hostVersion = host.version()
@@ -382,36 +390,39 @@ export async function apply(ctx, rawConfig = {}) {
   // 主会话：固定入口创建/打开唯一协调者会话；不再由 task_create 自动绑定。
   // 服务用 getter 惰性取：cordis 并发加载条目，apply 时服务可能还没就绪（同上 connection）。
   const service = name => host.service(name)
-  // G1 S3：轮换**动作面**（marker / 指针时间戳 / 审计 / 旧会话改名+归档 / 启动恢复）。
-  // 判定仍是 src/main-rotation.js 的纯函数与采集层；这里只把「台账 + 平台动作」绑成服务，
-  // 且平台服务一律惰性取（cordis 并发加载，apply 早期 get 可能还是 undefined）。
-  // 归档不可逆（平台无 unarchive）：是否归档由 config.rotateArchiveOld 决定，这里只执行。
-  const rotation = createRotationService({
+  // 0.25.0：上下文观测 + 压力提醒（**只读 + 只提问**：不调 compactNow、不自动换会话）。
+  // 观测在「打开主会话」后异步跑一次；压力到 `contextPressureThreshold` 时用宿主 userQuestions 弹问题卡。
+  // 用户选「新建协调者会话」才代建（requestNewCoordinator → mainSession.createCoordinatorSession）。
+  let mainSession
+  const contextObserver = createContextObserver({
     db,
     config,
+    tokenMeter: () => service('tokenMeter'),
     persistence: () => service('sessionPersistence'),
-    // P8 的活跃子代理兜底：读不到就是「无法判断」，不阻塞判定。
-    catalog: () => dispatcher?.catalog?.(),
-    rename: (sessionId, title) => {
-      const sessions = service('sessionController')
-      if (typeof sessions?.rename !== 'function') throw new Error('缺少 sessionController.rename 服务')
-      return sessions.rename({ sessionId, title })
+    sessionQuery: () => service('sessionQuery'),
+    agentPresets: () => service('agentPresets'),
+    sessions: () => service('sessions'),
+    userQuestions: () => service('userQuestions'),
+    requestNewCoordinator: async () => {
+      const result = await mainSession?.createCoordinatorSession?.({ source: 'pressure-reminder' })
+      if (result?.ok === true) {
+        contextObserver.clearAlert({ reason: 'created' })
+        try { await ensureDigestFor(result.sessionId) } catch (error) {
+          warnings(`dsh-orchestrator: 新协调者会话的日报重建失败：${error?.message ?? error}`)
+        }
+      }
+      return result
     },
-    archive: sessionId => {
-      const workspaces = service('workspaceRegistry')
-      if (typeof workspaces?.archiveSession !== 'function') throw new Error('缺少 workspaceRegistry.archiveSession 服务')
-      return workspaces.archiveSession(sessionId)
-    },
-    log: (event, detail) => logger.log(event, { detail }),
+    log: (event, fields) => logger.log(event, fields),
     onWarn: warnings,
   })
-  const mainSession = createMainSession({
+  mainSession = createMainSession({
     db,
     config,
-    rotation,
     agents: () => service('agents'),
     sessionController: () => service('sessionController'),
     workspaces: () => service('workspaceRegistry'),
+    sessions: () => service('sessions'),
     defaultCwd: join(dir, 'workspace'),
     presetFor: agent => service('agentPresets')?.presetForSession?.(agent?.session),
     selectPreset: (agent, presetId) => {
@@ -421,6 +432,14 @@ export async function apply(ctx, rawConfig = {}) {
     },
     workspacePath: join(dir, 'workspace'),
     workspaceName: '指挥舱',
+    // 打开成功后旁路观测（异步、不阻塞打开）；压力到阈值时才弹问题卡。
+    onOpened: ({ result, agent }) => {
+      if (result?.ok !== true) return undefined
+      const sessionId = typeof result.sessionId === 'string' ? result.sessionId : undefined
+      if (sessionId === undefined) return undefined
+      const live = agent ?? (() => { try { return service('agents')?.get?.(sessionId) } catch { return undefined } })()
+      return contextObserver.observeAndRemind({ mainSessionId: sessionId, liveAgent: live, source: 'open' })
+    },
     log: (event, detail) => logger.log(event, { detail }),
   })
 
@@ -716,10 +735,6 @@ export async function apply(ctx, rawConfig = {}) {
   // 启动对账（S2）：running 无活跃子会话 / catalog 查不到 → orphaned，并汇总上报一次；
   // 此时协调者可能还没加载，汇总会保留到 agent/created 再补发。
   await reconciler.reconcile({ coordinatorSessionId: resolvedCoordinatorId() })
-  // G1 S3：启动先把上次崩溃中断的轮换补完（F6 归档空白残留 / F7 补处置旧会话）。
-  // 失败只 warn、绝不阻断加载；marker 留着的话下次启动幂等重试（rename 覆盖标题、archive 幂等）。
-  // 判定不在这里做：该不该换只在用户「打开主会话」那一次算（main-session → rotation.evaluate）。
-  await rotation.recoverPending({ pointer: resolvedCoordinatorId() })
 
   // 看门狗放在启动对账之后：先让 S2 把「进程重启后没人在跑」的 running 标 orphaned，
   // 剩下的 running 才交给看门狗判断是否空闲（避免同一任务既报丢失又报卡住）。
@@ -803,6 +818,19 @@ export async function apply(ctx, rawConfig = {}) {
       panel,
       // P2-4（D6）：官方 Team 板只读快照（服务缺失/未开启/读失败都在 handler 里降级）。
       teamBoard: () => teamBoard.read(resolveCoordinator()),
+      // 0.25.0：上下文观测缓存（只读诊断；面板不常驻渲染压力）。
+      contextSnapshot: () => contextObserver.snapshot(),
+      // 0.25.0：会话头「设为协调者」→ 只切指针（不改名、不归档旧会话）+ 重建日报 + 清提醒。
+      adoptSession: async ({ sessionId }) => {
+        const result = await mainSession.adoptSession({ sessionId, source: 'panel' })
+        if (result?.ok === true && result.unchanged !== true) {
+          contextObserver.clearAlert({ reason: 'adopted' })
+          try { await ensureDigestFor(result.sessionId) } catch (error) {
+            warnings(`dsh-orchestrator: 新协调者会话的日报重建失败：${error?.message ?? error}`)
+          }
+        }
+        return result
+      },
       openMain: async () => {
         const result = await mainSession.open()
         if (result?.ok === true && typeof result.sessionId === 'string') {
@@ -849,6 +877,17 @@ export async function apply(ctx, rawConfig = {}) {
   // 宿主能力快照：装配完成后记一次，尽量反映真实可用面（服务仍可能晚加载，缺失如实记录、不猜）。
   // 面板诊断行与工具返回后续直接读 host.report()，不另存副本。
   const hostReport = host.report()
+  // 0.25.0：压缩能力只读探测（serviceFor/compactNow 存在性 + 能否读到宿主 thresholdRatio）。
+  // 只记诊断，不触发任何动作——压缩始终由宿主自己做。
+  const compactionProbe = (() => {
+    try {
+      return probeCompaction({
+        agent: resolveCoordinator(),
+        agentPresets: service('agentPresets'),
+        tokenMeter: service('tokenMeter'),
+      })
+    } catch { return null }
+  })()
   logger.log('host.capabilities', {
     detail: {
       version: hostReport.version.version ?? null,
@@ -857,6 +896,7 @@ export async function apply(ctx, rawConfig = {}) {
       available: hostReport.available,
       total: hostReport.total,
       missing: hostReport.missing,
+      compaction: compactionProbe,
     },
   })
 

@@ -134,8 +134,8 @@ test('能力表：每个字段都是布尔，且派生集合与集合语义一�
 })
 
 test('能力表：轮换/对账/看门狗的窄口径（delivered 刻意不算「在跑」）', () => {
-  // main-rotation：delivered 只等确认，不该阻断换主会话（LIMITATIONS 明写这是有意的）。
-  assert.deepEqual(statusesWith('rotationActive'), ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'])
+  // 0.25.0：主会话轮换删除，`rotationActive` 能力位一并下线（未知能力 = 空集合）。
+  assert.deepEqual(statusesWith('rotationActive'), [])
   // reconcile：活跃性对账只认 running；catalog 查得到 running + 故意停下的 waiting_*。
   assert.deepEqual(statusesWith('liveness'), ['running'])
   assert.deepEqual(statusesWith('catalog'), ['running', 'waiting_user', 'waiting_auth'])

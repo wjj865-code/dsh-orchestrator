@@ -50,7 +50,6 @@ function assertStateInvariants(status) {
   // 流程终态不能续派；要释放资源的状态不该还算活跃；等人/阻断轮换都必须先是活跃态。
   if (caps.terminal) assert.equal(caps.followup, false, `${status} 是流程终态却能续派`)
   if (caps.releases) assert.equal(caps.active, false, `${status} 要释放资源却还算活跃`)
-  if (caps.rotationActive) assert.equal(caps.active, true, `${status} 既不算活跃又阻断主会话轮换`)
   if (caps.waiting) assert.equal(caps.active, true, `${status} 是等人态却不算活跃`)
   // 能续派 ⇔ 有「回到 running」的落点（running 上续派不改状态，是唯一例外）。
   if (caps.followup) {
@@ -136,7 +135,7 @@ test('属性：能力位与转移表不矛盾（delivered 可追问不可轮换�
   for (const status of STATUSES) assertStateInvariants(status)
   // 两条最容易写错的业务不变量，单独再钉一次。
   assert.ok(statusesWith('followup').includes('delivered'), 'delivered 是追问窗口')
-  assert.equal(statusesWith('rotationActive').includes('delivered'), false, 'delivered 只等确认，不该阻断轮换')
+  assert.deepEqual(statusesWith('rotationActive'), [], '0.25.0 起没有轮换能力位（轮换已删除）')
   assert.deepEqual(statusesWith('terminal').filter(status => STATUS_CAPS[status].followup), [])
   // failed/orphaned 可重派（新任务），也可 resume（同任务同会话续跑）——两者不是互斥关系：
   // retry 走新建、resume 走「回 running」的边，实现上各有一条独立路径（tools.js retryTask / resumeTask）。

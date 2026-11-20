@@ -1340,7 +1340,7 @@ test('注册 /api/orchestrator 只读路由：POST + buffered + snapshot', withH
   assert.equal(response.status, 200)
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.deepEqual(body.mainSession, { id: 's-1', live: true })
+  assert.deepEqual(body.mainSession, { id: 's-1', live: true, context: null })
   // P2-4（D6）：没装 agentTeams 板 API 时快照里是稳定降级形状（面板隐藏该分区，不影响现有流程）。
   assert.equal(body.teamBoard.enabled, false)
   assert.deepEqual(body.teamBoard.rows, [])
@@ -1721,103 +1721,39 @@ test('G1：没有 goals 服务时 apply 与派发静默降级（不 warn、不�
   await f.disposers.at(-1)?.()
 }))
 
-test('轮换只在「打开主会话」时判定一次：启动/agent-created 不判定不建会话，open-main 命中阈值才轮换', withHome(async home => {
-  const { openLedger, setSetting } = await import('../src/ledger.js')
-  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
-  const since = Date.now() - 30 * 24 * 3600 * 1000
-  setSetting(ledger, 'main_session_id', 'session-old')
-  setSetting(ledger, 'main_session_created_at', String(since))
-  ledger.close()
-
-  const created = []
-  const renamed = []
-  const archived = []
-  const s1 = makeAgent('session-old')
-  const f = fakeCtx({
-    agents: [s1],
-    sessionController: {
-      async create(request) { created.push(request); return { sessionId: 'session-new' } },
-      async rename(request) { renamed.push(request) },
-    },
-    workspaces: {
-      resolveByPath: () => undefined,
-      async create(path, title) { return { id: 'ws-1', path, title } },
-      archiveSession: async id => archived.push(id),
-    },
-  })
-  // P1-A 起轮换默认 off：这里显式开 auto，验证「打开主会话」是唯一判定点。
-  await apply(f.ctx, { mainRotation: 'auto' })
-  // 启动 + 主会话加载都只做对账/恢复：不判定、不建会话、不写任何轮换键。
-  f.listeners.get('agent/created')({ agent: s1 })
-  await wait(50)
-  const { DatabaseSync } = await import('node:sqlite')
-  const dbPath = join(home, 'state', 'orchestrator', 'tasks.sqlite')
-  const db = new DatabaseSync(dbPath)
-  const rotationKeys = node => node.prepare("SELECT key FROM settings WHERE key LIKE 'main_rotation%'").all().map(row => row.key)
-  assert.equal(created.length, 0, '启动/加载阶段绝不建会话')
-  assert.deepEqual(rotationKeys(db), [], '启动/加载阶段不留判定痕迹（没有 due 标记）')
-  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('main_session_id').value, 'session-old')
-  db.close()
-
-  // 唯一判定点：open-main → 采集 + 判定（30 天龄命中 age 因子）→ 轮换。
-  const response = await f.routes[0].fetch(new Request('http://x/api/orchestrator', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ endpoint: 'open-main' }),
-  }))
-  const body = await response.json()
-  assert.equal(response.status, 200)
-  assert.deepEqual(body, { ok: true, sessionId: 'session-new', created: true })
-  assert.equal(created.length, 1, '一次打开只建一个会话')
-  assert.equal(created[0].agentPreset, 'dsh-orchestrator-coordinator')
-  assert.deepEqual(archived, ['session-old'], '旧主会话归档')
-  assert.ok(renamed.some(item => item.sessionId === 'session-old' && /已退役/.test(item.title)), '旧主会话改名退役')
-  const after = new DatabaseSync(dbPath)
-  const finalRead = key => after.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value
-  assert.equal(finalRead('main_session_id'), 'session-new')
-  assert.equal(finalRead('main_rotation_pending'), undefined, 'marker 收口后清掉')
-  const audit = JSON.parse(finalRead('main_rotation_last'))
-  assert.equal(audit.old, 'session-old')
-  assert.equal(audit.new, 'session-new')
-  assert.deepEqual(audit.triggers, ['age'])
-  assert.equal(finalRead('main_onboarding:session-new'), 'sent', '轮换跳过首次介绍')
-  after.close()
-  await f.disposers.at(-1)?.()
-}))
-
-test('S3：启动 recoverPending 补完上次崩溃中断的轮换（F7：指针已切 → 补处置旧会话）', withHome(async home => {
+test('0.25.0：启动把老 profile 残留的轮换 settings 键一次性清掉（含崩溃 marker）', withHome(async home => {
   const { openLedger, setSetting } = await import('../src/ledger.js')
   const ledger = await openLedger(join(home, 'state', 'orchestrator'))
   const at = Date.now() - 60_000
   setSetting(ledger, 'main_session_id', 'session-new')
+  // 老版本写过的 5 个键：main_session_created_at / main_rotation_at / main_rotation_last /
+  // main_rotation_pending（崩溃锚点）/ main_rotation_checked_at。marker 必须清——
+  // 留着的话回滚旧版本会按它「补完轮换」去归档一个毫不相干的会话。
+  for (const key of ['main_session_created_at', 'main_rotation_at', 'main_rotation_last', 'main_rotation_checked_at']) {
+    setSetting(ledger, key, String(at))
+  }
   setSetting(ledger, 'main_rotation_pending', JSON.stringify({ newId: 'session-new', oldId: 'session-old', at, reasons: ['age'] }))
   ledger.close()
 
-  const archived = []
-  const renamed = []
-  const s1 = makeAgent('session-new')
+  const created = []
   const f = fakeCtx({
-    agents: [s1],
-    workspaces: { archiveSession: async id => archived.push(id) },
-    sessionController: { rename: async request => renamed.push(request) },
+    agents: [makeAgent('session-new')],
+    sessionController: {
+      async create(request) { created.push(request); return { sessionId: 'session-should-not-exist' } },
+    },
   })
   await apply(f.ctx, {})
 
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   const read = key => db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value
-  assert.equal(read('main_session_id'), 'session-new', '指针不回退')
-  assert.equal(read('main_rotation_pending'), undefined, 'marker 补完后清掉')
-  const last = JSON.parse(read('main_rotation_last'))
-  assert.equal(last.old, 'session-old')
-  assert.equal(last.new, 'session-new')
-  assert.equal(last.recovered, true)
-  assert.equal(last.archived, true)
-  assert.equal(read('main_onboarding:session-new'), 'sent', '恢复也跳过首次介绍')
-  assert.deepEqual(archived, ['session-old'])
-  assert.equal(renamed.length, 1)
-  assert.equal(renamed[0].sessionId, 'session-old')
-  assert.match(renamed[0].title, /已退役/)
+  assert.equal(read('main_session_id'), 'session-new', '指针不动')
+  for (const key of ['main_session_created_at', 'main_rotation_at', 'main_rotation_last', 'main_rotation_pending', 'main_rotation_checked_at']) {
+    assert.equal(read(key), undefined, `${key} 应被一次性清掉`)
+  }
+  assert.equal(created.length, 0, '启动不建会话（没有轮换动作了）')
   db.close()
   await f.disposers.at(-1)?.()
 }))
+
 

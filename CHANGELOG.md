@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.25.0（2026-11-20）—— 删轮换、宿主自压、插件只提醒 + 手动 adopt
+
+**破坏性变更（升级须知）**
+
+- **主会话轮换整套删除**：`src/main-rotation.js`（判定 / 12 条保护 / 检查节流 / 采集 / marker 崩溃恢复 / 旧会话改名+归档）下线；`main-session.rotateMain`、`index.js` 的装配与 `recoverPendingRotation` 启动恢复一并删除。**不再自动换主会话、不再归档旧会话**。
+- **8 个配置键删除**：`mainRotation` / `rotateAfterMainLogMiB` / `rotateAfterDays` / `rotateCooldownHours` / `rotateMinAgeHours` / `rotateIdleMinutes` / `rotateCheckIntervalHours` / `rotateArchiveOld` → 进 `DEPRECATED_KEYS`，老 profile 留着只 warn 一次、按默认运行。
+- **配置面 29 → 22**：删 8 个轮换键、新增 1 个 `contextPressureThreshold`（默认 0.4，0.1–0.95，卡片可编辑）。
+- **5 个 settings 键一次性清理**：`main_session_created_at` / `main_rotation_at` / `main_rotation_last` / `main_rotation_pending`（崩溃锚点，留着会让回滚旧版误归档会话）/ `main_rotation_checked_at` 在启动时删掉并记 `main.rotation.legacy-cleaned`。
+- `status-facts` 的 `rotationActive` 能力位删除（`statusesWith('rotationActive')` 返回空）。
+
+**新增**
+
+- **上下文观测**（`src/main-context.js`，只读）：打开主会话时算一次压力（`tokenMeter.contextPressure`）/ 日志体积（`locate`+`stat`）/ 压缩次数（`sessionQuery.observeSession` 的 `compaction/start`，`turn:null` = 手动），结果进 `snapshot.mainSession.context` 与 `main.context.observed` 日志；日志 ≥ 16 MiB 给一次性提示（`main_log_hint_shown`）。
+- **压力提醒**（唯一出口，宿主 `userQuestions` 问题卡）：压力 ≥ `contextPressureThreshold` 时问一次「新建协调者会话 / 继续当前会话 / 稍后再说」；去重 `settings.main_context_alert`（0.1 band + 0.05 滞回），`NO_PROVIDER`/缺服务只 warn 一次、不建会话、不代压。
+- **手动换协调者（只切指针）**：会话头「设为协调者」（新端点 `adopt-session`，校验指挥舱工作区/已加载/预设可拉回，错误码 `ADOPT_*`）；提醒卡选「新建」→ 插件代建空白协调者会话并切换（`main.adopt.created`）。旧会话不改名、不归档、随时可回看；同一时刻只允许一次切换。
+- **计划审批顺序写进协调者预设 policy**：先回复摘要 + 计划文档**绝对路径**并 `present`，再 `ask_user_question`（选项至少 批准执行 / **先看计划文档** / 调整计划），选「先看」只展示不推进，只有明确批准才续派。
+- 探测位：`probeCompaction`（`agentPresets.serviceFor(agent,'compaction')` + `compactNow` 存在性 + 能否读到宿主 `thresholdRatio`），结果进 `host.capabilities.compaction`；**只读、不触发任何动作**。
+
+**不做**
+
+- 不调用 `compactNow`、不写宿主压缩阈值/预设行内 config、不重试、不加定时器、不碰子会话。`/compact` 手动路径照旧。
+- 官方 plan-mode UI 未接：`planMode` 在预设隔离域里、协调者预设不挂它，宿主也没有对插件开放的计划审批端点（见 LIMITATIONS）。
+
 ## 0.24.0（2026-11-20）
 
 0.23.1 之后的 **minor 版**，四片合发（按提交从新到旧）：**config-schema 兜底解析 + 显式告警**（`Config` 解析失败

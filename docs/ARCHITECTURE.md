@@ -31,31 +31,17 @@
 - 降级 fail-closed：没有会话 id、路由不可用、HTTP/JSON 失败、`ok:false` 一律隐藏；失败不缓存，换会话立即重判，另有 5 秒兜底轮询；同会话的明确答案缓存。
 - 侧栏「◈ 主会话」始终可见、不参与判定（它是首次创建主会话的引导入口）；面板主体仍注册为 `main` 槽位，入口隐藏不等于面板消失。
 
-## 主会话轮换（G1）
+## 主会话上下文维护（0.25.0：宿主自压 + 插件只提醒 + 手动 adopt）
 
-主会话是唯一协调者，跑久了上下文与日志只会更大。轮换 = 把旧主会话退役、换一个干净会话继续；台账、任务、记忆、产物都不搬。**判定与动作严格分离**，判定只有一个调用点：`main-session.openOnce()`（启动、`agent/created`、面板轮询都不判定）。
+主会话是唯一协调者。**「轮换」整套已删除**（不再自动归档旧会话、不再自己换人）：上下文过长由宿主 `compaction-basic` 在每个 agent 预设的 isolate 组里自动压缩（阈值是宿主的 `thresholdRatio`，默认 0.8），插件只做观测与提醒。
 
-- **模块**：`src/main-rotation.js`（纯判定 `evaluateRotation` / 采集 `collectRotationMetrics` / 动作面 `createRotationService` / 崩溃恢复 / 检查节流纯函数 `rotationCheckWindow`）、`src/config.js`（轮换相关的 8 个键：`mainRotation` + 7 个 `rotate*`，默认值与回落都在 `normalizeRotationConfig`）、`src/main-session.js`（唯一判定点）、`index.js`（装配 + `apply()` 时 `recoverPending`）。
-- **判定**：只在旧主会话 **live** 时做（重启后第一次打开是隐式重建，不是轮换）。触发因子两个：`main-log`（日志 MiB）→ `age`（运行天数）。12 个保护 code 按 `ROTATION_BLOCKS` 排优先级：`mode-off`、`coordinator-override`、`spawn-provider`、`active-tasks`、`delivered-pending`、`delivered-artifacts`、`agent-running`、`recent-activity`、`active-children`、`min-age`、`cooldown`、`metrics-degraded`（两个因子全缺才 fail-closed，缺一个只记 `degraded`）。`due = mode==='auto' && triggers.length>0 && blockedBy.length===0`；`mainRotation` **默认 `auto`（开启）**，只有显式 `'off'` 才关，拼错保持默认 `auto`。
-- **动作时序**（顺序即回退边界）：建新会话（失败 = 零处置）→ 写 marker `main_rotation_pending`（先 marker 后切指针，崩溃恢复的唯一锚点）→ 切指针（失败 = 轮换没发生，指针切换后不回滚）→ 写时间戳 → `onboarding=sent`（跳过首次介绍）→ 改名 → 退役旧会话（先改名再归档，各自降级）→ 写审计 `main_rotation_last` → 记 `freshMain`（60 秒窗口内再打开交回同一 id）。
-- **崩溃恢复**：`abandoned`（marker.newId ≠ 指针）= 死在切指针前，尽力归档空白残留；`complete` = 指针已切，补时间戳 / onboarding / 旧会话处置，幂等；`invalid` 只清 marker + 告警，**绝不猜 id 去归档**。
-- **settings 键只存事实**：`main_session_created_at` / `main_rotation_at` / `main_rotation_last`（审计，只留最近一条）/ `main_rotation_pending` / `main_rotation_checked_at`（上次真正做过「采集 + 判定」的时刻，只给检查节流用，**不是判定结论、也不代表轮换过**）。
-- **日志**：`main.rotation.decided`（每次真正检查都写，带 `checkedAt` / `checkRecorded`）、`main.rotation.check.skipped`（节流跳过，带 `intervalHours` / `checkedAt` / `nextCheckAt` / `elapsedHours`）、`main.session.rotated`、以及 `failed` / `check.record-failed` / `marker.*` / `metrics.degraded` / `recovered-*` 等降级项。逐条边界见 [LIMITATIONS](LIMITATIONS.md#主会话轮换g1)。
-
-### 检查节流（S7：`rotateCheckIntervalHours` / `main_rotation_checked_at`）
-
-采集要读台账 + `locate` + `stat` 主会话日志，随手一开就查一次很浪费。`createRotationService.evaluate` 的顺序是：
-
-1. 配置覆盖 `coordinatorSession` / 没有主会话 id → 直接 `null`（连检查都不做）；
-2. **检查节流闸门**：读 `settings.main_rotation_checked_at`，交给纯函数 `rotationCheckWindow({ now, lastCheckedAt, intervalHours })`；
-   - `shouldCheck === false`（距上次检查 < `rotateCheckIntervalHours`，默认 24、区间 1–168）→ 返回 `{ due:false, skipped:true, skipReason:'check-interval', check:{…} }`，
-     **不采集、不读台账、不判定、不碰平台服务**，只写一条 `main.rotation.check.skipped` 日志；
-   - 没有记录（首次 / 升级后第一次打开）或到点（`elapsed >= 间隔`，`>=` 口径）→ 继续；
-   - 记录时间在未来（时钟回拨）→ 不信任，按「该检查」处理，检查完用当前时间覆盖，避免把检查冻结到时钟追上来；
-3. 采集 + 判定，**结论为「不需要换」时**才写 `main_rotation_checked_at = now`（写失败只记 `main.rotation.check.record-failed`，不影响本次判定）；
-   `due === true` **不写**——动作（create / 切指针）还在后面，失败或崩溃后下一次打开要能重试；检查整体异常（落 `catch`）同样不写。
-
-口径边界（三个时间参数各管一件事，别混）：`rotateCheckIntervalHours` 管**查不查**；`rotateCooldownHours`（默认 48）/ `rotateMinAgeHours`（默认 12）管**换不换**，它们命中时检查照做、只是 `blockedBy` 里多一条。`skipped` 的返回不是判定结论（`triggers` / `blockedBy` 都是空），不会把上一次的 blocks 重算一遍。
+- **模块**：`src/main-context.js`（观测 `readContextPressure` / `readLogSize` / `readCompactionStats`、只读探测 `probeCompaction`、提醒判定 `decideAlert`、问题卡与代建衔接 `createContextObserver`、老键清理 `cleanupLegacyRotation`）、`src/main-session.js`（`adoptSession` / `createCoordinatorSession`）、`index.js`（装配 + `onOpened` 旁路）、`src/host-route.js`（`adopt-session` 端点 + `snapshot.mainSession.context`）。
+- **观测**（只在「打开主会话」时算一次，异步不阻塞）：压力 = `tokenMeter.contextPressure(session)` 的 `pressureTokens/contextWindow`；日志体积 = `sessionPersistence.locate` + `stat`；压缩次数 = `sessionQuery.observeSession()` 里 `compaction/start` 的 `turn`（`null` = 手动 `/compact`，数字 = 宿主自动）。
+- **提醒**（唯一出口：宿主 `userQuestions` 问题卡）：压力 ≥ `contextPressureThreshold`（默认 0.4，可配）时弹一次；选项「新建协调者会话 / 继续当前会话 / 稍后再说」。去重：settings `main_context_alert = { at, ratio, band, state }`，同一 band（0.1 步长）只问一次，压力回落到 `阈值 − 0.05` 才重新武装。`userQuestions` 缺失或 `NO_PROVIDER` 只 warn 一次、不建会话。
+- **换协调者**（只切指针，旧会话零处置）：①会话头「设为协调者」→ `adopt-session` → `adoptSession`（校验：会话存在 / 在指挥舱工作区 / agent 已加载 / 预设为协调者或可拉回，否则 `ADOPT_*` 可读错误）；②问题卡选「新建」→ `createCoordinatorSession`（create → 切指针 → `onboarding=sent` → 改名「主会话」→ 审计 `main.adopt.created`；create 失败零处置，切指针失败**新会话留着待重用**、不归档）。同一时刻只允许一次切换（`ADOPT_BUSY`）。
+- **settings**：`main_session_id`（唯一指针）、`main_session_preset`、`main_onboarding:<id>` 语义不变；新增 `main_context_alert`（提醒去重）、`main_log_hint_shown`（16 MiB 一次性提示）；老键 `main_session_created_at` / `main_rotation_*` 在启动时一次性清掉（`main.rotation.legacy-cleaned`）。
+- **日志**：`main.context.observed` / `alert.asked|snoozed|declined|resolved|cleared|create-failed` / `main.adopt.created|pointer-failed` / `main.session.adopted` / `host.capabilities.compaction`（只读探测结果）。
+- **插件不压缩**：不调用 `compactNow`、不写宿主阈值/预设行内 config、不重试；`/compact` 手动路径照旧。
 
 ## 队列与并发
 
@@ -208,7 +194,6 @@
 | `resume` | 能续跑**原会话**吗？（`failed`/`orphaned`/超时收尾的 `done`） | `task_message({action:'resume'})`（判定与阈值在 `src/resume.js`） |
 | `terminal` / `releases` | 是流程终态吗 / 要释放可写根与 goal 吗？ | `close` 判定、结算收尾、面板与工具的 stop 幂等判定 |
 | `waiting` | 是等人（用户/授权）的停顿态吗？ | 续派即批准计划 |
-| `rotationActive` | 会阻断主会话轮换吗？ | `main-rotation`（**刻意不含 `delivered`**） |
 | `liveness` / `catalog` / `watchdog` | 要对账活着吗 / 要查目录吗 / 要巡检空闲吗？ | `reconcile`、`watchdog` |
 | `planSettled` | 计划任务进这个状态要收口 `plan_state` 吗？ | `ledger.transition` |
 
@@ -255,7 +240,7 @@
 | 文案域 | 真源常量 | 复用到 |
 |---|---|---|
 | 计划阶段 | `PLAN_PHASE_LINES` / `PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `PLAN_STATUS_LINES` / `planDocPathText()` / `planCreateReceipt()` / `PLAN_SAVE_TOOL_DESC` / `planSavedNextStep` | `task-detail`（L3）、`plan-mode`、`plan-doc`、`tools`、`dispatch`、`index.js` |
-| 两段式终态 | `DELIVERY_LINES` / `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`、`brief`、`notify`、`prompt-layers`、`write-guard`、`tools`、`deps` / `main-rotation` / `tool-migrations` |
+| 两段式终态 | `DELIVERY_LINES` / `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`、`brief`、`notify`、`prompt-layers`、`write-guard`、`tools`、`deps` / `tool-migrations` |
 | 完整访问 | `ACCESS_FULL.label` / `.briefLine` / `.workerHint` / `.createNote` | `brief`、`task-detail`、`tools` |
 
 1. **判据**：这句话会不会在第二个模块出现？会 → 放 `copy.js`；不会 → 留在本层（协调者规则归 L1、面板短标签归客户端）。
@@ -372,6 +357,7 @@
 
 - **进入**：`queue.pump` 从台账透传 `plan_first` 给 `dispatcher.spawn`；派发时复用 `ensureReadOnly`（压首回合窗口），再用**子 agent 作用域**的 `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 缺失只 warn（降级为只有只读沙箱）。批准前**不注册** target 可写根。
 - **计划落盘（`plan_save`）**：计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：`src/plan-doc.js` 只做纯函数——`planDocPath()` 算出 `<主会话工作区>/reports/plans/<taskId>.md`（没有 `path` 入参；编号白名单 + `relative()` 包含性校验把 `..`/绝对路径/盘符拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头，`writePlanDocument()` 只做一次 mkdir + 覆盖写。写完登记为任务产物。子会话拿到结果后只上报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**。
+- **交付顺序（0.25.0）**：先回复计划摘要 + 计划文档**绝对路径**并 `present` 该文档 → 再 `ask_user_question`（选项至少 **批准执行 / 先看计划文档 / 调整计划**）→ 用户选「先看计划文档」只展示正文/路径、不推进不催 → 只有明确「批准」才续派实现。
 - **出口**：`plan_save` 落盘 → `task_report blocked` 上报摘要 + 路径 → 用户决定 → `task_message` 续派，**不用** `exit_plan_mode`（子会话没有直接人类）。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`（插件根的 guard 是全局的，会误伤协调者）。
 - **批准闸门（人工，协调者不得自行批准）**：**计划批准必须由用户拍板**——计划任务 `blocked` 后，协调者必须把摘要 + 计划文档路径转交用户，并用 `ask_user_question` 请用户明确批准（options 至少「批准执行 / 调整计划」）；**协调者不得自行批准**——不得自己判断计划没问题就直接 `task_message` 续派实现，也不得把用户沉默、含糊回应当成批准。只有用户消息里明确批准才可续派（续派成功才走下面的「退出（批准）」）；用户答「调整」则把修改点原样转回同一个子会话，让它先出修订版计划（消息里写明「只修订计划、不要开始实现」）并再 `blocked` 一次，重新请用户拍板；用户没回答就保持「计划中」，协调者不续派、不代批。
 - **调整路径的已知口径**：`task_message` 在计划中任务上本身即「批准」（投递成功 → 沙箱 `workspace-write` + `plan_state='approved'`），所以「调整」那一轮已经切回可写；约束只能落在消息措辞上（只修订计划），修订版再次 `blocked` 后仍必须由用户重新拍板——不能拿第一次的批准当实现对修订版的授权。
@@ -460,9 +446,8 @@
 
 ### 插件页配置卡片
 
-插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**29 个字段**，与 `loadConfig({})` 的实际键集合一一对应
-（P2-2 删掉的 7 个键——`keepAlive*` 四键与 `mergeWindowMs` / `stallRounds` / `preferencesMaxItems`——不出现在表单上，
-只由 `src/config.js` 的 `DEPRECATED_KEYS` 给弃用警告），等价于手改 profile 的 `cordis.patch.yml`。DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供
+插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**22 个字段**，与 `loadConfig({})` 的实际键集合一一对应
+（已删键不出现在表单上——P2-2 删的 7 个 `keepAlive*` 与阈值键、0.25.0 删的轮换 8 键——只由 `src/config.js` 的 `DEPRECATED_KEYS` 给弃用警告），等价于手改 profile 的 `cordis.patch.yml`。DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供
 `configForms`（值 + 写操作）与 slot，**不生成表单**（0.2.2-rc.3 的 `autoGenerate` 字段全 asar 无 client 消费方）。
 
 **三件套**（字段规格只声明一次，三方共用，避免漂移）：
@@ -477,9 +462,9 @@
 slot key = bundle **包名**（`CONFIG_SLOT_KEY`）；`configForms.get()` / `whileServed()` 参数 = Loader **entry id**
 （`CONFIG_ENTRY_ID` = `orchestrator`，即 `cordis.patch.yml` 的 id）。`whileServed` 保证插件没加载时页面完全无痕。
 
-**暴露策略**：轮换的 8 个键（`mainRotation` + 7 个 `rotate*`）与其余字段都可编辑——轮换默认开启，
-用户必须能在卡片里关掉/调阈值；**`coordinatorSession` 只读**（运维兜底通道：填错会让协调者指向不存在的会话，
-且只能改配置才恢复，只在运维场景手改 `cordis.patch.yml`）。不可逆动作仍由 `rotateArchiveOld` 显式控制（`false` = 只改名）。
+**暴露策略**：**除 `coordinatorSession` 外全部可编辑**（含 0.25.0 新增的 `contextPressureThreshold`：插件自己的提醒阈值，改它不改宿主压缩）；
+**`coordinatorSession` 只读**（运维兜底通道：填错会让协调者指向不存在的会话，
+且只能改配置才恢复，只在运维场景手改 `cordis.patch.yml`）。不可逆动作（归档/删除会话）已不在插件里，插件只切指针。
 写通道 `mutate(ops, revision)` 带 revision 栅栏，别人先改过就拒绝并刷新，
 不静默覆盖；清空一个「已覆盖」字段发 `unset`（回落组合默认且不再算覆盖）。
 
@@ -501,7 +486,9 @@ slot key = bundle **包名**（`CONFIG_SLOT_KEY`）；`configForms.get()` / `whi
    （宿主 `resolveConfig()` 遇空 Config 跳过校验，已核实）。
 
 **废弃键**：P1-A 删掉的 6 个键（`backend`、`rotateAfterTasks`、`rotateAfterSessions`、`rotateAfterContextTokens`、
-`rotateAfterDiskMiB`、`rotateCheckIntervalHours`）由 `src/config.js` 的 `DEPRECATED_KEYS` 给一次性迁移提示；
+`rotateAfterDiskMiB`、`rotateCheckIntervalHours`）与 0.25.0 删掉的轮换 8 键（`mainRotation` / `rotateAfterMainLogMiB` /
+`rotateAfterDays` / `rotateCooldownHours` / `rotateMinAgeHours` / `rotateIdleMinutes` / `rotateCheckIntervalHours` /
+`rotateArchiveOld`）由 `src/config.js` 的 `DEPRECATED_KEYS` 给一次性迁移提示；
 它们**不出现在配置卡片上**（字段表不含），无需 UI 侧额外接入。
 
 ## 落盘与日志

@@ -11,17 +11,18 @@
 // 回落默认（那是运行时的最后一道防线，行为零变化）；本文件描述的是「字段的规格」，供
 // schema 与 UI 使用。两边由 test/config-fields.test.js 双向比对守住。
 //
-// 0.23.0（P2-2 合并）：字段表投影的是 `loadConfig({})` **实际产出的 29 个键**。已删的 7 个键
-// （`keepAlive*` 四个续跑键 + `mergeWindowMs` / `stallRounds` / `preferencesMaxItems` 三个常量化的阈值键）
+// 0.25.0（B'）：字段表投影的是 `loadConfig({})` **实际产出的 22 个键**（上一版 29 个：
+// 轮换 8 键随功能删除，新增 1 个 `contextPressureThreshold`）。已删的键（`keepAlive*` 四个续跑键 +
+// `mergeWindowMs` / `stallRounds` / `preferencesMaxItems` 三个常量化的阈值键 + 8 个轮换键）
 // **不得**再出现在这里——它们只留在 `src/config.js` 的 DEPRECATED_KEYS 里给弃用警告，
 // 表单上多一行「已删除的键」= 用户改完写回去仍是无效配置。
 //
-// 暴露策略（Q3 修订：轮换 9 键里 8 个可编辑 + `coordinatorSession` 只读）：总开关与 7 个 `rotate*`
-// 都能在插件页直接改——「默认开启 + 能关」才是可用形态，藏成只读会让用户以为轮换只能手改 YAML。
+// 暴露策略（0.25.0：轮换整组删除，换成「主会话」组）：`contextPressureThreshold` **可编辑**——
+// 「阈值可配」是硬要求，藏成只读或写死在代码里都会让用户在插件页上无从调整；压缩本身归宿主
+// compaction-basic，插件不设它的阈值。
 // `coordinatorSession` 例外，保留 `readonly: true`：它是**运维兜底通道**，填错（拼错/写了个不存在的会话 id）
 // 会让协调者直接指向不存在的会话，工具与派发全部失效、且只能再改配置才恢复——属于高危误操作，
-// 不该在表单里手滑改；需要时手改当前 profile 的 `cordis.patch.yml`。不可逆动作仍由 `rotateArchiveOld`
-// 显式控制（`false` = 只改名）。
+// 不该在表单里手滑改；需要时手改当前 profile 的 `cordis.patch.yml`。
 // `readonly` 机制是给这类键用的：标上即只读，表单与 `EDITABLE_KEYS` 自动跟随。
 
 /** 字段分组：顺序即页面上的分组顺序。 */
@@ -32,7 +33,7 @@ export const FIELD_GROUPS = Object.freeze([
   Object.freeze({ id: 'isolation', label: '隔离与并发' }),
   Object.freeze({ id: 'memory', label: '记忆与快照' }),
   Object.freeze({ id: 'preferences', label: '偏好注入' }),
-  Object.freeze({ id: 'rotation', label: '主会话轮换' }),
+  Object.freeze({ id: 'context', label: '主会话' }),
 ])
 
 /**
@@ -139,43 +140,17 @@ export const CONFIG_FIELDS = Object.freeze([
     label: '偏好字数上限',
   }),
 
-  // ── 主会话轮换（8 键可编辑 + coordinatorSession 只读） ──────────
+  // ── 主会话（1 键可编辑 + coordinatorSession 只读；压缩阈值归宿主，插件不设） ──────
   Object.freeze({
-    key: 'coordinatorSession', group: 'rotation', kind: 'string', default: '', readonly: true,
-    label: '协调者会话覆盖', hint: '运维兜底通道：页面只读，只在运维场景手改 cordis.patch.yml（填错会让协调者指向不存在的会话）',
+    key: 'contextPressureThreshold', group: 'context', kind: 'number', min: 0.1, max: 0.95, integer: false, default: 0.4,
+    label: '上下文压力提醒阈值',
+    hint: '插件**自己的提醒阈值**：主会话最近一次请求的 prompt 占该路由上下文窗口的比例（取自 tokenMeter.contextPressure）达到它时，插件弹一张问题卡问你要不要换新协调者会话。'
+      + '它和宿主 compaction-basic 的 thresholdRatio（默认 0.8，到点由宿主自己压缩）是两回事，改这里不会改变宿主压缩行为、也不影响子会话。'
+      + '插件只提醒、不压缩、不自动切换。保存后需重载插件或重启 DSH 生效',
   }),
   Object.freeze({
-    key: 'mainRotation', group: 'rotation', kind: 'enum', values: ['auto', 'off'], default: 'auto',
-    label: '轮换总开关', hint: '默认 auto（开）；只有显式 off 才关，拼错保持 auto',
-  }),
-  Object.freeze({
-    key: 'rotateAfterMainLogMiB', group: 'rotation', kind: 'number', min: 0.5, max: 4096, integer: false, default: 6,
-    label: '触发：主会话日志体积（MiB）',
-  }),
-  Object.freeze({
-    key: 'rotateAfterDays', group: 'rotation', kind: 'number', min: 1, max: 365, integer: true, default: 10,
-    label: '触发：运行天数',
-  }),
-  Object.freeze({
-    key: 'rotateCooldownHours', group: 'rotation', kind: 'number', min: 1, max: 720, integer: true, default: 48,
-    label: '冷却期（小时）',
-  }),
-  Object.freeze({
-    key: 'rotateMinAgeHours', group: 'rotation', kind: 'number', min: 1, max: 720, integer: true, default: 12,
-    label: '最小龄（小时）',
-  }),
-  Object.freeze({
-    key: 'rotateIdleMinutes', group: 'rotation', kind: 'number', min: 1, max: 1440, integer: true, default: 10,
-    label: '闲置判定（分钟）',
-  }),
-  Object.freeze({
-    key: 'rotateCheckIntervalHours', group: 'rotation', kind: 'number', min: 1, max: 168, integer: true, default: 24,
-    label: '检查间隔（小时）',
-    hint: '多久才做一次轮换检查（1–168，默认一天一次）；调成 1 = 每次打开都查。检查节流 ≠ 轮换冷却：冷却期内检查照做、只是不换',
-  }),
-  Object.freeze({
-    key: 'rotateArchiveOld', group: 'rotation', kind: 'boolean', default: true,
-    label: '轮换后归档旧主会话', hint: '不可逆：平台没有 unarchive；关掉则只改名退役',
+    key: 'coordinatorSession', group: 'context', kind: 'string', default: '', readonly: true,
+    label: '协调者会话覆盖', hint: '运维兜底通道：页面只读，只在运维场景手改 cordis.patch.yml（填错会让协调者指向不存在的会话）；日常换协调者请用会话头的「设为协调者」',
   }),
 ])
 

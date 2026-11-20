@@ -97,7 +97,13 @@ test('协调者 policy：计划批准必须用户拍板，禁止协调者自行�
   // 硬规则：blocked 计划必须先转交摘要 + 路径，再必须结构化提问请用户批准。
   assert.match(policy, /计划批准必须由用户拍板/)
   assert.match(policy, /必须用 ask_user_question 结构化提问/)
-  assert.match(policy, /批准执行 \/ 调整计划/)
+  // 0.25.0：问用户之前要先回复摘要 + present 计划文档，且选项必须有「先看计划文档」这一项。
+  assert.match(policy, /批准执行 \/ 先看计划文档 \/ 调整计划/)
+  assert.match(policy, /先交付/)
+  assert.match(policy, /绝对路径/)
+  assert.match(policy, /present 声明该计划文档/)
+  assert.match(policy, /不续派、不催/)
+  assert.match(policy, /回到第 2 步/)
   // 禁止代批：不得自行批准，也不得把沉默/含糊回应当默认批准。
   assert.match(policy, /协调者不得自行批准/)
   assert.match(policy, /禁止代批/)
@@ -122,7 +128,7 @@ test('README / ARCHITECTURE 与预设同口径：计划批准是人工闸门', (
     assert.match(text, /计划批准必须由用户拍板/, `${file} 没写「计划批准必须由用户拍板」`)
     assert.match(text, /协调者不得自行批准/, `${file} 没写「协调者不得自行批准」`)
     assert.match(text, /ask_user_question/, `${file} 没写用 ask_user_question 请用户批准`)
-    assert.match(text, /批准执行 \/ 调整计划/, `${file} 没写清「批准执行 / 调整计划」两个分支`)
+    assert.match(text, /批准执行/, `${file} 没写清「批准执行」分支`)
   }
   // 计划模式的技术小节要把「调整也得重新拍板」讲明，避免把第一次批准当成修订版授权。
   assert.match(docs[1][1], /只修订计划、不要开始实现/)

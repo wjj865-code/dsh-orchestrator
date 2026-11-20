@@ -157,6 +157,28 @@ export const ACTION_ERRORS = Object.freeze({
   ACTION_FAILED: define({ http: 500, panel: ({ reason }) => `动作失败：${reason}` }),
   OPEN_MAIN_UNAVAILABLE: define({ http: 500, panel: () => 'open-main-unavailable' }),
   OPEN_MAIN_FAILED: define({ http: 500, panel: ({ reason }) => `打开主会话失败：${reason}` }),
+  // adopt（0.25.0）：把已有会话设为协调者（会话头「设为协调者」按钮）。只切指针，不归档旧会话。
+  ADOPT_UNAVAILABLE: define({ http: 500, panel: () => '缺少「设为协调者」实现（插件装配不完整）' }),
+  ADOPT_NO_SESSION: define({ http: 409, panel: () => '会话不存在或还没加载：请先打开那个会话再试。' }),
+  ADOPT_NOT_COCKPIT: define({
+    http: 409,
+    panel: ({ cwd, workspace }) => `只能把「指挥舱」工作区里的会话设为协调者（指挥舱：${workspace ?? '未知'}；该会话目录：${cwd ?? '未知'}）。`,
+  }),
+  ADOPT_NOT_LIVE: define({
+    http: 409,
+    panel: () => '该会话还没加载（agent 未起）：先在它里面发一条消息，然后再点「设为协调者」。',
+  }),
+  ADOPT_PRESET_LOCKED: define({
+    http: 409,
+    panel: ({ preset, reason }) => `该会话已经用其他预设开始（${preset ?? '未知'}），宿主不允许中途换预设：`
+      + `请新建一个空白会话并选「协调者」预设，再设为协调者。${reason === undefined ? '' : `（${reason}）`}`,
+  }),
+  ADOPT_BUSY: define({ http: 409, panel: () => '另一次「设为协调者」正在进行，请稍后再试。' }),
+  ADOPT_FAILED: define({ http: 500, panel: ({ reason }) => `切换协调者失败：${reason ?? '未知原因'}` }),
+  ADOPT_CREATE_FAILED: define({
+    http: 502,
+    panel: ({ reason }) => `新建协调者会话失败（原协调者保持不变）：${reason ?? '未知原因'}`,
+  }),
   UNKNOWN_ENDPOINT: define({ http: 400, panel: () => 'unknown-endpoint' }),
   // 非阻断警告：stop 已成功，但收子会话/队列/写权限释放失败（只在面板 warnings 里出现）
   STOP_DISPATCH_FAILED: define({ http: 200, panel: ({ reason }) => `停止子会话失败：${reason}` }),

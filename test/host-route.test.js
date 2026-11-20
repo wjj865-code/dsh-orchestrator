@@ -36,7 +36,7 @@ test('snapshot 返回任务安全字段与协调者状态', async () => {
   assert.equal(response.status, 200)
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.deepEqual(body.mainSession, { id: 's-1', live: true })
+  assert.deepEqual(body.mainSession, { id: 's-1', live: true, context: null }, '主会话状态（0.25.0 增加只读 context 观测槽）')
   assert.equal(body.tasks.length, 1)
   const row = body.tasks[0]
   assert.equal(row.id, task.id)
@@ -329,7 +329,7 @@ test('snapshot 带 mainSession 与 targetDir；open-main 只建主会话', async
   })
   const before = counts(db)
   const snapshot = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  assert.deepEqual(snapshot.mainSession, { id: 's', live: true })
+  assert.deepEqual(snapshot.mainSession, { id: 's', live: true, context: null })
   assert.equal(snapshot.tasks[0].targetDir, 'C:/work')
   assert.deepEqual(counts(db), before, 'snapshot 不应写库')
   const opened = await handler(request({ endpoint: 'open-main' }))

@@ -36,7 +36,7 @@
 | G5 | 工具 schema 契约 | 逐个工具体检 | `parameters.type === 'object'`、根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 中文可读；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面 |
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
-| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` allow | 配置 29 键；全局工具 10 个（协调者 7 + 子会话 3）；allow 名单与工具表一致 |
+| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` allow | 配置 22 键；全局工具 10 个（协调者 7 + 子会话 3）；allow 名单与工具表一致 |
 | G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、配置表/工具表同源、内链可达） |
 | G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **95 KiB**；超了先删重复渲染/样式，不抬预算 |
 
@@ -83,8 +83,8 @@
 
 ### 3.5 用例规模
 
-- 62 个 `test/*.test.js`、约 1.9 万行、1,072 条 `test()`（1,067 pass / 5 skip，`pnpm test` 会打印总数）。
-- 大文件：`client.test.js`（U2 客户端）、`index.test.js`（装配）、`tools.test.js`（工具面）、`main-rotation.test.js`（轮换）。
+- 63 个 `test/*.test.js`、约 1.9 万行、1,050 条 `test()`（1,045 pass / 5 skip，`pnpm test` 会打印总数）。
+- 大文件：`client.test.js`（U2 客户端）、`index.test.js`（装配）、`tools.test.js`（工具面）、`main-session.test.js`（open-main / adopt / 代建协调者会话）。
 
 ## 4. 已知 flaky / 环境限制
 
@@ -187,7 +187,7 @@
 | 7 | `worktree:true` | 真的建出 `orch/<taskId>` 与检出；通知/`task_status` 标「隔离」；`git status` 无 `.agents/` |
 | 8 | 多分支仓库不给 `worktreeBase` | 任务不创建、返回候选，带基线重调后建树 |
 | 9 | 同目录并发派两条 | 默认拒绝并给三条出路；`allowConcurrent:true` 放行并标风险 |
-| 10 | 主会话轮换（默认 `mainRotation:'auto'`，调低阈值） | 命中一次：旧会话改名「已退役」并归档；日志有 `main.rotation.decided`；在插件页卡片里改成 `off` 保存后，再打开主会话只记 `blockedBy: ['mode-off']`、不换 |
+| 10 | 主会话上下文维护（0.25.0） | 在指挥舱新建会话选「协调者」→ 会话头点「设为协调者」后 `settings.main_session_id` 切到它、旧会话不改名不归档；压力 ≥ `contextPressureThreshold`（可先调低到 0.1 复现）时弹一次问题卡，选「继续当前会话」后同一 band 不再问 |
 | 11 | 配了 `checks` 的任务报 done | 全过才「待确认」并显示「验收 N/N」；有失败项即拒绝交付、任务仍「进行中」、回执给退出码与输出尾部 |
 | 12 | 关联官方板的任务被**人**确认交付 | 官方任务按 CAS 标 `complete`；超时自动完成时官方板**不变**，日志有 `team.board.skipped` |
 

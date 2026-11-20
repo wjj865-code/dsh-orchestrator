@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openLedger, createTask, getSetting, getMainSessionId, setMainSessionId, getMainSessionPreset, setMainSessionPreset, setSetting } from '../src/ledger.js'
 import { createMainSession, PRESET_ID } from '../src/main-session.js'
-import { createRotationService, readRotationState } from '../src/main-rotation.js'
 import { onboardingKey } from '../src/onboarding.js'
 
 const fake = ({ live = new Set() } = {}) => {
@@ -366,341 +365,235 @@ test('presetFor 用 session.header.agentPreset 兜底', async () => {
 })
 
 // ---------------------------------------------------------------------------
-// G1 S3：轮换动作（create → marker → 切指针 → 跳过 onboarding → 旧会话改名+归档 → 审计）
+// 0.25.0：adopt（把已有会话设为协调者）/ 代建（压力提醒里的「新建协调者会话」）
 //
-// 用**真** createRotationService（只注入假的平台动作）：判定/采集仍是真实现，所以「due」由
-// 「主会话龄 ≥ 默认 10 天」命中 age 因子构造——main-log 因没挂 persistence 降级，
-// 而 degraded 不会让 age 因子失效（P10 只在「两个因子都拿不到」时 fail-closed）。
+// 语义：只切指针。旧会话不改名、不归档、不退役（用户随时能回去看）。
 // ---------------------------------------------------------------------------
-const DAY = 24 * 3_600_000
-const RETIRED_TITLE = /^主会话（已退役 \d{4}-\d{2}-\d{2} \d{2}:\d{2}）$/
+const COCKPIT = 'C:/orch/workspace'
 
-/** 造一个「该轮换」的台账：指针 session-old 已运行 30 天，没有任何任务（Q1/Q4 保护都不命中）。 */
-const agedMain = async db => {
-  setMainSessionId(db, 'session-old')
-  setSetting(db, 'main_session_created_at', String(Date.now() - 30 * DAY))
+/** adopt 用的替身：sessions 里带 header（cwd + agentPreset），agents 只对 live 集合可见。 */
+const adoptFake = ({ live = [], cwd = COCKPIT, preset = PRESET_ID, select } = {}) => {
+  const created = []
+  const renamed = []
+  const selected = []
+  const set = new Set(live)
+  const sessions = new Map([...set].map(id => [id, { id, header: { id, cwd, agentPreset: preset } }]))
+  return {
+    created,
+    renamed,
+    selected,
+    sessions,
+    agents: { get: id => set.has(id) ? { id, session: sessions.get(id) } : undefined },
+    presetFor: () => preset,
+    sessionController: {
+      create: async request => { created.push(request); return { sessionId: 'session-new' } },
+      rename: async request => { renamed.push(request) },
+    },
+    workspaces: {
+      resolveByPath: async () => ({ id: 'ws-1' }),
+      create: async (path, title) => ({ id: 'ws-new', path, title }),
+    },
+    sessionsService: { get: id => sessions.get(id) },
+    selectPreset: select ?? (async (agent, id) => { selected.push([agent.id, id]); return id }),
+  }
 }
 
-/** 真轮换服务 + 假平台动作（归档/改名都记进数组，便于断言「谁被处置了」）。 */
-const rotationFor = (db, f, { archived = [], config = {}, log = () => {}, onWarn } = {}) => createRotationService({
+const adoptMain = (db, f, extras = {}) => createMainSession({
   db,
-  config: { mainRotation: 'auto', spawnProvider: 'spawn', ...config },
-  rename: async (sessionId, title) => f.sessionController.rename({ sessionId, title }),
-  archive: async sessionId => archived.push(sessionId),
-  log,
-  onWarn,
+  config: {},
+  agents: f.agents,
+  sessionController: f.sessionController,
+  workspaces: f.workspaces,
+  sessions: f.sessionsService,
+  presetFor: f.presetFor,
+  selectPreset: f.selectPreset,
+  workspacePath: COCKPIT,
+  ...extras,
 })
 
-test('S3 轮换：命中 due 时 create → 切指针 → 跳过 onboarding → 旧会话改名+归档 → 审计', async () => {
+test('adopt：只切指针（旧会话不改名不归档）+ 记审计 + 台账 preset 标记', async () => {
   const db = await ledger()
-  await agedMain(db)
-  const f = fake({ live: new Set(['session-old']) })
-  const archived = []
+  const f = adoptFake({ live: ['session-old', 'session-new-target'] })
+  setMainSessionId(db, 'session-old')
+  setMainSessionPreset(db, 'stale-marker')
   const logs = []
-  const rotation = rotationFor(db, f, { archived, log: (event, detail) => logs.push([event, detail]) })
-  const main = createMainSession({
-    db, config: {}, agents: f.agents, sessionController: f.sessionController,
-    workspaces: f.workspaces, rotation, workspacePath: 'C:/ws',
-    log: (event, detail) => logs.push([event, detail]),
-  })
-  const result = await main.open()
-  assert.equal(result.ok, true)
-  assert.equal(result.rotated, true)
-  assert.equal(result.replaced, 'session-old')
-  assert.equal(result.sessionId, 'session-main-new')
-  assert.equal(result.created, true)
-  assert.equal(result.rotation.at > 0, true)
-  assert.deepEqual(result.rotation.reasons.map(reason => reason.code), ['age'])
-  assert.equal(f.created.length, 1, '一次轮换只建一个会话')
-  assert.equal(f.created[0].agentPreset, PRESET_ID)
-  assert.equal(getMainSessionId(db), 'session-main-new')
+  const main = adoptMain(db, f, { log: (event, detail) => logs.push([event, detail]) })
+  const result = await main.adoptSession({ sessionId: 'session-new-target' })
+  assert.deepEqual(result, { ok: true, sessionId: 'session-new-target', previous: 'session-old' })
+  assert.equal(getMainSessionId(db), 'session-new-target')
   assert.equal(getMainSessionPreset(db), PRESET_ID)
-  // 新会话先拿回「主会话」标题，旧会话再改成「已退役 …」（rename 是覆盖标题，重复执行幂等）。
-  assert.deepEqual(f.renamed[0], { sessionId: 'session-main-new', title: '主会话' })
-  assert.equal(f.renamed[1].sessionId, 'session-old')
-  assert.match(f.renamed[1].title, RETIRED_TITLE)
-  assert.deepEqual(archived, ['session-old'])
-  // 跳过首次介绍 + 工作区索引任务：落 sent，而不是 create 分支的 pending。
-  assert.equal(getSetting(db, onboardingKey('session-main-new')), 'sent')
-  assert.equal(getSetting(db, onboardingKey('session-old')), undefined)
-  // 时间戳 / 审计 / marker 收口
-  const state = readRotationState(db)
-  assert.ok(state.createdAt > Date.now() - 10_000, 'main_session_created_at 指向新会话起点')
-  assert.ok(state.rotatedAt > Date.now() - 10_000, 'main_rotation_at 用于冷却期')
-  assert.equal(state.pending, null, 'marker 已清')
-  assert.equal(state.last.old, 'session-old')
-  assert.equal(state.last.new, 'session-main-new')
-  assert.equal(state.last.renamed, true)
-  assert.equal(state.last.archived, true)
-  assert.equal(state.last.recovered, false)
-  assert.deepEqual(state.last.triggers, ['age'])
-  const rotatedLog = logs.find(([event]) => event === 'main.session.rotated')
-  assert.ok(rotatedLog, '应写 main.session.rotated 审计日志')
-  assert.equal(rotatedLog[1].archived, true)
-  assert.equal(rotatedLog[1].marker, true, 'marker 在切指针前落过盘')
+  assert.deepEqual(f.renamed, [], '旧会话不改名')
+  assert.deepEqual(f.created, [], 'adopt 不建会话')
+  const adopted = logs.find(([event]) => event === 'main.session.adopted')
+  assert.ok(adopted, '要写 main.session.adopted 审计')
+  assert.equal(adopted[1].previous, 'session-old')
+  assert.equal(adopted[1].sessionId, 'session-new-target')
   db.close()
 })
 
-test('S3 未命中 due：健康主会话直接复用，不 create、不改名、不归档', async () => {
+test('adopt：同一会话幂等（unchanged，不重写台账）', async () => {
   const db = await ledger()
+  const f = adoptFake({ live: ['session-old'] })
   setMainSessionId(db, 'session-old')
-  setMainSessionPreset(db, PRESET_ID)
-  setSetting(db, 'main_session_created_at', String(Date.now() - 3_600_000))
-  const f = fake({ live: new Set(['session-old']) })
-  const archived = []
-  const rotation = rotationFor(db, f, { archived })
-  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation, workspacePath: 'C:/ws' })
-  const result = await main.open()
+  const main = adoptMain(db, f)
+  const result = await main.adoptSession({ sessionId: 'session-old' })
   assert.equal(result.ok, true)
-  assert.equal(result.created, false)
-  assert.equal(result.rotated, undefined)
-  assert.equal(result.sessionId, 'session-old')
-  assert.equal(f.created.length, 0)
-  assert.deepEqual(f.renamed, [])
-  assert.deepEqual(archived, [])
-  // 判定只在打开时算一次、且只读：不留审计、不留 marker。
-  assert.equal(readRotationState(db).last, null)
-  assert.equal(readRotationState(db).pending, null)
+  assert.equal(result.unchanged, true)
   db.close()
 })
 
-test('S7 检查节流（open 路径）：同一天内第二次打开只读一个 settings 键就跳过，不采集不判定', async () => {
+test('adopt：非「指挥舱」工作区的会话拒绝（ADOPT_NOT_COCKPIT）', async () => {
   const db = await ledger()
+  const f = adoptFake({ live: ['session-other'], cwd: 'C:/somewhere/else' })
   setMainSessionId(db, 'session-old')
-  setMainSessionPreset(db, PRESET_ID)
-  setSetting(db, 'main_session_created_at', String(Date.now() - 3_600_000))
-  const f = fake({ live: new Set(['session-old']) })
-  // 给 live agent 一个带 id/cwd 的 header，采集才会真的走 locate + stat（否则 main-log 直接降级）。
-  f.agents.get = id => id === 'session-old'
-    ? { id, status: 'idle', session: { id, header: { id, cwd: 'C:/ws', createdAt: Date.now() - 3_600_000 } } }
-    : undefined
-  const logs = []
-  let locates = 0
-  const rotation = createRotationService({
-    db,
-    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    persistence: {
-      locate: () => {
-        locates += 1
-        return { kind: 'jsonl', path: 'C:/sessions/session-old.jsonl' }
-      },
-    },
-    statFile: async () => ({ size: 1024, mtimeMs: Date.now() - 30 * 60_000 }),
-    log: (event, detail) => logs.push([event, detail]),
+  const main = adoptMain(db, f)
+  const result = await main.adoptSession({ sessionId: 'session-other' })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'ADOPT_NOT_COCKPIT')
+  assert.equal(result.params.workspace, COCKPIT)
+  assert.equal(getMainSessionId(db), 'session-old', '失败不改指针')
+  db.close()
+})
+
+test('adopt：agent 还没加载拒绝（ADOPT_NOT_LIVE）', async () => {
+  const db = await ledger()
+  const f = adoptFake({ live: [] })
+  // 会话记录在 sessions 里（cwd 合法），但 agents.get 拿不到 → not live。
+  f.sessions.set('session-cold', { id: 'session-cold', header: { id: 'session-cold', cwd: COCKPIT, agentPreset: PRESET_ID } })
+  setMainSessionId(db, 'session-old')
+  const main = adoptMain(db, f)
+  const result = await main.adoptSession({ sessionId: 'session-cold' })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'ADOPT_NOT_LIVE')
+  db.close()
+})
+
+test('adopt：会话不存在拒绝（ADOPT_NO_SESSION）', async () => {
+  const db = await ledger()
+  const f = adoptFake({ live: [] })
+  const main = adoptMain(db, f)
+  const result = await main.adoptSession({ sessionId: 'session-missing' })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'ADOPT_NO_SESSION')
+  db.close()
+})
+
+test('adopt：已用其他预设开始（select 抛 locked）拒绝（ADOPT_PRESET_LOCKED）', async () => {
+  const db = await ledger()
+  const f = adoptFake({
+    live: ['session-started'],
+    preset: 'standard',
+    select: async () => { throw new Error('agent-preset/locked: this session has already started') },
   })
-  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation, workspacePath: 'C:/ws' })
-  const first = await main.open()
-  assert.equal(first.created, false)
-  assert.equal(locates, 1, '第一次打开真的采集')
-  assert.equal(logs.filter(([event]) => event === 'main.rotation.decided').length, 1)
-  assert.equal(getSetting(db, 'main_rotation_checked_at') !== undefined, true, 'not-due 时写检查时间戳')
-  // 同一天再点一次「打开主会话」：节流直接跳过，采集/判定都不发生。
-  const second = await main.open()
-  assert.equal(second.ok, true)
-  assert.equal(second.sessionId, 'session-old')
-  assert.equal(locates, 1, '第二次打开零采集')
-  assert.equal(logs.filter(([event]) => event === 'main.rotation.decided').length, 1, '第二次打开不判定')
-  assert.equal(logs.filter(([event]) => event === 'main.rotation.check.skipped').length, 1, '跳过留一条日志')
+  setMainSessionId(db, 'session-old')
+  const main = adoptMain(db, f)
+  const result = await main.adoptSession({ sessionId: 'session-started' })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'ADOPT_PRESET_LOCKED')
+  assert.equal(result.params.preset, 'standard')
+  assert.equal(getMainSessionId(db), 'session-old')
   db.close()
 })
 
-test('S3 保护沿用 S1：龄命中但有活跃任务时不轮换，照旧复用', async () => {
+test('adopt：空白会话被拉回协调者预设后才接受', async () => {
   const db = await ledger()
-  await agedMain(db)
-  setMainSessionPreset(db, PRESET_ID)
-  // 默认新建任务就是 waiting_dep（P1 的活跃口径），这一条由 S1 判定挡住，不需要 open() 另加闸门。
-  createTask(db, { brief: { title: '活跃任务', goal: 'g', acceptance: ['a'] }, coordinatorSession: 'session-old' })
-  const f = fake({ live: new Set(['session-old']) })
-  const archived = []
-  const logs = []
-  const rotation = rotationFor(db, f, { archived, log: (event, detail) => logs.push([event, detail]) })
-  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation, workspacePath: 'C:/ws' })
-  const result = await main.open()
+  const f = adoptFake({ live: ['session-blank'], preset: 'standard' })
+  setMainSessionId(db, 'session-old')
+  const main = adoptMain(db, f)
+  const result = await main.adoptSession({ sessionId: 'session-blank' })
   assert.equal(result.ok, true)
-  assert.equal(result.created, false)
-  assert.equal(result.sessionId, 'session-old')
-  assert.equal(f.created.length, 0)
-  assert.deepEqual(f.renamed, [])
-  assert.deepEqual(archived, [])
-  // 判定结果看得见「为什么没换」：活跃任务（main.rotation.decided 审计日志）。
-  const decided = logs.find(([event]) => event === 'main.rotation.decided')
-  assert.deepEqual(decided[1].detail.blockedBy, ['active-tasks'])
-  assert.equal(decided[1].detail.due, false)
+  assert.deepEqual(f.selected, [['session-blank', PRESET_ID]])
+  assert.equal(getMainSessionId(db), 'session-blank')
   db.close()
 })
 
-test('S3 create 失败零处置：指针不动、marker/审计不写、旧会话不改名不归档', async () => {
+test('adopt：已有切换在进行时返回 ADOPT_BUSY（同一时刻只允许一次）', async () => {
   const db = await ledger()
-  await agedMain(db)
-  const since = getSetting(db, 'main_session_created_at')
-  const f = fake({ live: new Set(['session-old']) })
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const f = adoptFake({
+    live: ['session-a', 'session-b'],
+    preset: 'standard',
+    select: async () => { await gate; return PRESET_ID },
+  })
+  setMainSessionId(db, 'session-old')
+  const main = adoptMain(db, f)
+  const first = main.adoptSession({ sessionId: 'session-a' })
+  const second = await main.adoptSession({ sessionId: 'session-b' })
+  assert.equal(second.ok, false)
+  assert.equal(second.code, 'ADOPT_BUSY')
+  release()
+  assert.equal((await first).ok, true)
+  db.close()
+})
+
+test('代建：create → 切指针 → onboarding=sent → 改名 → 审计，旧会话零处置', async () => {
+  const db = await ledger()
+  const f = adoptFake({ live: ['session-old'] })
+  setMainSessionId(db, 'session-old')
+  const logs = []
+  const main = adoptMain(db, f, { log: (event, detail) => logs.push([event, detail]) })
+  const result = await main.createCoordinatorSession({ source: 'pressure-reminder' })
+  assert.equal(result.ok, true)
+  assert.equal(result.sessionId, 'session-new')
+  assert.equal(result.previous, 'session-old')
+  assert.equal(result.created, true)
+  assert.equal(f.created.length, 1)
+  assert.equal(f.created[0].agentPreset, PRESET_ID)
+  assert.equal(getMainSessionId(db), 'session-new')
+  assert.equal(getMainSessionPreset(db), PRESET_ID)
+  assert.equal(getSetting(db, onboardingKey('session-new')), 'sent', '跳过首次介绍/索引任务')
+  assert.deepEqual(f.renamed, [{ sessionId: 'session-new', title: '主会话' }], '只改新会话标题')
+  assert.ok(logs.some(([event]) => event === 'main.adopt.created'))
+  db.close()
+})
+
+test('代建：create 失败 → 零处置（不写指针、不建第二个）', async () => {
+  const db = await ledger()
+  const f = adoptFake({ live: ['session-old'] })
   f.sessionController.create = async () => { throw new Error('boom') }
-  const archived = []
-  const logs = []
-  const rotation = rotationFor(db, f, { archived, log: (event, detail) => logs.push([event, detail]) })
-  const main = createMainSession({
-    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation,
-    workspacePath: 'C:/ws', log: (event, detail) => logs.push([event, detail]),
-  })
-  const result = await main.open()
+  setMainSessionId(db, 'session-old')
+  const main = adoptMain(db, f)
+  const result = await main.createCoordinatorSession()
   assert.equal(result.ok, false)
-  assert.match(result.error, /boom/)
-  assert.equal(getMainSessionId(db), 'session-old', '指针必须还是旧会话')
-  assert.equal(getSetting(db, 'main_session_created_at'), since, '起点不能被改')
-  assert.deepEqual(f.renamed, [])
-  assert.deepEqual(archived, [])
-  const state = readRotationState(db)
-  assert.equal(state.pending, null, 'create 失败不该留下 marker')
-  assert.equal(state.last, null, 'create 失败不该写审计')
-  assert.equal(state.rotatedAt, null)
-  assert.ok(logs.some(([event, detail]) => event === 'main.rotation.failed' && detail.stage === 'create'))
+  assert.equal(result.code, 'ADOPT_CREATE_FAILED')
+  assert.equal(getMainSessionId(db), 'session-old')
   db.close()
 })
 
-/** 只让「写主会话指针」这一条 UPSERT 失败的台账代理（其余读写照旧）。 */
-const failingPointerDb = db => ({
-  prepare(sql) {
-    const statement = db.prepare(sql)
-    if (!sql.includes('INSERT INTO settings')) return statement
-    return {
-      run(...args) {
-        if (args[0] === 'main_session_id') throw new Error('database is locked')
-        return statement.run(...args)
-      },
-      get: (...args) => statement.get(...args),
-      all: (...args) => statement.all(...args),
-    }
-  },
-})
-
-test('S3 指针写失败（F3）：旧主会话仍可用，空白新会话尽力归档，marker 清掉', async () => {
-  const db = await ledger()
-  await agedMain(db)
-  const f = fake({ live: new Set(['session-old']) })
-  const archived = []
+test('代建：切指针失败 → ADOPT_FAILED，新会话留着待重用（不归档），旧协调者不变', async () => {
+  const f = adoptFake({ live: ['session-old'] })
+  const db = {
+    prepare(sql) {
+      if (sql.includes('SELECT value FROM settings')) return { get: () => undefined }
+      if (sql.includes('INSERT INTO settings')) return { run: () => { throw new Error('disk full') } }
+      throw new Error('unexpected SQL: ' + sql)
+    },
+  }
   const logs = []
-  const proxy = failingPointerDb(db)
-  const rotation = rotationFor(proxy, f, { archived, log: (event, detail) => logs.push([event, detail]) })
-  const main = createMainSession({
-    db: proxy, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation,
-    workspacePath: 'C:/ws', log: (event, detail) => logs.push([event, detail]),
-  })
-  const result = await main.open()
+  const main = adoptMain(db, f, { log: (event, detail) => logs.push([event, detail]) })
+  const result = await main.createCoordinatorSession()
   assert.equal(result.ok, false)
-  assert.match(result.error, /轮换失败，旧主会话仍可用/)
-  assert.equal(result.rotated, false)
-  assert.equal(getMainSessionId(db), 'session-old', '真台账里指针没动')
-  assert.deepEqual(archived, ['session-main-new'], '空白新会话被归档隐藏（失败归档也不影响旧指针）')
-  assert.deepEqual(f.renamed, [], '旧会话不该改名（轮换没发生）')
-  const state = readRotationState(db)
-  assert.equal(state.pending, null)
-  assert.equal(state.last, null)
-  assert.equal(state.rotatedAt, null)
-  assert.ok(logs.some(([event, detail]) => event === 'main.rotation.pointer-failed' && detail.discarded === true))
-  db.close()
+  assert.equal(result.code, 'ADOPT_FAILED')
+  assert.equal(result.params.sessionId, 'session-new', '把新建的会话 id 交回，提示用户可以直接用它')
+  assert.equal(f.created.length, 1, '只建一个')
+  assert.deepEqual(f.renamed, [], '指针没切成功就不改名')
+  assert.ok(logs.some(([event]) => event === 'main.adopt.pointer-failed'))
 })
 
-test('S3 归档失败降级：只改名，轮换仍成立', async () => {
+test('打开主会话成功后触发 onOpened 旁路（观测/提醒），且不影响返回结果', async () => {
   const db = await ledger()
-  await agedMain(db)
-  const f = fake({ live: new Set(['session-old']) })
-  const warnings = []
-  const rotation = createRotationService({
-    db,
-    config: { mainRotation: 'auto', spawnProvider: 'spawn' },
-    rename: async (sessionId, title) => f.sessionController.rename({ sessionId, title }),
-    archive: async () => { throw new Error('workspace/unknown-session') },
-    onWarn: message => warnings.push(message),
+  const f = fake()
+  const opened = []
+  const main = createMainSession({
+    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
+    workspacePath: 'C:/ws',
+    onOpened: async payload => { opened.push(payload) },
   })
-  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation, workspacePath: 'C:/ws' })
   const result = await main.open()
   assert.equal(result.ok, true)
-  assert.equal(result.rotated, true)
-  assert.equal(getMainSessionId(db), 'session-main-new')
-  assert.equal(f.renamed[1].sessionId, 'session-old')
-  assert.match(f.renamed[1].title, RETIRED_TITLE)
-  const state = readRotationState(db)
-  assert.equal(state.last.renamed, true)
-  assert.equal(state.last.archived, false, '归档失败降级为只改名')
-  assert.ok(warnings.some(message => /归档会话 session-old 失败/.test(message)))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(opened.length, 1)
+  assert.equal(opened[0].result.sessionId, 'session-main-new')
   db.close()
 })
-
-test('S3 并发单飞：两个 open() 同时命中 due 也只建一次、只处置一次旧会话', async () => {
-  const db = await ledger()
-  await agedMain(db)
-  const f = fake({ live: new Set(['session-old']) })
-  let release
-  const gate = new Promise(resolve => { release = resolve })
-  f.sessionController.create = async request => {
-    f.created.push(request)
-    await gate
-    return { sessionId: 'session-main-new' }
-  }
-  const archived = []
-  const rotation = rotationFor(db, f, { archived })
-  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation, workspacePath: 'C:/ws' })
-  const first = main.open()
-  const second = main.open()
-  release()
-  const [a, b] = await Promise.all([first, second])
-  assert.deepEqual(a, b)
-  assert.equal(f.created.length, 1)
-  assert.equal(a.rotated, true)
-  assert.deepEqual(archived, ['session-old'])
-  assert.equal(getMainSessionId(db), 'session-main-new')
-  db.close()
-})
-
-test('S3 rotateArchiveOld=false：只改名退役、不归档（保留可回看入口）', async () => {
-  const db = await ledger()
-  await agedMain(db)
-  const f = fake({ live: new Set(['session-old']) })
-  const archived = []
-  const rotation = rotationFor(db, f, { archived, config: { rotateArchiveOld: false } })
-  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces, rotation, workspacePath: 'C:/ws' })
-  const result = await main.open()
-  assert.equal(result.ok, true)
-  assert.equal(result.rotated, true)
-  assert.deepEqual(archived, [], '归档关闭时一次也不调 archiveSession')
-  assert.match(f.renamed[1].title, RETIRED_TITLE)
-  const state = readRotationState(db)
-  assert.equal(state.last.renamed, true)
-  assert.equal(state.last.archived, false)
-  db.close()
-})
-
-test('S3 轮换后新会话尚未 live：窗口内再 open 不重复建（不给「不 live 就新建」留双建）', async () => {
-  const db = await ledger()
-  await agedMain(db)
-  const f = fake({ live: new Set(['session-old']) })
-  let clock = Date.now()
-  let release
-  const gate = new Promise(resolve => { release = resolve })
-  f.sessionController.create = async request => {
-    f.created.push(request)
-    await gate
-    return { sessionId: 'session-main-new' }
-  }
-  const archived = []
-  const rotation = rotationFor(db, f, { archived })
-  const main = createMainSession({
-    db, config: {}, agents: f.agents, sessionController: f.sessionController,
-    workspaces: f.workspaces, rotation, workspacePath: 'C:/ws', now: () => clock,
-  })
-  const rotated = main.open()
-  release()
-  const first = await rotated
-  assert.equal(first.rotated, true)
-  // 平台还没把新会话拉起来（fake 里 live 不含新 id）：再点一次不能又建一个。
-  const second = await main.open()
-  assert.equal(second.ok, true)
-  assert.equal(second.sessionId, 'session-main-new')
-  assert.equal(second.loading, true)
-  assert.equal(f.created.length, 1)
-  assert.deepEqual(archived, ['session-old'])
-  // 窗口过期后回到既有行为（不 live 就重建），这里只断言窗口内的保护。
-  clock += 61_000
-  db.close()
-})
-

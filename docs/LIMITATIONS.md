@@ -67,19 +67,14 @@
 - **`workerPreset` 只在派发时生效**：续派/冷恢复沿用会话创建时的 `agentPreset`，改配置不切换已有子会话；值非法时静默回落 `dsh-orchestrator-worker`（日志一行 warn）。
 - **`orch-debug` 调试预设**：复制随包「创造模式」组合，预设声明装在 profile 里；升级 DSH 后必须先 `node tools/debug-preset/cli.mjs --check` 看漂移，再重新生成并重装。预设可执行 Host 代码，不是沙箱；生成器与文档自 P1-E 起不随 npm 包发货（开发仓库 `tools/debug-preset/`）。
 
-## 主会话轮换（G1）
+## 主会话上下文维护（0.25.0）
 
-- **归档不可逆，这是本功能最硬的边界**：`rotateArchiveOld` 默认 `true`，收尾把旧主会话改名「主会话（已退役 YYYY-MM-DD HH:MM）」再 `archiveSession()`。平台**没有 unarchive API**，插件也不提供恢复；能选的只有事前配置 `rotateArchiveOld:false`（只改名）或 `mainRotation:'off'`（完全不换）。**轮换默认开启（`mainRotation` 默认 `auto`）**：想完全不换就必须显式配 `off`。归档动作本身幂等，但「已归档」不可撤销。
-- **判定只有一个调用点**：`main-session.openOnce()` 在**旧主会话 live** 时算一次。启动、`agent/created`、面板轮询、刷新都不判定；旧会话不 live 时走既有「隐式重建」，不算轮换。没有强制轮换的按钮/工具/端点。
-- **检查粒度是「一天最多一次」，不是「每次打开都算」**：`rotateCheckIntervalHours`（默认 24，1–168）让判定前先看 `settings.main_rotation_checked_at`，没到间隔就**直接跳过采集与判定**。所以**刚调低阈值不会立刻生效**——当天已经检查过的话最多等一个间隔（或清掉该键再打开）。这个节流只决定「查不查」，不改变「换不换」：`rotateCooldownHours` / `rotateMinAgeHours` 照旧在判定里挡。`mainRotation:'off'` 同样受节流（一次检查仍会写「为什么没换」的日志，只是频率压到一天一次）。
-- **判定是快照，动作前不复查**：`evaluate → rotateMain` 之间来新任务/消息/回合仍按旧结论执行；并发打开只生效一次（in-flight 复用），轮换后新会话未 live 的 **60 秒窗口**内再打开交回同一 id。
-- **指标口径与降级**：只剩 `main-log`（`sessionPersistence.locate` + `stat`，坏则记 `degraded`、**不按 0 算**）与 `age`（`since`：先 `settings.main_session_created_at`，退 `header.createdAt`）。只有**两个因子全拿不到**才 fail-closed（`metrics-degraded`）。`main-log` 是压缩后日志大小，不等于上下文占用。
-- **保护规则的边角**：`active-tasks` 只算 waiting_dep/pending/running/waiting_user/waiting_auth（不含 `delivered`，由 `delivered-pending` 单独挡）；`active-children` 依赖 `dispatcher.catalog()`（读不到按「无法判断」，不挡也不误挡）；`coordinator-override` 与 `spawn-provider` 命中时连采集都不做。
-- **崩溃中间态**：marker（`main_rotation_pending`）写失败只记日志、轮换继续，之后崩溃**无法自动恢复**；marker 形状坏掉（`invalid`）只清 marker + 告警，**绝不猜 id 去归档**；`abandoned` 恢复会把空白残留会话归档（同样不可逆）；`complete` 恢复幂等，但审计只保留**最近一条**。
-- **标题被覆盖**：旧会话标题改成「主会话（已退役 …）」，原标题不保留、平台没有标题历史。
-- **配置写错的表现**：`mainRotation` 只认显式 `'off'` 关闭，缺省/拼错一律按默认 `auto`（开）；数值键越界夹边界；`rotateArchiveOld` 只认显式 `false`；已删键留在 profile 只会在启动时给一条弃用警告。
-- **不迁移任何状态**：上下文、未处理追问、平台 goal/automation 都不搬；新会话直接 `onboarding=sent`（不补首次介绍与索引任务）；日报 schedule 在 `open-main` 响应里按新 id 重建，失败只 warn。
-- **平台服务缺失的降级**：缺 `rename` → 只归档；缺 `archiveSession` → 只改名 + warn；缺 `sessionController.create` → `open-main` 返回可读错误、**零处置**。都不抛异常到宿主。
+- **插件不压缩、不换人**：压缩完全由宿主 `compaction-basic`（每个 agent 预设的 isolate 组）负责，阈值 `thresholdRatio` 默认 0.8；插件不调用 `compactNow`、不写宿主阈值/预设行内 config、不重试。`/compact` 手动路径照旧可用。
+- **日志只增不减**（append-only、从不重写）：压缩只减小请求面，不减小日志。插件只在打开主会话时读一次压力与日志体积，日志 ≥ 16 MiB 给**一次性**提示；「重置」靠人工换新协调者会话——插件不做自动清理、不删会话、不归档旧会话。
+- **压力提醒是唯一出口**：压力 ≥ `contextPressureThreshold`（默认 0.4）时弹一张 `userQuestions` 问题卡（新建协调者会话 / 继续当前会话 / 稍后再说），去重状态在 `settings.main_context_alert`（0.1 band + 0.05 滞回）。`userQuestions` 缺失或无在线客户端（`NO_PROVIDER`）只 warn 一次、不建会话、不弹第二次；压力读不到时不提醒（fail-closed）。
+- **换协调者只切指针**：adopt（会话头「设为协调者」）与代建都只写 `settings.main_session_id` / `main_session_preset`；旧会话不改名、不归档、不退役。adopt 只接受**指挥舱工作区**里的会话，已用其他预设开始（宿主拒绝换预设）会被拒并给可读原因；同一时刻只允许一次切换（`ADOPT_BUSY`）。代建 create 失败零处置；**切指针失败时新建会话留着待重用**（不归档）。
+- **多会话并存**：`main_session_id` 仍是唯一指针；通知/日报/`task_*` 只认它，其余会话的上下文增长用户看不见（观测范围目前只覆盖主会话；`readContextPressure` 已按 session 参数化，扩范围只需遍历 `sessions.list()` 的存活会话）。
+- **官方计划模式 UI 不可接**：`planMode` 是**预设隔离域**服务（`agentPresets.serviceFor(agent,'planMode')`），且本体是「子会话里挂 plan-mode + `exit_plan_mode` 工具」那套；协调者预设不挂它、宿主也没有对插件开放的「计划审批端点」，所以协调者侧仍走「摘要 + present + ask_user_question」这条人工闸门（选项含「先看计划文档」）。
 
 ## 首次打开与仓库索引
 

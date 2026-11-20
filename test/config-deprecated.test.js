@@ -1,6 +1,7 @@
 // 已删除配置键的弃用机制（P1-A 起）：读到旧键就 warn 一次、值不回填、拼错的键不误报。
 //
-// 为什么需要它：配置面 41 → 35（P1-A）→ 28（P2-2）→ 29（恢复检查节流），删掉的键还留在老用户的 profile 里。
+// 为什么需要它：配置面 41 → 35（P1-A）→ 28（P2-2）→ 29（恢复检查节流）→ **22（0.25.0：轮换 8 键删除、
+// 提醒阈值 1 键新增）**，删掉的键还留在老用户的 profile 里。
 // 静默忽略会让用户以为「我配的阈值还在生效」；这里明确告诉用户哪个键失效了、该改什么。
 // 去重是进程级的（`pnpm test` 用 --experimental-test-isolation=none，所有用例共享模块状态），
 // 所以每个用例开始先 reset。
@@ -14,22 +15,34 @@ const collect = raw => {
   return { config, warnings }
 }
 
-test('弃用键清单：P1-A 的 6 个 + P2-2 的 7 个 − 恢复的检查节流键，每个都有迁移提示', () => {
+test('弃用键清单：P1-A 的 6 个 + P2-2 的 7 个 − 恢复的检查节流键 + 0.25.0 的轮换 8 键，每个都有迁移提示', () => {
   assert.deepEqual(Object.keys(DEPRECATED_KEYS).sort(), [
     'backend',
     'keepAlive', 'keepAliveMaxRounds', 'keepAliveMode', 'keepAlivePrompt',
+    'mainRotation',
     'mergeWindowMs',
     'preferencesMaxItems',
     'rotateAfterContextTokens', 'rotateAfterDiskMiB', 'rotateAfterSessions',
-    'rotateAfterTasks',
+    'rotateAfterTasks', 'rotateAfterDays', 'rotateAfterMainLogMiB', 'rotateArchiveOld',
+    'rotateCheckIntervalHours', 'rotateCooldownHours', 'rotateIdleMinutes', 'rotateMinAgeHours',
     'stallRounds',
-  ])
-  // 检查节流回来了：键不再算「已删除」，配了就得真生效。
-  assert.equal('rotateCheckIntervalHours' in DEPRECATED_KEYS, false, 'rotateCheckIntervalHours 已恢复为正式配置')
+  ].sort())
   for (const [key, note] of Object.entries(DEPRECATED_KEYS)) {
     assert.equal(typeof note, 'string')
     assert.ok(note.length > 0, `${key} 要有迁移提示`)
   }
+})
+
+test('0.25.0 旧键：轮换相关键的提示指向「宿主自压 + 插件只提醒 + 手动 adopt」', () => {
+  resetDeprecatedKeyWarnings()
+  const { config, warnings } = collect({ mainRotation: 'off', rotateAfterMainLogMiB: 6 })
+  assert.equal(warnings.length, 2)
+  assert.match(warnings[0], /配置键 mainRotation 已删除/)
+  assert.match(warnings[0], /compaction-basic/)
+  assert.match(warnings[1], /配置键 rotateAfterMainLogMiB 已删除/)
+  // 值不回填：旧键不出现在归一化结果里。
+  assert.equal('mainRotation' in config, false)
+  assert.equal('rotateAfterMainLogMiB' in config, false)
 })
 
 test('P2-2 旧键：续跑四键的提示指向 task_create.goalRounds（不是「再打开某个开关」）', () => {
@@ -52,10 +65,9 @@ test('命中旧键：各 warn 一次，文案带键名与提示；值不回填',
   assert.match(warnings[0], /配置键 backend 已删除/)
   assert.match(warnings[1], /配置键 rotateAfterTasks 已删除/)
   for (const warning of warnings) assert.match(warning, /按默认值运行/)
-  // 值不回填：旧键不出现在归一化结果里，也不会改变轮换本来会用的默认值（默认 auto）。
+  // 值不回填：旧键不出现在归一化结果里。
   assert.equal('backend' in config, false)
   assert.equal('rotateAfterTasks' in config, false)
-  assert.equal(config.mainRotation, 'auto')
 })
 
 test('同一键只 warn 一次（进程级去重）；换键仍会 warn', () => {
@@ -65,8 +77,8 @@ test('同一键只 warn 一次（进程级去重）；换键仍会 warn', () => 
   assert.equal(first.warnings.length, 1)
   assert.deepEqual(second.warnings, [], '同键第二次不再重复告警')
   const other = collect({ rotateCheckIntervalHours: 4 })
-  assert.deepEqual(other.warnings, [], '恢复的检查节流键不再是弃用键：不 warn')
-  assert.equal(other.config.rotateCheckIntervalHours, 4, '而且值真生效')
+  assert.equal(other.warnings.length, 1, '0.25.0 起它也是弃用键')
+  assert.equal('rotateCheckIntervalHours' in other.config, false, '值不再生效')
   const another = collect({ mergeWindowMs: 9000 })
   assert.equal(another.warnings.length, 1, '不同键各 warn 一次')
   assert.match(another.warnings[0], /配置键 mergeWindowMs 已删除/)
@@ -83,6 +95,6 @@ test('没有旧键就一条也不 warn；显式 undefined 也算命中（用户 
 test('没有 onWarn 时静默（纯函数场景不抛、不写日志）', () => {
   resetDeprecatedKeyWarnings()
   assert.doesNotThrow(() => loadConfig({ backend: 'team' }))
-  // 静默调用不该「消耗」去重名额的前提是没 onWarn 就不记；这里只断言结果仍是 29 键的默认值。
-  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 29)
+  // 静默调用不该「消耗」去重名额的前提是没 onWarn 就不记；这里只断言结果仍是 22 键的默认值。
+  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 22)
 })

@@ -4,7 +4,9 @@ import { readFileSync } from 'node:fs'
 import { Config, unwrapVolatile, configSchemaAvailable } from '../src/config-schema.js'
 import { loadConfig, DEPRECATED_KEYS } from '../src/config.js'
 import { CONFIG_FIELDS, FIELD_KEYS, FIELD_BY_KEY, FIELDS_BY_GROUP, FIELD_GROUPS, EDITABLE_KEYS } from '../src/config-fields.js'
-import { ROTATION_DEFAULTS, ROTATION_LIMITS, MAIN_ROTATION_MODES } from '../src/main-rotation.js'
+import {
+  CONTEXT_PRESSURE_THRESHOLD_DEFAULT, CONTEXT_PRESSURE_THRESHOLD_MIN, CONTEXT_PRESSURE_THRESHOLD_MAX,
+} from '../src/main-context.js'
 import { SAME_DIR_GUARD_MODES } from '../src/write-guard.js'
 import { WORKTREE_POLICIES } from '../src/worktree-request.js'
 
@@ -78,11 +80,10 @@ test('字段表与 loadConfig 双向一致（字段集 / 默认值 / 枚举 / �
   // 枚举与区间跟源码常量走，防常量改了字段表没跟。
   assert.deepEqual([...FIELD_BY_KEY.sameDirGuard.values], [...SAME_DIR_GUARD_MODES])
   assert.deepEqual([...FIELD_BY_KEY.worktreePolicy.values], [...WORKTREE_POLICIES])
-  assert.deepEqual([...FIELD_BY_KEY.mainRotation.values], [...MAIN_ROTATION_MODES])
-  for (const [key, [min, max, integer]] of Object.entries(ROTATION_LIMITS)) {
-    assert.deepEqual([FIELD_BY_KEY[key].min, FIELD_BY_KEY[key].max, FIELD_BY_KEY[key].integer], [min, max, integer], `${key} 区间不一致`)
-    assert.equal(FIELD_BY_KEY[key].default, ROTATION_DEFAULTS[key], `${key} 默认值不一致`)
-  }
+  // 0.25.0：提醒阈值的默认/区间与 src/main-context.js 的常量同源。
+  assert.equal(FIELD_BY_KEY.contextPressureThreshold.default, CONTEXT_PRESSURE_THRESHOLD_DEFAULT)
+  assert.equal(FIELD_BY_KEY.contextPressureThreshold.min, CONTEXT_PRESSURE_THRESHOLD_MIN)
+  assert.equal(FIELD_BY_KEY.contextPressureThreshold.max, CONTEXT_PRESSURE_THRESHOLD_MAX)
 
   // 结构自洽：分组存在、区间合法、只读字段不可编辑。
   const groupIds = new Set(FIELD_GROUPS.map(g => g.id))
@@ -99,12 +100,14 @@ test('字段表与 loadConfig 双向一致（字段集 / 默认值 / 枚举 / �
 })
 
 test('废弃键不出现在 UI 字段表', () => {
-  // 12 个键由 src/config.js 的 DEPRECATED_KEYS 给迁移提示（P1-A 的 6 个 + P2-2 的 7 个 − 恢复的 1 个）；UI 侧不暴露。
+  // 0.25.0：轮换 8 键进 DEPRECATED_KEYS（P1-A 的 6 个 + P2-2 的 7 个 − 恢复的 1 个 + 轮换 8 个）；UI 侧不暴露。
   assert.deepEqual(Object.keys(DEPRECATED_KEYS).sort(), [
     'backend', 'rotateAfterDiskMiB', 'rotateAfterContextTokens',
     'rotateAfterSessions', 'rotateAfterTasks',
     'keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt',
     'mergeWindowMs', 'stallRounds', 'preferencesMaxItems',
+    'mainRotation', 'rotateAfterMainLogMiB', 'rotateAfterDays', 'rotateCooldownHours',
+    'rotateMinAgeHours', 'rotateIdleMinutes', 'rotateCheckIntervalHours', 'rotateArchiveOld',
   ].sort())
   for (const key of Object.keys(DEPRECATED_KEYS)) {
     assert.equal(FIELD_BY_KEY[key], undefined, `废弃键 ${key} 不得出现在字段表`)
@@ -112,76 +115,55 @@ test('废弃键不出现在 UI 字段表', () => {
   }
 })
 
-test('语义对齐：字段表只投影 loadConfig({}) 实际产出的 29 个键', () => {
+test('语义对齐：字段表只投影 loadConfig({}) 实际产出的 22 个键', () => {
   // 反向验证：把已删的 7 键任意一个加回 config-fields.js → 本条立刻红。
   const deleted = ['keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt', 'mergeWindowMs', 'stallRounds', 'preferencesMaxItems']
   for (const key of deleted) {
     assert.equal(FIELD_KEYS.includes(key), false, `${key} 已删除，不得回到表单`)
   }
-  assert.equal(FIELD_KEYS.length, 29, '字段表应与 loadConfig({}) 的 29 键同规模')
+  // 0.25.0：轮换 8 键也删了（29 − 8 + 1 提醒阈值 = 22）。
+  for (const key of [
+    'mainRotation', 'rotateAfterMainLogMiB', 'rotateAfterDays', 'rotateCooldownHours',
+    'rotateMinAgeHours', 'rotateIdleMinutes', 'rotateCheckIntervalHours', 'rotateArchiveOld',
+  ]) {
+    assert.equal(FIELD_KEYS.includes(key), false, `${key} 已删除（轮换整套下线）`)
+  }
+  assert.equal(FIELD_KEYS.length, 22, '字段表应与 loadConfig({}) 的 22 键同规模')
   // 续跑只剩「按任务声明」这一条路：不再有续跑分组，也没有任何 keepalive 分组。
   assert.deepEqual(FIELD_GROUPS.map(group => group.id).includes('keepalive'), false, '续跑分组应随四个续跑键一起删除')
 })
 
-test('mainRotation 默认 auto（开启）；只有显式 off 才关，拼错保持默认', () => {
-  assert.equal(FIELD_BY_KEY.mainRotation.default, 'auto')
-  assert.equal(ROTATION_DEFAULTS.mainRotation, 'auto')
-  assert.equal(loadConfig({}).mainRotation, 'auto')
-  assert.equal(loadConfig({ mainRotation: 'off' }).mainRotation, 'off')
-  // 拼错不再「安全地关掉」，而是保持默认开启——关轮换只有一条路：显式写 off。
-  for (const bad of ['GARBAGE', 'AUTO', 'on', false, 0]) {
-    assert.equal(loadConfig({ mainRotation: bad }).mainRotation, 'auto', JSON.stringify(bad))
-  }
+test('上下文压力提醒阈值：默认 0.4、可编辑数字、区间 0.1–0.95（与 loadConfig 同口径）', () => {
+  const field = FIELD_BY_KEY.contextPressureThreshold
+  assert.equal(field.kind, 'number')
+  assert.equal(field.integer, false)
+  assert.equal(field.default, 0.4)
+  assert.equal(field.min, 0.1)
+  assert.equal(field.max, 0.95)
+  assert.notEqual(field.readonly, true, '提醒阈值必须可编辑（用户要求阈值能在表单里配）')
+  assert.ok(EDITABLE_KEYS.includes('contextPressureThreshold'))
+  // help 必须写清「这是插件的提醒阈值，与宿主 compaction-basic 的 0.8 无关」。
+  assert.match(field.hint, /提醒阈值/)
+  assert.match(field.hint, /compaction-basic/)
+  assert.match(field.hint, /0\.8/)
+  assert.match(field.hint, /不会改变宿主压缩行为/)
+  // 运行时归一化与字段表一致：默认 0.4，覆盖生效。
+  assert.equal(loadConfig({}).contextPressureThreshold, 0.4)
+  assert.equal(loadConfig({ contextPressureThreshold: 0.7 }).contextPressureThreshold, 0.7)
 })
 
-test('轮换分组：8 个键在卡片上可编辑，coordinatorSession 只读（运维兜底通道）', () => {
-  // 布局：轮换分组仍是 9 键（总开关 + 7 个 rotate* + 协调者覆盖）。
-  const rotation = FIELDS_BY_GROUP.find(group => group.id === 'rotation')
-  assert.equal(rotation.fields.length, 9, '轮换分组应恰好 9 个字段')
-  assert.deepEqual(rotation.fields.map(field => field.key), [
-    'coordinatorSession', 'mainRotation', 'rotateAfterMainLogMiB', 'rotateAfterDays',
-    'rotateCooldownHours', 'rotateMinAgeHours', 'rotateIdleMinutes',
-    'rotateCheckIntervalHours', 'rotateArchiveOld',
-  ])
+test('「主会话」分组：2 个字段（提醒阈值可编辑 + 协调者覆盖只读）', () => {
+  const group = FIELDS_BY_GROUP.find(item => item.id === 'context')
+  assert.ok(group, '要有 context 分组')
+  assert.deepEqual(group.fields.map(item => item.key), ['contextPressureThreshold', 'coordinatorSession'])
+  assert.equal(group.label, '主会话')
   // 只读只有一处，且理由明确：填错会让协调者指向不存在的会话（高危误操作）。
-  assert.equal(FIELD_BY_KEY.coordinatorSession.readonly, true, 'coordinatorSession 应恢复只读')
+  assert.equal(FIELD_BY_KEY.coordinatorSession.readonly, true, 'coordinatorSession 应保持只读')
   assert.equal(EDITABLE_KEYS.includes('coordinatorSession'), false, 'coordinatorSession 不得下发保存')
-  for (const field of rotation.fields) {
-    if (field.key === 'coordinatorSession') continue
-    assert.notEqual(field.readonly, true, `${field.key} 不该只读`)
-    assert.ok(EDITABLE_KEYS.includes(field.key), `${field.key} 必须可编辑（否则卡片上点不动）`)
-  }
-  assert.equal(EDITABLE_KEYS.length, CONFIG_FIELDS.length - 1, '29 键里只有 coordinatorSession 只读')
-  assert.equal(FIELD_GROUPS.find(group => group.id === 'rotation').label, '主会话轮换', '分组标题不再标「只读」（只读逐行标）')
+  assert.equal(EDITABLE_KEYS.length, CONFIG_FIELDS.length - 1, '22 键里只有 coordinatorSession 只读')
 
-  // 检查节流：可写 int，默认 24、区间 1–168（与 loadConfig 的夹取口径一致）。
-  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.kind, 'number')
-  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.integer, true)
-  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.min, 1)
-  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.max, 168)
-  assert.equal(FIELD_BY_KEY.rotateCheckIntervalHours.default, 24)
-  assert.match(FIELD_BY_KEY.rotateCheckIntervalHours.hint, /检查节流 ≠ 轮换冷却/, '提示要写清与冷却的区别')
-
-  // 卡片保存路径：8 个可编辑键经 loadConfig 归一化后真读到新值。
-  const saved = loadConfig({
-    mainRotation: 'off',
-    rotateAfterMainLogMiB: 2.5,
-    rotateAfterDays: 3,
-    rotateCooldownHours: 6,
-    rotateMinAgeHours: 2,
-    rotateIdleMinutes: 30,
-    rotateCheckIntervalHours: 6,
-    rotateArchiveOld: false,
-  })
-  assert.equal(saved.mainRotation, 'off')
-  assert.equal(saved.rotateAfterMainLogMiB, 2.5)
-  assert.equal(saved.rotateAfterDays, 3)
-  assert.equal(saved.rotateCooldownHours, 6)
-  assert.equal(saved.rotateMinAgeHours, 2)
-  assert.equal(saved.rotateIdleMinutes, 30)
-  assert.equal(saved.rotateCheckIntervalHours, 6)
-  assert.equal(saved.rotateArchiveOld, false)
-  // coordinatorSession 走运维手改 YAML（不经卡片）：loadConfig 照旧认，空串/缺省 = 读台账指针。
+  // 卡片保存路径：提醒阈值经 loadConfig 归一化后真读到新值；coordinatorSession 走手改 YAML。
+  assert.equal(loadConfig({ contextPressureThreshold: 0.55 }).contextPressureThreshold, 0.55)
   assert.equal(loadConfig({ coordinatorSession: 's-manual' }).coordinatorSession, 's-manual')
   assert.equal(loadConfig({ coordinatorSession: '' }).coordinatorSession, undefined)
   assert.equal(loadConfig({}).coordinatorSession, undefined)

@@ -110,3 +110,16 @@ export const openMainOnce = () => {
   run.then(clear, clear)
   return run
 }
+
+// 0.25.0：把指定会话设为协调者（会话头「设为协调者」）。
+// 服务端只切指针：不改名、不归档、不退役旧会话；失败返回稳定 code（宿主渲染中文文案）。
+export const adoptCoordinator = async sessionId => {
+  const response = await fetch(ROUTE, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ endpoint: 'adopt-session', sessionId }),
+  })
+  const body = await response.json()
+  if (body && body.ok === true) return body
+  throw actionFailure(body, response.status)
+}
