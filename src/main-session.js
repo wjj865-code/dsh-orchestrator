@@ -229,11 +229,19 @@ export function createMainSession({
     }
   }
 
-  /** 打开成功后的旁路回调（观测/提醒）：绝不 await，失败也不影响打开结果。 */
+  /**
+   * 打开成功后的旁路回调（观测/提醒）：绝不 await，失败也不影响打开结果。
+   *
+   * **契约**（真机验证发现过一次断链）：`onOpened` 收到的 `result` 必须与 `open()` 的返回值同形
+   * ——`{ ok: true, sessionId, created }`。消费方（index.js 的上下文压力观测）只在
+   * `result.ok === true` 时做事；早先这里直接回传调用点的轻量描述（没有 `ok`），
+   * 结果「压力提醒」整条链在真机上永远不触发（单测因为各自只测一半而全绿）。
+   */
   const notifyOpened = (result, agent) => {
     if (typeof onOpened !== 'function') return
+    const opened = { ok: true, ...result }
     try {
-      void Promise.resolve(onOpened({ result, agent })).catch(() => { /* 观测失败不影响打开 */ })
+      void Promise.resolve(onOpened({ result: opened, agent })).catch(() => { /* 观测失败不影响打开 */ })
     } catch { /* 同步抛错同样吞掉 */ }
   }
 

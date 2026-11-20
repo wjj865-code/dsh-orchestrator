@@ -134,6 +134,47 @@ test('没有 workspaceRegistry（undefined）时也能创建主会话', async ()
   db.close()
 })
 
+// onOpened 的契约是 0.25.0 真机验证里踩到的坑：消费方（index 的压力观测）只认 `result.ok === true`，
+// 而调用点回传的是轻量描述（没有 ok），于是「打开主会话 → 观测 → 压力提醒」整条链在真机上从不触发。
+// 这里把契约钉死：新建与复用两条路都必须给 onOpened 一个与 open() 同形的 result（ok:true + sessionId）。
+test('onOpened 契约：新建/复用都给 ok:true + sessionId（压力观测依赖它）', async () => {
+  const created = await ledger()
+  const f = fake()
+  const onCreated = []
+  const mainCreated = createMainSession({
+    db: created, config: {}, agents: f.agents, sessionController: f.sessionController,
+    workspaces: f.workspaces, workspacePath: 'C:/ws',
+    onOpened: args => { onCreated.push(args) },
+  })
+  await mainCreated.open()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(onCreated.length, 1)
+  assert.deepEqual(
+    { ok: onCreated[0].result.ok, sessionId: onCreated[0].result.sessionId, created: onCreated[0].result.created, agent: onCreated[0].agent },
+    { ok: true, sessionId: 'session-main-new', created: true, agent: undefined },
+  )
+  created.close()
+
+  const reused = await ledger()
+  const g = fake({ live: new Set(['session-main-old']) })
+  g.presetFor = () => PRESET_ID
+  setMainSessionId(reused, 'session-main-old')
+  setMainSessionPreset(reused, PRESET_ID)
+  const onReused = []
+  const mainReused = createMainSession({
+    db: reused, config: {}, agents: g.agents, sessionController: g.sessionController,
+    presetFor: g.presetFor, workspacePath: 'C:/ws',
+    onOpened: args => { onReused.push(args) },
+  })
+  await mainReused.open()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(onReused.length, 1)
+  assert.equal(onReused[0].result.ok, true)
+  assert.equal(onReused[0].result.sessionId, 'session-main-old')
+  assert.equal(onReused[0].agent?.id, 'session-main-old')
+  reused.close()
+})
+
 test('并发 open 只创建一次主会话，两个调用拿到同一个结果', async () => {
   const db = await ledger()
   const f = fake()
