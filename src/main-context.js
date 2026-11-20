@@ -352,6 +352,9 @@ export function createContextObserver({
   }
   let latest = null
   let reminding = false
+  // 最近一次观测到的**存活**协调者 agent（提醒要用它做作用域路由，见 remind() 的注释）。
+  // 带 sessionId 一起存：新建主会话时那条观测还没有 agent，不能把旧主会话的 agent 拿来用。
+  let latestLive = null
 
   /** 按 sessionId 取压力（存活会话；未加载返回未知）。任意会话都能用，不绑主会话。 */
   const pressure = ({ sessionId, session } = {}) => {
@@ -398,11 +401,13 @@ export function createContextObserver({
       const limit = threshold()
       const alert = readAlertState(db)
       const decision = decideAlert({ ratio: press.ratio, threshold: limit, previous: alert, now: at })
+      const live = liveAgent !== undefined && liveAgent !== null
+      if (live) latestLive = { sessionId: mainSessionId, agent: liveAgent }
       latest = {
         at,
         source,
         sessionId: mainSessionId,
-        live: liveAgent !== undefined && liveAgent !== null,
+        live,
         pressure: {
           pressureTokens: press.pressureTokens,
           contextWindow: press.contextWindow,
@@ -461,6 +466,16 @@ export function createContextObserver({
    * 压力提醒的唯一出口：`ctx.userQuestions.ask()` 弹一张问题卡。
    * 三个选项：去新建（插件代建 + adopt）/ 继续当前会话（抬 band）/ 稍后再说（静默）。
    * 任何失败都只 warn + 记审计，不影响打开主会话、不自动动作。
+   *
+   * **作用域（0.25.0 真机验证修的第二处）**：`ask()` 必须带上主会话的 live agent。
+   * 宿主 `UserQuestionService.ask()` 在 `agent === undefined` 时走**全局** waterfall
+   * `ctx.waterfall('user-questions/request', ...)`；而浏览器端 answerer 是
+   * `ctx.remote.$on('user-questions/request', ...)` 注册的，它第一件事是
+   * `ctx.sessions.scopeOf(owner)` —— 全局派发时没有会话作用域，直接 `next()` 放行，
+   * 宿主拿到 noAnswerer → `NO_PROVIDER`，卡片永远不弹（0.25.0 真机实测：日志
+   * `main.context.alert.asked` 后紧接 `main.context.alert.no-provider`）。
+   * 带 agent 后走 `scopeTarget(agent, agent)`，请求才会落到该会话的 answerer 上。
+   * 拿不到 live agent（刚建出来还没起 agent）时退回全局 ask，并 warn 一次说明卡片可能不出现。
    */
   const remind = async ({ observation, mainSessionId } = {}) => {
     try {
@@ -484,9 +499,21 @@ export function createContextObserver({
       }
       if (reminding) return { action: 'skip', reason: 'busy' }
       reminding = true
+      // 作用域：只认「同一个主会话」的存活 agent，避免拿上一个主会话的 agent 去路由。
+      const agent = latestLive !== null && latestLive.sessionId === mainSessionId ? latestLive.agent : undefined
+      const agentId = agent === undefined
+        ? null
+        : (typeof agent?.session?.id === 'string' ? agent.session.id : (typeof agent?.id === 'string' ? agent.id : null))
+      if (agent === undefined) {
+        warnOnce('ask-without-agent',
+          'dsh-orchestrator: 压力提醒拿不到主会话的存活 agent（会话刚建、agent 还没起）：问题卡可能不会出现在任何客户端；'
+          + '本次仍按全局作用域提问，可手动在指挥舱新建协调者会话')
+      }
       // 先记 band 再提问：防止同一段压力弹两次（用户关掉卡片也不会重复弹）。
       writeAlertState(db, { at: now(), ratio, band: decision.band, state: 'asked' })
-      log('main.context.alert.asked', { detail: { ratio, threshold: limit, band: decision.band, sessionId: mainSessionId } })
+      log('main.context.alert.asked', {
+        detail: { ratio, threshold: limit, band: decision.band, sessionId: mainSessionId, agentId, hasAgent: agent !== undefined },
+      })
       const question = {
         id: 'main-context-pressure',
         header: '主会话上下文压力',
@@ -501,18 +528,18 @@ export function createContextObserver({
       }
       let answer
       try {
-        answer = await service.ask({ questions: [question] })
+        answer = await service.ask({ questions: [question], ...(agent === undefined ? {} : { agent }) })
       } catch (error) {
         const code = typeof error?.code === 'string' ? error.code : ''
         if (code === 'NO_PROVIDER') {
           warnOnce('user-questions-no-provider',
             'dsh-orchestrator: 上下文压力已到提醒阈值，但当前没有在线客户端可以回答问题卡（本次不提醒；可手动在指挥舱新建协调者会话）')
           writeAlertState(db, { at: now(), ratio, band: decision.band, state: 'unavailable' })
-          log('main.context.alert.no-provider', { detail: { ratio, band: decision.band } })
+          log('main.context.alert.no-provider', { detail: { ratio, band: decision.band, agentId, hasAgent: agent !== undefined } })
           return { action: 'skip', reason: 'no-provider' }
         }
         warn(`dsh-orchestrator: 压力提醒问题卡失败（不影响使用）：${errorText(error)}`)
-        log('main.context.alert.ask-failed', { detail: { ratio, band: decision.band, error: errorText(error) } })
+        log('main.context.alert.ask-failed', { detail: { ratio, band: decision.band, error: errorText(error), agentId, hasAgent: agent !== undefined } })
         writeAlertState(db, { at: now(), ratio, band: decision.band - 1, state: 'failed' })
         return { action: 'skip', reason: 'ask-failed' }
       }
