@@ -469,7 +469,13 @@ test('任务入口渲染：主会话显示「任务」入口（品牌块 + 图�
   const injected = header.spec.inject()
   assert.equal(typeof injected.hooks.mainView.getSnapshot, 'function')
   assert.equal(injected.hooks.mainView.getSnapshot(), true)
-  assert.deepEqual(fetchCalls, [{ endpoint: 'session-role', sessionId: 's-main' }])
+  assert.deepEqual(
+    fetchCalls.filter(body => body.endpoint === 'session-role'),
+    [{ endpoint: 'session-role', sessionId: 's-main' }],
+    '入口判定只问一次 session-role',
+  )
+  // t-a79e12d8：同一个 apply 还起了「主会话导航待办」轮询（服务端建完会话后客户端据此跳过去）。
+  assert.ok(fetchCalls.some(body => body.endpoint === 'main-nav'), '客户端要轮询 main-nav 待办')
   const render = value => header.component({
     openPanel: () => {},
     useMainView: selector => selector(value),
@@ -2045,3 +2051,142 @@ test('chip 只走官方 turnTail 槽位：不注入 DOM、不抢动作行/时钟
     /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.orch-taskchip-spin\s*\{\s*animation:\s*none\s*;?\s*\}[\s\S]*?\.orch-taskchip\[data-state=['"]?confirming['"]?\]\s*\{\s*animation:\s*none\s*;\s*opacity:\s*0?\.6\s*;?\s*\}/,
   )
 })
+
+// ---------------------------------------------------------------------------
+// t-a79e12d8：压力提醒「新建协调者会话」确认之后——服务端只切指针，跳转只能客户端做。
+// 客户端轮询 main-nav 待办：navigate → uiWorkspace.openSession；notice / 跳转失败 → 面板顶部可读提示。
+// 断言前用 plain() 归一化：产物里的对象来自 vm 沙箱（另一个 realm），原型不同 deepEqual 会假失败。
+// ---------------------------------------------------------------------------
+const plain = value => JSON.parse(JSON.stringify(value))
+
+test('主会话导航待办：navigate → uiWorkspace.openSession + ack 成功，同一 id 不重复跳', async () => {
+  const { loaded } = load()
+  const opened = []
+  const acked = []
+  const notices = []
+  const poller = loaded.__test.createMainNavPoller({
+    readNav: async () => ({ ok: true, nav: { id: 'nav-1', kind: 'navigate', sessionId: 's-new' } }),
+    ackNav: async ack => { acked.push(ack); return { ok: true } },
+    openSession: id => { opened.push(id) },
+    onNotice: text => notices.push(text),
+  })
+  await poller.run()
+  assert.deepEqual(opened, ['s-new'], '客户端用宿主公开的 uiWorkspace.openSession 跳过去')
+  assert.deepEqual(plain(acked), [{ id: 'nav-1', ok: true }], '跳成功才 ack')
+  assert.deepEqual(notices, [], '成功路径不打扰用户')
+  // 服务端还没清（或 ack 丢了）：同一条待办不重复导航。
+  await poller.run()
+  assert.deepEqual(opened, ['s-new'])
+  assert.equal(acked.length, 1)
+  // 已处理完（服务端返回 null）时什么都不做。
+  const idle = loaded.__test.createMainNavPoller({
+    readNav: async () => ({ ok: true, nav: null }), ackNav: async () => { throw new Error('不该 ack') },
+    openSession: () => { throw new Error('不该跳') },
+  })
+  await idle.run()
+})
+
+test('主会话导航待办：宿主拒绝 openSession → 最多重试 3 次后 ack 失败 + 可读提示（指针不动）', async () => {
+  const { loaded } = load()
+  const acked = []
+  const notices = []
+  let attempts = 0
+  const poller = loaded.__test.createMainNavPoller({
+    readNav: async () => ({ ok: true, nav: { id: 'nav-2', kind: 'navigate', sessionId: 's-new' } }),
+    ackNav: async ack => { acked.push(ack); return { ok: true } },
+    openSession: () => { attempts += 1; throw new Error('sessions.retain: unknown session s-new') },
+    onNotice: text => notices.push(text),
+  })
+  await poller.run()
+  await poller.run()
+  assert.equal(attempts, 2, '前两次只重试、不打扰用户（新建会话的广播可能还没到）')
+  assert.deepEqual(acked, [])
+  await poller.run()
+  assert.equal(attempts, 3)
+  assert.deepEqual(plain(acked), [{ id: 'nav-2', ok: false, error: 'sessions.retain: unknown session s-new' }])
+  assert.equal(notices.length, 1, '最终失败给一条可读提示')
+  assert.match(notices[0], /自动跳转失败/)
+  assert.match(notices[0], /unknown session s-new/, '带上宿主给的原因（排查用）')
+  assert.match(notices[0], /请从左侧会话列表打开「主会话」/, '告诉用户手动入口在哪')
+  await poller.run()
+  assert.equal(attempts, 3, '消费过的待办不再重试')
+})
+
+test('主会话导航待办：notice 原样交给面板；开放接口缺失（老宿主）降级为提示不崩', async () => {
+  const { loaded } = load()
+  const acked = []
+  const notices = []
+  const poller = loaded.__test.createMainNavPoller({
+    readNav: async () => ({ ok: true, nav: { id: 'nav-3', kind: 'notice', text: '新建协调者会话失败（旧主会话保持不动）：缺 sessionController' } }),
+    ackNav: async ack => { acked.push(ack); return { ok: true } },
+    openSession: () => { throw new Error('不该跳') },
+    onNotice: text => notices.push(text),
+  })
+  await poller.run()
+  assert.deepEqual(notices, ['新建协调者会话失败（旧主会话保持不动）：缺 sessionController'])
+  assert.deepEqual(plain(acked), [{ id: 'nav-3', ok: true }])
+
+  // 老宿主/裁剪 profile 没有 uiWorkspace.openSession：不抛给用户看崩栈，只说「手动打开」。
+  const noHost = loaded.__test.createMainNavPoller({
+    readNav: async () => ({ ok: true, nav: { id: 'nav-4', kind: 'navigate', sessionId: 's-new' } }),
+    ackNav: async () => ({ ok: true }),
+    onNotice: text => notices.push(text),
+    attempts: 1,
+  })
+  await noHost.run()
+  assert.match(notices.at(-1), /没有 uiWorkspace\.openSession/)
+  // 轮询本身失败（网络/路由不可用）：静默，不打扰正在对话的用户。
+  const offline = loaded.__test.createMainNavPoller({
+    readNav: async () => { throw new Error('HTTP 500') },
+    ackNav: async () => ({ ok: true }),
+    openSession: () => { throw new Error('不该跳') },
+    onNotice: text => notices.push(text),
+  })
+  await offline.run()
+  assert.equal(notices.filter(text => /HTTP 500/.test(text)).length, 0)
+})
+
+test('面板顶部显示主会话跳转失败提示：已挂载订阅即时显示，未挂载挂载时取走一次', async () => {
+  const { loaded, ctx, registrations, resetHooks, hooks } = load({
+    fetch: async (_url, init) => {
+      const payload = JSON.parse(init.body)
+      return { ok: true, status: 200, json: async () => (payload.endpoint === 'main-nav' ? { ok: true, nav: null } : snapshotOf([])) }
+    },
+    globals: { setTimeout: () => 0, clearTimeout: () => {} },
+  })
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const injected = panel.spec.inject()
+  const text = '新主会话已建好，但自动跳转失败：unknown session。请从左侧会话列表打开「主会话」。'
+  resetHooks()
+  hooks.slots[0] = snapshotOf([])
+  // 未挂载时先到的提示：挂载时 take 一次就显示。
+  injected.notice.set(text)
+  const props = { openSession: () => {}, focus: injected.focus, notice: injected.notice }
+  const render = () => {
+    hooks.cursor = 0
+    hooks.effects.length = 0
+    return panel.component(props)
+  }
+  // 组件垫片把 JSX 子节点放在元素的 children 上（不是 props.children）：渲染成文字时要把两者合起来喂给函数组件。
+  const panelText = node => {
+    if (node === null || node === undefined) return ''
+    if (typeof node === 'string' || typeof node === 'number') return String(node)
+    if (Array.isArray(node)) return node.map(panelText).join('')
+    if (typeof node !== 'object') return ''
+    if (typeof node.type === 'function') {
+      const kids = Array.isArray(node.children) ? node.children : []
+      return panelText(node.type({ ...node.props, children: kids.length === 1 ? kids[0] : kids }))
+    }
+    return panelText(node.children)
+  }
+  render()
+  for (const effect of hooks.effects) effect()
+  assert.match(panelText(render()), /自动跳转失败/, '面板顶部要显示这条可读提示')
+  assert.equal(injected.notice.take(), null, '提示取走一次就清空（不残留到下次开面板）')
+  // 面板已挂载（上一次 render 的 effect 订阅上了）：之后到的提示即时推给它，不用等重新挂载。
+  injected.notice.set('新主会话已建好，但自动跳转失败：HTTP 500。请从左侧会话列表打开「主会话」。')
+  assert.match(panelText(render()), /HTTP 500/, '已挂载的面板要即时收到新提示')
+  await flush()
+})
+

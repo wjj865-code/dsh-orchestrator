@@ -25,7 +25,9 @@ import {
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce, adoptCoordinator,
   readGroups, readGroup, readCalendar, readAutomations, readStats,
   saveGroup, archiveGroup, setPlan, saveAutomation, toggleAutomation, deleteAutomation,
+  readMainNav, ackMainNav,
 } from './api.js'
+import { createMainNavPoller, createNavNotice } from './nav.js'
 import { createTaskFeed } from './feed.js'
 import { createMainViewGate } from './gate.js'
 import { ensureStyles, STYLE_TEXT } from './styles.js'
@@ -164,27 +166,28 @@ export const createClient = (req) => {
       if (body === null || typeof body !== 'object' || body.ok !== true) throw new Error('bad-response')
       return body.isMain === true
     }
+    // 自排程定时器（仓库口径：不用 setInterval，便于卸载时立刻停）。
+    const schedule = typeof setTimeout === 'function'
+      ? (run, ms) => {
+        let cancelled = false
+        let handle
+        const tick = () => {
+          if (cancelled) return
+          run()
+          if (!cancelled) handle = setTimeout(tick, ms)
+        }
+        handle = setTimeout(tick, ms)
+        return () => {
+          cancelled = true
+          try { clearTimeout(handle) } catch { /* 卸载期清理失败不阻断 */ }
+        }
+      }
+      : undefined
     const mainView = createMainViewGate({
       readSessionId,
       subscribeSession,
       fetchRole,
-      timer: typeof setTimeout === 'function'
-        ? (run, ms) => {
-          // 自排程 setTimeout（仓库口径：不用 setInterval，便于卸载时立刻停）。
-          let cancelled = false
-          let handle
-          const tick = () => {
-            if (cancelled) return
-            run()
-            if (!cancelled) handle = setTimeout(tick, ms)
-          }
-          handle = setTimeout(tick, ms)
-          return () => {
-            cancelled = true
-            try { clearTimeout(handle) } catch { /* 卸载期清理失败不阻断 */ }
-          }
-        }
-        : undefined,
+      timer: schedule,
     })
     if (typeof ctx.effect === 'function') {
       ctx.effect(() => {
@@ -200,6 +203,31 @@ export const createClient = (req) => {
     const chipFeed = createTaskFeed({ readSnapshot: () => readSnapshot() })
     if (typeof ctx.effect === 'function') {
       ctx.effect(() => () => chipFeed.stop(), 'dsh-orchestrator: task chip feed')
+    }
+
+    // t-a79e12d8：「新建协调者会话」确认后的跳转/提示待办（服务端只切指针，跳转只能客户端做）。
+    // 面板顶部显示可读失败原因；同时切到面板——失败提示必须落在用户看得见的地方（与产物预览失败同口径）。
+    const navNotice = createNavNotice()
+    const navPoller = createMainNavPoller({
+      readNav: readMainNav,
+      ackNav: ackMainNav,
+      openSession: sessionId => ctx.uiWorkspace.openSession(sessionId),
+      onNotice: text => {
+        navNotice.set(text)
+        ctx.layout.selectPanel(PANEL_ID)
+      },
+      warn: message => {
+        try { console.warn(message) } catch { /* 控制台不可用不阻断 */ }
+      },
+      timer: schedule,
+    })
+    if (typeof ctx.effect === 'function') {
+      ctx.effect(() => {
+        const stop = navPoller.start()
+        return () => { try { stop?.() } catch { /* 卸载期清理失败不阻断 */ } }
+      }, 'dsh-orchestrator: main nav poller')
+    } else {
+      void navPoller.run()
     }
 
     // 产物预览：复用宿主的会话右侧栏（ui-sidebar-right 的 file Tab，Markdown/代码/图片/PDF/Office 都有渲染器）。
@@ -256,6 +284,8 @@ export const createClient = (req) => {
         openArtifactPreview,
         // chip 的「打开并定位」请求交给面板自己消费（挂载时 take 一次，取走即清空）。
         focus: focusRequest,
+        // t-a79e12d8：主会话跳转失败的可读提示（面板顶部 banner；已挂载即时推送，未挂载挂载时取走）。
+        notice: navNotice,
       }),
     }, TasksPanel))
 
@@ -359,6 +389,8 @@ export const createClient = (req) => {
     apply,
     __test: {
       createMainViewGate,
+      createMainNavPoller,
+      createNavNotice,
       countTasks,
       matchesFilter,
       matchesQuery,

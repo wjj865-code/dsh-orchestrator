@@ -70,7 +70,7 @@ function fakeGoalService() {
   }
 }
 
-function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, agentTeams: agentTeamsOverride, connection, sessionController, workspaces, goals, sessions, workspaceChanges } = {}) {
+function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { id: 'm-1', name: 'w-1' } }, subagents: subagentsOverride, withInject = false, withAgentTeams = true, agentTeams: agentTeamsOverride, connection, sessionController, workspaces, goals, sessions, workspaceChanges, extraServices = {} } = {}) {
   const live = new Map((agents ?? [agent]).map(item => [item.id, item]))
   const registered = []
   const routes = []
@@ -142,6 +142,9 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       if (name === 'goals') return goals
       if (name === 'agentTeams') return agentTeamsService
       if (name === 'subagents') return subagentsService
+      // t-a79e12d8：压力提醒/导航的替身服务（tokenMeter / userQuestions / agentPresets…），
+      // 只有用例显式给的才存在，保持「缺服务照常降级」的默认形状。
+      if (extraServices[name] !== undefined) return extraServices[name]
       return undefined
     },
     ...(withInject
@@ -349,8 +352,89 @@ test('open-main 创建失败返回 500 与可读原因', withHome(async () => {
   assert.match(body.error, /boom/)
 }))
 
-test('主会话 live 时 task_create 正常派发，只给主会话装白名单', withHome(async () => {
-  const s1 = makeAgent('s-1')
+// t-a79e12d8：压力提醒的两个真机缺陷（有任务在跑仍弹卡 / 确认新建后不跳转）的服务端接线。
+// 这一层验「装配」：activeTasks 真的来自台账、代建结果真的落成 main-nav 待办、ack 才清。
+const contextServices = ({ asks, answer } = {}) => ({
+  tokenMeter: { contextPressure: () => ({ pressureTokens: 8000, contextWindow: 16000 }) },
+  userQuestions: {
+    async ask(request) {
+      asks.push(request)
+      return { answers: [{ id: 'main-context-pressure', selected: [answer] }] }
+    },
+  },
+  agentPresets: { serviceFor: () => undefined },
+})
+
+const postRoute = (route, body) => route(new Request('http://x/api/orchestrator', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+}))
+
+test('压力提醒：有运行中任务时 open-main 不弹卡（deferred），任务收尾后再问', withHome(async home => {
+  const coordinator = makeAgent('s-1')
+  const asks = []
+  const boot = fakeCtx({
+    agent: coordinator,
+    extraServices: contextServices({ asks, answer: '继续当前会话' }),
+  })
+  await apply(boot.ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(boot.registered.map(tool => [tool.name, tool]))
+  const created = await byName.task_create.execute({ title: '在跑', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
+  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const open = () => postRoute(boot.routes[0].fetch, { endpoint: 'open-main' })
+
+  await open()
+  await wait(200)
+  assert.equal(asks.length, 0, '有任务在跑就不该弹「切换主会话」问题卡')
+  assert.match(logsOf(home), /main\.context\.alert\.deferred/, '要留延后审计')
+  // 收尾（停止任务）后下一次打开主会话：同一 band 也会问。
+  const stopped = await byName.task_message.execute({ task_id: taskId, action: 'stop' }, { agent: coordinator })
+  assert.match(stopped, /已停止|已取消|已取消/)
+  await open()
+  await wait(200)
+  assert.equal(asks.length, 1, '任务收尾后同一 band 再问（deferred 不占 band）')
+}))
+
+test('压力提醒选「新建协调者会话」：代建 + 切指针后留 main-nav 待办，ack 才清（服务端不假装导航）', withHome(async home => {
+  const coordinator = makeAgent('s-1')
+  const asks = []
+  const created = []
+  const boot = fakeCtx({
+    agent: coordinator,
+    sessionController: {
+      async create(request) { created.push(request); return { sessionId: 'session-new' } },
+      async rename() {},
+    },
+    workspaces: {
+      resolveByPath: () => undefined,
+      async create(path, title) { return { id: 'ws-1', path, title } },
+    },
+    extraServices: contextServices({ asks, answer: '新建协调者会话' }),
+  })
+  await apply(boot.ctx, { coordinatorSession: 's-1' })
+  const route = boot.routes[0].fetch
+  await postRoute(route, { endpoint: 'open-main' })
+  await wait(200)
+  assert.equal(asks.length, 1, '没有任务在跑时照常问')
+  assert.equal(created.length, 1, '选「新建」才代建')
+  const navBody = await (await postRoute(route, { endpoint: 'main-nav' })).json()
+  assert.equal(navBody.ok, true)
+  assert.equal(navBody.nav.kind, 'navigate', '代建成功 → 一条「跳到新会话」待办（不是服务端直接跳）')
+  assert.equal(navBody.nav.sessionId, 'session-new')
+  // 指针已经切好（旧会话仍可用，不归档不删除）。
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  assert.equal(db.prepare('SELECT value FROM settings WHERE key = ?').get('main_session_id').value, 'session-new')
+  db.close()
+  // 客户端 ack 后待办清空；id 不匹配不清。
+  const wrong = await (await postRoute(route, { endpoint: 'main-nav-ack', id: 'nav-x', ok: true })).json()
+  assert.deepEqual(wrong, { ok: true, cleared: false })
+  const acked = await (await postRoute(route, { endpoint: 'main-nav-ack', id: navBody.nav.id, ok: true })).json()
+  assert.deepEqual(acked, { ok: true, cleared: true })
+  assert.deepEqual(await (await postRoute(route, { endpoint: 'main-nav' })).json(), { ok: true, nav: null })
+  assert.match(logsOf(home), /main\.nav\.consumed/)
+}))
+
+test('主会话 live 时 task_create 正常派发，只给主会话装白名单', withHome(async () => {  const s1 = makeAgent('s-1')
   const s2 = makeAgent('s-2')
   const { ctx, registered } = fakeCtx({ agents: [s1, s2] })
   await apply(ctx, { coordinatorSession: 's-1' })

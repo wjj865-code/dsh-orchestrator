@@ -20,6 +20,7 @@ import { legacyToolHint } from './src/tool-migrations.js'
 import { createQueue } from './src/queue.js'
 import { createStartupReconciler } from './src/reconcile.js'
 import { createContextObserver, cleanupLegacyRotation, probeCompaction } from './src/main-context.js'
+import { createMainNav, planCoordinatorNav } from './src/main-nav.js'
 import { createIdleWatchdog } from './src/watchdog.js'
 import { createGoalBridge } from './src/goal.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
@@ -455,7 +456,10 @@ export async function apply(ctx, rawConfig = {}) {
   // 0.25.0：上下文观测 + 压力提醒（**只读 + 只提问**：不调 compactNow、不自动换会话）。
   // 观测在「打开主会话」后异步跑一次；压力到 `contextPressureThreshold` 时用宿主 userQuestions 弹问题卡。
   // 用户选「新建协调者会话」才代建（requestNewCoordinator → mainSession.createCoordinatorSession）。
+  // t-a79e12d8：代建/切指针后的「跳到新会话」只能客户端做（宿主 uiWorkspace.openSession 在浏览器里），
+  // 所以这里只记一条进程内待办（main-nav 端点轮询），服务端不假装能导航。
   let mainSession
+  const mainNav = createMainNav({ log: (event, fields) => logger.log(event, fields) })
   const contextObserver = createContextObserver({
     db,
     config,
@@ -465,8 +469,13 @@ export async function apply(ctx, rawConfig = {}) {
     agentPresets: () => service('agentPresets'),
     sessions: () => service('sessions'),
     userQuestions: () => service('userQuestions'),
+    // 有非终态任务时延后提醒（不弹卡、不写 asked、不占 band）：在跑任务的回报还投给旧协调者会话。
+    activeTasks: () => listTasks(db, { active: true }),
     requestNewCoordinator: async () => {
       const result = await mainSession?.createCoordinatorSession?.({ source: 'pressure-reminder' })
+      // 成功 → 一条「跳到新会话」待办；失败 → 一条可读提示（旧主会话保持不动，指针没切）。
+      const pending = planCoordinatorNav(result)
+      if (pending !== null) mainNav.publish(pending)
       if (result?.ok === true) {
         contextObserver.clearAlert({ reason: 'created' })
         try { await ensureDigestFor(result.sessionId) } catch (error) {
@@ -939,6 +948,8 @@ export async function apply(ctx, rawConfig = {}) {
       teamBoard: () => teamBoard.read(resolveCoordinator()),
       // 0.25.0：上下文观测缓存（只读诊断；面板不常驻渲染压力）。
       contextSnapshot: () => contextObserver.snapshot(),
+      // t-a79e12d8：客户端轮询「跳到新主会话 / 一条可读提示」的进程内待办（读 + ack，不碰台账）。
+      mainNav,
       // 0.25.0：会话头「设为协调者」→ 只切指针（不改名、不归档旧会话）+ 重建日报 + 清提醒。
       adoptSession: async ({ sessionId }) => {
         const result = await mainSession.adoptSession({ sessionId, source: 'panel' })

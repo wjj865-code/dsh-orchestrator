@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openLedger, getSetting } from '../src/ledger.js'
 import {
-  ALERT_OPTION_CONTINUE, ALERT_OPTION_CREATE, ALERT_OPTION_LATER, MAIN_CONTEXT_ALERT_KEY,
+  ALERT_OPTION_CONTINUE, ALERT_OPTION_CREATE, ALERT_OPTION_LATER, DEFERRED_TASK_STATUSES, MAIN_CONTEXT_ALERT_KEY,
   createContextObserver, decideAlert, readAlertState, readContextPressure,
 } from '../src/main-context.js'
 
@@ -28,7 +28,7 @@ const liveSession = (id, { pressureTokens = 8000, contextWindow = 16000 } = {}) 
   }
 }
 
-const baseDeps = ({ db, agent, session, tokenMeter, ask, log, onWarn, requestNewCoordinator }) => ({
+const baseDeps = ({ db, agent, session, tokenMeter, ask, log, onWarn, requestNewCoordinator, activeTasks }) => ({
   db,
   config: { contextPressureThreshold: 0.4 },
   tokenMeter,
@@ -39,6 +39,7 @@ const baseDeps = ({ db, agent, session, tokenMeter, ask, log, onWarn, requestNew
   sessions: { get: () => session },
   userQuestions: { ask },
   requestNewCoordinator,
+  activeTasks,
   log: log ?? (() => {}),
   onWarn,
 })
@@ -190,3 +191,73 @@ test('提醒出口：选「新建协调者会话」才代建并清 alert；「�
   assert.equal(readAlertState(db2).state, 'snoozed')
   db2.close()
 })
+
+// t-a79e12d8：有非终态任务时不弹「切换主会话」问题卡（用户原话：有运行中任务时依然会询问）。
+test('decideAlert：有非终态任务 → defer（不占 band）；delivered 不算运行中', () => {
+  assert.deepEqual(DEFERRED_TASK_STATUSES, ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth'],
+    'delivered（已交付待确认）不算运行中：子会话已结束，换主会话不会丢回报')
+  const deferred = decideAlert({ ratio: 0.42, threshold: 0.4, previous: null, activeTasks: [{ id: 't-run', status: 'running' }] })
+  assert.equal(deferred.action, 'defer')
+  assert.equal(deferred.reason, 'tasks-active')
+  assert.equal(deferred.band, 4)
+  assert.deepEqual(deferred.taskIds, ['t-run'])
+  // 也接受裸 id（方便调用方只查 id）；delivered 行不触发延后。
+  assert.equal(decideAlert({ ratio: 0.42, threshold: 0.4, previous: null, activeTasks: ['t-1'] }).action, 'defer')
+  assert.equal(decideAlert({ ratio: 0.42, threshold: 0.4, previous: null, activeTasks: [{ id: 't-d', status: 'delivered' }] }).action, 'ask')
+  // 压力没到阈值 / 已问过同 band 时，有任务也不会变成 defer（不打断既有语义）。
+  assert.equal(decideAlert({ ratio: 0.3, threshold: 0.4, previous: null, activeTasks: ['t-1'] }).action, 'skip')
+  assert.equal(decideAlert({
+    ratio: 0.42, threshold: 0.4, previous: { band: 4, state: 'asked' }, activeTasks: ['t-1'],
+  }).action, 'skip')
+})
+
+test('提醒延后：有运行中任务时不弹卡、不写 asked/不占 band，收尾后同一 band 再问', async () => {
+  const db = await ledger()
+  const { agent, session, tokenMeter } = liveSession('s-main')
+  const asks = []
+  const events = []
+  let activeTasks = [{ id: 't-running', status: 'running' }]
+  const observer = createContextObserver(baseDeps({
+    db, agent, session, tokenMeter,
+    ask: answerWith(ALERT_OPTION_CONTINUE, asks),
+    activeTasks: () => activeTasks,
+    log: (event, fields) => events.push({ event, fields }),
+  }))
+  const deferredEvents = () => events.filter(item => item.event === 'main.context.alert.deferred')
+
+  await observer.observeAndRemind({ mainSessionId: 's-main', liveAgent: agent })
+  assert.equal(asks.length, 0, '有任务在跑就不该弹问题卡')
+  assert.equal(deferredEvents().length, 1, '要留 main.context.alert.deferred 审计')
+  assert.equal(deferredEvents()[0].fields.detail.reason, 'tasks-active')
+  assert.deepEqual(deferredEvents()[0].fields.detail.taskIds, ['t-running'])
+  assert.equal(deferredEvents()[0].fields.detail.band, 5, '压力 0.5 → band 5（只用于审计，不写进 settings）')
+  assert.equal(getSetting(db, MAIN_CONTEXT_ALERT_KEY), undefined, '不写 asked、不占 band（否则收尾后不会再问）')
+  assert.equal(observer.snapshot().alert.decision, 'defer', 'snapshot 如实给出 defer 判定')
+
+  // 同一批任务、同一段压力再打开：不重复记审计（也不弹）。
+  await observer.observeAndRemind({ mainSessionId: 's-main', liveAgent: agent })
+  assert.equal(asks.length, 0)
+  assert.equal(deferredEvents().length, 1, '同一 band + 同一批任务只记一条 deferred')
+
+  // 任务收尾 → 下一次打开主会话，同一 band 也会再问（这就是不占 band 的意义）。
+  activeTasks = []
+  await observer.observeAndRemind({ mainSessionId: 's-main', liveAgent: agent })
+  assert.equal(asks.length, 1)
+  assert.equal(readAlertState(db).state, 'declined')
+  db.close()
+})
+
+test('提醒延后：只有 delivered（已交付待确认）时照常问', async () => {
+  const db = await ledger()
+  const { agent, session, tokenMeter } = liveSession('s-main')
+  const asks = []
+  const observer = createContextObserver(baseDeps({
+    db, agent, session, tokenMeter,
+    ask: answerWith(ALERT_OPTION_CONTINUE, asks),
+    activeTasks: () => [{ id: 't-delivered', status: 'delivered' }],
+  }))
+  await observer.observeAndRemind({ mainSessionId: 's-main', liveAgent: agent })
+  assert.equal(asks.length, 1, 'delivered 不算运行中：照常问')
+  db.close()
+})
+

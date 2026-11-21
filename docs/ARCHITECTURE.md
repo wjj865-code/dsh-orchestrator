@@ -37,12 +37,14 @@
 
 主会话是唯一协调者。**「轮换」整套已删除**（不再自动归档旧会话、不再自己换人）：上下文过长由宿主 `compaction-basic` 在每个 agent 预设的 isolate 组里自动压缩（阈值是宿主的 `thresholdRatio`，默认 0.8），插件只做观测与提醒。
 
-- **模块**：`src/main-context.js`（观测 `readContextPressure` / `readLogSize` / `readCompactionStats`、只读探测 `probeCompaction`、提醒判定 `decideAlert`、问题卡与代建衔接 `createContextObserver`、老键清理 `cleanupLegacyRotation`）、`src/main-session.js`（`adoptSession` / `createCoordinatorSession`）、`index.js`（装配 + `onOpened` 旁路）、`src/host-route.js`（`adopt-session` 端点 + `snapshot.mainSession.context`）。
+- **模块**：`src/main-context.js`（观测 `readContextPressure` / `readLogSize` / `readCompactionStats`、只读探测 `probeCompaction`、提醒判定 `decideAlert`、问题卡与代建衔接 `createContextObserver`、老键清理 `cleanupLegacyRotation`）、`src/main-session.js`（`adoptSession` / `createCoordinatorSession`）、`src/main-nav.js`（进程内导航/提示待办 `createMainNav` + 代建结果翻译 `planCoordinatorNav`）、`client/src/nav.js`（轮询执行跳转 `createMainNavPoller`）、`index.js`（装配 + `onOpened` 旁路）、`src/host-route.js`（`adopt-session` / `main-nav` / `main-nav-ack` 端点 + `snapshot.mainSession.context`）。
 - **观测**（只在「打开主会话」时算一次，异步不阻塞）：压力 = `tokenMeter.contextPressure(session)` 的 `pressureTokens/contextWindow`；日志体积 = `sessionPersistence.locate` + `stat`；压缩次数 = `sessionQuery.observeSession()` 里 `compaction/start` 的 `turn`（`null` = 手动 `/compact`，数字 = 宿主自动）。
 - **提醒**（唯一出口：宿主 `userQuestions` 问题卡）：压力 ≥ `contextPressureThreshold`（默认 0.4，可配）时弹一次；选项「新建协调者会话 / 继续当前会话 / 稍后再说」。去重：settings `main_context_alert = { at, ratio, band, state }`，同一 band（0.1 步长）只问一次，压力回落到 `阈值 − 0.05` 才重新武装。`userQuestions` 缺失或 `NO_PROVIDER` 只 warn 一次、不建会话。
+- **有在跑的任务就延后**（t-a79e12d8）：`decideAlert` 该 `ask` 时若 `activeTasks` 里还有 `DEFERRED_TASK_STATUSES`（`statusesWith('active')` 去掉 `delivered`：pending / running / waiting_dep / waiting_user / waiting_auth）就改成 `defer`。`remind` 只写一条 `main.context.alert.deferred`（按 band + 任务集合去重），**不写 `main_context_alert`、不占 band**——任务收尾后下一次 open 仍会问（同一 band 也问）。`delivered` 不算在跑（子会话已结束，换主会话不丢回报）。
 - **换协调者**（只切指针，旧会话零处置）：①会话头「设为协调者」→ `adopt-session` → `adoptSession`（校验：会话存在 / 在指挥舱工作区 / agent 已加载 / 预设为协调者或可拉回，否则 `ADOPT_*` 可读错误）；②问题卡选「新建」→ `createCoordinatorSession`（create → 切指针 → `onboarding=sent` → 改名「主会话」→ 审计 `main.adopt.created`；create 失败零处置，切指针失败**新会话留着待重用**、不归档）。同一时刻只允许一次切换（`ADOPT_BUSY`）。
+- **跳转（客户端能力，服务端不假装能导航）**：`planCoordinatorNav(代建结果)` → 成功一条 `{kind:'navigate', sessionId}`、失败一条 `{kind:'notice', text}`，写进 `createMainNav` 的**进程内单条待办**（TTL 5 分钟，不写台账/settings）。浏览器 `client/src/nav.js` 每 5s 拉 `main-nav`：`navigate` → `uiWorkspace.openSession(sessionId)` 成功后 `main-nav-ack`（id 匹配才清，多客户端先到先得）；宿主拒绝（`sessions.retain: unknown session`，新会话广播未到）最多试 3 次，仍失败 → ack `ok:false`（审计 `main.nav.navigate-failed`，指针保持不动）+ 切面板顶部可读提示「请从左侧会话列表打开『主会话』」；没有 `openSession` 的旧宿主同样降级为提示、不崩。没有 `mainNav` 装配时两个端点分别回 `{ok:true, nav:null}` / `{ok:true, cleared:false}`。
 - **settings**：`main_session_id`（唯一指针）、`main_session_preset`、`main_onboarding:<id>` 语义不变；新增 `main_context_alert`（提醒去重）、`main_log_hint_shown`（16 MiB 一次性提示）；老键 `main_session_created_at` / `main_rotation_*` 在启动时一次性清掉（`main.rotation.legacy-cleaned`）。
-- **日志**：`main.context.observed` / `alert.asked|snoozed|declined|resolved|cleared|create-failed` / `main.adopt.created|pointer-failed` / `main.session.adopted` / `host.capabilities.compaction`（只读探测结果）。
+- **日志**：`main.context.observed` / `alert.asked|deferred|snoozed|declined|resolved|cleared|create-failed` / `main.nav.pending|consumed|navigate-failed|expired` / `main.adopt.created|pointer-failed` / `main.session.adopted` / `host.capabilities.compaction`（只读探测结果）。
 - **插件不压缩**：不调用 `compactNow`、不写宿主阈值/预设行内 config、不重试；`/compact` 手动路径照旧。
 
 ## 队列与并发
@@ -441,6 +443,7 @@
 |---|---|
 | `snapshot` | 只读快照（含 `handoff` 精简版、`teamBoard`、任务行 `acceptance` 摘要） |
 | `open-main` | 创建/打开主会话 |
+| `main-nav` / `main-nav-ack` | 读「跳到新主会话 / 一条可读提示」的进程内待办；客户端处理完 ack（id 匹配才清） |
 | `detail` | 任务详情、消息、依赖、产物、最新回复、交接、官方板关联 |
 | `artifacts` | 产物汇总（项目/日期分组所需字段） |
 | `preview` | 预览台账里登记的文本产物（前 64 KiB） |

@@ -1,6 +1,8 @@
 // /api/orchestrator 路由的 handler。
 // 平台只保证 401/403 + owner-only（connection.admit），不保证只读：
-// snapshot 只 import 查询函数、不写台账、不 spawn；open-main 是唯一动作端点，只建/打开主会话。
+// snapshot / session-role / main-nav 只查台账或读进程内待办、不写台账、不 spawn；
+// open-main / adopt-session 建或切主会话；main-nav-ack 只清那条进程内待办（不写台账/settings）；
+// 其余动作端点走 panel / workbench 的既有门控。
 import { listTasks, listHistoryTasks } from './ledger.js'
 import { taskCard } from './card.js'
 import { panelFailure, panelHttpStatus } from './action-errors.js'
@@ -32,7 +34,7 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession, contextSnapshot, panel, workbench, teamBoard, staleMinutes = 30, limit = 200, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession, mainNav, contextSnapshot, panel, workbench, teamBoard, staleMinutes = 30, limit = 200, now = Date.now }) {
   // message 请求级幂等：按 (taskId, clientRequestId) 去重，只在进程内（重启失效，见 request-dedupe.js）。
   const dedupe = createRequestDedupe({ max: 200 })
   // 工作台写动作的请求级幂等（同一个 endpoint + 目标 id + clientRequestId 只执行一次）。
@@ -216,6 +218,23 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
       const status = coordinatorStatus?.() ?? {}
       const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
       return json({ ok: true, isMain: isMainSession(sessionId, status.id) }, 200)
+    }
+    if (endpoint === 'main-nav') {
+      // t-a79e12d8：只读轮询「要不要跳到新主会话 / 有没有一条可读提示」。
+      // 待办是进程内的短命事实（默认 5 分钟过期）：这里不清它，客户端处理完才用 main-nav-ack 清。
+      const nav = typeof mainNav?.read === 'function' ? mainNav.read() : null
+      return json({ ok: true, nav: nav ?? null }, 200)
+    }
+    if (endpoint === 'main-nav-ack') {
+      // 客户端处理完待办后确认：id 匹配才清（多客户端时先到先得，后到的不再重复导航）。
+      // 不写台账、不写 settings、不碰会话——失败只记审计（main.nav.navigate-failed）。
+      if (typeof mainNav?.ack !== 'function') return json({ ok: true, cleared: false }, 200)
+      const outcome = mainNav.ack({
+        id: typeof body?.id === 'string' ? body.id : '',
+        ok: body?.ok === true,
+        error: typeof body?.error === 'string' ? body.error : '',
+      })
+      return json({ ok: true, cleared: outcome?.cleared === true }, 200)
     }
     if (WORKBENCH_READS.has(endpoint)) {
       // 只读投影：不写台账、不 spawn；组/排期/自动化各自独立失败（面板可分区降级）。

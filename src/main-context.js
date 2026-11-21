@@ -19,9 +19,14 @@
 //   - 只在「打开主会话」时算一次压力（open 后异步、不阻塞），结果进内存缓存；
 //   - settings `main_context_alert = { at, ratio, band, state }`：同一 band（0.1 步长）只问一次；
 //     压力回落到 `阈值 − 0.05` 以下才清 alert，允许下一段再问；
-//   - 提问/代建进行中不重复弹（进程内 busy 标志）。
+//   - 提问/代建进行中不重复弹（进程内 busy 标志）；
+//   - **有运行中的任务就先不问**（t-a79e12d8）：判定得出「该问」时若台账里还有非终态任务
+//     （`DEFERRED_TASK_STATUSES`），改记 `main.context.alert.deferred` 并**什么都不写**——不写 asked、
+//     不占 band；任务收尾后的下一次「打开主会话」自然还会问（同一 band）。原因：此时换协调者会让
+//     在跑任务的回报投给旧会话，用户报告的就是这个坑。
 import { stat } from 'node:fs/promises'
 import { deleteSetting, getSetting, setSetting } from './ledger.js'
+import { statusesWith } from './status-facts.js'
 
 const MIB = 1024 * 1024
 
@@ -42,6 +47,18 @@ export const CONTEXT_PRESSURE_THRESHOLD_MAX = 0.95
 /** band 步长与滞回：0.4 → 0.5 → 0.6 各问一次；回落到 阈值−0.05 才重新武装。 */
 export const ALERT_BAND_STEP = 0.1
 export const ALERT_HYSTERESIS = 0.05
+
+/**
+ * 「有任务在跑就不要换主会话」的状态集合（t-a79e12d8）。
+ *
+ * 取自 `status-facts` 的 `active` 能力（与台账 `listTasks({active:true})` 同源），**去掉 `delivered`**：
+ * `delivered` 是「已交付待确认」，子会话已经结束、没有回报会再投回主会话，此时换主会话不会丢消息
+ * （用户建议口径：delivered 不算「运行中」）。其余 `active` 状态（`waiting_dep` / `pending` /
+ * `running` / `waiting_user` / `waiting_auth`）都还会往协调者会话里投递/继续，一律延后提醒。
+ */
+export const DEFERRED_TASK_STATUSES = Object.freeze(
+  statusesWith('active').filter(status => status !== 'delivered'),
+)
 
 /** 问题卡三个选项（label 就是答案值，改文案时同步 src/copy.js 与文档）。 */
 export const ALERT_OPTION_CREATE = '新建协调者会话'
@@ -295,10 +312,26 @@ export function writeAlertState(db, value) {
  * - 同一 band 只问一次；`declined`（继续当前会话）在本 band 内不再问，下一 band 会再问；
  * - `snoozed`（稍后再说）在本段压力内不再问，直到压力回落后重新武装；
  * - `failed`（代建/切指针失败）把 band 降到上一档记录，下一次打开允许重试。
+ * - **有非终态任务 → `defer`**（t-a79e12d8）：本该 `ask` 时若 `activeTasks` 里还有
+ *   `DEFERRED_TASK_STATUSES` 的任务，返回 `{action:'defer', reason:'tasks-active', taskIds}`。
+ *   这是「不弹、不占 band」：调用方只记审计，**不写 `main_context_alert`**，所以任务收尾后的
+ *   下一次打开还会问（同一 band 也问）。`activeTasks` 收台账行（`{id,status}`）或 id 字符串。
+ *
+ * @param {{ratio?:number, threshold?:number, previous?:object|null, now?:number, activeTasks?:Array}} opts
  */
-export function decideAlert({ ratio, threshold, previous, now } = {}) {
+export function decideAlert({ ratio, threshold, previous, now, activeTasks } = {}) {
   const limit = Number.isFinite(threshold) ? threshold : CONTEXT_PRESSURE_THRESHOLD_DEFAULT
   const at = Number.isFinite(now) ? now : Date.now()
+  const busy = (Array.isArray(activeTasks) ? activeTasks : [])
+    .filter(task => typeof task === 'string'
+      ? task !== ''
+      : task !== null && task !== undefined && DEFERRED_TASK_STATUSES.includes(task.status))
+    .map(task => (typeof task === 'string' ? task : task.id))
+    .filter(id => typeof id === 'string' && id !== '')
+  // 所有「问」的出口都先过这道闸：有在跑的任务就改成延后（不占 band、不写 asked）。
+  const ask = (reason, band) => (busy.length > 0
+    ? { action: 'defer', reason: 'tasks-active', band, threshold: limit, at, taskIds: busy }
+    : { action: 'ask', reason, band, threshold: limit, at })
   if (!Number.isFinite(ratio)) return { action: 'skip', reason: 'pressure-unknown', band: null, threshold: limit }
   if (ratio < limit - ALERT_HYSTERESIS) {
     return previous === null
@@ -307,9 +340,9 @@ export function decideAlert({ ratio, threshold, previous, now } = {}) {
   }
   if (ratio < limit) return { action: 'skip', reason: 'below-threshold', band: null, threshold: limit }
   const band = Math.floor(ratio / ALERT_BAND_STEP)
-  if (previous === null) return { action: 'ask', reason: 'raised', band, threshold: limit, at }
+  if (previous === null) return ask('raised', band)
   if (previous.state === 'snoozed') return { action: 'skip', reason: 'snoozed', band, threshold: limit }
-  if (previous.band === null || band > previous.band) return { action: 'ask', reason: 'next-band', band, threshold: limit, at }
+  if (previous.band === null || band > previous.band) return ask('next-band', band)
   return { action: 'skip', reason: 'already-asked', band, threshold: limit }
 }
 
@@ -331,6 +364,7 @@ export function createContextObserver({
   sessions,
   userQuestions,
   requestNewCoordinator,
+  activeTasks,
   now = () => Date.now(),
   statFile = defaultStatFile,
   log = () => {},
@@ -338,6 +372,13 @@ export function createContextObserver({
 } = {}) {
   const resolve = value => (typeof value === 'function' ? value() : value)
   const warn = message => { if (typeof onWarn === 'function') onWarn(message) }
+  /** 台账里还没收尾的任务行（有就延后提醒；读失败按「没有」降级，不能因此挡住提醒）。 */
+  const busyTasks = () => {
+    try {
+      const rows = resolve(activeTasks)
+      return Array.isArray(rows) ? rows : []
+    } catch { return [] }
+  }
   const warned = new Set()
   const warnOnce = (key, message) => {
     if (warned.has(key)) return false
@@ -355,6 +396,8 @@ export function createContextObserver({
   // 最近一次观测到的**存活**协调者 agent（提醒要用它做作用域路由，见 remind() 的注释）。
   // 带 sessionId 一起存：新建主会话时那条观测还没有 agent，不能把旧主会话的 agent 拿来用。
   let latestLive = null
+  // 延后提醒的审计去重键（band + 任务集合）：同一次压力段、同一批任务只记一条 deferred。
+  let deferredKey = null
 
   /** 按 sessionId 取压力（存活会话；未加载返回未知）。任意会话都能用，不绑主会话。 */
   const pressure = ({ sessionId, session } = {}) => {
@@ -400,7 +443,10 @@ export function createContextObserver({
       const hint = hintOf(size.logMiB)
       const limit = threshold()
       const alert = readAlertState(db)
-      const decision = decideAlert({ ratio: press.ratio, threshold: limit, previous: alert, now: at })
+      const tasks = busyTasks()
+      const decision = decideAlert({
+        ratio: press.ratio, threshold: limit, previous: alert, now: at, activeTasks: tasks,
+      })
       const live = liveAgent !== undefined && liveAgent !== null
       if (live) latestLive = { sessionId: mainSessionId, agent: liveAgent }
       latest = {
@@ -445,6 +491,8 @@ export function createContextObserver({
           hostAutoCompactionDisabled: probe.auto === false,
           alertDecision: decision.action,
           alertReason: decision.reason,
+          // 只在 defer 时有值：这次被「有任务在跑」挡住的任务 id 个数（排查提醒为什么不出现）。
+          deferTaskCount: decision.taskIds?.length ?? 0,
         },
       })
       return latest
@@ -464,8 +512,9 @@ export function createContextObserver({
 
   /**
    * 压力提醒的唯一出口：`ctx.userQuestions.ask()` 弹一张问题卡。
-   * 三个选项：去新建（插件代建 + adopt）/ 继续当前会话（抬 band）/ 稍后再说（静默）。
+   * 三个选项：去新建（插件代建 + 切指针，客户端再跳过去）/ 继续当前会话（抬 band）/ 稍后再说（静默）。
    * 任何失败都只 warn + 记审计，不影响打开主会话、不自动动作。
+   * **有非终态任务时不问**（decision `defer`，见 `decideAlert`）：只记一次审计，settings 一个字节都不写。
    *
    * **作用域（0.25.0 真机验证修的第二处）**：`ask()` 必须带上主会话的 live agent。
    * 宿主 `UserQuestionService.ask()` 在 `agent === undefined` 时走**全局** waterfall
@@ -482,12 +531,38 @@ export function createContextObserver({
       const ratio = observation?.pressure?.ratio
       const limit = observation?.pressure?.threshold ?? threshold()
       const previous = readAlertState(db)
-      const decision = decideAlert({ ratio, threshold: limit, previous, now: now() })
+      const tasks = busyTasks()
+      const decision = decideAlert({ ratio, threshold: limit, previous, now: now(), activeTasks: tasks })
       if (decision.action === 'clear') {
         writeAlertState(db, null)
         log('main.context.alert.cleared', { detail: { reason: decision.reason, ratio } })
         if (latest !== null) latest.alert = { active: false, state: null, band: null, ratio: null, decision: 'clear', reason: decision.reason }
         return { action: 'clear' }
+      }
+      if (decision.action === 'defer') {
+        // 延后：**不写 settings**（不写 asked、不占 band），任务收尾后下一次 open 自然还会问。
+        // 审计按「band + 这批任务」去重：同一次打开/同一批任务只记一条，任务换了一批再记一条。
+        if (latest !== null) {
+          latest.alert = {
+            active: false, state: null, band: null, ratio, decision: 'defer', reason: decision.reason, taskIds: decision.taskIds,
+          }
+        }
+        const key = `${mainSessionId ?? ''}|${decision.band}|${decision.taskIds.join(',')}`
+        if (deferredKey !== key) {
+          deferredKey = key
+          log('main.context.alert.deferred', {
+            detail: {
+              reason: decision.reason,
+              ratio,
+              threshold: limit,
+              band: decision.band,
+              sessionId: mainSessionId ?? null,
+              taskIds: decision.taskIds,
+              taskCount: decision.taskIds.length,
+            },
+          })
+        }
+        return { action: 'defer', reason: decision.reason, taskIds: decision.taskIds }
       }
       if (decision.action !== 'ask') return { action: 'skip', reason: decision.reason }
       const service = resolve(userQuestions)
@@ -521,7 +596,7 @@ export function createContextObserver({
         detail: '换会话只切换「谁是协调者」：旧会话保留可回看，台账/任务/记忆/偏好都不搬。'
           + '宿主仍会按自己的阈值（默认 0.8）自动压缩当前会话。',
         options: [
-          { label: ALERT_OPTION_CREATE, description: '新建一个空白协调者会话并立刻切换过去（旧会话保留）' },
+          { label: ALERT_OPTION_CREATE, description: '新建一个空白协调者会话、切过去并跳到新会话（旧会话保留）' },
           { label: ALERT_OPTION_CONTINUE, description: '留在当前会话继续；压力再高一档才会再问' },
           { label: ALERT_OPTION_LATER, description: '这次不问；压力回落后才会重新提醒' },
         ],
@@ -560,9 +635,11 @@ export function createContextObserver({
           return { action: 'create', ok: true, sessionId: outcome.sessionId ?? null }
         }
         // 失败不清 alert：把 band 降一档，下次打开还能再问/再试（用户可重试）。
-        warn(`dsh-orchestrator: 新建协调者会话失败（保持原协调者）：${outcome?.error ?? outcome?.code ?? '未知原因'}`)
+        // 可读原因优先取 `params.reason`（ADOPT_* 的稳定 code 只说类别），浏览器侧会另给一条提示。
+        const reason = outcome?.params?.reason ?? outcome?.error ?? outcome?.code ?? '未知原因'
+        warn(`dsh-orchestrator: 新建协调者会话失败（保持原协调者）：${reason}`)
         log('main.context.alert.create-failed', {
-          detail: { oldId: mainSessionId, code: outcome?.code ?? null, error: outcome?.error ?? null, ratio },
+          detail: { oldId: mainSessionId, code: outcome?.code ?? null, reason, ratio },
         })
         writeAlertState(db, { at: now(), ratio, band: decision.band - 1, state: 'failed' })
         return { action: 'create', ok: false, code: outcome?.code ?? null }

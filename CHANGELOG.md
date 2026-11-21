@@ -42,6 +42,23 @@
 - **未验（附原因）**：① 真实模型回合下「模型是否照着 W1 行动」——stub 只证明注入内容与每回合重渲染，不证明模型服从；② 排期拖拽与自动化新建/暂停的交互动作——只验到页面可进入、接口 200；拖拽需要真实指针序列，自动化写动作会真建调度，不在本次冒烟范围；③ 暗色主题 / 多语言外观未覆盖。
 - **证据**（临时目录，未入库）：`probe-results.json`（15 项）、`drive-results.json`（16 项）、`06-page-*.png` / `07-group-dock.png` 等截图、`mock/requests.jsonl`（宿主真实请求体）、`plugin-log-scan.json`。
 
+### 未发布：压力提醒不再打扰运行中任务 + 「新建」确认后真的跳过去（t-a79e12d8）
+
+> 本节是**未发布改动**（不 bump 版本号、不 tag、不 publish），随下一次发版并入。用户原话：「目前超过40%，自动切新的主会话逻辑不太对，例如有运行中任务时，依然会询问用户是否切换，选择确认后，当前会话不是主会话了，但没有新建和跳转到新会话」。
+
+**根因（实读 + 真机日志）**：① `src/main-context.js` 的 `decideAlert` 只看压力 band，完全不看台账任务状态——真机 08:29:10 弹卡时 `t-4f7ce108` 正在跑（08:40:38 才交付）；② 代建只做到「create + 切指针」（`index.js` 的 `requestNewCoordinator` → `mainSession.createCoordinatorSession`），**跳转是客户端能力**（宿主 `uiWorkspace.openSession`），插件当年没有任何通道让浏览器知道要跳过去：真机 08:29:20 `main.adopt.created` 成功（newId=session-341c…），用户仍停在旧会话、看到会话头变成「设为协调者」，08:33:52 又把它点了回去。
+
+**行为变化（2 条）**
+
+1. **有非终态任务就不弹卡**：`decideAlert` 在「该问」时检查 `DEFERRED_TASK_STATUSES`（`pending` / `running` / `waiting_dep` / `waiting_user` / `waiting_auth`；`delivered` 不算在跑），命中就改成 `defer`：只记 `main.context.alert.deferred`（按 band + 任务集合去重），**不写 `settings.main_context_alert`、不占 band**；任务收尾后下一次打开主会话仍会问（同一 band 也问）。
+2. **确认「新建协调者会话」后真的会跳过去**：代建成功 → 写一条进程内导航待办（`src/main-nav.js`，TTL 5 分钟）→ 浏览器每 5s 轮询 `main-nav` → `uiWorkspace.openSession(新会话 id)` → `main-nav-ack` 清待办。失败全部降级、不留「当前不是主会话又没新会话可跳」的中间态：create 失败零处置（不切指针）并给可读提示；切指针失败保持旧主会话 + 提示；导航失败保留指针（用户从会话列表打开「主会话」）+ 面板顶部可读提示 + 审计 `main.nav.navigate-failed`。旧宿主没有 `openSession` 时只给提示、不崩。**不新增归档/删除旧会话**。
+
+**代码**：新增 `src/main-nav.js`（`createMainNav` / `planCoordinatorNav` / `MAIN_NAV_TEXT`）、`client/src/nav.js`（`createMainNavPoller` / `createNavNotice`）；改 `src/main-context.js`（`DEFERRED_TASK_STATUSES`、`decideAlert({activeTasks})`、`remind` 的 defer 分支）、`src/host-route.js`（`main-nav` / `main-nav-ack`，未装配时降级）、`index.js`（`activeTasks` 注入、`requestNewCoordinator` 发布待办、路由装配 `mainNav`）、`client/src/{api,client,views}.js`（轮询 + 面板可读提示）。文案：问题卡「新建」项改成「新建一个空白协调者会话、切过去并跳到新会话（旧会话保留）」。
+
+**验证**：新增 `test/main-nav.test.js`（4 条：代建结果→待办、单条/覆盖/id 匹配 ack、失败审计、TTL 过期）；`test/main-context.test.js` 加 3 条（defer 纯函数与 delivered 口径、deferred 不写 asked 且收尾后再问、只有 delivered 照常问）；`test/host-route.test.js` 加 1 条（读/ack/降级/零写入）；`test/index.test.js` 加 2 条装配级用例（有任务在跑时 `open-main` 走 deferred、停止后再问；选「新建」→ 代建 + 切指针 + `main-nav` 待办 + ack 才清）；`test/client.test.js` 加 4 条（navigate 跳转 + 不重复、拒绝后重试 3 次 + 可读提示、notice 原样显示 + 缺 openSession 降级、面板顶部提示已挂载订阅/未挂载 take）；`test/client-build.test.js` 同步 `__test` 出口与源码文件清单。文档：README（提醒/延后/跳转三条 + 排障一行）、ARCHITECTURE（模块/延后/跳转/日志/路由）、LIMITATIONS（延后代价 + 跳转尽力而为）、本节。
+
+**边界（未做）**：不改 `contextPressureThreshold`、不改宿主压缩、不恢复轮换/归档；不新增工具、不改权限模型；跳转不保证成功（尽力而为，失败的手动路径已在提示里写明）。
+
 ## 0.28.0（2026-11-21）—— 任务链（dependsOn）进 L1：依赖完成自动开始，不再「等 A 完成再派 B」
 
 本版只有一类改动：把**早就存在**的依赖编排机制写成协调者每回合都在的规则，并小版本发布。**没有改派发语义、状态机、权限，也没有新增工具**。用户原话：「你可以使用 dependson，依赖任务结束时会自动开始。这个机制是不是没写到预设或者提示词，怎么没怎么使用。」

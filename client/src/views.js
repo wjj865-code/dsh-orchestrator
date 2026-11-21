@@ -272,7 +272,7 @@ export function createViews({
     )
   }
 
-  const TasksPanel = ({ openSession, openArtifactPreview, focus }) => {
+  const TasksPanel = ({ openSession, openArtifactPreview, focus, notice }) => {
     // ---- 数据与状态（A3/A4/B1/G1 全部保留）----
     const [snapshot, setSnapshot] = React.useState(null)
     // 快照（轮询/刷新）和动作（打开主会话/打开会话）分开记，避免把动作错误显示成「台账暂不可用」。
@@ -669,6 +669,18 @@ export function createViews({
       }
       if (typeof id === 'string' && id !== '') void openDetail(id)
     }, [focus])
+
+    // t-a79e12d8：「新建协调者会话」后客户端没跳过去（宿主拒绝/没有 openSession）时的可读提示。
+    // 面板已挂载 → 订阅即时收到；刚被切过来（未挂载）→ 挂载时 take 一次。两者都落到同一条 banner。
+    React.useEffect(() => {
+      if (notice === undefined || notice === null) return undefined
+      const pending = typeof notice.take === 'function' ? notice.take() : null
+      if (typeof pending === 'string' && pending !== '') setActionNotice(pending)
+      if (typeof notice.subscribe !== 'function') return undefined
+      return notice.subscribe(value => {
+        if (typeof value === 'string' && value !== '') setActionNotice(value)
+      })
+    }, [notice])
 
     // 产物路径复制：优先 Clipboard API，老宿主退回 textarea + execCommand；都不行就报可读错误。
     const copyPath = async path => {

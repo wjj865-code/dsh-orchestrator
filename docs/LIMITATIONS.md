@@ -91,6 +91,8 @@
 - **插件不压缩、不换人**：压缩完全由宿主 `compaction-basic`（每个 agent 预设的 isolate 组）负责，阈值 `thresholdRatio` 默认 0.8；插件不调用 `compactNow`、不写宿主阈值/预设行内 config、不重试。`/compact` 手动路径照旧可用。
 - **日志只增不减**（append-only、从不重写）：压缩只减小请求面，不减小日志。插件只在打开主会话时读一次压力与日志体积，日志 ≥ 16 MiB 给**一次性**提示；「重置」靠人工换新协调者会话——插件不做自动清理、不删会话、不归档旧会话。
 - **压力提醒是唯一出口**：压力 ≥ `contextPressureThreshold`（默认 0.4）时弹一张 `userQuestions` 问题卡（新建协调者会话 / 继续当前会话 / 稍后再说），去重状态在 `settings.main_context_alert`（0.1 band + 0.05 滞回）。`userQuestions` 缺失或无在线客户端（`NO_PROVIDER`）只 warn 一次、不建会话、不弹第二次；压力读不到时不提醒（fail-closed）。
+- **有任务在跑时提醒会延后**：`pending` / `running` / `waiting_dep` / `waiting_user` / `waiting_auth` 任一存在就不弹卡，只记 `main.context.alert.deferred`（不写 `main_context_alert`、不占 band），任务收尾后下一次打开主会话再问；`delivered`（已交付待确认）不算在跑，照常问。代价：长期有任务在跑时提醒会一直不出现，需要换会话请手动「设为协调者」。
+- **「新建」之后的跳转是尽力而为**：服务端只建会话 + 切指针；跳转由浏览器插件每 5 秒轮询 `main-nav` 后调 `uiWorkspace.openSession`。宿主拒绝（新会话还没在客户端会话表里）最多重试 3 次（约 15 秒），仍失败就 ack 失败并在面板顶部给可读提示——**指针保持已切状态**（当前会话会失去「主会话」身份），用户从左侧会话列表打开标题「主会话」的会话即可；离线客户端在 5 分钟内回到页面会被补跳，超过 TTL（5 分钟）就不跳（避免很久以后把人拽走）。没有 `uiWorkspace.openSession` 的旧宿主/裁剪 profile 只给提示、不崩。
 - **换协调者只切指针**：adopt（会话头「设为协调者」）与代建都只写 `settings.main_session_id` / `main_session_preset`；旧会话不改名、不归档、不退役。adopt 只接受**指挥舱工作区**里的会话，已用其他预设开始（宿主拒绝换预设）会被拒并给可读原因；同一时刻只允许一次切换（`ADOPT_BUSY`）。代建 create 失败零处置；**切指针失败时新建会话留着待重用**（不归档）。
 - **多会话并存**：`main_session_id` 仍是唯一指针；通知/日报/`task_*` 只认它，其余会话的上下文增长用户看不见（观测范围目前只覆盖主会话；`readContextPressure` 已按 session 参数化，扩范围只需遍历 `sessions.list()` 的存活会话）。
 - **官方计划模式 UI 不可接**：`planMode` 是**预设隔离域**服务（`agentPresets.serviceFor(agent,'planMode')`），且本体是「子会话里挂 plan-mode + `exit_plan_mode` 工具」那套；协调者预设不挂它、宿主也没有对插件开放的「计划审批端点」，所以协调者侧仍走「摘要 + present + ask_user_question」这条人工闸门（选项含「先看计划文档」）。

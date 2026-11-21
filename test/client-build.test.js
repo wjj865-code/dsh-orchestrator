@@ -151,7 +151,8 @@ test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dis
   assert.deepEqual(Object.keys(loaded.__test).sort(), [
     'STYLE_TEXT', 'TONE_COLOR', 'WORKBENCH_PAGES', 'artifactDate', 'artifactProject', 'automationStateLabel',
     'chipOpenTargetOf', 'chipStateOf', 'chipTooltipOf', 'chipViewOf', 'chipVisibleTitle', 'countTasks',
-    'createFocusRequest', 'createMainViewGate', 'createTaskFeed', 'createWorkbench', 'dateKeyOf',
+    'createFocusRequest', 'createMainNavPoller', 'createMainViewGate', 'createNavNotice', 'createTaskFeed',
+    'createWorkbench', 'dateKeyOf',
     'fileAddressOf', 'fileAddressProblem', 'groupArtifacts', 'groupTasksOf', 'isLatestTurn', 'matchesFilter',
     'matchesQuery', 'monthGrid', 'nextPlannedTask', 'planStampOnDay', 'plannedOnDay', 'selectTaskChips',
   ])
@@ -164,7 +165,7 @@ test('源码守约束 1：client/src/** 不出现打包 react 的写法（React 
   // T7.2 的模块边界：入口 / 装配 / 视图 / 展示件 / 样式 / 纯逻辑 / API / 闸门 / 常量。
   for (const expected of [
     'index.js', 'client.js', 'views.js', 'workbench.js', 'ui.js', 'styles.js', 'styles.css',
-    'logic.js', 'api.js', 'gate.js', 'constants.js',
+    'logic.js', 'api.js', 'gate.js', 'nav.js', 'constants.js',
   ]) {
     assert.ok(existsSync(new URL(`../client/src/${expected}`, import.meta.url)), `缺少源码文件 client/src/${expected}`)
   }

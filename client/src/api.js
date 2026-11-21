@@ -144,6 +144,16 @@ const postEndpoint = async (payload, signal) => {
 
 export const readGroups = (signal) => postEndpoint({ endpoint: 'groups' }, signal)
 
+// t-a79e12d8：主会话导航待办（服务端只建会话 + 切指针，跳转只能客户端做）。
+// 轮询 `main-nav`；处理完（成功或最终失败）用 `main-nav-ack` 让服务端丢掉这条待办。
+export const readMainNav = () => postEndpoint({ endpoint: 'main-nav' })
+export const ackMainNav = ({ id, ok, error } = {}) => postEndpoint({
+  endpoint: 'main-nav-ack',
+  id,
+  ok: ok === true,
+  ...(typeof error === 'string' && error !== '' ? { error } : {}),
+})
+
 export const readGroup = (groupId, signal) => postEndpoint({ endpoint: 'group', groupId }, signal)
 
 export const readCalendar = (from, to, signal) => postEndpoint({ endpoint: 'calendar', from, to }, signal)

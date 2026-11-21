@@ -282,6 +282,47 @@ test('session-role：主会话未打开 / coordinatorStatus 缺失时降级为 f
   db.close()
 })
 
+// t-a79e12d8：客户端只能通过轮询拿到「要不要跳到新主会话」这条待办（服务端不假装能导航）。
+test('main-nav / main-nav-ack：读待办、ack 要 id 匹配、未装配时降级为 null/false 且不写台账', async () => {
+  const db = await openLedger(tempDir())
+  const pending = new Map()
+  const acks = []
+  const mainNav = {
+    read: () => (pending.size === 0 ? null : [...pending.values()][0]),
+    ack: ({ id, ok, error }) => {
+      acks.push({ id, ok, error })
+      if (!pending.has(id)) return { cleared: false }
+      pending.delete(id)
+      return { cleared: true }
+    },
+  }
+  const handler = createHostRoute({ db, mainNav, coordinatorStatus: () => ({ id: 's-main', live: true }) })
+  const before = counts(db)
+
+  assert.deepEqual(await (await handler(request({ endpoint: 'main-nav' }))).json(), { ok: true, nav: null })
+  pending.set('nav-1', { id: 'nav-1', kind: 'navigate', sessionId: 's-new', at: 1 })
+  const read = await handler(request({ endpoint: 'main-nav' }))
+  assert.equal(read.status, 200)
+  assert.deepEqual(await read.json(), { ok: true, nav: { id: 'nav-1', kind: 'navigate', sessionId: 's-new', at: 1 } })
+
+  // id 不匹配：不清（多客户端时先到先得）。
+  assert.deepEqual(await (await handler(request({ endpoint: 'main-nav-ack', id: 'nav-9', ok: true }))).json(),
+    { ok: true, cleared: false })
+  assert.deepEqual(acks.at(-1), { id: 'nav-9', ok: true, error: '' })
+  assert.deepEqual(await (await handler(request({ endpoint: 'main-nav-ack', id: 'nav-1', ok: false, error: 'unknown session' }))).json(),
+    { ok: true, cleared: true })
+  assert.deepEqual(acks.at(-1), { id: 'nav-1', ok: false, error: 'unknown session' })
+  assert.deepEqual(await (await handler(request({ endpoint: 'main-nav' }))).json(), { ok: true, nav: null })
+  assert.deepEqual(counts(db), before, 'main-nav / main-nav-ack 不写台账')
+
+  // 未装配 mainNav（老装配/测试）：读 null、ack 视为已清，不 500。
+  const bare = createHostRoute({ db })
+  assert.deepEqual(await (await bare(request({ endpoint: 'main-nav' }))).json(), { ok: true, nav: null })
+  assert.deepEqual(await (await bare(request({ endpoint: 'main-nav-ack', id: 'nav-1', ok: true }))).json(),
+    { ok: true, cleared: false })
+  db.close()
+})
+
 test('queued 按 queued_at 精确标记：新建未排队不算排队', async () => {
   const db = await openLedger(tempDir())
   const handler = createHostRoute({
