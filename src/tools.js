@@ -12,12 +12,12 @@ import { statusesWith } from './status-facts.js'
 import { dependencyState, promoteDependents, upstreamBrief, validateDepends } from './deps.js'
 import { renderTaskDetail } from './task-detail.js'
 import {
-  GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, MEMORY_FACT_KINDS, TASK_LOG_KIND, addMemory, buildLessonBlock,
-  buildMemoryBlock, distillLessons, distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember,
-  searchMemories, taskLogText,
+  GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, MAX_WORKER_MEMORIES_PER_TASK, MEMORY_FACT_KINDS,
+  MEMORY_SOURCE_WORKER, TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock, countWorkerMemories,
+  distillLessons, distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember, searchMemories, taskLogText,
 } from './memory.js'
 import {
-  addMessage, createTask, getTask, listTasks, recentMessages, setMessageDelivery,
+  addMessage, createTask, findTaskBySession, getTask, listTasks, recentMessages, setMessageDelivery,
   setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
   countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected,
@@ -129,7 +129,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, teamBoard, stateDir, worktree, cleanupWorktree, runAcceptance = runChecks }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, teamBoard, stateDir, worktree, cleanupWorktree, taskOfAgent, runAcceptance = runChecks }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   // P9：宿主侧 git 能力（测试注入 fake；生产用 execFile）。普通任务一次都不会调用它。
@@ -163,23 +163,29 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     if (exec?.agent?.id !== current.id) return MAIN_ONLY_HINT
     return undefined
   }
-  // 写记忆只属协调者（子会话只读）：错误来源有两个——
-  //   1. worker 预设的 preset-tools 用 `deny` 把 memory_note 从子会话工具表里遮掉（正路，模型根本看不到）；
-  //   2. 别的 profile / 预设没生效 / 旧会话里它仍在工具表上（兜底路径，本函数负责给可执行出口）。
-  // 「能读不能写」的语义只在工具层表达，**不靠运行时特判决定可用性**（可用性由预设层声明）。
-  const WORKER_WRITE_DENIED = '拒绝：写记忆只属协调者（主会话），子会话只读。替代做法：'
-    + '① 可复用的结论写进 task_report 的 summary（交付后协调者会看到并决定是否记下）；'
-    + '② 查历史经验 / 项目背景用 context({ mode: "history" | "project" | "workspaces" })（只读，子会话可用）；'
-    + '③ 确实该长期记住的决策，在回报正文里点名请协调者 memory_note。'
-  const requireMainForWrite = exec => {
-    const current = status()
-    if (current.id === undefined) return UNBOUND_HINT
-    if (exec?.agent?.id === current.id) return undefined
+  // 写记忆的角色口径（2026-11-21，用户方向：子会话执行任务时也读到很多项目背景与已有实践，应该能写项目记忆）：
+  //   1. 协调者（主会话）：全局偏好 + 任意项目的 note/lesson/decision——原行为不变；
+  //   2. 任务执行者（子会话）：只能写**自己任务 target_dir** 那个项目的 note/lesson/decision，单任务上限
+  //      MAX_WORKER_MEMORIES_PER_TASK 条，行上记 `source='worker'` + taskId/sessionId；
+  //      全局偏好（`kind:'preference'`）、`global` / 跨项目记忆、日志层一律拒绝，并给可执行替代路径。
+  // 能力声明在预设层（worker 预设的 preset-tools 用 `keep` 正向声明 memory_note），这里做归属校验与硬护栏：
+  // worker 的 project 只认台账 `tasks.target_dir`，不接受模型随便传（传错就拒，不静默纠正到别的项目）。
+  const WORKER_MEMORY_FALLBACK = '替代做法：把结论写进 task_report 的 summary（协调者会看到并决定是否沉淀），'
+    + '也可以让协调者用 memory_note 记（协调者可写全局偏好或指定项目）。'
+  const rejectWorkerMemory = (exec, reason, text) => {
     log('memory.note.rejected', {
       agentId: exec?.agent?.id,
-      detail: { reason: 'worker-write-denied', tool: 'memory_note', callId: exec?.callId },
+      detail: { reason, tool: 'memory_note', callId: exec?.callId },
     })
-    return WORKER_WRITE_DENIED
+    return text
+  }
+  // 子会话 → 任务的归属解析：优先用 index.js 注入的映射（首回合台账 session_id 可能还没回写），
+  // 再退回台账 tasks.session_id（唯一真相）。
+  const taskOfWorker = agentId => {
+    if (typeof agentId !== 'string' || agentId === '') return undefined
+    let mapped
+    try { mapped = typeof taskOfAgent === 'function' ? taskOfAgent(agentId) : undefined } catch { mapped = undefined }
+    return mapped ?? findTaskBySession(db, agentId)
   }
 
   // 分组 / 写域 / 优先级：都只做轻量归一，非法值忽略。
@@ -1666,7 +1672,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     // P1-B：history_search + project_context 合并成 context（mode 区分）。
     // P0（0.26.0 记忆优化）：history 首行打印【检索范围】、project 支持多键/'all'、日志层单独成块、
     // project 白名单加 docs/ARCHITECTURE.md。行为变更见 CHANGELOG。
-    // 「读」对协调者与子会话都开放（同一条实现、同参数逐字同输出）；「写」只在 memory_note，且仅主会话。
+    // 「读」对协调者与子会话都开放（同一条实现、同参数逐字同输出）；「写」只在 memory_note：
+    // 协调者写任意项目与全局偏好，子会话只写自己任务目录的项目记忆（见下面的护栏）。
     wrap('context', '读上下文（只读，不开放任意文件读取；协调者与子会话都可用）：mode:"history"（默认）查历史——本插件记忆（首行打印【检索范围】；不传 project 只查 global 跨项目记忆，要查本项目请显式传 target_dir 或工作区名）、历史任务、平台历史会话，新任务开始前用它补上下文，结果只作参考不作状态断言；mode:"project" 读项目背景——README/AGENTS/docs/ARCHITECTURE.md/package 等白名单文件、顶层结构、最近任务、相关记忆；mode:"workspaces" 返回已登记工作区与持久化仓库采样索引（不扫描全盘）。', objectSchema({
       mode: { type: 'string', enum: CONTEXT_MODES, description: '读哪一类：history（默认，历史检索，吸收原 history_search）｜project（项目背景，吸收原 project_context）｜workspaces（已登记工作区 + 仓库索引）' },
       query: str('history：检索关键词（任务名/目标/决策/文件名）；project：用于推断项目与匹配记忆的关键词'),
@@ -1689,50 +1696,108 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     //   全局偏好 → 只写 settings.orchestrator_preferences（每回合注入 L1 协调者 policy）；
     //   项目偏好 / 其它 kind → 只写 memories（随 task_detail 注入子会话 / 供 context 检索）。
     // 一条事实只落一处，不存在「两份真相」。
-    // 写入权只属协调者：子会话的工具表里没有它（worker 预设的 preset-tools deny），误调由 requireMainForWrite 给拒绝理由。
-    wrap('memory_note', '记住一条跨任务有效的决策/经验，或一条偏好（仅主会话/协调者可写；子会话工具表里没有它，误调会被拒并给出只读替代路径）。偏好（kind:preference）不传 project 时写进协调者偏好（每回合注入提示词，立即生效）；其余写进 memories 事实层（供 context({ mode: "history" }) 与 task_detail 注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
+    // 写入权（2026-11-21）：协调者可写全局偏好与任意项目；任务子会话可写**自己任务目录**的项目记忆
+    // （note/lesson/decision，单任务 ≤3 条、去重、来源留痕），preference 与全局/跨项目记忆仍只属协调者。
+    wrap('memory_note', '记住一条跨任务有效的决策/经验，或一条偏好。协调者（主会话）可写任意项目与全局偏好：kind:preference 不传 project 时写进协调者偏好（每回合注入提示词，立即生效）。任务子会话只能写自己任务 target_dir 的项目记忆（note/lesson/decision，project 强制为本任务目录、单任务最多 3 条、重复内容幂等；写 preference 与全局/跨项目记忆会被拒并给替代路径）。其余写进 memories 事实层（供 context({ mode: "history" }) 与 task_detail 注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
       text: str('要记住的内容，一两句话'),
-      project: str('可选：项目绝对路径或工作区名；不传记为全局'),
-      kind: { type: 'string', enum: ['note', 'decision', 'preference', 'lesson'], description: '类型，默认 note' },
+      project: str('可选：项目绝对路径或工作区名；不传记为全局（子会话只能传自己任务的 target_dir）'),
+      kind: { type: 'string', enum: ['note', 'decision', 'preference', 'lesson'], description: '类型，默认 note（子会话不能写 preference）' },
     }), async (args, exec) => {
-      const denied = requireMainForWrite(exec)
-      if (denied !== undefined) return denied
-      // 写入即蒸馏：去代码块/命令日志并按事实层上限截断，避免长日志混进 brief。
-      const text = distillText(args.text, MAX_FACT_CHARS)
-      if (text === '') return '要记的内容不能为空。'
-      const hint = resolveProjectHint(args.project)
-      const kind = ['note', 'decision', 'preference', LESSON_KIND].includes(args.kind) ? args.kind : 'note'
-      // 全局偏好走 settings（协调者取向），不进 memories；项目偏好仍是项目约定，走 memories。
-      if (kind === 'preference' && hint.key === GLOBAL_PROJECT) {
-        const saved = upsertPreference(db, {
-          id: `p-${createHash('sha256').update(text).digest('hex').slice(0, 8)}`,
-          category: 'general',
-          rule: text,
-          scope: 'global',
-          appliesTo: 'coordinator',
-          priority: 50,
-          source: 'user',
-          addedAt: Date.now(),
+      const current = status()
+      if (current.id === undefined) return UNBOUND_HINT
+      const callerId = exec?.agent?.id
+      // 协调者：原行为不变（全局偏好走 settings、任意项目走 memories）。
+      if (callerId === current.id) {
+        // 写入即蒸馏：去代码块/命令日志并按事实层上限截断，避免长日志混进 brief。
+        const text = distillText(args.text, MAX_FACT_CHARS)
+        if (text === '') return '要记的内容不能为空。'
+        const hint = resolveProjectHint(args.project)
+        const kind = ['note', 'decision', 'preference', LESSON_KIND].includes(args.kind) ? args.kind : 'note'
+        // 全局偏好走 settings（协调者取向），不进 memories；项目偏好仍是项目约定，走 memories。
+        if (kind === 'preference' && hint.key === GLOBAL_PROJECT) {
+          const saved = upsertPreference(db, {
+            id: `p-${createHash('sha256').update(text).digest('hex').slice(0, 8)}`,
+            category: 'general',
+            rule: text,
+            scope: 'global',
+            appliesTo: 'coordinator',
+            priority: 50,
+            source: 'user',
+            addedAt: Date.now(),
+          })
+          log('memory.note', {
+            agentId: exec?.agent?.id,
+            detail: { projectKey: hint.key, kind, route: 'preferences', count: saved.length, callId: exec?.callId },
+          })
+          return preferenceSavedHint(hint.title)
+        }
+        const saved = remember(db, {
+          text,
+          projectKey: hint.key,
+          kind,
+          sourceSessionId: exec?.agent?.id,
         })
+        if (saved === undefined) return '这条已经记过，未重复写入。'
         log('memory.note', {
           agentId: exec?.agent?.id,
-          detail: { projectKey: hint.key, kind, route: 'preferences', count: saved.length, callId: exec?.callId },
+          detail: { projectKey: hint.key, kind, route: 'memories', callId: exec?.callId },
         })
-        return preferenceSavedHint(hint.title)
+        if (kind === 'preference') return projectPreferenceSavedHint(hint.title)
+        return `已记住（${hint.title ?? '全局'}）。`
+      }
+
+      // 子会话：归属 → 项目 → kind → 去重/上限，全部是硬护栏（拒绝时不写库）。
+      const workerTask = taskOfWorker(callerId)
+      if (workerTask === undefined) {
+        return rejectWorkerMemory(exec, 'worker-no-task',
+          `拒绝：找不到你的任务归属（会话 ${callerId ?? '未知'} 不在台账里），写不了项目记忆——项目键必须来自任务的 target_dir。${WORKER_MEMORY_FALLBACK}`)
+      }
+      const taskProjectKey = typeof workerTask.target_dir === 'string' && workerTask.target_dir.trim() !== ''
+        ? projectKeyOf(workerTask.target_dir)
+        : undefined
+      if (taskProjectKey === undefined) {
+        return rejectWorkerMemory(exec, 'worker-no-target',
+          `拒绝：任务「${taskLabelWithId(workerTask)}」没有 target 目录，写不了项目记忆（项目键必须来自任务的 target_dir）。${WORKER_MEMORY_FALLBACK}`)
+      }
+      if (args.kind === 'preference') {
+        return rejectWorkerMemory(exec, 'worker-preference-denied',
+          '拒绝：子会话不能写全局偏好（kind:"preference"）——偏好会每回合注入协调者 policy，只由协调者维护。'
+          + `要沉淀的项目约定请用 kind:"note" / "lesson" / "decision"；${WORKER_MEMORY_FALLBACK}`)
+      }
+      const text = distillText(args.text, MAX_FACT_CHARS)
+      if (text === '') return '要记的内容不能为空。'
+      const kind = ['note', 'decision', LESSON_KIND].includes(args.kind) ? args.kind : 'note'
+      // project 只认本任务 target_dir：不传就强制落本项目；传了别的项目（含 global）直接拒绝，不静默串项目。
+      if (typeof args.project === 'string' && args.project.trim() !== '') {
+        const asked = resolveProjectHint(args.project)
+        if (asked.key !== taskProjectKey) {
+          return rejectWorkerMemory(exec, 'worker-project-mismatch',
+            `拒绝：子会话只能写自己任务的项目记忆——本任务的项目是 ${taskProjectKey}（task_detail 的「工作目录」），收到的是 ${asked.key}。`
+            + '不传 project 即写到本项目；要写别的项目/全局请让协调者 memory_note。')
+        }
+      }
+      const used = countWorkerMemories(db, workerTask.id)
+      if (used >= MAX_WORKER_MEMORIES_PER_TASK) {
+        return rejectWorkerMemory(exec, 'worker-quota-denied',
+          `拒绝：本任务已经写过 ${used} 条项目记忆（单任务上限 ${MAX_WORKER_MEMORIES_PER_TASK} 条）。${WORKER_MEMORY_FALLBACK}`)
       }
       const saved = remember(db, {
         text,
-        projectKey: hint.key,
+        projectKey: taskProjectKey,
         kind,
-        sourceSessionId: exec?.agent?.id,
+        source: MEMORY_SOURCE_WORKER,
+        sourceTaskId: workerTask.id,
+        sourceSessionId: callerId,
       })
-      if (saved === undefined) return '这条已经记过，未重复写入。'
+      if (saved === undefined) return '已存在（already）：这条项目记忆已经记过，未重复写入。'
       log('memory.note', {
-        agentId: exec?.agent?.id,
-        detail: { projectKey: hint.key, kind, route: 'memories', callId: exec?.callId },
+        agentId: callerId,
+        detail: {
+          projectKey: taskProjectKey, kind, route: 'memories', source: MEMORY_SOURCE_WORKER,
+          taskId: workerTask.id, written: used + 1, cap: MAX_WORKER_MEMORIES_PER_TASK, callId: exec?.callId,
+        },
       })
-      if (kind === 'preference') return projectPreferenceSavedHint(hint.title)
-      return `已记住（${hint.title ?? '全局'}）。`
+      return `已记住（项目：${taskProjectKey}｜本任务 ${used + 1}/${MAX_WORKER_MEMORIES_PER_TASK} 条）。`
     }),
 
     wrap('task_report', '子任务每轮结束必须调用：progress（有进展未完成）、done（完成；配置了 checks 的任务会先在任务目录自动执行验收，未通过则拒绝交付、任务保持进行中）、blocked（卡住等人决定）、needs_auth（需要授权）。协调者据此决定是否打扰用户。', objectSchema({

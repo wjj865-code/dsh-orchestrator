@@ -46,10 +46,10 @@ import { ISOLATED_WORKTREE_STATES } from './write-guard.js'
 import { ADVANCE_LOOP_LINES, DELIVERY_NOT_FINAL, TASK_CHAIN_LINES } from './copy.js'
 // W1（任务子会话 per-turn policy）的句子只在 copy.js 定义一次，本模块只负责分层归属与渲染顺序。
 import {
-  BLOCKED_HINT, CONFIRM_HINT, WORKER_CONTEXT_HINT, WORKER_POLICY_HEADING, WORKER_POLICY_LINES,
+  BLOCKED_HINT, CONFIRM_HINT, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT, WORKER_POLICY_HEADING, WORKER_POLICY_LINES,
 } from './copy.js'
 
-export { DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES, TASK_CHAIN_LINES, WORKER_CONTEXT_HINT }
+export { DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES, TASK_CHAIN_LINES, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT }
 
 /**
  * L1「推进循环」段落（唯一渲染入口）：句子全部来自 `src/copy.js` 的 `ADVANCE_LOOP_LINES`，
@@ -103,7 +103,7 @@ export function renderTaskChainPolicy() {
  * 为什么从 brief/persona 迁过来：brief 与 persona 只在**出生那一刻**到达子会话，续派或多轮之后
  * 容易被上下文挤掉；per-turn policy 每回合重渲染，口径不会丢。句子本体全部来自 `src/copy.js`
  * （`WORKER_POLICY_LINES`），本模块只决定哪一句在什么条件下出现：
- *   - 固定四句：先读详情 / 执行中上报 / 交付回报 / 主动读 context；
+ *   - 固定五句：先读详情 / 执行中上报 / 交付回报 / 主动读 context / 收尾沉淀项目经验；
  *   - 条件一句：worktree 装依赖，仅当台账 `worktree_state` 属于真隔离（requested/created/reused）。
  *
  * @param {{ worktreeState?: string }} [task]  台账任务的 `worktree_state`（可空）
@@ -116,6 +116,7 @@ export function renderWorkerPolicy({ worktreeState } = {}) {
     `- ${WORKER_POLICY_LINES.blocked}`,
     `- ${WORKER_POLICY_LINES.report}`,
     `- ${WORKER_POLICY_LINES.context}`,
+    `- ${WORKER_POLICY_LINES.memory}`,
   ]
   if (ISOLATED_WORKTREE_STATES.includes(worktreeState)) lines.push(`- ${WORKER_POLICY_LINES.worktree}`)
   return lines.join('\n')
@@ -160,12 +161,14 @@ export const PROMPT_LAYERS = Object.freeze([
       '交付时怎么回报与完成动作（task_report 四状态 + summary + done 清空 question/options + 两段式终态；CONFIRM_HINT）',
       '隔离任务的装依赖授权（仅 worktree 真隔离任务；WORKTREE_INSTALL_HINT）',
       '需要历史经验/项目背景时主动调 context（WORKER_CONTEXT_HINT）',
+      '任务收尾沉淀项目经验（memory_note 写一条项目级 note/lesson/decision；不写 preference/全局、不写日志；WORKER_MEMORY_HINT）',
     ]),
     forbids: Object.freeze([
       '协调者的决策口径（action:close / 交付确认 / 推进循环 / 任务链 / 三闸门，属 L1）',
       '任务目标/验收/约束/背景/经验正文（属 L3）',
       'present、read_workspace 等协调者工具（属 L1）',
       '一次性派发参数（任务编号、访问级别，属 L2）',
+      '全局偏好与跨项目记忆的写入（只协调者；W1 只讲「写自己任务的项目记忆」）',
     ]),
   }),
   Object.freeze({
@@ -314,6 +317,8 @@ export function layerViolations(layerId, text) {
       [/交付（报 done）时|完成后用 task_report 回报/, 'W1 的交付回报口径'],
       [/本任务在独立检出里跑|worktree 检出目录里没有依赖/, 'W1 的装依赖提示'],
       [/主动调\s*context/, 'W1 的上下文引导'],
+      // 记忆沉淀的边界（只写自己任务的项目记忆、不写 preference/全局）是 W1 每回合注入的口径。
+      [/有值得复用的项目经验时|不写 preference/, 'W1 的项目经验沉淀引导'],
     ],
     // L3 不许重复 brief 的指路，也不许讲协调者口径或 W1 的静态回报口径。
     L3: [

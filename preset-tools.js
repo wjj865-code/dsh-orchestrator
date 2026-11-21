@@ -14,14 +14,18 @@
 //   2. `deny`（遮挡式，协调者与子会话同形）：只 deny 点名的全局工具，其余原样继承。
 //      - 协调者：只点名「编排正确性」项 + 三个角色专属工具（task_report / task_detail / plan_save）；
 //        工具面其余部分全开（read/skill 由预设行自己挂，写由 read-only 权限预设兜底）。
-//      - 子会话：只遮 `memory_note`（写记忆仍仅主会话）。
+//      - 子会话：**不点名遮任何工具**（deny 为空）。0.29.x 存量的「遮 memory_note（写记忆仍仅主会话）」
+//        已按用户方向撤掉：子会话也能写**项目级**记忆（note/lesson/decision，project 强制为任务 target_dir、
+//        单任务 ≤3 条），全局偏好与跨项目记忆仍只协调者——那部分由执行层按归属校验。只给 keep。
 //      两边都不用 allow 补集：那需要把平台所有全局工具名抄全，漏一个 = 悄悄少一个工具。
 //
 // `keep`（仅遮挡式）：正向声明「这些全局工具必须对该会话**出生即可用**」
-//   （协调者声明 7 个任务工具；子会话声明只读的 `context`、`task_detail`、`task_report`）。
+//   （协调者声明 7 个任务工具；子会话声明只读的 `context`、`task_detail`、`task_report` 与可写的 `memory_note`）。
 //   - keep 永不被 deny（与 deny 名单重叠是配置错误，直接抛）；
 //   - 挂载后随 `tools/change` 校验一次可见性：确认到就写一条 `preset.keep` 审计 + logger.info；
 //     还没注册就先静默（全局工具可能比预设挂得晚），缺了不抛——可见性由平台真值决定，本模块只声明并留痕。
+//   - **keep-only 合法**（deny 为空、只给 keep）：语义是「不遮任何工具，只做正向可见性声明」。
+//     子会话预设就走这个形态——没有该遮的全局工具，又需要声明「出生即可用」。
 //   - allow 模式不需要 keep（allow 名单本身就是保留声明），给了就是配置错误。
 //
 // 时序：预设是 profile 加载时 eager 挂载的，我们的 `task_*` 可能还没注册。这里在
@@ -66,10 +70,11 @@ export function apply(ctx, config = {}) {
   if (allow.size > 0 && deny.size > 0) {
     throw new Error('preset-tools: allow（保留式）与 deny（遮挡式）只能二选一，不要同时给')
   }
-  if (allow.size === 0 && deny.size === 0) {
-    throw new Error('preset-tools: 必须给 allow（保留式）或 deny（遮挡式）名单（空名单会让工具表要么全空要么全开）')
+  if (allow.size === 0 && deny.size === 0 && keep.size === 0) {
+    throw new Error('preset-tools: 必须给 allow（保留式）或 deny / keep（遮挡式）名单（空名单会让工具表要么全空要么全开）')
   }
-  const mode = deny.size > 0 ? 'deny' : 'allow'
+  // keep-only 也算遮挡式：不遮任何工具，只做「出生即可用」的正向声明（子会话预设就是这一形态）。
+  const mode = allow.size > 0 ? 'allow' : 'deny'
   if (mode === 'allow' && keep.size > 0) {
     throw new Error('preset-tools: keep 只用于遮挡式（deny）；保留式（allow）的名单本身就是保留声明')
   }

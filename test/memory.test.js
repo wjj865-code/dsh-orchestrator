@@ -5,9 +5,10 @@ import { join } from 'node:path'
 import { openLedger } from '../src/ledger.js'
 import {
   GLOBAL_PROJECT, LESSONS_DIRNAME, LESSON_KIND, MAX_FACT_CHARS, MAX_LESSON_SUMMARY_CHARS, MAX_LOG_CHARS,
-  MAX_TASK_LOG_PER_PROJECT, TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock, distillFacts,
-  distillLessons, distillText, lessonFilePath, lessonPointerBlock, memoryLayerOf, memoryTokens, normalizeProjectKeys,
-  projectKeyOf, renderLessonFile, searchMemories, taskLogText, writeLessonFile,
+  MAX_TASK_LOG_PER_PROJECT, MAX_WORKER_MEMORIES_PER_TASK, MEMORY_SOURCE_WORKER, TASK_LOG_KIND, addMemory,
+  buildLessonBlock, buildMemoryBlock, countWorkerMemories, distillFacts, distillLessons, distillText,
+  lessonFilePath, lessonPointerBlock, memoryLayerOf, memoryTokens, normalizeProjectKeys, projectKeyOf,
+  renderLessonFile, searchMemories, taskLogText, writeLessonFile,
 } from '../src/memory.js'
 import { tempDir } from './helpers.js'
 
@@ -48,6 +49,36 @@ test('addMemory 幂等；searchMemories 按项目隔离并命中中文关键词'
   const globalHits = searchMemories(db, { projectKey: project, query: 'pnpm', limit: 5 })
   assert.equal(globalHits.length, 1)
   assert.equal(globalHits[0].projectKey, GLOBAL_PROJECT)
+  db.close()
+})
+
+test('记忆来源审计：source/taskId/sessionId 落行并可检索，countWorkerMemories 按单任务计数', async () => {
+  const db = await openLedger(tempDir())
+  const project = projectKeyOf('C:/work/source')
+  const first = addMemory(db, {
+    projectKey: project, kind: 'lesson', text: '写项目记忆前先查已有经验',
+    source: MEMORY_SOURCE_WORKER, sourceTaskId: 't-1a2b3c4d', sourceSessionId: 'w-1',
+  })
+  addMemory(db, { projectKey: project, kind: 'note', text: '协调者手记一条' })
+  addMemory(db, {
+    projectKey: project, kind: 'decision', text: '另一个任务的项目决策',
+    source: MEMORY_SOURCE_WORKER, sourceTaskId: 't-deadbeef', sourceSessionId: 'w-2',
+  })
+  // 行上留痕：worker 写入带 source + 任务/会话；协调者写入 source 为空。
+  const rows = db.prepare('SELECT * FROM memories ORDER BY created_at, rowid').all()
+  assert.equal(rows.find(row => row.id === first.id).source, MEMORY_SOURCE_WORKER)
+  assert.equal(rows.find(row => row.id === first.id).source_task_id, 't-1a2b3c4d')
+  assert.equal(rows.find(row => row.id === first.id).source_session_id, 'w-1')
+  assert.equal(rows.find(row => row.text.includes('协调者手记')).source, null)
+  // 检索结果也带来源（排障时能回答「这条是谁记的」）。
+  const hits = searchMemories(db, { projectKey: project, query: '项目记忆 经验', limit: 5 })
+  const workerHit = hits.find(row => row.id === first.id)
+  assert.equal(workerHit.source, MEMORY_SOURCE_WORKER)
+  // 单任务计数只数该任务、且只数 worker 写入。
+  assert.equal(countWorkerMemories(db, 't-1a2b3c4d'), 1)
+  assert.equal(countWorkerMemories(db, 't-deadbeef'), 1)
+  assert.equal(countWorkerMemories(db, 't-none'), 0)
+  assert.equal(MAX_WORKER_MEMORIES_PER_TASK, 3)
   db.close()
 })
 

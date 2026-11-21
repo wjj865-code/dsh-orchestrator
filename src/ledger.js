@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY, project_key TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
-  source_task_id TEXT, source_session_id TEXT, hash TEXT NOT NULL UNIQUE,
+  source_task_id TEXT, source_session_id TEXT, source TEXT, hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL, last_used_at INTEGER, use_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_key, created_at DESC);
@@ -80,6 +80,10 @@ export async function openLedger(stateDir) {
     // 旧库补列（阶段 1 早期版本没有）。
     const columns = db.prepare('PRAGMA table_info(notifications)').all().map(row => row.name)
     if (!columns.includes('reason')) db.exec('ALTER TABLE notifications ADD COLUMN reason TEXT')
+    // 记忆来源（2026-11-21）：子会话也能写项目记忆后，行上要能区分「谁写的」（worker + taskId/sessionId）。
+    // 旧库/存量行 NULL = 协调者或早期版本写入。
+    const memoryColumns = db.prepare('PRAGMA table_info(memories)').all().map(row => row.name)
+    if (!memoryColumns.includes('source')) db.exec('ALTER TABLE memories ADD COLUMN source TEXT')
     const taskColumns = db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
     if (!taskColumns.includes('queued_at')) db.exec('ALTER TABLE tasks ADD COLUMN queued_at INTEGER')
     if (!taskColumns.includes('target_dir')) db.exec('ALTER TABLE tasks ADD COLUMN target_dir TEXT')

@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   DELIVERY_NOT_FINAL, LAYER_NAME, PRESENT_LIMIT_TEXT, PRESENT_MAX_FILES, PROMPT_LAYERS, WORKER_CONTEXT_HINT,
-  layerViolations, renderAdvanceLoopPolicy, renderTaskChainPolicy, renderWorkerPolicy,
+  WORKER_MEMORY_HINT, layerViolations, renderAdvanceLoopPolicy, renderTaskChainPolicy, renderWorkerPolicy,
 } from '../src/prompt-layers.js'
 import {
   ADVANCE_LOOP_LINES, ADVANCE_NOTICE_HINT, TASK_CHAIN_LINES, WORKER_POLICY_HEADING, WORKER_POLICY_LINES,
@@ -120,7 +120,7 @@ test('任务链归 L1：五条规则逐字来自 copy.js，W1/L2/L3 不许复述
 
 // ---- W1：任务执行者 per-turn policy（t-4f7ce108） ---------------------------------
 
-test('W1 段落固定四句 + 条件一句：句子逐字来自 copy.js', () => {
+test('W1 段落固定五句 + 条件一句：句子逐字来自 copy.js', () => {
   const plain = renderWorkerPolicy()
   assert.match(plain, new RegExp(`^## ${WORKER_POLICY_HEADING}`))
   for (const [key, line] of Object.entries(WORKER_POLICY_LINES)) {
@@ -130,6 +130,12 @@ test('W1 段落固定四句 + 条件一句：句子逐字来自 copy.js', () => 
     }
     assert.ok(plain.includes(line), `W1 缺少 ${key} 的句子`)
   }
+  // 「收尾沉淀项目经验」这一句的边界逐字在 W1 里（写自己任务的项目记忆、不写 preference/全局/日志）。
+  assert.ok(plain.includes(WORKER_MEMORY_HINT), 'W1 应有项目经验沉淀引导')
+  assert.match(WORKER_MEMORY_HINT, /有值得复用的项目经验就用 memory_note 写一条 note\/lesson\/decision/)
+  assert.match(WORKER_MEMORY_HINT, /project 只能是你自己任务的 target_dir/)
+  assert.match(WORKER_MEMORY_HINT, /单任务最多 3 条/)
+  assert.match(WORKER_MEMORY_HINT, /不写 preference、不写全局\/跨项目记忆，也不写日志/)
   // 条件句只在真隔离（requested / created / reused）出现。
   for (const worktreeState of ['requested', 'created', 'reused']) {
     assert.ok(renderWorkerPolicy({ worktreeState }).includes(WORKER_POLICY_LINES.worktree), `${worktreeState} 应给装依赖授权`)
@@ -139,10 +145,10 @@ test('W1 段落固定四句 + 条件一句：句子逐字来自 copy.js', () => 
   }
 })
 
-test('W1 拥有执行中上报 / 交付回报 / 装依赖 / 主动读 context（brief 与 persona 不再各写一份）', () => {
+test('W1 拥有执行中上报 / 交付回报 / 装依赖 / 主动读 context / 沉淀项目经验（brief 与 persona 不再各写一份）', () => {
   const w1 = PROMPT_LAYERS.find(layer => layer.id === 'W1')
   assert.equal(w1.audience, 'worker')
-  for (const marker of ['BLOCKED_HINT', 'CONFIRM_HINT', 'WORKTREE_INSTALL_HINT', 'WORKER_CONTEXT_HINT', 'WORKER_DETAIL_HINT']) {
+  for (const marker of ['BLOCKED_HINT', 'CONFIRM_HINT', 'WORKTREE_INSTALL_HINT', 'WORKER_CONTEXT_HINT', 'WORKER_DETAIL_HINT', 'WORKER_MEMORY_HINT']) {
     assert.ok(w1.owns.some(item => item.includes(marker)), `W1 owns 应登记 ${marker}`)
   }
   // 归层自检：W1 段落本身干净（不讲协调者口径），L2 不许把它抄回去。
@@ -153,6 +159,7 @@ test('W1 拥有执行中上报 / 交付回报 / 装依赖 / 主动读 context（
     `完成后用 task_report 回报（progress / done / blocked / needs_auth）`,
     `本任务在独立检出里跑，检出目录没有依赖`,
     `需要历史经验/项目背景时主动调 context`,
+    `有值得复用的项目经验时用 memory_note 写一条 note/lesson/decision，不写 preference/全局`,
   ]) {
     assert.notDeepEqual(layerViolations('L2', leaked), [], `L2 不该复述 W1 的口径：${leaked.slice(0, 24)}…`)
   }

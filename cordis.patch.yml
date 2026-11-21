@@ -195,17 +195,19 @@
           # 子会话的工具面：**遮挡式**（deny 名单），与协调者的保留式（allow 补集）不同——
           # 子会话的 bash/pwsh/fs/web/todo/skill 等工具都由本预设自有行提供（不是全局工具），
           # 用 allow 补集要把平台所有全局工具名抄全，漏一个就会把 task_report/task_detail 一起遮掉。
-          # 这里只遮写记忆：memory_note 仍只属主会话（执行层 tools.js 另有只读兜底与拒绝理由）。
+          # 0.29.x（2026-11-21 用户方向「子会话执行任务也能读到很多项目背景与已有实践，也需要写记忆」）：
+          # 子会话也能写**项目级**记忆（note/lesson/decision，project 强制为自己任务的 target_dir、单任务 ≤3 条、
+          # 来源记 worker+taskId），所以这里**不再遮 memory_note**（deny 为空 = keep-only 形态）；
+          # 全局偏好（preference）与跨项目/全局记忆仍只协调者——由执行层 tools.js 按任务归属校验并拒绝。
           # keep 是正向声明：这些全局工具必须对子会话「出生即可用」；挂载后校验并写 preset.keep 审计。
           - id: preset-tools
             name: '@wjj865-code/dsh-orchestrator/preset-tools'
             config:
-              deny:
-                - memory_note
               keep:
                 - context
                 - task_detail
                 - task_report
+                - memory_note
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill

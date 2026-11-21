@@ -1432,37 +1432,121 @@ test('context 对子会话开放（只读）：三种 mode 与协调者逐字一
   db.close()
 })
 
-test('memory_note 写记忆仍仅主会话：子会话被拒给可执行理由（含迁移提示），不写库、留审计', async () => {
+test('memory_note 子会话可写自己任务的项目记忆：project 强制任务 target_dir、去重、来源留痕、单任务上限 3 条', async () => {
   const events = []
   const logger = { log: (event, fields) => events.push([event, fields]) }
   const { db, tools } = await setup({ logger })
-  const before = db.prepare('SELECT count(*) AS n FROM memories').get().n
-  const denied = await call(tools, 'memory_note', { text: '子会话想记一条', kind: 'decision' }, { agent: { id: 'm-1' } })
-  // 拒绝理由要「可执行」：写 summary / 用 context 只读查 / 请协调者记——不是一句「请从主会话操作」。
-  assert.match(denied, /^拒绝：写记忆只属协调者（主会话）/)
-  assert.match(denied, /task_report 的 summary/)
-  assert.match(denied, /context\(\{ mode: "history"/)
-  assert.match(denied, /请协调者 memory_note/)
-  // 真没写：memories / settings 都没动（loadPreferences 自带出厂种子，只断言没有新增用户条目）。
-  assert.equal(db.prepare('SELECT count(*) AS n FROM memories').get().n, before)
-  assert.equal(loadPreferences(db).some(item => item.rule.includes('子会话想记一条')), false)
-  // 审计留痕（排障时能看到「谁在写记忆被拒」）。
-  const rejected = events.filter(([event]) => event === 'memory.note.rejected')
-  assert.equal(rejected.length, 1)
-  assert.equal(rejected[0][1].detail.reason, 'worker-write-denied')
-  assert.equal(rejected[0][1].agentId, 'm-1')
-  // 协调者照常可写（同一条路由没被收紧）。
-  const noted = await call(tools, 'memory_note', { text: '子会话想记一条', kind: 'decision' })
-  assert.match(noted, /已记住/)
+  const project = tempDir()
+  const task = createTask(db, {
+    brief: sampleBrief({ title: '写项目记忆', goal: '沉淀项目经验', target: project }),
+    coordinatorSession: 's-1',
+    targetDir: project,
+  })
+  transition(db, task.id, 'running', { sessionId: 'w-1', target: 'w-1' })
+  const worker = { agent: { id: 'w-1' } }
+  const rows = () => db.prepare("SELECT * FROM memories WHERE source = 'worker' ORDER BY created_at, rowid").all()
+
+  // 1) 不传 project：项目键强制取任务的 target_dir（不落 global、不由模型决定）。
+  const first = await call(tools, 'memory_note', { text: '本项目测试先跑 pnpm test', kind: 'lesson' }, worker)
+  assert.match(first, /^已记住（项目：/)
+  assert.match(first, /本任务 1\/3 条/)
+  assert.equal(rows().length, 1)
+  assert.equal(rows()[0].project_key, projectKeyOf(project))
+  assert.equal(rows()[0].kind, 'lesson')
+  assert.equal(rows()[0].source, 'worker')
+  assert.equal(rows()[0].source_task_id, task.id)
+  assert.equal(rows()[0].source_session_id, 'w-1')
+  // 审计日志写清来源与用量（排障时能回答「谁在哪个任务写了第几条」）。
+  const noted = events.filter(([event]) => event === 'memory.note').at(-1)
+  assert.equal(noted[1].detail.source, 'worker')
+  assert.equal(noted[1].detail.taskId, task.id)
+  assert.equal(noted[1].detail.cap, 3)
+  assert.equal(noted[1].detail.written, 1)
+
+  // 2) 同 project + kind + text 幂等：重复写返回 already，不占额度、不新增行。
+  const duplicate = await call(tools, 'memory_note', { text: '本项目测试先跑 pnpm test', kind: 'lesson' }, worker)
+  assert.match(duplicate, /already/)
+  assert.equal(rows().length, 1)
+
+  // 3) 传自己任务的 target_dir（大小写/斜杠归一后同键）照常写入。
+  const same = await call(tools, 'memory_note', { text: '构建产物只写 dist 目录', kind: 'decision', project }, worker)
+  assert.match(same, /2\/3/)
+  // 4) 第 3 条成功后到上限，第 4 条被硬护栏拒绝（不是提示词约束）。
+  const third = await call(tools, 'memory_note', { text: '发布前先跑 check:docs', kind: 'note' }, worker)
+  assert.match(third, /3\/3/)
+  const over = await call(tools, 'memory_note', { text: '还想再记一条', kind: 'note' }, worker)
+  assert.match(over, /^拒绝：本任务已经写过 3 条项目记忆/)
+  assert.match(over, /task_report 的 summary/)
+  assert.equal(rows().length, 3)
+  const quota = events.filter(([event, fields]) => event === 'memory.note.rejected' && fields.detail.reason === 'worker-quota-denied')
+  assert.equal(quota.length, 1)
   db.close()
 })
 
-test('context 与 memory_note 的 schema 说明体现「读开放、写仅主会话」', async () => {
+test('memory_note 子会话写 preference / 全局 / 别的项目 / 无归属任务一律拒绝，给替代路径并留审计', async () => {
+  const events = []
+  const logger = { log: (event, fields) => events.push([event, fields]) }
+  const { db, tools } = await setup({ logger })
+  const project = tempDir()
+  const other = tempDir()
+  const task = createTask(db, {
+    brief: sampleBrief({ title: '写项目记忆', goal: 'g', target: project }),
+    coordinatorSession: 's-1',
+    targetDir: project,
+  })
+  transition(db, task.id, 'running', { sessionId: 'w-1', target: 'w-1' })
+  const worker = { agent: { id: 'w-1' } }
+  const before = db.prepare('SELECT count(*) AS n FROM memories').get().n
+  const reasons = []
+
+  // 1) 全局偏好只属协调者（每回合注入协调者 policy，不能被子会话改写）。
+  const preference = await call(tools, 'memory_note', { text: '以后都用 vitest', kind: 'preference' }, worker)
+  assert.match(preference, /^拒绝：子会话不能写全局偏好/)
+  assert.match(preference, /kind:"note" \/ "lesson" \/ "decision"/)
+  reasons.push('worker-preference-denied')
+
+  // 2) 显式传 global 也不行（跨项目记忆不归子会话）。
+  const global = await call(tools, 'memory_note', { text: '全局约定：统一用 pnpm', kind: 'note', project: 'global' }, worker)
+  assert.match(global, /^拒绝：子会话只能写自己任务的项目记忆/)
+  assert.match(global, /global/)
+  reasons.push('worker-project-mismatch')
+
+  // 3) 传别的项目也拒绝（不静默纠正到别的项目，也不落本项目）。
+  const mismatch = await call(tools, 'memory_note', { text: '别的项目的约定', kind: 'note', project: other }, worker)
+  assert.match(mismatch, /^拒绝：子会话只能写自己任务的项目记忆/)
+  assert.ok(mismatch.includes(projectKeyOf(other)), '拒绝理由要点名收到的项目键，便于纠正')
+  reasons.push('worker-project-mismatch')
+
+  // 4) 没有 target 的任务：拒绝并要求走 summary（项目键只能来自 target_dir）。
+  const noTarget = createTask(db, { brief: sampleBrief({ title: '无目录', goal: 'g' }), coordinatorSession: 's-1' })
+  transition(db, noTarget.id, 'running', { sessionId: 'w-2', target: 'w-2' })
+  const noDir = await call(tools, 'memory_note', { text: '无目录任务想记一条', kind: 'note' }, { agent: { id: 'w-2' } })
+  assert.match(noDir, /^拒绝：任务「.*」没有 target 目录/)
+  reasons.push('worker-no-target')
+
+  // 5) 不在台账里的会话（别的 profile / 孙会话）也拒绝，而不是回落到 global。
+  const orphan = await call(tools, 'memory_note', { text: '来路不明的写入', kind: 'note' }, { agent: { id: 'm-ghost' } })
+  assert.match(orphan, /^拒绝：找不到你的任务归属/)
+  reasons.push('worker-no-task')
+
+  // 全都真没写：memories 一行没多；每次拒绝都有审计原因。
+  assert.equal(db.prepare('SELECT count(*) AS n FROM memories').get().n, before)
+  const rejected = events.filter(([event]) => event === 'memory.note.rejected').map(([, fields]) => fields.detail.reason)
+  assert.deepEqual(rejected, reasons)
+  // 协调者行为不变：全局偏好照常进 settings、项目记忆照常可写。
+  const preferenceSaved = await call(tools, 'memory_note', { text: '汇报时先给结论', kind: 'preference' })
+  assert.match(preferenceSaved, /偏好/)
+  assert.equal(loadPreferences(db).some(item => item.rule.includes('汇报时先给结论')), true)
+  db.close()
+})
+
+test('context 与 memory_note 的 schema 说明体现「读开放、写按角色」', async () => {
   const { db, tools } = await setup()
   assert.match(tools.context.description, /协调者与子会话都可用/)
   assert.match(tools.context.description, /只读/)
-  assert.match(tools.memory_note.description, /仅主会话\/协调者可写/)
-  assert.match(tools.memory_note.description, /子会话工具表里没有它/)
+  assert.match(tools.memory_note.description, /任务子会话只能写自己任务 target_dir 的项目记忆/)
+  assert.match(tools.memory_note.description, /单任务最多 3 条/)
+  assert.match(tools.memory_note.description, /写 preference 与全局\/跨项目记忆会被拒/)
   db.close()
 })
 

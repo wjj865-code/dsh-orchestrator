@@ -132,7 +132,7 @@ test('空 allow 直接报错（避免协调者工具全开或全空）', () => {
   assert.throws(() => apply(makeCtx(['read']), { allow: [] }), /allow/)
 })
 
-test('遮挡式（deny）：只遮点名工具，其余全局工具原样继承（子会话工具面靠它去写记忆）', () => {
+test('遮挡式（deny）：只遮点名工具，其余全局工具原样继承', () => {
   const ctx = makeCtx(['context', 'memory_note', 'task_detail', 'task_report', 'read'])
   applyIsolated(ctx, { deny: ['memory_note'] })
   assert.deepEqual(ctx.calls, [{ deny: ['memory_note'] }])
@@ -167,11 +167,23 @@ test('keep 是「出生即可用」的正向声明：确认后写 preset.keep �
   assert.deepEqual(ctx.visible(), ['context', 'task_detail', 'task_report'])
 })
 
+test('keep-only（deny 为空）：不遮任何工具，只做「出生即可用」正向声明', () => {
+  // 子会话预设 0.29.x 起就是这一形态：不再遮 memory_note（子会话可写项目记忆），只 keep 声明。
+  const ctx = makeCtx(['context', 'memory_note', 'task_detail', 'task_report'])
+  applyIsolated(ctx, { keep: ['context', 'task_detail', 'task_report', 'memory_note'] })
+  assert.deepEqual(ctx.calls, [], '没有 deny 名单 → 一次 restrict 都不该发')
+  assert.deepEqual(ctx.logLines, ['preset-tools: keep context, task_detail, task_report, memory_note'])
+  // memory_note 不被遮：子会话工具表里保留它（写权限由执行层按任务归属校验）。
+  assert.deepEqual(ctx.visible(), ['context', 'memory_note', 'task_detail', 'task_report'])
+})
+
 test('配置互斥：allow 与 deny 只能二选一，deny 与 keep 不许重叠，keep 只用于遮挡式', () => {
   assert.throws(() => apply(makeCtx([]), { allow: ['task_create'], deny: ['memory_note'] }), /二选一/)
   assert.throws(() => apply(makeCtx([]), { deny: ['memory_note'], keep: ['memory_note'] }), /冲突/)
   assert.throws(() => apply(makeCtx([]), { allow: ['task_create'], keep: ['context'] }), /keep/)
-  assert.throws(() => apply(makeCtx([]), { keep: ['context'] }), /allow|deny/)
+  // 三份名单全空是配置错误（工具表要么全空要么全开）；keep-only 合法，见上一条。
+  assert.throws(() => apply(makeCtx([]), {}), /allow|deny/)
+  assert.throws(() => apply(makeCtx([]), { deny: [], keep: [] }), /allow|deny/)
 })
 
 test('dispose 时移除 tools/change 监听并解除 deny', () => {

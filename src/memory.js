@@ -41,6 +41,12 @@ const KIND_LABELS = {
 // 现在：fact（lesson/decision/preference/note）不参与淘汰；task-log 单项目 200 条（比旧的 300 更紧）。
 // 旧的 300 因此不再保留：它和 200 的日志上限叠加时永远先被 200 触发，留着只会让「口径到底几条」继续含糊。
 export const MAX_TASK_LOG_PER_PROJECT = 200
+// 子会话写项目记忆的护栏（2026-11-21，用户方向：子会话执行任务时也读到项目背景，应该能沉淀项目经验）：
+// - 只允许写**自己任务 target_dir** 那个项目（归属由执行层按台账判定，不认模型自由传的 project）；
+// - 单任务最多 3 条（硬护栏，不是提示词约束：到上限直接拒绝写入）；
+// - 行上记 `source='worker'` + taskId/sessionId，便于审计与排查（协调者写入 source 为 NULL）。
+export const MEMORY_SOURCE_WORKER = 'worker'
+export const MAX_WORKER_MEMORIES_PER_TASK = 3
 const MAX_TOKENS = 12
 // 通用词停用：这些词在几乎任何记忆里都出现，命中它们不构成「相关」（审计 §3.1：首条命中 token
 // 重合度均值 20%，多数只共「任务/插件」这类词）。只加**不携带项目语义**的词，别把领域词误杀。
@@ -212,6 +218,7 @@ export function memoryTokens(query) {
 
 /**
  * 写一条记忆；同 project+kind+text 的 hash 幂等，重复写返回 undefined。
+ * `source` 记写入方（worker / null=协调者），与 sourceTaskId/sourceSessionId 一起构成审计字段。
  * @returns {object|undefined}
  */
 export function addMemory(db, {
@@ -220,6 +227,7 @@ export function addMemory(db, {
   text,
   sourceTaskId = null,
   sourceSessionId = null,
+  source = null,
 } = {}) {
   const key = normalizeKey(projectKey)
   const normalizedKind = clip(kind, 40) || 'note'
@@ -231,10 +239,10 @@ export function addMemory(db, {
   const hash = memoryHash(key, normalizedKind, clipped)
   const now = Date.now()
   const result = db.prepare(`INSERT INTO memories
-    (id, project_key, kind, text, source_task_id, source_session_id, hash, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    (id, project_key, kind, text, source_task_id, source_session_id, source, hash, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(hash) DO NOTHING`)
-    .run(id, key, normalizedKind, clipped, sourceTaskId ?? null, sourceSessionId ?? null, hash, now)
+    .run(id, key, normalizedKind, clipped, sourceTaskId ?? null, sourceSessionId ?? null, source ?? null, hash, now)
   if (Number(result.changes) === 0) return undefined
   // 淘汰分层：只有日志层（task-log / 旧 task-done / 未知 kind）参与淘汰，单项目留最新的 200 条；
   // 事实层一条都不删——手记的 decision/note 比自动日志珍贵，不能因为写日志多就被挤掉。
@@ -356,9 +364,27 @@ export function searchMemories(db, { projectKey = GLOBAL_PROJECT, projectKeys, q
     text: row.text,
     sourceTaskId: row.source_task_id,
     sourceSessionId: row.source_session_id,
+    source: row.source ?? null,
     createdAt: row.created_at,
     useCount: row.use_count,
   }))
+}
+
+/**
+ * 单任务 worker 写入条数（护栏用）：按 `source='worker'` + `source_task_id` 统计。
+ * 不用 hash 去重口径：重复写入本来就不落库，这里数的是「这个任务已经沉淀了几条」。
+ */
+export function countWorkerMemories(db, taskId) {
+  const id = typeof taskId === 'string' ? taskId.trim() : ''
+  if (id === '') return 0
+  try {
+    const row = db.prepare('SELECT count(*) AS n FROM memories WHERE source = ? AND source_task_id = ?')
+      .get(MEMORY_SOURCE_WORKER, id)
+    return Number(row?.n ?? 0)
+  } catch {
+    // 旧库还没补 source 列时按 0 处理：护栏不能把写入整个打死。
+    return 0
+  }
 }
 
 const dayOf = createdAt => {
@@ -533,7 +559,9 @@ export function migrateLegacyTaskDone(db) {
   return migrated
 }
 
-/** 显式记一条（memory_note 工具）；kind 只做自由字符串截断。 */
-export function remember(db, { text, projectKey = GLOBAL_PROJECT, kind = 'note', sourceTaskId = null, sourceSessionId = null } = {}) {
-  return addMemory(db, { text, projectKey, kind, sourceTaskId, sourceSessionId })
+/** 显式记一条（memory_note 工具）；kind 只做自由字符串截断；source 记写入方（worker / null）。 */
+export function remember(db, {
+  text, projectKey = GLOBAL_PROJECT, kind = 'note', sourceTaskId = null, sourceSessionId = null, source = null,
+} = {}) {
+  return addMemory(db, { text, projectKey, kind, sourceTaskId, sourceSessionId, source })
 }

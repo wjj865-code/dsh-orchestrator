@@ -22,7 +22,7 @@
 
 ### 原生自动化工具面
 
-- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，四个工具（`schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`）由**预设自有行**注册，**不写进 keep/deny 名单**——own 工具不受 `restrict` 影响；`preset-tools.js` 的两个预设现在都用**遮挡式 deny + keep 声明**：协调者只遮「编排正确性」项与三个角色专属工具、`keep` 声明 7 个任务工具「出生即可用」，worker 只遮 `memory_note`、`keep: [context, task_detail, task_report]`（都写 `preset.keep` / `preset.deny` 审计；见 [子会话读上下文](#子会话读上下文只读-context)）。这四个 schedule 工具不进入 `createTools`，插件全局工具数仍为 10。
+- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，四个工具（`schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`）由**预设自有行**注册，**不写进 keep/deny 名单**——own 工具不受 `restrict` 影响；`preset-tools.js` 的两个预设都用**遮挡式**：协调者点名 `deny`「编排正确性」项与三个角色专属工具、`keep` 声明 7 个任务工具「出生即可用」，worker 是 **keep-only**（deny 为空，`keep: [context, task_detail, task_report, memory_note]`，子会话可写项目记忆；都写 `preset.keep` / `preset.deny` 审计；见 [子会话读上下文](#子会话读上下文只读-context)）。这四个 schedule 工具不进入 `createTools`，插件全局工具数仍为 10。
 - **工具面（P1-B：15 → 10；0.26.0 起协调者另挂只读工具，t-4f7ce108 收窄到只有 `read`）**：`createTools` 返回 10 个（协调者可见 7；子会话 4 = 3 个专属 + 共用的只读 `context`）。这 10 个之外，协调者预设还挂了宿主原生 `read`（只读；`tool-fs` 只开 `read`，**不再挂 `tool-fs-search`**——`glob`/`grep` 已移除）与 `skill`（技能加载器）+ `present` + `schedule_*`，它们是**预设自有工具**，不计入全局工具数，也不受 `deny` 影响。旧入口并进三个工具：`task_message` 的 `action`、`task_list` 的 `view`、新工具 `context` 的 `mode`。旧名**不注册**、不在 keep 名单，`index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）。
 - 缺能力诊断只针对唯一主会话：检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule`，缺失去重 warn + policy 提示；不改运行回合工具表，也不模拟自动化。
 - 只支持 `target:this_session`：Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new`/`new_once` 创建普通 root 会话，不是委托 worker、也不是第二协调者；**非唯一主** id 被 `requireMain` 拒绝。**默认 worker 不新增**挂载；`access:full` 不增加工具、不解除 `subagent_session`。沿用 Host-wide 管理、用户**明确授权**、RRULE 与 `expectedUpdatedAt` 冲突保护；用法见 [README 原生自动化](../README.md#主会话原生自动化)，边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。
@@ -333,7 +333,7 @@
 派发给子会话的 brief 只回答「你是哪个任务、去哪读详情」，创建详情全部留在台账、由子会话用 `task_detail` 现取；静态提示改由 W1 每回合注入：
 
 - **形态**：`renderBrief({ taskId, access })` 输出两行（完整访问多一行【访问级别】）——`【任务编号】t-xxxxxxxx` + `【任务详情】先调 task_detail 读完整详情（task_id 就是上面的任务编号）。`。目标、验收、约束、背景、用户原话、工作目录/权限、经验/前置/产物都不内联；`worktree_state` 不进 brief（装依赖提示归 W1，按同一台账字段条件渲染）。
-- **静态提示归 W1（per-turn policy）**：`WORKER_DETAIL_HINT`（先读 `task_detail` 的字段清单与「不要凭 brief 猜任务内容」）、`BLOCKED_HINT`（执行中要拍板 → `blocked` 上报「问题 + 选项」，协调者问用户后续派）、`CONFIRM_HINT`（`task_report` 四状态；交付把 summary 写成「结论 + 改了什么/改了哪些文件/怎么验证的」；子会话**不能**调 `ask_user_question`——平台对 `origin === 'subagent'` 抛 `DELEGATED_CALLER`；`done` 会清空 `question`/`options`；交付后协调者**不会为「任务能否关闭」提问**，任务保持「已交付待确认」、等 `deliveredTimeoutMinutes` 超时自动完成，用户要改再 `task_message` 追问）、`WORKTREE_INSTALL_HINT`（隔离任务：可以装依赖，**只安装不升级**）、`WORKER_CONTEXT_HINT`（主动读上下文）。句子真源都在 `src/copy.js`，渲染在 `renderWorkerPolicy`，注入在 `index.js` 的第二条 `systemPrompt.context`。
+- **静态提示归 W1（per-turn policy）**：`WORKER_DETAIL_HINT`（先读 `task_detail` 的字段清单与「不要凭 brief 猜任务内容」）、`BLOCKED_HINT`（执行中要拍板 → `blocked` 上报「问题 + 选项」，协调者问用户后续派）、`CONFIRM_HINT`（`task_report` 四状态；交付把 summary 写成「结论 + 改了什么/改了哪些文件/怎么验证的」；子会话**不能**调 `ask_user_question`——平台对 `origin === 'subagent'` 抛 `DELEGATED_CALLER`；`done` 会清空 `question`/`options`；交付后协调者**不会为「任务能否关闭」提问**，任务保持「已交付待确认」、等 `deliveredTimeoutMinutes` 超时自动完成，用户要改再 `task_message` 追问）、`WORKTREE_INSTALL_HINT`（隔离任务：可以装依赖，**只安装不升级**）、`WORKER_CONTEXT_HINT`（主动读上下文）、`WORKER_MEMORY_HINT`（收尾沉淀项目经验：只写自己任务 `target_dir` 的 `note`/`lesson`/`decision`，不写 `preference`/全局/日志）。句子真源都在 `src/copy.js`，渲染在 `renderWorkerPolicy`，注入在 `index.js` 的第二条 `systemPrompt.context`。
 - **task_detail（只读）**：`src/task-detail.js` 渲染编号/标题/状态 → 目标全文 → 工作目录 + 可写/只读提示 → `【验收标准】`/`【可执行检查】`/`【约束】`/`【背景资料】`/`【用户原话】` → 编排（非默认才出现）→ `【前置任务】`（按**当前**台账现读）→ `【经验文件】<路径>（N 条）` → `【已有产物】`。实现只读台账：不写消息、不改状态/时间戳；交付/完成口径不在这里重复（归 W1）。
 - **越权拒绝**：只允许任务自己的子会话；主会话或别的子会话调用返回「读取被拒绝…主会话查任务用 task_status」，并记 `task.detail.rejected`。
 - **挂载链**：和其它 `task_*` 一样由 `index.js` 注册成 host plane 全局工具；协调者预设的 `preset-tools` 把 `task_detail` 列进 `deny`（0.26.0 起它与 `task_report` / `plan_save` 一起按「角色专属」遮在预设层），主会话看不到/调不到。
@@ -348,12 +348,12 @@
 | 工具 | 协调者（主会话） | 子会话 | 依据 |
 |---|---|---|---|
 | `context` | 可调（只读） | 可调（只读，**同一条实现**，同参数输出逐字一致） | worker 预设 `preset-tools` 的 `keep: [context, …]`；`src/tools.js` 三种 mode 都不再拦主会话 |
-| `memory_note` | 可写 | **不可见**（工具表里没有）；万一被别的 profile 露出，执行层返回「拒绝：写记忆只属协调者」+ 替代路径，并记 `memory.note.rejected` | worker 预设 `preset-tools` 的 `deny: [memory_note]`；`requireMainForWrite` 兜底 |
+| `memory_note` | 可写（任意项目 + 全局偏好） | 可写，但**只能写自己任务 `target_dir` 的项目记忆**（`note`/`lesson`/`decision`，单任务 ≤3 条、同 `kind`+`text` 幂等、行上记 `source:'worker'` + taskId/sessionId）；`preference`、`global`/跨项目一律拒绝并给替代路径 | worker 预设 `preset-tools` 的 `keep`（keep-only，不遮任何工具）；执行层 `taskOfWorker` + `countWorkerMemories` 做归属与护栏校验，拒绝记 `memory.note.rejected`（见下「子会话写入项目记忆」） |
 | `task_report` / `task_detail` / `plan_save` | 不可见（协调者预设 `preset-tools` 的 `deny`） | 只对任务自己的子会话 | 预设层遮挡 + 执行层 `task.detail.rejected` 等归属校验 |
 
-- **两种收窄形态**（`preset-tools.js`）：0.26.0 起本插件的**两个预设都用遮挡式**（点名 `deny` + `keep` 正向声明）。协调者只遮「编排正确性」项与三个角色专属工具（`keep` 声明 7 个任务工具），worker 只遮 `memory_note`（`keep: [context, task_detail, task_report]`）。不再用 `allow` 补集：那要把平台所有全局工具名抄全，漏一个就悄悄少一个工具（协调者还会把只读工具也遮掉）。保留式（`allow`）形态仍留在模块里兼容旧 profile 与探针，新配置不再使用。真机语义实验见 `docs/probes/preset-scope-restrict.mjs`（10/10 PASS，含「deny 名单只遮点名项」「`keep` 晚注册后补确认」）。
+- **两种收窄形态**（`preset-tools.js`）：0.26.0 起本插件的**两个预设都用遮挡式**（点名 `deny` + `keep` 正向声明）。协调者只遮「编排正确性」项与三个角色专属工具（`keep` 声明 7 个任务工具）；worker 是 **keep-only**（deny 为空）：不遮任何工具，只 keep 声明 `context` / `task_detail` / `task_report` / `memory_note` 出生即可用（0.29.x 起子会话也可写项目记忆，见上表与下面「子会话写入项目记忆」一节）。不再用 `allow` 补集：那要把平台所有全局工具名抄全，漏一个就悄悄少一个工具（协调者还会把只读工具也遮掉）。保留式（`allow`）形态仍留在模块里兼容旧 profile 与探针，新配置不再使用。真机语义实验见 `docs/probes/preset-scope-restrict.mjs`（10/10 PASS，含「deny 名单只遮点名项」「`keep` 晚注册后补确认」）。
 - **`keep` 是正向声明**：声明这些全局工具必须对子会话出生即可用；挂载后随 `tools/change` 校验，确认到就写 `preset.keep` 审计（写 `$DSH_HOME/state/orchestrator/logs/*.jsonl`），未注册先静默、不抛——可见性以平台真值为准。
-- **引导写在 W1 per-turn policy 里**（不是每条 brief、也不再写进 persona）：`src/copy.js` 的 `WORKER_CONTEXT_HINT`（「需要历史经验/项目背景时主动调 context：查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入；写记忆只属协调者…」）由 `renderWorkerPolicy` 每回合渲染，`test/prompt-layers.test.js` 逐字校验；brief 只剩两行、persona 只剩身份一句，都不重复这句。
+- **引导写在 W1 per-turn policy 里**（不是每条 brief、也不再写进 persona）：`src/copy.js` 的 `WORKER_CONTEXT_HINT`（「需要历史经验/项目背景时主动调 context：查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入」）与 `WORKER_MEMORY_HINT`（「有值得复用的项目经验就用 memory_note 写一条 note/lesson/decision：project 只能是你自己任务的 target_dir、单任务最多 3 条；不写 preference、不写全局/跨项目记忆，也不写日志」）由 `renderWorkerPolicy` 每回合渲染，`test/prompt-layers.test.js` 逐字校验；brief 只剩两行、persona 只剩身份一句，都不重复这两句。
 - **注入侧只做减法**：brief 自 T1 起就没有记忆正文；`task_detail` 的 `【经验文件】<路径>（N 条）` 保留（关键指针），只在末尾加一句出口「更多历史与项目背景用 `context({ mode: 'history' | 'project' })`」。
 
 ### 记忆检索与容量（0.25.1，审 t-c8df6366 后的最小落地包）
@@ -369,6 +369,17 @@
 - **worktree 归一**：`task_report done` 的 projectKey 取 `brief.target ?? repo_root ?? target_dir`——隔离任务的 `target_dir` 是检出目录，以前直接用它写出 `.agents/worktrees/t-*` 分裂键。
 - **项目背景白名单**：`projectContextFor` 增加 `docs/ARCHITECTURE.md`（默认前 1200 字，`include:['docs/ARCHITECTURE.md']` 给前 4000 字；总输出 ≤8000 字），未识别 include 给一行提示。
 - **旧偏好迁移**：`migrateLegacyPreferences`（`src/preferences.js`）启动时把 `memories` 的 global `preference` 搬进 `settings.orchestrator_preferences`：带「更正/修正/纠正/推翻/不再用」标记的条目按共享主题词（≥3）取代旧条目，写成功后删除 memories 行（不双写），失败不写标记、下次重试；没有旧行时不动 settings。
+
+### 子会话写入项目记忆（0.29.x，t-94b99f3f）
+
+用户方向：「子会话在执行任务也能读到很多项目背景和已有实践，也需要进行写入记忆」。放开的是**写项目记忆**，不是权限模型：
+
+- **能力声明**：worker 预设的 `preset-tools` 改 **keep-only**（deny 为空、`keep` 含 `memory_note`）——子会话工具表里出生就有它；`preset-tools.js` 允许「deny 空 + keep 非空」的形态。
+- **归属由台账判定**（`src/tools.js` 的 `taskOfWorker`）：先查 `index.js` 注入的 spawn 映射（首回合 `tasks.session_id` 可能还没回写），再退 `findTaskBySession`。项目键只取 `tasks.target_dir`（`projectKeyOf` 归一），**不接受模型自由传**：`project` 不传 → 强制落本项目；传别的项目/`global` → 拒绝并点名两个键。
+- **只放三类 kind**：`note`/`lesson`/`decision`；`kind:'preference'` 直接拒绝（偏好每回合注入协调者 policy，只由协调者维护）。没有 target 的任务、找不到归属的会话（别的 profile/孙会话）同样拒绝，并给替代路径（写 `task_report` 的 summary / 让协调者 `memory_note`）。
+- **硬护栏**（不是提示词约束）：同 `project + kind + text` 由 `memories.hash` 唯一约束幂等（重复返回 `already`）；单任务上限 `MAX_WORKER_MEMORIES_PER_TASK = 3`，用 `countWorkerMemories` 按 `source='worker' + source_task_id` 计数，超限拒绝。
+- **来源审计**：`memories` 新增 `source` 列（旧库 ALTER 补），子会话写入记 `source='worker'` + `source_task_id` + `source_session_id`；每条写入/拒绝都记 `memory.note` / `memory.note.rejected` 日志（含 `written`/`cap`）。
+- **不改的**：记忆检索与注入语义、`task_detail` 的经验指针、brief、派发/状态机/权限模型、`memory_note` 的公开参数（只是角色化行为）。
 
 ## 产物
 
@@ -492,7 +503,7 @@
 
 插件页只展示一段简介与文档链接；这里只留运维需要口径：
 
-- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace`（另有预设自有的只读 `read`、`skill`、`present`、`schedule_*`，不计入这 10 个）；子会话 `task_report` / `task_detail` / `plan_save` / 共用的只读 `context`（写记忆的 `memory_note` 不在子会话工具表里）。
+- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace`（另有预设自有的只读 `read`、`skill`、`present`、`schedule_*`，不计入这 10 个）；子会话 `task_report` / `task_detail` / `plan_save` / 共用的只读 `context` 与**只能写自己任务目录项目记忆**的 `memory_note`。
 - **面板动作与错误码同源**：面板 stop / retry / message / delete 与 `task_message({action})` 共用 `src/action-errors.js` 的 code 与门控；面板失败返回 `{ok:false, code, error}`，`host-route` 按 code 映射 HTTP 状态（400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部）。
 - `stop`：已结束再 stop 返回 `{ok:true, already:true}`；收子会话失败不阻断取消（`warnings[].code=STOP_DISPATCH_FAILED`）。
 - `retry`：只允许 failed/orphaned；已有活跃重派直接返回那条任务；同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。

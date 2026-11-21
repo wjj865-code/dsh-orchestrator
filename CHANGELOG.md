@@ -42,6 +42,36 @@
 - **未验（附原因）**：① 真实模型回合下「模型是否照着 W1 行动」——stub 只证明注入内容与每回合重渲染，不证明模型服从；② 排期拖拽与自动化新建/暂停的交互动作——只验到页面可进入、接口 200；拖拽需要真实指针序列，自动化写动作会真建调度，不在本次冒烟范围；③ 暗色主题 / 多语言外观未覆盖。
 - **证据**（临时目录，未入库）：`probe-results.json`（15 项）、`drive-results.json`（16 项）、`06-page-*.png` / `07-group-dock.png` 等截图、`mock/requests.jsonl`（宿主真实请求体）、`plugin-log-scan.json`。
 
+### 未发布：子会话可写项目记忆（note / lesson / decision），全局偏好仍只协调者（t-94b99f3f）
+
+> 本节是**未发布改动**（不 bump 版本号、不 tag、不 publish），随下一次发版并入。用户原话：「另外写记忆为啥只属于协调者，按理说子会话在执行任务也能读到很多项目背景和已有实践，也需要进行写入记忆。A 子会话写项目记忆（推荐）。」
+
+**行为变化（用户可感知）**
+
+1. **子会话可以沉淀项目经验**：任务执行者的工具表里恢复 `memory_note`（worker 预设 `preset-tools` 改成 **keep-only**：deny 为空、`keep` 声明 `context` / `task_detail` / `task_report` / `memory_note`）。子会话只能写**自己任务 `target_dir`** 那个项目的 `note` / `lesson` / `decision`；不传 `project` 就落本项目，传别的项目或 `global` 一律拒绝（点名本任务项目键），不会串到别的项目。
+2. **全局偏好与跨项目记忆仍只协调者**：子会话写 `kind:'preference'`、没有 `target` 的任务、或找不到任务归属的会话（别的 profile / 孙会话）都被拒绝，并给可执行替代路径（写 `task_report` 的 summary / 让协调者 `memory_note`）。协调者行为不变（全局偏好仍进 `settings.orchestrator_preferences`，任意项目仍可写）。
+3. **硬护栏**：同 `project + kind + text` 幂等（重复返回 `already`）；单任务最多 **3 条**（`MAX_WORKER_MEMORIES_PER_TASK`，`countWorkerMemories` 按 `source='worker'` + `source_task_id` 计数，超限拒绝）；`memories` 新增 `source` 列（旧库 ALTER 补），子会话写入记 `source='worker'` + taskId/sessionId，写入/拒绝都记日志（`memory.note` / `memory.note.rejected`，含 `written`/`cap`）。
+
+**代码**
+
+- `src/tools.js`：`memory_note` 按角色分流（协调者原路由不变；子会话走归属 → 项目 → kind → 去重/上限的硬护栏），新增 `taskOfWorker`（优先用注入的 spawn 映射，再退 `findTaskBySession`，首回合 `tasks.session_id` 没回写也认得出），拒绝原因 `worker-no-task` / `worker-no-target` / `worker-preference-denied` / `worker-project-mismatch` / `worker-quota-denied`。
+- `src/memory.js`：`addMemory` / `remember` 增加 `source`；新增 `MEMORY_SOURCE_WORKER` / `MAX_WORKER_MEMORIES_PER_TASK` / `countWorkerMemories`；`searchMemories` 结果带 `source`。
+- `src/ledger.js`：`memories.source` 建表列 + 旧库 `ALTER TABLE` 补列。
+- `preset-tools.js`：允许 **keep-only**（deny 空 + keep 非空）形态；worker 预设不再遮 `memory_note`。
+- `src/copy.js` / `src/prompt-layers.js`：W1 新增 `WORKER_MEMORY_HINT`（「有值得复用的项目经验就用 memory_note 写一条 note/lesson/decision，project 只能是你自己任务的 target_dir、单任务最多 3 条；不写 preference、不写全局/跨项目记忆，也不写日志」），`WORKER_CONTEXT_HINT` 删掉「写记忆只属协调者」；`PROMPT_LAYERS` 的 W1 owns 登记、L2 探针加「W1 记忆沉淀句被抄回 brief 就红」。
+- `cordis.patch.yml`：worker 预设的 `preset-tools` 从 `deny: [memory_note]` 改为 keep-only，注释写明放开范围与理由。
+- `index.js`：`createTools` 注入 `taskOfAgent: workerTaskOf`（与 W1 同一份归属解析）。
+
+**测试**
+
+- `test/tools.test.js`：新增两条——子会话写自己任务项目记忆成功（project 强制 target、去重 `already`、来源字段、单任务上限 3 条 + 审计日志）与「preference / global / 别的项目 / 无 target / 无归属」全部拒绝且不写库；schema 描述断言同步。
+- `test/memory.test.js`：来源审计（`source`/taskId/sessionId 落行、检索可见、`countWorkerMemories` 单任务计数）。
+- `test/preset-tools.test.js`：新增 keep-only 形态（不遮任何工具、只写 keep 审计）；配置互斥用例同步。
+- `test/config.test.js`：worker 预设不再有 `deny`、`keep` 含 `memory_note`；`index.js` 注入 `taskOfAgent`。
+- `test/prompt-layers.test.js` / `test/index.test.js`：W1 固定五句 + `WORKER_MEMORY_HINT` 逐字断言 + L2 探针；W1 注入用例加记忆沉淀句断言。
+
+**文档**：README（工具清单 `memory_note` 行、预设收窄形态、W1 层职责、记忆与偏好）、`docs/ARCHITECTURE.md`（权限矩阵、preset 形态、W1 句子、新增「子会话写入项目记忆」一节）、`docs/LIMITATIONS.md`（「子会话能读上下文，也能写项目记忆」的边界与代价）、本节。
+
 ### 未发布：压力提醒不再打扰运行中任务 + 「新建」确认后真的跳过去（t-a79e12d8）
 
 > 本节是**未发布改动**（不 bump 版本号、不 tag、不 publish），随下一次发版并入。用户原话：「目前超过40%，自动切新的主会话逻辑不太对，例如有运行中任务时，依然会询问用户是否切换，选择确认后，当前会话不是主会话了，但没有新建和跳转到新会话」。

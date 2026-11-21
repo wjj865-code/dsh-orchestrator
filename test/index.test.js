@@ -213,7 +213,8 @@ test('apply 注册 10 个工具（P1-B 15 → 10），只写 $DSH_HOME/state/orc
 }))
 
 // 挂载链证据：task_detail 由 index 的 createTools(...).map(ctx.tools.register) 注册成 host plane 全局工具，
-// worker 预设的 preset-tools 只做遮挡式 deny（当前仅 memory_note，见 test/config.test.js），所以子会话工具表里直接就有它。
+// worker 预设的 preset-tools 是 keep-only 形态（不遮任何工具，0.29.x 起含 memory_note，见 test/config.test.js），
+// 所以子会话工具表里直接就有它。
 test('task_detail 走全局注册：主会话越权被拒，任务自己的子会话可读', withHome(async () => {
   const coordinator = makeAgent('s-1')
   const { ctx, registered } = fakeCtx({ agent: coordinator })
@@ -797,6 +798,9 @@ test('任务子会话拿到 worker policy；协调者/无关会话/孙会话拿�
   assert.match(policy, /## 回报与确认/)
   assert.match(policy, /task_report 回报（progress \/ done \/ blocked \/ needs_auth）/)
   assert.match(policy, /主动调 context/)
+  // 0.29.x：子会话也能沉淀项目经验（写自己任务 target_dir 的 note/lesson/decision，不写 preference/全局）。
+  assert.match(policy, /有值得复用的项目经验就用 memory_note 写一条 note\/lesson\/decision/)
+  assert.match(policy, /不写 preference、不写全局\/跨项目记忆/)
   // 协调者自己永远不拿 W1；无关会话与孙会话（不在 tasks.session_id 里）也不拿。
   assert.equal(worker.text({ agent: coordinator }), '')
   assert.equal(worker.text({ agent: { id: 'grandchild-1' } }), '')

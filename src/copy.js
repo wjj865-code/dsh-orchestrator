@@ -283,11 +283,22 @@ export const WORKTREE_INSTALL_HINT = '本任务在独立检出里跑，检出目
  * 子会话「主动读上下文」的引导（W1 唯一措辞）。
  *
  * 配套事实（不在本句里重复讲）：`context` 只读且子会话可用（worker 预设 keep 声明它出生即可用）；
- * `memory_note` 子会话不可用（worker 预设 deny 掉，执行层再兜一层拒绝理由含迁移提示）。
+ * 写记忆的能力与边界归下一句 `WORKER_MEMORY_HINT`（这里只讲「查」，不讲「写」）。
  */
 export const WORKER_CONTEXT_HINT = '需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读）：'
-  + '查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入；'
-  + '写记忆只属协调者，要沉淀的结论写进 task_report 的 summary。'
+  + '查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入。'
+
+/**
+ * 子会话「沉淀项目经验」的引导（W1 唯一措辞，2026-11-21 用户方向：子会话也该能写记忆）。
+ *
+ * 边界写死在句子里（执行层另有硬护栏，这里是模型面口径）：
+ * - 只写 `note` / `lesson` / `decision` 三类项目级事实，不写 `preference`（偏好只协调者维护、每回合注入）；
+ * - 不写全局/跨项目记忆，不写日志（完成记录由协调者按 `task_report` 的 summary 沉淀）；
+ * - `project` 只能是自己任务的 `target_dir`，单任务最多 3 条。
+ */
+export const WORKER_MEMORY_HINT = '任务收尾时：有值得复用的项目经验就用 memory_note 写一条 note/lesson/decision'
+  + '（project 只能是你自己任务的 target_dir，单任务最多 3 条，重复内容不会重复写入）；'
+  + '不写 preference、不写全局/跨项目记忆，也不写日志——完成记录由协调者按 task_report 的 summary 沉淀。'
 
 /** W1 段标题（渲染入口在 `src/prompt-layers.js` 的 `renderWorkerPolicy`）。 */
 export const WORKER_POLICY_HEADING = '回报与确认（任务子会话每回合都在，不必等 brief 再说）'
@@ -298,6 +309,7 @@ export const WORKER_POLICY_LINES = Object.freeze({
   blocked: BLOCKED_HINT,
   report: CONFIRM_HINT,
   context: WORKER_CONTEXT_HINT,
+  memory: WORKER_MEMORY_HINT,
   worktree: WORKTREE_INSTALL_HINT,
 })
 

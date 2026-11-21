@@ -224,7 +224,7 @@ test('worker 预设挂 tool-goal：子会话才有 get_goal 可读自己的任�
   assert.equal(coordinator.rows.some(row => row.id === 'tool-goal'), false)
 })
 
-test('worker 预设只做「遮挡式」收窄：memory_note 遮掉，context/task_detail/task_report 出生即可用', () => {
+test('worker 预设不再遮 memory_note（keep-only）：context/task_detail/task_report/memory_note 出生即可用', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const worker = presetPlugins(source, 'dsh-orchestrator-worker')
   // 挂载链：index.js 的 createTools(...).map(tool => ctx.tools.register(tool)) 把 task_detail 注册成
@@ -234,21 +234,23 @@ test('worker 预设只做「遮挡式」收窄：memory_note 遮掉，context/ta
   assert.equal(rows.length, 1, 'worker 预设应恰好挂一行 preset-tools（遮挡式）')
   const rowText = rows[0].lines.join('\n')
   assert.match(rowText, /name:\s*'@wjj865-code\/dsh-orchestrator\/preset-tools'/)
-  // 写记忆仍仅主会话：唯一被遮的是 memory_note。
-  assert.match(rowText, /deny:\s*\n\s+- memory_note/)
+  // 0.29.x（2026-11-21 用户方向）：子会话也能写项目记忆 → 不再遮 memory_note，worker 是 keep-only 形态。
+  assert.doesNotMatch(rowText, /^\s+deny:/m, 'worker 预设不应再有 deny 名单（不再遮 memory_note）')
   assert.doesNotMatch(rowText, /^\s+allow:/m, 'worker 预设不能用 allow 补集（会把全局工具全遮掉）')
   // 正向声明：这些全局工具必须对子会话出生即可用（preset-tools 挂载后校验并写 preset.keep 审计）。
-  for (const tool of ['context', 'task_detail', 'task_report']) {
+  for (const tool of ['context', 'task_detail', 'task_report', 'memory_note']) {
     assert.match(rowText, new RegExp(`- ${tool}\\s*$`, 'm'), `worker 预设 keep 应声明 ${tool}`)
   }
   assert.match(worker.text, /task_report \/ task_detail \/ plan_save \/ context/, 'worker 预设应保留全局工具挂载链的说明')
-  // 协调者那一侧同形：keep 里仍保留 memory_note（写记忆留在主会话）。
+  // 协调者那一侧同形：keep 里仍保留 memory_note（写记忆仍在主会话）。
   const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
   const coordinatorTools = coordinator.rows.find(row => row.id === 'preset-tools')
   assert.match(coordinatorTools.lines.join('\n'), /^\s+- memory_note\s*$/m)
   const index = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
-  assert.match(index, /createTools\(\{[\s\S]{0,800}?\.map\(tool => ctx\.tools\.register\(tool\)\)/,
+  assert.match(index, /createTools\(\{[\s\S]{0,1200}?\.map\(tool => ctx\.tools\.register\(tool\)\)/,
     'task_detail 与其它 task_* 一样走全局注册')
+  // 归属解析复用 W1 的同一份（首回合台账 session_id 还没回写也能认出子会话的任务）。
+  assert.match(index, /taskOfAgent:\s*workerTaskOf/, 'memory_note 的归属解析要复用 workerTaskOf')
 })
 
 test('协调者预设挂 present 交付工具：主会话可交付子会话产物', () => {

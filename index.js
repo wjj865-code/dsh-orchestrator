@@ -874,6 +874,9 @@ export async function apply(ctx, rawConfig = {}) {
     goalBridge,
     // L1：经验文件落在插件唯一写入根下的 lessons/，子会话可 read。
     stateDir: dir,
+    // 子会话写项目记忆（2026-11-21）：memory_note 要按「子会话 → 任务」判归属；复用 W1 的同一份解析
+    // （spawn 映射 + 台账 session_id），首回合台账还没回写 session_id 时也能认出来。
+    taskOfAgent: workerTaskOf,
     // P2-4（D6）：官方 Team 板只读关联（task_create.teamTaskId 的校验与记录）。
     teamBoard,
     // P9：worktree 能力共享同一份服务（recentDays 取配置），终态清理由 index 统一注入。

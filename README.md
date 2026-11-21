@@ -131,7 +131,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 | `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条检查的退出码/耗时）、交接、目标状态与轮次（`x/y`）、官方 Team 关联、最近消息、最新返回（`include:'full'` 看全文） |
 | `task_message` | 子任务动作统一入口：`action:'message'`（默认，续派/追问，复用原会话）/ `'resume'` 续跑失败·丢失（或超时完成）任务的原会话 / `'stop'` 停止 / `'retry'` 重派 failed·orphaned（新任务新会话）/ `'close'` 把「已交付待确认」确认成 `done` |
 | `context` | 只读读上下文（协调者与子会话都能调）：`mode:'history'`（默认，记忆/历史任务/历史会话；首行【检索范围】，查项目记忆要传 `project`）/ `'project'`（项目白名单文件含 `docs/ARCHITECTURE.md`、结构、最近任务、相关记忆）/ `'workspaces'`（已登记工作区与仓库采样索引） |
-| `memory_note` | 记一条跨任务有效的决策/经验（**仅主会话可写**：子会话工具表里没有它）；`kind:'preference'` 不传 `project` 时写进协调者偏好（每回合注入、立即生效） |
+| `memory_note` | 记一条跨任务有效的决策/经验，或一条偏好。协调者（主会话）可写任意项目与全局偏好；任务子会话只能写**自己任务 `target_dir`** 的项目记忆（`note`/`lesson`/`decision`，`project` 强制为本任务目录、单任务最多 3 条、同 `kind`+`text` 幂等），写 `preference` 与全局/跨项目记忆会被拒并给替代路径；`kind:'preference'` 不传 `project` 时写进协调者偏好（每回合注入、立即生效） |
 | `read_workspace` | 读产物正文：主会话工作区内文件/目录，或任务已登记产物；越界/`../`/符号链接逃逸/未登记均被拒；大文件按行窗口截断给续读 `offset` |
 
 子任务（3 个，外加与协调者共用的只读 `context`）：
@@ -142,7 +142,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 | `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收标准、可执行检查、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物 |
 | `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为产物（计划阶段唯一写入口） |
 
-- 10 个工具**全局注册**（`index.js` 的 `createTools(...).map(ctx.tools.register)`），角色差异全在**预设层**（两个预设都是**遮挡式 deny + keep**）：协调者预设遮「编排正确性」项（`wait_agent`、团队工具、`plugin_manager`、密钥/IM）与三个子会话专属工具，并用 `keep` 声明 7 个任务工具出生即可用；worker 预设只遮 `memory_note`（写记忆仍仅主会话），其余全局工具子会话都继承。所以 `context` 子会话也能调——**只读**、与协调者同一条实现（同参数输出逐字一致）；`task_report`/`task_detail`/`plan_save` 只对任务自己的子会话开放；`memory_note` 万一被别的 profile 露出，执行层会拒绝并给替代路径（写 `task_report` 的 summary / 用 `context` 只读查 / 请协调者记）。
+- 10 个工具**全局注册**（`index.js` 的 `createTools(...).map(ctx.tools.register)`），角色差异全在**预设层**（两个预设都是**遮挡式**）：协调者预设遮「编排正确性」项（`wait_agent`、团队工具、`plugin_manager`、密钥/IM）与三个子会话专属工具，并用 `keep` 声明 7 个任务工具出生即可用；worker 预设**不遮任何工具**（keep-only），只正向声明 `context` / `task_detail` / `task_report` / `memory_note` 出生即可用——所以 `context` 与 `memory_note` 子会话都能调：`context` **只读**、与协调者同一条实现（同参数输出逐字一致）；`memory_note` 在子会话里只能写自己任务目录的项目记忆（全局偏好与跨项目记忆由执行层按任务归属拒绝并给替代路径）；`task_report`/`task_detail`/`plan_save` 只对任务自己的子会话开放。
 - 派发给子会话的 **brief 只留一次性参数**（2–3 行，`access:'full'` 多一行）：任务编号 + 一行「先调 `task_detail`」指针；目标、验收、经验、前置、产物都不内联进提示词，由子会话用 `task_detail` 现读。**执行中怎么上报 / 交付怎么回报 / 隔离任务装依赖 / 主动读 context** 这些静态提示不再写进 brief，而是由 W1「任务执行者 policy」**每回合注入**（只命中该任务的子会话，见下面「提示词分层」）。交付后协调者**不会**来问「确认 / 要改？」，任务保持待确认、等超时自动完成；用户要改时协调者用 `task_message` 回到同一个子会话。
 
 ### 技能与只读工具
@@ -158,7 +158,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 | 层 | 载体 | 谁看 | 独占职责 |
 |---|---|---|---|
 | **L1** 协调者 policy | `ctx.systemPrompt.context`（每回合重渲染） | 协调者 | 硬规则、工具面、交付/确认决策口径、交互三闸门、推进循环、任务链、worktree/写域策略、偏好、能力诊断 |
-| **W1** 任务执行者 policy | 同一个 `ctx.systemPrompt.context`（**只命中 `tasks.session_id` 属于任务的子会话**） | 任务子会话 | 开工先读 `task_detail`、执行中 `blocked` 上报、交付 `task_report` 的 summary/两段式终态、隔离任务装依赖授权、主动调 `context` |
+| **W1** 任务执行者 policy | 同一个 `ctx.systemPrompt.context`（**只命中 `tasks.session_id` 属于任务的子会话**） | 任务子会话 | 开工先读 `task_detail`、执行中 `blocked` 上报、交付 `task_report` 的 summary/两段式终态、隔离任务装依赖授权、主动调 `context`、收尾用 `memory_note` 沉淀项目经验（不写偏好/全局/日志） |
 | **L2** brief / persona | 派发消息 + worker 预设 persona（出生即带） | 任务子会话 | 只留一次性参数（任务编号、访问级别）与一行详情指针；persona 只说身份 |
 | **L3** `task_detail` | 子会话按需调用 | 任务子会话 | 任务创建详情（目标/验收/约束/背景/原话/目录与权限/前置/经验/产物/计划/隔离说明） |
 | **L4** onboarding | 一次性 `agent.steer`（新主会话首次） | 协调者 | 自我介绍一句 + 派一次只读索引任务 |
@@ -296,7 +296,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 - **事实层**：摘要里的经验/教训分句蒸馏成 `lesson`，加上 `decision`/`preference`/`note` 原子事实，随 `task_create` 写进 `lessons/` 记忆文件、由 `task_detail` 给出路径；`memoryLimit` 控制注入条数；检索有质量门槛（多词要命中 ≥2 个词或分数 ≥2、通用词不参与匹配）与分层配额（`decision`/`preference` 最多 2 条，其余槽位留给经验）。
 - **容量（口径已变）**：日志层单项目留最新 **200 条**（超出淘汰最老的日志）；**事实层不参与淘汰**。旧口径「单项目 300 条总量」已删除——它把事实和日志混算，项目一活跃就先删手记的决策/笔记。
 - **检索**：`context({mode:'history'})` 首行打印【检索范围】——**不传 `project` 只查 global 跨项目记忆**，要查本项目必须显式传 `target_dir` 或工作区名；也接受数组（合并 ≤2 个项目）与 `'all'`。`task-log` 单独成块、最多 2 条、排在事实层之后。`context({mode:'project'})` 读项目白名单（README/AGENTS/**docs/ARCHITECTURE.md**/package 等）：架构默认前 1200 字，`include:['docs/ARCHITECTURE.md']` 给前 4000 字。
-- **子会话自己读**：`context` 对子会话开放（只读、同一条实现）；`task_detail` 只给本次命中的经验指针，想要更多历史/项目背景由子会话自己调 `context`——worker 预设 persona 写明「查本项目经验传 `project:<target_dir 或工作区名>`，不要等协调者注入」。写记忆仍仅主会话（`memory_note` 不在子会话工具表里）。
+- **子会话自己读、也能写项目记忆**：`context` 对子会话开放（只读、同一条实现）；`task_detail` 只给本次命中的经验指针，想要更多历史/项目背景由子会话自己调 `context`——W1 policy 每回合写明「查本项目经验传 `project:<target_dir 或工作区名>`，不要等协调者注入」。**`memory_note` 子会话也能调**：只能写自己任务 `target_dir` 这个项目的 `note`/`lesson`/`decision`（不传 `project` 就落本项目，传别的项目或 `global` 一律拒绝），同 `kind`+`text` 幂等、单任务上限 **3 条**，行上记来源（`source:'worker'` + `taskId`/`sessionId`）便于审计；`preference`、全局/跨项目记忆仍只由协调者写。
 - **偏好**：`memory_note({ kind:'preference' })` 不传 `project` 时写进协调者偏好（每回合注入、下一回合生效、不用重启）；带 `project` 的偏好仍是项目约定，写 `memories` 随 `task_detail` 注入。旧版写在 `memories` 里的全局偏好会在启动时一次性搬进 settings（幂等；同主题取更正后的版本，如 present 的 1–4），搬完从 `memories` 删除（不双写）。偏好只是提示词文本，**不能**放宽沙箱/审批/工具边界。
 
 ### 收件箱、日报与看门狗
