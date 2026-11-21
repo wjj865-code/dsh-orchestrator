@@ -4,6 +4,7 @@ import {
   BLOCKED_HINT, CONFIRM_HINT, DETAIL_POINTER_TEXT, SUMMARY_FIELDS, WORKTREE_INSTALL_HINT,
   renderBrief, renderBriefForTask, validateBrief, validateTargetDir,
 } from '../src/brief.js'
+import { BLOCKER_RULE } from '../src/copy.js'
 
 const valid = {
   title: '修复空数据文案',
@@ -56,10 +57,13 @@ test('执行中待确认提示：用 task_report blocked 上报「问题 + 选�
   assert.match(BLOCKED_HINT, /task_report/)
   assert.match(BLOCKED_HINT, /blocked/)
   assert.match(BLOCKED_HINT, /问题 \+ 选项建议/)
-  // 覆盖该上报的四类决策点（用户点名要的）。
-  for (const kind of ['业务取舍', '范围变更', '不可逆操作', '方案歧义']) {
-    assert.equal(BLOCKED_HINT.includes(kind), true, `应提到 ${kind}`)
+  // 0.26.0：执行期只报堵塞项（四类口径引用 copy.js 的 BLOCKER_RULE），不再按「业务取舍/方案歧义」泛问——
+  // 那两类属于开工前的 T2/T3 意图确认，归协调者；子会话在执行期只把「继续做就是错」的事交回来。
+  assert.ok(BLOCKED_HINT.includes(BLOCKER_RULE), '堵塞项四类必须逐字引用 copy.js 的 BLOCKER_RULE')
+  for (const kind of ['不可逆', '远端写', 'blocked', '工具面外']) {
+    assert.equal(BLOCKER_RULE.includes(kind), true, `堵塞项口径应提到 ${kind}`)
   }
+  assert.match(BLOCKED_HINT, /执行中只把\*\*堵塞项\*\*交给用户拍板/)
 })
 
 test('执行中待确认提示：由主会话 ask_user_question 确认后 task_message 续派', () => {

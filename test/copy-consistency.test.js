@@ -102,6 +102,24 @@ test('协调者 policy：需要拍板必须用 ask_user_question 结构化提问
   assertNoConflicts('COORDINATOR_POLICY', policy)
 })
 
+test('协调者 policy：交互三闸门与 brief 同源，T1 不免确认、追加调整先评估', () => {
+  const policy = renderCoordinatorPolicy({})
+  assert.ok(policy.includes('## 交互三闸门'), 'L1 缺少交互三闸门段落')
+  // 四类堵塞项与评估要素都只从 copy.js 取（brief / task_message 描述共用同一句）。
+  assert.ok(policy.includes(BLOCKER_RULE))
+  assert.ok(policy.includes(CHANGE_REVIEW_FIELDS))
+  assert.ok(renderBrief({ taskId: 't-1a2b3c4d' }).includes(BLOCKER_RULE), 'brief 的【执行中待确认】与 L1 的堵塞项不同源')
+  // 判级不是免确认：T1 不提问，但不可逆最低 T2、必须拍板（正向断言保留，别被反向断言挤掉）。
+  assert.match(policy, /T1 不是「不问就干」/)
+  assert.match(policy, /不可逆仍必须拍板/)
+  assert.match(policy, /你看着办/)
+  // 追加调整：R0 直接转给原会话（不打扰），R1/R2 必须取得确认。
+  assert.match(policy, /R0 只补细节、不动验收与已交付结论/)
+  assert.match(policy, /R1 动到验收\/范围\/方案/)
+  assert.match(policy, /R2 不可逆、权限/)
+  assertNoConflicts('COORDINATOR_POLICY', policy)
+})
+
 test('协调者 policy：计划批准必须用户拍板，禁止协调者自行批准（含直接续派实现）', () => {
   const policy = renderCoordinatorPolicy({})
   // 硬规则：blocked 计划必须先转交摘要 + 路径，再必须结构化提问请用户批准。
@@ -283,6 +301,13 @@ test('文案单源：计划/交付/完整访问的原子句只在 src/copy.js �
   assert.equal(planMode.PLAN_PHASE_LINES, PLAN_PHASE_LINES)
   assert.equal(planMode.PLAN_FIRST_DETAIL, PLAN_FIRST_DETAIL)
   assert.equal(planMode.EXIT_PLAN_MODE_DENIAL, EXIT_PLAN_MODE_DENIAL)
+})
+
+test('交互闸门的跨层措辞只有一处真源：堵塞项四类 / 评估要素只在 src/copy.js 定义', () => {
+  // L1 与 brief / task_message 描述都靠插值引用这两句；任何一处再抄一份完整句子，这里就会红。
+  for (const marker of ['已确认的验收/范围/方案不可达', '影响面（哪些任务/产物/已交付结论会变）']) {
+    assert.deepEqual(filesWith(marker), ['copy.js'], `「${marker}」在其它模块又写了一份（应引用 src/copy.js）`)
+  }
 })
 
 test('计划文案只有一处真源：详情 / 创建回执 / 工具描述 / 落盘回执 / 拒绝文案逐字同源', () => {

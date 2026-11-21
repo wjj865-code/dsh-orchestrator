@@ -6,7 +6,7 @@ import { isAbsolute } from 'node:path'
 // degraded（目标不是 git 仓库）仍在原工作树里跑、依赖齐全，不该出现装依赖提示。
 import { ISOLATED_WORKTREE_STATES } from './write-guard.js'
 // P1-C 文案单源：访问级别这一行与 task_detail / 工具回执 / 状态行是同一句（src/copy.js）。
-import { ACCESS_FULL } from './copy.js'
+import { ACCESS_FULL, BLOCKER_RULE } from './copy.js'
 
 const text = value => typeof value === 'string' ? value.trim() : ''
 const single = value => text(value).replace(/[\r\n]+/g, ' ')
@@ -29,11 +29,13 @@ export const DETAIL_POINTER_TEXT = '先调 task_detail（参数 task_id 填上�
 //
 // 所以「问用户」这件事始终由协调者做（带子会话给的同一批选项），子会话只负责**把问题与选项交回去**：
 // - 执行中（提示三）：task_report blocked + question/options → 通知原样带给协调者 → 协调者问用户 → task_message 续派；
+//   0.26.0 起「执行中」只在**堵塞项**上打扰（四类口径在 src/copy.js 的 BLOCKER_RULE），进度与能自己查清的事不在这里问；
 // - 交付时（提示一）：done 会清掉 question/options，待确认要点写进 summary；协调者不为「能否关闭」提问，
 //   任务留待确认、超时自动完成，用户要改时协调者 task_message 回到同一会话。
-export const BLOCKED_HINT = '执行中遇到需要用户拍板的事（业务取舍、范围变更、不可逆操作、方案歧义等）：'
+export const BLOCKED_HINT = `执行中只把**堵塞项**交给用户拍板：${BLOCKER_RULE}；`
   + '用 task_report 的 blocked 上报「问题 + 选项建议」，由协调者用 ask_user_question 向用户确认后经 task_message 续派再继续；'
   + '不要自行假设用户意图、不要阻塞等待、也不要等不到回复就跳过。blocked 只是上报，不等于已获授权。'
+  + '协调者转来的方向调整以追加消息为准：先按新方向评估影响面，超出原验收标准或范围就先 blocked 要新范围，不要自行扩大范围。'
 
 // 交付口径的**唯一措辞**（审计 §5.1.2 矛盾 2）：brief 与 task_detail 曾各写一套——
 // 这里说「要点写进 summary」，task_detail 说「正文写：改了什么/改了哪些文件/怎么验证的」，

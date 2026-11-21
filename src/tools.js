@@ -46,7 +46,7 @@ import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, pla
 import { MAX_PLAN_CHARS, isSafePlanTaskId, planSavedNote, writePlanDocument } from './plan-doc.js'
 // P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
 import {
-  ACCESS_FULL, DELIVERY_LINES, PLAN_SAVE_TOOL_DESC, deliveredReceiptNote, planCreateReceipt,
+  ACCESS_FULL, CHANGE_REVIEW_FIELDS, DELIVERY_LINES, PLAN_SAVE_TOOL_DESC, deliveredReceiptNote, planCreateReceipt,
 } from './copy.js'
 import {
   branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, findReusableCheckout,
@@ -957,11 +957,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     let isDir = false
     try { isDir = statSync(dir).isDirectory() } catch { isDir = false }
     if (!isDir) return `项目目录不存在或不是目录：${dir}`
-    return projectContextFor(dir, String(args.query ?? ''))
+    return projectContextFor(dir, String(args.query ?? ''), { include: args.include })
   }
 
   return [
-    wrap('task_create', '创建一个子任务：建台账、检查活跃上限、渲染 brief 派生一个子会话。description 由你写清目标与验收；可用 checks 配机器可判定验收（交付前自动执行）。', objectSchema({
+    wrap('task_create', '创建一个子任务：建台账、检查活跃上限、渲染 brief 派生一个子会话。description 由你写清目标与验收；可用 checks 配机器可判定验收（交付前自动执行）。复杂任务先传 planFirst 走计划闸门。', objectSchema({
       title: str('一句话任务名，卡片上显示'),
       goal: str('要达成的目标，一两句话'),
       constraints: strList('约束，可空'),
@@ -993,7 +993,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         + '冲突只提示、不重试轰炸，也不接管官方派发/生命周期'),
       target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
       readOnly: { type: 'boolean', description: '只读任务：子会话沙箱 read-only（读正常，写文件/写 shell 被拒）；默认 false，只在明确需要时传 true' },
-      planFirst: { type: 'boolean', description: '计划模式：子会话先只读探索并上报计划，批准后再执行；与 readOnly 互斥；默认 false' },
+      planFirst: { type: 'boolean', description: '计划模式（复杂任务 T3）：跨仓库/重构迁移/不可逆/范围不确定时先只读探索并上报计划，用户批准后再执行；与 readOnly 互斥；默认 false' },
       access: {
         type: 'string',
         enum: ['full'],
@@ -1597,7 +1597,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         enum: MESSAGE_ACTIONS,
         description: '动作：message（默认，追加消息/续派）｜resume（续跑原会话：同任务同子会话冷恢复，用于失败/会话丢失后接着干）｜stop（停止任务，吸收原 task_stop）｜retry（重派 failed/orphaned：新任务新会话，吸收原 task_retry）｜close（确认已交付待确认 → done，吸收原 task_close）',
       },
-      message: str('要追加的内容（action:"message" 必填；action:"resume" 可选，作为本轮续跑指示）'),
+      message: str('要追加的内容（action:"message" 必填；action:"resume" 可选，作为本轮续跑指示）。用户追加调整时先按协调者 policy 评估（'
+        + `${CHANGE_REVIEW_FIELDS}）并取得确认，消息里写清新方向、不动的部分、验收是否变`),
     }), async (args, exec) => {
       const action = typeof args.action === 'string' ? args.action.trim() : ''
       if (action === 'resume') return resumeTask(args, exec)

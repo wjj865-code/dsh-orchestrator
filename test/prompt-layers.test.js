@@ -38,12 +38,24 @@ test('五层清单完整：L1/L2/L3/L4/NOTIFY 各有载体、受众与独占职�
 
 test('L1 承担全部协调者规则（每回合重渲染的那一层）', () => {
   const policy = renderCoordinatorPolicy({})
-  for (const fragment of ['wait_agent', 'task_close', 'task_message', 'present', 'read_workspace', 'ask_user_question', 'schedule_create']) {
+  for (const fragment of ['wait_agent', 'task_close', 'task_message', 'present', 'read_workspace', 'ask_user_question', 'schedule_create', 'grill-me']) {
     assert.ok(policy.includes(fragment), `L1 缺 ${fragment}`)
   }
+  // 0.26.0：只读工具与 grill-me 的用法都在 L1（每回合都在，不会被 compaction 吃掉）。
+  assert.match(policy, /skill\(\{ name: 'grill-me' \}\)/, 'L1 应给出加载 grill-me 的调用形状')
+  assert.match(policy, /read \/ glob \/ grep（只读/, 'L1 应说明只读工具面')
   // 策略段也在 L1（结构化配置渲染）。
   assert.match(policy, /## worktree 隔离/)
   assert.match(policy, /## 同写域并发防护/)
+  // 0.26.0：交互三闸门是 L1 的独立一段（判级 / 堵塞项 / 追加评估）。
+  assert.match(policy, /## 交互三闸门/)
+  assert.match(policy, /T0 直答/)
+  assert.match(policy, /R0 只补细节/)
+  // owns 要登记这两条，否则「谁该说什么」的分层表与实现脱节。
+  const l1 = PROMPT_LAYERS.find(layer => layer.id === 'L1')
+  assert.ok(l1.owns.some(item => item.includes('交互三闸门')), 'L1 owns 应登记交互三闸门')
+  assert.ok(l1.owns.some(item => item.includes('BLOCKER_RULE')), 'L1 owns 应登记堵塞项口径的措辞源')
+  assert.ok(l1.owns.some(item => item.includes('grill-me')), 'L1 owns 应登记 grill-me 技能的触发口径')
   assert.equal(layerViolations('L1', policy).length, 0)
 })
 
@@ -66,6 +78,18 @@ test('L2 brief 只指路：不定义交付/关闭口径，不讲协调者工具'
   assert.match(brief, /task_detail/)
   // 协调者口径一律不出现。
   assert.doesNotMatch(brief, /task_close|present|read_workspace|已交付待确认/)
+})
+
+test('L2 只报送商品：堵塞项口径引用 copy.js，不复述 L1 的分级与评估', () => {
+  const l2 = PROMPT_LAYERS.find(layer => layer.id === 'L2')
+  assert.ok(l2.owns.some(item => item.includes('BLOCKER_RULE')), 'L2 owns 应写明堵塞项口径引用 BLOCKER_RULE')
+  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full', worktreeState: 'created' })
+  assert.deepEqual(layerViolations('L2', brief), [])
+  // 探针：把分级/评估抄进 brief 或 task_detail 就红（这是 L1 的判断，不是子会话的规则）。
+  for (const leaked of ['T0 / T1 判级：简单任务不提问', 'R0 / R1 先评估再确认', '见「三闸门」的分级表']) {
+    assert.notDeepEqual(layerViolations('L2', leaked), [], `L2 不该复述：${leaked}`)
+    assert.notDeepEqual(layerViolations('L3', leaked), [], `L3 不该复述：${leaked}`)
+  }
 })
 
 test('L2 行数：4 行基准，full 与隔离各加一行（修「四件事」漂移）', () => {

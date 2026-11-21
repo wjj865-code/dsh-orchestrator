@@ -47,13 +47,16 @@ export const PROMPT_LAYERS = Object.freeze([
     carrier: 'ctx.systemPrompt.context().text（index.js，每回合重渲染）',
     audience: 'coordinator',
     owns: Object.freeze([
-      '工具可用与禁用（wait_agent / 团队工具 / 原生 read-glob / schedule 四工具）',
+      '工具可用与禁用（能用 task_* 7 个 + 原生 read/glob/grep 只读 + skill/present/schedule；禁用 wait_agent 与团队工具）',
+      '复杂需求开工前用 grill-me 技能拷问（多轮前沿提问、每问带推荐、决策归用户、grill ≠ 批准）',
       '能直接回答就不委派（只有新鲜取证/写文件/跨仓库证据才 task_create）',
       '交付与确认的决策口径（done 不是终态、默认保持待确认、何时 task_message({ action: "close" })、何时追问）',
       '不主动问「任务能否关闭」；只在真歧义/不可逆/远端写授权时提问，且必须用 ask_user_question 结构化提问（不得用纯文字问句代替，多条合并成一条清单）',
       'present 与 read_workspace 的用法与边界',
       'worktree 隔离策略（renderWorktreePolicy）',
       '同写域并发防护（renderWriteGuardPolicy）',
+      '交互三闸门（T0–T3 判级、开工前确认、执行期只报堵塞项、追加调整先评估；renderInteractionPolicy）',
+      '堵塞项四类与「不算堵塞项」清单（措辞源 copy.js 的 BLOCKER_RULE）',
       '用户偏好（第 4 段，src/preferences.js）',
       '能力诊断（schedule 服务缺失时的降级说明）',
     ]),
@@ -193,11 +196,14 @@ export function layerViolations(layerId, text) {
       [/已交付待确认/, 'L1 的两段式终态口径'],
       [/present/, 'L1 的交付工具'],
       [/read_workspace/, 'L1 的读产物口径'],
+      // 分级与评估是协调者的判断，子会话只报送商品（这条最容易顺手抄进 brief）。
+      [/三闸门|T0\s*\/\s*T1|R0\s*\/\s*R1/, 'L1 的交互闸门分级'],
     ],
     // L3 不许重复 brief 的指路，也不许讲协调者口径。
     L3: [
       [/先调\s*task_detail/, 'L2 的指路指引'],
       [/task_close|action:\s*['\"]close['\"]/, 'L1 的确认交付口径'],
+      [/三闸门|T0\s*\/\s*T1|R0\s*\/\s*R1/, 'L1 的交互闸门分级'],
     ],
     // 通知只讲动作，不讲能力边界。
     NOTIFY: [
