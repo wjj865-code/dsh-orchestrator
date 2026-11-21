@@ -126,6 +126,22 @@ test('P1 store：purgeTrash 只清超过 24h 的目录', () => {
   assert.equal(existsSync(join(paths.trashDir, 'new.2')), true)
 })
 
+test('P1 store：purgeUnregistered 把「目录在、registry 无」的包搬进 trash（删包被 watcher 挡住时的兜底）', () => {
+  const { store, stateDir } = setup()
+  const manifest = validateManifest(validManifest()).manifest
+  store.writePack(manifest, skillFiles())
+  // 不写 registry：模拟删包时只撤了预设/registry、目录还在。
+  const result = store.purgeUnregistered()
+  assert.deepEqual(result.moved, ['demo-pack'])
+  assert.equal(existsSync(join(packPaths(stateDir).packsDir, 'demo-pack')), false)
+  assert.equal(existsSync(join(packPaths(stateDir).trashDir, 'demo-pack.1700000000000')), true)
+  // 已登记的包不动。
+  store.writePack(manifest, skillFiles())
+  store.recordPack(manifest)
+  assert.deepEqual(store.purgeUnregistered().moved, [])
+  assert.equal(existsSync(join(packPaths(stateDir).packsDir, 'demo-pack')), true)
+})
+
 test('P1 store：install / health 状态读写；未知状态文件名拒绝', () => {
   const { store } = setup()
   const manifest = validateManifest(validManifest()).manifest

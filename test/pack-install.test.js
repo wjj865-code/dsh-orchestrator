@@ -204,6 +204,32 @@ test('P3 卸载：删除 tools 目录并记 uninstalled（包与技能保留）'
   assert.equal(existsSync(store.packDir('cli-pack')), true, '卸载 CLI 不影响包目录')
 })
 
+test('P3 安装的 render 冒烟：失败 → VERIFY_FAILED + 清理；成功 → install.json 记 smoke=render-passed', async () => {
+  const { store, manifest, stateDir } = setup()
+  const { runner } = makeRunner()
+  const installer = createInstaller({ store, runner })
+  const smokeFile = join(stateDir, 'smoke.md')
+  writeFileSync(smokeFile, '---\ntitle: s\n---\n\n正文\n')
+  const failedSmoke = async () => ({ ok: false, code: 'SMOKE_INVALID', error: 'render 输出不像公众号 HTML' })
+  const failed = await installer.install({ manifest, cliId: 'demo-cli', confirm: true, smokeFile, renderSmoke: failedSmoke })
+  assert.equal(failed.ok, false)
+  assert.equal(failed.code, 'VERIFY_FAILED')
+  assert.match(failed.error, /render 冒烟失败/)
+  assert.equal(existsSync(join(stateDir, 'capability-packs', 'tools', 'cli-pack')), false)
+
+  const passed = await installer.install({
+    manifest, cliId: 'demo-cli', confirm: true, smokeFile,
+    renderSmoke: async ({ invocation, smokeFile: file }) => {
+      assert.equal(invocation.ok, true)
+      assert.match(invocation.appDataDir, /wenyan$/)
+      assert.equal(existsSync(file), true)
+      return { ok: true, bytes: 100 }
+    },
+  })
+  assert.equal(passed.ok, true, passed.error)
+  assert.equal(store.readInstall('cli-pack').smoke, 'render-passed')
+})
+
 test('P3 CLI 环境：APPDATA/LOCALAPPDATA 固定到包内 .state/wenyan', () => {
   const env = cliEnvironment({ toolsDir: 'C:\\state\\tools\\cli-pack', appDataDir: 'C:\\state\\packs\\cli-pack\\.state\\wenyan', env: { PATH: 'x', APPDATA: 'C:\\Users\\x\\AppData\\Roaming' } })
   assert.equal(env.APPDATA, 'C:\\state\\packs\\cli-pack\\.state\\wenyan')

@@ -19,6 +19,7 @@ import { capabilityPacksUsable } from './platform.js'
 import { envCommand, envSummary, executeSetx } from './env.js'
 import { checkPackHealth, healthLine } from './health.js'
 import { MEASURED_INSTALL } from './install.js'
+import { renderSmoke as renderSmokeCli } from './wenyan.js'
 
 const text = value => (typeof value === 'string' ? value.trim() : '')
 const isObject = value => typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -314,8 +315,18 @@ export function createPackService({
       await presets.unregister(entry.manifest.preset.id)
       const removed = store.removePack(id)
       if (removed.ok !== true) return { ok: false, code: 'DELETE_FAILED', error: removed.error }
-      log('pack.action', { detail: { action: 'delete', id } })
-      return { ok: true, id, deleted: true, trashPath: removed.trashPath ?? null, presetUnregistered: true }
+      log('pack.action', { detail: { action: 'delete', id, deferred: removed.deferred === true } })
+      return {
+        ok: true,
+        id,
+        deleted: true,
+        deferred: removed.deferred === true,
+        trashPath: removed.trashPath ?? null,
+        presetUnregistered: true,
+        ...(removed.deferred === true
+          ? { note: '包会话仍在运行：预设与 registry 已撤销，目录将在下次启动 DSH 时移入 .trash（避免硬删让运行中会话丢技能）。' }
+          : {}),
+      }
     })
   }
 
@@ -327,7 +338,16 @@ export function createPackService({
     if (entry === undefined) return { ok: false, code: 'PACK_NOT_FOUND', error: `没有能力包 ${JSON.stringify(id)}` }
     if (entry.manifest === undefined) return { ok: false, code: 'PACK_BROKEN', error: entry.error ?? '包不可读' }
     if (installer === undefined) return { ok: false, code: 'INSTALLER_UNAVAILABLE', error: '安装器不可用（宿主侧未装配）' }
-    const result = await installer.install({ manifest: entry.manifest, cliId, confirm, expectedPlanHash })
+    // 装后 render 冒烟：包内 references/smoke.md（文颜包有；其它包没有就跳过）。
+    const smokeFile = join(entry.packRoot, 'references', 'smoke.md')
+    const result = await installer.install({
+      manifest: entry.manifest,
+      cliId,
+      confirm,
+      expectedPlanHash,
+      smokeFile,
+      renderSmoke: renderSmokeCli,
+    })
     const health = healthOf(entry)
     log('pack.install.result', { detail: { id, cliId, ok: result.ok, code: result.code ?? null, reused: result.reused === true } })
     return { ...result, health, healthLine: healthLine(health) }

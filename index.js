@@ -273,6 +273,11 @@ export async function apply(ctx, rawConfig = {}) {
   // 内置包随插件只读发；预设走运行时注册（P0 门禁 GO），失败降级为静态 YAML（export-static）。
   // 能力包会话是普通根会话：这里的注册只加预设，不碰台账/队列/派发语义。
   const packStore = createPackStore({ stateDir: dir, log: (event, fields) => logger.log(event, fields) })
+  // 删包时若包会话仍开着，Windows 的 skill watcher 会占住目录（rename EPERM）：
+  // 那时只撤预设/registry，目录延后到没人持有时清理；启动就是最稳的清理时机。
+  try { packStore.purgeUnregistered() } catch (error) {
+    warnings(`dsh-orchestrator: 能力包目录清理失败（下次启动再试）：${error?.message ?? error}`)
+  }
   const presetRegistry = createPresetRegistry({
     agentPresets: () => host.service('agentPresets'),
     onWarn: warnings,

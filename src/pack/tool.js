@@ -186,7 +186,9 @@ export function createCapabilityPackTool({ packs, wrap, schema }) {
     if (action === 'delete') {
       const result = await packs.delete(id, { confirm: args.confirm === true, clientRequestId: args.clientRequestId })
       if (result.ok !== true) return `删除未执行（${result.code}）：${result.error}`
-      return `已删除能力包 ${id}（预设已撤销，旧会话保旧 revision；包目录进 .trash 保留 24h）。`
+      return result.deferred === true
+        ? `已删除能力包 ${id}：预设与 registry 已撤销；包会话仍在运行，目录将在下次启动 DSH 时移入 .trash（不硬删，避免运行中会话丢技能）。`
+        : `已删除能力包 ${id}（预设已撤销，旧会话保旧 revision；包目录进 .trash 保留 24h）。`
     }
     if (action === 'open') {
       const result = await packs.open(id, { cwd: args.cwd })

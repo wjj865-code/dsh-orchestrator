@@ -72,10 +72,10 @@ const sleepSync = ms => {
 }
 
 /**
- * rename 重试：Windows 上「刚写完/刚删」的目录可能被索引器短暂占用（EPERM/EBUSY），
- * 这不是逻辑错误；重试 5 次（25ms 递增）仍失败才交给调用方回滚。
+ * rename 重试：Windows 上「刚写完/刚删」的目录可能被索引器或技能 watcher 短暂占用（EPERM/EBUSY）。
+ * 这不是逻辑错误；退避重试最多约 10 秒（20 × 50ms 递增）仍失败才交给调用方回滚。
  */
-function renameWithRetry(from, to, { attempts = 5, delayMs = 25 } = {}) {
+function renameWithRetry(from, to, { attempts = 20, delayMs = 50 } = {}) {
   let lastError
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -295,20 +295,68 @@ export function createPackStore({ stateDir, now = Date.now, log = () => {} } = {
   }
 
   // ── 删除（包目录进 trash、tools 删除） ────────────────────────
+  /**
+   * 删除包目录。
+   * Windows 上**运行中的包会话**的 skill-filesystem watcher 可能一直占着 `skills/` 目录，
+   * 导致整目录 rename 恒 EPERM（不是瞬时占用，重试无效）。这时不能假装删掉，也不能硬删
+   * （硬删会让还开着的会话中途丢技能）：改为「撤预设 + 删 registry + 删 tools + 目录延后清理」，
+   * 返回 `deferred:true`；下次启动 `purgeUnregistered()` 在没人持有 watcher 时把目录搬进 .trash。
+   */
   const removePack = id => {
     const target = idDir(id)
     ensureRoot()
     const trashPath = join(paths.trashDir, `${id}.${now()}`)
+    let deferred = false
     try {
-      if (existsSync(target)) renameWithRetry(target, trashPath)
+      if (existsSync(target)) {
+        try {
+          renameWithRetry(target, trashPath)
+        } catch (error) {
+          const transient = error?.code === 'EPERM' || error?.code === 'EBUSY' || error?.code === 'EACCES'
+          if (!transient) throw error
+          deferred = true
+          log('pack.remove.deferred', { detail: { id, reason: error.code } })
+        }
+      }
       const tools = toolsDir(id)
       rmSync(tools, { recursive: true, force: true })
       forgetPack(id)
-      log('pack.remove', { detail: { id, trash: existsSync(trashPath) } })
-      return { ok: true, trashPath: existsSync(trashPath) ? trashPath : undefined }
+      log('pack.remove', { detail: { id, trash: existsSync(trashPath), deferred } })
+      return { ok: true, deferred, trashPath: deferred || !existsSync(trashPath) ? undefined : trashPath }
     } catch (error) {
       return { ok: false, error: `删除包失败：${error?.message ?? error}` }
     }
+  }
+
+  /**
+   * 清理「目录还在、registry 里已经没有」的包（启动时调用；删包被 watcher 挡住时的兜底）。
+   * 只动 `packs/` 下非 `.tmp-*` 的目录；能搬进 `.trash` 就搬，失败就留着下次再试（不硬删）。
+   */
+  const purgeUnregistered = () => {
+    ensureRoot()
+    const { registry } = readRegistry()
+    const known = new Set(Object.keys(registry.packages))
+    const moved = []
+    const deferred = []
+    for (const name of readdirSync(paths.packsDir)) {
+      if (name.startsWith('.')) continue
+      if (known.has(name)) continue
+      const full = join(paths.packsDir, name)
+      let isDir = false
+      try { isDir = statSync(full).isDirectory() } catch { isDir = false }
+      if (!isDir) continue
+      const trashPath = join(paths.trashDir, `${name}.${now()}`)
+      try {
+        renameWithRetry(full, trashPath)
+        moved.push(name)
+      } catch {
+        deferred.push(name)
+      }
+    }
+    if (moved.length > 0 || deferred.length > 0) {
+      log('pack.purge-unregistered', { detail: { moved: moved.length, deferred: deferred.length } })
+    }
+    return { moved, deferred }
   }
 
   /** 清理超过 24h 的 trash（启动/面板刷新时顺手调用；失败只记日志）。 */
@@ -369,6 +417,7 @@ export function createPackStore({ stateDir, now = Date.now, log = () => {} } = {
     listLocalPacks,
     writePack,
     removePack,
+    purgeUnregistered,
     restoreTrash,
     touchPack,
     purgeTrash,

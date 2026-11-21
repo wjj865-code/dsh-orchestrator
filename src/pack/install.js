@@ -279,9 +279,16 @@ export function createInstaller({ store, runner = createProcessRunner(), now = D
 
   /**
    * 安装/升级（必须带确认 + planHash）。
+   * @param {object} input
+   * @param {object} input.manifest
+   * @param {string} input.cliId
+   * @param {boolean} [input.confirm]
+   * @param {string} [input.expectedPlanHash]
+   * @param {string} [input.smokeFile] - 可选的 render 冒烟 Markdown（如包内 references/smoke.md）
+   * @param {Function} [input.renderSmoke] - 冒烟执行器（service 注入 src/pack/wenyan.js 的 renderSmoke）
    * @returns {{ ok: boolean, code?: string, reused?: boolean, record?: object, plan?: object, error?: string }}
    */
-  const install = async ({ manifest, cliId, confirm = false, expectedPlanHash }) => {
+  const install = async ({ manifest, cliId, confirm = false, expectedPlanHash, smokeFile, renderSmoke } = {}) => {
     const cli = manifest.cli.find(item => item.id === cliId)
     if (cli === undefined) return { ok: false, code: 'CLI_UNKNOWN', error: `包「${manifest.id}」没有声明 CLI：${cliId}` }
     const card = plan(manifest, cliId)
@@ -376,6 +383,28 @@ export function createInstaller({ store, runner = createProcessRunner(), now = D
       return fail(id, cli, { code: 'VERIFY_FAILED', error: `CLI --version 失败（退出码 ${versionRun.code}）`, startedAt, exitCode: versionRun.code ?? null, tail: versionRun.tail })
     }
 
+    // 校验 4（可选）：render 冒烟。文颜 render 也会初始化 token 存储，必须带 APPDATA 重定向；
+    // 冒烟失败说明「装上了但跑不起来」，不能回填 invocation（回填等于交给用户一个坏的 CLI）。
+    let smokeOk = false
+    if (typeof renderSmoke === 'function' && typeof smokeFile === 'string' && smokeFile !== '' && exists(smokeFile)) {
+      const smoke = await renderSmoke({
+        invocation: {
+          ok: true,
+          node: runtime[0].command,
+          entry,
+          version: cli.install.version,
+          appDataDir: join(store.stateDirOf(id), 'wenyan'),
+        },
+        smokeFile,
+        env,
+      })
+      if (smoke?.ok !== true) {
+        try { rmSync(toolsDir, { recursive: true, force: true }) } catch { /* 同上 */ }
+        return fail(id, cli, { code: 'VERIFY_FAILED', error: `render 冒烟失败：${smoke?.error ?? '未知原因'}`, startedAt, exitCode: 0, tail: result.tail })
+      }
+      smokeOk = true
+    }
+
     const record = {
       status: 'installed',
       cliId: cli.id,
@@ -394,6 +423,7 @@ export function createInstaller({ store, runner = createProcessRunner(), now = D
       resolved: { node: runtime[0].command, entry },
       appDataDir: join(store.stateDirOf(id), 'wenyan'),
       versionOutput: (versionRun.stdout ?? '').trim().slice(0, 200),
+      smoke: smokeOk ? 'render-passed' : 'skipped',
     }
     store.writeInstall(id, record)
     log('pack.install.installed', { detail: { id, cli: cli.id, version: record.version, seconds: Math.round((record.finishedAt - startedAt) / 1000) } })
