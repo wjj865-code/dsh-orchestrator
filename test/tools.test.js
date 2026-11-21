@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import{ join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, recentMessages, transition, setTaskLastMessage } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, recentMessages, transition, setTaskLastMessage, setTaskWorktree } from '../src/ledger.js'
 import { loadPreferences } from '../src/preferences.js'
 import { GLOBAL_PROJECT, searchMemories, projectKeyOf } from '../src/memory.js'
 import { createTools } from '../src/tools.js'
@@ -1658,9 +1658,9 @@ test('M1 分层：done 只沉淀 task-log（一行、无产物清单），不注
   assert.doesNotMatch(detail, /【历史经验】/)
   assert.doesNotMatch(detail, /替换了登录校验逻辑/)
 
-  // 显式查历史时日志层可见，并标出层
+  // 显式查历史时日志层可见，单独成块并标出层（P0：task-log 不再混进【记忆】块）
   const found = await call(tools, 'context', { mode: 'history', query: '登录校验' })
-  assert.match(found, /【记忆】/)
+  assert.match(found, /【任务日志】/)
   assert.match(found, /\[日志\]/)
   assert.match(found, /登录修复/)
 })
@@ -1965,5 +1965,133 @@ test('task_message retry：官方板关联跟着原任务复制（重派不丢�
   const retried = listTasks(db).find(item => item.id !== original.id && item.title === '重派关联')
   assert.equal(retried.team_task_id, 'task-3')
   assert.equal(retried.team_task_revision, 2)
+  db.close()
+})
+
+// ---- P0 记忆优化（t-3e27f4b4）：检索范围 / 分块 / 白名单 / worktree 归一 ----
+
+test('P0-a/P0-b context history：首行【检索范围】，project 多键与 all 合并，未知名报警告', async () => {
+  const { db, tools } = await setup()
+  const a = tempDir()
+  const b = tempDir()
+  await call(tools, 'memory_note', { text: '甲项目登录用 cookie', kind: 'decision', project: a })
+  await call(tools, 'memory_note', { text: '乙项目登录用 token', kind: 'decision', project: b })
+
+  // 不传 project：只查 global —— 首行必须写明「未含项目记忆」，不能让人以为「没有历史」。
+  const plain = await call(tools, 'context', { mode: 'history', query: '登录' })
+  assert.equal(plain.split('\n')[0], '【检索范围】global（未含项目记忆）')
+  assert.equal(plain.includes('甲项目'), false)
+
+  const one = await call(tools, 'context', { mode: 'history', query: '登录', project: a })
+  assert.equal(one.split('\n')[0], `【检索范围】project: ${projectKeyOf(a)}｜+ global（跨项目记忆）`)
+  assert.match(one, /甲项目/)
+  assert.equal(one.includes('乙项目'), false)
+
+  const merged = await call(tools, 'context', { mode: 'history', query: '登录', project: [a, b] })
+  const mergedLine = merged.split('\n')[0]
+  assert.ok(mergedLine.includes(projectKeyOf(a)), mergedLine)
+  assert.ok(mergedLine.includes(projectKeyOf(b)), mergedLine)
+  assert.match(merged, /甲项目/)
+  assert.match(merged, /乙项目/)
+
+  const all = await call(tools, 'context', { mode: 'history', query: '登录', project: 'all' })
+  assert.equal(all.split('\n')[0], '【检索范围】all（全部项目记忆）')
+  assert.match(all, /甲项目/)
+  assert.match(all, /乙项目/)
+
+  // 未知名项目：一行警告，不再静默回落。
+  const unknown = await call(tools, 'context', { mode: 'history', query: '登录', project: '不存在的项目名' })
+  assert.equal(unknown.split('\n')[0], '【检索范围】global（未含项目记忆）')
+  assert.match(unknown, /【警告】未找到项目「不存在的项目名」/)
+  db.close()
+})
+
+test('P0-b 项目名匹配多个工作区：给「请传绝对目录」的可执行警告，不猜一个', async () => {
+  const a = tempDir()
+  const b = tempDir()
+  const { tools } = await setup({
+    workspaces: { list: () => [{ id: 'w1', title: 'alpha', path: a }, { id: 'w2', title: 'beta', path: b }] },
+  })
+  const text = await call(tools, 'context', { mode: 'history', query: '登录', project: 'alpha beta' })
+  assert.equal(text.split('\n')[0], '【检索范围】global（未含项目记忆）')
+  assert.match(text, /【警告】项目名「alpha beta」匹配多个工作区/)
+  assert.ok(text.includes(a), text)
+  assert.ok(text.includes(b), text)
+})
+
+test('P0 检索分块：task-log 单独成块、最多 2 条、排在事实层【记忆】之后', async () => {
+  const { db, tools } = await setup({ stateDir: tempDir() })
+  await call(tools, 'memory_note', { text: '登录模块统一走 session cookie', kind: 'decision' })
+  for (const title of ['登录甲', '登录乙', '登录丙']) {
+    await call(tools, 'task_create', sampleBrief({ title, goal: '修复登录' }))
+    const task = listTasks(db).find(item => item.title === title)
+    await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '改了登录逻辑' }, { agent: { id: task.session_id } })
+  }
+  const found = await call(tools, 'context', { mode: 'history', query: '登录', limit: 5 })
+  assert.ok(found.includes('【记忆】'), found)
+  assert.ok(found.includes('【任务日志】'), found)
+  assert.ok(found.indexOf('【记忆】') < found.indexOf('【任务日志】'), '事实层必须排在日志层之前')
+  const logLines = found.split('\n').filter(line => line.startsWith('- [日志]'))
+  assert.equal(logLines.length, 2) // 最多 2 条，不占事实层槽位
+  assert.match(found, /最多 2 条/)
+  db.close()
+})
+
+test('P0 project 白名单：docs/ARCHITECTURE.md 默认前 1200 字，include 给前 4000 字，未知 include 有提示', async () => {
+  const project = tempDir()
+  mkdirSync(join(project, 'docs'), { recursive: true })
+  writeFileSync(join(project, 'docs', 'ARCHITECTURE.md'), `# 架构\n${'决策正文。'.repeat(1200)}`, 'utf8')
+  const { tools } = await setup()
+  const architectureOf = text => {
+    const start = text.indexOf('【架构】')
+    if (start === -1) return ''
+    const rest = text.slice(start)
+    const next = rest.indexOf('\n【', '【架构】'.length)
+    return next === -1 ? rest : rest.slice(0, next)
+  }
+  const plain = await call(tools, 'context', { mode: 'project', target: project })
+  assert.match(plain, /【架构】docs\/ARCHITECTURE\.md（前 1200 字/)
+  const plainArch = architectureOf(plain)
+  assert.ok(plainArch.length > 0)
+  assert.ok(plainArch.length <= 1200 + 120, `默认架构段应受 1200 字约束：${plainArch.length}`)
+
+  const deep = await call(tools, 'context', { mode: 'project', target: project, include: ['docs/ARCHITECTURE.md'] })
+  assert.match(deep, /include 显式包含/)
+  const deepArch = architectureOf(deep)
+  assert.ok(deepArch.length > plainArch.length)
+  assert.ok(deepArch.length <= 4000 + 120, `include 架构段应受 4000 字约束：${deepArch.length}`)
+
+  const unknown = await call(tools, 'context', { mode: 'project', target: project, include: ['docs/SECRET.md'] })
+  assert.match(unknown, /【提示】include 只支持 docs\/ARCHITECTURE\.md/)
+  // 白名单外不读：放个 .env 也不会出现。
+  writeFileSync(join(project, '.env'), 'SECRET=should-not-appear', 'utf8')
+  const again = await call(tools, 'context', { mode: 'project', target: project })
+  assert.equal(again.includes('should-not-appear'), false)
+})
+
+test('P0 worktree 记忆归一：done 的 projectKey 取 brief.target（不用检出目录），无 target 时退 repo_root', async () => {
+  const { db, tools } = await setup()
+  const target = tempDir()
+  const checkout = join(target, '.agents', 'worktrees', 't-12345678')
+  mkdirSync(checkout, { recursive: true })
+  const brief = { ...sampleBrief({ title: '隔离任务', goal: '修一下' }), target }
+  const isolated = createTask(db, { brief, coordinatorSession: 's-1' })
+  transition(db, isolated.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  setTaskWorktree(db, isolated.id, { state: 'requested', repoRoot: target })
+  setTaskWorktree(db, isolated.id, { state: 'created', repoRoot: target, targetDir: checkout })
+  await call(tools, 'task_report', { task_id: isolated.id, status: 'done', summary: '改了实现' }, { agent: { id: 'c-1' } })
+  const keys = db.prepare('SELECT DISTINCT project_key FROM memories').all().map(row => row.project_key)
+  assert.deepEqual(keys, [projectKeyOf(target)])
+  assert.equal(keys.includes(projectKeyOf(checkout)), false)
+
+  // 没有 brief.target（老任务/无目标派发）时退到源仓库根，而不是检出目录。
+  const orphanBrief = sampleBrief({ title: '无目标隔离任务', goal: '修一下' })
+  const noTarget = createTask(db, { brief: orphanBrief, coordinatorSession: 's-1' })
+  transition(db, noTarget.id, 'running', { sessionId: 'c-2', target: 'c-2' })
+  setTaskWorktree(db, noTarget.id, { state: 'requested', repoRoot: target })
+  setTaskWorktree(db, noTarget.id, { state: 'created', repoRoot: target, targetDir: checkout })
+  await call(tools, 'task_report', { task_id: noTarget.id, status: 'done', summary: '又改了实现' }, { agent: { id: 'c-2' } })
+  const second = db.prepare('SELECT DISTINCT project_key FROM memories').all().map(row => row.project_key)
+  assert.deepEqual(second, [projectKeyOf(target)])
   db.close()
 })

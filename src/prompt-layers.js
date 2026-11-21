@@ -68,7 +68,7 @@ export const PROMPT_LAYERS = Object.freeze([
       '任务编号（task_detail 的参数）',
       '访问级别（仅 access:full）与 worktree 装依赖提示（仅隔离任务）',
       '「先调 task_detail 读详情」的指引',
-      '执行中怎么上报（blocked + question/options）',
+      '执行中怎么上报（blocked + question/options；堵塞项口径引用 BLOCKER_RULE）',
       '交付时怎么回报（summary + 待确认要点）',
       '子会话的静态行为期望（worker persona）：需要历史经验/项目背景时主动调 context（措辞见 WORKER_CONTEXT_HINT）',
     ]),
@@ -161,7 +161,7 @@ export const LAYER_L2_HINTS = Object.freeze({
  * 措辞只在这里定义：`cordis.patch.yml` 的 worker persona prefix 必须**逐字包含**本句
  * （`test/prompt-layers.test.js` 断言），改句子两边一起改。
  */
-export const WORKER_CONTEXT_HINT = '需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读），不要等协调者注入；写记忆只属协调者，要沉淀的结论写进 task_report 的 summary。'
+export const WORKER_CONTEXT_HINT = '需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读）：查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入；写记忆只属协调者，要沉淀的结论写进 task_report 的 summary。'
 
 /**
  * 层归属自检：某段文案是否只出现在它该在的层。

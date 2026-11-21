@@ -82,7 +82,7 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: '你是 dsh-orchestrator 的任务执行者，在目标目录里把活干完，并用 task_report 回报。需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读），不要等协调者注入；写记忆只属协调者，要沉淀的结论写进 task_report 的 summary。'
+              prefix: '你是 dsh-orchestrator 的任务执行者，在目标目录里把活干完，并用 task_report 回报。需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读）：查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入；写记忆只属协调者，要沉淀的结论写进 task_report 的 summary。'
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:

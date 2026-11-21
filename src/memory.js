@@ -6,6 +6,12 @@
 // - 日志层 task-log（旧版本写成 task-done）：任务完成记录，只归档，**永不注入 brief**；
 // - 事实层 lesson / decision / preference / note：蒸馏后的原子事实，才允许注入 brief。
 // 未知 kind 一律按日志层处理（白名单），避免新 kind 意外把长文本带进 brief。
+//
+// M2 记忆优化（2026-11-21，审计 §7 最小落地包）：
+// - 检索质量门槛：多词查询要求命中 ≥2 个词或 score ≥2，通用词进停用词（不再「永远 3 条、20% 相关」）；
+// - 分层配额：decision/preference 一次最多 2 条，其余槽位给 lesson/note；
+// - 淘汰分层：只有日志层参与淘汰（单项目 task-log 留最新 200 条），事实层永不删；
+// - 多键检索：normalizeProjectKeys 支持单键 / 多键数组 / 'all'（context history 的 project 参数）。
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -29,9 +35,27 @@ const KIND_LABELS = {
   note: '笔记',
   [TASK_LOG_KIND]: '日志',
 }
-const MAX_MEMORIES_PER_PROJECT = 300
+// 淘汰分层（M2，2026-11-21，审计 §2.5 缺陷 1）：配额只作用于**日志层** task-log，事实层永不淘汰。
+// 旧口径「单项目 300 条」把 fact 与 log 混在一起算；日志写入量是事实的 2–3 倍（实测 fact 9–29/天、
+// log 21–58/天），项目一活跃就开始按 created_at 删 11-14 手记的 decision/note。
+// 现在：fact（lesson/decision/preference/note）不参与淘汰；task-log 单项目 200 条（比旧的 300 更紧）。
+// 旧的 300 因此不再保留：它和 200 的日志上限叠加时永远先被 200 触发，留着只会让「口径到底几条」继续含糊。
+export const MAX_TASK_LOG_PER_PROJECT = 200
 const MAX_TOKENS = 12
-const STOP_TOKENS = new Set(['任务', '完成', '用户', 'the', 'and', 'for', 'with'])
+// 通用词停用：这些词在几乎任何记忆里都出现，命中它们不构成「相关」（审计 §3.1：首条命中 token
+// 重合度均值 20%，多数只共「任务/插件」这类词）。只加**不携带项目语义**的词，别把领域词误杀。
+const STOP_TOKENS = new Set([
+  '任务', '完成', '用户', '插件', '测试', '实现', '代码', '文件', '项目', '问题', '需要', '可以', '这个', '那个',
+  'the', 'and', 'for', 'with', 'this', 'that', 'code', 'file', 'test', 'task', 'user', 'plugin', 'project',
+])
+// 最低命中（质量门槛，审计 §7 第 2 条）：查询词 ≥2 个时，一条记忆必须命中 ≥2 个词或分数 ≥2
+// （分数 ≥2 = 带 kind 权重的 decision，或 2 次词频），把「永远 3 条、20% 相关」改成「少而准」。
+// 单词查询沿用「命中即相关」（min = 1）：否则「查一个关键词什么也查不到」比现在还糟。
+const MIN_QUERY_HITS = 2
+// 分层配额：一个结果集里 decision/preference 最多占 2 条，剩余槽位优先给 lesson/note
+// （避免「3 条决策、0 条经验」）。没有其它层可补时按分数补回——不为配额返回更少结果。
+const DECISIONISH_QUOTA = 2
+const DECISIONISH_KINDS = new Set(['decision', 'preference'])
 
 /** 分层判定：只有事实层白名单注入 brief；task-log / task-done / 未知 kind 都是日志层。 */
 export function memoryLayerOf(kind) {
@@ -212,47 +236,114 @@ export function addMemory(db, {
     ON CONFLICT(hash) DO NOTHING`)
     .run(id, key, normalizedKind, clipped, sourceTaskId ?? null, sourceSessionId ?? null, hash, now)
   if (Number(result.changes) === 0) return undefined
-  // 单项目最多保留 300 条，避免自动沉淀无限增长；按创建时间留新的。
-  try {
-    db.prepare(`DELETE FROM memories WHERE id IN (
-      SELECT id FROM memories WHERE project_key = ? ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?
-    )`).run(key, MAX_MEMORIES_PER_PROJECT)
-  } catch { /* 清理失败不影响写入 */ }
+  // 淘汰分层：只有日志层（task-log / 旧 task-done / 未知 kind）参与淘汰，单项目留最新的 200 条；
+  // 事实层一条都不删——手记的 decision/note 比自动日志珍贵，不能因为写日志多就被挤掉。
+  if (memoryLayerOf(normalizedKind) === MEMORY_LAYERS.log) {
+    try {
+      db.prepare(`DELETE FROM memories WHERE id IN (
+        SELECT id FROM memories WHERE project_key = ?
+          AND kind NOT IN (${MEMORY_FACT_KINDS.map(() => '?').join(', ')})
+        ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?
+      )`).run(key, ...MEMORY_FACT_KINDS, MAX_TASK_LOG_PER_PROJECT)
+    } catch { /* 清理失败不影响写入 */ }
+  }
   return { id, projectKey: key, kind: normalizedKind, text: clipped, createdAt: now }
+}
+
+/**
+ * 项目键归一（P0-b）：`'all'`（或数组里含 'all'）→ `null`，表示「不按项目过滤」；
+ * 字符串/数组 → 去重后的键列表（自动补 `global`，与旧行为一致：项目检索总能召回跨项目记忆）。
+ */
+export function normalizeProjectKeys(value) {
+  const raw = Array.isArray(value) ? value : [value]
+  const keys = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const text = item.trim()
+    if (text === '') continue
+    if (text.toLowerCase() === 'all') return null
+    const key = normalizeKey(text)
+    if (!keys.includes(key)) keys.push(key)
+  }
+  if (keys.length === 0) return [GLOBAL_PROJECT]
+  if (!keys.includes(GLOBAL_PROJECT)) keys.push(GLOBAL_PROJECT)
+  return keys
+}
+
+/**
+ * 分层配额：decision/preference 优先占满 `decisionQuota` 个槽位，其余槽位按分数留给 lesson/note。
+ * 所有候选都是 decision/preference 时按分数补回（不为多样性少返回结果）。
+ */
+function pickLayered(scored, cap, { decisionQuota = DECISIONISH_QUOTA } = {}) {
+  const picked = []
+  const deferred = []
+  let decisionish = 0
+  for (const item of scored) {
+    if (picked.length >= cap) break
+    if (DECISIONISH_KINDS.has(item.row.kind)) {
+      if (decisionish >= decisionQuota) {
+        deferred.push(item)
+        continue
+      }
+      decisionish += 1
+    }
+    picked.push(item)
+  }
+  for (const item of deferred) {
+    if (picked.length >= cap) break
+    picked.push(item)
+  }
+  return picked
 }
 
 /**
  * 按项目 + 关键词检索；无关键词时返回最近记忆。
  * kinds 可限定分层（brief 注入只取事实层）；不传则各层都查（context 检索要能翻日志）。
- * 结果按关键词命中数、kind 权重、时间排序，并更新 last_used/use_count。
+ * projectKey / projectKeys 支持单键、多键数组与 `'all'`（P0-b：多键合并后统一按分数截 limit）。
+ * 结果过质量门槛（最低命中 / 停用词）与分层配额后，按分数、时间排序，并更新 last_used/use_count。
  */
-export function searchMemories(db, { projectKey = GLOBAL_PROJECT, query = '', limit = 5, kinds } = {}) {
-  const key = normalizeKey(projectKey)
+export function searchMemories(db, { projectKey = GLOBAL_PROJECT, projectKeys, query = '', limit = 5, kinds } = {}) {
+  // 注意别用 `projectKeys ?? projectKey`：`'all'` 归一成 null（不过滤），null 会被 ?? 吃掉又变回单键。
+  const keys = projectKeys === undefined ? normalizeProjectKeys(projectKey) : normalizeProjectKeys(projectKeys)
   const cap = Number.isFinite(limit) ? Math.min(10, Math.max(1, Math.floor(limit))) : 5
   const terms = memoryTokens(query)
   const kindList = Array.isArray(kinds) ? kinds.filter(item => typeof item === 'string' && item !== '') : []
   const kindSql = kindList.length > 0 ? ` AND kind IN (${kindList.map(() => '?').join(', ')})` : ''
   const kindArgs = kindList
+  // keys === null（'all'）时不加项目过滤：跨项目检索，用来回答「哪个项目记过这件事」。
+  const keySql = keys === null ? '' : ` AND project_key IN (${keys.map(() => '?').join(', ')})`
+  const keyArgs = keys ?? []
+  // 多键合并时行数会成倍增加：取回窗口按键数放大，避免「按时间截断」把某个键的命中整个切掉。
+  const window = cap * 6
   let rows
   if (terms.length === 0) {
     rows = db.prepare(`SELECT * FROM memories
-      WHERE project_key IN (?, ?)${kindSql} ORDER BY created_at DESC LIMIT ?`)
-      .all(key, GLOBAL_PROJECT, ...kindArgs, cap * 4)
+      WHERE 1 = 1${keySql}${kindSql} ORDER BY created_at DESC LIMIT ?`)
+      .all(...keyArgs, ...kindArgs, window)
   } else {
     const where = terms.map(() => "lower(text) LIKE ? ESCAPE '\\'").join(' OR ')
     rows = db.prepare(`SELECT * FROM memories
-      WHERE project_key IN (?, ?) AND (${where})${kindSql} ORDER BY created_at DESC LIMIT ?`)
-      .all(key, GLOBAL_PROJECT, ...terms.map(term => `%${escapeLike(term)}%`), ...kindArgs, cap * 4)
+      WHERE 1 = 1${keySql} AND (${where})${kindSql} ORDER BY created_at DESC LIMIT ?`)
+      .all(...keyArgs, ...terms.map(term => `%${escapeLike(term)}%`), ...kindArgs, window)
   }
-  const scored = rows.map(row => {
+  const scored = []
+  for (const row of rows) {
     const text = row.text.toLowerCase()
-    let score = terms.reduce((sum, term) => sum + countOf(text, term), 0)
+    let score = 0
+    let hits = 0
+    for (const term of terms) {
+      const count = countOf(text, term)
+      if (count > 0) hits += 1
+      score += count
+    }
     if (row.kind === 'decision') score += 2
     if (row.kind === 'preference' || row.kind === LESSON_KIND) score += 1
-    return { row, score }
-  })
+    // 质量门槛：多词查询要命中 ≥2 个词（或分数 ≥2）；单词查询命中即算（min = 1）。
+    if (terms.length > 0 && hits < Math.min(MIN_QUERY_HITS, terms.length) && score < 2) continue
+    scored.push({ row, score })
+  }
   scored.sort((left, right) => right.score - left.score || right.row.created_at - left.row.created_at)
-  const picked = scored.slice(0, cap).map(item => item.row)
+  const picked = pickLayered(scored, cap).map(item => item.row)
   const bump = db.prepare('UPDATE memories SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?')
   const now = Date.now()
   for (const row of picked) {

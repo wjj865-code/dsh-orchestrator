@@ -315,14 +315,22 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     return workspaceList().find(item => typeof item?.path === 'string' && projectKeyOf(item.path) === key)
   }
   // project 参数可以是绝对目录，也可以是工作区显示名；工作区名走现有推断，不猜。
+  // `known` 供 context history 用：未知名项目要报警告（P0-b），不能静默回落 global。
   const resolveProjectHint = hint => {
     const text = typeof hint === 'string' ? hint.trim() : ''
-    if (text === '') return { key: GLOBAL_PROJECT, path: undefined, title: undefined }
+    if (text === '') return { key: GLOBAL_PROJECT, path: undefined, title: undefined, known: false }
+    if (text.toLowerCase() === 'global') return { key: GLOBAL_PROJECT, path: undefined, title: 'global', known: true }
     if (isAbsolute(text)) {
       let exists = false
       try { exists = statSync(text).isDirectory() } catch { exists = false }
       const path = resolve(text)
-      return { key: projectKeyOf(path), path: exists ? path : undefined, title: exists ? (workspaceForPath(path)?.title ?? basename(path)) : basename(path), exists }
+      return {
+        key: projectKeyOf(path),
+        path: exists ? path : undefined,
+        title: exists ? (workspaceForPath(path)?.title ?? basename(path)) : basename(path),
+        exists,
+        known: true,
+      }
     }
     const match = inferWorkspaceTarget({ title: text, goal: text }, workspaceList())
     if (match.ok !== false && match.workspace !== undefined) {
@@ -331,9 +339,19 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         path: match.workspace.path,
         title: match.workspace.title,
         exists: true,
+        known: true,
       }
     }
-    return { key: GLOBAL_PROJECT, path: undefined, title: text }
+    // 匹配到多个工作区：不是「未知名」，要给「请传哪个绝对目录」的可执行提示。
+    return {
+      key: GLOBAL_PROJECT,
+      path: undefined,
+      title: text,
+      known: false,
+      ambiguous: match.ok === false
+        ? (Array.isArray(match.candidates) ? match.candidates : []).map(item => `${item.title} → ${item.path}`)
+        : undefined,
+    }
   }
   const readProjectText = (path, max = 2000) => {
     try {
@@ -344,9 +362,34 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return ''
     }
   }
-  const projectContextFor = (dir, query = '') => {
+  // 项目背景输出预算（P0 记忆优化）：总长受控；架构段默认只给开头，显式 include 才给前 4000 字。
+  const MAX_PROJECT_CONTEXT_CHARS = 8000
+  const PROJECT_DOC_DEFAULT_CHARS = 1200
+  const PROJECT_DOC_INCLUDE_CHARS = 4000
+  // project 白名单文档（含显式 include 的别名）——只有这些能被 include「加长」，其它路径一律不读。
+  const PROJECT_INCLUDE_DOCS = Object.freeze({
+    'docs/architecture.md': 'docs/ARCHITECTURE.md',
+    architecture: 'docs/ARCHITECTURE.md',
+    arch: 'docs/ARCHITECTURE.md',
+  })
+  /** include 归一：识别出的白名单文档集合 + 未识别的项（给一行提示，不静默）。 */
+  const normalizeInclude = value => {
+    const raw = Array.isArray(value) ? value : (typeof value === 'string' ? [value] : [])
+    const docs = new Set()
+    const unknown = []
+    for (const item of raw) {
+      if (typeof item !== 'string' || item.trim() === '') continue
+      const key = item.trim().toLowerCase().replace(/^\.?\//, '')
+      const doc = PROJECT_INCLUDE_DOCS[key]
+      if (doc === undefined) unknown.push(item.trim())
+      else docs.add(doc)
+    }
+    return { docs, unknown }
+  }
+  const projectContextFor = (dir, query = '', { include } = {}) => {
     const projectKey = projectKeyOf(dir)
     const title = workspaceForPath(dir)?.title ?? basename(dir)
+    const { docs: includeDocs, unknown: unknownIncludes } = normalizeInclude(include)
     const lines = [`【项目】${title}`, `【路径】${dir}`]
     const index = workspaceIndexText(loadWorkspaceIndex(db), dir)
     if (index !== '') lines.push(index)
@@ -380,6 +423,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     if (readme !== '') lines.push(`【README】\n${readme.trim()}`)
     const agents = readProjectText(join(dir, 'AGENTS.md'), 1800)
     if (agents !== '') lines.push(`【AGENTS】\n${agents.trim()}`)
+    // 架构正本（审计 §5.1）：以前不在白名单里，70 KB 的决策文档永远不会被读到。
+    // 默认只给开头 1200 字（不把 6000 字预算全吃掉）；显式 include 才给前 4000 字。
+    const architectureFull = includeDocs.has('docs/ARCHITECTURE.md')
+    const architectureChars = architectureFull ? PROJECT_DOC_INCLUDE_CHARS : PROJECT_DOC_DEFAULT_CHARS
+    const architecture = readProjectText(join(dir, 'docs', 'ARCHITECTURE.md'), architectureChars)
+    if (architecture !== '') {
+      lines.push(`【架构】docs/ARCHITECTURE.md（前 ${architectureChars} 字${architectureFull ? '，include 显式包含' : '，要更多传 include: ["docs/ARCHITECTURE.md"]'}）\n${architecture.trim()}`)
+    }
 
     const recent = listTasks(db, { active: false })
       .filter(task => projectKeyOf(task.target_dir) === projectKey)
@@ -389,8 +440,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }
     const memoryBlock = buildMemoryBlock(db, { projectKey, query, limit: 3 })
     if (memoryBlock !== '') lines.push(memoryBlock)
+    if (unknownIncludes.length > 0) {
+      lines.push(`【提示】include 只支持 docs/ARCHITECTURE.md（收到：${unknownIncludes.join('、')}），其它文件不在白名单。`)
+    }
     let text = lines.join('\n')
-    if (text.length > 6000) text = `${text.slice(0, 5999)}…`
+    if (text.length > MAX_PROJECT_CONTEXT_CHARS) text = `${text.slice(0, MAX_PROJECT_CONTEXT_CHARS - 1)}…`
     return text
   }
 
@@ -775,18 +829,64 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     return blocks.join('\n')
   }
 
-  // 历史检索（原 history_search 的实现，输出逐字不变）。
+  // 历史检索（原 history_search 的实现）。
   //
   // 只读、**子会话也可用**（协调者与子会话走同一条实现，同参数输出逐字一致）：
   // 「需要历史经验/项目背景时主动查」是子会话的行为期望（worker 预设 persona），这里不按角色拦。
   // 可用性声明在预设层（worker 预设 preset-tools 的 `keep`），本层只保证「只读 + 无副作用」。
+  //
+  // P0-a/P0-b（记忆优化，2026-11-21）：
+  // - 首行打印【检索范围】：不传 project 时只查 global（跨项目），必须让人看见「没含项目记忆」——
+  //   以前静默回落 global，254 条项目记忆一条都查不到，调用方还以为是「没有历史」；
+  // - project 支持 绝对路径 / 工作区名 / 数组（合并 ≤2 个项目键，统一按分数截 limit）/ 'all'（全部项目）；
+  // - 未知名项目给一行【警告】，不再静默回落；
+  // - task-log 单独成块、最多 2 条、排在事实层之后（把检索槽位还给事实层）。
+  const MAX_HISTORY_PROJECT_KEYS = 2
+  const MAX_HISTORY_LOG_ROWS = 2
+  const LOG_LAYER_KINDS = Object.freeze([TASK_LOG_KIND, 'task-done'])
+  /** project 参数 → { keys: string[]|null, label, warnings }；keys=null 表示 'all'（不按项目过滤）。 */
+  const resolveHistoryScope = value => {
+    const warnings = []
+    const raw = (Array.isArray(value) ? value : [value])
+      .filter(item => typeof item === 'string')
+      .map(item => item.trim())
+      .filter(item => item !== '')
+    if (raw.length === 0) {
+      return { keys: [GLOBAL_PROJECT], label: 'global（未含项目记忆）', warnings }
+    }
+    if (raw.some(item => item.toLowerCase() === 'all')) {
+      return { keys: null, label: 'all（全部项目记忆）', warnings }
+    }
+    const keys = []
+    for (const item of raw) {
+      const hint = resolveProjectHint(item)
+      if (hint.known !== true) {
+        warnings.push(hint.ambiguous !== undefined && hint.ambiguous.length > 0
+          ? `项目名「${item}」匹配多个工作区，这一项按 global 检索；请改传绝对目录：${hint.ambiguous.join('；')}`
+          : `未找到项目「${item}」：这一项按 global 检索。要查项目记忆请传绝对目录或已登记工作区名（见 context({ mode: 'workspaces' })）`)
+        continue
+      }
+      if (!keys.includes(hint.key)) keys.push(hint.key)
+      if (keys.length >= MAX_HISTORY_PROJECT_KEYS) break
+    }
+    if (keys.length === 0) return { keys: [GLOBAL_PROJECT], label: 'global（未含项目记忆）', warnings }
+    if (!keys.includes(GLOBAL_PROJECT)) keys.push(GLOBAL_PROJECT)
+    return {
+      keys,
+      label: `project: ${keys.filter(key => key !== GLOBAL_PROJECT).join(' + ')}｜+ global（跨项目记忆）`,
+      warnings,
+    }
+  }
   const historyView = async (args, exec) => {
     const query = String(args.query ?? '').trim()
     if (query === '') return '给一个关键词再查历史（任务名、目标、决策或文件名）。'
     const limit = Number.isFinite(args.limit) ? Math.min(10, Math.max(1, Math.floor(args.limit))) : 5
-    const hint = resolveProjectHint(args.project)
+    const scope = resolveHistoryScope(args.project)
     const tokens = memoryTokens(query)
-    const memories = searchMemories(db, { projectKey: hint.key, query, limit })
+    // 事实层与日志层分开查：日志层单独成块、最多 2 条，不占事实层的 limit 槽位。
+    const memoryScope = scope.keys === null ? 'all' : scope.keys
+    const facts = searchMemories(db, { projectKeys: memoryScope, query, limit, kinds: MEMORY_FACT_KINDS })
+    const logs = searchMemories(db, { projectKeys: memoryScope, query, limit: MAX_HISTORY_LOG_ROWS, kinds: LOG_LAYER_KINDS })
     const tasks = listTasks(db, { active: false })
       .map(task => {
         const latest = recentMessages(db, task.id, 1)[0]?.rendered ?? ''
@@ -806,16 +906,22 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           const id = hit?.header?.id ?? hit?.sessionId
           if (typeof id !== 'string' || id === '') continue
           const cwd = hit?.header?.cwd
-          if (hint.path !== undefined && typeof cwd === 'string' && projectKeyOf(cwd) !== hint.key) continue
+          if (scope.keys !== null && typeof cwd === 'string' && !scope.keys.includes(projectKeyOf(cwd))) continue
           sessions.push({ id, snippet: short(hit?.bestMatch?.snippet ?? hit?.snippet ?? '', 160) })
           if (sessions.length >= 3) break
         }
       } catch { /* sessionQuery 不可用就只查插件自己的数据 */ }
     }
-    const blocks = []
-    if (memories.length > 0) {
-      // 标出层：task-log 是日志层（只归档、不注入 brief），lesson/decision/preference 是事实层。
-      blocks.push(`【记忆】\n${memories.map(row => `- [${memoryKindLabel(row.kind)}] ${row.text}`).join('\n')}`)
+    // 首行必须是【检索范围】——调用方据此判断「要不要显式传 project 再查一次」。
+    const blocks = [`【检索范围】${scope.label}`]
+    for (const warning of scope.warnings) blocks.push(`【警告】${warning}`)
+    if (facts.length > 0) {
+      // 标出层：lesson/decision/preference/note 是事实层（可注入 brief）。
+      blocks.push(`【记忆】\n${facts.map(row => `- [${memoryKindLabel(row.kind)}] ${row.text}`).join('\n')}`)
+    }
+    if (logs.length > 0) {
+      // 日志层单独一块、最多 2 条：task-log 只归档、不注入 brief，别挤掉事实层的槽位。
+      blocks.push(`【任务日志】最多 ${MAX_HISTORY_LOG_ROWS} 条（日志层，只归档）\n${logs.map(row => `- [${memoryKindLabel(row.kind)}] ${row.text}`).join('\n')}`)
     }
     if (tasks.length > 0) {
       blocks.push(`【历史任务】\n${tasks.map(({ task }) => `- ${taskLabelWithId(task)}｜${labelOf(task.status)}｜${short(task.goal, 80)}${task.artifacts?.length > 0 ? `｜产物 ${task.artifacts.length}` : ''}`).join('\n')}`)
@@ -823,7 +929,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     if (sessions.length > 0) {
       blocks.push(`【历史会话】\n${sessions.map(item => `- ${item.id}${item.snippet === '' ? '' : `：${item.snippet}`}`).join('\n')}`)
     }
-    return blocks.length > 0 ? blocks.join('\n') : '没有找到相关历史。'
+    return blocks.length > 1 ? blocks.join('\n') : `${blocks[0]}\n没有找到相关历史。`
   }
 
   // 已登记工作区 + 仓库采样索引（原 project_context({workspaces:true}) 的实现，输出逐字不变）。
@@ -831,7 +937,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     return `【已登记工作区】\n${workspaceList().map(item => JSON.stringify({ id: item.id, title: item.title, path: item.path })).join('\n')}\n${workspaceIndexText(loadWorkspaceIndex(db)) || '尚无仓库索引，派只读工作区与仓库索引任务。'}`
   }
 
-  // 项目背景（原 project_context 的实现，输出逐字不变）。
+  // 项目背景（原 project_context 的实现；P0：架构正本进白名单，include 可显式加长）。
   const projectView = async (args, exec) => {
     if (args.workspaces === true) return workspacesView(args, exec)
     if (typeof args.query === 'string' && !args.target) {
@@ -1553,14 +1659,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return renderWorkspaceRead(result)
     }),
 
-    // P1-B：history_search + project_context 合并成 context（mode 区分），两段输出逐字保持原样。
+    // P1-B：history_search + project_context 合并成 context（mode 区分）。
+    // P0（0.26.0 记忆优化）：history 首行打印【检索范围】、project 支持多键/'all'、日志层单独成块、
+    // project 白名单加 docs/ARCHITECTURE.md。行为变更见 CHANGELOG。
     // 「读」对协调者与子会话都开放（同一条实现、同参数逐字同输出）；「写」只在 memory_note，且仅主会话。
-    wrap('context', '读上下文（只读，不开放任意文件读取；协调者与子会话都可用）：mode:"history"（默认）查跨项目历史——本插件记忆、历史任务、平台历史会话，新任务开始前用它补上下文，结果只作参考不作状态断言；mode:"project" 读项目背景——README/AGENTS/package 等白名单文件、顶层结构、最近任务、相关记忆；mode:"workspaces" 返回已登记工作区与持久化仓库采样索引（不扫描全盘）。', objectSchema({
+    wrap('context', '读上下文（只读，不开放任意文件读取；协调者与子会话都可用）：mode:"history"（默认）查历史——本插件记忆（首行打印【检索范围】；不传 project 只查 global 跨项目记忆，要查本项目请显式传 target_dir 或工作区名）、历史任务、平台历史会话，新任务开始前用它补上下文，结果只作参考不作状态断言；mode:"project" 读项目背景——README/AGENTS/docs/ARCHITECTURE.md/package 等白名单文件、顶层结构、最近任务、相关记忆；mode:"workspaces" 返回已登记工作区与持久化仓库采样索引（不扫描全盘）。', objectSchema({
       mode: { type: 'string', enum: CONTEXT_MODES, description: '读哪一类：history（默认，历史检索，吸收原 history_search）｜project（项目背景，吸收原 project_context）｜workspaces（已登记工作区 + 仓库索引）' },
       query: str('history：检索关键词（任务名/目标/决策/文件名）；project：用于推断项目与匹配记忆的关键词'),
-      project: str('history：项目绝对路径或工作区名；不传则查全局+当前项目'),
+      project: str('history：项目绝对路径、工作区名，或字符串数组（合并 ≤2 个项目键）/ "all"（全部项目）；不传只查 global（跨项目记忆），要查本项目必须显式传 target_dir 或工作区名'),
       target: str('project：项目绝对目录；不传则按 query 推断或使用主会话目录'),
-      limit: { type: 'number', description: 'history：最多几条，默认 5，最大 10' },
+      include: strList('project：可选，显式包含的白名单文档（目前支持 docs/ARCHITECTURE.md；默认给前 1200 字，显式 include 给前 4000 字）'),
+      limit: { type: 'number', description: 'history：事实层最多几条，默认 5，最大 10（日志层 task-log 另给 ≤2 条、排在事实层之后）' },
       workspaces: { type: 'boolean', description: '兼容旧调用 project_context({ workspaces: true })：等价 mode:"workspaces"（新调用请直接用 mode）' },
     }), async (args, exec) => {
       const mode = typeof args.mode === 'string' ? args.mode.trim() : ''
@@ -1804,7 +1913,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           // M1 记忆分层：done 摘要只进日志层 task-log（一行、无产物清单、不进 brief）；
           // 写入即蒸馏——摘要里带经验/教训标记的分句抽成 lesson 原子事实，才允许注入后续 brief。
           // 只在真正交付的这一次沉淀（重复 done 回报不重复写）。
-          const projectKey = projectKeyOf(next.target_dir)
+          // worktree 记忆归一（审计 §2.5 缺陷 2）：隔离任务的 target_dir 是检出目录
+          // （<repo>/.agents/worktrees/t-xxx），拿它当 project_key 会写出 8 个分裂键、项目键检索不到。
+          // 归一顺序：用户给的原始 target（brief.target）→ 源仓库根（repo_root）→ 最后才退回 target_dir。
+          const projectKey = projectKeyOf(next.brief?.target ?? next.repo_root ?? next.target_dir)
           const summary = String(args.summary ?? '')
           addMemory(db, {
             projectKey,

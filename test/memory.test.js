@@ -5,9 +5,9 @@ import { join } from 'node:path'
 import { openLedger } from '../src/ledger.js'
 import {
   GLOBAL_PROJECT, LESSONS_DIRNAME, LESSON_KIND, MAX_FACT_CHARS, MAX_LESSON_SUMMARY_CHARS, MAX_LOG_CHARS,
-  TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock, distillFacts, distillLessons, distillText,
-  lessonFilePath, lessonPointerBlock, memoryLayerOf, memoryTokens, projectKeyOf, renderLessonFile, searchMemories,
-  taskLogText, writeLessonFile,
+  MAX_TASK_LOG_PER_PROJECT, TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock, distillFacts,
+  distillLessons, distillText, lessonFilePath, lessonPointerBlock, memoryLayerOf, memoryTokens, normalizeProjectKeys,
+  projectKeyOf, renderLessonFile, searchMemories, taskLogText, writeLessonFile,
 } from '../src/memory.js'
 import { tempDir } from './helpers.js'
 
@@ -90,10 +90,11 @@ test('M1 分层：只有事实层注入 brief，task-log 与旧 task-done 都不
   // 事实层标签可读，便于协调者分辨来源
   assert.match(block, /\[经验\]/)
 
-  // 日志层不注入，但 history_search 用的检索仍能查到（不只查事实层）。
-  const logs = searchMemories(db, { projectKey: project, query: 'session cookie' })
+  // 日志层不注入，但 history 用的检索仍能查到（不只查事实层）。
+  // P0 质量门槛：多词查询要求命中 ≥2 个词，所以这里用只出现在日志层里的 'cookie' 做单词查询。
+  const logs = searchMemories(db, { projectKey: project, query: 'cookie' })
   assert.deepEqual(logs.map(row => row.kind).sort(), ['task-done', 'task-log'])
-  const factsOnly = searchMemories(db, { projectKey: project, query: 'session cookie', kinds: [LESSON_KIND, 'decision', 'preference', 'note'] })
+  const factsOnly = searchMemories(db, { projectKey: project, query: 'cookie', kinds: [LESSON_KIND, 'decision', 'preference', 'note'] })
   assert.equal(factsOnly.length, 0)
   db.close()
 })
@@ -274,4 +275,93 @@ test('L1 renderLessonFile：无行时只有头，行内容逐字保留', () => {
   const one = renderLessonFile({ projectKey: GLOBAL_PROJECT, rows: [{ id: 'm-9', kind: 'note', text: '甲\n乙', createdAt: 0 }], now: 0 })
   assert.equal(one.includes('甲\n乙'), true)
   assert.match(one, /id：m-9/)
+})
+
+// ---- M2 记忆优化（t-3e27f4b4）：淘汰分层 / 质量门槛 / 多键检索 ----
+
+test('M2 淘汰分层：task-log 单项目限 200，事实层不参与淘汰', async () => {
+  const db = await openLedger(tempDir())
+  const project = projectKeyOf('C:/work/evict')
+  // 手记事实先写（最老），再灌 260 条 task-log：旧口径（300 条混算）会先把这几条删掉。
+  addMemory(db, { projectKey: project, kind: 'decision', text: '决策甲：登录统一走 cookie，不再新增 token' })
+  addMemory(db, { projectKey: project, kind: 'note', text: '笔记乙：发布前先跑 pnpm test' })
+  addMemory(db, { projectKey: project, kind: LESSON_KIND, text: '经验丙：先查半成品再动手' })
+  for (let index = 0; index < 260; index += 1) {
+    addMemory(db, { projectKey: project, kind: TASK_LOG_KIND, text: `任务「第 ${index} 号」完成：改了一处` })
+  }
+  const countOfKind = kind => db.prepare('SELECT count(*) AS n FROM memories WHERE project_key = ? AND kind = ?').get(project, kind).n
+  assert.equal(countOfKind(TASK_LOG_KIND), MAX_TASK_LOG_PER_PROJECT)
+  assert.equal(MAX_TASK_LOG_PER_PROJECT, 200)
+  assert.equal(countOfKind('decision'), 1)
+  assert.equal(countOfKind('note'), 1)
+  assert.equal(countOfKind(LESSON_KIND), 1)
+  // 淘汰的是最老的日志（第 0–59 号），最新的留下。
+  const logTexts = db.prepare('SELECT text FROM memories WHERE project_key = ? AND kind = ?').all(project, TASK_LOG_KIND).map(row => row.text)
+  assert.equal(logTexts.some(text => text.includes('第 0 号')), false)
+  assert.equal(logTexts.some(text => text.includes('第 259 号')), true)
+  db.close()
+})
+
+test('M2 质量门槛：通用词进停用词；多词查询要命中 ≥2 词或分数 ≥2，单词查询照旧', async () => {
+  // 通用词不再构成「相关」
+  const tokens = memoryTokens('测试 代码 文件 实现 插件 登录')
+  for (const stop of ['测试', '代码', '文件', '实现', '插件']) assert.equal(tokens.includes(stop), false, stop)
+  assert.equal(tokens.includes('登录'), true)
+
+  const db = await openLedger(tempDir())
+  const project = projectKeyOf('C:/work/threshold')
+  addMemory(db, { projectKey: project, kind: 'note', text: '登录模块统一走 session cookie' })
+  addMemory(db, { projectKey: project, kind: 'note', text: '发布流程先跑 pnpm test' })
+  // 两个词各命中一条 note：单条只命中 1 个词（score 1）→ 两条都不算相关。
+  assert.deepEqual(searchMemories(db, { projectKey: project, query: '登录 发布' }), [])
+  // decision 有 +2 权重：只命中 1 个词也能过（score ≥2），这是「高价值事实放宽」的那一侧。
+  addMemory(db, { projectKey: project, kind: 'decision', text: '登录走统一网关' })
+  const hits = searchMemories(db, { projectKey: project, query: '登录 发布' })
+  assert.deepEqual(hits.map(row => row.kind), ['decision'])
+  // 单词查询沿用「命中即相关」：pnpm 仍能查到那条 note。
+  assert.equal(searchMemories(db, { projectKey: project, query: 'pnpm' }).length, 1)
+  db.close()
+})
+
+test('M2 分层配额：decision/preference 最多占 2 条，剩余槽位留给 lesson', async () => {
+  const db = await openLedger(tempDir())
+  const project = projectKeyOf('C:/work/quota')
+  for (let index = 0; index < 3; index += 1) {
+    addMemory(db, { projectKey: project, kind: 'decision', text: `登录事项${index}：走 cookie 校验` })
+  }
+  addMemory(db, { projectKey: project, kind: LESSON_KIND, text: '登录先查半成品再动手' })
+  const hits = searchMemories(db, { projectKey: project, query: '登录 cookie', limit: 3 })
+  assert.equal(hits.length, 3)
+  assert.equal(hits.filter(row => row.kind === 'decision').length, 2)
+  assert.equal(hits.some(row => row.kind === LESSON_KIND), true)
+  // 没有其它层可补时按分数补回：不会因为配额只返回 2 条。
+  const db2 = await openLedger(tempDir())
+  const project2 = projectKeyOf('C:/work/quota-only-decision')
+  for (let index = 0; index < 3; index += 1) {
+    addMemory(db2, { projectKey: project2, kind: 'decision', text: `登录事项${index}：走 cookie 校验` })
+  }
+  assert.equal(searchMemories(db2, { projectKey: project2, query: '登录 cookie', limit: 3 }).length, 3)
+  db.close()
+  db2.close()
+})
+
+test('P0-b 检索范围：projectKeys 合并多项目、all 跨项目、单键自动补 global', async () => {
+  const db = await openLedger(tempDir())
+  const a = projectKeyOf('C:/work/merge-a')
+  const b = projectKeyOf('C:/work/merge-b')
+  addMemory(db, { projectKey: a, kind: 'decision', text: '甲项目：登录用 cookie' })
+  addMemory(db, { projectKey: b, kind: 'decision', text: '乙项目：登录用 token' })
+  addMemory(db, { projectKey: GLOBAL_PROJECT, kind: 'preference', text: '全局：登录相关先查 README' })
+
+  const merged = searchMemories(db, { projectKeys: [a, b], query: '登录' })
+  assert.deepEqual(merged.map(row => row.projectKey).sort(), [a, b, GLOBAL_PROJECT].sort())
+  const all = searchMemories(db, { projectKeys: 'all', query: '登录' })
+  assert.equal(all.length, 3)
+  const one = searchMemories(db, { projectKey: a, query: '登录' })
+  assert.deepEqual(one.map(row => row.projectKey).sort(), [a, GLOBAL_PROJECT].sort())
+  // normalizeProjectKeys：'all' → null；数组去重并自动补 global。
+  assert.equal(normalizeProjectKeys('all'), null)
+  assert.deepEqual(normalizeProjectKeys([a, a]), [a, GLOBAL_PROJECT])
+  assert.deepEqual(normalizeProjectKeys(undefined), [GLOBAL_PROJECT])
+  db.close()
 })

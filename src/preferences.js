@@ -15,7 +15,9 @@
 //
 // 结构性保证：偏好**不是权限通道**。它只是提示词文本，落库在 settings，不进 config、
 // 不改 dispatch、不碰 sandboxPolicy；内置种子里不放任何「放宽安全边界」的条目（维护约束）。
+import { createHash } from 'node:crypto'
 import { getSetting, setSetting } from './ledger.js'
+import { GLOBAL_PROJECT } from './memory.js'
 
 /** settings 键（单键 JSON，与 workspace_repo_index 同一种存法）。 */
 export const PREFERENCES_KEY = 'orchestrator_preferences'
@@ -215,4 +217,147 @@ export const projectPreferenceSavedHint = title => `已保存为项目偏好（$
 export function preferenceBudgetLine(items, { maxItems = DEFAULT_MAX_ITEMS, maxChars = DEFAULT_MAX_CHARS } = {}) {
   const injectable = injectableOf(normalizePreferences(items))
   return `当前 ${injectable.length} 条可注入偏好（上限 ${maxItems} 条 / ${maxChars} 字）`
+}
+
+// ---- 旧全局偏好迁移（审计 §2.5 缺陷 3 + §7 第 7 条） --------------------------------
+//
+// 背景：0.19.0 之前 `memory_note(kind:'preference', 不传 project)` 写的是 memories 的 global 行，
+// 渲染侧却只读 `settings.orchestrator_preferences` → 那 3 条「记了却永不生效」的死数据（实测 11-15 写的
+// present 展示数量 / 汇报用任务名）。这里启动时一次性搬进 settings，并用幂等标记保证只跑一次。
+//
+// 两个细节（都是审计点名的）：
+//   1. **取更正后的版本**：旧数据里 present 有两条（1–2 与后来的「更正上一条…1–4」）。迁移时把带更正
+//      标记的那条视为旧条目的替代（共享关键 token ≥3 判同主题），设置里只留更正版。
+//   2. **不双写**：写到 settings 成功后把这些 global preference 行从 memories 删掉（否则 context 检索
+//      会同时看到 1–2 和 1–4 两条互相打架的「事实」）。删了什么写进日志，可回查。
+export const PREFERENCES_MIGRATED_KEY = 'orchestrator_preferences_migrated'
+/** 更正标记：出现这些词的那条视为对前面某条规则的修订。 */
+const CORRECTION_MARKER = /(更正|修正|纠正|推翻|不再用)/
+
+const normalizeRule = rule => String(rule ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+// 主题比较用的分词：与检索的 `memoryTokens` 不同——这里**不截断**（检索只取前 12 个词，
+// 长规则里真正有辨识度的词（present、产物、展示数量）会被截在窗口外，主题相似度就算不出来）。
+const topicTokens = value => {
+  const raw = String(value ?? '').toLowerCase()
+  const tokens = []
+  for (const run of raw.match(/[\u4e00-\u9fff]+/g) ?? []) {
+    if (run.length <= 2) tokens.push(run)
+    else for (let index = 0; index < run.length - 1; index += 1) tokens.push(run.slice(index, index + 2))
+  }
+  for (const word of raw.match(/[a-z0-9][a-z0-9_-]*/g) ?? []) {
+    if (word.length >= 2) tokens.push(word)
+  }
+  return [...new Set(tokens)]
+}
+const sharedTokenCount = (left, right) => {
+  const rightTokens = new Set(topicTokens(right))
+  return topicTokens(left).filter(token => rightTokens.has(token)).length
+}
+
+/** 在已保留条目里找「最像被更正」的那条：共享关键词 ≥3 才认。 */
+function bestCorrectionTarget(entries, rule) {
+  let best = -1
+  let bestShared = 0
+  entries.forEach((entry, index) => {
+    const shared = sharedTokenCount(rule, entry.rule)
+    if (shared > bestShared) {
+      bestShared = shared
+      best = index
+    }
+  })
+  return bestShared >= 3 ? best : -1
+}
+
+/**
+ * 把 memories 里的 global preference 一次性迁进 settings（幂等：`settings.orchestrator_preferences_migrated`）。
+ *
+ * @param {{db: object, log?: Function, now?: number}} options
+ * @returns {{ migrated: number, skipped: boolean, reason?: string, rules?: string[], deletedMemories?: number }}
+ */
+export function migrateLegacyPreferences({ db, log = () => {}, now = Date.now() } = {}) {
+  let marker = ''
+  try {
+    marker = text(getSetting(db, PREFERENCES_MIGRATED_KEY))
+  } catch {
+    return { migrated: 0, skipped: true, reason: 'settings-unavailable' }
+  }
+  if (marker !== '') return { migrated: 0, skipped: true, reason: 'already-migrated' }
+  let rows = []
+  try {
+    rows = db.prepare("SELECT id, text, created_at FROM memories WHERE project_key = ? AND kind = 'preference' ORDER BY created_at ASC, rowid ASC")
+      .all(GLOBAL_PROJECT)
+  } catch {
+    rows = []
+  }
+  const candidates = rows
+    .map(row => ({ id: row.id, rule: text(row.text), createdAt: Number(row.created_at) || 0 }))
+    .filter(item => item.rule !== '')
+  const stamp = new Date(now).toISOString()
+  const finish = (result) => {
+    try { setSetting(db, PREFERENCES_MIGRATED_KEY, stamp) } catch { /* 标记写不进去就下次再跑（迁移是幂等的） */ }
+    return result
+  }
+  // 没有旧数据就**什么都不写**（连标记也不写）：加载插件不该为了「扫了一遍」去动 settings。
+  // 没有旧行时再跑一次也只是同一条 SELECT，代价可忽略。
+  if (candidates.length === 0) return { migrated: 0, skipped: false, reason: 'no-legacy', rules: [] }
+
+  // 1) 去重 + 更正合并：同一文本只留最新一条；带更正标记的替换掉它指向的旧条目。
+  const kept = []
+  const superseded = []
+  for (const item of candidates) {
+    if (CORRECTION_MARKER.test(item.rule)) {
+      const target = bestCorrectionTarget(kept, item.rule)
+      if (target >= 0) superseded.push(kept.splice(target, 1)[0])
+    }
+    const duplicate = kept.findIndex(entry => entry.rule === item.rule || normalizeRule(entry.rule) === normalizeRule(item.rule))
+    if (duplicate >= 0) {
+      if (item.createdAt >= kept[duplicate].createdAt) kept[duplicate] = item
+      continue
+    }
+    kept.push(item)
+  }
+
+  // 2) 写 settings（一条失败不拦其它条；有失败就不写标记、不删 memories，下次启动重试）。
+  let migrated = 0
+  for (const item of kept) {
+    try {
+      upsertPreference(db, {
+        id: `p-${createHash('sha256').update(item.rule).digest('hex').slice(0, 8)}`,
+        category: 'general',
+        rule: item.rule,
+        scope: 'global',
+        appliesTo: 'coordinator',
+        priority: 50,
+        source: 'user',
+        addedAt: item.createdAt || now,
+      })
+      migrated += 1
+    } catch { /* 单条写失败：不写标记，下次重试 */ }
+  }
+  if (migrated !== kept.length) {
+    return { migrated, skipped: false, reason: 'partial', rules: kept.map(item => item.rule) }
+  }
+
+  // 3) 搬走后的旧行从 memories 删掉（含被更正掉的旧版）：settings 是唯一事实源，不留两份真相。
+  let deletedMemories = 0
+  try {
+    const remove = db.prepare('DELETE FROM memories WHERE id = ?')
+    for (const item of candidates) deletedMemories += Number(remove.run(item.id).changes) || 0
+  } catch { /* 删不掉就留着：settings 已生效，下次启动标记已在，不会再迁一次 */ }
+
+  log('memory.preferences.migrated', {
+    detail: {
+      migrated,
+      deletedMemories,
+      rules: kept.map(item => item.rule),
+      superseded: superseded.map(item => item.rule),
+    },
+  })
+  return finish({
+    migrated,
+    skipped: false,
+    rules: kept.map(item => item.rule),
+    deletedMemories,
+    superseded: superseded.map(item => item.rule),
+  })
 }

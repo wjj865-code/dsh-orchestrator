@@ -31,10 +31,12 @@ import { createHandoffLog, emitHandoffDelivered, setHandoffSink } from './src/ha
 import {
   confirmOnBoard, linkBoardTask, readTeamBoard, setTeamBoardSink, teamLinkView,
 } from './src/team-board.js'
-import { loadPreferences, renderPreferenceBlock } from './src/preferences.js'
+import { loadPreferences, migrateLegacyPreferences, renderPreferenceBlock } from './src/preferences.js'
 import { PRESENT_LIMIT_TEXT } from './src/prompt-layers.js'
 // P1-C 文案单源：协调者 policy 里的计划/交付口径引用 src/copy.js，避免与 L2/L3 说法漂移。
-import { PLAN_PHASE_LINES, PLAN_SAVE_DIR } from './src/copy.js'
+import {
+  BLOCKER_RULE, CHANGE_REVIEW_FIELDS, PLAN_PHASE_LINES, PLAN_SAVE_DIR, PROGRESS_NOTICE_HINT,
+} from './src/copy.js'
 import { startSnapshotLoop } from './src/snapshot.js'
 import { ensureDigest } from './src/digest.js'
 import { createPanelActions } from './src/panel-actions.js'
@@ -189,6 +191,13 @@ export async function apply(ctx, rawConfig = {}) {
   // 0.25.0：轮换删除后，老 profile 里残留的 main_rotation_* / main_session_created_at 一次性清掉
   // （marker 必须清：留着的话回滚旧版本会按它「补完轮换」去归档一个毫不相干的会话）。
   cleanupLegacyRotation({ db, log: (event, fields) => logger.log(event, fields) })
+  // 0.25.1：旧版 `memory_note(kind:'preference', 不传 project)` 写在 memories 的死数据一次性搬进 settings
+  // （渲染侧只读 settings，那几条以前永不生效）。幂等标记在 settings；失败不阻断加载、下次启动重试。
+  try {
+    migrateLegacyPreferences({ db, log: (event, fields) => logger.log(event, fields) })
+  } catch (error) {
+    warnings(`dsh-orchestrator: 旧偏好迁移失败（不影响加载，下次启动重试）：${error?.message ?? error}`)
+  }
   // 宿主自检（只诊断、不拦加载）：版本落在声明基线外时 warn 一次；能力快照等装配完成后再记。
   // 为什么只 warn：插件历史上靠「服务缺失静默不生效」吃过亏（真实宿主不渲染），宁可多一行可读诊断。
   const hostVersion = host.version()
