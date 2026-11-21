@@ -1,6 +1,6 @@
 # Changelog
 
-## 未发布（Unreleased）—— 协调者去掉 grep + 任务执行者 per-turn policy（t-4f7ce108）
+## 0.29.0（2026-11-21）—— 协调者去掉 grep/glob 只留 read + 任务执行者 W1 policy（t-4f7ce108）
 
 两条用户直接提的改动，**没有改派发语义、状态机、权限、工具数量，也没有新增工具**。用户原话：「目前发现 grep 工具会让主会话自行搜索，导致有时主会话会自主搜索文件调研，现在把这个工具从协调者预设中移除。另外协调者预设有 policy，但任务执行者却没有，建议参考协调者，将静态提示词内容都统一移入任务执行者的 policy，这样每次跑都会注入，效果更好。」
 
@@ -24,8 +24,23 @@
 
 **验证**
 
-- `pnpm test`（含 `pretest` 的 build + `check:client-size` + `check:docs`）、`pnpm run check:version`、`pnpm run check:client-size`、`pnpm run check:docs` 结果见交付回报；本次未改 `client/**`，`dist/client.js` 应保持入库字节。
-- 未 bump 版本、未 tag、未 publish（发版另排）。
+- `pnpm test`（含 `pretest` 的 build + `check:client-size` + `check:docs`）= **1,153 项 / 1,148 pass / 0 fail / 5 skip**；5 条 skip 全是「当前环境无法创建文件符号链接」的环境跳过（Windows 未开开发者模式），与本次改动无关。`pnpm run check:version`（0.29.0 三处一致）/ `check:docs`（**1,658 行 / 预算 1,800**）/ `check:client-size`（**148,323 B / 151,552 B**，余 3,229 B）全绿。
+- 本次未改 `client/**`，`pnpm run build` 重建后 `dist/client.js` 仍是入库的 148,323 B、git 零 diff（SHA-256 未变）。
+- **发版前本机 web 冒烟（0.29.0 本地 tgz，隔离 `DSH_HOME` + 独立 profile，空闲端口，不碰 49682）**：结果见下方「冒烟记录」。
+
+**冒烟记录（0.29.0 本地 tgz）**
+
+- **环境**：Windows 11 + DSH `0.2.2-rc.5`；隔离 `DSH_HOME=<临时目录>/home` + 独立 profile `smoke`（`--from-default-profile web` 生成，`dsh plugin --profile smoke add <0.29.0 本地 tgz>` 装包，安装副本 `version` 实测 0.29.0）、`dsh --profile smoke --no-open --port 49611`（空闲端口，**不碰 49682**）；真实 `~/.dsh` 零读写；用完关服务、删临时目录。
+- **模型**：本地 Messages 兼容 stub（假 key，记录宿主真实请求的 `tools[]`、system 上下文与消息体），**没有复制、也没有读取任何真实凭据**（「凭据只复制不读取」这条授权本次未使用）。
+- **结果 31/31 ✓**（15 项 HTTP/静态 + 16 项浏览器/模型回合）：
+  - **插件加载零 error / 零 warn**：插件日志 44 行（主会话创建、任务派发、worker 两回合、结算、通知全链路），无 error/warn 行；`host.capabilities` 报 rc.5、8/10 能力（缺 `registry` / `team-board` 属该隔离环境预期）。
+  - **协调者工具表（宿主真实下发，15 个）**：`ask_user_question` / `context` / `memory_note` / `present` / `read` / `read_workspace` / `schedule_create` / `schedule_edit` / `schedule_list` / `schedule_view` / `skill` / `task_create` / `task_list` / `task_message` / `task_status`——**没有 `grep` / `glob`**，也没有 `write` / `edit` / `pwsh` / `bash` / `apply_patch`。
+  - **worker brief 实测 2 行**：`【任务编号】t-eb9b3f8d` + `【任务详情】先调 task_detail 读完整详情（task_id 就是上面的任务编号）。`；不含任何 W1 静态句（`堵塞项` / `summary 写成` / `task_report` / `worktree` 都不在 brief 里）。
+  - **W1 policy 每回合注入**：worker 两个回合（1 条消息 / 3 条消息）的上下文都含标题「回报与确认（任务子会话每回合都在，不必等 brief 再说）」与 `blocked` / `report` / `context` 三句原文；协调者的 3 个请求一次都没出现该段。
+  - **面板六页 / dock**：会话头「任务」打开面板；`总览` / `任务组` / `排期` / `自动化` / `复盘` 五次点击都切到对应 `data-page`（第 6 页「组工作台」由任务组卡片进入，`data-page="group"`）；dock 实渲染、**0 个 input/textarea/form**，文案「dock 是只读镜像：不代发消息、不代批计划」。
+  - **接口与产物**：`snapshot` / `session-role` / `groups` / `calendar` / `automations` / `stats` 全 200，反例 `task-create` 返回 400 `UNKNOWN_ENDPOINT`；壳页 200 且已登记 `@wjj865-code/dsh-orchestrator/client.js`；平台 serve 的 bundle 内含入库 `dist/client.js` 全文（源文件 148,323 B）。
+- **未验（附原因）**：① 真实模型回合下「模型是否照着 W1 行动」——stub 只证明注入内容与每回合重渲染，不证明模型服从；② 排期拖拽与自动化新建/暂停的交互动作——只验到页面可进入、接口 200；拖拽需要真实指针序列，自动化写动作会真建调度，不在本次冒烟范围；③ 暗色主题 / 多语言外观未覆盖。
+- **证据**（临时目录，未入库）：`probe-results.json`（15 项）、`drive-results.json`（16 项）、`06-page-*.png` / `07-group-dock.png` 等截图、`mock/requests.jsonl`（宿主真实请求体）、`plugin-log-scan.json`。
 
 ## 0.28.0（2026-11-21）—— 任务链（dependsOn）进 L1：依赖完成自动开始，不再「等 A 完成再派 B」
 
