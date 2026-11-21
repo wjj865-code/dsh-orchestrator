@@ -170,9 +170,11 @@ test('复盘页（P11 阶段 3）：导航第 6 项、7/30 天窗口、三态齐
   assert.match(source('views.js'), /WORKBENCH_POLL_MS/)
 })
 
-test('面板没有第二个 main 槽位：工作台挂在同一个面板内部导航（不新增 main key）', () => {  const client = source('client.js')
+test('面板没有第二个 main 槽位：工作台挂在同一个面板内部导航（不新增 main key）', () => {
+  const client = source('client.js')
   const mainRegistrations = [...client.matchAll(/slots\.register\(\{\s*\n\s*name: 'main', key: ([A-Z_]+)/g)].map(match => match[1])
-  assert.deepEqual(mainRegistrations, ['PANEL_ID', 'LAUNCHER_ID'], 'main 槽位仍只有面板 + 启动器两个 key')
+  // 0.32.0：能力包是独立 main panel（CAPABILITY_PACKS_PANEL_ID）；工作台仍在 orchestrator 面板内部导航。
+  assert.deepEqual(mainRegistrations, ['PANEL_ID', 'LAUNCHER_ID', 'CAPABILITY_PACKS_PANEL_ID'], 'main 槽位：任务面板 + 启动器 + 能力包')
   // 页面状态持久化用 sessionStorage（产物预览会卸载面板，回来要复原）。
   assert.match(source('views.js'), /WORKBENCH_STORAGE_KEY/)
 })

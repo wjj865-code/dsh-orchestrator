@@ -469,4 +469,24 @@ textarea.orch-input { height: auto; padding: 6px 8px; resize: vertical; }
   .orch-wb-grid { grid-auto-rows: minmax(52px, auto); }
 }
 
+/* ── 能力包面板（0.32.0 / P4） ───────────────────────────────────────── */
+.orch-packs-shell { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; overflow-y: auto; }
+.orch-packs-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.orch-pack { display: flex; flex-direction: column; gap: 8px; }
+.orch-pack-rows { display: flex; flex-direction: column; gap: 4px; }
+.orch-pack-kv { display: flex; gap: 8px; font-size: 11px; line-height: 1.5; min-width: 0; }
+.orch-pack-kv > span { flex: 0 0 68px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-pack-kv > b { flex: 1 1 auto; min-width: 0; font-weight: 500; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary, #4a4f57); }
+.orch-pack-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; }
+.orch-pack-muted { color: var(--dsw-alias-label-tertiary, #8a8f99); font-size: 11px; }
+.orch-pack-env-row { display: flex; flex-direction: column; gap: 4px; }
+.orch-pack-env-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+.orch-pack-ok, .orch-pack-err { font-size: 11px; overflow-wrap: anywhere; }
+.orch-pack-ok { color: var(--dsw-alias-state-success-primary, #01a241); }
+.orch-pack-err { color: var(--dsw-alias-state-error-primary, #ec1313); }
+.orch-body--packs { display: flex; min-height: 0; }
+.orch-pack-confirm, .orch-pack-confirm-title, .orch-pack-notes, .orch-pack-env-edit { font-size: 11px; }
+.orch-pack-confirm, .orch-pack-env-edit { display: flex; flex-direction: column; gap: 6px; }
+.orch-pack-notes { margin: 2px 0; padding-left: 18px; }
+
 

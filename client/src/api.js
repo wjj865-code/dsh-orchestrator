@@ -181,3 +181,37 @@ export const saveAutomation = payload => workbenchAction('automation-save', { ..
 export const toggleAutomation = (id, active) => workbenchAction('automation-toggle', { id, active, confirm: true })
 
 export const deleteAutomation = id => workbenchAction('automation-delete', { id, confirm: true })
+
+// ---------------------------------------------------------------------------
+// 0.32.0 能力包（P4）：一个只读快照 + 窄写口。
+// 写动作统一带 clientRequestId（服务端按 endpoint+id+ref 去重）与 confirm；
+// env-set 的值只在请求体里过一手，响应与日志都不回显。
+// ---------------------------------------------------------------------------
+export const readPackSnapshot = (signal) => postEndpoint({ endpoint: 'pack-snapshot' }, signal)
+
+export const describePack = id => postEndpoint({ endpoint: 'pack-describe', id })
+
+export const openPackSession = (id, cwd) => postEndpoint({
+  endpoint: 'pack-open',
+  id,
+  ...(typeof cwd === 'string' && cwd !== '' ? { cwd } : {}),
+  clientRequestId: newRequestId(),
+})
+
+export const installPackCli = (id, cliId, planHash) => postEndpoint({
+  endpoint: 'pack-install', id, cliId, planHash, confirm: true, clientRequestId: newRequestId(),
+})
+
+export const uninstallPackCli = (id, cliId) => postEndpoint({
+  endpoint: 'pack-uninstall', id, cliId, clientRequestId: newRequestId(),
+})
+
+export const deletePack = id => postEndpoint({
+  endpoint: 'pack-delete', id, confirm: true, clientRequestId: newRequestId(),
+})
+
+export const copyPackEnvCommand = (id, ref) => postEndpoint({ endpoint: 'pack-env-copy', id, ref })
+
+export const setPackEnv = (id, ref, value) => postEndpoint({
+  endpoint: 'pack-env-set', id, ref, value, confirm: true, clientRequestId: newRequestId(),
+})

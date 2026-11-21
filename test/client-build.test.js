@@ -53,9 +53,9 @@ test('构建脚本：vite 是 pin 住的 devDependency，build/pretest/check:cli
   assert.match(pkg.scripts.prepublishOnly, /check:client-size/)
 })
 
-test('P2-5 体积预算：dist/client.js ≤ 148 KiB（工作台 v1 由 95 KiB 抬上来，128 KiB 实测不够），闸门脚本可单独执行且给可读结论', () => {
-  // 机器可判定：148 KiB 预算写死在脚本里，产物超了 CI 直接红（不是「看着差不多」）。
-  assert.equal(CLIENT_SIZE_LIMIT, 148 * 1024)
+test('P2-5 体积预算：dist/client.js ≤ 160 KiB（工作台 v1 148 KiB，0.32.0 能力包抬到 160 KiB），闸门脚本可单独执行且给可读结论', () => {
+  // 机器可判定：160 KiB 预算写死在脚本里，产物超了 CI 直接红（不是「看着差不多」）。
+  assert.equal(CLIENT_SIZE_LIMIT, 160 * 1024)
   const size = statSync(distPath).size
   assert.ok(size <= CLIENT_SIZE_LIMIT, `dist/client.js ${formatSize(size)} 超出预算 ${formatSize(CLIENT_SIZE_LIMIT)}`)
   // 纯函数口径：预算内空数组、超预算给两条（超了多少 + 怎么回去）、产物缺失也算问题。
@@ -115,7 +115,7 @@ test('产物工厂形状：factory 返回 { inject, apply }，inject 覆盖三�
     assert.ok(loaded.inject.includes(service), `inject 缺 ${service}`)
   }
   assert.equal(typeof loaded.apply, 'function')
-  // T7.2 起 apply 会注册真实 UI：给最小 ctx 应能跑完，且四个槽位都注册上。
+  // T7.2 起 apply 会注册真实 UI：给最小 ctx 应能跑完，且任务面板/启动器/能力包入口都注册上。
   const registered = []
   const ctx = {
     slots: {
@@ -130,10 +130,11 @@ test('产物工厂形状：factory 返回 { inject, apply }，inject 覆盖三�
   assert.doesNotThrow(() => loaded.apply(ctx))
   const slots = registered.map(row => row.spec.name)
   assert.deepEqual(slots, [
-    'main', 'main', 'sidebar.panellist', 'conversation.header.leading', 'conversation.chat.turnTail',
+    'main', 'main', 'sidebar.panellist', 'main', 'sidebar.panellist',
+    'conversation.header.leading', 'conversation.chat.turnTail',
   ])
   assert.deepEqual(registered.filter(row => row.spec.name === 'main').map(row => row.spec.key).sort(),
-    ['orchestrator', 'orchestrator-launcher'])
+    ['capability-packs', 'orchestrator', 'orchestrator-launcher'])
 })
 
 test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dist/client.js', () => {

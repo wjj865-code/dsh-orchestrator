@@ -7,6 +7,7 @@
  */
 import {
   PANEL_ID, LAUNCHER_ID, ROUTE, TONE_COLOR, CHIP_ID,
+  CAPABILITY_PACKS_PANEL_ID,
   FILTERS, METRICS, POLL_MS, POLL_BACKOFF_MS,
   STATUS_LABEL, STATUS_TONE, MESSAGE_KIND_LABEL, DELIVERY_LABEL, DELIVERY_TONE,
   GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL,
@@ -35,6 +36,8 @@ import { createUi } from './ui.js'
 import { createViews } from './views.js'
 import { createWorkbench } from './workbench.js'
 import { createConfigCard, CONFIG_ENTRY_ID, CONFIG_SLOT_KEY } from './config-form.js'
+// 0.32.0 能力包面板（P4）：独立 main panel + 侧栏入口；数据/写口见 client/src/api.js。
+import { createCapabilityPacksPanel } from './capability-packs.js'
 
 export const createClient = (req) => {
   const React = req('react')
@@ -48,6 +51,9 @@ export const createClient = (req) => {
   const { Icon, Badge, Chip, EmptyState, Banner, SkeletonList } = createUi(h)
   // 插件页配置卡片组件（P10）：只吃 props，自己订阅 ConfigForm。
   const OrchestratorConfigCard = createConfigCard({ React, h, Icon })
+  const { CapabilityPacksPanel, CapabilityPacksIcon } = createCapabilityPacksPanel({
+    React, h, Icon, Badge, Chip, EmptyState, Banner, SkeletonList,
+  })
   // chip 的「打开并定位」请求：chip 只记任务 id，真正开抽屉的是面板自己（面板挂载时 take 一次）。
   const focusRequest = createFocusRequest()
   const {
@@ -303,6 +309,16 @@ export const createClient = (req) => {
     ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
       name: 'sidebar.panellist', id: LAUNCHER_ID, order: 5, label: () => '主会话',
     }, LauncherIcon))
+
+    // 0.32.0 能力包：独立 main panel（不塞进工作台，边界一眼可见）+ 侧栏入口。
+    // 侧栏 order 15：插件 0 / 主会话 5 / 能力包 15 / 排期 10（宿主自带）之后仍不抢位。
+    ctx.slots.inject('main', () => ctx.slots.register({
+      name: 'main', key: CAPABILITY_PACKS_PANEL_ID,
+      inject: () => ({ openSession: openChildSession }),
+    }, CapabilityPacksPanel))
+    ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+      name: 'sidebar.panellist', id: CAPABILITY_PACKS_PANEL_ID, order: 15, label: () => '能力包',
+    }, CapabilityPacksIcon))
 
     // 会话头「任务」入口：hooks.mainView 是任务入口闸门；false/未判定时组件改渲染「设为协调者」。
     // 0.25.0：非主会话给「设为协调者」（adopt 当前会话；服务端只切指针，旧会话保留）。

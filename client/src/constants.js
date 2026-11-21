@@ -9,6 +9,10 @@
 export const CLIENT_ID = '@wjj865-code/dsh-orchestrator'
 export const PANEL_ID = 'orchestrator'
 export const LAUNCHER_ID = 'orchestrator-launcher'
+// 0.32.0 能力包：main 面板 key 与侧栏入口 id 同值（一个面板一个 key；侧栏 selectPanel 用它）。
+export const CAPABILITY_PACKS_PANEL_ID = 'capability-packs'
+// 能力包快照轮询：包状态变化慢（安装/删包是人工动作），15s 足够且不跟任务面板的 2s 抢带宽。
+export const PACK_POLL_MS = 15000
 export const ROUTE = 'api/orchestrator'
 export const POLL_MS = 2000
 export const POLL_BACKOFF_MS = 30000

@@ -183,7 +183,8 @@ test('apply 不再注册侧栏底部入口；注册任务面板、启动器面�
   loaded.apply(ctx)
   const names = registrations.map(row => row.spec.name)
   assert.deepEqual(names, [
-    'main', 'main', 'sidebar.panellist', 'conversation.header.leading', 'conversation.chat.turnTail',
+    'main', 'main', 'sidebar.panellist', 'main', 'sidebar.panellist',
+    'conversation.header.leading', 'conversation.chat.turnTail',
   ])
   assert.equal(names.includes('sidebar.footer.action'), false)
 })
@@ -192,11 +193,16 @@ test('启动器：side bar 条目 id/order/label 与 main 面板同 id，位于�
   const { loaded, ctx, registrations } = load()
   loaded.apply(ctx)
   const panels = registrations.filter(row => row.spec.name === 'main').map(row => row.spec)
-  assert.deepEqual(panels.map(spec => spec.key).sort(), ['orchestrator', 'orchestrator-launcher'])
+  assert.deepEqual(panels.map(spec => spec.key).sort(), ['capability-packs', 'orchestrator', 'orchestrator-launcher'])
   const entry = registrations.find(row => row.spec.name === 'sidebar.panellist').spec
   assert.equal(entry.id, 'orchestrator-launcher')
   assert.equal(entry.order, 5)
   assert.equal(entry.label(), '主会话')
+  // 0.32.0：能力包侧栏入口 id 与 main key 同值，排在「主会话」之后。
+  const packsEntry = registrations.filter(row => row.spec.name === 'sidebar.panellist')[1].spec
+  assert.equal(packsEntry.id, 'capability-packs')
+  assert.equal(packsEntry.order, 15)
+  assert.equal(packsEntry.label(), '能力包')
 })
 
 test('启动器点击路径：复用 open-main → openSession → selectPanel(null)（源码 + inject）', () => {
