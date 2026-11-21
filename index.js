@@ -40,6 +40,7 @@ import {
 import { startSnapshotLoop } from './src/snapshot.js'
 import { ensureDigest } from './src/digest.js'
 import { createPanelActions } from './src/panel-actions.js'
+import { createWorkbench } from './src/workbench.js'
 import { cleanupTaskWorktree, createWorktreeService } from './src/worktree.js'
 
 export const name = 'dsh-orchestrator'
@@ -874,6 +875,16 @@ export async function apply(ctx, rawConfig = {}) {
     teamBoard: task => teamBoard.linkView(task),
   })
 
+  // 工作台 v1（P11）：组 / 排期（L1）/ 自动化（L2，宿主 ctx.schedule 的桥）。
+  // 自动化的投递目标强制 = 唯一主会话（resolvedCoordinatorId），不接受别的会话：
+  // 只有唯一主会话能直接 task_create（见 README「主会话原生自动化」）。
+  const workbench = createWorkbench({
+    db,
+    schedule: () => service('schedule'),
+    mainSessionId: () => resolvedCoordinatorId(),
+    log: (event, fields) => logger.log(event, fields),
+  })
+
   // 客户端面板路由：鉴权由 connection 服务统一负责；snapshot 只查台账；
   // detail/artifacts/preview 只读，stop/retry/message/delete 是面板动作（owner-only）。
   const routeOptions = {
@@ -882,6 +893,7 @@ export async function apply(ctx, rawConfig = {}) {
       db,
       coordinatorStatus,
       panel,
+      workbench,
       // P2-4（D6）：官方 Team 板只读快照（服务缺失/未开启/读失败都在 handler 里降级）。
       teamBoard: () => teamBoard.read(resolveCoordinator()),
       // 0.25.0：上下文观测缓存（只读诊断；面板不常驻渲染压力）。

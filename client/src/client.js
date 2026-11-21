@@ -11,21 +11,27 @@ import {
   STATUS_LABEL, STATUS_TONE, MESSAGE_KIND_LABEL, DELIVERY_LABEL, DELIVERY_TONE,
   GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL,
   WORKTREE_STATE_LABEL, WORKTREE_SOURCE_LABEL,
+  WORKBENCH_PAGES, WORKBENCH_STORAGE_KEY, WORKBENCH_POLL_MS,
 } from './constants.js'
 import {
   countTasks, matchesFilter, matchesQuery, groupArtifacts, artifactDate, artifactProject,
   displayNameOf, textOf, listOf, timeLabel, shortPath, fileAddressOf, fileAddressProblem,
   createFocusRequest, selectTaskChips, chipStateOf, chipViewOf, chipTooltipOf, chipVisibleTitle,
   chipOpenTargetOf, isLatestTurn,
+  startOfMonth, plannedOnDay, planStampOnDay, groupTasksOf, nextPlannedTask, automationStateLabel,
+  monthGrid, dateKeyOf,
 } from './logic.js'
 import {
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce, adoptCoordinator,
+  readGroups, readGroup, readCalendar, readAutomations,
+  saveGroup, archiveGroup, setPlan, saveAutomation, toggleAutomation, deleteAutomation,
 } from './api.js'
 import { createTaskFeed } from './feed.js'
 import { createMainViewGate } from './gate.js'
 import { ensureStyles, STYLE_TEXT } from './styles.js'
 import { createUi } from './ui.js'
 import { createViews } from './views.js'
+import { createWorkbench } from './workbench.js'
 import { createConfigCard, CONFIG_ENTRY_ID, CONFIG_SLOT_KEY } from './config-form.js'
 
 export const createClient = (req) => {
@@ -89,6 +95,23 @@ export const createClient = (req) => {
     chipVisibleTitle,
     chipOpenTargetOf,
     isLatestTurn,
+    // 工作台 v1（P11）：页面组件 + 数据源 + 纯逻辑。
+    createWorkbench,
+    WORKBENCH_PAGES,
+    WORKBENCH_STORAGE_KEY,
+    WORKBENCH_POLL_MS,
+    workbenchApi: {
+      readGroups, readGroup, readCalendar, readAutomations,
+      saveGroup, archiveGroup, setPlan, saveAutomation, toggleAutomation, deleteAutomation,
+    },
+    startOfMonth,
+    plannedOnDay,
+    planStampOnDay,
+    groupTasksOf,
+    nextPlannedTask,
+    automationStateLabel,
+    monthGrid,
+    dateKeyOf,
   })
 
   function apply(ctx) {
@@ -353,6 +376,16 @@ export const createClient = (req) => {
       isLatestTurn,
       createFocusRequest,
       createTaskFeed,
+      // 工作台 v1（P11）：纯逻辑与页面组件都从这里暴露，供 test/client-workbench.test.js 直接断言。
+      createWorkbench,
+      monthGrid,
+      dateKeyOf,
+      plannedOnDay,
+      planStampOnDay,
+      groupTasksOf,
+      nextPlannedTask,
+      automationStateLabel,
+      WORKBENCH_PAGES,
       TONE_COLOR,
       STYLE_TEXT,
     },

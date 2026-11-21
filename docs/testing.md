@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | `pnpm test` | `pretest` = `pnpm run build` + `check:client-size` + `check:docs`，然后 `node --test … "test/*.test.js"` | 0 fail；pass 数与用例数一致；无未说明的 skip；进程正常退出不挂起 |
 | `pnpm run check:client` | `node --check dist/client.js`（构建产物语法） | exit 0 |
-| `pnpm run check:client-size` | `dist/client.js` 字节数 ≤ **95 KiB**（`scripts/check-client-size.mjs`） | exit 0 |
+| `pnpm run check:client-size` | `dist/client.js` 字节数 ≤ **148 KiB**（`scripts/check-client-size.mjs`） | exit 0 |
 | `pnpm run check:version` | `package.json` / README / CHANGELOG 三处版本口径 | exit 0 |
 | `pnpm run check:docs` | 文档行数预算（**1,800**）+ README 首屏结构 + 配置表/工具表/文档链接 + 内链可达 | exit 0（详见 §3.4） |
 | `npm pack --dry-run` | 包内容与 `package.json.files` | 含 `README`/`CHANGELOG`/`docs/testing.md`，不含被删文档与调试预设 |
@@ -38,7 +38,7 @@
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
 | G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 22 键；全局工具 10 个（协调者可见 7 + 子会话 3）；协调者另有预设自有的只读 `read`/`glob`/`grep` 与 `skill`（不计入 10）；deny/keep 名单与工具表一致 |
 | G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、配置表/工具表同源、内链可达） |
-| G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **95 KiB**；超了先删重复渲染/样式，不抬预算 |
+| G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **148 KiB**；148 KiB 之下按子预算表（脚本头部，合计 = 148）逐块核算，某一页超了先删重复渲染/收敛样式，再谈抬预算。**为什么从 95 调到 148**：工作台 v1 要新增总览/任务组/组工作台/排期/自动化五页与常驻只读 dock，平台只 serve 一个 `client.js`（无代码分割），全功能实测 143–146 KiB；先定 128 KiB 实测不够（差 12–16 KiB），用户拍板保留全功能 → 148 KiB（留 2–5 KiB 余量）。中间不设 148 之外的档位，超了就回头砍重复渲染 |
 
 ## 3. 断言口径（测试怎么写）
 

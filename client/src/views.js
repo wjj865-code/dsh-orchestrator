@@ -33,7 +33,20 @@ export function createViews({
   countTasks, matchesFilter, matchesQuery, groupArtifacts,
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
   selectTaskChips, chipViewOf, chipTooltipOf, chipVisibleTitle, chipOpenTargetOf, isLatestTurn,
+  // 工作台 v1（P11）：页面组件 + 数据源 + 纯逻辑。
+  createWorkbench, WORKBENCH_PAGES, WORKBENCH_STORAGE_KEY, WORKBENCH_POLL_MS,
+  workbenchApi, startOfMonth, plannedOnDay, planStampOnDay, groupTasksOf, nextPlannedTask, automationStateLabel,
+  monthGrid, dateKeyOf,
 }) {
+  // 工作台页面组件（只吃 props，自己不发请求；数据与节流在下面的 TasksPanel 里统一管）。
+  const Wb = createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banner, SkeletonList, STATUS_LABEL })
+  // 日历窗口：当前可见的 42 格（周一起始、固定 6 行）→ 服务端 calendar 端点的时间窗。
+  const monthGridRange = anchorMs => {
+    const grid = monthGrid(anchorMs)
+    const first = grid.cells[0]
+    const last = grid.cells[grid.cells.length - 1]
+    return { from: first.ms, to: last.ms + 24 * 60 * 60 * 1000 }
+  }
   // 状态徽标（卡片 / 抽屉 / 依赖行共用一处口径：文案与 tone 都不在各处抄状态表）。
   const statusBadge = status => (
     <Badge tone={toneOf(STATUS_TONE, status)} title={labelOf(STATUS_LABEL, status)}>
@@ -297,6 +310,37 @@ export function createViews({
     // 详情请求序号：慢响应不能覆盖后点开的另一个任务。
     const detailSeq = React.useRef(0)
 
+    // ---- 工作台 v1（P11）：页面状态 + 三份独立数据源（组 / 组详情 / 日历 / 自动化）----
+    // 页面与选中的组记在 sessionStorage：产物预览会 `selectPanel(null)` 卸载面板，回来要复原。
+    const storage = React.useMemo(() => {
+      try { return typeof window === 'undefined' ? null : window.sessionStorage } catch { return null }
+    }, [])
+    const storedWorkbench = React.useMemo(() => {
+      try {
+        const raw = storage === null ? null : storage.getItem(WORKBENCH_STORAGE_KEY)
+        const parsed = raw === null ? null : JSON.parse(raw)
+        return parsed !== null && typeof parsed === 'object' ? parsed : null
+      } catch {
+        return null
+      }
+    }, [storage])
+    const [page, setPage] = React.useState(() => (
+      WORKBENCH_PAGES.some(([key]) => key === storedWorkbench?.page) ? storedWorkbench.page : 'overview'
+    ))
+    const [groupId, setGroupId] = React.useState(() => (typeof storedWorkbench?.groupId === 'string' ? storedWorkbench.groupId : null))
+    const [groupsState, setGroupsState] = React.useState({ data: null, error: null })
+    const [groupState, setGroupState] = React.useState({ data: null, error: null })
+    const [calendarState, setCalendarState] = React.useState({ data: null, error: null })
+    const [automationState, setAutomationState] = React.useState({ data: null, error: null })
+    const [monthAnchor, setMonthAnchor] = React.useState(() => startOfMonth(Date.now()))
+    const [wbBusy, setWbBusy] = React.useState(false)
+
+    React.useEffect(() => {
+      try {
+        if (storage !== null) storage.setItem(WORKBENCH_STORAGE_KEY, JSON.stringify({ page, groupId }))
+      } catch { /* 隐私模式/配额满：记忆失败不影响使用 */ }
+    }, [storage, page, groupId])
+
     const load = React.useCallback(async (signal) => {
       try {
         const next = await readSnapshot(signal)
@@ -343,6 +387,157 @@ export function createViews({
       void tick()
       return () => { stopped = true; controller.abort(); clearTimeout(timer) }
     }, [load])
+
+    // ---- 工作台数据源：组 / 组详情 / 日历 / 自动化 ----
+    // 与 snapshot 的 2s 轮询分开：这些端点 15s 一次（或动作后立即），页面不可见时停表。
+    const loadGroups = React.useCallback(async signal => {
+      try {
+        const data = await workbenchApi.readGroups(signal)
+        setGroupsState({ data, error: null })
+      } catch (failure) {
+        if (signal === undefined || !signal.aborted) setGroupsState(current => ({ data: current.data, error: String((failure && failure.message) || failure) }))
+      }
+    }, [])
+    const loadGroup = React.useCallback(async (id, signal) => {
+      if (typeof id !== 'string' || id === '') return
+      try {
+        const data = await workbenchApi.readGroup(id, signal)
+        setGroupState({ data, error: null })
+      } catch (failure) {
+        if (signal === undefined || !signal.aborted) setGroupState(current => ({ data: current.data, error: String((failure && failure.message) || failure) }))
+      }
+    }, [])
+    const loadCalendar = React.useCallback(async (anchor, signal) => {
+      const grid = monthGridRange(anchor)
+      try {
+        const data = await workbenchApi.readCalendar(grid.from, grid.to, signal)
+        setCalendarState({ data, error: null })
+      } catch (failure) {
+        if (signal === undefined || !signal.aborted) setCalendarState(current => ({ data: current.data, error: String((failure && failure.message) || failure) }))
+      }
+    }, [])
+    const loadAutomations = React.useCallback(async signal => {
+      try {
+        const data = await workbenchApi.readAutomations(signal)
+        setAutomationState({ data, error: null })
+      } catch (failure) {
+        if (signal === undefined || !signal.aborted) setAutomationState(current => ({ data: current.data, error: String((failure && failure.message) || failure) }))
+      }
+    }, [])
+
+    // 轮询壳：页面不可见时只续排程、不打请求（宿主没有 visibility 事件 API，靠 document 判断）。
+    const pollWhileVisible = React.useCallback((run, intervalMs) => {
+      let stopped = false
+      let timer
+      const tick = async () => {
+        if (stopped) return
+        const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+        if (!hidden) await run()
+        if (!stopped) timer = setTimeout(tick, intervalMs)
+      }
+      void tick()
+      return () => { stopped = true; clearTimeout(timer) }
+    }, [])
+
+    React.useEffect(() => {
+      if (page !== 'groups') return undefined
+      const controller = new AbortController()
+      const stop = pollWhileVisible(() => loadGroups(controller.signal), WORKBENCH_POLL_MS)
+      return () => { stop(); controller.abort() }
+    }, [page, loadGroups, pollWhileVisible])
+
+    React.useEffect(() => {
+      if (page !== 'group') return undefined
+      const controller = new AbortController()
+      const stop = pollWhileVisible(() => loadGroup(groupId, controller.signal), WORKBENCH_POLL_MS)
+      return () => { stop(); controller.abort() }
+    }, [page, groupId, loadGroup, pollWhileVisible])
+
+    React.useEffect(() => {
+      if (page !== 'schedule') return undefined
+      const controller = new AbortController()
+      const stop = pollWhileVisible(() => loadCalendar(monthAnchor, controller.signal), WORKBENCH_POLL_MS)
+      return () => { stop(); controller.abort() }
+    }, [page, monthAnchor, loadCalendar, pollWhileVisible])
+
+    React.useEffect(() => {
+      // 总览要看「下一条自动化」，所以挂载即拉一次；自动化页再按 15s 轮询。
+      const controller = new AbortController()
+      void loadAutomations(controller.signal)
+      if (page !== 'automations') return () => controller.abort()
+      const stop = pollWhileVisible(() => loadAutomations(controller.signal), WORKBENCH_POLL_MS)
+      return () => { stop(); controller.abort() }
+    }, [page, loadAutomations, pollWhileVisible])
+    // 工作台写动作：统一 busy / 错误通道，成功后按影响面刷新对应数据源。
+    const runWorkbench = async (work, after) => {
+      setWbBusy(true)
+      setActionError(null)
+      setActionNotice(null)
+      try {
+        const result = await work()
+        if (after !== undefined) await after(result)
+        return result
+      } catch (failure) {
+        setActionError(String((failure && failure.message) || failure))
+        return null
+      } finally {
+        setWbBusy(false)
+      }
+    }
+
+    const renameGroup = (id, name) => runWorkbench(
+      () => workbenchApi.saveGroup({ id, name }),
+      async () => {
+        await loadGroups()
+        if (groupId === id) await loadGroup(id)
+        setActionNotice('组名已更新（组键不变，任务与 worktree 复用不受影响）')
+      },
+    )
+    const setGroupArchived = (id, archived) => runWorkbench(
+      () => workbenchApi.archiveGroup(id, archived),
+      async () => {
+        await loadGroups()
+        if (groupId === id) await loadGroup(id)
+        setActionNotice(archived ? '组已归档（任务与产物都没动）' : '组已取消归档')
+      },
+    )
+    const planTask = (taskId, plannedAt) => runWorkbench(
+      () => workbenchApi.setPlan(taskId, plannedAt),
+      async () => {
+        await load()
+        if (page === 'schedule') await loadCalendar(monthAnchor)
+        if (page === 'group') await loadGroup(groupId)
+        setActionNotice(plannedAt === null ? '已清除排期' : '已排期（只改计划日，不改任务状态）')
+      },
+    )
+    const createAutomation = payload => runWorkbench(
+      () => workbenchApi.saveAutomation(payload),
+      async () => {
+        await loadAutomations()
+        await loadGroups()
+        setActionNotice('自动化已保存并启用（到期由协调者按话术核对后派单）')
+      },
+    )
+    const switchAutomation = (id, active) => runWorkbench(
+      () => workbenchApi.toggleAutomation(id, active),
+      async () => {
+        await loadAutomations()
+        setActionNotice(active ? '自动化已恢复' : '自动化已暂停')
+      },
+    )
+    const removeAutomation = id => runWorkbench(
+      () => workbenchApi.deleteAutomation(id),
+      async result => {
+        await loadAutomations()
+        setActionNotice(result?.note ?? '自动化已删除')
+      },
+    )
+
+    const openGroup = id => {
+      setGroupId(id)
+      setGroupState({ data: null, error: null })
+      setPage('group')
+    }
 
     const refresh = async () => {
       setRefreshing(true)
@@ -447,6 +642,13 @@ export function createViews({
       const id = focus.take()
       const notice = typeof focus.takeNotice === 'function' ? focus.takeNotice() : null
       if (typeof notice === 'string' && notice !== '') setFocusNotice(notice)
+      // 工作台 v1：chip 只带任务 id，有 groupId 上下文时直接落到组工作台（而不是总览列表）。
+      const context = typeof focus.takeContext === 'function' ? focus.takeContext() : null
+      if (context !== null && typeof context === 'object' && typeof context.groupId === 'string' && context.groupId !== '') {
+        setGroupId(context.groupId)
+        setGroupState({ data: null, error: null })
+        setPage('group')
+      }
       if (typeof id === 'string' && id !== '') void openDetail(id)
     }, [focus])
 
@@ -1619,16 +1821,133 @@ export function createViews({
       </div>
     )
 
+    // ---- 工作台 v1（P11）：五页渲染 ----
+    // 总览沿用旧的「指标卡 + 筛选轨 + 列表 / 产物库」，把它们收进一页，行为与改版前一致。
+    const workbenchGroups = groupsState.data?.groups ?? []
+    const overviewPage = () => {
+      const todayPlanned = plannedOnDay(tasks, dateKeyOf(Date.now()))
+      const rows = automationState.data?.rows ?? []
+      const nextAutomation = rows.find(row => row.active === true && Number.isFinite(row.nextFireAt)) ?? rows[0] ?? null
+      return (
+        <div className="orch-wb" data-page="overview">
+          {metrics()}
+          <Wb.OverviewPage
+            tasks={tasks}
+            planned={todayPlanned}
+            nextAutomation={nextAutomation}
+            onOpenDetail={openDetail}
+            onPage={setPage}
+            list={(
+              <div className="orch-wb-overviewlist">
+                <div className="orch-wb-filters">{rail()}</div>
+                {boardView()}
+                {filter === 'artifacts' ? artifactView() : listView()}
+              </div>
+            )}
+          />
+        </div>
+      )
+    }
+
+    const groupsPage = () => (
+      <div className="orch-wb" data-page="groups">
+        <Wb.GroupsPage
+          state={groupsState}
+          onReload={() => { void loadGroups() }}
+          onOpen={openGroup}
+          onRename={renameGroup}
+          onArchive={setGroupArchived}
+          ungrouped={groupsState.data?.ungrouped ?? null}
+        />
+      </div>
+    )
+
+    const dock = () => (
+      <Wb.Dock
+        detail={detail}
+        group={groupState.data?.group ?? null}
+        notices={[]}
+        onOpenSession={open}
+        onJumpMain={handleOpenMain}
+      />
+    )
+
+    const groupPageView = () => (
+      <div className="orch-wb" data-page="group">
+        <Wb.GroupPage
+          state={groupState}
+          groupId={groupId}
+          onBack={() => setPage('groups')}
+          onReload={() => { void loadGroup(groupId) }}
+          onOpenDetail={openDetail}
+          onPlan={planTask}
+          onPreview={(taskId, path, inline) => { void previewInSidebar(taskId, path, inline === true) }}
+          onCopy={path => { void copyPath(path) }}
+          dock={dock()}
+          onOpenMain={handleOpenMain}
+          onRename={renameGroup}
+          onArchive={setGroupArchived}
+        />
+      </div>
+    )
+
+    const schedulePage = () => (
+      <div className="orch-wb" data-page="schedule">
+        <Wb.SchedulePage
+          state={calendarState}
+          tasks={tasks}
+          anchor={monthAnchor}
+          onAnchor={setMonthAnchor}
+          onPlan={planTask}
+          onClearPlan={taskId => planTask(taskId, null)}
+          onOpenDetail={openDetail}
+          onReload={() => { void loadCalendar(monthAnchor) }}
+        />
+      </div>
+    )
+
+    const automationsPage = () => (
+      <div className="orch-wb" data-page="automations">
+        <Wb.AutomationsPage
+          state={automationState}
+          groups={workbenchGroups}
+          busy={wbBusy}
+          onReload={() => { void loadAutomations() }}
+          onSave={createAutomation}
+          onToggle={switchAutomation}
+          onDelete={removeAutomation}
+        />
+      </div>
+    )
+
+    const pageNav = () => (
+      <Wb.PageNav
+        page={page === 'group' ? 'groups' : page}
+        onPage={next => {
+          if (next === 'groups') {
+            setGroupId(null)
+            setGroupState({ data: null, error: null })
+          }
+          setPage(next)
+        }}
+        inboxCount={inboxCount}
+        groupCount={workbenchGroups.length}
+        automationCount={automationState.data?.rows?.length ?? 0}
+      />
+    )
+
     return (
       <div className="orch-shell">
         {topbar()}
-        {metrics()}
-        <div className="orch-body">
-          {rail()}
-          <main className="orch-main">
+        <div className="orch-body orch-body--workbench">
+          <main className="orch-main orch-wb-shell">
             {alerts()}
-            {boardView()}
-            {filter === 'artifacts' ? artifactView() : listView()}
+            {pageNav()}
+            {page === 'overview' ? overviewPage() : null}
+            {page === 'groups' ? groupsPage() : null}
+            {page === 'group' ? groupPageView() : null}
+            {page === 'schedule' ? schedulePage() : null}
+            {page === 'automations' ? automationsPage() : null}
           </main>
         </div>
         {/* 第三段：抽屉常驻挂载，靠 data-open 触发 transform 过渡（关闭时滑出而不是瞬移）。 */}

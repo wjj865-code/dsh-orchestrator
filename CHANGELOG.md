@@ -1,5 +1,38 @@
 # Changelog
 
+## 未发布 —— 工作台 v1（P11）：任务台改版为「组 / 排期 / 自动化 / 右侧 dock」工作台
+
+**新增**
+
+- **工作台五页**（`client/src/workbench.js`，挂在原 `main` 槽位面板 `orchestrator` 内部导航，不新增第二个 main key）：总览（指标 + 收件箱 + 今日排期 + 最近产物）、任务组（组卡网格 + 未分组虚拟卡）、组工作台（状态列板 + 右侧 dock + 详情抽屉 + 产物格）、排期（月历 + 下一条 + 待排 tray）、运行与自动化（清单 + 新建 + 暂停/恢复/删除 + 降级）。交互骨架参考消费级工作台插件（单快照渲染、白名单写入口、常驻 dock、日历拖拽、三态齐备），不带 i18n / 示例数据。
+- **组成为一等维度**：新增 `groups_v1` 表（表名带 `_v1` 因为 `GROUPS` 是 SQLite 窗口帧关键字）。`groups_v1.id` **就是** `tasks.group_id` 且不可变——worktree 检出复用（`src/worktree-request.js` 的 `findReusableCheckout`）与 `task_list({ group })` 都按这个字符串判定，改键会静默漂移。改名只改 `name`；要改键只能走显式批量迁移（本版不提供入口）。启动时 `backfillGroups()` 幂等补元数据行（`INSERT OR IGNORE` + `settings.groups_backfilled_at`；**没有任何组时不写 settings**，保住「仅仅打开台账不写 settings」这条既有不变量）。没有元数据行的组按「虚拟组」读（名字回落 id，第一次改名时补行）。
+- **排期两层，互不推导**：L1 `tasks.planned_at`（人工计划日，纯展示，工作台 `plan-set` 写）；L2 `automations` 表（镜像 + 授权审计）+ 宿主 `ctx.schedule`（真身，到点投递 `target: { kind:'session', sessionId: 唯一主会话 }`）。日历上排一天**不会**自动派任务，创建自动化也**不会**改 `planned_at`——否则会变成「拖一下 = 授权定时派单」的隐性授权。
+- **自动化桥接**（`src/workbench.js`）：创建/暂停/恢复/删除走宿主 `schedule.create / view / edit`；`timing` 只接受白名单形状（`daily` / `weekly` / `cron` / `rrule`），与宿主 `ScheduleTiming` 逐字对齐（形状已用 asar 探针核实，**不与工具层的 rrule 混用**）；下次触发取宿主 `record.scheduledAt`，读不到就显示「未知」而不是猜。宿主没有 schedule 服务时整页只读降级（`available:false`，写动作回 `AUTOMATION_UNAVAILABLE` 502）。
+- **新端点**（`POST /api/orchestrator`，owner-only + `clientRequestId` 幂等 + 危险动作 `confirm:true` + 审计日志）：只读 `groups` / `group` / `calendar` / `automations`；写 `group-save` / `group-archive` / `plan-set` / `automation-save` / `automation-toggle` / `automation-delete`。**刻意没有** `task-create` / `plan-approve` / `close-all` / `patch-task`（反例清单，`test/host-route.test.js` 断言它们仍是 `UNKNOWN_ENDPOINT`）。
+- **门控纯函数**（`src/panel-gates.js`）：`planSetGate`（终态不给排期）、`groupSaveGate`（未归档 + 名字 1–40 字）、`groupArchiveGate`（要二次确认）、`automationGate`（先报「宿主没这个能力」再报「没这条记录」）；`snapshot`/`group` 下发 `canPlan` / `canRename` / `canArchive` 布尔值，按钮可见性与动作可执行性同源。
+- **右侧 dock 只读**：显示选中对象摘要、最近消息、阻塞项（`blocked` 的 question/options 只读）与「到主会话说」跳转；**没有输入框、没有发送按钮**（`test/client-workbench.test.js` 断言）。不新增发消息通道：面板「追加消息」仍只走协调者 `task_message`，计划批准仍只能由用户拍板。
+
+**行为变更（用户可感知，3 条）**
+
+1. 任务面板变成五页工作台：原来的「筛选轨 + 任务卡列表」收进总览页（筛选与搜索不变），新增组/排期/自动化三页；2. 可以在面板里给任务排计划日（只写 `planned_at`，不改状态、不派发）；3. 可以在面板里创建/暂停/删除「到点让协调者派单」的自动化（二次确认 + 授权勾选 + 审计），目标固定为唯一主会话。
+
+**预算变更（用户拍板 D1：95 → 128 → 148 KiB）**
+
+- 客户端体积闸门 **95 KiB → 148 KiB**（`scripts/check-client-size.mjs`），并在脚本头部写死子预算表（改版前已有 ≤93 / 工作台壳 ≤6 / 总览 ≤5 / 任务组 ≤7 / 组工作台 ≤9 / dock ≤5 / 排期 ≤9 / 自动化 ≤7 / 工作台样式 ≤7，合计 = 148）。
+- **决策过程**：改版前产物 95,402 B（余 1,878 B），平台只 serve 一个 `client.js`（无代码分割）。先按估算定 **128 KiB**；实施完成后实测（同版 esbuild 计量 JS 116,910 B + 内联 CSS 38,644 B，按 vite 与 esbuild 旧产物差 −8,956 B 校正）真实产物 **143–146 KiB**，128 KiB 差 12–16 KiB。用户明确要求「保留全功能、不削减」，因此拍板 **148 KiB**（余约 2–5 KiB）。**没有第三个档位**：超 148 KiB 就回头删重复渲染/收敛样式，不自行加预算。
+- `docs/testing.md` G10 同步改成「148 KiB + 子预算表逐块核算」并写明这次调整的原因；README/docs/脚本里 95 / 128 的旧数字一并改成 148（**历史 CHANGELOG 条目保持当时口径**，不改写）。
+
+**不变**
+
+- 派发语义（`task_create` 仍只由协调者调用，工作台的「新任务」只生成派单草稿）、计划批准四步与「计划中任务收到追加消息即批准」、交付两段式（`delivered` 仍需确认或超时才 `done`）、权限模型（协调者仍钉 `read-only`、子会话沙箱不变）、同写域默认拒绝、worktree 与 planFirst 互斥、2s 轮询无 SSE、产物预览仍走宿主右侧栏、面板动作门控与错误码同源。全局工具仍 **10 个**，配置面仍 **22 键**。
+
+**验证**
+
+- 新增 `test/workbench.test.js`（13 条：timing 归一与文案、组卡统计、日历分桶、backfill 幂等、组改名/归档、排期写清与终态拒绝、自动化全链路与降级、门控矩阵）；`test/host-route.test.js` 增 6 条（只读端点、未装配 500、反例端点 400、`plan-set` + 幂等、`group-save`/`archive`、`automation-*` 全链路与 502 降级）；`test/client-workbench.test.js` 新增 9 条（月历格 / 拖拽换算 / 看板列 / 待排与下一条 / dock 无输入框 / 客户端无派发与批准端点 / 面板不新增 main key）；`test/ledger.test.js` 表集合断言同步到 7 张表。
+- **体积实测**（`access:'full'` 收尾任务真的重建了产物）：`pnpm run build`（vite 7.3.8 + esbuild minify，sourcemap 保留）→ `dist/client.js` **142,811 B（139.46 KiB）**、`dist/client.js.map` 367,997 B；距 148 KiB（151,552 B）预算余 **8,741 B（8.5 KiB）**。`pnpm run check:client-size` 输出「客户端体积在预算内：139.5 KB (142811 B) / 预算 148.0 KB (151552 B)」。先前用同版 esbuild 计量给出的 139–143 KiB 估算命中。
+- **全门禁**（同一次重建后）：`pnpm test` = **1,140 项 / 1,135 pass / 0 fail / 5 skip**（5 条 skip 全是「当前环境无法创建文件符号链接」的环境跳过，与本次改动无关）；`check:docs`（1,619 行 / 预算 1,800）、`check:version`（0.26.0 三处一致）、`check:client-size` 均 exit 0。
+- **重建暴露并修掉的一处失败**：重建 `dist/client.js` 后 `test/client.test.js` 的面板首帧用例报 `t.useMemo is not a function`（9 条）——根因是那份「最小 React 垫片」没实现 `useMemo`（工作台 v1 在 `views.js` 里用它读 `sessionStorage`），与 `test/client-config-form.test.js` 的垫片口径不一致。垫片补上 `useMemo` 与 `useState` 惰性初始值求值（React 语义，槽位被用例预置时仍以预置值为准）后 49 条全绿，**没有改动任何断言、没有删用例**。
+
 ## 0.26.0（2026-11-21）—— 交互三闸门：开工前确认、执行期少打扰、改动先评估
 
 **新增**

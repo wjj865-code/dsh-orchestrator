@@ -43,7 +43,7 @@ const loadArtifact = () => {
 test('构建脚本：vite 是 pin 住的 devDependency，build/pretest/check:client 都指向产物', () => {
   assert.match(pkg.devDependencies?.vite ?? '', /^\d+\.\d+\.\d+$/, 'vite 必须 pin 精确版本（不用 ^ / ~），避免产物漂移')
   assert.equal(pkg.scripts.build, 'vite build --config vite.client.config.mjs')
-  // pretest 先构建（否则契约测试读的是旧产物），再过体积闸门（P2-5：dist ≤ 95 KiB），最后跑文档预算。
+  // pretest 先构建（否则契约测试读的是旧产物），再过体积闸门（工作台 v1：dist ≤ 148 KiB），最后跑文档预算。
   assert.equal(pkg.scripts.pretest, 'pnpm run build && node scripts/check-client-size.mjs && pnpm run check:docs',
     'pnpm test 前必须构建 + 体积闸门 + 检查文档')
   assert.equal(pkg.scripts['check:docs'], 'node scripts/check-docs.mjs')
@@ -53,9 +53,9 @@ test('构建脚本：vite 是 pin 住的 devDependency，build/pretest/check:cli
   assert.match(pkg.scripts.prepublishOnly, /check:client-size/)
 })
 
-test('P2-5 体积预算：dist/client.js ≤ 95 KiB，闸门脚本可单独执行且给可读结论', () => {
-  // 机器可判定：95 KiB 预算写死在脚本里，产物超了 CI 直接红（不是「看着差不多」）。
-  assert.equal(CLIENT_SIZE_LIMIT, 95 * 1024)
+test('P2-5 体积预算：dist/client.js ≤ 148 KiB（工作台 v1 由 95 KiB 抬上来，128 KiB 实测不够），闸门脚本可单独执行且给可读结论', () => {
+  // 机器可判定：148 KiB 预算写死在脚本里，产物超了 CI 直接红（不是「看着差不多」）。
+  assert.equal(CLIENT_SIZE_LIMIT, 148 * 1024)
   const size = statSync(distPath).size
   assert.ok(size <= CLIENT_SIZE_LIMIT, `dist/client.js ${formatSize(size)} 超出预算 ${formatSize(CLIENT_SIZE_LIMIT)}`)
   // 纯函数口径：预算内空数组、超预算给两条（超了多少 + 怎么回去）、产物缺失也算问题。
@@ -138,9 +138,9 @@ test('产物工厂形状：factory 返回 { inject, apply }，inject 覆盖三�
 
 test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dist/client.js', () => {
   // 空壳产物 341 B；P2-5 开 minify 前 129.9 KB，之后 77.6 KB。这条阈值只是「别把 UI 弄丢」的粗护栏，
-  // 精确预算由上面的 check-client-size（95 KiB）守；minify 会压掉空白但不改字符串字面量。
+  // 精确预算由上面的 check-client-size（工作台 v1 起 148 KiB）守；minify 会压掉空白但不改字符串字面量。
   assert.ok(statSync(distPath).size > 35_000, `产物只有 ${statSync(distPath).size} B，像是空壳`)
-  for (const marker of ['orch-shell', 'orch-drawer', 'orch-skeleton', 'createMainViewGate', 'open-main']) {
+  for (const marker of ['orch-shell', 'orch-drawer', 'orch-skeleton', 'createMainViewGate', 'open-main', 'orch-wb-nav']) {
     assert.ok(artifact.includes(marker), `产物缺少 UI 标记 ${marker}`)
   }
   // CSS 走 ?inline 内联：构建后整张表以字符串形式出现在产物里（minify 会把 `.orch-shell {` 压成 `.orch-shell{`）。
@@ -149,10 +149,11 @@ test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dis
   // __test 出口保留（T7.2 验收点：单测经它验纯逻辑与闸门）。
   const { loaded } = loadArtifact()
   assert.deepEqual(Object.keys(loaded.__test).sort(), [
-    'STYLE_TEXT', 'TONE_COLOR', 'artifactDate', 'artifactProject', 'chipOpenTargetOf', 'chipStateOf',
-    'chipTooltipOf', 'chipViewOf', 'chipVisibleTitle', 'countTasks', 'createFocusRequest',
-    'createMainViewGate', 'createTaskFeed', 'fileAddressOf', 'fileAddressProblem', 'groupArtifacts',
-    'isLatestTurn', 'matchesFilter', 'matchesQuery', 'selectTaskChips',
+    'STYLE_TEXT', 'TONE_COLOR', 'WORKBENCH_PAGES', 'artifactDate', 'artifactProject', 'automationStateLabel',
+    'chipOpenTargetOf', 'chipStateOf', 'chipTooltipOf', 'chipViewOf', 'chipVisibleTitle', 'countTasks',
+    'createFocusRequest', 'createMainViewGate', 'createTaskFeed', 'createWorkbench', 'dateKeyOf',
+    'fileAddressOf', 'fileAddressProblem', 'groupArtifacts', 'groupTasksOf', 'isLatestTurn', 'matchesFilter',
+    'matchesQuery', 'monthGrid', 'nextPlannedTask', 'planStampOnDay', 'plannedOnDay', 'selectTaskChips',
   ])
 })
 
@@ -162,7 +163,7 @@ test('源码守约束 1：client/src/** 不出现打包 react 的写法（React 
   assert.ok(files.length > 0, 'client/src/** 里应有 ESM 源码')
   // T7.2 的模块边界：入口 / 装配 / 视图 / 展示件 / 样式 / 纯逻辑 / API / 闸门 / 常量。
   for (const expected of [
-    'index.js', 'client.js', 'views.js', 'ui.js', 'styles.js', 'styles.css',
+    'index.js', 'client.js', 'views.js', 'workbench.js', 'ui.js', 'styles.js', 'styles.css',
     'logic.js', 'api.js', 'gate.js', 'constants.js',
   ]) {
     assert.ok(existsSync(new URL(`../client/src/${expected}`, import.meta.url)), `缺少源码文件 client/src/${expected}`)

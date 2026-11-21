@@ -59,13 +59,16 @@ const load = (options = {}) => {
   // React 垫片：只够「渲染一次」用（面板首帧冒烟）。hook 顺序按调用序号记录，
   // 不重渲染也就没有依赖数组/清理逻辑——真实行为归浏览器，这里只保证首帧不崩、结构正确。
   // effects 收集 useEffect 回调：chip 的「挂载才订阅」这类时序用例需要手动跑一次 effect。
+  // useMemo 只求值一次并占一个槽位（与 client-config-form.test.js 的垫片同口径）：工作台 v1 在
+  // views.js 里用 useMemo 读 sessionStorage，缺了这个 hook 首帧会直接 TypeError。
   const hooks = { cursor: 0, slots: [], effects: [] }
   const resetHooks = () => { hooks.cursor = 0; hooks.slots.length = 0; hooks.effects.length = 0 }
   const requireFn = () => ({
     createElement: (type, props, ...children) => ({ type, props, children }),
     useState: initial => {
       const index = hooks.cursor++
-      if (!(index in hooks.slots)) hooks.slots[index] = initial
+      // 惰性初始值（useState(() => …)）与 React 一致地求值一次；槽位已被用例预置时以预置值为准。
+      if (!(index in hooks.slots)) hooks.slots[index] = typeof initial === 'function' ? initial() : initial
       return [hooks.slots[index], value => {
         // 写回槽位：需要「事件处理里改状态 → 下一次渲染看得见」的用例（如 chip 降级提示）
         // 会自己把 cursor 归零再渲染一次；其余用例只渲染首帧，写回不影响断言。
@@ -77,6 +80,7 @@ const load = (options = {}) => {
       if (!(index in hooks.slots)) hooks.slots[index] = { current: initial }
       return hooks.slots[index]
     },
+    useMemo: compute => { hooks.cursor += 1; return compute() },
     useCallback: (fn) => { hooks.cursor += 1; return fn },
     useEffect: effect => { hooks.cursor += 1; hooks.effects.push(effect) },
   })

@@ -6,7 +6,7 @@ import { taskCard } from './card.js'
 import { panelFailure, panelHttpStatus } from './action-errors.js'
 import { createRequestDedupe } from './request-dedupe.js'
 import { isMainSession } from './session-role.js'
-import { ACTIVE_STATUSES, canClose, canDelete, canFollowup } from './panel-gates.js'
+import { ACTIVE_STATUSES, canClose, canDelete, canFollowup, canSetPlan } from './panel-gates.js'
 import { statusesWith } from './status-facts.js'
 // P2-3 交接契约 v1：snapshot 只下发精简版（谁/何时确认 + 验收是否通过），完整证据在 detail 端点。
 import { handoffSnapshot } from './handoff.js'
@@ -15,6 +15,13 @@ import { TEAM_BOARD_UNAVAILABLE } from './team-board.js'
 
 const ENDPOINTS = new Set(['snapshot', 'session-role'])
 const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message', 'close', 'delete'])
+// 工作台 v1（P11）：只读投影与窄写口。**注意这里刻意没有** task-create / plan-approve / message /
+// close-all / patch-task（设计稿 §5.3 的反例清单）：派发、计划批准、交付确认都必须走既有闸门。
+const WORKBENCH_READS = new Set(['groups', 'group', 'calendar', 'automations'])
+const WORKBENCH_WRITES = new Set([
+  'group-save', 'group-archive', 'plan-set',
+  'automation-save', 'automation-toggle', 'automation-delete',
+])
 const ACTIVE = new Set(ACTIVE_STATUSES)
 // 「待拍板」口径：等人（waiting_user/waiting_auth）+ 已交付待确认（delivered）——`waiting` 能力
 // 不含 delivered（它不 waiting 于某个问题，而是等确认），所以这里用两份能力拼，不再写内联三态判断。
@@ -25,9 +32,11 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession, contextSnapshot, panel, teamBoard, staleMinutes = 30, limit = 200, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession, contextSnapshot, panel, workbench, teamBoard, staleMinutes = 30, limit = 200, now = Date.now }) {
   // message 请求级幂等：按 (taskId, clientRequestId) 去重，只在进程内（重启失效，见 request-dedupe.js）。
   const dedupe = createRequestDedupe({ max: 200 })
+  // 工作台写动作的请求级幂等（同一个 endpoint + 目标 id + clientRequestId 只执行一次）。
+  const workbenchDedupe = createRequestDedupe({ max: 200 })
   // 官方 Team 板：读失败也只降级（快照是面板的轮询入口，不能因为一块只读分区 500）。
   const boardSnapshot = () => {
     if (typeof teamBoard !== 'function') {
@@ -111,6 +120,10 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
           worktreeSource: task.worktree_source ?? 'default',
           retryOf: task.retry_of ?? null,
           groupId: task.group_id ?? null,
+          // 工作台 v1（P11）L1：人工排期日（可空）。与自动化（L2）互不推导。
+          plannedAt: task.planned_at ?? null,
+          // 排期按钮可见性与 plan-set 动作同源（planSetGate）：终态任务不可排期。
+          canPlan: canSetPlan(task),
           dependsOn: Array.isArray(task.depends_on) ? task.depends_on : [],
           writeScopes: Array.isArray(task.write_scopes) ? task.write_scopes : [],
           priority: task.priority ?? 0,
@@ -203,6 +216,51 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
       const status = coordinatorStatus?.() ?? {}
       const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
       return json({ ok: true, isMain: isMainSession(sessionId, status.id) }, 200)
+    }
+    if (WORKBENCH_READS.has(endpoint)) {
+      // 只读投影：不写台账、不 spawn；组/排期/自动化各自独立失败（面板可分区降级）。
+      if (workbench === undefined) return json(panelFailure('PANEL_ACTIONS_UNAVAILABLE'), 500)
+      try {
+        const result = endpoint === 'groups'
+          ? workbench.groups()
+          : endpoint === 'group'
+            ? workbench.group(body?.groupId)
+            : endpoint === 'calendar'
+              ? workbench.calendar({ from: body?.from, to: body?.to })
+              : await workbench.automations()
+        return json(result, panelHttpStatus(result))
+      } catch (error) {
+        return json(panelFailure('ACTION_FAILED', { reason: error?.message ?? error }), 500)
+      }
+    }
+    if (WORKBENCH_WRITES.has(endpoint)) {
+      // 窄写口：owner-only（connection 统一鉴权）+ clientRequestId 幂等 + 危险动作 confirm（见 src/workbench.js）。
+      if (workbench === undefined) return json(panelFailure('PANEL_ACTIONS_UNAVAILABLE'), 500)
+      const targetKey = String(body?.id ?? body?.taskId ?? body?.groupId ?? '')
+      const requestId = typeof body?.clientRequestId === 'string'
+        ? body.clientRequestId.trim().slice(0, 128)
+        : ''
+      const execute = async () => {
+        try {
+          if (endpoint === 'group-save') return await workbench.saveGroup(body)
+          if (endpoint === 'group-archive') return await workbench.archiveGroup(body)
+          if (endpoint === 'plan-set') return await workbench.setPlan(body)
+          if (endpoint === 'automation-save') return await workbench.saveAutomation(body)
+          if (endpoint === 'automation-toggle') return await workbench.toggleAutomation(body)
+          return await workbench.deleteAutomation(body)
+        } catch (error) {
+          return panelFailure('ACTION_FAILED', { reason: error?.message ?? error })
+        }
+      }
+      if (requestId === '') {
+        const result = await execute()
+        return json(result, panelHttpStatus(result))
+      }
+      const outcome = await workbenchDedupe.run(`${endpoint}|${targetKey}`, requestId, execute)
+      const result = outcome.duplicate && outcome.result?.ok === true
+        ? { ...outcome.result, already: true, duplicate: true }
+        : outcome.result
+      return json(result, panelHttpStatus(result))
     }
     if (ACTIONS.has(endpoint)) {
       if (panel === undefined) return json(panelFailure('PANEL_ACTIONS_UNAVAILABLE'), 500)

@@ -37,6 +37,9 @@ export function createUi(h) {
     dashed: ['M12 3a9 9 0 1 1 0 18a9 9 0 1 1 0-18'],
     dash: ['M6 12h12'],
     dot: ['M12 12h.01'],
+    // 工作台 v1：排期页/自动化页的图标语言（与宿主一致的细线风格）。
+    calendar: ['M4 6h16v14H4z', 'M8 3v4', 'M16 3v4', 'M4 10h16'],
+    bolt: ['M13 3L4 14h6l-1 7 9-11h-6z'],
   }
   const Icon = ({ name, size = 14, className }) => (
     <svg

@@ -123,3 +123,48 @@ export const adoptCoordinator = async sessionId => {
   if (body && body.ok === true) return body
   throw actionFailure(body, response.status)
 }
+
+// ---------------------------------------------------------------------------
+// 工作台 v1（P11）：组 / 排期（L1）/ 自动化（L2）
+// 只读端点：groups / group / calendar / automations；写端点：group-save / group-archive /
+// plan-set / automation-save / automation-toggle / automation-delete。
+// 写端点统一带 clientRequestId（服务端按 endpoint+目标+id 做进程内幂等）与 confirm（危险动作）。
+// ---------------------------------------------------------------------------
+const postEndpoint = async (payload, signal) => {
+  const response = await fetch(ROUTE, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+    ...(signal === undefined ? {} : { signal }),
+  })
+  const body = await response.json()
+  if (body && body.ok === true) return body
+  throw actionFailure(body, response.status)
+}
+
+export const readGroups = (signal) => postEndpoint({ endpoint: 'groups' }, signal)
+
+export const readGroup = (groupId, signal) => postEndpoint({ endpoint: 'group', groupId }, signal)
+
+export const readCalendar = (from, to, signal) => postEndpoint({ endpoint: 'calendar', from, to }, signal)
+
+export const readAutomations = (signal) => postEndpoint({ endpoint: 'automations' }, signal)
+
+/** 工作台写动作：统一补 clientRequestId，失败按 code 抛（与面板动作同一套错误格式）。 */
+const workbenchAction = (endpoint, payload) => postEndpoint({
+  endpoint,
+  ...payload,
+  clientRequestId: payload?.clientRequestId ?? newRequestId(),
+})
+
+export const saveGroup = payload => workbenchAction('group-save', payload)
+
+export const archiveGroup = (id, archived) => workbenchAction('group-archive', { id, archived, confirm: true })
+
+export const setPlan = (taskId, plannedAt) => workbenchAction('plan-set', { taskId, plannedAt })
+
+export const saveAutomation = payload => workbenchAction('automation-save', { ...payload, confirm: true })
+
+export const toggleAutomation = (id, active) => workbenchAction('automation-toggle', { id, active, confirm: true })
+
+export const deleteAutomation = id => workbenchAction('automation-delete', { id, confirm: true })

@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { openLedger, createTask, transition, markQueued, setTaskArtifacts } from '../src/ledger.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from '../src/host-route.js'
+import { createWorkbench } from '../src/workbench.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const request = body => new Request('http://localhost/api/orchestrator', {
@@ -607,5 +608,165 @@ test('delete 端点透传 panel.delete；活跃任务的门控错误按 409 返�
   assert.equal(blocked.status, 409)
   assert.equal((await blocked.json()).code, 'DELETE_TASK_ACTIVE')
   assert.deepEqual(calls, [['delete', 't-done'], ['delete', 't-active']])
+  db.close()
+})
+
+// ---------------------------------------------------------------------------
+// 工作台 v1（P11）：只读投影 / 窄写口 / 幂等 / 反例端点在路由层不存在
+// ---------------------------------------------------------------------------
+
+const workbenchSetup = async ({ schedule } = {}) => {
+  const db = await openLedger(tempDir())
+  const workbench = createWorkbench({
+    db,
+    schedule: () => schedule,
+    mainSessionId: () => 's-main',
+    now: () => Date.parse('2026-11-21T10:00:00+08:00'),
+  })
+  const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-main', live: true }), workbench })
+  return { db, handler, workbench }
+}
+
+test('工作台只读端点：groups / group / calendar / automations 都可读，且不需要 panel', async () => {
+  const { db, handler } = await workbenchSetup()
+  createTask(db, { brief: sampleBrief({ title: '甲' }), coordinatorSession: 's-main', groupId: 'gzh', status: 'pending' })
+  const groups = await handler(request({ endpoint: 'groups' }))
+  assert.equal(groups.status, 200)
+  const groupBody = await groups.json()
+  assert.equal(groupBody.ok, true)
+  assert.equal(groupBody.groups[0].id, 'gzh')
+  const detail = await (await handler(request({ endpoint: 'group', groupId: 'gzh' }))).json()
+  assert.equal(detail.ok, true)
+  assert.equal(detail.tasks.length, 1)
+  const missing = await handler(request({ endpoint: 'group', groupId: 'nope' }))
+  assert.equal(missing.status, 404)
+  assert.equal((await missing.json()).code, 'GROUP_NOT_FOUND')
+  const calendar = await (await handler(request({ endpoint: 'calendar', from: '2026-11-01T00:00:00.000Z', to: '2026-11-30T00:00:00.000Z' }))).json()
+  assert.equal(calendar.ok, true)
+  const automations = await (await handler(request({ endpoint: 'automations' }))).json()
+  assert.equal(automations.ok, true)
+  assert.equal(automations.available, false, '没有 schedule 服务时如实降级')
+  db.close()
+})
+
+test('工作台端点未装配时返回 500，未知端点仍 400；反例端点不存在', async () => {
+  const db = await openLedger(tempDir())
+  const handler = createHostRoute({ db })
+  const unavailable = await handler(request({ endpoint: 'groups' }))
+  assert.equal(unavailable.status, 500)
+  assert.equal((await unavailable.json()).code, 'PANEL_ACTIONS_UNAVAILABLE')
+  // 设计稿 §5.3 的反例清单：这些端点一个都不许存在（派发/批准/批量确认/通用 patch）。
+  for (const endpoint of ['task-create', 'plan-approve', 'close-all', 'patch-task', 'message-all']) {
+    const response = await handler(request({ endpoint }))
+    assert.equal(response.status, 400, endpoint)
+    assert.equal((await response.json()).code, 'UNKNOWN_ENDPOINT', endpoint)
+  }
+  db.close()
+})
+
+test('plan-set：写 planned_at → snapshot 下发 plannedAt/canPlan；终态 409；clientRequestId 幂等', async () => {
+  const { db, handler } = await workbenchSetup()
+  const task = createTask(db, { brief: sampleBrief({ title: '排期' }), coordinatorSession: 's-main', groupId: 'gzh' })
+  transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  const when = '2026-11-22T20:00:00+08:00'
+  const first = await handler(request({ endpoint: 'plan-set', taskId: task.id, plannedAt: when, clientRequestId: 'r-1' }))
+  assert.equal(first.status, 200)
+  assert.equal((await first.json()).plannedAt, Date.parse(when))
+  const snapshot = await (await handler(request({ endpoint: 'snapshot' }))).json()
+  const row = snapshot.tasks.find(item => item.id === task.id)
+  assert.equal(row.plannedAt, Date.parse(when))
+  assert.equal(row.canPlan, true)
+  // 同一个 clientRequestId 重发：命中缓存，回 already + duplicate，只写一次。
+  const repeat = await handler(request({ endpoint: 'plan-set', taskId: task.id, plannedAt: when, clientRequestId: 'r-1' }))
+  const repeatBody = await repeat.json()
+  assert.equal(repeat.status, 200)
+  assert.equal(repeatBody.already, true)
+  assert.equal(repeatBody.duplicate, true)
+  // 终态任务不能排期。
+  const done = createTask(db, { brief: sampleBrief({ title: '完了' }), coordinatorSession: 's-main' })
+  transition(db, done.id, 'running', { sessionId: 'c-2', target: 'c-2' })
+  transition(db, done.id, 'delivered')
+  transition(db, done.id, 'done')
+  const ended = await handler(request({ endpoint: 'plan-set', taskId: done.id, plannedAt: when }))
+  assert.equal(ended.status, 409)
+  assert.equal((await ended.json()).code, 'PLAN_TASK_ENDED')
+  const badTime = await handler(request({ endpoint: 'plan-set', taskId: task.id, plannedAt: 'nope' }))
+  assert.equal(badTime.status, 400)
+  assert.equal((await badTime.json()).code, 'PLAN_TIME_INVALID')
+  db.close()
+})
+
+test('group-save / group-archive：危险动作要 confirm，归档后不能改名，组键不变', async () => {
+  const { db, handler } = await workbenchSetup()
+  const task = createTask(db, { brief: sampleBrief({ title: '甲' }), coordinatorSession: 's-main', groupId: 'gzh' })
+  const saved = await handler(request({ endpoint: 'group-save', id: 'gzh', name: '公众号文章组' }))
+  assert.equal(saved.status, 200)
+  assert.equal((await saved.json()).group.name, '公众号文章组')
+  assert.equal(db.prepare('SELECT group_id FROM tasks WHERE id = ?').get(task.id).group_id, 'gzh')
+  const noConfirm = await handler(request({ endpoint: 'group-archive', id: 'gzh', archived: true }))
+  assert.equal(noConfirm.status, 409)
+  assert.equal((await noConfirm.json()).code, 'GROUP_NOT_CONFIRMED')
+  const archived = await handler(request({ endpoint: 'group-archive', id: 'gzh', archived: true, confirm: true, clientRequestId: 'g-1' }))
+  assert.equal((await archived.json()).group.archived, true)
+  const rename = await handler(request({ endpoint: 'group-save', id: 'gzh', name: '改不了' }))
+  assert.equal(rename.status, 409)
+  assert.equal((await rename.json()).code, 'GROUP_ARCHIVED')
+  db.close()
+})
+
+test('automation-save / toggle / delete：confirm 门控、目标强制主会话、全链路成功', async () => {
+  const calls = []
+  const rows = new Map()
+  let seq = 0
+  const schedule = {
+    async create(request) {
+      calls.push(['create', request])
+      const id = `schedule-${++seq}`
+      const row = { id, ...request, status: 'active', scheduledAt: '2026-11-22T01:00:00.000Z', updatedAt: `u${seq}` }
+      rows.set(id, row)
+      return row
+    },
+    async view({ id }) { return rows.get(id) ?? { id, code: 'schedule_not_found' } },
+    async edit(req) {
+      calls.push(['edit', req])
+      const row = rows.get(req.id)
+      if (row === undefined) return { id: req.id, code: 'schedule_not_found' }
+      if (req.action === 'delete') { rows.delete(req.id); return { id: req.id, deleted: true } }
+      const next = { ...row, ...req.patch, updatedAt: `${row.updatedAt}+` }
+      rows.set(req.id, next)
+      return next
+    },
+  }
+  const { db, handler } = await workbenchSetup({ schedule })
+  createTask(db, { brief: sampleBrief({ title: '甲' }), coordinatorSession: 's-main', groupId: 'gzh' })
+  const missingConfirm = await handler(request({ endpoint: 'automation-save', kind: 'group', refId: 'gzh', timing: { kind: 'daily', time: '09:00' } }))
+  assert.equal(missingConfirm.status, 409)
+  assert.equal((await missingConfirm.json()).code, 'AUTOMATION_NOT_CONFIRMED')
+  const created = await handler(request({
+    endpoint: 'automation-save', kind: 'group', refId: 'gzh', timing: { kind: 'daily', time: '09:00' }, confirm: true, clientRequestId: 'a-1',
+  }))
+  assert.equal(created.status, 200)
+  const createdBody = await created.json()
+  assert.equal(createdBody.automation.kind, 'group')
+  assert.deepEqual(calls[0][1].target, { kind: 'session', sessionId: 's-main' })
+  const list = await (await handler(request({ endpoint: 'automations' }))).json()
+  assert.equal(list.available, true)
+  assert.equal(list.rows.length, 1)
+  const toggled = await handler(request({ endpoint: 'automation-toggle', id: createdBody.automation.id, active: false, confirm: true }))
+  assert.equal(toggled.status, 200)
+  const removed = await handler(request({ endpoint: 'automation-delete', id: createdBody.automation.id, confirm: true }))
+  assert.equal(removed.status, 200)
+  assert.equal((await removed.json()).deleted, true)
+  db.close()
+})
+
+test('工作台写动作在宿主没有 schedule 时返回 502（可读降级，不是 500）', async () => {
+  const { db, handler } = await workbenchSetup()
+  createTask(db, { brief: sampleBrief({ title: '甲' }), coordinatorSession: 's-main', groupId: 'gzh' })
+  const response = await handler(request({
+    endpoint: 'automation-save', kind: 'group', refId: 'gzh', timing: { kind: 'daily', time: '09:00' }, confirm: true,
+  }))
+  assert.equal(response.status, 502)
+  assert.equal((await response.json()).code, 'AUTOMATION_UNAVAILABLE')
   db.close()
 })

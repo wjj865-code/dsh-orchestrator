@@ -101,3 +101,30 @@ export const TONE_COLOR = {
   info: 'var(--dsw-alias-state-business-primary, #4d6bfe)',
   muted: 'var(--dsw-alias-label-tertiary, #8a8f99)',
 }
+
+// ---------------------------------------------------------------------------
+// 工作台 v1（P11）：页面 / 看板列 / 日历 / 右侧 dock
+// ---------------------------------------------------------------------------
+// 工作台是**一个** main 面板的内部五页（不新开第二个 main key：宿主一次只显示一个面板，
+// 切 key 会丢状态、还会起两份快照轮询）。页面状态记在 sessionStorage，因为预览产物会
+// `selectPanel(null)` 卸载面板，回来要能复原到同一页同一组。
+export const WORKBENCH_PAGES = [['overview', '总览'], ['groups', '任务组'], ['schedule', '排期'], ['automations', '自动化']]
+export const WORKBENCH_STORAGE_KEY = 'dsh-orchestrator:workbench'
+// 工作台的独立数据源（组/日历/自动化）不跟 2s 快照轮询：15s 或动作后刷新，页面不可见时停表。
+export const WORKBENCH_POLL_MS = 15000
+// 看板列：把台账 10 个状态压成 6 列（列只承载筛选，**不能靠拖拽改状态**——状态机是插件的核心）。
+export const BOARD_COLUMNS = [
+  { key: 'queue', label: '等前置 / 待派发', statuses: ['waiting_dep', 'pending'], tone: 'muted' },
+  { key: 'running', label: '在跑', statuses: ['running'], tone: 'info' },
+  { key: 'delivered', label: '待确认', statuses: ['delivered'], tone: 'warn' },
+  { key: 'asking', label: '待你决定', statuses: ['waiting_user', 'waiting_auth'], tone: 'warn' },
+  { key: 'done', label: '完成', statuses: ['done'], tone: 'good' },
+  { key: 'failed', label: '失败 / 取消', statuses: ['failed', 'orphaned', 'cancelled'], tone: 'bad' },
+]
+// 日历周起始：周一到周日（中文习惯；media-desk 用周日起始，这里刻意不同）。
+export const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
+// 排期默认时刻（照消费级工作台的习惯：没排过就落在晚上 8 点，可再改）。
+export const DEFAULT_PLAN_HOUR = 20
+// 自动化页面板上的「触发方式」选项（与 src/workbench.js 的 normalizeTiming 白名单一致）。
+export const AUTOMATION_KINDS = [['daily', '每天'], ['weekly', '每周'], ['cron', '自定义 cron'], ['rrule', 'rrule 直通']]
+export const AUTOMATION_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']

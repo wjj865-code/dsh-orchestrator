@@ -131,3 +131,60 @@ export const canStop = task => stopGate(task).ok
 
 /** 状态的全集与入边来源（面板「详情」与测试核对用，避免各自遍历本地表）。 */
 export { STATUSES, sourcesOf }
+
+// ---------------------------------------------------------------------------
+// 工作台 v1（P11）：排期 / 组 / 自动化的门控（与动作同源：host-route 下发布尔值，client 只读）
+// ---------------------------------------------------------------------------
+
+/**
+ * 排期门控（L1 planned_at）：只有非终态任务能排期——终态任务排了也永远不会跑，只会让日历说谎。
+ * @returns {{ok: boolean, reason: null|'not_found'|'ended'|'invalid_time'}}
+ */
+export function planSetGate(task, { plannedAt = null } = {}) {
+  if (task === undefined || task === null) return { ok: false, reason: 'not_found' }
+  if (TERMINAL.has(statusOf(task))) return { ok: false, reason: 'ended' }
+  if (plannedAt !== null && !Number.isFinite(plannedAt)) return { ok: false, reason: 'invalid_time' }
+  return { ok: true, reason: null }
+}
+
+export const canSetPlan = (task, context) => planSetGate(task, context).ok
+
+/**
+ * 组改名门控：组必须存在（元数据行或已有任务在用这个 group_id）、未归档、名字 1–40 字。
+ * @returns {{ok: boolean, reason: null|'not_found'|'archived'|'name_invalid'}}
+ */
+export function groupSaveGate(group, { name, exists = true } = {}) {
+  if (exists !== true) return { ok: false, reason: 'not_found' }
+  if (group !== undefined && group !== null && group.archived === true) return { ok: false, reason: 'archived' }
+  const text = typeof name === 'string' ? name.trim() : ''
+  if (text === '' || text.length > 40) return { ok: false, reason: 'name_invalid' }
+  return { ok: true, reason: null }
+}
+
+export const canSaveGroup = (group, context) => groupSaveGate(group, context).ok
+
+/**
+ * 归档门控：归档是软删（任务不受影响），必须二次确认。
+ * @returns {{ok: boolean, reason: null|'not_found'|'not_confirmed'}}
+ */
+export function groupArchiveGate(group, { confirm = false } = {}) {
+  if (group === undefined || group === null) return { ok: false, reason: 'not_found' }
+  if (confirm !== true) return { ok: false, reason: 'not_confirmed' }
+  return { ok: true, reason: null }
+}
+
+/**
+ * 自动化门控：宿主有 schedule 服务 + 用户明确授权（confirm）+ 记录存在。
+ * 「目标必须是唯一主会话」与「触发规则合法」不在这里判定（那要读 mainSessionId / 解析 timing），
+ * 由 workbench 在动作里判定并映射成专门的错误码。
+ * @returns {{ok: boolean, reason: null|'not_found'|'unavailable'|'not_confirmed'}}
+ */
+export function automationGate({ available = true, confirmed = true, exists = true } = {}) {
+  // 先报「宿主没有这个能力」再报「没这条记录」：降级页上两条都成立时，前者才是可操作的那条。
+  if (available !== true) return { ok: false, reason: 'unavailable' }
+  if (exists !== true) return { ok: false, reason: 'not_found' }
+  if (confirmed !== true) return { ok: false, reason: 'not_confirmed' }
+  return { ok: true, reason: null }
+}
+
+export const canAutomate = context => automationGate(context).ok

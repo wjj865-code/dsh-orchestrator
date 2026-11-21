@@ -152,6 +152,71 @@ export const ACTION_ERRORS = Object.freeze({
     http: 500,
     panel: ({ reason }) => `读取产物失败：${reason ?? ''}`,
   }),
+  // 工作台 v1（P11）：组元数据 / 计划日 / 自动化。全部只服务面板端点，不暴露成工具。
+  GROUP_NOT_FOUND: define({
+    http: 404,
+    panel: ({ groupId }) => `没有组 ${groupId ?? ''}：组来自 task_create({ group })，工作台不直接造任务。`,
+  }),
+  GROUP_NAME_INVALID: define({
+    http: 400,
+    panel: ({ reason }) => `组名不可用：${reason ?? '需要 1–40 个字'}`,
+  }),
+  GROUP_NAME_TAKEN: define({
+    http: 409,
+    panel: ({ name }) => `已经有一个组叫「${name ?? ''}」，换个名字再试。`,
+  }),
+  GROUP_CONFLICT: define({
+    http: 409,
+    panel: () => '这个组刚被别处改过：刷新后再改一次（不会静默覆盖）。',
+  }),
+  GROUP_ARCHIVED: define({
+    http: 409,
+    panel: ({ groupId }) => `组 ${groupId ?? ''} 已归档：先取消归档再改。`,
+  }),
+  GROUP_NOT_CONFIRMED: define({
+    http: 409,
+    panel: () => '归档需要二次确认：请勾选确认后再提交。',
+  }),
+  PLAN_TASK_NOT_FOUND: define({
+    http: 404,
+    panel: ({ taskId }) => `没有任务 ${taskId ?? ''}，无法排期。`,
+  }),
+  PLAN_TASK_ENDED: define({
+    http: 409,
+    panel: ({ label, statusLabel }) => `任务「${label}」已经结束（${statusLabel}），排期只对活跃/待确认任务有意义。`,
+  }),
+  PLAN_TIME_INVALID: define({
+    http: 400,
+    panel: ({ reason }) => `排期时间不可用：${reason ?? '需要 ISO 时间或 null（清除排期）'}`,
+  }),
+  AUTOMATION_UNAVAILABLE: define({
+    http: 502,
+    panel: () => '宿主没有可用的自动化（schedule）服务：装好 @deepseek-ai/dsh-tool-schedule 并彻底重启 DSH 后再试；现有任务编排不受影响。',
+  }),
+  AUTOMATION_TARGET_INVALID: define({
+    http: 409,
+    panel: () => '自动化只能投递到唯一主会话（this_session）：先打开主会话再建。',
+  }),
+  AUTOMATION_TIMING_INVALID: define({
+    http: 400,
+    panel: ({ reason }) => `触发时间不可用：${reason ?? '支持 每天/每周/自定义 cron'}`,
+  }),
+  AUTOMATION_CONFLICT: define({
+    http: 409,
+    panel: () => '这条自动化刚被别处改过（或宿主侧已变更）：刷新后再改，不会强行覆盖。',
+  }),
+  AUTOMATION_NOT_FOUND: define({
+    http: 404,
+    panel: ({ id }) => `没有这条自动化 ${id ?? ''}。`,
+  }),
+  AUTOMATION_NOT_CONFIRMED: define({
+    http: 409,
+    panel: () => '创建/修改/删除自动化需要你明确授权：请勾选确认后再提交。',
+  }),
+  AUTOMATION_FAILED: define({
+    http: 502,
+    panel: ({ reason }) => `宿主拒绝了这次自动化操作：${reason ?? '未知原因'}`,
+  }),
   // host-route（路由层兜底，不是 panel/工具动作本身）
   PANEL_ACTIONS_UNAVAILABLE: define({ http: 500, panel: () => 'panel-actions-unavailable' }),
   ACTION_FAILED: define({ http: 500, panel: ({ reason }) => `动作失败：${reason}` }),

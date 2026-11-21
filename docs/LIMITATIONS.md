@@ -192,7 +192,7 @@
 - 会话内卡片仍只提供数据（`taskCard`），不渲染 UI；可见入口是侧栏「主会话」和会话头「任务」面板。
 - **任务入口依赖宿主身份信号**：显示条件 = 当前会话 id 与台账 `main_session_id` 相等。id 取不到或 `session-role` 请求失败时按「不是主会话」处理，入口**默认隐藏**；会话切换立即重判，另有 5 秒兜底轮询——刚打开主会话 1 秒内可能短暂看不到入口。
 - 入口隐藏只是 UI 层：`main` 面板仍注册，`/api/orchestrator` 的动作端点也没有会话身份校验（owner-only 由平台 connection 负责）；真正的主会话权限仍由 `task_*` 工具的调用方校验兜底。
-- 面板是 2s 轮询、没有 SSE；任务很多时快照会变大。面板产物 ≤95 KiB 由 `check:client-size` 守着（minify 后排查用 `CLIENT_MINIFY=0`）。
+- 面板是 2s 轮询、没有 SSE；任务很多时快照会变大。面板产物 ≤148 KiB 由 `check:client-size` 守着（工作台 v1 由 95 KiB 抬到 148 KiB——先定 128 KiB、全功能实测不够；子预算见脚本头部与 `docs/testing.md` G10；minify 后排查用 `CLIENT_MINIFY=0`）。
 - **删除只删台账，不删盘**：级联清 `tasks`/`messages`/`notifications`，产物文件、`reports/<taskId>.md` 全文、`memories` 都保留；平台侧子会话历史也没有删除 API。删除不可恢复。
 - **删除不给活跃任务**：活跃状态先「停止」；终态任务若还有活跃下游依赖也不让删（`DELETE_HAS_ACTIVE_DEPENDENTS`）。
 - 日报默认关闭；开启后每个主会话一条 schedule，主会话重建会重建 schedule。

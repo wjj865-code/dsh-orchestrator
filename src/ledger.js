@@ -45,7 +45,28 @@ CREATE TABLE IF NOT EXISTS memories (
   source_task_id TEXT, source_session_id TEXT, hash TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL, last_used_at INTEGER, use_count INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_key, created_at DESC);`
+CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_key, created_at DESC);
+-- 工作台 v1（P11）：组元数据。id 就是 tasks.group_id 字符串且**不可变**（改名只改 name）：
+-- worktree 复用（src/worktree-request.js 的 findReusableCheckout）与 task_list({group}) 都按这个字符串判定，
+-- 改键会让历史结论静默漂移；要改键只能走显式的批量迁移动作（事务 + 审计）。
+CREATE TABLE IF NOT EXISTS groups_v1 (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, goal TEXT, color TEXT,
+  archived INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_groups_archived ON groups_v1(archived);
+-- 工作台 v1：原生自动化的**镜像 + 授权审计**（真身在宿主 ctx.schedule）。
+-- 本表只回答「这条自动化是谁在什么时候授权建的、绑在哪个组、最近一次投递如何」；
+-- 触发/暂停/删除一律以宿主 schedule 服务为准（README「主会话原生自动化」）。
+CREATE TABLE IF NOT EXISTS automations (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL, ref_id TEXT, title TEXT NOT NULL, prompt TEXT NOT NULL,
+  timing_json TEXT NOT NULL, schedule_id TEXT, target_session TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  authorized_by TEXT NOT NULL DEFAULT 'user', authorized_at INTEGER,
+  expected_updated_at TEXT,
+  last_fired_at INTEGER, last_result TEXT,
+  deleted_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_automations_ref ON automations(kind, ref_id);`
 
 export async function openLedger(stateDir) {
   const dbPath = join(stateDir, 'tasks.sqlite')
@@ -114,6 +135,13 @@ export async function openLedger(stateDir) {
     // 能单独算复用率）；last_stop_reason 记最近一次结算的 stopReason（旧库存量行都是 NULL）。
     if (!taskColumns.includes('resume_count')) db.exec('ALTER TABLE tasks ADD COLUMN resume_count INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('last_stop_reason')) db.exec('ALTER TABLE tasks ADD COLUMN last_stop_reason TEXT')
+    // 工作台 v1（P11）L1：计划日（人工排期，纯展示）。旧库/存量行 NULL = 未排期。
+    // 与 L2（automations + 宿主 schedule 的到点触发）**互不推导**：日历上排一天不等于授权定时派单。
+    if (!taskColumns.includes('planned_at')) db.exec('ALTER TABLE tasks ADD COLUMN planned_at INTEGER')
+    // 索引必须建在补列之后（旧库上 SCHEMA 里建会因列不存在直接抛）。
+    db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_planned ON tasks(planned_at)')
+    // 组 backfill：存量 group_id 落一行元数据（name 默认等于 id），幂等、只补缺的。
+    backfillGroups(db)
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -231,6 +259,8 @@ const taskOf = row => row === undefined ? undefined : ({
   // v0.24 resume：续跑次数（收尾后被冷恢复的次数）与最近一次结算原因（failed/orphaned 的 stopReason）。
   resume_count: Number.isFinite(row.resume_count) ? row.resume_count : 0,
   last_stop_reason: typeof row.last_stop_reason === 'string' && row.last_stop_reason !== '' ? row.last_stop_reason : null,
+  // 工作台 v1（P11）L1：计划日（毫秒）。旧行/旧库 NULL = 未排期；0/负数当未排期。
+  planned_at: Number.isFinite(row.planned_at) && row.planned_at > 0 ? row.planned_at : null,
 })
 
 export function createTask(db, {
@@ -766,4 +796,176 @@ export function getMainSessionPreset(db) {
 
 export function setMainSessionPreset(db, presetId) {
   return setSetting(db, MAIN_SESSION_PRESET_KEY, presetId)
+}
+
+// ---------------------------------------------------------------------------
+// 工作台 v1（P11）：组元数据 / 计划日 / 自动化镜像
+//
+// 三条边界（设计稿 §4，实施时不得放宽）：
+// 1. 组表只是**元数据**：`groups_v1.id` 就是 `tasks.group_id`，不可变；改名只改 `name`。
+//    （表名带 `_v1` 是因为 `GROUPS` 是 SQLite 的窗口帧关键字，不加引号会撞语法。）
+// 2. `planned_at`（L1）与 `automations`（L2）互不推导：排一天不会自动派任务，也不会创建自动化。
+// 3. 自动化的真身是宿主 `ctx.schedule`；本表只存镜像 + 授权审计，读不到宿主时如实降级。
+// ---------------------------------------------------------------------------
+
+/** 组 backfill 只跑一次（幂等标记）；之后新建的组由列表读时并集补上，不靠写时维护。 */
+export const GROUPS_BACKFILLED_KEY = 'groups_backfilled_at'
+
+const groupOf = row => row === undefined ? undefined : ({
+  id: row.id,
+  name: typeof row.name === 'string' && row.name !== '' ? row.name : row.id,
+  goal: row.goal ?? null,
+  color: row.color ?? null,
+  archived: row.archived === 1 || row.archived === true,
+  created_at: Number.isFinite(row.created_at) ? row.created_at : 0,
+  updated_at: Number.isFinite(row.updated_at) ? row.updated_at : 0,
+})
+
+/**
+ * 把存量 `tasks.group_id` 补成组元数据行（`name` 默认等于 id）。
+ * 幂等：`INSERT OR IGNORE` + 一次性 settings 标记；重复调用不会覆盖用户改过的名字。
+ * @returns {{created: number}}
+ */
+export function backfillGroups(db, now = Date.now()) {
+  if (typeof getSetting(db, GROUPS_BACKFILLED_KEY) === 'string' && getSetting(db, GROUPS_BACKFILLED_KEY) !== '') {
+    return { created: 0 }
+  }
+  const rows = db.prepare("SELECT DISTINCT group_id FROM tasks WHERE group_id IS NOT NULL AND group_id <> ''").all()
+  // 没有任何组时不写标记：保持「仅仅打开台账不写 settings」这条既有不变量（test/index.test.js 锁着）。
+  if (rows.length === 0) return { created: 0 }
+  const insert = db.prepare('INSERT OR IGNORE INTO groups_v1 (id, name, goal, color, archived, created_at, updated_at) VALUES (?, ?, NULL, NULL, 0, ?, ?)')
+  let created = 0
+  for (const row of rows) {
+    const result = insert.run(String(row.group_id), String(row.group_id), now, now)
+    created += Number(result.changes) > 0 ? 1 : 0
+  }
+  setSetting(db, GROUPS_BACKFILLED_KEY, String(now))
+  return { created }
+}
+
+export function listGroupMeta(db) {
+  return db.prepare('SELECT * FROM groups_v1 ORDER BY archived ASC, updated_at DESC, id ASC').all().map(groupOf)
+}
+
+export function getGroupMeta(db, id) {
+  return groupOf(db.prepare('SELECT * FROM groups_v1 WHERE id = ?').get(String(id)))
+}
+
+/** 已有的组键（含没有元数据行的「虚拟组」）：组列表与校验都用它，避免两套口径。 */
+export function listGroupKeys(db) {
+  const rows = db.prepare("SELECT DISTINCT group_id FROM tasks WHERE group_id IS NOT NULL AND group_id <> ''").all()
+  return rows.map(row => String(row.group_id))
+}
+
+/** 组内按状态计数：`Map<groupId, {active, delivered, done, failed, cancelled, orphaned, missing, total}>`。 */
+export function groupStatusCounts(db) {
+  const rows = db.prepare('SELECT group_id, status, COUNT(*) AS n FROM tasks WHERE group_id IS NOT NULL AND group_id <> \'\' GROUP BY group_id, status').all()
+  const out = new Map()
+  for (const row of rows) {
+    const key = String(row.group_id)
+    const entry = out.get(key) ?? { total: 0 }
+    const n = Number(row.n) || 0
+    entry[String(row.status)] = n
+    entry.total += n
+    out.set(key, entry)
+  }
+  return out
+}
+
+/** 组元数据 upsert（新建虚拟组的元数据 / 改名 / 改目标或颜色）。 */
+export function upsertGroupMeta(db, { id, name, goal = null, color = null, now = Date.now() } = {}) {
+  db.prepare(`INSERT INTO groups_v1 (id, name, goal, color, archived, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 0, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET name = excluded.name, goal = excluded.goal, color = excluded.color, updated_at = excluded.updated_at`)
+    .run(String(id), String(name), goal ?? null, color ?? null, now, now)
+  return getGroupMeta(db, id)
+}
+
+export function setGroupArchived(db, id, archived, now = Date.now()) {
+  const result = db.prepare('UPDATE groups_v1 SET archived = ?, updated_at = ? WHERE id = ?')
+    .run(archived === true ? 1 : 0, now, String(id))
+  return Number(result.changes) > 0 ? getGroupMeta(db, id) : undefined
+}
+
+/** L1 计划日。不动状态机、不唤醒队列：排期是「人看的计划」，不是派发信号。 */
+export function setTaskPlannedAt(db, id, plannedAt, now = Date.now()) {
+  const value = Number.isFinite(plannedAt) && plannedAt > 0 ? Math.trunc(plannedAt) : null
+  const result = db.prepare('UPDATE tasks SET planned_at = ?, updated_at = ? WHERE id = ?').run(value, now, String(id))
+  return Number(result.changes) > 0 ? getTask(db, id) : undefined
+}
+
+const parseTiming = value => {
+  if (value === null || value === undefined) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+const automationOf = row => row === undefined ? undefined : ({
+  id: row.id,
+  kind: row.kind,
+  ref_id: row.ref_id ?? null,
+  title: row.title,
+  prompt: row.prompt,
+  timing: parseTiming(row.timing_json),
+  schedule_id: row.schedule_id ?? null,
+  target_session: row.target_session ?? null,
+  active: row.active === 1 || row.active === true,
+  authorized_by: typeof row.authorized_by === 'string' && row.authorized_by !== '' ? row.authorized_by : 'user',
+  authorized_at: Number.isFinite(row.authorized_at) ? row.authorized_at : null,
+  expected_updated_at: row.expected_updated_at ?? null,
+  last_fired_at: Number.isFinite(row.last_fired_at) ? row.last_fired_at : null,
+  last_result: row.last_result ?? null,
+  deleted_at: Number.isFinite(row.deleted_at) ? row.deleted_at : null,
+  created_at: row.created_at,
+  updated_at: row.updated_at,
+})
+
+export function listAutomations(db, { includeDeleted = false } = {}) {
+  const sql = includeDeleted
+    ? 'SELECT * FROM automations ORDER BY created_at DESC, id DESC'
+    : 'SELECT * FROM automations WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC'
+  return db.prepare(sql).all().map(automationOf)
+}
+
+export function getAutomation(db, id) {
+  return automationOf(db.prepare('SELECT * FROM automations WHERE id = ?').get(String(id)))
+}
+
+export function insertAutomation(db, {
+  id, kind, refId = null, title, prompt, timing, scheduleId = null, targetSession = null,
+  authorizedBy = 'user', expectedUpdatedAt = null, now = Date.now(),
+} = {}) {
+  db.prepare(`INSERT INTO automations
+    (id, kind, ref_id, title, prompt, timing_json, schedule_id, target_session, active,
+     authorized_by, authorized_at, expected_updated_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`)
+    .run(String(id), String(kind), refId ?? null, String(title), String(prompt), JSON.stringify(timing ?? null),
+      scheduleId ?? null, targetSession ?? null, String(authorizedBy), now, expectedUpdatedAt ?? null, now, now)
+  return getAutomation(db, id)
+}
+
+/** 镜像更新：只允许白名单字段（真身的暂停/删除由宿主 schedule 负责）。 */
+export function updateAutomationRow(db, id, patch = {}, now = Date.now()) {
+  const sets = []
+  const values = []
+  const push = (column, value) => { sets.push(`${column} = ?`); values.push(value) }
+  if (typeof patch.title === 'string') push('title', patch.title)
+  if (typeof patch.prompt === 'string') push('prompt', patch.prompt)
+  if (patch.timing !== undefined) push('timing_json', JSON.stringify(patch.timing))
+  if (patch.scheduleId !== undefined) push('schedule_id', patch.scheduleId ?? null)
+  if (patch.targetSession !== undefined) push('target_session', patch.targetSession ?? null)
+  if (patch.active !== undefined) push('active', patch.active === true ? 1 : 0)
+  if (patch.expectedUpdatedAt !== undefined) push('expected_updated_at', patch.expectedUpdatedAt ?? null)
+  if (patch.lastFiredAt !== undefined) push('last_fired_at', patch.lastFiredAt ?? null)
+  if (patch.lastResult !== undefined) push('last_result', patch.lastResult ?? null)
+  if (patch.deletedAt !== undefined) push('deleted_at', patch.deletedAt ?? null)
+  if (sets.length === 0) return getAutomation(db, id)
+  push('updated_at', now)
+  values.push(String(id))
+  db.prepare(`UPDATE automations SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+  return getAutomation(db, id)
 }

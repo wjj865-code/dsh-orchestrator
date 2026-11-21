@@ -263,12 +263,19 @@ export const isLatestTurn = (snapshot, turn) => {
 export const createFocusRequest = () => {
   let pending = null
   let pendingNotice = null
+  let pendingContext = null
   return {
     request: (id, options = {}) => {
       const value = textOf(id)
       if (value === '') return false
       pending = value
       pendingNotice = textOf(options === null || options === undefined ? undefined : options.notice) || null
+      // 工作台 v1：chip 只知道任务 id，工作台要据此直接进「组工作台」并开抽屉。
+      // 上下文与 id 分开取，保持 take() 的旧契约（只返回任务 id 字符串）。
+      pendingContext = {
+        view: textOf(options?.view) || 'general',
+        groupId: textOf(options?.groupId) || null,
+      }
       return true
     },
     take: () => {
@@ -282,8 +289,141 @@ export const createFocusRequest = () => {
       pendingNotice = null
       return value
     },
+    takeContext: () => {
+      const value = pendingContext
+      pendingContext = null
+      return value
+    },
     peek: () => pending,
     peekNotice: () => pendingNotice,
   }
+}
+
+// ---------------------------------------------------------------------------
+// 工作台 v1（P11）纯逻辑：日历格 / 看板列 / 排期桶 / 文案
+// 与 React 无关，单测经 __test 直接断言（见 test/client-workbench.test.js）。
+// ---------------------------------------------------------------------------
+
+const pad = value => String(value).padStart(2, '0')
+
+/** 本地日键 `YYYY-MM-DD`（与 src/workbench.js 的 dayKeyOf 同口径）。 */
+export const dateKeyOf = ms => {
+  const date = new Date(Number.isFinite(ms) ? ms : Date.now())
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/** 本地零点（日历格里「拖到某天」的基准）。 */
+export const startOfDay = ms => {
+  const date = new Date(Number.isFinite(ms) ? ms : Date.now())
+  date.setHours(0, 0, 0, 0)
+  return date.getTime()
+}
+
+/** 当月 1 日（月份翻页锚点）。 */
+export const startOfMonth = ms => {
+  const date = new Date(Number.isFinite(ms) ? ms : Date.now())
+  date.setDate(1)
+  return startOfDay(date.getTime())
+}
+
+/** `HH:MM` 时刻文案（本地时区）。 */
+export const clockOf = ms => {
+  const date = new Date(Number.isFinite(ms) ? ms : Date.now())
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** `11月22日 20:00`（排期卡与「下一条」共用）。 */
+export const planWhenLabel = ms => {
+  if (!Number.isFinite(ms)) return '未排期'
+  const date = new Date(ms)
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${clockOf(ms)}`
+}
+
+/**
+ * 月历格（周一起始、固定 6 行）：2 月/31 天都占满 42 格，避免翻月时网格高度跳动。
+ * @returns {{year:number, month:number, label:string, cells:Array<{key:string, day:number, inMonth:boolean, isToday:boolean, ms:number}>}}
+ */
+export const monthGrid = (anchorMs, todayMs = Date.now()) => {
+  const anchor = startOfMonth(anchorMs)
+  const base = new Date(anchor)
+  const year = base.getFullYear()
+  const month = base.getMonth()
+  const firstWeekday = (base.getDay() + 6) % 7 // 周一 = 0
+  const start = startOfDay(anchor) - firstWeekday * 86400000
+  const todayKey = dateKeyOf(todayMs)
+  const cells = []
+  for (let index = 0; index < 42; index += 1) {
+    const ms = start + index * 86400000
+    const date = new Date(ms)
+    const key = dateKeyOf(ms)
+    cells.push({
+      key,
+      ms,
+      day: date.getDate(),
+      inMonth: date.getMonth() === month,
+      isToday: key === todayKey,
+    })
+  }
+  return { year, month, label: `${year} 年 ${month + 1} 月`, cells }
+}
+
+/** 看板列：按 BOARD_COLUMNS 压列，列内按 优先级↓ → 最近事件↓ 排序。 */
+export const groupBoard = (tasks, columns) => {
+  const list = Array.isArray(tasks) ? tasks : []
+  return (Array.isArray(columns) ? columns : []).map(column => {
+    const rows = list
+      .filter(task => column.statuses.includes(task.status))
+      .sort((left, right) => (Number(right.priority) || 0) - (Number(left.priority) || 0)
+        || (Number(right.lastEventAt) || 0) - (Number(left.lastEventAt) || 0))
+    return { ...column, tasks: rows, count: rows.length }
+  })
+}
+
+/** 某个组的任务（`groupId` 为空/undefined 视为未分组）。 */
+export const groupTasksOf = (tasks, groupId) => (Array.isArray(tasks) ? tasks : [])
+  .filter(task => (task.groupId ?? null) === (groupId ?? null))
+
+/** 待排 tray：活跃且还没排期的任务（终态不排期——排了也永远不会跑）。 */
+export const trayTasks = (tasks, now = Date.now()) => (Array.isArray(tasks) ? tasks : [])
+  .filter(task => task.canPlan !== false && !Number.isFinite(task.plannedAt)
+    && ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered'].includes(task.status))
+  .sort((left, right) => (Number(right.lastEventAt) || 0) - (Number(left.lastEventAt) || 0))
+  .slice(0, 20)
+
+/** 今日排期（总览的「今天」列与日历今天高亮共用）。 */
+export const plannedOnDay = (tasks, dateKey) => (Array.isArray(tasks) ? tasks : [])
+  .filter(task => Number.isFinite(task.plannedAt) && dateKeyOf(task.plannedAt) === dateKey)
+  .sort((left, right) => left.plannedAt - right.plannedAt)
+
+/** 下一条要做的（未来最近的排期）。 */
+export const nextPlannedTask = (tasks, now = Date.now()) => {
+  let best = null
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    if (!Number.isFinite(task.plannedAt) || task.plannedAt < now) continue
+    if (best === null || task.plannedAt < best.plannedAt) best = task
+  }
+  return best
+}
+
+/**
+ * 「拖到某天」换算：保留原时刻，没排过就用默认 20:00。
+ * 与 media-desk 的日程落点习惯一致；不同的是**只写 planned_at，不改任务状态**。
+ */
+export const planStampOnDay = (dateKey, sourceMs, defaultHour = 20) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey ?? ''))
+  if (match === null) return null
+  const base = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0)
+  const source = Number.isFinite(sourceMs) ? new Date(sourceMs) : null
+  const hour = source === null ? defaultHour : source.getHours()
+  const minute = source === null ? 0 : source.getMinutes()
+  base.setHours(hour, minute, 0, 0)
+  return base.getTime()
+}
+
+/** 自动化行的人类可读状态（面板只读宿主状态 + 镜像，不猜）。 */
+export const automationStateLabel = row => {
+  if (row?.hostMissing === true) return '宿主侧已不存在'
+  if (row?.active !== true) return '已暂停'
+  return row?.nextFireAt ? `下次 ${planWhenLabel(row.nextFireAt)}` : '等待宿主触发'
 }
 

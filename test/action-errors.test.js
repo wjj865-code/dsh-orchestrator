@@ -47,7 +47,7 @@ test('panelHttpStatus：成功 200，已知 code 用映射，旧格式 400', () 
 })
 
 test('源码里使用的每个 panelFailure/toolFailure code 都在集中表里', () => {
-  for (const file of ['../src/panel-actions.js', '../src/host-route.js', '../src/tools.js']) {
+  for (const file of ['../src/panel-actions.js', '../src/host-route.js', '../src/tools.js', '../src/workbench.js']) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8')
     for (const match of source.matchAll(/(?:panelFailure|toolFailure)\('([A-Z][A-Z0-9_]*)'/g)) {
       assert.ok(ACTION_ERRORS[match[1]] !== undefined, `${file} 使用了未定义错误码 ${match[1]}`)
