@@ -1,6 +1,8 @@
 # Changelog
 
-## 未发布（0.30.1 待发）—— 台账正文去重（P1，t-90651ad4）
+## 0.31.0（2026-11-21）—— 台账正文去重（P1）+ 抽屉正文徽标 + 测试 skip 守卫（t-90651ad4 / 9f38721）
+
+**本版三件事**：① **P1 台账正文去重**（主体，`3cb364e`）：正文类消息只存借条、读时冷读宿主会话日志、读不到就降级、旧行零迁移；② **抽屉正文徽标**（`client/src/views.js`）：详情抽屉「最新回复」标出「正文来自子会话 / 正文不可读（摘要）」并给降级说明行；③ **测试 skip 守卫**（`9f38721`）：配置模块加载用例在管道 spawn 不可用（受限沙箱 EPERM）时 `skip`，不再把环境限制判成失败。
 
 **只做数据去重，不改派发后端、不改状态机、不新增工具**（`createTools()` 仍是 10 个）。用户原话：「dsh官方就有保存子智能体的相关状态和会话数据，看下是否可以从插件中移除这部分数据，避免重复。」计划文档：`reports/plans/t-90651ad4.md`（P2–P4「派发改普通会话」不在本次范围）。
 
@@ -11,7 +13,7 @@
 1. **正文类消息只存借条**：`messages` 的 `brief` / `followup` / `resume` / `report` 四类，`rendered` 改为**单行摘要（≤240 字）**，`meta_json` 记 `{body:'host', chars, digest, summary}`。台账里不再有这几类的正文。
 2. **最新返回消息只存借条**：`tasks.last_message_json` 从 `{text}` / `{path}` 改为 `{at, stopReason, source, bytes, chars, digest, summary, stored:'host'}`；**不再写 `<state>/reports/<taskId>.md`**（该目录只剩历史文件，插件不再读写）。
 3. **读侧按需冷读宿主**：`task_status({include:'full'})` 与面板抽屉的「最新回复」在需要全文时才读宿主会话日志——`src/session-body.js`（新）先试 live 会话 `sessions.get(id).snapshotEvents(0)`，再试冷读 `sessionPersistence.open(id,'read')` + `handle.read(0)`，抽 `assistant/message`（最后一段话）、`user/message`（简报/追问，按 digest 精确匹配）、`tool/call` 里的 `task_report` 参数（回报正文）。
-4. **读不到就降级，不抛错不伪造**：`task_status` 显示「正文不可读：host-log-missing；以下只是摘要」；面板 detail 返回 `body:{source:'summary', unavailable:'host-log-missing'}` 并在抽屉里显示「正文不可读（摘要）」徽标。
+4. **读不到就降级，不抛错不伪造**：`task_status` 显示「正文不可读：host-log-missing；以下只是摘要」；面板 detail 返回 `body:{source:'summary', unavailable:'host-log-missing'}` 并在抽屉里显示「正文不可读（摘要）」徽标。抽屉徽标由 `client/src/views.js` 渲染：`source='host'` → 「正文来自子会话」；`source='summary'` → 「正文不可读（摘要）」+ 降级原因行；旧行（`inline`/`file`）不加徽标（正文本来就在台账里）。
 5. **旧行零迁移**：P1 之前的行没有 `meta.body` 标记，`rendered`/`text`/`path` 就是正文，读路径原样返回（`source:'inline'|'file'`）。**不改 schema、不删列、不 VACUUM**，回滚只需把写入侧切回「也写正文」。
 
 **不动的部分（C 档）**：`tasks.brief_json`（创建快照：目标/验收/约束/背景原话/`checks`/工作区索引/worktreeCleanup——宿主没有、删了 `task_detail` 与 A1 机器验收会坏）、`settle`/`acceptance`/`close`/`delivery_failed` 消息、`acceptance_json`、两段式交付（`delivered`/`accepted_*`/`close_reason`）、`depends_json`、`notifications`、`question*`、`goal_state`、worktree 七列、`team_task_*`、`memories`/`groups_v1`/`automations`。
@@ -20,7 +22,25 @@
 
 **测试**：新增 `test/body-dedupe.test.js`（5 条：写侧借条不带正文、读侧按 digest 从宿主日志取回、旧行原样可读、宿主缺失降级口径（`task_status` 与面板 detail 同源）、`session-body` 抽取器 + 冷读句柄含抛错降级）；改写 `test/settlement.test.js`（借条形状、超 64 KiB 不再落盘、幂等与空输出）、`test/tools.test.js`（`include:full` 冷读/降级/旧 inline-file 行）、`test/index.test.js`（装配级借条落地 + 宿主可读时给回全文 + 不可读时降级）、`test/panel-actions.test.js`（重派 brief 借条 + 重渲染出的两行）、`test/client.test.js`（抽屉「最新回复」的「正文来自子会话 / 正文不可读（摘要）」徽标与降级说明行）。全量 `1178` 条用例：`1173` 通过、`5` 跳过（符号链接权限，CI/有权限环境真跑）、`0` 失败。
 
+**测试守卫（`9f38721`）**：`test/config-schema.test.js` 的「真实模块加载」用例靠 `spawnSync` + `stdio:'pipe'` 捕获子进程输出，而受限沙箱禁止子进程打开命名管道（EPERM）。用例改成先问 `canSpawnWithPipes()`（`test/helpers.js` 同一口径）：能力不可用时 `t.skip` 并写明原因，本地全权 / CI 照样真跑——环境限制不再被判成失败。
+
 **文档**：`docs/ARCHITECTURE.md`（重写「最新返回消息（B1）」+ 新增「台账正文去重（P1）」一节，含三类数据对照表、读侧口径、回滚与风险；落盘清单删掉 `reports/<taskId>.md`）、`docs/LIMITATIONS.md`（正文可用性绑定宿主会话、缓存窗口）、`README.md`（`task_status` 行）、本条目。
+
+**验证**：`pnpm test`（含 `pretest` 的 build + `check:client-size` + `check:docs`）**1,178 项 / 1,173 pass / 0 fail / 5 skip**（5 条 skip 全是「当前环境无法创建文件符号链接」的环境跳过）；`pnpm run check:version`（0.31.0 三处一致）；`pnpm run check:docs` **1,703 行 / 预算 1,800**；`pnpm run check:client-size` **150,792 B / 151,552 B**（余 760 B）；`pnpm run build` 重建后 `dist/client.js` 与入库一致（git 无 diff）。发版前本机 web 冒烟见下方「冒烟记录」。
+
+**冒烟记录（0.31.0 本地 tgz）**
+
+- **环境**：Windows 11 + DSH `0.2.2-rc.5`；隔离 `DSH_HOME=<临时目录>/home` + 独立 profile `smoke`（`--from-default-profile web` 生成）；`npm pack` 出 `wjj865-code-dsh-orchestrator-0.31.0.tgz`，`dsh plugin --profile smoke add <tgz>` 安装（安装副本 `version` 实测 **0.31.0**，`dist/client.js` 与仓库 SHA-256 一致）；`dsh --profile smoke --no-open --port 0`（系统分配空闲端口，**不碰 49682 / 54746**）；冒烟进程全程用隔离 `DSH_HOME`，真实 `~/.dsh` 不参与。
+- **模型**：本地 `127.0.0.1:49911` 的 Messages 兼容 stub（假 key `sk-smoke-local`，只记录宿主真实请求的 `tools[]` / system / messages，回可预测的助手回合）；**没有复制、也没有读取任何真实凭据**。
+- **HTTP 12/12 ✓**：壳页 303（token→cookie）→ 带 cookie 后 `snapshot` / `main-nav` / `main-nav-ack` / `session-role` / `groups` / `calendar` / `automations` / `stats` 全 200；反例 `task-create` → 400 `UNKNOWN_ENDPOINT`；`open-main` → 200 建出主会话。
+- **协调者工具表（宿主真实下发 15 个 ✓）**：`ask_user_question` / `context` / `memory_note` / `present` / `read` / `read_workspace` / `schedule_create` / `schedule_edit` / `schedule_list` / `schedule_view` / `skill` / `task_create` / `task_list` / `task_message` / `task_status`——**没有 `grep` / `glob`**，也没有 `write` / `edit` / `pwsh` / `bash`；`read` + `read_workspace` + `memory_note` + 4 个 `task_*` 都在。
+- **worker 工具表（30 个）**：`preset-tools` 是 keep-only（`keep: [context, task_detail, task_report, memory_note]`，**无 deny 行**），子会话表里 `memory_note` / `task_detail` / `task_report` 都可用；`preset.keep` / `preset.deny` 审计行与 0.30.0 同口径。
+- **插件加载零 error / 零 warn ✓**：插件日志 24 行覆盖 `snapshot.created` / `host.capabilities` / `preset.keep`×2 / `preset.deny`×1 / `main.session.created` / `task.create.created` / `subagent.spawn.*` / `goal.created` / `task.transition`×2 / `task.spawn.ok` / `task.queue.drained` / `task.settle`×2 / `task.settle.late-message` / `notify.delivered`；**没有 error/warn 级别行、没有 `*.failed` / `*.rejected` 事件**；`host.capabilities` 报 rc.5、8/10 能力（缺 `registry` / `team-board` 属隔离环境懒挂载预期）。
+- **浏览器（headless Chrome + CDP，隔离 user-data-dir）12/12 ✓**：侧栏「主会话」入口与会话头「任务」入口可点；面板五页导航标签 `总览 / 任务组 / 排期 / 自动化 / 复盘` 逐项点击都切到对应 `data-page`（`overview` / `groups` / `schedule` / `automations` / `review`）；从「任务组」组卡进入组工作台 `data-page="group"`；dock 实渲染（`.orch-wb-dock`，`aria-label="任务上下文（只读）"`，**0 个 input/textarea/select/form**，文案「dock 是只读镜像：不代发消息、不代批计划」）；详情抽屉「最新回复」显示 **「正文来自子会话」** 徽标；浏览器 console/log **零 error、零 warning**。
+- **P1 隔离台账断言 10/10 ✓**：`tasks.last_message_json` 是借条（无 `text`/`path`、`stored:'host'`、`summary` 短于 `chars`）；`messages` 的 `brief` / `report` 行 `meta.body='host'`、`rendered` 单行摘要（report 摘要 241 字 vs 原文 351 字）、无换行；C 档消息不带 `body` 标记；`tasks.brief_json` 保留目标/验收；`messages` 六列 schema 未变（旧行零迁移）。
+- **读侧（与 `task_status include:full` 同一条 `readBody`）✓**：正常时面板 detail `body:{source:'host'}`，`lastMessage.text` 取回 **744 字全文**（台账摘要 241 字）；把宿主会话日志目录挪走后重启同一隔离 home，detail 仍 `200 {ok:true}`，`body:{source:'summary', unavailable:'host-log-missing'}`，`text` 退回 241 字摘要——**降级不抛错、不伪造**。
+- **未验（附原因）**：① 真实模型是否照着 W1 policy / 工具说明行动——stub 只能证明注入内容与工具表，不证明模型服从；② 真实上下文压力下的提醒 deferred、确认「新建」后的浏览器跳转（`main-nav` 待办）——需要真实长任务压到阈值，本次只验到空待办的降级口径（`nav:null` / `cleared:false`）；③ 排期拖拽、自动化新建/暂停的写动作（会真建调度，不属本次冒烟范围）；④ 暗色主题 / 多语言外观。
+- **证据**（临时目录，未入库）：`probe-results.json`（12 项）、`browser-results.json`（12 项 + `browser-panel.png`）、`ledger-check.json`（10 项）、`detail-results.json` / `detail-degraded.json`、`mock-requests.jsonl`（宿主真实请求体）、隔离 home 的 `logs/orchestrator-2026-11-21.jsonl`。用完关服务、清 headless Chrome 与临时目录。
 
 ## 0.30.0（2026-11-21）—— 有任务在跑不再弹切换卡、确认后真跳过去 + 子会话可写项目记忆（t-a79e12d8 / t-94b99f3f）
 
