@@ -2190,3 +2190,48 @@ test('面板顶部显示主会话跳转失败提示：已挂载订阅即时显�
   await flush()
 })
 
+// P1 正文去重：台账里的最新返回消息只有借条，正文由服务端 `detail.body` 说明来源。
+// 抽屉必须把「正文来自子会话 / 正文不可读（摘要）」标出来：读不到时给降级说明行，不伪造正文。
+test('P1 正文去重：抽屉「最新回复」标出正文来源与降级原因', () => {
+  const { hooks, panel, resetHooks } = panelOf()
+  const detailOf = (body, lastMessage) => ({
+    ok: true,
+    task: {
+      id: 't-p1', title: 't-p1', status: 'done', goal: 'g', targetDir: 'C:/work', target: 'c-1',
+      readOnly: false, group: null, priority: 0, dependsOn: [], writeScopes: [], question: null,
+      options: [], error: null, createdAt: 0, updatedAt: 0, artifacts: [], brief: {}, goalState: null,
+      acceptance: null, canFollowup: false, canDelete: true, lastMessage,
+    },
+    dependencies: [], dependents: [], messages: [], body,
+  })
+  const render = detail => {
+    resetHooks()
+    hooks.slots[0] = snapshotOf([])
+    hooks.slots[10] = detail
+    hooks.slots[13] = detail.task.id
+    return textAll(panel.component({ openSession: () => {} }))
+  }
+  // 台账借条的形状（与 src/last-message.js 的 captureLastMessage 一致）：没有正文，只有摘要。
+  const borrow = {
+    at: 1_700_000_000_000, stopReason: 'completed', source: 'lifecycle',
+    bytes: 12, chars: 6, digest: 'abcd1234', summary: '摘要…', stored: 'host',
+  }
+
+  // 宿主会话日志读到了：标「正文来自子会话」，正文就是 detailBody 补回来的全文。
+  const fromHost = render(detailOf({ source: 'host' }, { ...borrow, text: '子会话里的完整正文' }))
+  assert.match(fromHost, /正文来自子会话/)
+  assert.match(fromHost, /子会话里的完整正文/)
+  assert.doesNotMatch(fromHost, /正文不可读/)
+
+  // 读不到：标「正文不可读（摘要）」+ 一行 available 原因，显示的仍是摘要（不抛错、不伪造正文）。
+  const degraded = render(detailOf({ source: 'summary', unavailable: 'host-log-missing' }, { ...borrow, text: '摘要…' }))
+  assert.match(degraded, /正文不可读（摘要）/)
+  assert.match(degraded, /正文不可读：host-log-missing/)
+  assert.match(degraded, /摘要…/)
+
+  // 源码层：正文来源只认服务端下发的 detail.body，客户端不自己判断「能不能读」。
+  assert.match(source, /detail\.body/)
+  assert.match(source, /正文来自子会话/)
+  assert.match(source, /正文不可读（摘要）/)
+})
+

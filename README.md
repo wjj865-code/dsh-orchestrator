@@ -128,7 +128,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 |---|---|
 | `task_create` | 建任务并派发。`dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent` / `checks`（交付前机器验收）/ `goalRounds`（续跑预算，默认 0 不续跑）/ `teamTaskId`（关联官方 Team 板，确认时按 CAS 反写 `complete`） |
 | `task_list` | 活跃/历史任务（`active` / `group` 过滤）；`view:'inbox'` 是收件箱：待决、待确认、失败/丢失、长时间没动静 |
-| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条检查的退出码/耗时）、交接、目标状态与轮次（`x/y`）、官方 Team 关联、最近消息、最新返回（`include:'full'` 看全文） |
+| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条检查的退出码/耗时）、交接、目标状态与轮次（`x/y`）、官方 Team 关联、最近消息、最新返回（台账只存借条；`include:'full'` 从宿主会话日志冷读全文，读不到给摘要 + 原因） |
 | `task_message` | 子任务动作统一入口：`action:'message'`（默认，续派/追问，复用原会话）/ `'resume'` 续跑失败·丢失（或超时完成）任务的原会话 / `'stop'` 停止 / `'retry'` 重派 failed·orphaned（新任务新会话）/ `'close'` 把「已交付待确认」确认成 `done` |
 | `context` | 只读读上下文（协调者与子会话都能调）：`mode:'history'`（默认，记忆/历史任务/历史会话；首行【检索范围】，查项目记忆要传 `project`）/ `'project'`（项目白名单文件含 `docs/ARCHITECTURE.md`、结构、最近任务、相关记忆）/ `'workspaces'`（已登记工作区与仓库采样索引） |
 | `memory_note` | 记一条跨任务有效的决策/经验，或一条偏好。协调者（主会话）可写任意项目与全局偏好；任务子会话只能写**自己任务 `target_dir`** 的项目记忆（`note`/`lesson`/`decision`，`project` 强制为本任务目录、单任务最多 3 条、同 `kind`+`text` 幂等），写 `preference` 与全局/跨项目记忆会被拒并给替代路径；`kind:'preference'` 不传 `project` 时写进协调者偏好（每回合注入、立即生效） |

@@ -8,6 +8,8 @@ import { GLOBAL_PROJECT, searchMemories, projectKeyOf } from '../src/memory.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import { captureLastMessage } from '../src/last-message.js'
+import { resolveMessageBody } from '../src/message-body.js'
+import { createBodySource } from '../src/session-body.js'
 import { tempDir, sampleBrief, markDone, canSpawnWithPipes, PIPE_SPAWN_SKIP_REASON } from './helpers.js'
 
 function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity } = {}) {
@@ -66,6 +68,8 @@ async function setup(options = {}) {
     defaultCwd: options.defaultCwd,
     sessionQuery: options.sessionQuery,
     sessions: options.sessions,
+    // P1：正文读取器（include=full 冷读宿主会话日志）；不传 = 一切按摘要降级。
+    bodySource: options.bodySource,
     workspaceChanges: options.workspaceChanges,
     logger: options.logger,
     goalBridge: options.goalBridge,
@@ -359,55 +363,104 @@ test('task_status：详情、最近 3 条、不存在提示', async () => {
   db.close()
 })
 
-// B1：结算落下的最新返回消息，主会话用 task_status 读；长消息给路径 + 摘要，include=full 才读全文。
-test('task_status：返回子会话最新返回消息，长消息给路径+摘要，include=full 读全文', async () => {
-  const { db, tools } = await setup()
+// B1（P1）：结算落下的最新返回消息只有借条；task_status 默认给摘要，include=full 从宿主会话日志冷读。
+test('task_status：返回子会话最新返回消息（台账只存借条），include=full 从宿主冷读', async () => {
+  // 假宿主会话日志：assistant/message 的正文在 data.message.content（宿主 0.2.2-rc.5 形状）。
+  // hostText 可变 + 时钟每次递增，保证读侧不走缓存（测试里每一步都换正文）。
+  let hostText = ''
+  let clock = 0
+  const bodySource = createBodySource({
+    sessions: () => ({
+      get: id => (id === 'child-1'
+        ? {
+          snapshotEvents: () => [{
+            seq: 0,
+            time: 1,
+            type: 'assistant/message',
+            data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: hostText }] } },
+          }],
+        }
+        : undefined),
+    }),
+    now: () => (clock += 10_000),
+  })
+  const { db, tools } = await setup({ bodySource })
   await call(tools, 'task_create', sampleBrief({ title: '带回执' }))
   const task = listTasks(db)[0]
-  const reportsDir = tempDir()
+  db.prepare('UPDATE tasks SET session_id = ? WHERE id = ?').run('child-1', task.id)
 
-  const short = captureLastMessage({ text: '改完了：npm test 540/540 全绿。', taskId: task.id, reportsDir, stopReason: 'completed' })
+  hostText = '改完了：npm test 540/540 全绿。'
+  const short = captureLastMessage({ text: hostText, taskId: task.id, stopReason: 'completed' })
   setTaskLastMessage(db, task.id, short)
+  assert.equal(short.stored, 'host')
   const shortText = await call(tools, 'task_status', { task_id: task.id })
   assert.match(shortText, /最近返回（结算 completed｜/)
-  assert.match(shortText, /内联存台账/)
+  assert.match(shortText, /正文在子会话（宿主会话日志）/)
   assert.match(shortText, /改完了：npm test 540\/540 全绿。/)
+  // include=full：宿主可读 → 给回全文（不出现降级说明）。
+  const shortFull = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
+  assert.ok(shortFull.includes(hostText))
+  assert.ok(!shortFull.includes('正文不可读'))
 
-  // 内联但偏长：默认只给预览，include=full 给全文
-  const medium = '细'.repeat(2000)
-  setTaskLastMessage(db, task.id, captureLastMessage({ text: medium, taskId: task.id, reportsDir }))
+  // 长正文：默认只给摘要（≤240 字，尾部 …），全文要 include=full。
+  hostText = '细'.repeat(2_000)
+  setTaskLastMessage(db, task.id, captureLastMessage({ text: hostText, taskId: task.id }))
   const preview = await call(tools, 'task_status', { task_id: task.id })
-  assert.match(preview, /已截断，共 2000 字；全文用 include=full/)
-  assert.ok(!preview.includes(medium))
+  assert.match(preview, /正文在子会话/)
+  assert.ok(!preview.includes(hostText))
   const full = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
-  assert.ok(full.includes(medium))
+  assert.ok(full.includes(hostText))
+  assert.ok(!full.includes('正文不可读'))
 
-  // 超 64KB：默认给 reports 路径 + 摘要，include=full 从文件读全文
-  const huge = `结尾一行\n${'细'.repeat(25_000)}`
-  const record = captureLastMessage({ text: huge, taskId: task.id, reportsDir, stopReason: 'max-tokens' })
+  // 宿主日志里没有可读正文（会话不在 live 表、也没有 sessionPersistence）→ 摘要 + 降级说明，不抛错。
+  hostText = ''
+  const missing = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
+  assert.match(missing, /正文不可读：host-log-missing/)
+
+  // 超 64KB：同样只存借条，宿主日志能读到就给全文。
+  hostText = `结尾一行\n${'细'.repeat(25_000)}`
+  const record = captureLastMessage({ text: hostText, taskId: task.id, stopReason: 'max-tokens' })
   setTaskLastMessage(db, task.id, record)
-  assert.equal(record.stored, 'file')
+  assert.equal(record.stored, 'host')
+  assert.equal(record.path, undefined)
   const fileStatus = await call(tools, 'task_status', { task_id: task.id })
-  assert.match(fileStatus, /全文存 reports 文件/)
   assert.match(fileStatus, /结算 max-tokens/)
-  assert.ok(fileStatus.includes(record.path))
-  assert.match(fileStatus, /摘要：/)
-  assert.match(fileStatus, /看全文：task_status 带 include=full/)
-  const fromFile = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
-  assert.ok(fromFile.includes(huge))
+  assert.match(fileStatus, /正文在子会话/)
+  assert.ok(!fileStatus.includes('全文存 reports 文件'))
+  const fromHost = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
+  assert.ok(fromHost.includes(hostText))
+  assert.ok(!fromHost.includes('正文不可读'))
   db.close()
 })
 
-test('task_status include=full：报告文件被删时降级为摘要 + 读取失败原因', async () => {
+test('task_status include=full：宿主会话日志不可达时降级为摘要 + 读取原因', async () => {
   const { db, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '缺文件' }))
   const task = listTasks(db)[0]
-  const reportsDir = tempDir()
-  const record = captureLastMessage({ text: '细'.repeat(25_000), taskId: task.id, reportsDir })
-  setTaskLastMessage(db, task.id, { ...record, path: join(reportsDir, 'gone.md') })
+  db.prepare('UPDATE tasks SET session_id = ? WHERE id = ?').run('child-gone', task.id)
+  const record = captureLastMessage({ text: '细'.repeat(25_000), taskId: task.id })
+  setTaskLastMessage(db, task.id, record)
   const text = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
-  assert.match(text, /全文读取失败/)
-  assert.match(text, /gone\.md/)
+  assert.match(text, /正文不可读：host-log-missing/)
+  assert.match(text, /以下只是摘要/)
+  db.close()
+})
+
+test('task_status include=full：旧行自带正文（inline/file）不受影响', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '旧行' }))
+  const task = listTasks(db)[0]
+  // P1 之前的行：text / path 直接写在 last_message_json 里，没有 body 标记。
+  const dir = tempDir()
+  const path = join(dir, 'old.md')
+  writeFileSync(path, '旧文件里的全文', 'utf8')
+  setTaskLastMessage(db, task.id, { at: 1, stopReason: 'completed', source: 'lifecycle', bytes: 24, chars: 24, digest: 'abcd', summary: '摘要…', stored: 'file', path })
+  const text = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
+  assert.ok(text.includes('旧文件里的全文'))
+  setTaskLastMessage(db, task.id, { at: 2, stopReason: 'completed', source: 'lifecycle', bytes: 6, chars: 6, digest: 'efgh', summary: '正文', stored: 'inline', text: '正文' })
+  const inline = await call(tools, 'task_status', { task_id: task.id, include: 'full' })
+  assert.match(inline, /内联存台账/)
+  assert.ok(inline.includes('正文'))
   db.close()
 })
 
@@ -1358,10 +1411,17 @@ test('T1 重派：task_message action:retry 重渲染的 brief 与 task_create �
   const text = await call(tools, 'task_message', { action: 'retry', task_id: created.id })
   assert.match(text, /已重派/)
   const retried = listTasks(db).find(task => task.retry_of === created.id)
-  const rendered = recentMessages(db, retried.id, 1)[0].rendered
-  assert.equal(rendered.split('\n')[0], `【任务编号】${retried.id}`)
-  assert.match(rendered, /task_detail/)
-  assert.equal(rendered.includes(longGoal), false)
+  // P1：台账 brief 只剩借条（单行摘要）；派发与展示都按任务行重渲染出同样的两行。
+  const row = recentMessages(db, retried.id, 1)[0]
+  assert.equal(row.kind, 'brief')
+  assert.equal(row.rendered.includes('\n'), false)
+  assert.equal(row.meta.body, 'host')
+  assert.equal(row.rendered.includes(longGoal), false)
+  const resolved = await resolveMessageBody(retried, row, {})
+  assert.equal(resolved.source, 'derived')
+  assert.equal(resolved.text.split('\n')[0], `【任务编号】${retried.id}`)
+  assert.match(resolved.text, /task_detail/)
+  assert.equal(resolved.text.includes(longGoal), false)
   assert.equal(dispatcher.calls.some(callRow => callRow[0] === 'spawn'), true)
   // 重派的新任务自己的子会话能读到原目标全文。
   const detail = await call(tools, 'task_detail', { task_id: retried.id }, { agent: { id: retried.session_id } })

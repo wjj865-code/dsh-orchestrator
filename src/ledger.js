@@ -377,7 +377,13 @@ export function countPending(db) {
   return db.prepare("SELECT count(*) AS n FROM tasks WHERE status IN ('pending','waiting_dep')").get().n
 }
 
-/** 任务的渲染文本（派发时用），取第一条 brief 消息。 */
+/**
+ * 旧行的简报正文（派发时的兜底读法）。
+ *
+ * P1（0.30.1）起不再作为派发来源：台账 messages 里的 brief 只有借条（摘要），
+ * 派发一律用 `renderBriefForTask(task)` 现渲染（确定性输出）。此函数只为读**旧库**里
+ * 仍有全文的 brief 行 / 历史导出保留。
+ */
 export function briefText(db, id) {
   const row = db.prepare("SELECT rendered FROM messages WHERE task_id = ? AND kind = 'brief' ORDER BY seq ASC LIMIT 1").get(id)
   return row?.rendered

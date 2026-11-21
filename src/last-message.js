@@ -1,14 +1,23 @@
 // 子会话「最新返回消息」（结算时的完整 lastAssistantMessage）。
 // 目的：子会话结束后，主会话还能看到它最后说了什么（report 正文、被中断前的残值），
 // 不必去翻子会话历史或日志。
-// 存储策略：短消息直接进台账（tasks.last_message_json）；超过 MAX_INLINE_BYTES 写
-//   <state>/reports/<taskId>.md，台账只留「路径 + 摘要 + 长度」，避免 SQLite 单行膨胀。
+//
+// P1 去重（0.30.1，见 docs/ARCHITECTURE.md「台账正文去重」）：
+//   台账里**不再存正文**，只存 `{at, stopReason, source, bytes, chars, digest, summary, stored:'host'}`。
+//   正文真源是宿主会话日志（同一条 assistant/message），读的时候由 src/session-body.js 冷读：
+//     - 读得到 → `{text, source:'host'}`
+//     - 读不到 → `{text: 摘要, source:'summary', unavailable:'host-log-missing'}`（不抛错、不伪造）
+//   旧行（`text` / `path` 还在）照常可读：`source:'inline'` / `'file'`，不需要任何迁移。
+//
+// 为什么不写 reports 文件了：落盘文件曾是「台账塞不下大文本」的旁路，但正文宿主已经有了，
+// 再写一份就是第二份副本（且清理策略要自己维护）。超过 MAX_INLINE_BYTES 的旧记录仍能读。
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { BODY_SUMMARY_CHARS, HOST_LOG_MISSING, bodySummary } from './session-body.js'
 
+/** 历史常量：旧行曾经按这个阈值决定「内联 / 落 reports 文件」，现在只用于读旧行与文档口径。 */
 export const MAX_INLINE_BYTES = 64 * 1024
-export const SUMMARY_CHARS = 240
+export const SUMMARY_CHARS = BODY_SUMMARY_CHARS
 // task_status 默认展示的预览长度：再长的正文要用户显式 include=full 才给。
 export const PREVIEW_CHARS = 1200
 
@@ -25,9 +34,7 @@ export function messageText(output) {
 
 /** 单行摘要：压空白 + 截断（台账/通知/预览共用同一口径）。 */
 export function summarizeText(text, max = SUMMARY_CHARS) {
-  const flat = String(text ?? '').replace(/\s+/g, ' ').trim()
-  if (flat === '') return ''
-  return flat.length > max ? `${flat.slice(0, max)}…` : flat
+  return bodySummary(text, max)
 }
 
 /** 人类可读体积（KB/MB），只用于展示。 */
@@ -40,52 +47,38 @@ export function formatBytes(bytes) {
 
 const digestOf = text => createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16)
 
-// 文件名只用任务编号：同一任务重写覆盖，目录不会随结算次数增长。
-const safeName = taskId => {
-  const text = String(taskId ?? '').replace(/[^A-Za-z0-9._-]/g, '_')
-  return text === '' ? 'unknown' : text
-}
-
 /**
- * 把一次结算的返回消息落成台账记录（纯函数 + 一次文件写）。
+ * 把一次结算的返回消息压成台账记录（纯函数，不写盘）。
+ *
  * @returns {null | {at:number, stopReason:string|null, source:string, bytes:number, chars:number,
- *   digest:string, summary:string, stored:'inline'|'file', text?:string, path?:string}}
- * 空消息返回 null（不回写台账，避免把上一次的返回覆盖成空）。
+ *   digest:string, summary:string, stored:'host'}} 空消息返回 null（不回写台账，避免把上一次的返回覆盖成空）。
  */
 export function captureLastMessage({
   text,
   taskId,
-  reportsDir,
   stopReason = null,
   source = 'unknown',
-  now = Date.now(),
+  now = () => Date.now(),
 } = {}) {
   const body = messageText(text)
   if (body === '') return null
-  const bytes = Buffer.byteLength(body, 'utf8')
-  const record = {
-    at: now,
+  return {
+    at: now(),
     stopReason: stopReason ?? null,
     source,
-    bytes,
+    bytes: Buffer.byteLength(body, 'utf8'),
     chars: body.length,
     digest: digestOf(body),
     summary: summarizeText(body),
-  }
-  const useFile = bytes > MAX_INLINE_BYTES && typeof reportsDir === 'string' && reportsDir !== ''
-  if (!useFile) return { ...record, stored: 'inline', text: body }
-  const path = join(reportsDir, `${safeName(taskId)}.md`)
-  try {
-    mkdirSync(reportsDir, { recursive: true })
-    writeFileSync(path, body, 'utf8')
-    return { ...record, stored: 'file', path }
-  } catch {
-    // 写不进文件就退回内联：宁可撑大一行台账，也不能丢掉模型最后说的话。
-    return { ...record, stored: 'inline', text: body }
+    // 正文住在宿主会话日志里（P1）：台账只留这张借条。
+    stored: 'host',
   }
 }
 
-/** include=full 用：内联直接给文本，文件读盘；读失败降级为摘要 + 原因。 */
+/**
+ * 同步读旧行（inline / file）：只给「记录里自己带正文」的历史行用。
+ * 新行的 `stored === 'host'` 没有正文可读，这里退回摘要——需要全文请用 `resolveLastMessage`。
+ */
 export function readLastMessage(record) {
   if (record === null || record === undefined) return ''
   if (typeof record.text === 'string') return record.text
@@ -95,4 +88,47 @@ export function readLastMessage(record) {
   } catch (error) {
     return `${record.summary ?? ''}\n（全文读取失败：${record.path}：${error?.message ?? error}）`
   }
+}
+
+/**
+ * 按记录形态取正文（同步部分）：旧行自带正文 / 新行只有借条。
+ * @returns {{text:string, source:'inline'|'file'|'summary', unavailable?:string}|null}
+ */
+function localBody(record) {
+  if (record === null || record === undefined) return null
+  if (typeof record.text === 'string' && record.text !== '') {
+    return { text: record.text, source: 'inline' }
+  }
+  if (typeof record.path === 'string' && record.path !== '') {
+    try {
+      return { text: readFileSync(record.path, 'utf8'), source: 'file' }
+    } catch {
+      return { text: record.summary ?? '', source: 'summary', unavailable: HOST_LOG_MISSING }
+    }
+  }
+  return null
+}
+
+/**
+ * 解析「最近返回」的正文（P1 读侧）：自带正文的老行直接给，新行去宿主会话日志冷读。
+ *
+ * @param {object|null} record 台账 `last_message`
+ * @param {{ body?: { lastAssistant?: (sessionId:string) => Promise<string|undefined> }, sessionId?: string }} [options]
+ * @returns {Promise<{text:string, source:'inline'|'file'|'host'|'summary', unavailable?:string}|null>}
+ */
+export async function resolveLastMessage(record, { body, sessionId } = {}) {
+  const local = localBody(record)
+  if (local !== null) return local
+  if (record === null || record === undefined) return null
+  const summary = typeof record.summary === 'string' ? record.summary : ''
+  const id = typeof sessionId === 'string' ? sessionId.trim() : ''
+  if (id !== '' && typeof body?.lastAssistant === 'function') {
+    try {
+      const text = await body.lastAssistant(id)
+      if (typeof text === 'string' && text.trim() !== '') return { text: text.trim(), source: 'host' }
+    } catch {
+      // 冷读实现内部已吞错；这里再兜一层，绝不让面板/回执因为读正文失败而报错。
+    }
+  }
+  return { text: summary, source: 'summary', unavailable: HOST_LOG_MISSING }
 }

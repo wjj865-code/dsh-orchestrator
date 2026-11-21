@@ -299,7 +299,32 @@
 
 ### 最新返回消息（B1）
 
-两路事件都自带子会话最后一条 assistant 消息，结算时顺手落账：正文 ≤ 64 KiB 内联 `tasks.last_message_json.text`（`task_status` 默认给预览、`include:'full'` 给全文）；更大写 `<state>/reports/<taskId>.md`（台账只留 `path` + 240 字摘要）；空输出不写（不拿空记录覆盖上一次）。摘要压空白、240 字截断；日志只留摘要，完整正文经事件上的非日志字段交给结算，避免 jsonl 单行被撑大。`setTaskLastMessage` 按正文 `digest` 幂等（重复落库不重写行、不动 `updated_at`），文件落盘失败时降级内联。
+两路事件都自带子会话最后一条 assistant 消息，结算时顺手落账——但**台账只存借条**（见下节「台账正文去重」）：`tasks.last_message_json = {at, stopReason, source, bytes, chars, digest, summary, stored:'host'}`，不带正文、不写 `reports/` 文件。`task_status` 默认给 240 字摘要，`include:'full'` 时**按需冷读**宿主会话日志（`src/session-body.js`：live 会话走 `sessions.get(id).snapshotEvents(0)`，冷会话走 `sessionPersistence.open(id,'read')` + `handle.read(0)`）；读不到就给摘要 + `unavailable:'host-log-missing'`，不抛错、不伪造。空输出不写（不拿空记录覆盖上一次）。`setTaskLastMessage` 按正文 `digest` 幂等（重复落库不重写行、不动 `updated_at`）。
+
+### 台账正文去重（P1，0.30.1）
+
+**为什么**：会话正文真源是宿主会话日志（`~/.dsh/sessions` 的 jsonl + `sessionPersistence`/`sessionQuery`），dsh-context 的「编队/Fleet」也是读它。插件台账再存一份 brief/report/最后一条消息的正文，就是同一段文本两份副本（实测 333 个任务里 `messages` 561 KB + `last_message_json` 300 KB 都是副本）。P1 把**正文**从台账里拿掉，只留可回查的借条。
+
+**三类数据分开看**（判断「能不能删」的唯一口径）：
+
+| 数据 | 宿主有没有 | 处理 |
+|---|---|---|
+| `messages.kind` = brief / followup / resume / report | 有：子会话日志里的 `user/message`（简报/追问）与 `tool/call`（`task_report` 参数） | **只存借条**：`rendered` = 单行摘要（≤240 字），`meta_json = {body:'host', chars, digest, summary}` |
+| `tasks.last_message_json` | 有：该会话最后一条 `assistant/message` | **只存借条**（同上 + `at`/`stopReason`/`source`） |
+| `tasks.brief_json`（创建快照：目标/验收/约束/背景/原话/checks/workspaceIndex/worktreeCleanup） | **没有**（这是用户输入的编排参数，宿主不存） | **原样保留**——删了 `task_detail` 会丢字段、A1 机器验收拿不到 `checks` |
+| 交付确认（`delivered`/`accepted_*`/`close_reason`）、依赖链、验收证据、`notifications`、`question`、goal/worktree/team 列、`memories`/`groups_v1`/`automations` | **没有** | **一律不删**（删了就丢编排语义） |
+
+**读侧口径**（`src/message-body.js` + `src/last-message.js`）：
+
+- 新行：`meta.body === 'host'` → brief 用 `renderBriefForTask(task)` **确定性重渲染**（`source:'derived'`）；followup/resume 按 `digest` 在宿主 `user/message` 里精确找回；report 按 `digest` 在 `task_report` 的 `tool/call` 参数里找回（`source:'host'`）。
+- 旧行（P1 之前的行）：没有 `body` 标记 → `rendered`/`text`/`path` 就是正文，**原样返回**（`source:'inline'|'file'`），不需要任何数据迁移。
+- 读不到：返回摘要 + `unavailable`（`panel.detailBody` 的 `body:{source:'summary', unavailable:'host-log-missing'}`、`task_status` 的「正文不可读：…」），**不抛错、不伪造**。
+- 缓存：按 `sessionId` 短 TTL（5 秒、最多 32 条），失败不缓存。
+
+**改了什么**：`src/session-body.js`（新：宿主事件抽取 + 冷读 + 短缓存）、`src/message-body.js`（新：借条写入/解析口径）、`src/last-message.js`（借条 + `resolveLastMessage`）、`src/settlement.js`（只落借条）、`src/tools.js`（写入瘦身 + `task_status include=full` 冷读）、`src/panel-actions.js`（`detailBody` 异步补正文 + 消息行标 `body`）、`src/host-route.js`（detail 走 `detailBody`）、`src/queue.js`（派发改用 `renderBriefForTask` 现渲染）、`index.js`（装配唯一 `bodySource`）、`client/src/views.js`（「正文来自子会话 / 正文不可读（摘要）」徽标）。
+
+**回滚**：P1 不删列、不重建表、不 VACUUM；回滚只需把写入侧切回「也写正文」+ 派生读路径改回读台账，历史行（含旧正文）一直都在。**风险**：正文可用性从此与「宿主会话是否还在」绑定——宿主会话被删/归档/迁移待办时，插件只剩摘要。
+
 
 ## 启动对账（S2）
 
@@ -568,7 +593,6 @@ $DSH_HOME/state/orchestrator/
   logs/YYYY-MM-DD.jsonl
   handoff/handoff-YYYY-MM-DD.jsonl  # 交接契约 v1 事件（task.handoff.*，保留 30 天）
   lessons/<项目>-<short-hash>.md   # task_detail 经验指针指向的记忆文件（每次派发覆盖）
-  reports/<taskId>.md              # 超 64 KiB 的返回消息全文
   workspace/                       # 指挥舱
 ```
 

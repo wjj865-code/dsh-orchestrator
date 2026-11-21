@@ -1,5 +1,27 @@
 # Changelog
 
+## 未发布（0.30.1 待发）—— 台账正文去重（P1，t-90651ad4）
+
+**只做数据去重，不改派发后端、不改状态机、不新增工具**（`createTools()` 仍是 10 个）。用户原话：「dsh官方就有保存子智能体的相关状态和会话数据，看下是否可以从插件中移除这部分数据，避免重复。」计划文档：`reports/plans/t-90651ad4.md`（P2–P4「派发改普通会话」不在本次范围）。
+
+**背景（实测）**：会话正文的真源是宿主会话日志（`~/.dsh/sessions` 的 jsonl + `sessionPersistence`/`sessionQuery`；dsh-context 的「编队/Fleet」也是读它）。本机台账 333 个任务里，`messages` 表 561 KB（report 327 / brief 182 / followup 46）与 `tasks.last_message_json` 300 KB 都是同一段文本的第二份副本，另有一个「超 64 KiB 落 `reports/<taskId>.md`」的第三条旁路。
+
+**行为变化**
+
+1. **正文类消息只存借条**：`messages` 的 `brief` / `followup` / `resume` / `report` 四类，`rendered` 改为**单行摘要（≤240 字）**，`meta_json` 记 `{body:'host', chars, digest, summary}`。台账里不再有这几类的正文。
+2. **最新返回消息只存借条**：`tasks.last_message_json` 从 `{text}` / `{path}` 改为 `{at, stopReason, source, bytes, chars, digest, summary, stored:'host'}`；**不再写 `<state>/reports/<taskId>.md`**（该目录只剩历史文件，插件不再读写）。
+3. **读侧按需冷读宿主**：`task_status({include:'full'})` 与面板抽屉的「最新回复」在需要全文时才读宿主会话日志——`src/session-body.js`（新）先试 live 会话 `sessions.get(id).snapshotEvents(0)`，再试冷读 `sessionPersistence.open(id,'read')` + `handle.read(0)`，抽 `assistant/message`（最后一段话）、`user/message`（简报/追问，按 digest 精确匹配）、`tool/call` 里的 `task_report` 参数（回报正文）。
+4. **读不到就降级，不抛错不伪造**：`task_status` 显示「正文不可读：host-log-missing；以下只是摘要」；面板 detail 返回 `body:{source:'summary', unavailable:'host-log-missing'}` 并在抽屉里显示「正文不可读（摘要）」徽标。
+5. **旧行零迁移**：P1 之前的行没有 `meta.body` 标记，`rendered`/`text`/`path` 就是正文，读路径原样返回（`source:'inline'|'file'`）。**不改 schema、不删列、不 VACUUM**，回滚只需把写入侧切回「也写正文」。
+
+**不动的部分（C 档）**：`tasks.brief_json`（创建快照：目标/验收/约束/背景原话/`checks`/工作区索引/worktreeCleanup——宿主没有、删了 `task_detail` 与 A1 机器验收会坏）、`settle`/`acceptance`/`close`/`delivery_failed` 消息、`acceptance_json`、两段式交付（`delivered`/`accepted_*`/`close_reason`）、`depends_json`、`notifications`、`question*`、`goal_state`、worktree 七列、`team_task_*`、`memories`/`groups_v1`/`automations`。
+
+**代码**：新增 `src/session-body.js`（宿主事件抽取 + live/冷读 + 5 秒/32 条短缓存）、`src/message-body.js`（借条写入 `compactMessage` 与解析 `resolveMessageBody`）；改 `src/last-message.js`（`captureLastMessage` 只产出借条、新增 `resolveLastMessage`，`readLastMessage` 保留读旧行）、`src/settlement.js`（结算只落借条，`reportsDir` 入参保留但不再使用）、`src/tools.js`（brief/followup/resume/report 写入瘦身 + `task_status include:full` 冷读 + 降级行）、`src/panel-actions.js`（新增异步 `detailBody`；消息行带 `body` 标记；followup/brief 写入瘦身）、`src/host-route.js`（detail 走 `detailBody`）、`src/queue.js`（派发一律 `renderBriefForTask(task)` 现渲染）、`src/ledger.js`（`briefText` 降级为「读旧行的兜底」并注明不再用于派发）、`index.js`（唯一 `bodySource` 装配，注入 tools 与面板）、`client/src/views.js`（抽屉徽标「正文来自子会话 / 正文不可读（摘要）」+ 降级说明行）。
+
+**测试**：新增 `test/body-dedupe.test.js`（5 条：写侧借条不带正文、读侧按 digest 从宿主日志取回、旧行原样可读、宿主缺失降级口径（`task_status` 与面板 detail 同源）、`session-body` 抽取器 + 冷读句柄含抛错降级）；改写 `test/settlement.test.js`（借条形状、超 64 KiB 不再落盘、幂等与空输出）、`test/tools.test.js`（`include:full` 冷读/降级/旧 inline-file 行）、`test/index.test.js`（装配级借条落地 + 宿主可读时给回全文 + 不可读时降级）、`test/panel-actions.test.js`（重派 brief 借条 + 重渲染出的两行）、`test/client.test.js`（抽屉「最新回复」的「正文来自子会话 / 正文不可读（摘要）」徽标与降级说明行）。全量 `1178` 条用例：`1173` 通过、`5` 跳过（符号链接权限，CI/有权限环境真跑）、`0` 失败。
+
+**文档**：`docs/ARCHITECTURE.md`（重写「最新返回消息（B1）」+ 新增「台账正文去重（P1）」一节，含三类数据对照表、读侧口径、回滚与风险；落盘清单删掉 `reports/<taskId>.md`）、`docs/LIMITATIONS.md`（正文可用性绑定宿主会话、缓存窗口）、`README.md`（`task_status` 行）、本条目。
+
 ## 0.30.0（2026-11-21）—— 有任务在跑不再弹切换卡、确认后真跳过去 + 子会话可写项目记忆（t-a79e12d8 / t-94b99f3f）
 
 两条用户直接提的改动合并发版，**没有改派发语义、状态机、权限模型，也没有新增工具**（`createTools()` 仍是 10 个）。用户原话：「目前超过40%，自动切新的主会话逻辑不太对，例如有运行中任务时，依然会询问用户是否切换，选择确认后，当前会话不是主会话了，但没有新建和跳转到新会话」、「另外写记忆为啥只属于协调者，按理说子会话在执行任务也能读到很多项目背景和已有实践，也需要进行写入记忆。A 子会话写项目记忆（推荐）。」

@@ -1,7 +1,7 @@
 // 派发队列：平台不排队（满了抛 ACTIVATION_LIMIT_REACHED），插件自己排。
 // 单锁串行：同一时刻只有一个 pump 在跑；spawn 成功 / 子会话结算 / 任务终态都会唤醒。
 import {
-  briefText, clearQueued, countPending, getTask, listPendingQueue, listTasks, markQueued, transition,
+  clearQueued, countPending, getTask, listPendingQueue, listTasks, markQueued, transition,
 } from './ledger.js'
 import { promoteDependents } from './deps.js'
 import { renderBriefForTask } from './brief.js'
@@ -73,7 +73,8 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
         }
         // T1：派发提示词就是 brief 本身（任务编号 + task_detail 指引）；详情由子会话读台账，
         // 前置任务/产物也走 task_detail 现读，不再在派发时拼一段快照。
-        const rendered = briefText(db, id) ?? renderBriefForTask(task)
+        // P1：台账 messages 里 brief 只剩借条（摘要），派发一律按任务行现渲染（同一函数、确定性输出）。
+        const rendered = renderBriefForTask(task)
         // P9：worktree 任务在派发前建检出，子会话 cwd = 检出目录 + 原 target 偏移；普通任务一次 git 都不调。
         let dispatchCwd = task.target_dir ?? undefined
         if (worktree !== undefined && WORKTREE_DISPATCH_STATES.includes(task.worktree_state)) {

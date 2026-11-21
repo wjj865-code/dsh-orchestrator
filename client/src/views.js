@@ -1527,18 +1527,33 @@ export function createViews({
         </div>
       )
 
-      // 2) B1 最新回复：结算时落库的最后一条 assistant 消息（内联正文 / 大文件摘要+路径）。
+      // 2) B1 最新回复：台账只存借条（P1 正文去重），正文由服务端 `detail.body` 说明来源：
+      //    host = 刚从宿主会话日志冷读；inline/file = 旧行自带正文；summary = 读不到（只剩摘要）。
+      const bodyInfo = detail !== null && typeof detail.body === 'object' && detail.body !== null ? detail.body : null
+      const bodyMissing = bodyInfo !== null && bodyInfo.source === 'summary'
       const lastMessage = task.lastMessage !== null && typeof task.lastMessage === 'object' ? task.lastMessage : null
+      const lastMessageBadge = lastMessage === null
+        ? ''
+        : lastMessage.stored === 'host'
+          ? (bodyMissing ? '正文不可读（摘要）' : '正文来自子会话')
+          : (lastMessage.stored === 'file' ? '全文在报告文件' : '内联正文')
       const lastMessageBody = lastMessage === null
         ? <div className="orch-muted">{'还没有返回消息（子会话结算后自动记录最后一条回复）。'}</div>
         : (
           <div className="orch-stack">
             <div className="orch-card-meta">
-              <Badge tone="info">{lastMessage.stored === 'file' ? '全文在报告文件' : '内联正文'}</Badge>
+              <Badge tone={bodyMissing ? 'warn' : 'info'}>{lastMessageBadge}</Badge>
               {lastMessage.stopReason ? <Chip title="结束原因">{lastMessage.stopReason}</Chip> : null}
               <span className="orch-msg-at">{timeLabel(lastMessage.at)}</span>
               {typeof lastMessage.chars === 'number' ? <span className="orch-msg-at">{`${lastMessage.chars} 字`}</span> : null}
             </div>
+            {bodyMissing
+              ? (
+                <div className="orch-muted">
+                  {`正文不可读：${bodyInfo.unavailable || 'host-log-missing'}；以下只是台账里的摘要。`}
+                </div>
+              )
+              : null}
             <pre className="orch-pre">{lastMessage.stored === 'file'
               ? `${lastMessage.summary || ''}\n\n全文：${lastMessage.path || '（路径缺失）'}`
               : String(lastMessage.text || lastMessage.summary || '（空）')}</pre>

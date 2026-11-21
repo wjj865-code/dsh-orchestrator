@@ -287,7 +287,12 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
       if (panel === undefined) return json(panelFailure('PANEL_ACTIONS_UNAVAILABLE'), 500)
       try {
         let result
-        if (endpoint === 'detail') result = panel.detail(body?.taskId)
+        if (endpoint === 'detail') {
+          // P1：详情默认给同步快照；有 detailBody 时再按需冷读宿主会话日志补「最新回复」正文。
+          result = typeof panel.detailBody === 'function'
+            ? await panel.detailBody(body?.taskId)
+            : panel.detail(body?.taskId)
+        }
         else if (endpoint === 'artifacts') result = panel.artifacts(body?.limit)
         else if (endpoint === 'preview') result = panel.preview(body?.taskId, body?.path)
         else if (endpoint === 'stop') result = await panel.stop(body?.taskId)

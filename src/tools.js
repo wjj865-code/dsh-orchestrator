@@ -27,7 +27,10 @@ import {
   checksOf, executionDirOf, normalizeChecks, runChecks, specOf,
 } from './acceptance.js'
 import { collectWorkspaceArtifacts } from './artifact-collect.js'
-import { formatBytes, PREVIEW_CHARS, readLastMessage } from './last-message.js'
+import { formatBytes, PREVIEW_CHARS, readLastMessage, resolveLastMessage } from './last-message.js'
+// P1 去重：正文类消息只存借条（digest + 摘要），正文按需从宿主会话日志冷读。
+import { compactMessage } from './message-body.js'
+import { HOST_LOG_MISSING, renderReportText } from './session-body.js'
 import { DEFAULT_LINES, MAX_LINES, readWorkspaceFile, renderWorkspaceRead } from './read-workspace.js'
 import { registeredArtifacts } from './artifact-location.js'
 import { preferenceSavedHint, projectPreferenceSavedHint, upsertPreference } from './preferences.js'
@@ -85,20 +88,32 @@ const short = (value, max = 40) => {
   return text.length > max ? `${text.slice(0, max)}…` : text
 }
 
-// 子会话最新返回消息（B1）：默认给摘要/预览，include=full 才读全文（长消息从 reports 文件读）。
-function lastMessageLines(record, { full = false } = {}) {
-  const where = record.stored === 'file' ? '全文存 reports 文件' : '内联存台账'
+// 子会话最新返回消息（B1）：台账里只有借条（P1：正文住宿主会话日志）。
+// 默认给摘要/预览；include=full 时用读侧解析出的正文（resolved），读不到就显式降级为摘要。
+function lastMessageLines(record, { full = false, resolved = null } = {}) {
+  const where = record.stored === 'file'
+    ? '全文存 reports 文件'
+    : (record.stored === 'host' ? '正文在子会话（宿主会话日志）' : '内联存台账')
   const head = `最近返回（结算 ${record.stopReason ?? '未知'}｜${record.chars ?? '?'} 字｜${formatBytes(record.bytes)}｜${where}）：`
+  const textOf = () => (resolved === null ? readLastMessage(record) : resolved.text)
+  const degraded = resolved !== null && resolved.source === 'summary'
+    ? `（正文不可读：${resolved.unavailable ?? HOST_LOG_MISSING}；以下只是摘要）`
+    : ''
   if (full === true) {
-    const text = readLastMessage(record)
-    return [head, text === '' ? '- 空' : text]
+    const text = textOf()
+    return [head, ...(degraded === '' ? [] : [degraded]), text === '' ? '- 空' : text]
   }
-  if (record.stored === 'file') {
+  if (record.stored === 'file' && resolved === null) {
     return [head, `全文：${record.path ?? '(路径缺失)'}`, `摘要：${record.summary || '-'}`, '看全文：task_status 带 include=full']
   }
-  const text = readLastMessage(record)
-  if (text.length <= PREVIEW_CHARS) return [head, text]
-  return [head, `${text.slice(0, PREVIEW_CHARS)}…`, `（已截断，共 ${record.chars ?? text.length} 字；全文用 include=full）`]
+  const text = textOf()
+  if (text.length <= PREVIEW_CHARS) return [head, ...(degraded === '' ? [] : [degraded]), text]
+  return [
+    head,
+    ...(degraded === '' ? [] : [degraded]),
+    `${text.slice(0, PREVIEW_CHARS)}…`,
+    `（已截断，共 ${record.chars ?? text.length} 字；全文用 include=full）`,
+  ]
 }
 
 function taskLine(db, task, { staleMinutes = 30 } = {}) {
@@ -129,7 +144,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, workspaceChanges, goalBridge, teamBoard, stateDir, worktree, cleanupWorktree, taskOfAgent, runAcceptance = runChecks }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, bodySource, workspaceChanges, goalBridge, teamBoard, stateDir, worktree, cleanupWorktree, taskOfAgent, runAcceptance = runChecks }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   // P9：宿主侧 git 能力（测试注入 fake；生产用 execFile）。普通任务一次都不会调用它。
@@ -529,7 +544,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }
     const message = args.message ?? ''
     // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
-    const seq = addMessage(db, task.id, { kind: 'followup', rendered: message, meta: { delivery: 'pending' } })
+    // P1：正文不再进台账（真源是子会话在宿主的 user/message），这里只留 digest + 摘要。
+    const followupBody = compactMessage('followup', message)
+    const seq = addMessage(db, task.id, { kind: 'followup', rendered: followupBody.rendered, meta: { ...(followupBody.meta ?? {}), delivery: 'pending' } })
     try {
       await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, message), task.access === 'full' ? 'full' : undefined)
     } catch (error) {
@@ -684,7 +701,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       sessionId: current.id,
       detail: { retryOf: task.id, dependsOn: depends.ids, status: retried.status, access: retried.access ?? null, callId: exec?.callId },
     })
-    addMessage(db, retried.id, { kind: 'brief', rendered: renderBriefForTask(retried) })
+    // P1：重派也走借条（与 task_create / 面板重派同口径）。
+    const retriedBrief = compactMessage('brief', renderBriefForTask(retried))
+    addMessage(db, retried.id, { kind: 'brief', rendered: retriedBrief.rendered, meta: retriedBrief.meta })
     if (current.live === false) {
       const message = invalidHint() === '' ? toolFailure('MAIN_SESSION_UNAVAILABLE') : invalidHint()
       log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })
@@ -726,7 +745,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const text = typeof args.message === 'string' ? args.message.trim() : ''
     const body = resumePrompt(task, { history, message: text })
     const from = task.status
-    const seq = addMessage(db, task.id, { kind: 'resume', rendered: body, meta: { delivery: 'pending', from, stopReason: task.last_stop_reason } })
+    // P1：续跑指令正文同样只留借条（宿主 user/message 是真源）。
+    const resumeBody = compactMessage('resume', body)
+    const seq = addMessage(db, task.id, { kind: 'resume', rendered: resumeBody.rendered, meta: { ...(resumeBody.meta ?? {}), delivery: 'pending', from, stopReason: task.last_stop_reason } })
     try {
       // 与追问同一条投递链：dispatch.send 内部就是冷恢复 + 幂等补沙箱 / target 可写根 / goal。
       await sendFollowup(task.target, body, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, body), task.access === 'full' ? 'full' : undefined)
@@ -1374,8 +1395,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           ...(teamTask === null ? {} : { teamTaskId: teamTask.id, teamTaskRevision: teamTask.revision }),
         },
       })
-      const rendered = renderBriefForTask(task)
-      addMessage(db, task.id, { kind: 'brief', rendered })
+      // P1：简报正文不再进台账（真源 = 子会话第一条 user/message，且可由 renderBriefForTask 确定性重渲染）。
+      const briefBody = compactMessage('brief', renderBriefForTask(task))
+      addMessage(db, task.id, { kind: 'brief', rendered: briefBody.rendered, meta: briefBody.meta })
       // 并发风险提示：require 档被 allowConcurrent 放行、warn 档照常创建时由 guard 给；
       // off 档退回旧的 advisory 一行（保持历史行为，不静默消失）。
       const conflictNote = guard.note !== ''
@@ -1472,7 +1494,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
 
     wrap('task_status', '查看一个任务的详情与最近消息。', objectSchema({
       task_id: str('任务编号，如 t-1a2b3c4d'),
-      include: str('可选：填 full 时返回子会话最新返回消息的全文（长消息从 reports 文件读）'),
+      include: str('可选：填 full 时返回子会话最新返回消息的全文（正文从宿主会话日志冷读；读不到降级为摘要）'),
     }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
@@ -1559,9 +1581,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       // P6/T6.2：产物区块（错过通知时的兜底回流路径）。与通知同一口径（artifactLines 共用）：
       // 只列 present 能接住的普通文件，目录 / 符号链接 / 已不存在只计数不进清单；带交付指令。
       lines.push(...artifactLines({ artifacts: task.artifacts }, { counts: true }))
-      // B1：结算时落的最完整返回消息 → 主会话不必打开子会话就能读到它最后说了什么。
+      // B1（P1）：结算时落的最完整返回消息 → 主会话不必打开子会话就能读到它最后说了什么。
+      // 台账里只有借条；`include=full` 时按需从宿主会话日志冷读正文，读不到显式降级为摘要。
       if (task.last_message !== null && task.last_message !== undefined) {
-        lines.push(...lastMessageLines(task.last_message, { full: args.include === 'full' }))
+        const resolved = args.include === 'full'
+          ? await resolveLastMessage(task.last_message, { body: bodySource, sessionId: task.session_id })
+          : null
+        lines.push(...lastMessageLines(task.last_message, { full: args.include === 'full', resolved }))
       }
       if (task.session_id !== null && task.session_id !== undefined) {
         lines.push('打开方式：协调者会话的子代理目录（subagent catalog），按上面的子会话 id 打开；它不在普通会话列表里。')
@@ -1889,7 +1915,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         })
         if (result.ok !== true) {
           const failureText = acceptanceFailureText(result)
-          addMessage(db, task.id, { kind: 'report', rendered: `[done] ${args.summary ?? ''}` })
+          const reportBody = compactMessage('report', renderReportText('done', args.summary ?? ''))
+          addMessage(db, task.id, { kind: 'report', rendered: reportBody.rendered, meta: reportBody.meta })
           addMessage(db, task.id, { kind: 'acceptance', rendered: failureText })
           log('task.acceptance.rejected', {
             taskId: task.id,
@@ -1933,7 +1960,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           },
         })
       }
-      addMessage(db, task.id, { kind: 'report', rendered: `[${args.status}] ${args.summary ?? ''}` })
+      const reportRow = compactMessage('report', renderReportText(args.status, args.summary ?? ''))
+      addMessage(db, task.id, { kind: 'report', rendered: reportRow.rendered, meta: reportRow.meta })
       if (acceptanceNotice !== '') addMessage(db, task.id, { kind: 'acceptance', rendered: acceptanceNotice })
       // 追问必达（t-99d4a98c）：台账里「在等回报」的标记 = 这份回报就是协调者追问/续跑后等的答案。
       // 读迁移前的行（迁移不碰这一列），读完立刻清标记：必达只对追问后的**第一条**回报生效，

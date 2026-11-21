@@ -2,6 +2,8 @@
 // 与工具层共享同一台账/队列/派发器；鉴权由连接层 owner-only 负责。
 import { closeSync, openSync, readSync, statSync } from 'node:fs'
 import { renderBriefForTask } from './brief.js'
+import { compactMessage } from './message-body.js'
+import { resolveLastMessage } from './last-message.js'
 import {
   addMessage, clearTaskQuestion, createTask, deleteTask, findRecentDeliveredFollowup, getTask, listTasks,
   recentMessages, setMessageDelivery, setTaskError, transition, touchTask, incrementAttempts, markReportExpected,
@@ -96,11 +98,13 @@ const followupFailure = task => {
   }
 }
 
-export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge, cleanupWorktree, teamBoard }) {
+export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge, cleanupWorktree, teamBoard, bodySource }) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志不能影响 UI 动作 */ }
   }
   const current = () => typeof coordinatorStatus === 'function' ? coordinatorStatus() : { id: undefined, live: true }
+  // 正文读取器（P1）：细节接口按需冷读宿主会话日志；没装配时一律按摘要降级（不报错）。
+  const readBody = task => resolveLastMessage(task.last_message, { body: bodySource, sessionId: task.session_id })
   // P2-4（D6）：官方 Team 板关联视图。读失败只让这一块消失，不能让抽屉 500。
   const teamOf = task => {
     if (typeof teamBoard !== 'function') return null
@@ -113,8 +117,15 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     // recentMessages 是倒序，翻成时间顺序再按「失败行跟随的 followup」推投递状态。
     const rows = recentMessages(db, task.id, DETAIL_MESSAGE_LIMIT).reverse()
     const deliveries = messageDeliveries(rows)
+    // P1：正文类消息在台账里只有借条（`meta.body === 'host'`）；旧行 meta 里没有这个标记 = 自带全文。
     const messages = rows.map((row, index) => ({
-      seq: row.seq, kind: row.kind, text: row.rendered, at: row.at, delivery: deliveries[index],
+      seq: row.seq,
+      kind: row.kind,
+      text: row.rendered,
+      at: row.at,
+      delivery: deliveries[index],
+      body: row.meta?.body === 'host' ? 'host' : 'inline',
+      ...(row.meta?.body === 'host' && Number.isFinite(row.meta?.chars) ? { chars: row.meta.chars } : {}),
     }))
     const dependencies = task.depends_on.map(id => {
       const dep = getTask(db, id)
@@ -161,8 +172,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         brief: task.brief,
         // 平台 goal 只读镜像：面板只展示，不提供暂停/恢复/清除动作。
         goalState: task.goal_state ?? null,
-        // B1 最新返回消息：结算时落库的最后一条 assistant 消息。
-        // 内联消息给正文（≤64 KiB），大文件消息只给摘要 + 路径，详情接口不读盘。
+        // B1 最新返回消息：台账只存借条（P1）；正文由 detailBody 冷读宿主会话日志后补 `text`。
         lastMessage: task.last_message ?? null,
         // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）；旧行都是 null。
         deliveredAt: task.delivered_at ?? null,
@@ -189,6 +199,35 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       dependencies,
       dependents,
       messages,
+    }
+  }
+
+  /**
+   * 面板详情 + 正文（P1 读侧）：在同步 `detailOf` 之上按需冷读宿主会话日志，把
+   * `lastMessage.text` 填成全文，并给出 `body:{source, unavailable?}` 说明来源。
+   *
+   * 为什么不在 `detailOf` 里直接 await：面板动作层其余入口（stop/retry/message/delete）
+   * 与测试都用同步详情；把异步只留在这一条读路径上，失败时仍能拿到「只有摘要」的完整抽屉。
+   */
+  const detailBody = async taskId => {
+    const base = detailOf(taskId)
+    if (base?.ok !== true) return base
+    const task = getTask(db, base.task.id)
+    if (task === undefined) return base
+    const resolved = await readBody(task)
+    return {
+      ...base,
+      task: {
+        ...base.task,
+        lastMessage: task.last_message === null || task.last_message === undefined
+          ? null
+          : { ...task.last_message, ...(resolved === null ? {} : { text: resolved.text }) },
+      },
+      // 读侧降级口径：source=host（宿主会话日志冷读）/ inline|file（旧行自带正文）/
+      // summary（读不到，只剩摘要 + unavailable）。
+      body: resolved === null
+        ? { source: 'none' }
+        : { source: resolved.source, ...(resolved.unavailable === undefined ? {} : { unavailable: resolved.unavailable }) },
     }
   }
 
@@ -359,7 +398,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         status: depState.ready ? 'pending' : 'waiting_dep',
       })
       // T1：面板重派与 task_create 同口径——brief 只留任务编号 + task_detail 指引。
-      addMessage(db, retried.id, { kind: 'brief', rendered: renderBriefForTask(retried) })
+      // P1：正文不进台账（借条 = digest + 摘要）。
+      const briefBody = compactMessage('brief', renderBriefForTask(retried))
+      addMessage(db, retried.id, { kind: 'brief', rendered: briefBody.rendered, meta: briefBody.meta })
     } catch (error) {
       return panelFailure('RETRY_FAILED', { reason: error?.message ?? String(error) })
     }
@@ -402,7 +443,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     }
     // followup 先落 pending（待发），投递成功改 delivered，失败改 failed 再补一行 delivery_failed。
     // 详情抽屉据此显示「待发/已投递/投递失败」，不必猜。
-    const seq = addMessage(db, task.id, { kind: 'followup', rendered: content, meta: { delivery: 'pending' } })
+    // P1：正文不进台账（真源 = 子会话在宿主的 user/message），只留 digest + 摘要。
+    const panelBody = compactMessage('followup', content)
+    const seq = addMessage(db, task.id, { kind: 'followup', rendered: panelBody.rendered, meta: { ...(panelBody.meta ?? {}), delivery: 'pending' } })
     try {
       if (typeof dispatcher.sendReliable === 'function') {
         await dispatcher.sendReliable(task.target, content, undefined, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined)
@@ -502,7 +545,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     return { ok: true, taskId: task.id, deleted: removed.deleted }
   }
 
-  return { detail: detailOf, artifacts: artifactsOf, preview, stop, retry, message, close, delete: remove, short }
+  return { detail: detailOf, detailBody, artifacts: artifactsOf, preview, stop, retry, message, close, delete: remove, short }
 }
 
 export { short as panelShort }

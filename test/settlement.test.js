@@ -4,7 +4,8 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { openLedger, createTask, getTask, transition, addMessage, recentMessages, recordProgress, setTaskArtifacts } from '../src/ledger.js'
 import { createSettlementReporter, mapSettle, outputSummary, PAUSED_REASON } from '../src/settlement.js'
-import { MAX_INLINE_BYTES, SUMMARY_CHARS } from '../src/last-message.js'
+import { MAX_INLINE_BYTES, SUMMARY_CHARS, resolveLastMessage } from '../src/last-message.js'
+import { HOST_LOG_MISSING } from '../src/session-body.js'
 import { saveWorkspaceIndex } from '../src/workspace-index.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
@@ -338,8 +339,8 @@ test('结算消息不影响 task_report 的回报行顺序', async () => {
   f.db.close()
 })
 
-// B1：结算把完整 lastAssistantMessage 落进台账，主会话可直接读（task_status）。
-test('B1：completed 落完整 lastAssistantMessage（短消息内联，摘要仍只 240 字）', async () => {
+// B1：结算把完整 lastAssistantMessage 的**借条**落进台账（P1：正文留在宿主会话日志）。
+test('B1：completed 落 lastAssistantMessage 借条（借条不含正文，摘要仍只 240 字）', async () => {
   const f = await setup()
   const full = '第一段：改完了。\n第二段：npm test 540/540 全绿。'
   const outcome = f.reporter.report({
@@ -350,8 +351,10 @@ test('B1：completed 落完整 lastAssistantMessage（短消息内联，摘要�
     source: 'lifecycle',
   })
   const record = getTask(f.db, f.task.id).last_message
-  assert.equal(record.stored, 'inline')
-  assert.equal(record.text, full)
+  // P1：台账只存借条（stored='host'），不再有 text/path。
+  assert.equal(record.stored, 'host')
+  assert.equal(record.text, undefined)
+  assert.equal(record.path, undefined)
   assert.equal(record.chars, full.length)
   assert.equal(record.bytes, Buffer.byteLength(full))
   assert.equal(record.stopReason, 'completed')
@@ -360,32 +363,42 @@ test('B1：completed 落完整 lastAssistantMessage（短消息内联，摘要�
   assert.equal(record.summary, '第一段：改完了。 第二段：npm test 540/540 全绿。')
   // 摘要给通知，正文只在台账里
   assert.equal(f.pushed[0].summary, '第一段：改完了。 第二段：npm test 540/540 全绿。')
-  assert.equal(outcome.lastMessage.stored, 'inline')
+  assert.equal(outcome.lastMessage.stored, 'host')
   assert.equal(outcome.lastMessage.path, null)
   // 短消息不建 reports 目录
   assert.equal(existsSync(f.reportsDir), false)
+  // 读侧：宿主会话日志给了全文 → source='host'；宿主读不到 → 摘要 + unavailable（不抛错）。
+  const host = await resolveLastMessage(record, { sessionId: 'child-1', body: { lastAssistant: async () => full } })
+  assert.deepEqual(host, { text: full, source: 'host' })
+  const missing = await resolveLastMessage(record, { sessionId: 'child-1', body: { lastAssistant: async () => undefined } })
+  assert.equal(missing.source, 'summary')
+  assert.equal(missing.text, record.summary)
+  assert.equal(missing.unavailable, HOST_LOG_MISSING)
   f.db.close()
 })
 
-test('B1：超 64KB 写 reports 文件，台账只留路径 + 摘要', async () => {
+test('B1：超 64KB 也只存借条（不再写 reports 文件），正文由宿主会话日志提供', async () => {
   const f = await setup()
   const full = Array.from({ length: 400 }, (_, index) => `第 ${index} 段：${'细'.repeat(100)}`).join('\n')
   assert.ok(Buffer.byteLength(full) > MAX_INLINE_BYTES)
   const outcome = f.reporter.report({ taskId: f.task.id, stopReason: 'completed', output: [{ type: 'text', text: full }] })
   const record = getTask(f.db, f.task.id).last_message
-  assert.equal(record.stored, 'file')
+  assert.equal(record.stored, 'host')
   assert.equal(record.text, undefined)
-  assert.equal(record.path, join(f.reportsDir, `${f.task.id}.md`))
-  assert.equal(readFileSync(record.path, 'utf8'), full)
+  assert.equal(record.path, undefined)
   assert.equal(record.bytes, Buffer.byteLength(full))
   assert.equal(record.summary.length, SUMMARY_CHARS + 1)
   assert.match(record.summary, /…$/)
-  assert.equal(outcome.lastMessage.path, record.path)
-  assert.deepEqual(readdirSync(f.reportsDir), [`${f.task.id}.md`])
+  assert.equal(outcome.lastMessage.path, null)
+  // 大文本也不落盘：reports 目录根本不存在（正文真源是宿主会话日志）。
+  assert.equal(existsSync(f.reportsDir), false)
+  const resolved = await resolveLastMessage(record, { sessionId: 'child-1', body: { lastAssistant: async () => full } })
+  assert.equal(resolved.source, 'host')
+  assert.equal(resolved.text.length, full.length)
   f.db.close()
 })
 
-test('B1：派发侧只给全文 lastMessage 也能落库（日志摘要不参与持久化）', async () => {
+test('B1：派发侧只给全文 lastMessage 也落借条（日志摘要不参与持久化）', async () => {
   const f = await setup()
   const full = '改完了，测试全绿。\n（这里比 240 字摘要更长的部分也要留下）'
   const outcome = f.reporter.report({
@@ -396,18 +409,20 @@ test('B1：派发侧只给全文 lastMessage 也能落库（日志摘要不参�
     source: 'dispatcher',
   })
   const record = getTask(f.db, f.task.id).last_message
-  assert.equal(record.text, full)
+  assert.equal(record.stored, 'host')
   assert.equal(record.source, 'dispatcher')
+  assert.equal(record.chars, full.length)
+  // 派发侧的全文优先于 output：digest 记的是 full 的摘要
+  assert.equal(record.summary, '改完了，测试全绿。 （这里比 240 字摘要更长的部分也要留下）')
   assert.equal(outcome.summary, '改完了，测试全绿。 （这里比 240 字摘要更长的部分也要留下）')
   f.db.close()
 })
 
-test('B1：重复结算幂等——不改状态、同正文不重写返回消息、不多写文件', async () => {
+test('B1：重复结算幂等——不改状态、同正文不重写返回消息、不再写文件', async () => {
   const f = await setup()
   const full = '长'.repeat(25_000)
   assert.ok(Buffer.byteLength(full) > MAX_INLINE_BYTES)
   const first = f.reporter.report({ taskId: f.task.id, stopReason: 'completed', output: [{ type: 'text', text: full }] })
-  const path = getTask(f.db, f.task.id).last_message.path
   // 同一段正文的重复结算（派发侧 + 生命周期双到达）：只补消息通道，不重写、不落第二条 settle。
   const second = f.reporter.report({ taskId: f.task.id, stopReason: 'completed', output: [{ type: 'text', text: full }] })
   assert.equal(first.action, 'updated')
@@ -415,14 +430,14 @@ test('B1：重复结算幂等——不改状态、同正文不重写返回消息
   assert.equal(second.changed, false)
   const record = getTask(f.db, f.task.id).last_message
   assert.equal(record.digest, first.lastMessage.digest)
-  assert.equal(readFileSync(path, 'utf8'), full)
-  assert.deepEqual(readdirSync(f.reportsDir), [`${f.task.id}.md`])
+  assert.equal(record.stored, 'host')
+  assert.equal(existsSync(f.reportsDir), false)
   assert.deepEqual(f.kinds(), ['settle'])
   // 更晚的 activation（例如 task_report done 所在回合的收尾文本）可以覆盖：它才是「最后一段话」。
   const third = f.reporter.report({ taskId: f.task.id, stopReason: 'completed', output: [{ type: 'text', text: '第二次的不同内容' }] })
   assert.equal(third.action, 'captured')
   assert.equal(third.changed, true)
-  assert.equal(getTask(f.db, f.task.id).last_message.text, '第二次的不同内容')
+  assert.equal(getTask(f.db, f.task.id).last_message.summary, '第二次的不同内容')
   assert.equal(getTask(f.db, f.task.id).status, 'delivered')
   f.db.close()
 })
@@ -431,11 +446,11 @@ test('B1：空输出不覆盖已有返回消息（不回写空记录）', async 
   const f = await setup()
   f.reporter.report({ taskId: f.task.id, stopReason: 'completed', output: [{ type: 'text', text: '先有正文' }] })
   const done = getTask(f.db, f.task.id)
-  assert.equal(done.last_message.text, '先有正文')
+  assert.equal(done.last_message.summary, '先有正文')
   // 已完成任务再收到空输出：跳过，返回消息保持不动
   const later = f.reporter.report({ taskId: f.task.id, stopReason: 'aborted', output: [] })
   assert.equal(later.action, 'skipped')
-  assert.equal(getTask(f.db, f.task.id).last_message.text, '先有正文')
+  assert.equal(getTask(f.db, f.task.id).last_message.summary, '先有正文')
   f.db.close()
 })
 
@@ -457,7 +472,8 @@ test('B1 时序修复：done 之后到达的 settlement 只补写最后消息，
   assert.equal(outcome.changed, true)
   const task = getTask(f.db, f.task.id)
   assert.equal(task.status, 'done')
-  assert.equal(task.last_message.text, '做完了，测试全绿。\n第二段也要留下。')
+  assert.equal(task.last_message.stored, 'host')
+  assert.equal(task.last_message.summary, '做完了，测试全绿。 第二段也要留下。')
   // 只落消息：不写 settle 行、不发通知、不释放可写根、不唤醒队列
   assert.deepEqual(f.kinds(), [])
   assert.equal(f.pushed.length, 0)

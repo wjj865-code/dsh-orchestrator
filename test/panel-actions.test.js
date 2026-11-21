@@ -5,6 +5,7 @@ import {
   setTaskAcceptance, setTaskArtifacts, setTaskLastMessage,
 } from '../src/ledger.js'
 import { createPanelActions } from '../src/panel-actions.js'
+import { resolveMessageBody } from '../src/message-body.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 function setup(options = {}) {
@@ -126,15 +127,29 @@ test('retry 的 brief 与 task_create 同口径：任务编号 + task_detail 指
   transition(db, old.id, 'failed', { error: 'boom' })
   const result = await actions.retry(old.id)
   assert.equal(result.ok, true)
-  const row = db.prepare("SELECT rendered FROM messages WHERE task_id = ? AND kind = 'brief'").get(result.taskId)
+  const row = db.prepare("SELECT seq, rendered, meta_json FROM messages WHERE task_id = ? AND kind = 'brief'").get(result.taskId)
   assert.ok(row !== undefined, '重派也要写 brief 消息')
-  const lines = row.rendered.split('\n')
+  // P1：台账里 brief 只剩借条（digest + 单行摘要），正文按需重渲染/冷读。
+  const meta = JSON.parse(row.meta_json)
+  assert.equal(meta.body, 'host')
+  assert.equal(typeof meta.digest, 'string')
+  assert.equal(row.rendered.includes('\n'), false)
+  assert.ok(row.rendered.length <= 241, `摘要应 ≤240 字，实际 ${row.rendered.length}`)
+  assert.equal(row.rendered.includes('把目标写得很长把目标写得很长'), false)
+  assert.equal(row.rendered.includes('【目标】'), false)
+  const resolved = await resolveMessageBody(
+    getTask(db, result.taskId),
+    { seq: row.seq, kind: 'brief', rendered: row.rendered, meta },
+    {},
+  )
+  const lines = resolved.text.split('\n')
   // t-4f7ce108：面板重派与 task_create 同口径——只剩新任务编号 + 详情指针（静态提示归 W1，不再内联目标）。
+  assert.equal(resolved.source, 'derived')
   assert.equal(lines.length, 2)
   assert.equal(lines[0], `【任务编号】${result.taskId}`)
   assert.match(lines[1], /^【任务详情】.*task_detail/)
-  assert.equal(row.rendered.includes('把目标写得很长把目标写得很长'), false)
-  assert.equal(row.rendered.includes('【目标】'), false)
+  assert.equal(resolved.text.includes('把目标写得很长把目标写得很长'), false)
+  assert.equal(resolved.text.includes('【目标】'), false)
   db.close()
 })
 

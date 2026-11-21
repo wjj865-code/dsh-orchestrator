@@ -9,7 +9,9 @@
 - 产物自动收集依赖平台 `workspace/changes` + `workspaceChanges`：Host 没挂这两个能力、会话在摘要登记前被释放、或改动发生在临时目录时收集为空；显式 `task_report.artifacts` 始终保留。当前回合的摘要要等 turn stopping 才追加，`task_report done` 当刻只能收到之前回合的摘要（当前回合由 `session/event` 监听在微任务里补收）。
 - 产物预览只读前 64 KiB 文本；二进制/目录只显示元信息。详情与产物页只能**复制路径**，不能直接打开本地文件（网页不允许脚本静默打开）；「打开子会话」打开的是产出它的任务会话，不是文件。
 - 消息投递状态（待发/已投递/失败）写在 `messages.meta_json`；A3 之前的旧行没该字段，只能按紧随的 `delivery_failed` 行推断，失败行落到 50 条消息窗口外的会显示成已投递。
-- **最新返回消息只留最后一次**：≤64 KiB 内联 `tasks.last_message_json`，更大写 `reports/<taskId>.md`（台账只留路径 + 240 字摘要）；后续回合/续派会覆盖，没有历史版本。`reports/` 不参与每日快照、没有保留期清理；手删报告后 `task_status` 仍显示摘要，`include:'full'` 给出读取失败原因。
+- **最新返回消息只留最后一次**：`tasks.last_message_json` 只存借条（`at`/`stopReason`/`bytes`/`chars`/`digest`/240 字摘要），正文按需从宿主会话日志冷读；后续回合/续派会覆盖，没有历史版本。
+- **正文可用性与宿主会话绑定（P1 起）**：简报/追问/回报/最后一条消息的正文住在宿主会话日志里（`~/.dsh/sessions`）。宿主会话被删、被归档、格式迁移待办（`migration-required`）或 profile 没挂 `sessionPersistence`/`sessions` 时，插件只能给摘要：`task_status include:'full'` 显示「正文不可读：host-log-missing」，面板抽屉显示「正文不可读（摘要）」徽标。**读不到不报错、也不伪造**；台账自己的编排状态（状态机/依赖/验收/交付确认）不受影响。
+- 正文读取有 5 秒/32 条的进程内缓存：刚结束的回合若宿主还没 flush 完，可能短暂读到上一条正文；重开面板或等一会儿即可。
 - **只认结算事件**：插件在结算前被卸载、或进程被杀时没有返回消息可落；`subagent.failed`（激活被拒）本身没有输出，只留死因。
 
 ## 目标（G1）与自动续跑（P2-2：委托宿主 goal）
@@ -198,7 +200,7 @@
 - **任务入口依赖宿主身份信号**：显示条件 = 当前会话 id 与台账 `main_session_id` 相等。id 取不到或 `session-role` 请求失败时按「不是主会话」处理，入口**默认隐藏**；会话切换立即重判，另有 5 秒兜底轮询——刚打开主会话 1 秒内可能短暂看不到入口。
 - 入口隐藏只是 UI 层：`main` 面板仍注册，`/api/orchestrator` 的动作端点也没有会话身份校验（owner-only 由平台 connection 负责）；真正的主会话权限仍由 `task_*` 工具的调用方校验兜底。
 - 面板是 2s 轮询、没有 SSE；任务很多时快照会变大。面板产物 ≤148 KiB 由 `check:client-size` 守着（工作台 v1 由 95 KiB 抬到 148 KiB——先定 128 KiB、全功能实测不够；子预算见脚本头部与 `docs/testing.md` G10；minify 后排查用 `CLIENT_MINIFY=0`）。
-- **删除只删台账，不删盘**：级联清 `tasks`/`messages`/`notifications`，产物文件、`reports/<taskId>.md` 全文、`memories` 都保留；平台侧子会话历史也没有删除 API。删除不可恢复。
+- **删除只删台账，不删盘**：级联清 `tasks`/`messages`/`notifications`，产物文件、`memories` 都保留；平台侧子会话历史（含 P1 起作为正文真源的会话日志）也没有删除 API。删除不可恢复。
 - **删除不给活跃任务**：活跃状态先「停止」；终态任务若还有活跃下游依赖也不让删（`DELETE_HAS_ACTIVE_DEPENDENTS`）。
 - 日报默认关闭；开启后每个主会话一条 schedule，主会话重建会重建 schedule。
 - **配置卡片保存不热重载**：点「保存」只把值写进当前 profile 的 `cordis.patch.yml`，**运行中的插件不会 reload**——轮换判定、看门狗/陈旧计时器仍按启动时那份配置；改动不会自动生效：**重载插件或重启 DSH 后生效**（卡片回执与简介都写明这一点）。

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply, inject, name, COORDINATOR_DENY } from '../index.js'
@@ -1204,7 +1204,11 @@ test('S1：派发侧 settle completed 落「已交付待确认」，写结算消
   // 两段式终态：自然结束先落 delivered，确认后才 done。
   assert.equal(row.status, 'delivered')
   assert.equal(row.error, null)
-  assert.equal(JSON.parse(row.last_message_json).text, '改完了，测试全绿')
+  // P1：台账只存借条（stored='host'，摘要 + digest），正文真源是子会话在宿主里的会话日志。
+  const record = JSON.parse(row.last_message_json)
+  assert.equal(record.stored, 'host')
+  assert.equal(record.text, undefined)
+  assert.equal(record.summary, '改完了，测试全绿')
   const message = after.prepare("SELECT rendered FROM messages WHERE task_id = ? AND kind = 'settle'").get(row.id)
   assert.match(message.rendered, /结算.*待确认/)
   assert.equal(after.prepare("SELECT level, status FROM notifications WHERE task_id = ?").get(row.id).level, 'notify')
@@ -1300,10 +1304,11 @@ test('S1：平台 subagent/end（续派/冷恢复）也能把 running 推到 can
   const row = db.prepare('SELECT id, status, error, last_message_json FROM tasks').get()
   assert.equal(row.status, 'cancelled')
   assert.match(row.error, /stopReason=aborted/)
-  // B1：结算把完整返回消息落进台账，主会话用 task_status 就读得到。
+  // B1：结算把返回消息的借条落进台账，主会话用 task_status 就读得到摘要。
   const stored = JSON.parse(row.last_message_json)
-  assert.equal(stored.stored, 'inline')
-  assert.equal(stored.text, '被中断了')
+  assert.equal(stored.stored, 'host')
+  assert.equal(stored.text, undefined)
+  assert.equal(stored.summary, '被中断了')
   const message = db.prepare("SELECT meta_json FROM messages WHERE kind = 'settle'").get()
   assert.equal(JSON.parse(message.meta_json).source, 'lifecycle')
   assert.equal(db.prepare('SELECT count(*) AS n FROM notifications').get().n, 1)
@@ -1314,7 +1319,7 @@ test('S1：平台 subagent/end（续派/冷恢复）也能把 running 推到 can
   await disposers.at(-1)?.()
 }))
 
-test('B1：超 64KB 的 lastAssistantMessage 落 reports 文件，task_status 默认给路径+摘要、include=full 给全文', withHome(async home => {
+test('B1（P1）：超 64KB 的返回消息也只存借条，不再写 reports 文件；宿主读不到时 include=full 降级为摘要', withHome(async home => {
   const s1 = makeAgent('s-1')
   let childId
   const subagents = {
@@ -1326,6 +1331,7 @@ test('B1：超 64KB 的 lastAssistantMessage 落 reports 文件，task_status �
     async interruptByParent() {},
     async listChildren() { return [{ id: childId ?? '', mode: 'continuable' }] },
   }
+  // 故意不给 sessions / sessionPersistence：模拟「宿主会话日志不可达」。
   const { ctx, registered, listeners, disposers } = fakeCtx({ agents: [s1], subagents })
   await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
@@ -1338,15 +1344,57 @@ test('B1：超 64KB 的 lastAssistantMessage 落 reports 文件，task_status �
   const row = db.prepare('SELECT id, last_message_json FROM tasks').get()
   const record = JSON.parse(row.last_message_json)
   db.close()
-  assert.equal(record.stored, 'file')
-  assert.ok(record.path.startsWith(join(home, 'state', 'orchestrator', 'reports')))
-  assert.equal(readFileSync(record.path, 'utf8'), big)
+  // 借条：stored='host'、无 text/path；不再有 reports 目录（正文真源是宿主会话日志）。
+  assert.equal(record.stored, 'host')
+  assert.equal(record.text, undefined)
+  assert.equal(record.path, undefined)
+  assert.equal(record.bytes, Buffer.byteLength(big))
+  assert.equal(existsSync(join(home, 'state', 'orchestrator', 'reports')), false)
   const preview = await byName.task_status.execute({ task_id: row.id }, { agent: s1 })
-  assert.ok(preview.includes(record.path))
-  assert.match(preview, /摘要：/)
+  assert.match(preview, /正文在子会话/)
+  assert.ok(preview.includes(record.summary), '预览给摘要（240 字上限，尾部 …）')
   assert.ok(!preview.includes(big))
+  // include=full：宿主读不到 → 摘要 + 可读降级说明，不抛错、不伪造全文。
   const full = await byName.task_status.execute({ task_id: row.id, include: 'full' }, { agent: s1 })
-  assert.ok(full.includes(big))
+  assert.ok(!full.includes(big))
+  assert.match(full, /正文不可读：host-log-missing/)
+  await disposers.at(-1)?.()
+}))
+
+test('B1（P1）：宿主会话日志可读时 include=full 给回全文（live 会话 snapshotEvents）', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  let childId
+  const subagents = {
+    async startActivation(spec) {
+      childId = spec.childId
+      return { childId: spec.childId, messageId: 'msg-1', result: new Promise(() => {}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [{ id: childId ?? '', mode: 'continuable' }] },
+  }
+  // 宿主 0.2.2-rc.5 的事件形状：assistant/message 的正文在 data.message.content。
+  const big = `最后一行\n${'细'.repeat(25_000)}`
+  const events = [
+    { seq: 0, time: 1, type: 'turn/start', data: { turn: 1 } },
+    { seq: 1, time: 2, type: 'assistant/message', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: big }] } } },
+    { seq: 2, time: 3, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const sessions = { get: id => (id === childId ? { snapshotEvents: () => events } : undefined) }
+  const { ctx, registered, listeners, disposers } = fakeCtx({ agents: [s1], subagents, sessions })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  await byName.task_create.execute({ title: '长回执 2', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  listeners.get('subagent/end')({ id: childId, local: true, stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: big }] })
+  await wait(50)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const row = db.prepare('SELECT id FROM tasks').get()
+  db.close()
+  const full = await byName.task_status.execute({ task_id: row.id, include: 'full' }, { agent: s1 })
+  assert.ok(full.includes(big), '宿主会话日志可读时应给回全文')
+  assert.match(full, /正文在子会话/)
+  assert.ok(!full.includes('正文不可读'))
   await disposers.at(-1)?.()
 }))
 
@@ -1465,7 +1513,9 @@ test('S1 结算：只写一条 settle；重复 subagent/end 只补消息不重�
   await wait(50)
   const { getTask } = await import('../src/ledger.js')
   assert.equal(getTask(ledger, taskId).status, 'delivered')
-  assert.equal(getTask(ledger, taskId).last_message.text, '做完了')
+  // P1：台账里只有借条（摘要），正文留在子会话的宿主会话日志。
+  assert.equal(getTask(ledger, taskId).last_message.stored, 'host')
+  assert.equal(getTask(ledger, taskId).last_message.summary, '做完了')
   assert.equal(ledger.prepare("SELECT count(*) AS n FROM messages WHERE kind = 'settle' AND task_id = ?").get(taskId).n, 1)
   // 重复的 subagent/end（派发侧 + 生命周期双到达）：只补消息，不再迁移/不再写 settle。
   f.listeners.get('subagent/end')({ id: spawned.id, local: true, stopReason: 'completed' })

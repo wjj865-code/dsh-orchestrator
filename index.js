@@ -9,6 +9,8 @@ import {
 } from './src/ledger.js'
 import { collectWorkspaceArtifacts, appendMissingArtifacts, MAX_AUTO_ARTIFACTS } from './src/artifact-collect.js'
 import { createSettlementReporter } from './src/settlement.js'
+// P1 去重：正文（简报/回报/最后一条消息）只在宿主会话日志里存一份，台账留借条。
+import { createBodySource } from './src/session-body.js'
 import { createDeliveredSweeper } from './src/delivered.js'
 import { taskLabel } from './src/task-label.js'
 import { createMainSession } from './src/main-session.js'
@@ -453,6 +455,13 @@ export async function apply(ctx, rawConfig = {}) {
   // 主会话：固定入口创建/打开唯一协调者会话；不再由 task_create 自动绑定。
   // 服务用 getter 惰性取：cordis 并发加载条目，apply 时服务可能还没就绪（同上 connection）。
   const service = name => host.service(name)
+  // P1 正文去重（0.30.1）：台账只存借条，正文按需从宿主会话日志冷读。
+  // 这里是**唯一**装配点（tools / 面板 detail 共用同一个读取器与缓存），读不到一律降级为摘要。
+  const bodySource = createBodySource({
+    sessions: () => service('sessions'),
+    sessionPersistence: () => service('sessionPersistence'),
+    logger: { warn: warnings },
+  })
   // 0.25.0：上下文观测 + 压力提醒（**只读 + 只提问**：不调 compactNow、不自动换会话）。
   // 观测在「打开主会话」后异步跑一次；压力到 `contextPressureThreshold` 时用宿主 userQuestions 弹问题卡。
   // 用户选「新建协调者会话」才代建（requestNewCoordinator → mainSession.createCoordinatorSession）。
@@ -870,6 +879,8 @@ export async function apply(ctx, rawConfig = {}) {
     defaultCwd: () => resolveCoordinator()?.session?.header?.cwd ?? join(dir, 'workspace'),
     sessionQuery: () => service('sessionQuery'),
     sessions: () => service('sessions'),
+    // P1：正文读取器（task_status include=full 冷读宿主会话日志）。
+    bodySource,
     workspaceChanges: () => service('workspaceChanges'),
     goalBridge,
     // L1：经验文件落在插件唯一写入根下的 lessons/，子会话可 read。
@@ -926,6 +937,8 @@ export async function apply(ctx, rawConfig = {}) {
     cleanupWorktree,
     // P2-4（D6）：抽屉里的「官方 Team 任务」关联视图（只读）。
     teamBoard: task => teamBoard.linkView(task),
+    // P1：抽屉的「最新回复」正文按需从宿主会话日志冷读（读不到降级为摘要 + unavailable）。
+    bodySource,
   })
 
   // 工作台 v1（P11）：组 / 排期（L1）/ 自动化（L2，宿主 ctx.schedule 的桥）。

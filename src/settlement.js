@@ -62,7 +62,8 @@ export function createSettlementReporter({
   notifier,
   logger,
   labelFor,
-  // B1：长返回消息的落盘目录（<state>/reports）；不给就一律内联进台账。
+  // B1 的旧参数（<state>/reports 落盘目录）：P1 起不再写文件（正文真源是宿主会话日志），
+  // 保留入参只为不打断 index.js 的装配与老调用方。
   reportsDir,
   releaseSession = () => {},
   pump = () => {},
@@ -99,9 +100,10 @@ export function createSettlementReporter({
   }
 
   /**
-   * 落盘「子会话最后一条消息」（B1）：短消息内联、超 64KB 写 reports 文件只留路径 + 摘要。
+   * 落盘「子会话最后一条消息」（B1）：P1 起只存借条 `{at, stopReason, bytes, chars, digest, summary}`，
+   * 正文留在宿主会话日志里（读侧见 src/last-message.js 的 resolveLastMessage）。
    * 失败只记日志——结算落库比「看得见最后一段话」优先，不能因此回滚状态。
-   * @returns {{record: object, task: object} | null}
+   * @returns {{record: object, task: object, changed?: boolean} | null}
    */
   const persistLastMessage = (task, { text, stopReason, source }) => {
     try {
@@ -186,7 +188,7 @@ export function createSettlementReporter({
     const mapped = indexIncomplete
       ? { status: 'failed', reason: '工作区索引未完整持久化（缺少有效 workspace_index 回报），可用 task_message({ action: "retry" }) 重试', stopReason }
       : mapSettle(stopReason, { progressCount: task.progress_count ?? 0 })
-    // 完整正文（不截断）先算出来：摘要给通知/死因，正文进台账或 reports 文件。
+    // 完整正文（不截断）先算出来：摘要给通知/死因与台账借条，正文本身留在宿主会话日志。
     const fullText = typeof lastMessage === 'string' && lastMessage !== '' ? messageText(lastMessage) : messageText(output)
     const summary = summarizeText(fullText)
     const extra = typeof error === 'string' && error !== '' ? error : ''
@@ -210,7 +212,7 @@ export function createSettlementReporter({
       })
       return { action: 'failed', reason: 'transition-failed', taskId: task.id, from }
     }
-    // B1：把完整返回消息落进台账（短消息内联，超 64KB 写 reports 文件只留路径 + 摘要）。
+    // B1：把返回消息的**借条**落进台账（P1：正文留在宿主会话日志，台账只存 digest + 摘要）。
     const captured = persistLastMessage(task, { text: fullText, stopReason: mapped.stopReason, source })
     const lastMessageRecord = captured === null ? null : captured.record
     if (captured !== null) next = captured.task
