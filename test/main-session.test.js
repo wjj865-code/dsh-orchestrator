@@ -638,3 +638,153 @@ test('打开主会话成功后触发 onOpened 旁路（观测/提醒），且不
   assert.equal(opened[0].result.sessionId, 'session-main-new')
   db.close()
 })
+
+// ---------------------------------------------------------------------------
+// C：主会话权限徽标一致性 —— 协调者会话的 permission preset 钉成 read-only。
+//
+// 协调者预设没有 read/write/bash，宿主默认给新会话 pin 的却是 workspace-write → 徽标说能写、
+// 实际写不了。这里钉住宿主公开写路径 `permissionPresets.set(session,'read-only')`：
+// 新建（open / 代建）、adopt、复用已有主会话时把漂移拉回。子会话不受影响（dispatch 钉 workspace-write）。
+// ---------------------------------------------------------------------------
+
+/** permissionPresets 替身：记 current/set 调用，assume 初始 workspace-write（宿主默认）。 */
+const permissionFake = ({ initial = 'workspace-write' } = {}) => {
+  const calls = []
+  const state = new Map()
+  return {
+    calls,
+    current: session => state.get(session?.id) ?? initial,
+    set: (session, name) => {
+      calls.push([session?.id, name])
+      state.set(session?.id, name)
+    },
+  }
+}
+
+test('C：新建主会话时把 permission preset 钉成 read-only，并记审计', async () => {
+  const db = await ledger()
+  const f = fake()
+  const permissions = permissionFake()
+  const logs = []
+  const session = { id: 'session-main-new' }
+  const main = createMainSession({
+    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
+    sessions: () => ({ get: id => (id === session.id ? session : undefined) }),
+    permissionPresets: () => permissions,
+    workspacePath: 'C:/ws',
+    log: (event, detail) => logs.push([event, detail]),
+  })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.deepEqual(permissions.calls, [['session-main-new', 'read-only']])
+  const pinned = logs.find(([event]) => event === 'main.session.permission-pinned')
+  assert.ok(pinned, '钉成功要留审计')
+  assert.equal(pinned[1].from, 'workspace-write')
+  assert.equal(logs.find(([event]) => event === 'main.session.created')[1].permission, 'pinned')
+  db.close()
+})
+
+test('C：已经是 read-only 时不重复 set（幂等，不留审计噪音）', async () => {
+  const db = await ledger()
+  const f = fake()
+  const permissions = permissionFake({ initial: 'read-only' })
+  const logs = []
+  const session = { id: 'session-main-new' }
+  const main = createMainSession({
+    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
+    sessions: () => ({ get: () => session }),
+    permissionPresets: () => permissions,
+    workspacePath: 'C:/ws',
+    log: (event, detail) => logs.push([event, detail]),
+  })
+  await main.open()
+  assert.deepEqual(permissions.calls, [])
+  assert.equal(logs.some(([event]) => event === 'main.session.permission-pinned'), false)
+  db.close()
+})
+
+test('C：权限钉不住（宿主预设表没有 read-only / set 抛错）不影响打开主会话', async () => {
+  const db = await ledger()
+  const f = fake()
+  const logs = []
+  const session = { id: 'session-main-new' }
+  const main = createMainSession({
+    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
+    sessions: () => ({ get: () => session }),
+    permissionPresets: () => ({ current: () => 'workspace-write', set: () => { throw new Error('permission: unknown preset "read-only"') } }),
+    workspacePath: 'C:/ws',
+    log: (event, detail) => logs.push([event, detail]),
+  })
+  const result = await main.open()
+  assert.equal(result.ok, true, '权限是旁路，不能挡打开')
+  assert.equal(getMainSessionId(db), 'session-main-new')
+  const failed = logs.find(([event]) => event === 'main.session.permission-pin-failed')
+  assert.ok(failed, '失败要如实记日志')
+  assert.match(failed[1].error, /unknown preset/)
+  db.close()
+})
+
+test('C：复用已有主会话时把用户切走的权限拉回 read-only（返回 permissionRestored）', async () => {
+  const db = await ledger()
+  const f = fake({ live: new Set(['session-main-old']) })
+  const permissions = permissionFake({ initial: 'danger-full-access' })
+  const logs = []
+  setMainSessionId(db, 'session-main-old')
+  setMainSessionPreset(db, PRESET_ID)
+  const main = createMainSession({
+    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
+    presetFor: f.presetFor, permissionPresets: () => permissions, workspacePath: 'C:/ws',
+    log: (event, detail) => logs.push([event, detail]),
+  })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.equal(result.created, false)
+  assert.equal(result.permissionRestored, true)
+  assert.deepEqual(permissions.calls, [['session-main-old', 'read-only']])
+  assert.ok(logs.some(([event]) => event === 'main.session.permission-pinned'))
+  db.close()
+})
+
+test('C：adopt 进来的会话同样钉 read-only，审计里带 permission', async () => {
+  const db = await ledger()
+  const f = adoptFake({ live: ['session-old', 'session-target'] })
+  const permissions = permissionFake()
+  const logs = []
+  setMainSessionId(db, 'session-old')
+  const main = adoptMain(db, f, { permissionPresets: () => permissions, log: (event, detail) => logs.push([event, detail]) })
+  const result = await main.adoptSession({ sessionId: 'session-target' })
+  assert.equal(result.ok, true)
+  assert.deepEqual(permissions.calls, [['session-target', 'read-only']])
+  assert.equal(logs.find(([event]) => event === 'main.session.adopted')[1].permission, 'pinned')
+  db.close()
+})
+
+test('C：代建（createCoordinatorSession）的新会话也钉 read-only', async () => {
+  const db = await ledger()
+  const f = adoptFake({ live: ['session-old'] })
+  const permissions = permissionFake()
+  const created = { id: 'session-new' }
+  f.sessionsService.get = id => (id === created.id ? created : f.sessions.get(id))
+  const logs = []
+  setMainSessionId(db, 'session-old')
+  const main = adoptMain(db, f, { permissionPresets: () => permissions, log: (event, detail) => logs.push([event, detail]) })
+  const result = await main.createCoordinatorSession()
+  assert.equal(result.ok, true)
+  assert.deepEqual(permissions.calls, [['session-new', 'read-only']])
+  assert.equal(logs.find(([event]) => event === 'main.adopt.created')[1].permission, 'pinned')
+  db.close()
+})
+
+test('C：宿主没有 permissionPresets 服务时整段降级（不抛、不写权限、打开照旧成功）', async () => {
+  const db = await ledger()
+  const f = fake()
+  const logs = []
+  const main = createMainSession({
+    db, config: {}, agents: f.agents, sessionController: f.sessionController, workspaces: f.workspaces,
+    workspacePath: 'C:/ws', log: (event, detail) => logs.push([event, detail]),
+  })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.equal(logs.some(([event]) => event.startsWith('main.session.permission-')), false, '缺服务不是错误，不刷日志')
+  db.close()
+})

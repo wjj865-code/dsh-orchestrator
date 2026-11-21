@@ -423,6 +423,9 @@ export async function apply(ctx, rawConfig = {}) {
     sessionController: () => service('sessionController'),
     workspaces: () => service('workspaceRegistry'),
     sessions: () => service('sessions'),
+    // C：主会话权限徽标一致性——协调者会话的 permission preset 钉成宿主出厂预设 read-only
+    // （沙箱只读 + 审批 ask）。普通任务子会话由 dispatch 显式钉 workspace-write，不受影响。
+    permissionPresets: () => service('permissionPresets'),
     defaultCwd: join(dir, 'workspace'),
     presetFor: agent => service('agentPresets')?.presetForSession?.(agent?.session),
     selectPreset: (agent, presetId) => {
@@ -479,6 +482,11 @@ export async function apply(ctx, rawConfig = {}) {
         .then(result => { if (result.ok === false) warnings(`dsh-orchestrator: ${result.error}`) })
         .catch(error => warnings(`dsh-orchestrator: 首次介绍启动失败：${error?.message ?? error}`))
       void mainSession.guardPreset?.(agent).catch(error => warnings(`dsh-orchestrator: 主会话预设守护失败：${error?.message ?? error}`))
+      // C：协调者权限预设钉只读（新建/代建时已钉；这里兜住重启恢复、adopt 前晚加载、以及升级前
+      // 建的旧主会话——徽标与协调者实际工具面保持一致）。服务缺失/失败只记日志，不影响加载。
+      try { mainSession.pinPermission?.(agent.id, agent.session) } catch (error) {
+        warnings(`dsh-orchestrator: 主会话权限钉只读失败：${error?.message ?? error}`)
+      }
       // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑，并对一次子会话目录。
       void ensureDigestFor(agent.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
       queue?.pump()

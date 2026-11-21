@@ -458,13 +458,14 @@ test('P8 派发：agent/created 先生效（首回合窗口），激活后不重
   assert.equal(env.guards.length, 1)
 })
 
-test('P8 派发：普通任务一次 plan mode / guard / 只读都不碰（可写根照旧）', async () => {
+test('P8 派发：普通任务不碰 plan mode / guard，沙箱钉 workspace-write（可写根照旧）', async () => {
   const env = planEnv({ hookOnStart: true })
   await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
   await tick()
   assert.deepEqual(env.planEvents, [])
   assert.deepEqual(env.guards, [])
-  assert.deepEqual(sandboxModeEvents(env), [])
+  // C：父会话被钉只读后宿主会把覆盖种进子会话，普通任务必须显式钉回可写。
+  assert.deepEqual(sandboxModeEvents(env).map(item => item.payload), [{ mode: 'workspace-write', source: 'delegation' }])
   assert.equal(env.registrations.length, 1)
 })
 

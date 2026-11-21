@@ -110,18 +110,21 @@ test('readOnly：agent/created 先设（首回合窗口），激活后幂等不�
   assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 1)
 })
 
-test('readOnly：投影已是 read-only 时跳过 append；非只读任务一次都不设', async () => {
+test('readOnly：投影已是 read-only 时跳过 append；普通任务钉 workspace-write', async () => {
   const env = readOnlyEnv({ modeOverride: 'read-only' })
   const dispatcher = createSubagentDispatcher({ subagents: env.subagents, agent, ...env.services, sessionWaitMs: 0 })
   await dispatcher.spawn({ prompt: 'p', readOnly: true })
   await tick()
   assert.equal(env.appends.length, 0)
 
+  // C：主会话被钉成 read-only 后，宿主会把父会话的 sandbox 覆盖种进子会话；普通任务必须显式写回可写。
   const normal = readOnlyEnv()
   const plain = createSubagentDispatcher({ subagents: normal.subagents, agent, ...normal.services, sessionWaitMs: 0 })
   await plain.spawn({ prompt: 'p', cwd: 'C:/target' })
   await tick()
-  assert.deepEqual(normal.appends, [])
+  const modes = normal.appends.filter(([, event]) => event === 'sandbox/mode')
+  assert.equal(modes.length, 1)
+  assert.deepEqual(modes[0][2], { mode: 'workspace-write', source: 'delegation' })
   assert.equal(normal.registrations.length, 1, '非只读任务仍注册可写根')
 })
 
@@ -200,13 +203,15 @@ test('access:full：投影已是 danger-full-access 时跳过 append；不传 ac
   await tick()
   assert.equal(env.appends.length, 0, '已有同模式不重复 append')
 
-  // 默认不受影响：不传 access / 传了别的值（非 'full'）都不碰沙箱。
+  // 默认子任务钉 workspace-write（C：父会话 read-only 覆盖会被宿主种进子会话）。
   for (const access of [undefined, 'readOnly', 'true', true]) {
     const plain = readOnlyEnv()
     const normal = createSubagentDispatcher({ subagents: plain.subagents, agent, ...plain.services, sessionWaitMs: 0 })
     await normal.spawn({ prompt: 'p', cwd: 'C:/target', ...(access === undefined ? {} : { access }) })
     await tick()
-    assert.deepEqual(plain.appends, [], `access=${String(access)} 不该注入任何沙箱事件`)
+    const modes = plain.appends.filter(([, event]) => event === 'sandbox/mode')
+    assert.equal(modes.length, 1, `access=${String(access)} 应只钉一次 workspace-write`)
+    assert.deepEqual(modes[0][2], { mode: 'workspace-write', source: 'delegation' })
     assert.equal(plain.registrations.length, 1)
   }
 })
@@ -217,8 +222,11 @@ test('access:full：只写自己的会话，同批次其他任务不受污染', 
   const full = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', access: 'full' })
   const normal = await dispatcher.spawn({ prompt: 'p', cwd: 'C:/target' })
   await tick()
-  const touched = env.appends.filter(([, event]) => event === 'sandbox/mode').map(([childId]) => childId)
-  assert.deepEqual(touched, [full.id])
+  const modes = env.appends.filter(([, event]) => event === 'sandbox/mode')
+  assert.deepEqual(modes.map(([childId, , payload]) => [childId, payload.mode]), [
+    [full.id, 'danger-full-access'],
+    [normal.id, 'workspace-write'],
+  ])
   assert.notEqual(full.id, normal.id)
   assert.equal(env.registrations.length, 2, '两个任务各自登记自己的可写根')
 })

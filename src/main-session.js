@@ -6,6 +6,10 @@
 //   - 换协调者只有两条路：①用户在会话头点「设为协调者」（adopt 一个已有会话）
 //     ②压力提醒卡里选「新建协调者会话」（插件代建一个空白协调者会话再切过去）。
 //     两条路都**只切指针**：旧会话不改名、不归档、不退役，用户随时可以回去看。
+//
+// C（2026-11-21，权限徽标一致性）：见 `MAIN_PERMISSION_PRESET`。协调者会话在三条路上钉只读——
+// 新建（`open` 与 `createCoordinatorSession`）、adopt、以及每次「打开主会话」复用已有会话时把
+// 用户手动切走的预设拉回。宿主没有「锁死权限选择器」的 API，能做的只有这个（如实写进 LIMITATIONS）。
 import { mkdir } from 'node:fs/promises'
 import { resolve as resolvePath } from 'node:path'
 import { getMainSessionId, getMainSessionPreset, setMainSessionId, setMainSessionPreset, setSetting } from './ledger.js'
@@ -14,6 +18,12 @@ import { onboardingKey } from './onboarding.js'
 export const PRESET_ID = 'dsh-orchestrator-coordinator'
 export const WORKER_PRESET_ID = 'dsh-orchestrator-worker'
 export const MAIN_SESSION_HINT = '尚未打开主会话，请先从面板「打开主会话」。'
+// C（主会话权限徽标一致性）：协调者会话的权限预设钉成宿主的出厂只读预设
+// （`read-only` = 沙箱 read-only + 审批 ask）。理由：协调者预设里没有 read/write/bash，
+// 而宿主给新会话的默认预设是 `workspace-write`，输入区徽标就显示「工作区写入」——徽标说能写、
+// 实际写不了。钉成只读后徽标与实际工具面一致。**只写协调者会话**，普通任务子会话照旧
+// workspace-write（`src/dispatch.js` 显式钉，父会话覆盖会被宿主种进子会话）。
+export const MAIN_PERMISSION_PRESET = 'read-only'
 
 /** 路径等价判断：同一目录（Windows 大小写不敏感）。adopt 只接受「指挥舱」工作区里的会话。 */
 const sameDir = (left, right) => {
@@ -29,7 +39,7 @@ const sameDir = (left, right) => {
 }
 
 export function createMainSession({
-  db, config, agents, sessionController, workspaces, sessions, presetFor, selectPreset,
+  db, config, agents, sessionController, workspaces, sessions, presetFor, selectPreset, permissionPresets,
   workspacePath, workspaceName = '指挥舱', onOpened, now = () => Date.now(), log = () => {},
 }) {
   // 服务既可以直接传对象（测试/同步场景），也可以传 getter（index 惰性取，等 cordis 服务就绪）。
@@ -37,6 +47,8 @@ export function createMainSession({
   const resolveSessionController = () => typeof sessionController === 'function' ? sessionController() : sessionController
   const resolveWorkspaces = () => typeof workspaces === 'function' ? workspaces() : workspaces
   const resolveSessions = () => typeof sessions === 'function' ? sessions() : sessions
+  // 宿主 `ctx.permissionPresets`（权限预设服务）。老宿主/裁剪过的 profile 可能没有 → 整段降级为「不动权限」。
+  const resolvePermissionPresets = () => typeof permissionPresets === 'function' ? permissionPresets() : permissionPresets
   // 刚创建/刚轮换出来的新会话在平台异步起 agent 之前不 live；这段时间里再点「打开主会话」不能再建一个
   // （openOnce 的「不 live 就新建」会把一次切换变成两次 + 一个空白残留）。窗口只拦这一条路，过期后照旧重建。
   const FRESH_MAIN_LOAD_GRACE_MS = 60_000
@@ -108,6 +120,39 @@ export function createMainSession({
   }
 
   /**
+   * 把协调者会话的权限预设钉成只读（C：徽标 = 实际工具面）。
+   *
+   * 写路径只有宿主公开的 `permissionPresets.set(session, 'read-only')`：它追加
+   * `permission/preset` + `sandbox/mode` + `approval/policy` 三条会话事件，`permissions` 投影
+   * （= 输入区徽标的数据源）跟着变。已经就是只读时什么都不追加（宿主 set 自己也幂等）。
+   *
+   * 覆盖：新建（open / 代建）、adopt、复用已有主会话时的漂移拉回。失败只记日志，**绝不挡打开主会话**；
+   * 宿主没有 permissionPresets 服务（老宿主/裁剪 profile）时整段降级为「不动权限」、不报错。
+   * @param {string} sessionId - 目标会话 id（找不到会话对象时只记日志）。
+   * @param {object} [sessionHint] - 已知的 Session 对象（adopt/agent/created 路径直接给，省一次查找）。
+   * @returns {'pinned'|'unchanged'|'unavailable'|'failed'}
+   */
+  const pinPermission = (sessionId, sessionHint) => {
+    const presets = resolvePermissionPresets()
+    if (typeof presets?.set !== 'function') return 'unavailable'
+    const session = sessionHint ?? liveAgent(sessionId)?.session ?? sessionOf(sessionId)
+    if (session === undefined) return 'unavailable'
+    let current
+    try { current = presets.current?.(session) } catch { current = undefined }
+    if (current === MAIN_PERMISSION_PRESET) return 'unchanged'
+    try {
+      presets.set(session, MAIN_PERMISSION_PRESET)
+    } catch (error) {
+      log('main.session.permission-pin-failed', {
+        sessionId, from: current ?? null, preset: MAIN_PERMISSION_PRESET, error: `${error?.message ?? error}`,
+      })
+      return 'failed'
+    }
+    log('main.session.permission-pinned', { sessionId, from: current ?? null, preset: MAIN_PERMISSION_PRESET })
+    return 'pinned'
+  }
+
+  /**
    * 把已有会话设为协调者（会话头「设为协调者」/ 提醒卡）。
    *
    * 只切指针：不改名、不归档、不退役。校验（失败给可读 code，宿主路由渲染文案）：
@@ -155,11 +200,14 @@ export function createMainSession({
       } catch (error) {
         return { ok: false, code: 'ADOPT_FAILED', params: { reason: `${error?.message ?? error}` } }
       }
+      // C：adopt 进来的会话也钉只读（用户选的会话可能带着 workspace-write/full 的旧权限）。
+      const permission = pinPermission(sessionId, agent.session)
       log('main.session.adopted', {
         previous,
         sessionId,
         source,
         preset,
+        permission,
       })
       return { ok: true, sessionId, previous }
     } finally {
@@ -215,6 +263,8 @@ export function createMainSession({
         return { ok: false, code: 'ADOPT_FAILED', params: { reason: `${error?.message ?? error}`, sessionId } }
       }
       // 以下都只降级：指针已切，新会话可用。
+      // C：新建的协调者会话同样钉只读（顺序放在切指针之后：手指针失败时它还不是协调者）。
+      const permission = pinPermission(sessionId)
       try { setSetting(db, onboardingKey(sessionId), 'sent') } catch (error) {
         log('main.adopt.onboarding.failed', { newId: sessionId, error: `${error?.message ?? error}` })
       }
@@ -222,7 +272,7 @@ export function createMainSession({
         log('main.adopt.rename.failed', { newId: sessionId, error: `${error?.message ?? error}` })
       }
       freshMain = { sessionId, at: now() }
-      log('main.adopt.created', { previous, newId: sessionId, source })
+      log('main.adopt.created', { previous, newId: sessionId, source, permission })
       return { ok: true, sessionId, previous, created: true }
     } finally {
       mutating = false
@@ -250,6 +300,8 @@ export function createMainSession({
     if (override !== undefined) {
       const agent = liveAgent(override)
       if (agent === undefined) return { ok: false, error: `配置的协调者会话 ${override} 当前未加载` }
+      // C：配置覆盖的会话也是协调者，权限同样钉只读（服务缺失时静默降级）。
+      pinPermission(override, agent.session)
       notifyOpened({ sessionId: override, created: false }, agent)
       return { ok: true, sessionId: override, created: false }
     }
@@ -278,12 +330,22 @@ export function createMainSession({
           })
           await guardPreset(live)
         }
+        // C：复用已有主会话时把用户手动切走的权限预设拉回只读（宿主的 agent 预设锁不覆盖权限选择器）。
+        const permission = pinPermission(id, live.session)
         notifyOpened({ sessionId: id, created: false }, live)
-        return { ok: true, sessionId: id, created: false, agentPreset: PRESET_ID, presetMismatch: mismatch }
+        return {
+          ok: true,
+          sessionId: id,
+          created: false,
+          agentPreset: PRESET_ID,
+          presetMismatch: mismatch,
+          ...(permission === 'pinned' ? { permissionRestored: true } : {}),
+        }
       }
       // 旧版主会话没有台账标记：能明确读到协调者预设就认领复用，否则重建一次。
       if (marker === undefined && preset === PRESET_ID) {
         setMainSessionPreset(db, PRESET_ID)
+        pinPermission(id, live.session)
         log('main.session.preset-adopted', { sessionId: id, preset })
         notifyOpened({ sessionId: id, created: false }, live)
         return { ok: true, sessionId: id, created: false, agentPreset: PRESET_ID, presetMismatch: false }
@@ -309,6 +371,9 @@ export function createMainSession({
     }
     const sessionId = created?.sessionId
     if (typeof sessionId !== 'string' || sessionId === '') return { ok: false, error: '创建主会话失败：没有返回 sessionId' }
+    // C：新建主会话第一件事就是把权限钉只读（徽标从第一条投影起就是 read-only，不会先闪一下
+    // workspace-write）；失败只记日志，不影响打开。
+    const permission = pinPermission(sessionId)
     // create 不接受 title；标题单独 rename，失败只记日志，不影响主会话可用。
     try {
       await engines.rename?.({ sessionId, title: '主会话' })
@@ -318,7 +383,7 @@ export function createMainSession({
     setSetting(db, onboardingKey(sessionId), 'pending')
     setMainSessionId(db, sessionId)
     setMainSessionPreset(db, createdPreset(created))
-    log('main.session.created', { sessionId, agentPreset: created?.agentPreset ?? null })
+    log('main.session.created', { sessionId, agentPreset: created?.agentPreset ?? null, permission })
     notifyOpened({ sessionId, created: true }, undefined)
     return { ok: true, sessionId, created: true, agentPreset: created?.agentPreset }
   }
@@ -336,5 +401,5 @@ export function createMainSession({
     return opening
   }
 
-  return { open, currentId, guardPreset, adoptSession, createCoordinatorSession, isMutating: () => mutating }
+  return { open, currentId, guardPreset, pinPermission, adoptSession, createCoordinatorSession, isMutating: () => mutating }
 }
