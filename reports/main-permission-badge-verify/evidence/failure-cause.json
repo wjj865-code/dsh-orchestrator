@@ -1,0 +1,47 @@
+{
+  "note": "Previous verification turn ended with the model account out of balance — not an environment or driver failure.",
+  "events": [
+    {
+      "type": "assistant/attempt",
+      "seq": 1864,
+      "time": 1795231883196,
+      "data": {
+        "turn": 2,
+        "step": 92,
+        "stream": [
+          {
+            "type": "chunk",
+            "time": 1795231883195,
+            "chunk": {
+              "type": "finish",
+              "reason": {
+                "kind": "error",
+                "failure": {
+                  "message": "Insufficient Balance (request_id: ccd0990e-1972-4880-b659-7afae9fce43d)",
+                  "code": "ACCOUNT_QUOTA",
+                  "status": 402
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "turn/end",
+      "seq": 1866,
+      "time": 1795231883200,
+      "data": {
+        "turn": 2,
+        "reason": {
+          "kind": "error",
+          "error": {
+            "message": "Insufficient Balance (request_id: ccd0990e-1972-4880-b659-7afae9fce43d)",
+            "code": "ACCOUNT_QUOTA",
+            "status": 402
+          }
+        }
+      }
+    }
+  ]
+}

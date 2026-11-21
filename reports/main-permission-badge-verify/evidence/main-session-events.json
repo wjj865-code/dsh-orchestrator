@@ -1,0 +1,90 @@
+[
+  {
+    "type": "permission/preset",
+    "seq": 0,
+    "time": 1795231293755,
+    "data": {
+      "preset": "workspace-write"
+    }
+  },
+  {
+    "type": "sandbox/mode",
+    "seq": 1,
+    "time": 1795231293755,
+    "data": {
+      "mode": "workspace-write"
+    }
+  },
+  {
+    "type": "approval/policy",
+    "seq": 2,
+    "time": 1795231293756,
+    "data": {
+      "policy": "ask"
+    }
+  },
+  {
+    "type": "permission/preset",
+    "seq": 3,
+    "time": 1795231293768,
+    "data": {
+      "preset": "read-only"
+    }
+  },
+  {
+    "type": "sandbox/mode",
+    "seq": 4,
+    "time": 1795231293769,
+    "data": {
+      "mode": "read-only"
+    }
+  },
+  {
+    "type": "permission/preset",
+    "seq": 30,
+    "time": 1795231359284,
+    "data": {
+      "preset": "danger-full-access"
+    }
+  },
+  {
+    "type": "sandbox/mode",
+    "seq": 31,
+    "time": 1795231359284,
+    "data": {
+      "mode": "danger-full-access"
+    }
+  },
+  {
+    "type": "approval/policy",
+    "seq": 32,
+    "time": 1795231359285,
+    "data": {
+      "policy": "never"
+    }
+  },
+  {
+    "type": "permission/preset",
+    "seq": 47,
+    "time": 1795231362882,
+    "data": {
+      "preset": "read-only"
+    }
+  },
+  {
+    "type": "sandbox/mode",
+    "seq": 48,
+    "time": 1795231362883,
+    "data": {
+      "mode": "read-only"
+    }
+  },
+  {
+    "type": "approval/policy",
+    "seq": 49,
+    "time": 1795231362883,
+    "data": {
+      "policy": "ask"
+    }
+  }
+]

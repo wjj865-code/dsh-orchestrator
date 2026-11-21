@@ -1,0 +1,58 @@
+{
+  "startedAt": "2026-11-21T03:35:00.481Z",
+  "steps": [
+    {
+      "name": "d-prep",
+      "at": "2026-11-21T03:35:09.293Z",
+      "badge": {
+        "aria": "访问模式，当前：仅可查看",
+        "text": "仅可查看",
+        "title": null
+      }
+    },
+    {
+      "name": "d0-child-tools",
+      "at": "2026-11-21T03:35:10.998Z",
+      "found": true,
+      "tools": [
+        "ask_user_question",
+        "context",
+        "create_goal",
+        "edit",
+        "get_goal",
+        "glob",
+        "grep",
+        "job_kill",
+        "job_list",
+        "job_output",
+        "plan_save",
+        "present",
+        "pwsh",
+        "read",
+        "read_image",
+        "read_workspace",
+        "skill",
+        "task_create",
+        "task_detail",
+        "task_list",
+        "task_message",
+        "task_report",
+        "task_status",
+        "todo_write",
+        "update_goal",
+        "web_fetch",
+        "web_search",
+        "working_directory",
+        "write"
+      ]
+    },
+    {
+      "name": "d1-child-write",
+      "at": "2026-11-21T03:35:11.117Z",
+      "wrote": true,
+      "fileContent": "written-by-e2e-child\n",
+      "target": "C:/Users/72489/AppData/Local/Temp/orch-e2e-artifacts/task-target3"
+    }
+  ],
+  "finishedAt": "2026-11-21T03:35:14.119Z"
+}

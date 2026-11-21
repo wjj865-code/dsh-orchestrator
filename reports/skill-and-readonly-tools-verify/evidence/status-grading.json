@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "scn": "done",
+      "reportAt": "2026-11-21T05:39:28.629Z",
+      "reportStatus": "done",
+      "toolResultAt": "2026-11-21T05:39:28.708Z",
+      "notificationAt": "2026-11-21T05:39:33.761Z",
+      "latencyMsFromToolResult": 5053
+    },
+    {
+      "scn": "blocked",
+      "reportAt": "2026-11-21T05:39:36.834Z",
+      "reportStatus": "blocked",
+      "toolResultAt": "2026-11-21T05:39:36.944Z",
+      "notificationAt": "2026-11-21T05:39:36.966Z",
+      "latencyMsFromToolResult": 22
+    },
+    {
+      "scn": "needs-auth",
+      "reportAt": "2026-11-21T05:39:40.016Z",
+      "reportStatus": "needs_auth",
+      "toolResultAt": "2026-11-21T05:39:40.126Z",
+      "notificationAt": "2026-11-21T05:39:40.133Z",
+      "latencyMsFromToolResult": 7
+    }
+  ]
+}

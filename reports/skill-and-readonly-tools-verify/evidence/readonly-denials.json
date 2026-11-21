@@ -1,0 +1,22 @@
+{
+  "skillDenial": "Error: skill \"grill-me\" is unknown or no longer available",
+  "writeDenial": "Error: [sandbox: file access denied under read-only mode]\n[sandbox: escalation available — retry this exact operation once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]",
+  "readonlyTargetFileExists": false,
+  "workerCatalogSkills": [
+    "brainstorming",
+    "diagnose-windows-sandbox-acl",
+    "executing-plans",
+    "mmx-cli",
+    "office",
+    "office-docx",
+    "office-pptx",
+    "office-xlsx",
+    "skills-cli",
+    "test-driven-development",
+    "using-superpowers",
+    "vercel-cli-with-tokens",
+    "write-tech-article",
+    "writing-plans"
+  ],
+  "workerCatalogHasGrillMe": false
+}

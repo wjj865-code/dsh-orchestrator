@@ -1,0 +1,37 @@
+[
+  {
+    "type": "agent-preset/selected",
+    "seq": 0,
+    "time": 1795232110683,
+    "data": {
+      "agentPreset": "dsh-orchestrator-worker"
+    }
+  },
+  {
+    "type": "sandbox/mode",
+    "seq": 2,
+    "time": 1795232110683,
+    "data": {
+      "mode": "read-only",
+      "source": "delegation"
+    }
+  },
+  {
+    "type": "approval/policy",
+    "seq": 3,
+    "time": 1795232110683,
+    "data": {
+      "policy": "never",
+      "source": "delegation"
+    }
+  },
+  {
+    "type": "sandbox/mode",
+    "seq": 6,
+    "time": 1795232110688,
+    "data": {
+      "mode": "workspace-write",
+      "source": "delegation"
+    }
+  }
+]

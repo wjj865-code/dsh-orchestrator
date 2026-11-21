@@ -1,0 +1,439 @@
+{
+  "permission": [
+    {
+      "at": "2026-11-21T03:21:33.769Z",
+      "event": "main.session.permission-pinned",
+      "detail": {
+        "sessionId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+        "from": "workspace-write",
+        "preset": "read-only"
+      }
+    },
+    {
+      "at": "2026-11-21T03:22:42.883Z",
+      "event": "main.session.permission-pinned",
+      "detail": {
+        "sessionId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+        "from": "danger-full-access",
+        "preset": "read-only"
+      }
+    }
+  ],
+  "sandbox": [
+    {
+      "at": "2026-11-21T03:22:48.276Z",
+      "event": "subagent.workspace-write",
+      "sessionId": "8e65cd89-ca2b-4672-8daf-dda80b894f32",
+      "detail": {
+        "sessionId": "8e65cd89-ca2b-4672-8daf-dda80b894f32",
+        "mode": "workspace-write"
+      }
+    },
+    {
+      "at": "2026-11-21T03:30:17.028Z",
+      "event": "subagent.workspace-write",
+      "sessionId": "23d216ad-d414-43dd-a11d-bb798197041a",
+      "detail": {
+        "sessionId": "23d216ad-d414-43dd-a11d-bb798197041a",
+        "mode": "workspace-write"
+      }
+    },
+    {
+      "at": "2026-11-21T03:35:10.688Z",
+      "event": "subagent.workspace-write",
+      "sessionId": "54975f4e-031a-4911-9b6f-b2f784ca21f5",
+      "detail": {
+        "sessionId": "54975f4e-031a-4911-9b6f-b2f784ca21f5",
+        "mode": "workspace-write"
+      }
+    }
+  ],
+  "taskLifecycle": [
+    {
+      "at": "2026-11-21T03:22:48.248Z",
+      "event": "task.create.requested",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "title": "E2E 子会话写文件",
+        "goal": "在 target 目录写一个文件，证明 workspace-write 生效",
+        "readOnly": false,
+        "planFirst": false,
+        "access": null,
+        "goalRounds": 0,
+        "callId": "toolu_mock_4"
+      }
+    },
+    {
+      "at": "2026-11-21T03:22:48.253Z",
+      "event": "task.create.created",
+      "taskId": "t-38dbc0e1",
+      "sessionId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "title": "E2E 子会话写文件",
+        "callId": "toolu_mock_4",
+        "targetDir": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-artifacts\\task-target",
+        "readOnly": false,
+        "planFirst": false,
+        "access": null,
+        "dependsOn": [],
+        "group": null,
+        "writeScopes": [],
+        "priority": 0,
+        "status": "pending",
+        "worktree": "none",
+        "worktreeSource": "default",
+        "checks": 0,
+        "goalRounds": 0
+      }
+    },
+    {
+      "at": "2026-11-21T03:22:48.300Z",
+      "event": "task.transition",
+      "taskId": "t-38dbc0e1",
+      "detail": {
+        "from": "pending",
+        "to": "running",
+        "reason": null,
+        "closeReason": null
+      }
+    },
+    {
+      "at": "2026-11-21T03:22:48.301Z",
+      "event": "task.spawn.ok",
+      "taskId": "t-38dbc0e1",
+      "sessionId": "8e65cd89-ca2b-4672-8daf-dda80b894f32",
+      "detail": {
+        "target": "8e65cd89-ca2b-4672-8daf-dda80b894f32"
+      }
+    },
+    {
+      "at": "2026-11-21T03:22:48.484Z",
+      "event": "task.transition",
+      "taskId": "t-38dbc0e1",
+      "sessionId": "8e65cd89-ca2b-4672-8daf-dda80b894f32",
+      "detail": {
+        "from": "running",
+        "to": "delivered",
+        "reason": null,
+        "closeReason": null
+      }
+    },
+    {
+      "at": "2026-11-21T03:22:48.493Z",
+      "event": "task.settle",
+      "taskId": "t-38dbc0e1",
+      "sessionId": "8e65cd89-ca2b-4672-8daf-dda80b894f32",
+      "detail": {
+        "from": "running",
+        "to": "delivered",
+        "stopReason": "completed",
+        "source": "lifecycle",
+        "lastMessage": {
+          "stored": "inline",
+          "bytes": 5,
+          "chars": 5
+        }
+      }
+    },
+    {
+      "at": "2026-11-21T03:22:48.497Z",
+      "event": "task.settle.late-message",
+      "taskId": "t-38dbc0e1",
+      "sessionId": "8e65cd89-ca2b-4672-8daf-dda80b894f32",
+      "detail": {
+        "status": "delivered",
+        "stopReason": "completed",
+        "source": "dispatcher",
+        "lastMessage": {
+          "stored": "inline",
+          "bytes": 5,
+          "chars": 5
+        }
+      }
+    },
+    {
+      "at": "2026-11-21T03:25:16.540Z",
+      "event": "task.create.requested",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "title": "E2E 子会话写文件",
+        "goal": "在 target 目录写一个文件，证明 workspace-write 生效",
+        "readOnly": false,
+        "planFirst": false,
+        "access": null,
+        "goalRounds": 0,
+        "callId": "toolu_mock_2"
+      }
+    },
+    {
+      "at": "2026-11-21T03:25:16.543Z",
+      "event": "task.create.rejected",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "reason": "duplicate",
+        "existingTaskId": "t-38dbc0e1",
+        "existingStatus": "delivered",
+        "callId": "toolu_mock_2"
+      }
+    },
+    {
+      "at": "2026-11-21T03:27:45.638Z",
+      "event": "task.create.requested",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "title": "E2E 子会话写文件 995100",
+        "goal": "在 target 目录写一个文件（995100），证明 workspace-write 生效",
+        "readOnly": false,
+        "planFirst": false,
+        "access": null,
+        "goalRounds": 0,
+        "callId": "toolu_mock_2"
+      }
+    },
+    {
+      "at": "2026-11-21T03:27:45.642Z",
+      "event": "task.create.rejected",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "reason": "same-dir",
+        "mode": "require",
+        "targetDir": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-artifacts\\task-target",
+        "conflicts": [
+          "t-38dbc0e1"
+        ],
+        "callId": "toolu_mock_2"
+      }
+    },
+    {
+      "at": "2026-11-21T03:30:16.993Z",
+      "event": "task.create.requested",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "title": "E2E 子会话写文件 182900",
+        "goal": "在 target 目录写一个文件（182900），证明 workspace-write 生效",
+        "readOnly": false,
+        "planFirst": false,
+        "access": null,
+        "goalRounds": 0,
+        "callId": "toolu_mock_2"
+      }
+    },
+    {
+      "at": "2026-11-21T03:30:16.999Z",
+      "event": "task.create.created",
+      "taskId": "t-8684907a",
+      "sessionId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "title": "E2E 子会话写文件 182900",
+        "callId": "toolu_mock_2",
+        "targetDir": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-artifacts\\task-target2",
+        "readOnly": false,
+        "planFirst": false,
+        "access": null,
+        "dependsOn": [],
+        "group": null,
+        "writeScopes": [],
+        "priority": 0,
+        "status": "pending",
+        "worktree": "none",
+        "worktreeSource": "default",
+        "checks": 0,
+        "goalRounds": 0
+      }
+    },
+    {
+      "at": "2026-11-21T03:30:17.047Z",
+      "event": "task.transition",
+      "taskId": "t-8684907a",
+      "detail": {
+        "from": "pending",
+        "to": "running",
+        "reason": null,
+        "closeReason": null
+      }
+    },
+    {
+      "at": "2026-11-21T03:30:17.048Z",
+      "event": "task.spawn.ok",
+      "taskId": "t-8684907a",
+      "sessionId": "23d216ad-d414-43dd-a11d-bb798197041a",
+      "detail": {
+        "target": "23d216ad-d414-43dd-a11d-bb798197041a"
+      }
+    },
+    {
+      "at": "2026-11-21T03:30:17.269Z",
+      "event": "task.transition",
+      "taskId": "t-8684907a",
+      "sessionId": "23d216ad-d414-43dd-a11d-bb798197041a",
+      "detail": {
+        "from": "running",
+        "to": "delivered",
+        "reason": null,
+        "closeReason": null
+      }
+    },
+    {
+      "at": "2026-11-21T03:30:50.160Z",
+      "event": "task.settle.late-message",
+      "taskId": "t-8684907a",
+      "sessionId": "23d216ad-d414-43dd-a11d-bb798197041a",
+      "detail": {
+        "status": "delivered",
+        "stopReason": "completed",
+        "source": "lifecycle",
+        "lastMessage": {
+          "stored": "inline",
+          "bytes": 42,
+          "chars": 18
+        }
+      }
+    },
+    {
+      "at": "2026-11-21T03:30:50.163Z",
+      "event": "task.settle.late-message",
+      "taskId": "t-8684907a",
+      "sessionId": "23d216ad-d414-43dd-a11d-bb798197041a",
+      "detail": {
+        "status": "delivered",
+        "stopReason": "completed",
+        "source": "dispatcher",
+        "lastMessage": {
+          "stored": "inline",
+          "bytes": 42,
+          "chars": 18
+        }
+      }
+    },
+    {
+      "at": "2026-11-21T03:35:10.660Z",
+      "event": "task.create.requested",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "title": "E2E 子会话写文件 924200",
+        "goal": "在 target 目录写一个文件（924200），证明 workspace-write 生效",
+        "readOnly": false,
+        "planFirst": false,
+        "access": null,
+        "goalRounds": 0,
+        "callId": "toolu_mock_2"
+      }
+    },
+    {
+      "at": "2026-11-21T03:35:10.668Z",
+      "event": "task.create.created",
+      "taskId": "t-0a44b0a8",
+      "sessionId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "agentId": "session-4810b765-8584-4d8f-9600-2826a9d45244",
+      "detail": {
+        "title": "E2E 子会话写文件 924200",
+        "callId": "toolu_mock_2",
+        "targetDir": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-artifacts\\task-target3",
+        "readOnly": false,
+        "planFirst": false,
+        "access": null,
+        "dependsOn": [],
+        "group": null,
+        "writeScopes": [],
+        "priority": 0,
+        "status": "pending",
+        "worktree": "none",
+        "worktreeSource": "default",
+        "checks": 0,
+        "goalRounds": 0
+      }
+    },
+    {
+      "at": "2026-11-21T03:35:10.707Z",
+      "event": "task.transition",
+      "taskId": "t-0a44b0a8",
+      "detail": {
+        "from": "pending",
+        "to": "running",
+        "reason": null,
+        "closeReason": null
+      }
+    },
+    {
+      "at": "2026-11-21T03:35:10.708Z",
+      "event": "task.spawn.ok",
+      "taskId": "t-0a44b0a8",
+      "sessionId": "54975f4e-031a-4911-9b6f-b2f784ca21f5",
+      "detail": {
+        "target": "54975f4e-031a-4911-9b6f-b2f784ca21f5"
+      }
+    },
+    {
+      "at": "2026-11-21T03:35:10.971Z",
+      "event": "task.transition",
+      "taskId": "t-0a44b0a8",
+      "sessionId": "54975f4e-031a-4911-9b6f-b2f784ca21f5",
+      "detail": {
+        "from": "running",
+        "to": "delivered",
+        "reason": null,
+        "closeReason": null
+      }
+    },
+    {
+      "at": "2026-11-21T03:35:11.035Z",
+      "event": "task.settle.late-message",
+      "taskId": "t-0a44b0a8",
+      "sessionId": "54975f4e-031a-4911-9b6f-b2f784ca21f5",
+      "detail": {
+        "status": "delivered",
+        "stopReason": "completed",
+        "source": "lifecycle",
+        "lastMessage": {
+          "stored": "inline",
+          "bytes": 42,
+          "chars": 18
+        }
+      }
+    },
+    {
+      "at": "2026-11-21T03:35:11.038Z",
+      "event": "task.settle.late-message",
+      "taskId": "t-0a44b0a8",
+      "sessionId": "54975f4e-031a-4911-9b6f-b2f784ca21f5",
+      "detail": {
+        "status": "delivered",
+        "stopReason": "completed",
+        "source": "dispatcher",
+        "lastMessage": {
+          "stored": "inline",
+          "bytes": 42,
+          "chars": 18
+        }
+      }
+    }
+  ],
+  "writableRoot": [
+    {
+      "at": "2026-11-21T03:22:48.292Z",
+      "event": "subagent.writable-root",
+      "sessionId": "8e65cd89-ca2b-4672-8daf-dda80b894f32",
+      "detail": {
+        "directory": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-artifacts\\task-target"
+      }
+    },
+    {
+      "at": "2026-11-21T03:30:17.039Z",
+      "event": "subagent.writable-root",
+      "sessionId": "23d216ad-d414-43dd-a11d-bb798197041a",
+      "detail": {
+        "directory": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-artifacts\\task-target2"
+      }
+    },
+    {
+      "at": "2026-11-21T03:35:10.699Z",
+      "event": "subagent.writable-root",
+      "sessionId": "54975f4e-031a-4911-9b6f-b2f784ca21f5",
+      "detail": {
+        "directory": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-artifacts\\task-target3"
+      }
+    }
+  ]
+}

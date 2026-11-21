@@ -1,0 +1,724 @@
+[
+  {
+    "sessionId": "00557287-3bfd-4225-a038-7d7ffbfc6531",
+    "label": "E2E needs_auth 分级 SCN=needs-auth",
+    "preset": "dsh-orchestrator-worker",
+    "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-auth",
+    "sandboxEvents": [
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ],
+    "permissionEvents": [
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      }
+    ],
+    "events": [
+      {
+        "type": "agent-preset/selected",
+        "seq": 0,
+        "data": {
+          "agentPreset": "dsh-orchestrator-worker"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "working-directory/change",
+        "seq": 4,
+        "data": {
+          "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-auth"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ]
+  },
+  {
+    "sessionId": "3d0b305e-96dc-4d01-a8ab-72f0204465cd",
+    "label": "E2E done 分级 SCN=done",
+    "preset": "dsh-orchestrator-worker",
+    "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-done",
+    "sandboxEvents": [
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ],
+    "permissionEvents": [
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      }
+    ],
+    "events": [
+      {
+        "type": "agent-preset/selected",
+        "seq": 0,
+        "data": {
+          "agentPreset": "dsh-orchestrator-worker"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "working-directory/change",
+        "seq": 4,
+        "data": {
+          "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-done"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ]
+  },
+  {
+    "sessionId": "4e3e7788-5bfd-4852-96c6-654c6774c441",
+    "label": "E2E 普通写文件 SCN=normal-write",
+    "preset": "dsh-orchestrator-worker",
+    "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-normal",
+    "sandboxEvents": [
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ],
+    "permissionEvents": [
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      }
+    ],
+    "events": [
+      {
+        "type": "agent-preset/selected",
+        "seq": 0,
+        "data": {
+          "agentPreset": "dsh-orchestrator-worker"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "working-directory/change",
+        "seq": 4,
+        "data": {
+          "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-normal"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ]
+  },
+  {
+    "sessionId": "6e1acca9-1278-46b4-ad43-753303e84b38",
+    "label": "E2E blocked 分级 SCN=blocked",
+    "preset": "dsh-orchestrator-worker",
+    "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-blocked",
+    "sandboxEvents": [
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ],
+    "permissionEvents": [
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      }
+    ],
+    "events": [
+      {
+        "type": "agent-preset/selected",
+        "seq": 0,
+        "data": {
+          "agentPreset": "dsh-orchestrator-worker"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "working-directory/change",
+        "seq": 4,
+        "data": {
+          "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-blocked"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ]
+  },
+  {
+    "sessionId": "94ad6d40-2cfe-4ca9-85e9-c1192ee408aa",
+    "label": "E2E 只读写拒绝 SCN=readonly-deny",
+    "preset": "dsh-orchestrator-worker",
+    "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-ro",
+    "sandboxEvents": [
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      }
+    ],
+    "permissionEvents": [
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      }
+    ],
+    "events": [
+      {
+        "type": "agent-preset/selected",
+        "seq": 0,
+        "data": {
+          "agentPreset": "dsh-orchestrator-worker"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "working-directory/change",
+        "seq": 4,
+        "data": {
+          "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-ro"
+        }
+      }
+    ]
+  },
+  {
+    "sessionId": "d1dedbac-49c9-4d21-a9a7-66f6165ec483",
+    "label": "E2E 完整访问写盘 SCN=full-write",
+    "preset": "dsh-orchestrator-worker",
+    "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-full",
+    "sandboxEvents": [
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "danger-full-access",
+          "source": "delegation"
+        }
+      }
+    ],
+    "permissionEvents": [
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      }
+    ],
+    "events": [
+      {
+        "type": "agent-preset/selected",
+        "seq": 0,
+        "data": {
+          "agentPreset": "dsh-orchestrator-worker"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "working-directory/change",
+        "seq": 4,
+        "data": {
+          "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-full"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "danger-full-access",
+          "source": "delegation"
+        }
+      }
+    ]
+  },
+  {
+    "sessionId": "d4972d80-a54b-4c3f-9538-aa389cf800e4",
+    "label": "E2E 进度通知 SCN=progress",
+    "preset": "dsh-orchestrator-worker",
+    "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-progress",
+    "sandboxEvents": [
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ],
+    "permissionEvents": [
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      }
+    ],
+    "events": [
+      {
+        "type": "agent-preset/selected",
+        "seq": 0,
+        "data": {
+          "agentPreset": "dsh-orchestrator-worker"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 2,
+        "data": {
+          "mode": "read-only",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 3,
+        "data": {
+          "policy": "never",
+          "source": "delegation"
+        }
+      },
+      {
+        "type": "working-directory/change",
+        "seq": 4,
+        "data": {
+          "cwd": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-e2e-026\\targets\\target-progress"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 6,
+        "data": {
+          "mode": "workspace-write",
+          "source": "delegation"
+        }
+      }
+    ]
+  },
+  {
+    "sessionId": "session-0fd60995-28ee-41b7-b80e-5e99778ec2ee",
+    "label": null,
+    "preset": null,
+    "cwd": null,
+    "sandboxEvents": [
+      {
+        "type": "sandbox/mode",
+        "seq": 1,
+        "data": {
+          "mode": "workspace-write"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 4,
+        "data": {
+          "mode": "read-only"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 276,
+        "data": {
+          "mode": "danger-full-access"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 293,
+        "data": {
+          "mode": "read-only"
+        }
+      }
+    ],
+    "permissionEvents": [
+      {
+        "type": "permission/preset",
+        "seq": 0,
+        "data": {
+          "preset": "workspace-write"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 2,
+        "data": {
+          "policy": "ask"
+        }
+      },
+      {
+        "type": "permission/preset",
+        "seq": 3,
+        "data": {
+          "preset": "read-only"
+        }
+      },
+      {
+        "type": "permission/preset",
+        "seq": 275,
+        "data": {
+          "preset": "danger-full-access"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 277,
+        "data": {
+          "policy": "never"
+        }
+      },
+      {
+        "type": "permission/preset",
+        "seq": 292,
+        "data": {
+          "preset": "read-only"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 294,
+        "data": {
+          "policy": "ask"
+        }
+      }
+    ],
+    "events": [
+      {
+        "type": "permission/preset",
+        "seq": 0,
+        "data": {
+          "preset": "workspace-write"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 1,
+        "data": {
+          "mode": "workspace-write"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 2,
+        "data": {
+          "policy": "ask"
+        }
+      },
+      {
+        "type": "permission/preset",
+        "seq": 3,
+        "data": {
+          "preset": "read-only"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 4,
+        "data": {
+          "mode": "read-only"
+        }
+      },
+      {
+        "type": "permission/preset",
+        "seq": 275,
+        "data": {
+          "preset": "danger-full-access"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 276,
+        "data": {
+          "mode": "danger-full-access"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 277,
+        "data": {
+          "policy": "never"
+        }
+      },
+      {
+        "type": "permission/preset",
+        "seq": 292,
+        "data": {
+          "preset": "read-only"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 293,
+        "data": {
+          "mode": "read-only"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 294,
+        "data": {
+          "policy": "ask"
+        }
+      }
+    ]
+  },
+  {
+    "sessionId": "session-85359ee9-04c3-4aca-97d0-ed5688fcb161",
+    "label": null,
+    "preset": null,
+    "cwd": null,
+    "sandboxEvents": [
+      {
+        "type": "sandbox/mode",
+        "seq": 1,
+        "data": {
+          "mode": "workspace-write"
+        }
+      }
+    ],
+    "permissionEvents": [
+      {
+        "type": "permission/preset",
+        "seq": 0,
+        "data": {
+          "preset": "workspace-write"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 2,
+        "data": {
+          "policy": "ask"
+        }
+      }
+    ],
+    "events": [
+      {
+        "type": "permission/preset",
+        "seq": 0,
+        "data": {
+          "preset": "workspace-write"
+        }
+      },
+      {
+        "type": "sandbox/mode",
+        "seq": 1,
+        "data": {
+          "mode": "workspace-write"
+        }
+      },
+      {
+        "type": "approval/policy",
+        "seq": 2,
+        "data": {
+          "policy": "ask"
+        }
+      }
+    ]
+  }
+]

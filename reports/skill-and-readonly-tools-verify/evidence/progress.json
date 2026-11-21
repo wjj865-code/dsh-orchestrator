@@ -1,0 +1,211 @@
+{
+  "notifications": [
+    {
+      "at": "2026-11-21T05:39:15.027Z",
+      "trigger": "任务「E2E 进度通知 SCN=progress」有新进展：进度 1/2：环境已就绪\n  progress 只是进度信号、不是终态：任务还在跑，要结论就 task_message 追问同一子会话（复用已有上下文），别为此重派任务"
+    },
+    {
+      "at": "2026-11-21T05:39:18.050Z",
+      "trigger": "任务「E2E 进度通知 SCN=progress」有新进展：进度 2/2：正在写代码（水位窗口内）\n  progress 只是进度信号、不是终态：任务还在跑，要结论就 task_message 追问同一子会话（复用已有上下文），别为此重派任务"
+    },
+    {
+      "at": "2026-11-21T05:39:20.457Z",
+      "trigger": "任务「E2E 进度通知 SCN=progress」有新进展（回答你的追问）：追问答复：已完成一半，剩下的是收尾（answeredFollowup 验证）。\n  progress 只是进度信号、不是终态：任务还在跑，要结论就 task_message 追问同一子会话（复用已有上下文），别为此重派任务"
+    },
+    {
+      "at": "2026-11-21T05:39:25.457Z",
+      "trigger": "任务「E2E 进度通知 SCN=progress」可能卡住：连续 3 次 progress 无状态变化，可能卡住；用 task_status 查看"
+    }
+  ],
+  "decisions": [
+    {
+      "at": "2026-11-21T05:39:09.893Z",
+      "summary": "进度 1/2：环境已就绪"
+    },
+    {
+      "at": "2026-11-21T05:39:09.952Z",
+      "summary": "进度 2/2：正在写代码（水位窗口内）"
+    },
+    {
+      "at": "2026-11-21T05:39:20.317Z",
+      "summary": "追问答复：已完成一半，剩下的是收尾（answeredFollowup 验证）。"
+    }
+  ],
+  "timings": {
+    "p1DeliveredAt": "2026-11-21T05:39:15.027Z",
+    "p1ReportRequestAt": "2026-11-21T05:39:09.893Z",
+    "p1ToolResultAt": "2026-11-21T05:39:09.952Z",
+    "p1LatencyMsFromToolResult": 5075,
+    "p2DeliveredAt": "2026-11-21T05:39:18.050Z",
+    "p2ReportRequestAt": "2026-11-21T05:39:09.952Z",
+    "p2ToolResultAt": "2026-11-21T05:39:16.040Z",
+    "p2LatencyMsFromToolResult": 2010,
+    "answeredDeliveredAt": "2026-11-21T05:39:20.457Z",
+    "answeredReportRequestAt": "2026-11-21T05:39:20.317Z",
+    "answeredToolResultAt": "2026-11-21T05:39:20.447Z",
+    "answeredLatencyMsFromToolResult": 10
+  },
+  "notificationRows": [
+    {
+      "id": 1,
+      "task_id": "t-db700824",
+      "level": "notify",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239540312,
+      "delivered_at": 1795239540312,
+      "merged_into": null
+    },
+    {
+      "id": 2,
+      "task_id": "t-8dea2b04",
+      "level": "notify",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239547652,
+      "delivered_at": 1795239547652,
+      "merged_into": null
+    },
+    {
+      "id": 3,
+      "task_id": "t-f5844d75",
+      "level": "coalesce",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239554925,
+      "delivered_at": 1795239554925,
+      "merged_into": null
+    },
+    {
+      "id": 4,
+      "task_id": "t-f5844d75",
+      "level": "coalesce",
+      "status": "skipped",
+      "reason": "progress_watermark",
+      "created_at": 1795239555987,
+      "delivered_at": null,
+      "merged_into": null
+    },
+    {
+      "id": 5,
+      "task_id": "t-f5844d75",
+      "level": "coalesce",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239557935,
+      "delivered_at": 1795239557935,
+      "merged_into": null
+    },
+    {
+      "id": 6,
+      "task_id": "t-f5844d75",
+      "level": "coalesce",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239560347,
+      "delivered_at": 1795239560347,
+      "merged_into": null
+    },
+    {
+      "id": 7,
+      "task_id": "t-f5844d75",
+      "level": "notify",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239565356,
+      "delivered_at": 1795239565356,
+      "merged_into": null
+    },
+    {
+      "id": 8,
+      "task_id": "t-6a6cc51b",
+      "level": "notify",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239573661,
+      "delivered_at": 1795239573661,
+      "merged_into": null
+    },
+    {
+      "id": 9,
+      "task_id": "t-0aefd20c",
+      "level": "interrupt",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239576865,
+      "delivered_at": 1795239576865,
+      "merged_into": null
+    },
+    {
+      "id": 10,
+      "task_id": "t-112d4222",
+      "level": "interrupt",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239580042,
+      "delivered_at": 1795239580042,
+      "merged_into": null
+    },
+    {
+      "id": 11,
+      "task_id": "t-f0ef214e",
+      "level": "notify",
+      "status": "delivered",
+      "reason": null,
+      "created_at": 1795239588588,
+      "delivered_at": 1795239588588,
+      "merged_into": null
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t-db700824",
+      "title": "E2E 只读写拒绝 SCN=readonly-deny",
+      "status": "delivered",
+      "read_only": 1,
+      "access": null
+    },
+    {
+      "id": "t-8dea2b04",
+      "title": "E2E 普通写文件 SCN=normal-write",
+      "status": "delivered",
+      "read_only": 0,
+      "access": null
+    },
+    {
+      "id": "t-f5844d75",
+      "title": "E2E 进度通知 SCN=progress",
+      "status": "running",
+      "read_only": 0,
+      "access": null
+    },
+    {
+      "id": "t-6a6cc51b",
+      "title": "E2E done 分级 SCN=done",
+      "status": "delivered",
+      "read_only": 0,
+      "access": null
+    },
+    {
+      "id": "t-0aefd20c",
+      "title": "E2E blocked 分级 SCN=blocked",
+      "status": "waiting_user",
+      "read_only": 0,
+      "access": null
+    },
+    {
+      "id": "t-112d4222",
+      "title": "E2E needs_auth 分级 SCN=needs-auth",
+      "status": "waiting_auth",
+      "read_only": 0,
+      "access": null
+    },
+    {
+      "id": "t-f0ef214e",
+      "title": "E2E 完整访问写盘 SCN=full-write",
+      "status": "delivered",
+      "read_only": 0,
+      "access": "full"
+    }
+  ]
+}
