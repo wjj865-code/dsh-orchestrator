@@ -471,6 +471,14 @@
 
 不传 `target` 时，用 `title` + `goal` 匹配 `workspaceRegistry.list()` 的显示名与路径末段：精确名优先、否则子串层；纯 ASCII 键至少 3 个字母数字，CJK 至少 2 字；通用末段（workspace/documents/desktop/default/src/app/tmp）不参与匹配；被更具体名字严格包含的泛命中丢弃；唯一命中写 `target_dir`，多命中不建任务、列候选，无命中沿用主会话目录；registry 不可用时按无工作区降级。
 
+## 能力包（0.32.0）
+
+- **分层**：`src/pack/manifest.js`（schemaVersion 2 校验：路径不越界、精确版本、pnpm + registry 白名单、env 只声明不落值）→ `store.js`（唯一写入根 `$DSH_HOME/state/orchestrator/capability-packs`、原子写、`.trash` 回退）→ `preset-template.js`（固定预设行：写/执行/skill/web/todo，禁 `task_*`/`plan_save`/`capability_pack`）→ `preset-registry.js`（`agentPresets.register()` 运行时注册，失败降级静态 YAML）→ `install.js`（包内 pnpm 安装、确认卡、版本校验、realpath 入口、render 冒烟）→ `wenyan.js`（render/publish 封装、错误映射、草稿记账）→ `service.js`（dry-run/confirm/幂等/回滚的唯一闸门）→ `tool.js`（`capability_pack` 工具）与 `panel.js` + `host-route.js`（面板只读快照 + 窄写口）。
+- **数据**：内置包随插件只读发（`packs/`，`packs/wechat-mp-article`）；用户包与全部运行期状态在 `capability-packs/{packs,tools,.trash,registry.json}`。`cli.invocation` 是运行期事实，写在 `.state/install.json`，不回写内置 `pack.json`。
+- **安装链路**：argv 数组 + `shell:false`，`--ignore-workspace --ignore-scripts --registry=https://registry.npmjs.org --store-dir <tools>/.store`；装后校验锁定版本、`realpathSync.native()` 解析 bin 入口、跑 `--version` 与 `render` 冒烟（带 `APPDATA`/`LOCALAPPDATA` 重定向）；任一步失败删 `tools/<id>`、记 failed、包与技能照常可用。
+- **闸门**：`create/update/delete/install` 都要 `confirm:true`（安装还要求 `planHash`）；`clientRequestId` 请求级幂等；更新失败把旧目录从 `.trash` 搬回；内置包只读；能力包会话只调 `sessionController.create({cwd, agentPreset})`，不写台账、不进队列。
+- **安全**：插件不落盘、不读、不回显凭据值；`setx` 执行需二次确认、只回 `{ok, code}`；审计只记 `{ref, mode, result}`；`render`/`publish` 不自动重试（无幂等），重复建草稿前必须问用户。
+
 ## 路由与面板
 
 `POST /api/orchestrator`，connection owner-only：

@@ -1,6 +1,6 @@
 {
   "name": "@wjj865-code/dsh-orchestrator",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, cross-project memory, dependency orchestration, inbox/digest, snapshots, and a browser task panel.",
   "type": "module",
   "license": "MIT",

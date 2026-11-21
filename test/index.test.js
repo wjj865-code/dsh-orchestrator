@@ -209,7 +209,8 @@ test('apply 注册 11 个工具（P1-B 15 → 10，0.32.0 +capability_pack），
   assert.deepEqual(registered.map(tool => tool.name).sort(),
     ['capability_pack', 'context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
   assert.deepEqual(readdirSync(home), ['state'])
-  assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), ['logs', 'snapshots'])
+  // 0.32.0：capability-packs 根在启动时建好（purgeUnregistered 需要 packs/tools/.trash 存在）。
+  assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), ['capability-packs', 'logs', 'snapshots'])
 }))
 
 // 挂载链证据：task_detail 由 index 的 createTools(...).map(ctx.tools.register) 注册成 host plane 全局工具，

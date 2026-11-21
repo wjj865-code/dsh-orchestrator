@@ -2,14 +2,14 @@
 
 > **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目标目录里把活干完，进度与结论落进持久台账，DSH 界面里有任务面板。
 
-- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.31.0`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
+- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.32.0`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
 - Node `>= 22.15`（`engines`）｜DSH 兼容基线 **`0.2.2-rc.3` – `rc.5`**（CI 与真机实测在 `rc.3`；主要在 **DeepSeek Harness Desktop** 上开发与使用，Web 同构）
 
 **三分钟看懂**：装插件 → 打开「主会话」→ 用自然语言说需求（协调者拆成 `task_create` 派给子会话）→ 子会话回报「已交付待确认」→ 你看面板与产物，确认或追问。下面按这个顺序走一遍。
 
 ## 安装与升级
 
-1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.31.0`。
+1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.32.0`。
 2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）：宿主侧代码在 DSH 进程启动时加载，**刷新页面不会换版本**，装完还是旧行为就是没重启。
 3. 自检：插件页有「任务编排」与详情页；侧栏「插件」下方有「◈ 主会话」与「能力包」；插件全局 **11 个工具**（协调者能用其中 8 个；子会话 4：`task_report` / `task_detail` / `plan_save` / 只读的 `context`），协调者另外挂宿主原生的只读工具 `read`（**没有** `glob`/`grep`）与技能加载器 `skill`；派一条任务回报后主会话收到「已交付待确认」，`task_message({action:'close'})` 能收成「已完成」。
 4. 升级 = 装新版 + 彻底重启。registry 包用插件页的更新入口；从 GitHub 装（`https://github.com/wjj865-code/dsh-orchestrator`）的先卸载旧版。旧包名 `dsh-orchestrator` 与新版不兼容，先移除。
@@ -178,6 +178,17 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | `task_inbox` | `task_list({ view: 'inbox' })` | 收件箱，输出与旧工具逐字一致 |
 | `history_search` | `context({ mode: 'history', query, project?, limit? })` | 跨项目历史检索 |
 | `project_context` | `context({ mode: 'project', target, query? })` | 项目背景；只要工作区与仓库索引用 `context({ mode: 'workspaces' })` |
+
+## 能力包（0.32.0）
+
+一个**能力包** = 一个预设（`agentPresets` 运行时注册）+ 一组技能（`skill-filesystem.customSkillDirs`）+ 可选的外部 CLI 声明 + 环境变量声明。包会话是**普通根会话**：不写台账、不进队列、不占写域，也不派子任务。
+
+- **入口**：侧栏「能力包」→ 包卡（名称/版本/发布者/技能数/CLI 状态/健康灯/env 摘要）→「用这个包开新会话」。
+- **内置包「公众号文章」**：`wechat-mp-writer`（写作）→ `out/article.md` → `wechat-mp-format`（文颜 `render` 出 HTML，本地预览）→ `wechat-mp-draft`（文颜 `publish` **建草稿**，不是群发）。
+- **CLI 懒装**：`@wenyan-md/cli@2.0.12`（Apache-2.0，精确锁定）装进 `$DSH_HOME/state/orchestrator/capability-packs/tools/<id>`，不写 PATH、不装全局、不碰 profile。安装前必须看确认卡：**259 个包 / ≈184 MiB unpacked / 冷装 ≈4 分 04 秒 / 热装 ≈14 秒 / 0 个 install 钩子**，默认按钮是「取消」。入口用 `realpathSync.native()` 解析（pnpm junction 直接执行会 `ERR_MODULE_NOT_FOUND`），运行期把 `APPDATA`/`LOCALAPPDATA` 重定向到包内 `.state/wenyan`（文颜的 token 存储不落用户目录）。
+- **凭据只走 env**：`WECHAT_APP_ID` / `WECHAT_APP_SECRET`。插件**不落盘、不读值、不回显**，只回答「已设置/未设置」；面板默认给可复制的 `setx` 命令（值处是占位符），「由插件设置」需二次确认、值只在内存里过一手。设置后必须**彻底退出 DSH 再启动**。
+- **用户包**：协调者用 `capability_pack` 先 dry-run（文件树 + 预设行 + 安装卡）再 `confirm:true` 创建；只生成声明与 `SKILL.md`/`references` 文本，不生成可执行脚本。删除时撤销预设、包目录进 `.trash` 保留 24h、删 `tools/<id>`。
+- **边界**：Desktop-only（`capabilityPacksAllowOnWeb=true` 才放开）；不做发布/群发、不做 server 模式、不自研渲染；不自动升级 CLI（升级由面板确认后执行）；内置包只读，随插件版本升级。
 
 ## 配置
 
@@ -374,8 +385,8 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 | 现象 | 处理 |
 |---|---|
-| 侧栏没有「主会话」 | 确认装的是 `0.31.0`；**彻底退出 DSH 再启动**（刷新页面无效） |
-| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.31.0` 显式版本；维护者侧可主动同步镜像（见 [CONTRIBUTING](docs/CONTRIBUTING.md#发版)） |
+| 侧栏没有「主会话」 | 确认装的是 `0.32.0`；**彻底退出 DSH 再启动**（刷新页面无效） |
+| 插件页 / `npm i @latest` 装到旧版 | 镜像还没同步（新版本几十分钟到几小时）：过一会儿重装；急着用就换 `@wjj865-code/dsh-orchestrator@0.32.0` 显式版本；维护者侧可主动同步镜像（见 [CONTRIBUTING](docs/CONTRIBUTING.md#发版)） |
 | 会话头没有「任务」入口 | 只在主会话显示：确认当前会话就是从侧栏「主会话」打开的；没建就点「打开主会话」 |
 | 点产物「预览」没有右侧栏 | 宿主要装 `ui-sidebar-right` 与 `ui-sidebar-documentpreview`；缺了会提示原因，产物库那行退回面板内预览 |
 | 工具表没有 `task_*` | 插件没激活或不是主会话；看插件页与 `logs/` |
@@ -387,6 +398,10 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 | Bot 模式看不到入口 | 用会话头「任务」按钮；侧栏入口只在纯 dsh 表面 |
 | 想换一个协调者会话 | 0.25.0 起没有「轮换」、也不会定时换：在指挥舱新建一个会话（选「协调者」预设）→ 会话头点「**设为协调者**」（只切指针，旧会话不改名、不归档）；或等压力问题卡出现时点「新建协调者会话」（插件代建、切指针并跳到新会话）。日志 append-only 只增不减，插件不做自动清理 |
 | 选了「新建协调者会话」却没跳过去 | 自动跳转失败时面板顶部有一条可读提示；指针已经切好，从左侧会话列表打开标题为「主会话」的会话即可（插件不归档、不删除任何会话） |
+| 侧栏没有「能力包」 | 确认装的是 `0.32.0` + Desktop 宿主；检查配置 `capabilityPacks` / `capabilityPacksPanel` 没被关（Web 下默认不启用，见 `capabilityPacksAllowOnWeb`）；改完彻底重启 DSH |
+| 能力包装不上 CLI | 面板确认卡里有失败原因与手动命令；常见是网络/代理或 registry 被 `.npmrc` 改写（安装器显式 `--registry=https://registry.npmjs.org`）。失败不会留下半截 `tools/<id>`，可重试 |
+| 删除能力包后目录还在 | 包会话仍开着时 Windows watcher 占目录：预设与 registry 已撤销，目录在下次启动 DSH 时清理（不硬删，避免运行中会话丢技能） |
+| 文颜报 `invalid ip` / 凭据无效 | 只提变量名与白名单路径：公众号后台「开发 → 基本配置 → IP 白名单」；`WECHAT_APP_ID`/`WECHAT_APP_SECRET` 改完要彻底重启 DSH。插件不会自动重试 |
 
 排障细节（平台缺陷、时序竞态、已知降级）见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
 

@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.32.0（2026-11-21）——能力包（工厂 MVP + 内置公众号包）：P0 GO → P1–P6
+
+**一句话**：新增「能力包」——预设 + 技能 + 可选 CLI（文颜）+ 环境变量声明的成套能力；内置「公众号文章」包（写作 → 排版 → **建草稿**，不做群发），协调者可用 `capability_pack` 生成/删除用户包，侧栏新增「能力包」面板。**不改派发语义**（计划批准 / 两段式交付 / 依赖链 / 写域 / 权限模型一律不动）；能力包会话是普通根会话，不写台账、不进队列。
+
+**阶段与 commit**（本仓库 `git log`）：
+
+| 阶段 | commit | 内容 |
+|---|---|---|
+| P0 门禁 | `31f3412` | 真机探针 `docs/probes/capability-pack-probe.mjs` + `reports/pack-spike.md`：运行时预设注册/技能/开会话/撤销 **7/7 PASS**；文颜 2.0.12 在宿主 Node（Electron-as-node v24.21.0）`--version`/`render` 通过；安装体量实测（259 包 / ≈184 MiB / 冷装≈4分04秒 / 0 钩子） |
+| P1 | `8b5f560` | `src/pack/{manifest,registry,store}.js`：schemaVersion 2 校验、原子写、`.trash` 回退、路径不越界、env 只声明不落值、install/health 状态 |
+| P2 | `18ee091` | `packs/wechat-mp-article/**`（3 技能 + references）、`preset-template.js`（禁 `task_*`/`plan_save`/`capability_pack`）、`preset-registry.js`（运行时注册 + 静态兜底）、Desktop 判定、`capabilityPacks*` 三配置 |
+| P3 | `0b3640a` | `capability_pack` 工具（list/describe/create/update/delete/open/install/uninstall/health/export-static）、生成器、安装器（argv 白名单/确认卡/planHash/版本校验/realpath 入口/render 冒烟/失败清理）、env 服务、健康检查、面板服务端窄写口 |
+| P4 | `5b862b1` | 能力包面板（侧栏入口 + 包卡 + 安装确认卡 + EnvVarsCard）、`pack-*` 路由（409/404 映射、clientRequestId 幂等）、客户端预算 **148 → 160 KiB**（实测 163,430 B / 余 410 B） |
+| P5 | `5fec406` | `src/pack/wenyan.js`（render 落文件 / publish 解析 Media ID / 错误映射 / 冒烟 / 草稿记账 / 重复建草稿确认）；安装器装后 render 冒烟；删包被 Windows watcher 挡住时「撤预设 + 目录延后清理」 |
+| P6 | 本提交 | 文档收口（README 能力包一节、ARCHITECTURE、LIMITATIONS、本 CHANGELOG）、真机验收探针与报告、0.32.0 |
+
+**新增工具**：`capability_pack`（协调者专用；worker 与包会话由 preset-tools deny）。创建流程固定：`dry-run（不带 confirm）→ 看文件树/预设行/安装卡 → confirm:true + clientRequestId`。工具数 10 → 11（协调者可见 8）。
+
+**安全与边界**（都有单测）：
+
+- 文颜 `@wenyan-md/cli@2.0.12` 懒装到 `capability-packs/tools/<id>`：精确版本 + registry 白名单 + `--ignore-scripts` + `--ignore-workspace`；装后校验版本、`realpathSync.native()` 解析入口（pnpm junction 直接跑会 `ERR_MODULE_NOT_FOUND`）、`--version` + `render` 冒烟。
+- 运行期 `APPDATA`/`LOCALAPPDATA` 重定向到包内 `.state/wenyan`（文颜 token 不落用户目录）。
+- 凭据只认 `WECHAT_APP_ID`/`WECHAT_APP_SECRET`：插件不落盘、不读值、不回显；`setx` 默认只生成可复制命令，执行需二次确认且只回 `{ok, code}`。
+- 只做草稿箱：不调发布/群发接口；`publish` 无幂等，重复执行前必须问用户（`out/draft.json` 记 Media ID）。
+- Desktop-only；Web 下工具返回 `PLATFORM_UNSUPPORTED`（`capabilityPacksAllowOnWeb=true` 才放开）。
+
+**配置面 22 → 25**：`capabilityPacks`（总开关）、`capabilityPacksPanel`（面板入口）、`capabilityPacksAllowOnWeb`（Web 覆盖）。
+
+**门禁**：`pnpm test`（build + `check:client-size` 160 KiB + `check:docs`）全绿；客户端 163,430 B / 163,840 B；`check:version`、`check:docs` 通过。新增用例：manifest（22）、store/registry、预设模板/注册、生成器、安装器（argv/确认/版本复用/升级/失败回退/冒烟）、服务闸门（dry-run/幂等/回滚/只读内置/开包会话/env 不落值）、路由、文颜封装、客户端契约。
+
+**真机验收（隔离 `DSH_HOME` + 临时 profile）**：`docs/probes/capability-pack-acceptance.mjs` **24/24 PASS**——建用户包 → 预设可见 → 开包会话 → 2 技能可见 → env 降级路径 → 文颜懒装（102 秒，pnpm store 命中；冷装实测 ≈4 分 04 秒）→ `render` 695 B HTML（含 `<section>`）→ 删包预设消失；零 error 日志、零凭据泄漏（宿主进程带 `WECHAT_APP_SECRET` 哨兵值扫描状态/工作/profile 目录均未命中）。详见 `reports/pack-acceptance.md`。
+
+**未验 / 明确不做**：真实公众号 `publish` 联调（需测试号 + IP 白名单，未做）；宿主 UI 预设选择器的刷新时机（P0 未验项）；Web 分支的安装执行（v1 只在 Windows 执行）；不做群发/发布、不做 server 模式、不自研渲染、不自动升级 CLI、不 vendor 二进制、不写 PATH。
+
 ## 0.31.0（2026-11-21）—— 台账正文去重（P1）+ 抽屉正文徽标 + 测试 skip 守卫（t-90651ad4 / 9f38721）
 
 **本版三件事**：① **P1 台账正文去重**（主体，`3cb364e`）：正文类消息只存借条、读时冷读宿主会话日志、读不到就降级、旧行零迁移；② **抽屉正文徽标**（`client/src/views.js`）：详情抽屉「最新回复」标出「正文来自子会话 / 正文不可读（摘要）」并给降级说明行；③ **测试 skip 守卫**（`9f38721`）：配置模块加载用例在管道 spawn 不可用（受限沙箱 EPERM）时 `skip`，不再把环境限制判成失败。

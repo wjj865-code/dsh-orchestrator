@@ -194,12 +194,22 @@
 - headless 一次性进程在 5 秒合并窗口内退出时，`steer` 可能因 initiator scope dispose 失败；`notifications` 记 `failed` 是正确审计。重启窗口内子会话已完成但结算未消费时，会对账为 `orphaned`，重建即可。
 - Bot 模式：ds-bot 的 Bot 表面只认自己的 DSH Agent 会话，打开主会话后视图可能仍停在 Bot 会话；纯 dsh 表面不受影响。
 
+## 能力包（0.32.0）
+
+- **Desktop-only**：Web 下不注册预设、`capability_pack` 返回 `PLATFORM_UNSUPPORTED`、面板显示不可用；`capabilityPacksAllowOnWeb=true` 是唯一覆盖（安装/`setx` 仍只在 Windows 执行）。
+- **预设注册依赖宿主 rc 契约**：`agentPresets.register()` 在 DSH 0.2.2-rc.5 真机通过（P0 门禁），但不是公开承诺；注册失败降级为静态 `cordis.patch.yml`（`capability_pack({action:'export-static'})`），改完必须彻底重启，且宿主 UI 预设选择器的刷新时机未验。
+- **CLI 安装是网络+磁盘操作**：冷装实测 259 包 / ≈184 MiB / ≈4 分钟；无镜像回退、不自动重试、升级只能面板确认后执行；安装期间包里技能仍可用，只是 `cli: unavailable`。
+- **公众号只到草稿箱**：`publish` 在文颜里就是「建草稿」，不做群发/发布接口；建草稿要求本机出口 IP 在公众号白名单（`invalid ip` 只给指引，不重试）；无幂等，重复执行会新建草稿（面板/技能要求先问用户）。
+- **凭据边界**：插件不读值、不落盘；`setx` 会把密钥短暂暴露在进程命令行并写入 `HKCU\Environment`（需用户二次确认）；文颜自己可能缓存 `access_token`，已重定向到包内 `.state/wenyan`，删包即清，但插件不读不管。
+- **用户包技能质量无保证**：工厂只生成声明与文本（不生成脚本），也不做内容评分；`dry-run + 健康检查 + 一键删除` 是全部兜底。真实公众号联调（一条草稿）仍属人工验收项。
+- **删除包时若会话仍开着（Windows）**：skill watcher 可能占住 `skills/` 目录，整目录 rename 恒 `EPERM`。此时只撤预设 + registry + tools，目录延后到下次启动 `purgeUnregistered()` 清理（不硬删，避免运行中会话中途丢技能）。
+
 ## UI
 
 - 会话内卡片仍只提供数据（`taskCard`），不渲染 UI；可见入口是侧栏「主会话」和会话头「任务」面板。
 - **任务入口依赖宿主身份信号**：显示条件 = 当前会话 id 与台账 `main_session_id` 相等。id 取不到或 `session-role` 请求失败时按「不是主会话」处理，入口**默认隐藏**；会话切换立即重判，另有 5 秒兜底轮询——刚打开主会话 1 秒内可能短暂看不到入口。
 - 入口隐藏只是 UI 层：`main` 面板仍注册，`/api/orchestrator` 的动作端点也没有会话身份校验（owner-only 由平台 connection 负责）；真正的主会话权限仍由 `task_*` 工具的调用方校验兜底。
-- 面板是 2s 轮询、没有 SSE；任务很多时快照会变大。面板产物 ≤148 KiB 由 `check:client-size` 守着（工作台 v1 由 95 KiB 抬到 148 KiB——先定 128 KiB、全功能实测不够；子预算见脚本头部与 `docs/testing.md` G10；minify 后排查用 `CLIENT_MINIFY=0`）。
+- 面板是 2s 轮询、没有 SSE；任务很多时快照会变大。面板产物 ≤160 KiB 由 `check:client-size` 守着（工作台 v1 由 95 KiB 抬到 148 KiB，0.32.0 能力包面板抬到 160 KiB——子预算见脚本头部与 `docs/testing.md` G10；minify 后排查用 `CLIENT_MINIFY=0`）。
 - **删除只删台账，不删盘**：级联清 `tasks`/`messages`/`notifications`，产物文件、`memories` 都保留；平台侧子会话历史（含 P1 起作为正文真源的会话日志）也没有删除 API。删除不可恢复。
 - **删除不给活跃任务**：活跃状态先「停止」；终态任务若还有活跃下游依赖也不让删（`DELETE_HAS_ACTIVE_DEPENDENTS`）。
 - 日报默认关闭；开启后每个主会话一条 schedule，主会话重建会重建 schedule。
