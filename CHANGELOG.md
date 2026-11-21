@@ -1,31 +1,12 @@
 # Changelog
 
-## 未发布 —— 交互优化：报告之后必须推进（L1 推进循环 + 通知动作指令）
+## 0.27.0（2026-11-21）—— 工作台 v1（组 / 排期 / 自动化 / 复盘 / 只读 dock）+ 推进循环
 
-**新增**
+本版两批：任务台改版为**工作台 v1**（五页 + 复盘页、常驻只读 dock、排期两层、原生自动化桥），以及交互收紧为**推进循环**（收到回报后必须推进、不许只汇报）。
 
-- **L1 推进循环段**（`src/prompt-layers.js` 的 `renderAdvanceLoopPolicy()`，`renderCoordinatorPolicy()` 拼在三闸门之后、worktree/写域之前）：收到任何回报（`progress` / `done` / `delivered` / `blocked` / `needs_auth`）或用户消息后，协调者必须落到三类动作之一——**推进**（按已批准计划 `task_message` 续派/追问同一子会话，或已授权时 `task_create` 继续做）、**提问**（`ask_user_question`，2–4 个选项带建议、多个待决合成一条清单）、**问新任务**（仅无活跃且无待确认时问「还有新任务吗」）——**禁止只输出汇报文字**。另四条：已批准计划（`plan_state=approved`）批准后立即续派实现、不许只回确认；卡点（B1–B4）与待拍板必须提问、不能拖也不能自批；全部完成先问新任务、同一事件只问一次、不答不重复轰炸，也不许宣称「已全部完成」然后静默；与既有口径的边界写死（问新任务 ≠ 问能否关闭、交付仍默认待确认、T0 直答不违反、软门禁不假装硬拦截）。
-- **通知动作指令**（`src/notify.js`）：`done` / `delivered` / `blocked` / `needs_auth` 的通知末尾各贴一行「下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进」；打断级（blocked / needs_auth）的即时通知也带。`progress` 仍只贴它自己的追问指令（不重复「下一步」），结算异常（failed / cancelled / orphaned）只报事实。
-- **文案单源**：句子本体在 `src/copy.js`（`ADVANCE_LOOP_LINES` / `ADVANCE_NOTICE_HINT`），policy 与通知逐字同源；`PROMPT_LAYERS` 的 L1 与 NOTIFY 条目登记了这条归属，`layerViolations` 新增 L2/L3 探针（推进循环与「还有新任务吗」属 L1，子会话不许复述）。
+**升级注意**：装 `@wjj865-code/dsh-orchestrator@0.27.0` 后要**彻底退出 DSH 再启动**（刷新页面无效），客户端产物与新预设才生效；台账只做增量 DDL（多 `groups_v1` / `automations` 两张表 + `tasks.planned_at` 一列），旧库直接可用、无需手工迁移，代码回滚时新表/新列留着也无害。
 
-**行为变更（用户可感知）**
-
-1. 回报之后协调者不再只回一段「XX 完成了」：要么续派/追问、要么结构化提问、要么在全部完成时问一句「还有新任务吗」；2. `done` / `delivered` / `blocked` / `needs_auth` 的通知末尾多一行动作指令，照着做就不会停在转述；3. 已批准的计划任务在批准后会立刻续派实现，不再出现「只回一句好的」然后卡住。
-
-**不变**
-
-- 派发语义（`task_create` 仍只由协调者调用）、计划批准四步与人工闸门、两段式交付（`delivered` 仍等确认或超时）、「不主动问任务能否关闭」、四类堵塞项与「少打扰」、四类工具的权限模型，一字不改；没有新增工具、没有自动代批、没有执行层拦截（仍是提示词约束）。
-
-**验证**
-
-- `test/prompt-layers.test.js` 新增：`ADVANCE_LOOP_LINES` 每句都逐字出现在 `renderAdvanceLoopPolicy()` 与 `renderCoordinatorPolicy()` 里；L1 `owns` 登记措辞源；L2/L3 探针命中即失败；`ADVANCE_NOTICE_HINT` 归 NOTIFY 且不重复能力边界。
-- `test/interaction-policy.test.js` 新增：五条规则逐条断言 + 位置（三闸门之后、worktree 之前）+ 与「不催关闭」「T0 直答」的边界 + `BLOCKER_RULE` 只出现一次（不重抄）+ 软门禁措辞。
-- `test/notify.test.js` 新增：四种状态通知都含动作指令、progress 不重复贴、结算异常不贴；三条受影响的通知文案断言改为「首行 + 动作指令」口径（原本是整段严格相等，标签断言意图不变）。
-- **软门禁如实记录**：这条规则是提示词约束，插件不检查协调者这回合是否真的调了 `task_message` / `ask_user_question`，也没有「只汇报就重试」的拦截；模型仍可能只汇报。已写进 `docs/LIMITATIONS.md`「交互规范（软约束）」。
-
-## 未发布 —— 工作台 v1（P11）：任务台改版为「组 / 排期 / 自动化 / 复盘 / 右侧 dock」工作台
-
-**新增**
+**工作台 v1（P11）**
 
 - **工作台六页**（`client/src/workbench.js`，挂在原 `main` 槽位面板 `orchestrator` 内部导航，不新增第二个 main key）：总览（指标 + 收件箱 + 今日排期 + 最近产物）、任务组（组卡网格 + 未分组虚拟卡）、组工作台（状态列板 + 右侧 dock + 详情抽屉 + 产物格）、排期（月历 + 下一条 + 待排 tray）、运行与自动化（清单 + 新建 + 暂停/恢复/删除 + 降级）、复盘（7/30 天窗口的交付/确认/平均时长 + 失败归因 + 产物类型 + 组排行，见下）。交互骨架参考消费级工作台插件（单快照渲染、白名单写入口、常驻 dock、日历拖拽、三态齐备），不带 i18n / 示例数据。
 - **组成为一等维度**：新增 `groups_v1` 表（表名带 `_v1` 因为 `GROUPS` 是 SQLite 窗口帧关键字）。`groups_v1.id` **就是** `tasks.group_id` 且不可变——worktree 检出复用（`src/worktree-request.js` 的 `findReusableCheckout`）与 `task_list({ group })` 都按这个字符串判定，改键会静默漂移。改名只改 `name`；要改键只能走显式批量迁移（本版不提供入口）。启动时 `backfillGroups()` 幂等补元数据行（`INSERT OR IGNORE` + `settings.groups_backfilled_at`；**没有任何组时不写 settings**，保住「仅仅打开台账不写 settings」这条既有不变量）。没有元数据行的组按「虚拟组」读（名字回落 id，第一次改名时补行）。
@@ -41,9 +22,15 @@
 - **复盘页**：导航第 5 项（工作台第 6 页），7 / 30 天切换、三态齐全（骨架 / 错误 Banner + 重试 / 空态）、窄屏单列；图表只用数字卡 + 横向条 + 排行行，**不引图表库**；只读，不新增任何写口（`test/client-workbench.test.js` 断言页面里没有 `workbenchAction` / `clientRequestId` / `confirm: true`）。
 - **体积**：复盘页从组工作台 / 排期 / 自动化三页各让 1 KiB 进子预算表（新增「复盘页 ≤ 3」，合计仍 = 148 KiB），**没有抬预算、没有删既有功能**；重建后 `dist/client.js` = **148,323 B（144.85 KiB）**，余 3,229 B。
 
-**行为变更（用户可感知，4 条）**
+**推进循环（交互收紧：报告之后必须推进，不许只汇报）**
 
-1. 任务面板变成五页工作台：原来的「筛选轨 + 任务卡列表」收进总览页（筛选与搜索不变），新增组/排期/自动化三页；2. 可以在面板里给任务排计划日（只写 `planned_at`，不改状态、不派发）；3. 可以在面板里创建/暂停/删除「到点让协调者派单」的自动化（二次确认 + 授权勾选 + 审计），目标固定为唯一主会话；4. 新增「复盘」页：按 7 / 30 天看交付、确认、平均交付时长、失败归因、产物类型与组排行（纯只读统计，数据来自台账既有时间戳）。
+- **L1 推进循环段**（`src/prompt-layers.js` 的 `renderAdvanceLoopPolicy()`，`renderCoordinatorPolicy()` 拼在三闸门之后、worktree/写域之前）：收到任何回报（`progress` / `done` / `delivered` / `blocked` / `needs_auth`）或用户消息后，协调者必须落到三类动作之一——**推进**（按已批准计划 `task_message` 续派/追问同一子会话，或已授权时 `task_create` 继续做）、**提问**（`ask_user_question`，2–4 个选项带建议、多个待决合成一条清单）、**问新任务**（仅无活跃且无待确认时问「还有新任务吗」）——**禁止只输出汇报文字**。另四条：已批准计划（`plan_state=approved`）批准后立即续派实现、不许只回确认；卡点（B1–B4）与待拍板必须提问、不能拖也不能自批；全部完成先问新任务、同一事件只问一次、不答不重复轰炸，也不许宣称「已全部完成」然后静默；与既有口径的边界写死（问新任务 ≠ 问能否关闭、交付仍默认待确认、T0 直答不违反、软门禁不假装硬拦截）。
+- **通知动作指令**（`src/notify.js`）：`done` / `delivered` / `blocked` / `needs_auth` 的通知末尾各贴一行「下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进」；打断级（blocked / needs_auth）的即时通知也带。`progress` 仍只贴它自己的追问指令（不重复「下一步」），结算异常（failed / cancelled / orphaned）只报事实。
+- **文案单源**：句子本体在 `src/copy.js`（`ADVANCE_LOOP_LINES` / `ADVANCE_NOTICE_HINT`），policy 与通知逐字同源；`PROMPT_LAYERS` 的 L1 与 NOTIFY 条目登记了这条归属，`layerViolations` 新增 L2/L3 探针（推进循环与「还有新任务吗」属 L1，子会话不许复述）。
+
+**行为变更（用户可感知，5 条）**
+
+1. 任务面板变成六页工作台：原来的「筛选轨 + 任务卡列表」收进总览页（筛选与搜索不变），新增组 / 排期 / 自动化 / 复盘；2. 可以在面板里给任务排计划日（只写 `planned_at`，不改状态、不派发）；3. 可以在面板里创建/暂停/删除「到点让协调者派单」的自动化（二次确认 + 授权勾选 + 审计），目标固定为唯一主会话；4. 新增「复盘」页：按 7 / 30 天看交付、确认、平均交付时长、失败归因、产物类型与组排行（纯只读统计，数据来自台账既有时间戳）；5. 回报之后协调者不再只回一段「XX 完成了」：要么续派/追问、要么结构化提问、要么在全部完成时问一句「还有新任务吗」——`done` / `delivered` / `blocked` / `needs_auth` 的通知末尾也多一行动作指令，已批准的计划在批准后立刻续派实现。
 
 **预算变更（用户拍板 D1：95 → 128 → 148 KiB）**
 
@@ -53,13 +40,19 @@
 
 **不变**
 
-- 派发语义（`task_create` 仍只由协调者调用，工作台的「新任务」只生成派单草稿）、计划批准四步与「计划中任务收到追加消息即批准」、交付两段式（`delivered` 仍需确认或超时才 `done`）、权限模型（协调者仍钉 `read-only`、子会话沙箱不变）、同写域默认拒绝、worktree 与 planFirst 互斥、2s 轮询无 SSE、产物预览仍走宿主右侧栏、面板动作门控与错误码同源。全局工具仍 **10 个**，配置面仍 **22 键**。
+- 派发语义（`task_create` 仍只由协调者调用，工作台的「新任务」只生成派单草稿）、计划批准四步与「计划中任务收到追加消息即批准」、交付两段式（`delivered` 仍需确认或超时才 `done`）、权限模型（协调者仍钉 `read-only`、子会话沙箱不变）、同写域默认拒绝、worktree 与 planFirst 互斥、2s 轮询无 SSE、产物预览仍走宿主右侧栏、面板动作门控与错误码同源。全局工具仍 **10 个**，配置面仍 **22 键**。推进循环是提示词层改动：没有新增工具、没有自动代批、没有执行层拦截，也不改派发/状态机/权限。
+
+**已知限制**
+
+- **推进循环是软约束**：插件不检查协调者这一回合是否真的调了 `task_message` / `ask_user_question`，也没有「只汇报就重试」的拦截；模型仍可能只输出汇报文字。「同一事件只问一次」也不记账（只在模型上下文里）。详见 `docs/LIMITATIONS.md`「交互规范（软约束）」。
+- **复盘页口径**：平均时长只统计窗口内交付且 `created_at` 可知的任务（跨窗口不回溯）；失败归因取 `tasks.error` 首行（相同即合并、截 60 字）；产物只按扩展名归类（不读文件内容，扩展名超 8 字符归「其他」）；组排行只统计窗口内有活动的组；15s 轮询不是实时流；窗口上限 62 天、不支持自定义起止日期。
 
 **验证**
 
 - 新增 `test/workbench.test.js`（16 条：timing 归一与文案、组卡统计、日历分桶、backfill 幂等、组改名/归档、排期写清与终态拒绝、自动化全链路与降级、门控矩阵、复盘投影 `reviewStats` 的窗口/归因/产物/排行口径、`createWorkbench.stats` 只读不改台账）；`test/host-route.test.js` 增 7 条（只读端点、`stats` 端点（days 缺省 7 / 上限 62 / 非法回落）、未装配 500、反例端点 400、`plan-set` + 幂等、`group-save`/`archive`、`automation-*` 全链路与 502 降级）；`test/client-workbench.test.js` 新增 10 条（月历格 / 拖拽换算 / 看板列 / 待排与下一条 / dock 无输入框 / 复盘页导航与三态 / 客户端无派发与批准端点 / 面板不新增 main key）；`test/ledger.test.js` 表集合断言同步到 7 张表。
 - **体积实测**（`access:'full'` 收尾任务真的重建了产物）：`pnpm run build`（vite 7.3.8 + esbuild minify，sourcemap 保留）→ 工作台 v1 首版 `dist/client.js` **142,811 B（139.46 KiB）**，距 148 KiB 预算余 8,741 B；**阶段 3 复盘页加入后 148,323 B（144.85 KiB）**、`dist/client.js.map` 380,700 B，余 **3,229 B**。`pnpm run check:client-size` 两次都 exit 0（最后一次输出「客户端体积在预算内：144.8 KB (148323 B) / 预算 148.0 KB (151552 B)」）。
-- **全门禁**：阶段 3 交付时 `pnpm test` = **1,145 项 / 1,140 pass / 0 fail / 5 skip**（5 条 skip 全是「当前环境无法创建文件符号链接」的环境跳过，与本次改动无关）；`check:docs` / `check:version`（0.26.0 三处一致）/ `check:client-size` 均 exit 0。工作台 v1 首版门禁为 1,140 项 / 1,135 pass / 0 fail。
+- **全门禁**（本版定版时）：`pnpm test` = **1,148 项 / 1,143 pass / 0 fail / 5 skip**（5 条 skip 全是「当前环境无法创建文件符号链接」的环境跳过，与本次改动无关）；`check:docs`（1,632 行 / 预算 1,800）/ `check:version`（0.27.0 三处一致）/ `check:client-size`（148,323 B / 151,552 B）均 exit 0。过程里程碑：工作台 v1 首版 1,140 项 / 1,135 pass；阶段 3 复盘页 1,145 项 / 1,140 pass。
+- **推进循环的测试**：`test/prompt-layers.test.js` 断言 `ADVANCE_LOOP_LINES` 每句逐字出现在 `renderAdvanceLoopPolicy()` 与 `renderCoordinatorPolicy()`、L1 `owns` 登记措辞源、L2/L3 探针命中即失败、`ADVANCE_NOTICE_HINT` 归 NOTIFY 且不重复能力边界；`test/interaction-policy.test.js` 断言五条规则、位置（三闸门之后 / worktree 之前）、与「不催关闭」「T0 直答」的边界、`BLOCKER_RULE` 只出现一次、软门禁措辞；`test/notify.test.js` 断言四种状态通知都带动作指令、progress 与结算异常不带（三条原文案断言改为「首行 + 动作指令」口径，标签断言意图不变）。
 - **重建暴露并修掉的一处失败**：重建 `dist/client.js` 后 `test/client.test.js` 的面板首帧用例报 `t.useMemo is not a function`（9 条）——根因是那份「最小 React 垫片」没实现 `useMemo`（工作台 v1 在 `views.js` 里用它读 `sessionStorage`），与 `test/client-config-form.test.js` 的垫片口径不一致。垫片补上 `useMemo` 与 `useState` 惰性初始值求值（React 语义，槽位被用例预置时仍以预置值为准）后 49 条全绿，**没有改动任何断言、没有删用例**。
 
 ## 0.26.0（2026-11-21）—— 交互三闸门：开工前确认、执行期少打扰、改动先评估
