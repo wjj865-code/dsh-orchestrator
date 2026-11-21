@@ -7,9 +7,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   DELIVERY_NOT_FINAL, LAYER_NAME, PRESENT_LIMIT_TEXT, PRESENT_MAX_FILES, PROMPT_LAYERS, WORKER_CONTEXT_HINT,
-  layerViolations, renderAdvanceLoopPolicy,
+  layerViolations, renderAdvanceLoopPolicy, renderTaskChainPolicy,
 } from '../src/prompt-layers.js'
-import { ADVANCE_LOOP_LINES, ADVANCE_NOTICE_HINT } from '../src/copy.js'
+import { ADVANCE_LOOP_LINES, ADVANCE_NOTICE_HINT, TASK_CHAIN_LINES } from '../src/copy.js'
 import { renderCoordinatorPolicy } from '../index.js'
 import { CONFIRM_HINT, SUMMARY_FIELDS, renderBrief } from '../src/brief.js'
 import { renderTaskDetail } from '../src/task-detail.js'
@@ -82,6 +82,29 @@ test('推进循环归 L1：句子逐字来自 copy.js，通知尾部动作指令
   assert.deepEqual(layerViolations('NOTIFY', ADVANCE_NOTICE_HINT), [])
   const notify = PROMPT_LAYERS.find(layer => layer.id === 'NOTIFY')
   assert.ok(notify.owns.some(item => item.includes('ADVANCE_NOTICE_HINT')), 'NOTIFY owns 应登记动作指令')
+})
+
+test('任务链归 L1：五条规则逐字来自 copy.js，L2/L3 不许复述', () => {
+  const policy = renderCoordinatorPolicy({})
+  const block = renderTaskChainPolicy()
+  // 每一句都逐字来自 copy.js 的 TASK_CHAIN_LINES（改一处两处一起变，不许各写一套）。
+  for (const [key, line] of Object.entries(TASK_CHAIN_LINES)) {
+    assert.ok(block.includes(line), `任务链段落缺少 ${key}`)
+    assert.ok(policy.includes(line), `L1 policy 缺少 ${key}`)
+  }
+  // 判据 / 建链时机 / 不阻塞 / 失败传播 / delivered≠done / 同检出串行 —— 五条规则的分句都在。
+  for (const fragment of ['判据（什么时候该建链）', '建链时机', '不是阻塞等待', '下游自动 failed', '不算 done', '必须用 dependsOn 串行']) {
+    assert.ok(block.includes(fragment), `任务链段缺少规则片段：${fragment}`)
+  }
+  // 归层：L1 独占（子会话只读前置事实，不建链、不判断时机）。
+  const l1 = PROMPT_LAYERS.find(layer => layer.id === 'L1')
+  assert.ok(l1.owns.some(item => item.includes('任务链')), 'L1 owns 应登记任务链')
+  assert.ok(l1.owns.some(item => item.includes('TASK_CHAIN_LINES')), 'L1 owns 应写明措辞源')
+  assert.deepEqual(layerViolations('L1', policy), [])
+  for (const leaked of ['任务链：B 的输入是 A 的产物', 'dependsOn 不是阻塞等待：先落 waiting_dep']) {
+    assert.notDeepEqual(layerViolations('L2', leaked), [], `L2 不该复述：${leaked}`)
+    assert.notDeepEqual(layerViolations('L3', leaked), [], `L3 不该复述：${leaked}`)
+  }
 })
 
 test('L4 onboarding 瘦身：不再复述 L1 的 6 条能力边界（审计 §2.7）', () => {

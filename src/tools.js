@@ -46,7 +46,8 @@ import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, pla
 import { MAX_PLAN_CHARS, isSafePlanTaskId, planSavedNote, writePlanDocument } from './plan-doc.js'
 // P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
 import {
-  ACCESS_FULL, CHANGE_REVIEW_FIELDS, DELIVERY_LINES, PLAN_SAVE_TOOL_DESC, deliveredReceiptNote, planCreateReceipt,
+  ACCESS_FULL, CHANGE_REVIEW_FIELDS, DELIVERY_LINES, PLAN_SAVE_TOOL_DESC, TASK_CHAIN_TOOL_DESC, TASK_CHAIN_WAITING_NOTE,
+  deliveredReceiptNote, planCreateReceipt,
 } from './copy.js'
 import {
   branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, findReusableCheckout,
@@ -999,7 +1000,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         enum: ['full'],
         description: 'per-task 访问级别：只接受 "full"（子会话沙箱 danger-full-access：构建/发版类任务要写仓库外或跑不受沙箱限制的 bash 时用）；不传=沿用当前会话策略、完全不动沙箱（默认）；与 readOnly/planFirst 互斥',
       },
-      dependsOn: strList('前置任务编号数组；依赖全部完成后才派发；任一前置失败则本任务失败'),
+      dependsOn: strList(TASK_CHAIN_TOOL_DESC),
       group: str('可选分组名，如“登录改造”；面板按组汇总进度'),
       goalRounds: {
         type: 'number',
@@ -1403,7 +1404,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           base: worktreeRecord?.base,
           hint: worktreeHint,
         })
-        const notes = [dependencyNote, checksNote, goalRoundsNote, teamTaskNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
+        // 回执补一句「自动晋升、不占回合」：否则协调者看到「等待前置」就会自己盯着等，机制白搭。
+        const notes = [dependencyNote, TASK_CHAIN_WAITING_NOTE, checksNote, goalRoundsNote, teamTaskNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
         log('task.dep.waiting', { taskId: task.id, detail: { dependsOn: depends.ids, callId } })
         return `任务「${taskLabelWithId(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
       }

@@ -1505,6 +1505,9 @@ test('依赖：前置运行中时下游 waiting_dep，前置交付并确认后�
   const dep = listTasks(db).find(task => task.title === '前置A')
   const second = await call(tools, 'task_create', { ...sampleBrief({ title: '下游B' }), dependsOn: [dep.id] })
   assert.match(second, /等待前置任务/)
+  // 0.28.0：回执必须写明「自动晋升、不占回合」，否则协调者会自己盯着等（机制白搭）。
+  assert.match(second, /自动晋升/)
+  assert.match(second, /不占回合/)
   const waiting = listTasks(db).find(task => task.title === '下游B')
   assert.equal(waiting.status, 'waiting_dep')
   assert.equal(dispatcher.calls.filter(callRow => callRow[0] === 'spawn').length, 1)

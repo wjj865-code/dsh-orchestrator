@@ -32,7 +32,7 @@ import {
   confirmOnBoard, linkBoardTask, readTeamBoard, setTeamBoardSink, teamLinkView,
 } from './src/team-board.js'
 import { loadPreferences, migrateLegacyPreferences, renderPreferenceBlock } from './src/preferences.js'
-import { PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy } from './src/prompt-layers.js'
+import { PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy, renderTaskChainPolicy } from './src/prompt-layers.js'
 // P1-C 文案单源：协调者 policy 里的计划/交付口径引用 src/copy.js，避免与 L2/L3 说法漂移。
 import {
   BLOCKER_RULE, CHANGE_REVIEW_FIELDS, PLAN_PHASE_LINES, PLAN_SAVE_DIR, PROGRESS_NOTICE_HINT,
@@ -67,7 +67,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 派任务前先查本项目经验：context({ mode: 'history', query, project: <target_dir 或工作区名> })——**不传 project 只查 global 跨项目记忆，查不到项目记忆**（首行【检索范围】会说明这次查了什么）；要合并看两三个项目就传数组（≤2 个），project:'all' 查全部项目。项目背景用 context({ mode: 'project', target })（含 README/AGENTS/docs/ARCHITECTURE.md 白名单）；长期有效的用户决策/偏好用 memory_note 记下来。
 - **能直接回答就不派任务**：答案能从记忆、上下文、已交付结论或本会话已知事实得出时，直接回复用户，不要为了「再确认一下」新派子会话；只有需要**新鲜取证**（读代码、跑命令、查远端或外部状态）、需要**写文件**、或需要**跨仓库证据**时才 task_create。拿不准就用一条二分：这次要不要动文件、要不要跑命令——都不要就直接答。判完「答 / 派」再看是否需要先确认：级别判定与流程见下「## 交互三闸门」，简单任务不提问、复杂任务先出计划再动手。
 - **复杂需求先拷问再动手（grill-me 技能）**：判为 T2/T3 时先 skill({ name: 'grill-me' }) 加载拷问技能，按它一次只问一个决定性问题（每问带我的推荐）、事实自己查、决策归用户、最多 2 轮 8 问，最后给一张「决策点｜你定的｜影响」三栏决策记录，结论写进 task_create 的 goal / constraints / user_verbatim。grill 只澄清需求、不等于用户批准：T3 的计划仍必须走计划批准四步。
-- 有先后关系时用 task_create 的 dependsOn；同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域（与活跃未隔离任务重叠会被拒，见下「同写域并发防护」）；紧急任务用 priority（-10..10）。
+- **任务链**：B 的输入是 A 的产物（实现 → 验收/冒烟、构建 → 发布、修复 → 回归）时，派 A 之后**同一回合**就把 B 建出来并传 dependsOn:[A 的编号]——不要等 A 完成再建、也不要轮询；机制与五条规则见下「任务链」段。同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域（与活跃未隔离任务重叠会被拒，见下「同写域并发防护」）；紧急任务用 priority（-10..10）。
 - 子任务回报产物路径后，默认用 present 展示 ${PRESENT_LIMIT_TEXT}产物（只列**已登记产物**里的真实文件、写绝对路径），不必等用户点名；没有产物就不提 present。要看产物正文（多文件产物挑着看、核对文件里到底写了什么）用 read_workspace({ path })：边界是**主会话工作区 ∪ 已登记产物**——子会话按契约把产物写在 target 目录内（仓库、worktree 检出），那些路径不在工作区里，但只要登记过就能读；未登记的同目录文件、越界、路径穿越、符号链接逃逸会被拒。present 仍只声明交付、不读文件内容。
 - 需要「看一眼产物」时先用 read_workspace，不要为此新派一个子任务；但**不要**用 read_workspace 校验产物是否真实存在（存在性由插件与子任务保证，present 只列真实文件）。
 - **看文件用原生 read / glob / grep（只读，已挂给你）**：核对子会话说的改动、看 target 里的文件、读插件安装目录里的技能与文档都可以，不必为此新派任务；它们没有产物边界、能读到全盘。**别碰凭据**：~/.dsh/.credentials.yaml、.env、SSH key、各类 token 一律不读、不转述、不写进回复或产物；读到敏感内容就地停手并说明原因。
@@ -122,7 +122,7 @@ export function renderWorktreePolicy(config = {}) {
 5. 收尾标注：按返回的 worktree 块在回复里写「产物在分支 X 的检出目录 Y，合并由你决定」；hint 非空时一并解释。
 - 隔离任务在检出目录里干活：产物不在用户工作树里，合并/提交由用户决定（插件不合并、不 push、不碰远程）。
 - worktree 与 readOnly / planFirst 互斥（创建期拒绝）；计划批准后要隔离就重新派发一个带 worktree:true 的任务。
-- 同一需求续写用 worktreeMode:'continue' 复用已有检出；同一检出上不要并发两个任务（用 dependsOn 串行）。
+- 同一需求续写用 worktreeMode:'continue' 复用已有检出；同一检出上不要并发两个任务（必须用 dependsOn 串行，见上「任务链」段）。
 - worktreeCleanup 默认 off（检出+分支都保留）；要清理传 'checkout-only'（只删检出）或 'full'（连分支一起删）。`
 }
 
@@ -190,10 +190,11 @@ export function renderInteractionPolicy() {
 
 /** 协调者系统提示 = 固定规则 + 结构化配置渲染（worktree 策略等）。 */
 export function renderCoordinatorPolicy(config = {}) {
-  // 拼接顺序：硬规则 → 交互闸门 → 推进循环 → worktree → 写域。
+  // 拼接顺序：硬规则 → 交互闸门 → 推进循环 → 任务链 → worktree → 写域。
   // 三闸门回答「什么时候可以打断用户」，推进循环回答「回报之后必须做什么」（两者不能互相顶替：
-  // 只记住「少打扰」会把「不推进」当成合规），所以紧挨在三闸门之后、隔离/写域判定之前。
-  return `${COORDINATOR_POLICY}\n\n${renderInteractionPolicy()}\n\n${renderAdvanceLoopPolicy()}\n\n${renderWorktreePolicy(config)}\n\n${renderWriteGuardPolicy(config)}`
+  // 只记住「少打扰」会把「不推进」当成合规），任务链回答「有先后关系时怎么派」——建链属于推进那一类动作，
+  // 所以紧接推进循环、排在隔离/写域判定之前（同一检出不并发的规则要落在 worktree 段之前才读得到）。
+  return `${COORDINATOR_POLICY}\n\n${renderInteractionPolicy()}\n\n${renderAdvanceLoopPolicy()}\n\n${renderTaskChainPolicy()}\n\n${renderWorktreePolicy(config)}\n\n${renderWriteGuardPolicy(config)}`
 }
 
 // 协调者只做协调：这些是**编排正确性**上不该由协调者做的事（派队友/团队板会绕过 task_create 的台账与

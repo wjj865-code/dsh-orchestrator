@@ -159,6 +159,7 @@
 | P2-5 面板 S9′ | esbuild minify + ≤95 KiB 闸门、官方板只读分区、交接区块、验收小标 | `test/client-build.test.js`、`test/client.test.js` |
 | P2-6 文档收口 | 文档 ≤1,800 行（预算常量与失败提示同改）、README 首屏重写 + 结构断言、P2 变更入档 | `scripts/check-docs.mjs`、本文件 §3.4 |
 | 外部依赖 | ds-bot Bot 模式不撤外部 root 会话皮肤、rc.3 子会话沙箱根=父目录、团队工具残留 | CHANGELOG `0.13.0`/`0.14.0`；[LIMITATIONS](LIMITATIONS.md) |
+| 任务链规则（0.28.0） | L1 五条规则（判据与建链时机 / 不阻塞 / 失败传播 / delivered≠done / 同检出串行）逐字来自 `src/copy.js`；`task_create.dependsOn` 描述与 `waiting_dep` 回执同源；L2/L3 探针；机制用 `dependencyState`/`promoteDependents` 复核 | `test/task-chain-policy.test.js`、`test/prompt-layers.test.js`；CHANGELOG `0.28.0` |
 
 ## 7. 真机复核清单（装 profile + 彻底重启后逐条勾）
 

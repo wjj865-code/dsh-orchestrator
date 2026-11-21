@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.28.0（2026-11-21）—— 任务链（dependsOn）进 L1：依赖完成自动开始，不再「等 A 完成再派 B」
+
+本版只有一类改动：把**早就存在**的依赖编排机制写成协调者每回合都在的规则，并小版本发布。**没有改派发语义、状态机、权限，也没有新增工具**。用户原话：「你可以使用 dependson，依赖任务结束时会自动开始。这个机制是不是没写到预设或者提示词，怎么没怎么使用。」
+
+**升级注意**：装 `@wjj865-code/dsh-orchestrator@0.28.0` 后要**彻底退出 DSH 再启动**（刷新页面无效），新的协调者 policy 才生效；台账无 schema 变更，旧库直接可用。
+
+**新增**
+
+- **L1 新增「任务链」段**（`src/prompt-layers.js` 的 `renderTaskChainPolicy()`，拼在**推进循环之后、worktree/写域之前**）：五条规则——① **判据与建链时机**：B 的输入是 A 的产物（实现 → 验收/冒烟、构建 → 发布、修复 → 回归、迁移 → 回归复核）时，派 A 之后**同一回合**就把 B 建出来并传 `dependsOn:[A 的编号]`，**不要等 A 完成再建、也不要轮询**；② **`dependsOn` 不是阻塞等待**：B 先落 `waiting_dep`，前置全 `done` 后由**插件队列自动晋升** `pending` 并派发，**不占协调者回合**、不是 `wait_agent`；③ **前置失败 → 下游自动 `failed`**（failed/cancelled/orphaned/不存在，原因写明、沿链循环传播，要接着做用 `retry`）；④ **前置「已交付待确认」（`delivered`）不算 `done`**（就绪只认 `done`；要推进先 `close` 或等超时，别重复派下游）；⑤ **同一 worktree 检出必须用 `dependsOn` 串行**（两个任务写一个检出让后一个排队，或各建检出）。
+- **文案单源**（`src/copy.js` 的 `TASK_CHAIN_LINES` / `TASK_CHAIN_TOOL_DESC` / `TASK_CHAIN_WAITING_NOTE`）：L1 段、`task_create.dependsOn` 描述、`waiting_dep` 创建回执**三处逐字同源**；`PROMPT_LAYERS` 的 L1 登记归属，`layerViolations` 新增 L2/L3 探针（任务链是协调者的派单判断，子会话只读前置事实）。
+- **工具描述同步**：`task_create.dependsOn` 从「依赖全部完成后才派发；任一前置失败则本任务失败」扩成完整五条——只写「会等待」会让协调者以为要自己盯，反而不敢用；`waiting_dep` 回执补一句「依赖完成由插件队列自动晋升（不占回合，不用轮询）」。
+- **文档**：README（「依赖、分组、写域、优先级」节 + §6 协作节奏）、`docs/ARCHITECTURE.md`（依赖节新增协调者规则一条）、`docs/testing.md`（里程碑表新增一行）。
+
+**行为变更（用户可感知，3 条）**
+
+1. 有先后关系的需求不再「先派 A，等 A 交付后再派 B」：协调者在派 A 的同一回合就把 B 建好并挂 `dependsOn`，A 完成（确认或超时）后 B 自动开始，不占协调者回合；
+2. B 在前置**已交付但未确认**（`delivered`）时会一直等——这是既有语义（依赖就绪只认 `done`），现在写进规则：协调者会明确告诉你「要推进就先确认或等超时」，而不是重复派单；
+3. 前置失败/取消时下游立刻失败并写明原因（一直如此，现在规则里也说了）。
+
+**不变**
+
+- 派发语义、状态机、权限、`src/deps.js` 的晋升/失败传播、队列、工具面（10 个）、配置面（22 键）、brief 行数（4–6）、两段式交付、推进循环与交互三闸门、面板与客户端行为：**一行代码不改**。规则与既有口径互相引用、不推翻（禁止轮询 / 能直接回答就不派任务 / 交付两段式），并如实标注「晋升是执行层硬机制，建不建链是提示词判断」。
+
+**验证**
+
+- 新增 `test/task-chain-policy.test.js`（9 条：段位置在推进循环之后、worktree/写域之前；五条规则齐全且逐字来自 `copy.js`；`task_create.dependsOn` 描述逐字同源；`waiting_dep` 回执写明自动晋升；机制与文案一致——用 `dependencyState`/`promoteDependents` 证明 delivered 不晋升、done 晋升、失败沿链传播；L2/L3 探针；与既有口径兼容；文案单源；README/ARCHITECTURE 同口径）；`test/prompt-layers.test.js` 加「任务链归 L1：五条规则逐字来自 copy.js」；`test/tools.test.js` 的依赖用例加「回执写明自动晋升、不占回合」两条断言。
+- 全门禁：`node --test` 全量 = **1,158 项 / 1,145 pass / 1 fail / 12 skip**；其中 1 fail + 12 skip 全是**沙箱环境限制**（`spawnSync(..., {stdio:'pipe'})` 与文件符号链接在本机受限沙箱里 EPERM，`test/config-schema.test.js` 那条「真实模块加载」与符号链接用例需要完整权限；仓库既有的 `canSpawnWithPipes()` / `canCreateFileSymlink()` 探测已把相关用例标 skip）。`check:docs`（**1,635 行 / 预算 1,800**）/ `check:version`（0.28.0 三处一致）/ `check:client-size`（148,323 B / 151,552 B，余 3,229 B）全绿。
+- 本次**未改客户端源码**（`client/**` 零改动），`dist/client.js` 保持入库的 148,323 B、无需重建；隔离 web 冒烟已证明平台 serve 的产物与该文件逐字节一致（见下）。`pnpm run build` 需要 esbuild 子进程，本次受限沙箱不允许 `spawn`，因此「重建后 dist 与源码一致」这一步留给发版任务在完整权限下复核（本次改动不含客户端源码，重建产物应保持同一 SHA-256）。
+- **发版前本机 web 冒烟（0.28.0 本地 tgz，隔离 `DSH_HOME` + 独立 web profile，空闲端口，不碰 49682）**：结果见下方「冒烟记录」。
+
+**冒烟记录（0.28.0 本地 tgz）**
+
+- **环境**：Windows 11 + DSH `0.2.2-rc.5`；隔离 `DSH_HOME=<临时目录>/dsh-home` + 独立 profile `web`（`dsh plugin --profile web add <0.28.0 本地 tgz>`，pnpm store/cache/`npm pack` 全指到临时目录）、`dsh web --no-open --port 49791`（空闲端口，**不碰 49682**），真实 `~/.dsh` 零读写；用完关服务、删临时目录。
+- **结果 18/18 ✓**：① token 换 cookie 后壳页 200，壳 HTML 已登记 `@wjj865-code/dsh-orchestrator/client.js`（`rev=f9f611e3426d`）；② `/plugins/??…/client.js` **200 / 148,374 B**，正文与入库 `dist/client.js`（148,323 B）**逐字节一致**（差的 51 B 全是平台 serve 时追加的 `;\n` 分隔符 + 改写成 `??…&rev=…` 的 `sourceMappingURL` 尾行）；③ 插件日志 `snapshot.created` / `host.capabilities`（rc.5，8/10 能力，缺 `registry`/`team-board` 属该隔离环境预期）/ `preset.keep` / `preset.deny` 齐全、**零 error / 零 warn**；④ `POST /api/orchestrator` 的 `snapshot` / `session-role` / 工作台只读 `groups` / `calendar` / `automations` / `stats` 全 200（`snapshot` 带 `tasks` / `mainSession` / `teamBoard` 降级说明），反例 `task-create` 返回 400 `UNKNOWN_ENDPOINT`；⑤ 产物内工作台六页 `data-page` 标记、dock 组件**无 input/textarea/form**、排期待排 tray、自动化清单、复盘统计、五页导航标记全在。
+- **未验（附原因）**：真实浏览器里的交互（打开面板、切六页、拖拽排期、dock 渲染、复盘页三态）——该环境没有浏览器自动化，只做了产物静态核对 + 接口核对；`open-main`（建/开主会话）——隔离 home 没有模型凭据，且与本冒烟目标（插件加载 + 面板可用）无关。
+- **证据**（临时目录，未入库）：`smoke-0.28.0.json`（逐项结果）、`probe-0.28.0.mjs`（探针脚本）、`plugin-startup.log.jsonl`（插件启动日志）。
+- **前置条件**：前置任务对**已发布 0.27.0** 的隔离 web 冒烟已交付、结论无阻断（见其交付回报）；本次未用 0.27.0 冒烟替代 0.28.0 冒烟。
+
 ## 0.27.0（2026-11-21）—— 工作台 v1（组 / 排期 / 自动化 / 复盘 / 只读 dock）+ 推进循环
 
 本版两批：任务台改版为**工作台 v1**（五页 + 复盘页、常驻只读 dock、排期两层、原生自动化桥），以及交互收紧为**推进循环**（收到回报后必须推进、不许只汇报）。

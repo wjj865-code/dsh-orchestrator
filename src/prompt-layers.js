@@ -32,9 +32,9 @@
 //   3. 它是不是「收到通知后马上要做的动作」？——是 → 通知 hint；否则别写进通知。
 import { BLOCKED_HINT, CONFIRM_HINT } from './brief.js'
 // P1-C 文案单源：跨层共享的「交付不是结束」与通知/详情/工具回执同源（src/copy.js）。
-import { ADVANCE_LOOP_LINES, DELIVERY_NOT_FINAL } from './copy.js'
+import { ADVANCE_LOOP_LINES, DELIVERY_NOT_FINAL, TASK_CHAIN_LINES } from './copy.js'
 
-export { DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES }
+export { DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES, TASK_CHAIN_LINES }
 
 /**
  * L1「推进循环」段落（唯一渲染入口）：句子全部来自 `src/copy.js` 的 `ADVANCE_LOOP_LINES`，
@@ -59,6 +59,30 @@ export function renderAdvanceLoopPolicy() {
 }
 
 /**
+ * L1「任务链」段落（唯一渲染入口）：五条规则的句子全部来自 `src/copy.js` 的 `TASK_CHAIN_LINES`，
+ * 本模块只负责分层归属与渲染顺序，`index.js` 只把它拼进协调者 policy 的固定位置。
+ *
+ * 为什么单独成段：机制（waiting_dep + `promoteDependents` 自动晋升）早就在执行层，缺的只是「什么时候
+ * 建链、建完要不要等」这句判断口径。散在硬规则的一条 bullet 里时，模型读到「有先后关系时用 dependsOn」
+ * 仍会「等 A 完成再派 B」——那正是这条规则要消灭的两次人工往返。
+ *
+ * 与相邻段的分工（不互相推翻）：
+ * - 「交互三闸门」回答什么时候可以打断用户；「推进循环」回答回报之后必须做什么（建链属于「推进」）；
+ * - 「worktree 隔离」回答要不要隔离与怎么建检出；本段只说**同一检出不并发、用 dependsOn 串行**。
+ */
+export function renderTaskChainPolicy() {
+  return `## ${TASK_CHAIN_LINES.heading}
+
+- ${TASK_CHAIN_LINES.criteria}。
+  ${TASK_CHAIN_LINES.buildNow}。
+- ${TASK_CHAIN_LINES.notBlocking}。
+- ${TASK_CHAIN_LINES.upstreamFailed}。
+- ${TASK_CHAIN_LINES.deliveredNotDone}。
+- ${TASK_CHAIN_LINES.worktreeSerial}。
+- ${TASK_CHAIN_LINES.compat}。`
+}
+
+/**
  * 五层清单（机器可读）：文档、测试与排障都按这张表核对「谁该说什么」。
  * `owns` 是**该层的独占职责**（别的层不许重复）；`forbids` 是明确不该出现在该层的内容。
  */
@@ -79,6 +103,7 @@ export const PROMPT_LAYERS = Object.freeze([
       '同写域并发防护（renderWriteGuardPolicy）',
       '交互三闸门（T0–T3 判级、开工前确认、执行期只报堵塞项、追加调整先评估；renderInteractionPolicy）',
       '推进循环（收到回报/用户消息后必须落到推进/提问/问新任务三类动作之一，不许只汇报；renderAdvanceLoopPolicy，措辞源 copy.js 的 ADVANCE_LOOP_LINES）',
+      '任务链（dependsOn 的判据/建链时机/不阻塞/失败传播/交付不算 done/同检出串行五条规则；renderTaskChainPolicy，措辞源 copy.js 的 TASK_CHAIN_LINES）',
       '堵塞项四类与「不算堵塞项」清单（措辞源 copy.js 的 BLOCKER_RULE）',
       '用户偏好（第 4 段，src/preferences.js）',
       '能力诊断（schedule 服务缺失时的降级说明）',
@@ -224,6 +249,8 @@ export function layerViolations(layerId, text) {
       [/三闸门|T0\s*\/\s*T1|R0\s*\/\s*R1/, 'L1 的交互闸门分级'],
       // 推进循环是协调者的行为规则：子会话只负责回报，不判断「下一步该推进还是提问」。
       [/推进循环|还有新任务吗/, 'L1 的推进循环口径'],
+      // 任务链的判据/时机是协调者的派单判断；子会话只读自己的前置事实（L3 的【前置任务】），不建链。
+      [/任务链|dependsOn 不是阻塞等待/, 'L1 的任务链口径'],
     ],
     // L3 不许重复 brief 的指路，也不许讲协调者口径。
     L3: [
@@ -231,6 +258,7 @@ export function layerViolations(layerId, text) {
       [/task_close|action:\s*['\"]close['\"]/, 'L1 的确认交付口径'],
       [/三闸门|T0\s*\/\s*T1|R0\s*\/\s*R1/, 'L1 的交互闸门分级'],
       [/推进循环|还有新任务吗/, 'L1 的推进循环口径'],
+      [/任务链|dependsOn 不是阻塞等待/, 'L1 的任务链口径'],
     ],
     // 通知只讲动作，不讲能力边界。
     NOTIFY: [

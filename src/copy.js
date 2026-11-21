@@ -140,6 +140,55 @@ export const ADVANCE_NOTICE_HINT = '下一步：推进 / 提问 / 宣布完成�
   + `（口径见协调者「${ADVANCE_LOOP_LINES.heading}」）。`
 
 /**
+ * 任务链（dependsOn）的原子句：协调者 L1 规则、`task_create` 的 dependsOn 描述、waiting_dep 回执共用。
+ *
+ * 背景（0.28.0，用户原话：「你可以使用 dependson，依赖任务结束时会自动开始。这个机制是不是没写到预设
+ * 或者提示词，怎么没怎么使用。」）：机制早就在（`src/deps.js` + `src/queue.js` 的 `promoteDependents`
+ * 自动晋升），但提示词里只有硬规则里一句「有先后关系时用 dependsOn」——模型不知道**什么时候**该建链、
+ * 也不知道 dependsOn 不占回合，于是习惯性「等 A 完成再派 B」，把一条自动链走成两次人工往返。
+ *
+ * 五条规则与实现一一对应（都是把既有行为写明，不是新语义）：
+ *   1. 判据 + 建链时机：B 的输入是 A 的产物 → 派 A 后同一回合就建 B（`validateDepends` 只认已存在的 id）；
+ *   2. 不是阻塞等待：waiting_dep → done 后 `promoteDependents` 在 `queue.pump()` 里晋升 pending；
+ *   3. 前置失败 → 下游 failed：`dependencyState` 的 failed/missing 分支立即传播；
+ *   4. 前置 delivered ≠ done：就绪只认 `status === 'done'`，delivered 会挡住下游；
+ *   5. 同一 worktree 检出串行：同检出不并发（`renderWorktreePolicy` 也指向这里）。
+ *
+ * 改句子前先确认实现没变：这五条是对 `src/deps.js` 现状的措辞，不是对未来的承诺。
+ */
+export const TASK_CHAIN_LINES = Object.freeze({
+  heading: '任务链（dependsOn：依赖完成自动开始，不占你的回合）',
+  criteria: '判据（什么时候该建链）：B 的输入是 A 的产物时就是一条链——实现 → 验收/冒烟、构建 → 发布、'
+    + '修复 → 回归、迁移 → 回归复核都算；A 还没产出东西，B 就没法开始',
+  buildNow: '建链时机：派 A 之后**同一回合**就把 B 建出来（`task_create({ dependsOn: [A 的编号] })`，A 的编号在创建回执里）——'
+    + '不要等 A 完成再来建 B，也不要为「等 A」跑 task_list 轮询',
+  notBlocking: 'dependsOn 不是阻塞等待：B 先落 waiting_dep，前置全部 done 后由**插件队列自动晋升** pending 并派发，'
+    + '不占你的回合、不用你 wait_agent 也不用轮询——这一回合没有别的事就正常结束，B 到点自己开始',
+  upstreamFailed: '前置失败 → 下游自动 failed：前置 failed / cancelled / orphaned / 不存在时下游直接失败并写明原因'
+    + '（失败沿链循环传播）；要接着做用 `task_message({ action: "retry" })` 重派，不要原地等一条已经死掉的链',
+  deliveredNotDone: '前置「已交付待确认」（delivered）不算 done：依赖就绪只认 done——前置停在等你确认时下游一直 waiting_dep；'
+    + '确实要推进就先 `task_message({ action: "close" })` 收成 done（或等超时自动完成），别重复派下游、也别把 delivered 当失败',
+  worktreeSerial: '同一 worktree 检出必须用 dependsOn 串行：两个任务同时写一个检出会互相覆盖——后一个带 dependsOn 排队，'
+    + '或者各建一个检出（worktree:true）；worktreeMode:"continue" 复用检出同样只能串行',
+  compat: '与既有口径的关系：这条不推翻「禁止阻塞等待/不轮询」「能直接回答就不派任务」「推进循环」「交付两段式」——'
+    + '建链属于「推进」那一类动作；晋升与失败传播是执行层硬机制，建不建链是你的判断（提示词约束）',
+})
+
+/**
+ * `task_create.dependsOn` 的工具描述：与 L1 的任务链段**逐字同源**（规则句只在 copy.js 写一次）。
+ *
+ * 为什么工具描述也要写全：协调者读的是工具表，派单那一刻手边只有 schema——只写「依赖完成才派发」
+ * 会让人以为要自己等，于是不会用 dependsOn。
+ */
+export const TASK_CHAIN_TOOL_DESC = '前置任务编号数组（任务链；依赖就绪由插件队列自动晋升，不占你的回合）——'
+  + [TASK_CHAIN_LINES.criteria, TASK_CHAIN_LINES.buildNow, TASK_CHAIN_LINES.notBlocking,
+    TASK_CHAIN_LINES.upstreamFailed, TASK_CHAIN_LINES.deliveredNotDone, TASK_CHAIN_LINES.worktreeSerial]
+    .join('；')
+
+/** waiting_dep 创建回执的补充一句（协调者看到时不要以为要自己等）。 */
+export const TASK_CHAIN_WAITING_NOTE = `依赖完成由插件队列自动晋升（不占回合，不用轮询）：${TASK_CHAIN_LINES.notBlocking}`
+
+/**
  * 两段式终态（delivered）的原子句：状态名 / 非终态 / 追问 / 确认 / 超时。
  *
  * 口径（0.14.x 起）：`done` 只是交付，任务停在「已交付待确认」；要改就追问原会话（复用同一个子会话），
