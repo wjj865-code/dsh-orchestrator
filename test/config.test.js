@@ -118,9 +118,9 @@ test('空闲看门狗：非法分钟数回落默认，超界夹到 1–1440', ()
   assert.equal(clamped.watchdogIdleMinutes, 1)
 })
 
-test('配置面总数 22（0.25.0：轮换 8 键删除、提醒阈值 1 键新增）：loadConfig 不泄漏未声明的键', () => {
+test('配置面总数 25（0.25.0：轮换 8 键删除、提醒阈值 1 键新增；0.32.0：能力包 3 键）：loadConfig 不泄漏未声明的键', () => {
   const config = loadConfig({})
-  assert.equal(Object.keys(config).length, 22, `实际 ${Object.keys(config).length} 个键：${Object.keys(config).join(',')}`)
+  assert.equal(Object.keys(config).length, 25, `实际 ${Object.keys(config).length} 个键：${Object.keys(config).join(',')}`)
   assert.equal('backend' in config, false, 'backend 键已删除（team 后端先于它删除）')
   for (const key of [
     'rotateAfterTasks', 'rotateAfterSessions', 'rotateAfterContextTokens', 'rotateAfterDiskMiB',

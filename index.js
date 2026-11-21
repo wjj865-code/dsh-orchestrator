@@ -45,6 +45,11 @@ import { ensureDigest } from './src/digest.js'
 import { createPanelActions } from './src/panel-actions.js'
 import { createWorkbench } from './src/workbench.js'
 import { cleanupTaskWorktree, createWorktreeService } from './src/worktree.js'
+// 0.32.0 能力包：内置公众号包 + 运行时预设注册（P0 GO；失败降级静态兜底）。
+import { createPackStore } from './src/pack/store.js'
+import { buildPresetDefinition } from './src/pack/preset-template.js'
+import { createPresetRegistry, loadBuiltinPacks } from './src/pack/preset-registry.js'
+import { isDesktopHost } from './src/pack/platform.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
@@ -260,9 +265,54 @@ export async function apply(ctx, rawConfig = {}) {
   if (hostVersion.status === 'below' || hostVersion.status === 'above') {
     warnings(`dsh-orchestrator: 宿主版本 ${hostVersion.version} ${hostVersion.status === 'below' ? '低于' : '高于'}声明的兼容基线 ${hostVersion.baseline}：插件照常加载，但接口形状可能已变；升级/降级宿主后先跑 docs/compat.md 的冒烟 3 条`)
   }
+
+  // ── 能力包（0.32.0，P2）────────────────────────────────────────
+  // 内置包随插件只读发；预设走运行时注册（P0 门禁 GO），失败降级为静态 YAML（export-static）。
+  // 能力包会话是普通根会话：这里的注册只加预设，不碰台账/队列/派发语义。
+  const packStore = createPackStore({ stateDir: dir, log: (event, fields) => logger.log(event, fields) })
+  const presetRegistry = createPresetRegistry({
+    agentPresets: () => host.service('agentPresets'),
+    onWarn: warnings,
+    log: (event, fields) => logger.log(event, fields),
+  })
+  const capabilityPacksDesktop = isDesktopHost()
+  const builtinPackState = []
+  if (config.capabilityPacks === false) {
+    logger.log('pack.disabled', { detail: { by: 'config' } })
+  } else if (!capabilityPacksDesktop && config.capabilityPacksAllowOnWeb !== true) {
+    logger.log('pack.platform-unsupported', { detail: { by: 'desktop-only' } })
+  } else {
+    for (const builtin of loadBuiltinPacks()) {
+      if (builtin.manifest === undefined) {
+        warnings(`dsh-orchestrator: 内置能力包 ${builtin.id} 不可用（跳过注册）：${builtin.errors.join('；')}`)
+        continue
+      }
+      if (builtin.errors.length > 0) {
+        warnings(`dsh-orchestrator: 内置能力包 ${builtin.id} 技能文件不完整（包仍可注册，缺失技能不可用）：${builtin.errors.join('；')}`)
+      }
+      const definition = buildPresetDefinition({
+        manifest: builtin.manifest,
+        packRoot: builtin.packRoot,
+        installStatePath: packStore.installStatePath(builtin.id),
+        stateDir: dir,
+      })
+      const registered = await presetRegistry.register(definition)
+      if (registered.ok !== true) {
+        warnings(`dsh-orchestrator: 能力包预设 ${builtin.id} 未运行时注册：${registered.error}（可用 capability_pack({action:'export-static'}) 导出兜底）`)
+      }
+      builtinPackState.push({
+        id: builtin.id,
+        packRoot: builtin.packRoot,
+        manifest: builtin.manifest,
+        definition,
+        mode: registered.mode,
+        error: registered.error,
+      })
+    }
+  }
+
   // 状态迁移的审计日志（审计 §4.5）：`transition` 是唯一入口，在这里挂一次观察者就覆盖全部 19 个调用点，
-  // 从此「这个任务为什么从 running 变 orphaned」能直接从日志还原，不必靠 settle 消息反推。
-  // P2-3 交接契约 v1：进入 delivered 的**唯一**入口也在这里 → `task.handoff.delivered` 只写一次
+  // 从此「这个任务为什么从 running 变 orphaned」能直接从日志还原，不必靠 settle 消息反推。  // P2-3 交接契约 v1：进入 delivered 的**唯一**入口也在这里 → `task.handoff.delivered` 只写一次
   // （task_report done 与结算 completed 两条路都过 transition，不会漏也不会重）。
   const handoffLog = createHandoffLog({ db, stateDir: dir, onWarn: warnings })
   setTransitionObserver(({ taskId, from, to, sessionId, reason, closeReason }) => {
@@ -1059,6 +1109,10 @@ export async function apply(ctx, rawConfig = {}) {
     }
     // 卸载期间的收尾也不能变成未处理拒绝（宿主会判 fatal load failure）。
     try { await notifier.flushNow() } catch { /* 通知收尾失败不影响卸载 */ }
+    // 能力包预设：热替换/卸载时撤掉本进程注册的行（已开会话按平台语义保旧 revision）。
+    for (const pack of builtinPackState) {
+      try { await presetRegistry.unregister(pack.definition.id) } catch { /* 卸载期撤销失败不阻断 */ }
+    }
     try { db.close() } catch { /* 关闭失败不影响已完成的写入 */ }
   })
 }

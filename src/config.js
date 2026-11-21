@@ -148,5 +148,10 @@ export function loadConfig(raw = {}, { onWarn } = {}) {
     CONTEXT_PRESSURE_THRESHOLD_MAX,
     Math.max(CONTEXT_PRESSURE_THRESHOLD_MIN, threshold),
   )
+  // 能力包（0.32.0）：三个布尔开关。默认「启用 + 面板可见 + Desktop-only」；
+  // 只有显式 false / true 才改（与 autoResumeQueue 同口径，非法值与不传等价）。
+  config.capabilityPacks = raw?.capabilityPacks !== false
+  config.capabilityPacksPanel = raw?.capabilityPacksPanel !== false
+  config.capabilityPacksAllowOnWeb = raw?.capabilityPacksAllowOnWeb === true
   return config
 }

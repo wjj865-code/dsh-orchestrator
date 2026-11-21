@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 2,
+  "id": "wechat-mp-article",
+  "name": "公众号文章",
+  "description": "写作 → 文颜排版 → 公众号草稿箱（不做群发）。技能 + 文颜 CLI（可选安装）。",
+  "publisher": "builtin",
+  "version": "0.2.0",
+  "platforms": ["desktop"],
+  "hostBaseline": ">=0.2.2-rc.3 <0.3.0",
+  "preset": {
+    "id": "dsh-orchestrator-pack-wechat-mp-article",
+    "name": "公众号文章",
+    "description": "公众号写作与草稿箱会话：写作技能 + 文颜 CLI（可选安装）。不会派子任务、不写台账。",
+    "order": 200
+  },
+  "skillsDir": "skills",
+  "skills": [
+    { "name": "wechat-mp-writer", "description": "公众号选题/结构/标题/摘要与平台语气：产出带 frontmatter 的 Markdown 草稿" },
+    { "name": "wechat-mp-format", "description": "用文颜把 Markdown 排版成公众号 HTML（本地预览/导出，不联网、不需凭据）" },
+    { "name": "wechat-mp-draft", "description": "用文颜把 Markdown 建到公众号草稿箱（需 env 凭据与 IP 白名单；不做群发）" }
+  ],
+  "cli": [{
+    "id": "wenyan",
+    "purpose": "Markdown 排版 + 公众号草稿箱",
+    "optional": true,
+    "install": {
+      "manager": "pnpm",
+      "package": "@wenyan-md/cli",
+      "version": "2.0.12",
+      "scope": "pack-local",
+      "registry": "https://registry.npmjs.org",
+      "integrity": "sha512-C0a7GizQPClLETGKbkPnH+DxY0eFzY0y0DxuKD54k96NyyNhf1EfKmCVrm9xeppwpTMhGN21f1LfzpShfCQ/Gw==",
+      "license": "Apache-2.0",
+      "sourceUrl": "https://registry.npmjs.org/@wenyan-md/cli",
+      "provenance": "https://registry.npmjs.org/-/npm/v1/attestations/@wenyan-md%2fcli@2.0.12"
+    },
+    "env": ["WECHAT_APP_ID", "WECHAT_APP_SECRET"],
+    "docs": "https://github.com/caol64/wenyan-cli",
+    "notes": "publish = 上传到公众号草稿箱（非群发）；render 把 HTML 打到 stdout；安装体量实测 259 包 / ≈184 MiB / 冷装≈4分04秒 / 0 install 钩子"
+  }],
+  "env": [
+    {
+      "ref": "WECHAT_APP_ID",
+      "kind": "plain",
+      "required": true,
+      "purpose": "公众号 AppID（wx 开头）",
+      "consumers": ["cli:wenyan"],
+      "docs": "https://developers.weixin.qq.com/doc/subscription/guide/dev/"
+    },
+    {
+      "ref": "WECHAT_APP_SECRET",
+      "kind": "secret",
+      "required": true,
+      "purpose": "公众号 AppSecret（仅用于换 access_token）",
+      "consumers": ["cli:wenyan"],
+      "docs": "https://developers.weixin.qq.com/doc/subscription/guide/dev/"
+    }
+  ],
+  "health": [
+    { "id": "skills", "kind": "files", "spec": { "paths": [
+      "skills/wechat-mp-writer/SKILL.md",
+      "skills/wechat-mp-format/SKILL.md",
+      "skills/wechat-mp-draft/SKILL.md"
+    ] } },
+    { "id": "cli", "kind": "command", "soft": true },
+    { "id": "env", "kind": "env", "soft": true, "spec": { "refs": ["WECHAT_APP_ID", "WECHAT_APP_SECRET"] } }
+  ],
+  "research": [
+    {
+      "url": "https://registry.npmjs.org/@wenyan-md/cli/latest",
+      "title": "@wenyan-md/cli@2.0.12（Apache-2.0，无 install 钩子，SLSA provenance）",
+      "fetchedAt": "2026-11-21",
+      "note": "版本/许可/命令面/依赖与 integrity 核对；P0 探针实测 render 与 --version"
+    },
+    {
+      "url": "https://github.com/caol64/wenyan-cli",
+      "title": "文颜 CLI 文档（render / publish / theme / credential）",
+      "fetchedAt": "2026-11-21",
+      "note": "publish 语义 = 建草稿；render 只渲染到 stdout；publish 需要公众号 IP 白名单"
+    }
+  ],
+  "createdAt": "2026-11-21T00:00:00.000Z",
+  "updatedAt": "2026-11-21T00:00:00.000Z"
+}

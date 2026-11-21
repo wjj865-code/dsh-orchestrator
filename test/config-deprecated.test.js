@@ -96,5 +96,5 @@ test('没有 onWarn 时静默（纯函数场景不抛、不写日志）', () => 
   resetDeprecatedKeyWarnings()
   assert.doesNotThrow(() => loadConfig({ backend: 'team' }))
   // 静默调用不该「消耗」去重名额的前提是没 onWarn 就不记；这里只断言结果仍是 22 键的默认值。
-  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 22)
+  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 25)
 })

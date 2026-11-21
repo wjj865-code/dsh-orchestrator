@@ -34,6 +34,7 @@ export const FIELD_GROUPS = Object.freeze([
   Object.freeze({ id: 'memory', label: '记忆与快照' }),
   Object.freeze({ id: 'preferences', label: '偏好注入' }),
   Object.freeze({ id: 'context', label: '主会话' }),
+  Object.freeze({ id: 'packs', label: '能力包' }),
 ])
 
 /**
@@ -151,6 +152,22 @@ export const CONFIG_FIELDS = Object.freeze([
   Object.freeze({
     key: 'coordinatorSession', group: 'context', kind: 'string', default: '', readonly: true,
     label: '协调者会话覆盖', hint: '运维兜底通道：页面只读，只在运维场景手改 cordis.patch.yml（填错会让协调者指向不存在的会话）；日常换协调者请用会话头的「设为协调者」',
+  }),
+
+  // ── 能力包（0.32.0） ──────────────────────────────────────────
+  // 三个布尔开关对应计划里的 capabilityPacks.enabled / .panel / .allowOnWeb（配置键是扁平的，
+  // 因为宿主 schema 只认顶层字段；文档按这三行说明）。
+  Object.freeze({
+    key: 'capabilityPacks', group: 'packs', kind: 'boolean', default: true,
+    label: '启用能力包', hint: '总开关：关掉后不注册内置包预设、capability_pack 工具返回停用、面板隐藏能力包入口',
+  }),
+  Object.freeze({
+    key: 'capabilityPacksPanel', group: 'packs', kind: 'boolean', default: true,
+    label: '显示能力包面板', hint: '面板入口与包列表；关掉不影响已注册的预设与会话',
+  }),
+  Object.freeze({
+    key: 'capabilityPacksAllowOnWeb', group: 'packs', kind: 'boolean', default: false,
+    label: 'Web 下也启用能力包', hint: 'Desktop-only 默认：Web 下不注册预设、工具返回 PLATFORM_UNSUPPORTED、不写文件；打开后按 Desktop 处理（自担风险）',
   }),
 ])
 

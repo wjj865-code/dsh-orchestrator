@@ -310,9 +310,16 @@ export function createPackStore({ stateDir, now = Date.now, log = () => {} } = {
   }
 
   // ── 包内运行期状态（install / health） ────────────────────────
+  // 用户包：`packs/<id>/.state/`（随包目录一起进 trash/删除）。
+  // 内置包：插件安装目录只读，状态落到 `capability-packs/.state/<id>/`（同 id 一份，删插件即失效）。
+  const stateDirOf = id => {
+    const packDir = idDir(id)
+    return existsSync(packDir) ? join(packDir, '.state') : join(paths.root, '.state', id)
+  }
+
   const stateFile = (id, name) => {
     if (name !== 'install.json' && name !== 'health.json') throw new Error(`未知状态文件：${name}`)
-    return join(idDir(id), '.state', name)
+    return join(stateDirOf(id), name)
   }
 
   const readState = (id, name) => {
@@ -348,5 +355,8 @@ export function createPackStore({ stateDir, now = Date.now, log = () => {} } = {
     writeInstall: (id, value) => writeState(id, 'install.json', value),
     readHealth: id => readState(id, 'health.json').value,
     writeHealth: (id, value) => writeState(id, 'health.json', value),
+    installStatePath: id => stateFile(id, 'install.json'),
+    healthStatePath: id => stateFile(id, 'health.json'),
+    stateDirOf,
   }
 }

@@ -217,7 +217,11 @@ P1-B 把工具面收缩到 10 个（协调者 12 → 7）。**旧名已删除**�
 | `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（1–90） |
 | `contextPressureThreshold` | `0.4` | **插件自己的提醒阈值**（0.1–0.95）：主会话最近一次请求 prompt 占上下文窗口的比例达到它时，插件弹一张问题卡问「要不要换新协调者会话」。**与宿主 compaction-basic 的 thresholdRatio（0.8）无关**，改它不会改变宿主压缩行为、也不影响子会话；插件只提醒、不压缩、不自动切换 |
 
-> **配置面 41 → 35 → 28 → 29 → 22**：P1-A 删了 `backend` 与 5 个 `rotate*` 键；P2-2 又删了续跑四键（续跑改用 `task_create({ goalRounds })`）和三个固定成常量的阈值键；**0.25.0 删掉轮换的 8 个键（`mainRotation` + 7 个 `rotate*`），只留插件自己的提醒阈值 `contextPressureThreshold`**。老 profile 里留着已删键也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#02302026-11-19)。
+| `capabilityPacks` | `true` | 能力包总开关（0.32.0）：关掉后不注册内置包预设、`capability_pack` 返回停用、面板隐藏入口 |
+| `capabilityPacksPanel` | `true` | 显示能力包面板（入口 + 包列表）；关掉不影响已注册的预设与会话 |
+| `capabilityPacksAllowOnWeb` | `false` | Desktop-only 默认：Web 下不注册预设、工具返回 `PLATFORM_UNSUPPORTED`；打开后按 Desktop 处理（自担风险） |
+
+> **配置面 41 → 35 → 28 → 29 → 22 → 25**：P1-A 删了 `backend` 与 5 个 `rotate*` 键；P2-2 又删了续跑四键（续跑改用 `task_create({ goalRounds })`）和三个固定成常量的阈值键；**0.25.0 删掉轮换的 8 个键（`mainRotation` + 7 个 `rotate*`），只留插件自己的提醒阈值 `contextPressureThreshold`**；0.32.0 新增能力包三键。老 profile 里留着已删键也不影响加载——启动时各给一条弃用警告、按默认值运行；逐键迁移说明见 [CHANGELOG](CHANGELOG.md#02302026-11-19)。
 
 ## 核心概念
 
