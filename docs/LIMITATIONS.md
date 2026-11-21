@@ -35,7 +35,18 @@
 - **经验文件是快照，不是台账（T1）**：`lessons/<项目>-<hash>.md` 每次派发覆盖为本次命中事实层记忆；无历史版本、不参与快照。手删后 `task_detail` 指针显示「已丢失」（下次派发重建）；写文件失败时经验改为只出现在 `task_detail` 的内联块。
 - **`task_detail` 只读且只给自己**：按创建时 `brief_json` 返回目标/验收/检查/经验，前置与产物按**当前**台账现读；主会话或别的子会话调用被拒。
 - **子会话能读上下文，但不能写记忆**：`context` 三种 mode 对子会话只读开放（与协调者同一条实现）；`memory_note` 不在子会话工具表里（worker 预设 `preset-tools` 的 `deny`）。若换成自带 allow 名单的 `workerPreset`、或旧会话里它仍在表上，执行层会拒绝并给替代路径（`task_report` 的 summary / `context` 只读查 / 请协调者记），记 `memory.note.rejected`。**能力声明在预设层、执行层只做只读语义兜底**：预设没生效时工具会「看得见但写不了」，而不是运行时按角色开关。
-- **`context` 不是任意文件读取**：只读台账/记忆/已登记工作区与白名单文件（README/AGENTS/package 等），不枚举全盘、不读 `.env`；子会话拿到的默认项目目录仍是主会话目录（要读自己的目标仓库请显式传 `target` / `project`）。
+- **`context` 不是任意文件读取**：只读台账/记忆/已登记工作区与白名单文件（README/AGENTS/`docs/ARCHITECTURE.md`/package 等），不枚举全盘、不读 `.env`；子会话拿到的默认项目目录仍是主会话目录（要读自己的目标仓库请显式传 `target` / `project`）。
+
+## 记忆容量与检索（0.25.1）
+
+- **淘汰分层**：日志层 `task-log` 单项目留最新 **200 条**（超出按 `created_at` 删最老的日志），**事实层不参与淘汰**。旧口径「单项目 300 条总量」已删除——它把事实和日志混算，日志写入量是事实的 2–3 倍，活跃一两天就会删掉手记的 decision/note。事实层没有全表上限，长期只增；要清只能手删台账行。
+- **检索默认范围**：`context({ mode: 'history' })` 不传 `project` 时**只查 `global` 跨项目记忆**（首行【检索范围】写明「未含项目记忆」）。这是有意的：协调者没有单一项目上下文，猜一个项目会串味。查项目记忆要传绝对目录/工作区名；数组最多合并 2 个项目键（另自动带 `global`），`'all'` 查全部项目。未知名项目给一行警告，不静默回落。
+- **质量门槛的代价**：多词查询要求命中 ≥2 个词（或分数 ≥2），单词查询命中即相关；「任务/插件/测试/代码/文件/项目」等通用词不进 token。所以「只共一个通用词」的记忆不再返回——召回变少是有意的，别把「查不到」直接当丢数据。
+- **配额**：`decision`/`preference` 在一次检索里最多占 2 条，其余槽位给 `lesson`/`note`；如果候选全是决策/偏好，仍按分数补满（不为配额少返回结果）。
+- **架构文档的截断**：`context({ mode: 'project' })` 默认只读 `docs/ARCHITECTURE.md` 前 1200 字（项目背景总输出 ≤8000 字），`include: ['docs/ARCHITECTURE.md']` 才给前 4000 字；`include` 白名单外一律不读。
+- **旧偏好迁移是一次性写操作**：启动时把 `memories` 里 `project='global'` 的 `preference` 搬进 `settings.orchestrator_preferences`，幂等标记 `orchestrator_preferences_migrated`；带「更正/修正/纠正」标记的条目取代它指向的旧条目（如 present 展示数量取 1–4）。迁移成功后旧行**从 `memories` 删除**（不双写），迁移了哪几条记在日志 `memory.preferences.migrated`；没有旧行时不写任何 settings。
+- **worktree 记忆只归一未来写入**：`done` 的 projectKey 取 `brief.target → repo_root → target_dir`，新写入不再落到 `.agents/worktrees/t-*` 键；历史上已经在分裂键下的旧行**没有迁移代码**（要查旧经验得显式传检出路径）。
+
 
 ## 交接契约（D2）
 
@@ -62,10 +73,18 @@
 ## 主会话与工具面
 
 - `spawn_teammate`/`send_message`/`list_agents`/`interrupt_agent`/`wait_agent`/`team_task_*` 是 **agent scope 自注册**的团队工具，`restrict` 遮不到；执行层 `guard` 硬拦协调者，但工具表里仍可能看到残留。
+- **协调者的 deny 名单只剩「编排正确性」**（0.26.0）：`read`/`glob`/`grep`/`skill` 已放开（工具由预设行自己挂），`write`/`edit`/`bash`/`pwsh` 不挂；`task_report`/`task_detail`/`plan_save` 改由预设 `preset-tools` 的 `deny` 遮掉（工具表里看不到），执行层仍按任务归属拒绝越权调用。只读工具的读取面风险见「协调者读文件」。
 - `config.coordinatorSession` 覆盖的会话没有预设保证，运行期 `restrict` 挂在回合边界：绑定当回合仍是全工具表，下一回合才收窄。同一回合并行发出、且在 guard 判定前就开始执行的 `wait_agent` 不承诺拦住。
 - `run_code` / PTC：平台禁止 `restrict` 指名 PTC 保留传输 `run_code`；profile 配了 PTC executor 时协调者可能经它间接调用被 deny 的工具（desktop 默认没有）。
 - **`workerPreset` 只在派发时生效**：续派/冷恢复沿用会话创建时的 `agentPreset`，改配置不切换已有子会话；值非法时静默回落 `dsh-orchestrator-worker`（日志一行 warn）。
 - **`orch-debug` 调试预设**：复制随包「创造模式」组合，预设声明装在 profile 里；升级 DSH 后必须先 `node tools/debug-preset/cli.mjs --check` 看漂移，再重新生成并重装。预设可执行 Host 代码，不是沙箱；生成器与文档自 P1-E 起不随 npm 包发货（开发仓库 `tools/debug-preset/`）。
+
+## 主会话权限徽标（0.25.1）
+
+- **钉只读 ≠ 锁权限**：协调者会话的 `permission preset` 显式钉成宿主出厂预设 `read-only`（沙箱只读 + 审批 ask），徽标与实际工具面一致。但宿主没有锁权限选择器的 API：`/permission` 或输入区选择器**仍能切走**（宿主 `locked` 只针对 agent 预设的 `agentPresets.select`，不覆盖权限预设），插件只在下次「打开主会话」、adopt、协调者 `agent/created` 重建时把漂移拉回（`main.session.permission-pinned`）。用户切走后到下一个观察点之前，徽标如实显示他选的值。
+- **需要宿主预设表含 `read-only`**：DSH 出厂表（`@deepseek-ai/dsh-permission-presets` 在 0.2.2 系列 profile 里）有 `read-only`（沙箱只读 + 审批 ask）。被改成只剩 `workspace-write`/`danger-full-access` 的 profile 里 `set` 会抛 `unknown preset`，插件记 `main.session.permission-pin-failed` 并保持宿主默认徽标——不挡打开主会话、不挡派单。
+- **旧主会话与升级**：升级前创建的主会话仍是 `workspace-write`；下次打开、重启后协调者 `agent/created`、或 adopt 时钉成只读。插件不改宿主全局 `permission.defaultPreset`（那会连普通新会话一起变只读）。
+- **普通任务子会话仍是 `workspace-write`**：宿主会把父会话的显式 `sandbox/mode` 覆盖按 `source:'delegation'` 种进子会话，所以 `src/dispatch.js` 对普通任务显式写回 `workspace-write`（`subagent.workspace-write` 日志）。这不是放宽权限（与原先继承父会话的 workspace-write 等价），但子会话日志里会多一条幂等的 `sandbox/mode` 事件；只读/计划任务照旧 `read-only`，`access:'full'` 照旧 `danger-full-access`。
 
 ## 主会话上下文维护（0.25.0）
 
@@ -111,6 +130,15 @@
 - **IM 外发风险**：profile 开了 IM 双向同步时，读进上下文的正文可能随「最终助手文字」同步到外部且**不可撤回**；涉密产物不要读进主会话——这是本能力最主要的残余风险，不是可配置项。
 - **不用于校验存在性**：存在性仍由插件（通知路径已 `lstat`）与子任务保证。
 
+## 协调者读文件（read / glob / grep）
+
+- **读取面是整台机器**：0.26.0 起协调者预设挂 `tool-fs`（只开 `read`）与 `tool-fs-search`（`glob`/`grep`），它们没有产物边界——`read_workspace` 的「工作区 ∪ 已登记产物」约束只属于 `read_workspace`。能读到 `~/.dsh/.credentials.yaml`、`.env`、SSH key、token 文件等；插件**只靠提示词**要求「不读凭据、不转述」，没有路径黑名单、没有执行层拦截。
+- **IM / 外发风险叠加**：读进上下文的正文可能随「最终助手文字」同步到外部且不可撤回（与 `read_workspace` 同一条风险）。涉密文件不要读进主会话。
+- **写仍然没有工具**：`tool-fs` 的 `write` / `edit` / `applyPatch` / `readImage` 全部关掉，`bash` / `pwsh` 也没挂；写路径只由钉死的 `read-only` 权限预设（沙箱写全拒）兜底，两处都**不是**「审批门禁」。
+- **`working_directory` 不给协调者**：这个宿主全局工具改的是会话 cwd，而协调者 cwd 是指挥锚（子会话未给 `target` 时继承它、工作区/写域判定与记忆项目键推断都以它为准）。它被预设 `preset-tools` 的 `deny` 与 `COORDINATOR_DENY` 两处遮掉，工具表里看不到、硬调被拒。所以**协调者不能切目录**：相对路径读文件会落在主会话默认 cwd（`<state>/workspace`）下，跨目录一律写绝对路径；真要换目录属于用户/子任务侧的事（`task_create` 的 `target` 决定子会话 cwd）。
+- **工具面不随权限变**：用户手切 `full` 后沙箱不再挡写，但协调者工具表里仍然没有写工具/命令工具——插件不因权限变化增删工具，也不额外提示「现在可写了」。
+- **`grill-me` 是提示词技能**：澄清协议没有执行层校验，判错表现为「问少了」或「问多了」；它不改变任何工具/沙箱边界，也不构成批准。
+
 ## 状态与提示词的单一事实源
 
 - **状态能力表只有一份**（`src/status-facts.js` 的 `STATUS_CAPS`）：新增状态只改这张表，其余引用自动跟上。**死边已删**：`running→done`、`orphaned→pending` 从未有调用点（要「直接完成」走 `running→delivered→done`）；v0.24 反过来给 `resume` 重开了 `failed→running` / `orphaned→running` / `done→running`（`done` 只认 `close_reason='timeout'`）。
@@ -119,6 +147,15 @@
 - **worktree 状态转移会校验**（`WORKTREE_TRANSITIONS`）：非法转移抛错而不是静默写入。
 - **提示词五层各有独占职责**（`src/prompt-layers.js` 的 `PROMPT_LAYERS`）；`layerViolations` 是机器可读归层探针，测试用它防「删掉的重叠又抄回来」。
 - **偏好不是权限通道**：只是 `settings.orchestrator_preferences` 里的提示词文本，不进 config、不改 dispatch、不碰 `sandboxPolicy`；内置种子里不放「放宽安全边界」的条目。超限（默认 12 条 / 1200 字）按 priority 降序保留并写明「另有 N 条未展示」，被截掉的**不会生效**也不报错。
+
+## 交互规范（软约束）
+
+- **只是提示词文本**：T0–T3 判级、四类堵塞项、R0–R2 分档都在 L1 的 `renderInteractionPolicy()` 里，**没有执行层校验**——插件不拦 `task_message`、不检查是否真的先问过用户，也不记录判级结果。
+- **判错的两种表现**：「该问没问」（T2/T3 被当成 T1 直接开做）与「不该问又问」（把进度、能否关闭当成堵塞项）。纠正方式是把用户偏好写成偏好条目（`memory_note(kind:'preference')`，每回合注入）或改 policy 代码；**没有配置档位**能一键关掉三闸门（配置面固定 22 键）。
+- **T1/T2 边界是模型判断**：同一需求在两次会话里可能判成不同级别；判据里的「动 5 个以上文件」「跨仓库」是经验阈值，不是代码常量。
+- **确认只能由协调者发起**：`ask_user_question` 对子会话直接拒绝（`DELEGATED_CALLER`），所以 T2/T3/R1/R2 的确认都由主会话做；子会话只能 `task_report blocked` 报问题 + 选项。选项数按 policy 2–4 个，多条目清单写进 question 正文。
+- **顺序闸门靠措辞**：计划中的任务收到 `task_message` 即视为批准、沙箱当场切回可写（平台行为，本次未改）；所以「先评估 → 再确认 → 才通知」只能靠 L1 的措辞约束，插件不拦「先追加后解释」。
+- **回退**：改动集中在 L1 一段 + copy/brief 两处小改，`git revert` 单个 commit 即可整段回退；无数据迁移、无宿主契约变化。
 
 ## 计划阶段（P8）
 
@@ -142,6 +179,8 @@
 ## 通知与生命周期
 
 - 通知走 `agent.steer`：空闲唤醒、忙时 next-step 排队；平台另发 `subagent-settled`，不经过本插件、不写 `notifications`，不能当成插件投递成功。
+- **progress 通知是信号、不是终态**：默认送达（旧口径的 silent 已删），但同任务 60 秒水位 + 5 秒合并窗口内只留**最新一条**（被同窗口的 `done` 取代则直接撤掉）；被压住/覆盖/取代的写 `notifications`（`skipped` + `reason: progress_watermark | progress_merged | progress_superseded`），所以「主会话没收到这一条」永远有行可查。水位在进程内，插件重启会重置（重启后第一条 progress 立即送）。要逐条看历史请看台账 / `task_status`，通知面永远按节流口径。
+- **追问必达只覆盖第一条**：`task_message` / `resume` 投递成功后的**下一份**回报必达（跳过水位与合并窗口）；之后的 progress 回到正常节奏。子会话一次连发多条时，只有第一条保证即时送达，其余按水位合并（最新一条仍会补投）。
 - **结算自动收场（S1）只覆盖「一次 activation」**：派发侧 `activation.result` 只对第一次生效，续派/冷恢复起的轮次只能靠 `subagent/end` 观察；平台若停发该事件，续派轮次退回「只有 `task_report` 才推终态」。
 - **`completed` 不等于「工作做完了」**：continuable 子会话可以一轮正常收场等续派，所以只在「没上报过 progress」时自动 `done`；上报过 progress 的回合结束落 `orphaned`（可 `resume` 续跑，会话真不可达才 `retry`）。
 - `refusal` 只有源码级依据（pre-step hook deny / 策略拒绝），真机没有稳定构造；`max-tokens` 由 `maxTokens` 截断触发，真实长输出落同一个值。

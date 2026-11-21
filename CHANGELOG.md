@@ -1,5 +1,108 @@
 # Changelog
 
+## 0.26.0（2026-11-21）—— 交互三闸门：开工前确认、执行期少打扰、改动先评估
+
+**新增**
+
+- **L1 新增 `renderInteractionPolicy()`**（`index.js`）：协调者每回合都在的第三段结构化 policy，拼在硬规则之后、worktree/写域之前。三件事——① **判级 T0–T3**：能直接答就不派（T0）、单点可回退直接做并回一句「我的理解：…」（T1）、现象/多方案/改可见默认行为/歧义先 `ask_user_question` 问一次（T2）、跨仓库/动 5 个以上文件/重构迁移/不可逆/推远端或发布/写仓库外 → `task_create({ planFirst: true })` 先出计划再动手（T3）；判级只做一次，不可逆永远最低 T2。② **执行期四类堵塞项**（B1 验收/范围不可达、B2 要新授权、B3 子会话 blocked 且选项要用户定、B4 工具面外查不到），其余（进度、能否关闭、可给默认值的细节）不算堵塞项、不打扰；一个堵塞项只问一次。③ **追加调整 R0–R2**：先评估（影响面/风险/建议）再确认，最后才 `task_message`；R0 直接转原会话、R1 要确认、R2 必须拍板。
+- **文案单源**：`src/copy.js` 新增 `BLOCKER_RULE`（L1 与 brief 的 `BLOCKED_HINT` 共用）与 `CHANGE_REVIEW_FIELDS`（L1 与 `task_message` 描述共用）；brief 的「执行中待确认」改为只报堵塞项（brief 仍 4 行）；`task_create` / `planFirst` / `task_message` 三处工具描述带上 T3 与评估要素。
+- **既有硬规则收紧**：「需要先看方案再动手…可用 planFirst」升级为「复杂任务必须走计划闸门」；「少打扰」明确限定为**执行期**口径；开工前意图确认与追加评估确认都归「需要拍板」，同样走结构化提问。
+
+**行为变更（用户可感知，4 条）**
+
+1. 复杂需求（T3）先出一份计划文档并要求批准，不再直接开写；2. 简单需求（T1）仍不提问，但会先回一句「我的理解：…」；3. 执行期提问收窄到四类堵塞项，每个问题带建议、只问一次；4. 用户追加调整会先收到「影响面/风险/建议」评估，确认后才动子任务（R0 直接转原会话）。
+
+**不变**
+
+- 工具面（10 个）、配置面（22 键）、状态机、两段式终态、`planFirst` 审批四步与「计划中任务收到追加消息即批准」的平台行为、brief 行数（4–6）、通知分级、面板与客户端行为，一字不改。三闸门是**提示词软约束**，没有执行层门禁（边界见 LIMITATIONS「交互规范（软约束）」）。
+
+**验证**
+
+- 新增 `test/interaction-policy.test.js`（8 条：段的顺序、T0–T3 表、堵塞项与 brief 同源、不算堵塞项清单、R0–R2、顺序闸门、不可逆最低 T2、与既有口径互引）；`test/brief.test.js` 改锁堵塞项四类（原「业务取舍/方案歧义」泛问口径已收窄到开工前）；`test/copy-consistency.test.js` 加三闸门正向断言与「堵塞项/评估要素只许在 `src/copy.js`」的静态断言；`test/prompt-layers.test.js` 加 L1 owns 与 L2/L3 探针。文档：README 新 §6「协作节奏」、ARCHITECTURE 新节、LIMITATIONS 新「交互规范（软约束）」、testing 断言口径一行。`pnpm test` / `check:docs` / `check:version` 全绿。
+
+### 同批（`t-48e8ce06`）：技能 + 只读工具（A 片 grill-me / B 片 tool-scope）
+
+按 `t-8b583258` 调研与用户拍板「A + B，接受默认（deny-keep）」实施。**版本不另 bump**：0.26.0 尚未发布（`package.json` / CHANGELOG 首条 / README 版本号都还是 0.26.0，且工作树里还有同批未提交改动），所以并入同一批。
+
+**新增**
+
+- **A 片：grill-me 技能随包发**。新增 `skills/grill-me/SKILL.md`（frontmatter：`name: grill-me` / `description` / `whenToUse`）与根模块 `skill-grill-me.js`：`apply()` 用 `import.meta.url` 读包内 SKILL.md → 解析 frontmatter → `ctx.skills.register({ name, description, whenToUse, content, source: 'bundled', path })`。注册进的是**调用方 context 的作用域层**，所以只对协调者预设可见（worker 预设不挂该模块）。协调者预设新增两行：`skill-grill-me`（`@wjj865-code/dsh-orchestrator/skill-grill-me`）+ `tool-skill`（`@deepseek-ai/dsh-tool-skill`，模型面 `skill({name})` 与技能目录）。`package.json` 增加 `exports['./skill-grill-me']`，`files` 增加 `skill-grill-me.js` 与 `skills/`（否则技能文件不发货）。SKILL.md 缺失/坏格式只 warn、不注册——技能是增强项，不能让预设挂载失败。
+- **协议（草案落地）**：多轮前沿提问（一次只问一个决定性问题）、每问带我的推荐、事实自己查、决策归用户、最多 **2 轮 8 问**、最后给「决策点｜你定的｜影响」三栏决策记录、与交互三闸门 T2/T3 衔接、**grill ≠ 批准**（不替代 T2 确认，也不替代 T3 计划批准）。灵感来自 Matt Pocock 的 grilling（MIT），措辞重写，未复制任何 GPL 版本。
+- **B 片：协调者只读工具面**。协调者预设新增 `tool-fs`（`read: true`，`write`/`edit`/`applyPatch`/`readImage` 全 `false`）与 `tool-fs-search`（`sampleOverCapGlobResults: false`）→ 协调者拿到 `read` / `glob` / `grep`，工具表里仍然没有写工具；`bash`/`pwsh` 不挂。`COORDINATOR_DENY` 从「文件/命令/团队/子任务/密钥」大名单缩到**编排正确性清单**（`wait_agent`、`spawn_teammate`/`send_message`/`list_agents`/`interrupt_agent`、`team_task_*`、`plugin_manager`、`request_secret`/`request_connector`、IM/bot 8 个）。角色专属的 `task_report`/`task_detail`/`plan_save` 从执行层名单移出、改由协调者预设的 `preset-tools` `deny` 遮掉（工具表里看不到；执行层仍按任务归属拒绝越权调用）。
+- **preset-tools 协调者改遮挡式**：`allow` 补集 → `deny`（编排正确性 + 三个角色专属）+ `keep`（7 个任务工具，挂载后校验并写 `preset.keep` 审计）。与 worker 同形，`preset-tools.js` 的 `allow` 形态保留兼容旧 profile/探针，但本插件不再使用。
+
+**行为变更（用户可感知，4 条）**
+
+1. 协调者现在能只读看文件（`read`/`glob`/`grep`）——核对子会话改动、读 target 与技能文件不用再派任务；2. 协调者能用 `skill({name})` 加载技能，系统提示里会多一份只有 `grill-me` 的技能目录；3. `COORDINATOR_DENY` 缩到编排正确性清单：`write`/`edit`/`bash`/`pwsh`/`web_search`/`job_*` 等不再被协调者 guard 硬拦（但协调者预设本来就没挂它们，工具表里仍然没有）；4. T2/T3 开工前会先按 grill-me 拷问需求（一次一问、每问带推荐、最多 8 问、给三栏决策记录），再走原来的确认/计划批准。
+
+**不变**
+
+- 插件全局工具数仍 **10 个**（协调者可见 7 + 子会话专属 3），`test/index.test.js` / `test/tools.test.js` / `test/tool-migrations.test.js` 的 10 条工具断言没动；配置面 22 键；状态机、两段式终态、计划批准四步、面板与客户端；协调者默认权限仍是钉死的 `read-only`（不新增「工作区只读」档位）；`read_workspace` 保留（受控产物读，1.0 前不退役）；worker 预设与子会话不见 grill-me、读取面不变。
+
+**验证**
+
+- 新增 `test/skill-grill-me.test.js`（7 条：SKILL.md frontmatter 合规、协议要点齐全、注册进 skills 的参数形状、缺文件只 warn、坏 frontmatter 可读报错、注册失败只 warn、正文随文件走/名字不匹配拒绝）；`test/config.test.js` 改锁协调者预设（`read`/`glob`/`grep`/`skill` 已挂、`tool-fs` 只开 `read`、worker 不挂 `skill-grill-me`、deny/keep 名单、`package.json.exports`/`files`）；`test/index.test.js` 改锁 deny 名单与 guard（只读工具放行、编排正确性项仍拒、角色专属工具改预设层）；`test/prompt-layers.test.js` 加 L1 grill-me 触发语与只读工具说明；`test/plan-save.test.js` 改断 `plan_save` 在预设 deny。文档：README「工具清单」新增「技能与只读工具」一节 + 权限徽标/交付口径/已知限制同步、ARCHITECTURE 新节 + 工具面/权限/L1/收窄形态、LIMITATIONS 新「协调者读文件」一节、testing G8 与断言口径。`pnpm test` / `check:docs` / `check:version` 全绿。
+
+**风险与取舍（待确认）**
+
+- **`read`/`glob`/`grep` 能读全盘**（含 `~/.dsh/.credentials.yaml`、`.env`、SSH key、token），插件只靠 L1 提示词要求「不读凭据、不转述」，没有路径黑名单/执行层拦截——这是本批的主要残余风险，已在 README「已知限制」与 LIMITATIONS 写明。
+- **`bash`/`pwsh` 仍未挂**（B 片只到只读文件工具）；用户手切 `full` 时沙箱不再挡写，但工具面不变（协调者仍然没有写工具/命令工具），插件也不额外提示。
+- **版本**：并入 0.26.0，不单独 bump（见本批开头）；若要单独发版，改动仅在 CHANGELOG 分段与版本号。
+
+**发版前修正（真机复验补漏，`t-740b8b7a`）**
+
+- **协调者工具表多出宿主全局 `working_directory`**：0.26.0 把协调者 `preset-tools` 从 allow 补集改成遮挡式 `deny` 后，`@deepseek-ai/dsh-tool-working-directory` 不再被顺带遮住，出现在真机工具表里（证据与影响见 `reports/skill-and-readonly-tools-verify/README.md` §9）。处理：**选「加进名单」而不是「补文档」**——它改的是协调者会话 cwd，而 cwd 是指挥锚（`task_create` 未给 target 时子会话继承它、工作区/写域判定与 `projectKeyOf` 推断都以它为准），会话内切目录会让这些锚点静默漂移；协调者看文件用 `read`/`glob`/`grep` 的绝对路径，不需要切目录。落点：协调者预设 `preset-tools.deny`（出生即遮）+ 执行层 `COORDINATOR_DENY`（硬拦兜底）两处；文档 README「技能与只读工具」/「打开主会话」、ARCHITECTURE B 片段、LIMITATIONS「协调者读文件」写明清空口径；`test/config.test.js`（deny 必须列、keep 不能列）与 `test/index.test.js`（执行层名单必须含）双锁。`pnpm test` / `check:docs` / `check:version` 全绿。
+
+
+## 0.25.1（2026-11-21）—— 主会话权限徽标一致：协调者钉 `read-only`
+
+**修正**
+
+- **主会话权限徽标与协调者工具面对不上**：协调者预设没有 `read`/`write`/`bash`，但宿主给新会话 pin 的默认权限预设有 `workspace-write`，输入区徽标就显示「工作区写入」——徽标说能写、实际什么都写不了。现在协调者会话的 `permission preset` 显式钉成宿主出厂预设 **`read-only`**（沙箱 `read-only` + 审批 `ask`），徽标显示「Read Only / 仅可查看」，与实际工具面一致。
+- **写路径** `ctx.permissionPresets.set(session,'read-only')`（`src/main-session.js` 的 `pinPermission`）：追加 `permission/preset` + `sandbox/mode` + `approval/policy` 三条会话事件，`permissions` 投影（徽标数据源）随之变。覆盖四条路：`open` 新建、压力卡代建、adopt（会话头「设为协调者」）、复用已有主会话时把用户切走的预设拉回（日志 `main.session.permission-pinned`）。已经只读时什么都不追加。
+- **不挡打开主会话**：钉失败只记 `main.session.permission-pin-failed`（例如宿主预设表里没有 `read-only`），老宿主没有 `permissionPresets` 服务时整段降级为「不动权限」。
+- **配套（子会话不受影响）**：宿主会把父会话的显式 `sandbox/mode` 覆盖按 `source:'delegation'` 种进子会话，主会话只读后不写回来普通子任务会跟着只读。`src/dispatch.js` 因此对普通任务显式钉 `workspace-write`（日志 `subagent.workspace-write`），只读/计划任务照旧 `read-only`、`access:'full'` 照旧 `danger-full-access`。**行为不变**（普通子任务仍 `workspace-write`），只是子会话日志里多一条幂等的 `sandbox/mode` 事件。
+- **口径（不是锁）**：宿主没有锁权限选择器的 API——`/permission` 与输入区选择器仍可切走（宿主的 `locked` 只针对 agent 预设 `agentPresets.select`），插件只在下次打开主会话 / adopt / 协调者 `agent/created` 时拉回。旧主会话在升级后的下一次观察点变只读；插件不改宿主全局 `permission.defaultPreset`。
+- 文档：README（三分钟跑通 + 已知限制）、ARCHITECTURE（主会话权限段 + 子会话沙箱注入段）、LIMITATIONS（新增「主会话权限徽标」一节）同步；单测覆盖新建/幂等/失败降级/复用拉回/adopt/代建六条路。
+
+**不变**
+
+- 协调者工具面不变（仍无 `read`/`write`/`bash`）；配置面不变（22 键）；普通任务派发、可写根、只读/计划/完整访问口径除「普通任务显式钉 workspace-write」外一字不改。
+
+### 同批（`t-99d4a98c`）：progress 通知必达——追问后主会话不再收不到消息
+
+#### 修正
+
+- **`task_report(progress)` 不再静默**：通知分级里 `progress` 从 `silent` 改成 **`coalesce`（默认送达）**。旧口径下 `notifier.push` 第一行就 return——不进合并窗口、不 `steer` 协调者、连 `notifications` 审计行都不写，于是「追问 → 子会话先报部分结论 → 继续跑」这条路径对主会话永久不可见（实测 t-1f70bedb：追问后子会话回了 `[progress]`，主会话 0 消息，15 分钟后只剩看门狗）。
+- **追问必达（结构性判据，不是补丁）**：台账新增 `tasks.report_expected_at`——`task_message` / `resume` **投递成功后**置位（面板「追加」同口径），下一份回报带 `answeredFollowup`，progress 据此跳过水位与合并窗口**立刻送达**；回报一到就清标记，只对第一条生效。扩展了 A 方案（原本靠「最近一条 followup」猜），落成能跨回合、跨重启的台账事实。
+- **不刷屏：5 秒合并窗口 + 同任务 60 秒水位（尾沿补投）**：合并窗口内同一任务的第二条 progress 覆盖前一条；水位内只留最新一条、到水位线补投（最后状态不丢）；已被同窗口的 `done`/`blocked` 取代的旧 progress 直接撤掉（同一批里既列「有新进展」又列「已交付待确认」是噪音）。`done` / `blocked` / `needs_auth` 的既有语义与合并窗口一字不改。
+- **每条 progress 都有审计行**：送达写 `delivered`；被水位压住/窗口覆盖/被终态取代写 `skipped` + `reason: progress_watermark | progress_merged | progress_superseded`（旧口径连行都不写，这是「主会话为什么没收到」唯一好用的判据）。
+- **通知文案**：progress 通知写「有新进展」（追问后的第一条写「有新进展（回答你的追问）」），并附一句动作指令——这是进度信号不是终态，要结论就 `task_message` 追问同一子会话，别为此重派任务；L1 协调者 policy 同步这条口径（共用语在 `src/copy.js` 的 `PROGRESS_NOTICE_HINT`）。
+- **投递失败不占水位**：`skipped`/`failed` 会撤回水位，否则一次「主会话没打开」会连带压住接下来的 progress；卸载时 `drain`/`flushNow` 把压住的 progress 一并送掉。
+- 改了什么：`src/notify.js`（分级 + 合并/水位/尾沿 + 文案）、`src/ledger.js`（`report_expected_at` 列与迁移 + `markReportExpected`/`clearReportExpected`）、`src/tools.js`（追问/续跑置位、回报读标记并清）、`src/panel-actions.js`（面板「追加」同口径置位）、`src/copy.js`（`PROGRESS_NOTICE_HINT`）、`index.js`（L1 一条 policy）。文档：ARCHITECTURE「回报、通知」、LIMITATIONS「通知与生命周期」、README「看进度 / 工具清单」、testing 行。
+- 验证：`test/notify.test.js`（默认送达、同窗口合并、水位尾沿、追问必达、被 done 取代、失败不占水位、卸载不丢行）、`test/tools.test.js`（置位/清标记/必达透传/投递失败不置位）、`test/ledger.test.js`（新列与旧库迁移）、`test/resume.test.js`（续跑置位）、`test/panel-actions.test.js`（面板追问置位）、`test/copy-consistency.test.js`（L1 与通知逐字同源）、`test/integration.test.js`（端到端：追问 → 子会话先报 progress → 主会话**立刻**收到；后续 progress 走水位并留 `progress_watermark` 行）；`DSH_ORCH_PROGRESS_MS` 只调水位、不改语义（与 `DSH_ORCH_NOTIFY_MERGE_MS` 同档）。
+
+### 同批（`t-3e27f4b4`）：记忆优化 P0——检索范围、质量门槛、淘汰分层、worktree 归一、分块
+
+按 `reports/memory-and-main-session-audit.md` §7 最小落地包与 context 核查（`t-c8df6366`）实施。**行为变更**（升级要留意）见下 1、2、5 三条。
+
+**修正**
+
+1. **`context({ mode: 'history' })` 首行打印【检索范围】**（行为变更：可见性）：不传 `project` 时**只查 `global` 跨项目记忆**，输出首行写明 `【检索范围】global（未含项目记忆）`；传了项目则写 `【检索范围】project: <key>｜+ global（跨项目记忆）`。同时修正 `project` 参数描述（旧文案「不传则查全局+当前项目」是错的）。
+2. **`project` 支持 string | string[] | 'all'**（行为变更：多键合并）：数组去重后最多取 **2 个项目键** + 自动带 `global`，合并后统一按分数截 `limit`；`'all'` 不按项目过滤。未知名项目给一行 `【警告】未找到项目「x」`，不再静默回落 global。检索内部新增 `normalizeProjectKeys` / `searchMemories({ projectKeys })`。
+3. **质量门槛**：`memoryTokens` 停用词从 7 个扩到 27 个（任务/插件/测试/代码/文件/项目…）；多词查询要求命中 **≥2 个词**或 `score ≥ 2`（decision 的 +2 权重也算），单词查询仍是命中即相关。`pickLayered` 加分层配额：`decision`/`preference` 一次最多 2 条，其余槽位先给 `lesson`/`note`（候选全是决策类时按分数补满）。
+4. **`history` 结果分块**：事实层进 `【记忆】`，日志层（`task-log`）单独进 `【任务日志】`、**最多 2 条**、排在事实层之后，不再挤占 `limit` 槽位。
+5. **淘汰分层**（行为变更：容量口径）：`task-log` 单项目保留最新 **200 条**（`MAX_TASK_LOG_PER_PROJECT`），**事实层不参与淘汰**；旧「单项目 300 条总量」常量删除——混算会让活跃项目先删手记的 decision/note。README / LIMITATIONS 同步新口径。
+6. **worktree 记忆归一**：`task_report done` 的 projectKey 取 `brief.target ?? repo_root ?? target_dir`（以前直接用检出目录，写出 8 个 `.agents/worktrees/t-*` 分裂键）。历史分裂键不迁移。
+7. **`context({ mode: 'project' })` 白名单加 `docs/ARCHITECTURE.md`**：默认前 **1200 字**，`include: ['docs/ARCHITECTURE.md']` 给前 **4000 字**；项目背景总输出上限 6000 → **8000 字**；未识别 include 给一行提示，白名单外仍不读。
+8. **旧全局偏好迁移**：启动时 `migrateLegacyPreferences` 把 `memories` 里 `project='global'` 的 `preference` 搬进 `settings.orchestrator_preferences`（幂等标记 `orchestrator_preferences_migrated`）；带「更正/修正/纠正/推翻/不再用」标记的条目按共享主题词（≥3）取代旧条目（present 取更正后的 1–4）；写成功后删 memories 行（不双写），失败不写标记、下次重试，没有旧行时不动 settings。
+9. **提示词**：L1 硬规则改成「查本项目经验：`context({ mode: 'history', query, project: <target_dir 或工作区名> })`，不传只查 global」；worker persona（`WORKER_CONTEXT_HINT` / `cordis.patch.yml`）同步「查本项目经验要显式传 `project:<target_dir 或工作区名>`」。
+
+- 不采纳审计 §7 第 1 条「默认键改 `defaultDir()`」：核查（`t-c8df6366`）确认协调者 cwd 是指挥舱，推断出的项目键对指挥舱无效；改为「显式 project + 首行可见」。
+- 改了什么：`src/memory.js`（停用词/门槛/配额/多键/淘汰分层）、`src/tools.js`（检索范围与分块、多键 scope、ARCHITECTURE 白名单与 include、done 的 projectKey、context schema）、`src/preferences.js`（旧偏好迁移）、`index.js`（启动迁移 + L1 一条 policy）、`src/prompt-layers.js` + `cordis.patch.yml`（persona 措辞）。
+- 验证：`test/memory.test.js`（淘汰分层 260→200、事实保留、质量门槛、配额、多键/all）、`test/tools.test.js`（首行检索范围、多键与 all 合并、未知名警告、日志分块 ≤2 且排在事实层后、ARCHITECTURE 截断与 include、worktree 归一）、`test/preferences.test.js`（迁移取更正版、不双写、幂等、无旧数据不写 settings）、`test/prompt-layers.test.js` / `test/copy-consistency.test.js`（persona 逐字同源）；`pnpm test` 全绿。
+
+
 ## 0.25.0（2026-11-20）—— 删轮换、宿主自压、插件只提醒 + 手动 adopt
 
 **破坏性变更（升级须知）**

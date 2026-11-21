@@ -36,7 +36,7 @@
 | G5 | 工具 schema 契约 | 逐个工具体检 | `parameters.type === 'object'`、根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 中文可读；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面 |
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
-| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` allow | 配置 22 键；全局工具 10 个（协调者 7 + 子会话 3）；allow 名单与工具表一致 |
+| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 22 键；全局工具 10 个（协调者可见 7 + 子会话 3）；协调者另有预设自有的只读 `read`/`glob`/`grep` 与 `skill`（不计入 10）；deny/keep 名单与工具表一致 |
 | G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、配置表/工具表同源、内链可达） |
 | G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **95 KiB**；超了先删重复渲染/样式，不抬预算 |
 
@@ -63,6 +63,8 @@
 - `test/status-facts.test.js` 锁能力位：`STATUS_CAPS` 是唯一状态能力表；`test/status-property.test.js` 用固定种子
   跑 10k 步随机迁移，断言无非法边、终态闭包、`delivered` 可追问不可轮换（<2s，确定性可复现）。
 - `test/tool-migrations.test.js`：旧工具名 → 新调用的映射表是唯一真源，README「工具迁移映射」必须与它逐条一致。
+- 交互三闸门（0.26.0）：判级表 / 堵塞项四类 / 评估三行只许在 L1——`test/interaction-policy.test.js` 锁结构与同源（`BLOCKER_RULE` / `CHANGE_REVIEW_FIELDS` 都在 `src/copy.js`），`layerViolations` 的 L2/L3 探针挡住子会话把分级与评估抄回去。
+- grill-me 技能（0.26.0）：`test/skill-grill-me.test.js` 锁两件事——`skills/grill-me/SKILL.md` 的 frontmatter（name=kebab / description / whenToUse）与协议要点（前沿提问、每问带推荐、事实自己查、2 轮 8 问、三栏决策记录、T2/T3 衔接、grill≠批准），以及注册模块「读包内文件 → 预设作用域 `ctx.skills.register`」、frontmatter 坏格式给可读报错、文件缺失/注册失败只 warn 不阻断预设挂载；`test/config.test.js` 锁协调者预设挂 `skill-grill-me` + `tool-skill` 而 worker 不挂。
 
 ### 3.3 文档一致性（`test/copy-consistency.test.js` 静态部分）
 
@@ -83,7 +85,7 @@
 
 ### 3.5 用例规模
 
-- 63 个 `test/*.test.js`、约 1.9 万行、1,050 条 `test()`（1,045 pass / 5 skip，`pnpm test` 会打印总数）。
+- 66 个 `test/*.test.js`、约 1.9 万行、1,112 条 `test()`（1,107 pass / 5 skip，`pnpm test` 会打印总数）。
 - 大文件：`client.test.js`（U2 客户端）、`index.test.js`（装配）、`tools.test.js`（工具面）、`main-session.test.js`（open-main / adopt / 代建协调者会话）。
 
 ## 4. 已知 flaky / 环境限制
@@ -149,6 +151,8 @@
 | P1-E 调试预设外移 | 生成器/测试/文档移出主包、`files` 不含 `docs/DEBUG-PRESET.md`、`tools/debug-preset/` 四件套 | CHANGELOG `0.21.0`；`node tools/debug-preset/cli.mjs --check` |
 | P2-2 续跑委托宿主 goal | 28 键（再删 7 键各一条弃用警告）、`goalRounds=0` create+disarm / `>0` create 带 maxGoalRounds 且保持 armed、`src/` 无 `turn-stopping` 订阅 | `test/config-deprecated.test.js`、`test/goal.test.js`、`test/index.test.js` |
 | P2-2 通知合并窗口 | 配置键删除后仍按 5 秒合并；测试用 `DSH_ORCH_NOTIFY_MERGE_MS` 旁路（只调窗口，不改语义） | `test/notify.test.js`、`test/index.test.js` |
+| 追问必达 / progress 送达 | `report_expected_at` 置位与清标记、`answeredFollowup` 跳过水位与窗口、同任务水位尾沿补投、投递失败不占水位、每条 progress 都有 `notifications` 行；水位测试用 `DSH_ORCH_PROGRESS_MS` 旁路（只调水位，不改语义） | `test/notify.test.js`、`test/tools.test.js`、`test/ledger.test.js`、`test/resume.test.js`、`test/integration.test.js`（端到端：追问 → 先报 progress → 主会话立刻收到） |
+| 记忆优化 P0（0.25.1） | `history` 首行【检索范围】、`project` 多键（≤2）/`all`/未知名警告、质量门槛（多词 ≥2 命中或 score ≥2、停用词）、分层配额 2+1、日志层单独成块 ≤2 且排在事实层后、`task-log` 单项目 200 且事实层不淘汰、`done` 的 projectKey 取 `brief.target → repo_root → target_dir`、`docs/ARCHITECTURE.md` 默认 1200/`include` 4000 字、旧全局偏好迁移取更正版且不双写 | `test/memory.test.js`、`test/tools.test.js`、`test/preferences.test.js`；CHANGELOG `0.25.1` 同批 |
 | P2-1 可执行验收 | `task_create.checks`（1–5 条、argv、超时/跳过）、交付前执行且失败阻断、`readOnly` 拒绝配检查、台账 `acceptance_json` ALTER 幂等 | `test/acceptance.test.js`、`test/tools.test.js`、`test/ledger.test.js` |
 | P2-3 交接契约 v1 | 三条确认路径的 `acceptedBy`、事件各一次、幂等关闭、存量行 NULL、字段表与代码同源 | `test/handoff.test.js`、`test/host-route.test.js`、`scripts/check-docs.mjs` |
 | P2-4 官方 Team 板 | 只读快照透传 `revision`、`enabled:false` 不读板、CAS 冲突只重读一次、超时自动完成不反写 | `test/team-board.test.js`、`test/index.test.js` |
@@ -190,6 +194,7 @@
 | 10 | 主会话上下文维护（0.25.0） | 在指挥舱新建会话选「协调者」→ 会话头点「设为协调者」后 `settings.main_session_id` 切到它、旧会话不改名不归档；压力 ≥ `contextPressureThreshold`（可先调低到 0.1 复现）时弹一次问题卡，选「继续当前会话」后同一 band 不再问 |
 | 11 | 配了 `checks` 的任务报 done | 全过才「待确认」并显示「验收 N/N」；有失败项即拒绝交付、任务仍「进行中」、回执给退出码与输出尾部 |
 | 12 | 关联官方板的任务被**人**确认交付 | 官方任务按 CAS 标 `complete`；超时自动完成时官方板**不变**，日志有 `team.board.skipped` |
+| 13 | 主会话权限徽标（0.25.1） | 新建主会话后输入区徽标显示「Read Only / 仅可查看」（日志 `main.session.permission-pinned`）；`/permission danger-full-access` 切走后徽标如实变「Full access」，再点「打开主会话」被拉回 `read-only`（日志再记一条 `permission-pinned`，返回 `permissionRestored`）；同批普通任务子会话 `sandbox/mode` 停在 `workspace-write`（日志 `subagent.workspace-write`），照常写文件 |
 
 ### 7.3 取证
 

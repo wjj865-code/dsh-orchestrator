@@ -1,6 +1,6 @@
 {
   "name": "@wjj865-code/dsh-orchestrator",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, cross-project memory, dependency orchestration, inbox/digest, snapshots, and a browser task panel.",
   "type": "module",
   "license": "MIT",
@@ -9,6 +9,7 @@
     ".": "./index.js",
     "./client": "./dist/client.js",
     "./preset-tools": "./preset-tools.js",
+    "./skill-grill-me": "./skill-grill-me.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
@@ -16,6 +17,8 @@
     "index.js",
     "dist/",
     "preset-tools.js",
+    "skill-grill-me.js",
+    "skills/",
     "src/",
     "scripts/",
     "cordis.patch.yml",

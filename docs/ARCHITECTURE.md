@@ -4,13 +4,15 @@
 
 ## 角色
 
-- **协调者**：唯一主会话，固定入口；只拆任务、派子会话、看回报，不读写文件、不执行命令。
+- **协调者**：唯一主会话，固定入口；只拆任务、派子会话、看回报、交付产物。能**只读**看文件（`read` / `glob` / `grep` 与 `read_workspace`），但**不写文件、不执行命令**（预设不挂 `write`/`edit`/`bash`/`pwsh`，权限钉 `read-only`）。
 - **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；能力不受限，另有三个插件工具：`task_report`（回报）、`task_detail`（只读创建详情）与 `plan_save`（计划落盘）。
 - **客户端**：侧栏「主会话」入口（始终可见）+ 会话头「任务」面板（仅主会话可见）；只读快照 + 面板动作。
 
 ## 主会话
 
 解析顺序：`config.coordinatorSession`（显式覆盖，不写台账）→ 台账 `settings.main_session_id` → 未打开（`task_*` 返回「尚未打开主会话」）。`open-main` 确保「指挥舱」工作区存在，用协调者预设创建会话、`rename` 成「主会话」、写指针，再跳到该会话。复用判定以台账 `settings.main_session_preset` 为准；UI 空白会话可能被 rebind 成默认预设，插件在 `agent/created` 与复用前调 `agentPresets.select` 拉回，失败只记日志并由 guard 兜底。
+
+**权限（C：徽标 = 实际工具面）**：协调者会话的 `permission preset` 显式钉成宿主出厂预设 `read-only`（沙箱 `read-only` + 审批 `ask`，`src/main-session.js` 的 `MAIN_PERMISSION_PRESET` / `pinPermission`）。0.26.0 起协调者预设挂着**只读**工具（`read` / `glob` / `grep`）与技能加载器（`skill`），但**没有任何写工具**（预设没挂 `write`/`edit`/`bash`/`pwsh`，`tool-fs` 行只开 `read`），所以徽标「Read Only / 仅可查看」与工具面一致；宿主给新会话的默认预设是 `workspace-write`，不钉的话徽标会显示「工作区写入」。写路径只有宿主公开的 `ctx.permissionPresets.set(session,'read-only')`（追加 `permission/preset` + `sandbox/mode` + `approval/policy` 三条事件，`permissions` 投影 = 徽标数据源随之变）。覆盖四条路：open 新建、代建、adopt、复用已有主会话时把用户切走的预设拉回（`main.session.permission-pinned`）。**这不是锁**：宿主没有锁权限选择器的 API，`/permission` 与输入区选择器仍可切（宿主的 `locked` 只针对 agent 预设 `agentPresets.select`），漂移一律在下次观察点拉回。失败只记 `main.session.permission-pin-failed`，不挡打开；宿主没有 `permissionPresets` 服务时整段降级（老宿主/裁剪 profile）。
 
 ### 首次打开与工作区索引
 
@@ -20,8 +22,8 @@
 
 ### 原生自动化工具面
 
-- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，allow 显式保留 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`；`preset-tools.js` 在协调者预设里仍用增量 deny 补集（保留式），在 worker 预设里改用**遮挡式 deny + keep 声明**（只遮 `memory_note`，`keep: [context, task_detail, task_report]` 声明「出生即可用」并写 `preset.keep` 审计；见 [子会话读上下文](#子会话读上下文只读-context)）。这四个 schedule 工具不进入 `createTools`，插件全局工具数仍为 10。
-- **工具面（P1-B：15 → 10）**：`createTools` 返回 10 个（协调者 7；子会话 4 = 3 个专属 + 共用的只读 `context`）。旧入口并进三个工具：`task_message` 的 `action`、`task_list` 的 `view`、新工具 `context` 的 `mode`。旧名**不注册**、不在 allow 名单，`index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）。
+- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，四个工具（`schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`）由**预设自有行**注册，**不写进 keep/deny 名单**——own 工具不受 `restrict` 影响；`preset-tools.js` 的两个预设现在都用**遮挡式 deny + keep 声明**：协调者只遮「编排正确性」项与三个角色专属工具、`keep` 声明 7 个任务工具「出生即可用」，worker 只遮 `memory_note`、`keep: [context, task_detail, task_report]`（都写 `preset.keep` / `preset.deny` 审计；见 [子会话读上下文](#子会话读上下文只读-context)）。这四个 schedule 工具不进入 `createTools`，插件全局工具数仍为 10。
+- **工具面（P1-B：15 → 10；0.26.0 起协调者另挂只读工具）**：`createTools` 返回 10 个（协调者可见 7；子会话 4 = 3 个专属 + 共用的只读 `context`）。这 10 个之外，协调者预设还挂了宿主原生 `read` / `glob` / `grep`（只读，`tool-fs` 只开 `read`、`tool-fs-search` 给 glob/grep）与 `skill`（技能加载器）+ `present` + `schedule_*`，它们是**预设自有工具**，不计入全局工具数，也不受 `deny` 影响。旧入口并进三个工具：`task_message` 的 `action`、`task_list` 的 `view`、新工具 `context` 的 `mode`。旧名**不注册**、不在 keep 名单，`index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）。
 - 缺能力诊断只针对唯一主会话：检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule`，缺失去重 warn + policy 提示；不改运行回合工具表，也不模拟自动化。
 - 只支持 `target:this_session`：Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new`/`new_once` 创建普通 root 会话，不是委托 worker、也不是第二协调者；**非唯一主** id 被 `requireMain` 拒绝。**默认 worker 不新增**挂载；`access:full` 不增加工具、不解除 `subagent_session`。沿用 Host-wide 管理、用户**明确授权**、RRULE 与 `expectedUpdatedAt` 冲突保护；用法见 [README 原生自动化](../README.md#主会话原生自动化)，边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。
 
@@ -61,14 +63,17 @@
 
 | status | 通知级别 | 说明 |
 |---|---|---|
-| progress | silent | 只更新台账；连续 3 次（固定口径）才推一次 `stalled` |
+| progress | coalesce | **默认送达**（不是 silent）：进 5 秒合并窗口；同任务 60 秒水位，窗口内只留最新一条、到水位线补投；**追问/续跑后的第一条不看水位、立即送** |
 | done | notify | 落「已交付待确认」（`delivered`）；5 秒合并窗口后注入协调者 |
 | blocked | interrupt | 立即投递，可带 `question` / `options` |
 | needs_auth | interrupt | 立即投递，可带 `question` / `options` |
 
 - 通知走 `agent.steer` 直插协调者，不经过 Team 的 `sendMessage`；每次投递写 `notifications` 行（`delivered`/`failed`/`skipped`，合并后续行 `merged_into` 指向首条）。
+- **progress 为什么必须送达**：它是「任务还在跑」的协调信号，不是终态——协调者据此决定 `task_message` 追问同一子会话（或 `resume`），而不是重派新任务。silent 时代「追问 → 子会话先报部分结论 → 继续跑」这条最需要被看见的路径对主会话永久不可见（实测 t-1f70bedb：8 次追问后的 progress 零通知，只剩 15 分钟看门狗）。
+- **追问必达**（`tasks.report_expected_at`）：`task_message` / `resume` 投递成功后置位（面板「追加」同口径，`src/panel-actions.js`）；下一份回报带 `answeredFollowup` → progress 跳过水位与合并窗口立刻投递。回报一到就清标记——必达只对**第一条**生效，长任务不会因为一次追问变成每条 progress 都即时唤醒。
+- **节流不刷屏**：同任务 60 秒水位内只留最新一条、到点补投（尾沿保留最后状态）；合并窗口内同一任务的第二条 progress 覆盖第一条，被同窗口的 `done`/`blocked` 取代的直接撤掉（一条消息里不重复列同一任务）。被压住/覆盖/取代的写 `notifications` 行（`skipped` + `reason: progress_watermark | progress_merged | progress_superseded`）——**每条 progress 都有审计行**，排查「主会话为什么没收到」不用再猜。水位在进程内，重启后重置（重启后的第一条 progress 立即送）。
 - `task_list({view:'inbox'})` 汇总待决、失败/丢失、长时间没动静；问题/选项来自台账 `question` / `question_options_json`，`progress`/`done`/`task_message` 会清掉旧问题。
-- **卡住提醒**：连续 3 次 progress 且距上次提醒超过 `staleMinutes` 推一次「可能卡住」。
+- **卡住提醒**：连续 3 次 progress 且距上次提醒超过 `staleMinutes` 推一次「可能卡住」（与上面的送达并列，不互相替代）。
 - 日报：`digestAt`（HH:MM）开启后在主会话上维护一条每日 `schedule`，到点提示协调者汇总；主会话重建/时区变化会重建，配置为空会删除。
 
 ## 两段式终态（D1：交付 → 确认）
@@ -223,7 +228,7 @@
 
 | 层 | 载体 | 生命周期 | 唯一职责 |
 |---|---|---|---|
-| **L1** | `ctx.systemPrompt.context().text`（`index.js`） | 每回合重渲染 | 协调者行为规则：**能直接答就不委派**、工具可用/禁用、交付与确认口径（**不主动问「能否关闭」**，只在真歧义/不可逆/远端写授权时提问）、`present`/`read_workspace` 用法、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
+| **L1** | `ctx.systemPrompt.context().text`（`index.js`） | 每回合重渲染 | 协调者行为规则：**能直接答就不委派**、工具可用/禁用（含原生只读 `read`/`glob`/`grep` 与 `skill`）、交付与确认口径（**不主动问「能否关闭」**，只在真歧义/不可逆/远端写授权时提问）、`present` 与两条读路径（`read`/`read_workspace`）的用法、**复杂需求先 `skill({name:'grill-me'})` 拷问**、**交互三闸门（T0–T3 判级、堵塞项四类、追加调整 R0–R2）**、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
 | **L2** | 派发消息（`src/brief.js`）＋ worker 预设 persona（`cordis.patch.yml`） | 每次派发/续派；persona 出生即带 | 只指路：任务编号、访问级别、worktree 装依赖提示、`task_detail` 指引、执行中/交付时怎么回报；persona 只说子会话的**行为期望**（需要历史经验/项目背景时主动调 `context`，措辞真源 `WORKER_CONTEXT_HINT`） |
 | **L3** | 子会话按需调用（`src/task-detail.js`） | 按需 | 任务创建详情 + 完成动作 |
 | **L4** | 一次性 `agent.steer`（`src/onboarding.js`） | 仅新主会话首次 | 只开场：一句话自我介绍 + 派索引任务（能力边界一条都不重复） |
@@ -232,6 +237,22 @@
 - L4 从 708 字瘦到 525 字（删掉与 L1 重复的 6 条能力边界）：L1 每回合都在且不会被 compaction 吃掉，onboarding 是一次性消息、轮换时还会被直接标 `sent` 跳过；两处都写 = 每次改 policy 都要同步改它（已漂移过）。
 - **三处矛盾已修**：① 文档不再声称交付时可以带结构化选项（`done` 会清空 `question`/`options`）；② brief 的 `CONFIRM_HINT` 与 task_detail 的 `FINISH_HINT` 统一成「结论 + 改了什么/改了哪些文件/怎么验证的 + 待确认要点」，同源 `SUMMARY_FIELDS`；③ 文档里的 brief 行数改为「4 行基准，full/隔离各加一行 → 4–6 行」（`docs/testing.md` 有锁定断言）。
 - **偏好归 L1 末尾**（`src/preferences.js`）：存 `settings.orchestrator_preferences` 单键 JSON，每回合现渲染；字数 1200 为主约束、条数 12 为安全阀；超限**显式告知**被截条数；全局偏好只写 settings（不双写 memories），项目偏好只写 memories。偏好只是提示词文本，不进 config、不改 dispatch、不碰沙箱。
+
+## 交互三闸门（T0–T3 / 堵塞项 / 调整评估）
+
+`index.js` 的 `renderInteractionPolicy()`：协调者每回合都在的行为规则，拼在硬规则之后、worktree/写域之前（判级决定「要不要派单、怎么派」，逻辑上更靠前）。三条原则是一条生命周期上的三个入口，**不是三次打扰**：
+
+| 阶段 | 原则 | 什么时候 | 问不问用户 |
+|---|---|---|---|
+| A 理解 | 开工前确认意图（T0–T3） | 收到需求、开工前 | T0/T1 不问；T2/T3 问一次 |
+| B 执行 | 计划确认后少打扰（B1–B4） | 开工后到交付前 | 只有四类堵塞项 |
+| C 变更 | 追加调整先评估（R0–R2） | 用户改方向时 | 先评估再问，确认后才通知子任务 |
+
+- **判级（T0–T3）**：T0 不动文件不跑命令 → 直接答；T1 单点、可回退、不动用户数据、不碰远端 → 直接做（回复里先写「我的理解：…」）；T2 给的是现象/方案代价不同/改可见默认行为/目标或验收有歧义 → 只读调研 + `ask_user_question` 问一次；T3 跨仓库或跨工作区、动 5 个以上文件、重构·迁移、不可逆、要推远端或发布、要写仓库外、范围不确定 → `task_create({ planFirst: true })` → `plan_save` → 用户拍板 → 才实现。**判级只做一次**；不可逆永远最低 T2；用户说「你看着办」至多降一档。
+- **堵塞项四类**（措辞真源 `src/copy.js` 的 `BLOCKER_RULE`，brief 的 `BLOCKED_HINT` 共用同一句）：B1 已确认的验收/范围/方案不可达；B2 要新授权（权限/远端写/发布/删数据/不可逆）；B3 子会话报 `blocked` 且选项要用户定；B4 事实在协调者工具面外查不到。其余（进度、能否关闭、可给默认值的细节、自己查得清的事实、能回退的取舍）**不算堵塞项**；一个堵塞项只问一次，多个合成一条清单，用户不答按建议继续——B2 与计划批准除外（必须等明确答复、不代批）。
+- **追加调整（R0–R2）**：先给评估三行（`CHANGE_REVIEW_FIELDS`：影响面 / 风险 / 建议），再分档——R0 只补细节、不动验收与已交付结论 → 直接 `task_message` 转原会话；R1 动验收/范围/方案 → 评估 + 确认；R2 不可逆/权限/推翻已交付结论/换 target 或仓库 → 必须拍板。**顺序闸门**：评估与确认必须早于 `task_message`（计划中的任务收到追加消息即视为批准、沙箱当场切回可写，见「计划阶段（P8）」）。
+- 与既有机制衔接：T3 的唯一闸门就是 `planFirst`（审批四步不变）；T2/R1/R2 的确认只用宿主 `ask_user_question`（由协调者发起，子会话调用会被平台拒）；「少打扰」限定在执行期，与硬规则里「不催关闭」「能直接回答就不派任务」同向，不推翻任何既有口径。
+- **grill-me 技能是 T2/T3 的澄清动作**（0.26.0）：协调者判为 T2/T3 后先 `skill({ name: 'grill-me' })` 加载技能，按它一次只问一个决定性问题（每问带推荐）、事实自己查、决策归用户、最多 2 轮 8 问、给三栏决策记录。它只负责**澄清需求**，不替代 T2 的 `ask_user_question` 确认，也不替代 T3 的计划批准（grill ≠ 批准）。技能只挂在协调者预设作用域，子会话看不到。
 
 ## 文案单源（`src/copy.js`）
 
@@ -242,6 +263,7 @@
 | 计划阶段 | `PLAN_PHASE_LINES` / `PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `PLAN_STATUS_LINES` / `planDocPathText()` / `planCreateReceipt()` / `PLAN_SAVE_TOOL_DESC` / `planSavedNextStep` | `task-detail`（L3）、`plan-mode`、`plan-doc`、`tools`、`dispatch`、`index.js` |
 | 两段式终态 | `DELIVERY_LINES` / `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`、`brief`、`notify`、`prompt-layers`、`write-guard`、`tools`、`deps` / `tool-migrations` |
 | 完整访问 | `ACCESS_FULL.label` / `.briefLine` / `.workerHint` / `.createNote` | `brief`、`task-detail`、`tools` |
+| 交互闸门 | `BLOCKER_RULE` / `CHANGE_REVIEW_FIELDS` | `index.js`（L1 交互三闸门）、`brief`（`BLOCKED_HINT`）、`tools`（`task_message` 描述） |
 
 1. **判据**：这句话会不会在第二个模块出现？会 → 放 `copy.js`；不会 → 留在本层（协调者规则归 L1、面板短标签归客户端）。
 2. `copy.js` 是**叶子**：不 import 任何模块，谁都能引用而不引入环。
@@ -307,7 +329,7 @@
 - **三段常驻提示**（都讲「怎么做」，都明确「不等于已获授权」）：`BLOCKED_HINT`（执行中要拍板 → `blocked` 上报「问题 + 选项」，协调者问用户后续派）、`CONFIRM_HINT`（交付时把待确认要点写进 `summary`；子会话**不能**调 `ask_user_question`——平台对 `origin === 'subagent'` 抛 `DELEGATED_CALLER`；`done` 会清空 `question`/`options`；交付后协调者**不会为「任务能否关闭」提问**，任务保持「已交付待确认」、等 `deliveredTimeoutMinutes` 超时自动完成，用户要改再 `task_message` 追问）、`WORKTREE_INSTALL_HINT`（隔离任务：可以装依赖，**只安装不升级**）。
 - **task_detail（只读）**：`src/task-detail.js` 渲染编号/标题/状态 → 目标全文 → 工作目录 + 可写/只读提示 → `【验收标准】`/`【可执行检查】`/`【约束】`/`【背景资料】`/`【用户原话】` → 编排（非默认才出现）→ `【前置任务】`（按**当前**台账现读）→ `【经验文件】<路径>（N 条）` → `【已有产物】` → 完成口径。实现只读台账：不写消息、不改状态/时间戳。
 - **越权拒绝**：只允许任务自己的子会话；主会话或别的子会话调用返回「读取被拒绝…主会话查任务用 task_status」，并记 `task.detail.rejected`。
-- **挂载链**：和其它 `task_*` 一样由 `index.js` 注册成 host plane 全局工具；协调者预设的 allow 名单不含 `task_detail`，执行层 `COORDINATOR_DENY` 也把它列为子会话专属，主会话看不到/调不到。
+- **挂载链**：和其它 `task_*` 一样由 `index.js` 注册成 host plane 全局工具；协调者预设的 `preset-tools` 把 `task_detail` 列进 `deny`（0.26.0 起它与 `task_report` / `plan_save` 一起按「角色专属」遮在预设层），主会话看不到/调不到。
 - **重派同口径**：`retry` 用 `renderBrief({ taskId: 新任务编号 })` 重渲染，`task.brief` 快照整体复制；队列兜底也用 `renderBrief`，不再拼「【任务】标题 + 目标」。
 
 ## 子会话读上下文（只读 `context`）
@@ -320,12 +342,26 @@
 |---|---|---|---|
 | `context` | 可调（只读） | 可调（只读，**同一条实现**，同参数输出逐字一致） | worker 预设 `preset-tools` 的 `keep: [context, …]`；`src/tools.js` 三种 mode 都不再拦主会话 |
 | `memory_note` | 可写 | **不可见**（工具表里没有）；万一被别的 profile 露出，执行层返回「拒绝：写记忆只属协调者」+ 替代路径，并记 `memory.note.rejected` | worker 预设 `preset-tools` 的 `deny: [memory_note]`；`requireMainForWrite` 兜底 |
-| `task_report` / `task_detail` / `plan_save` | 不可调（`COORDINATOR_DENY`） | 只对任务自己的子会话 | 执行层 `task.detail.rejected` 等 |
+| `task_report` / `task_detail` / `plan_save` | 不可见（协调者预设 `preset-tools` 的 `deny`） | 只对任务自己的子会话 | 预设层遮挡 + 执行层 `task.detail.rejected` 等归属校验 |
 
-- **两种收窄形态**（`preset-tools.js`）：协调者用**保留式**（`allow` 补集，deny 掉不在名单里的全局工具）；worker 用**遮挡式**（点名 `deny`），因为子会话的 bash/pwsh/fs/web/todo/skill 都是预设自有行、不是全局工具，allow 补集要把平台全部全局工具名抄全，漏一个就把 `task_report`/`task_detail` 一起遮掉。真机语义实验见 `docs/probes/preset-scope-restrict.mjs`（10/10 PASS，含「deny 名单只遮点名项」「`keep` 晚注册后补确认」）。
+- **两种收窄形态**（`preset-tools.js`）：0.26.0 起本插件的**两个预设都用遮挡式**（点名 `deny` + `keep` 正向声明）。协调者只遮「编排正确性」项与三个角色专属工具（`keep` 声明 7 个任务工具），worker 只遮 `memory_note`（`keep: [context, task_detail, task_report]`）。不再用 `allow` 补集：那要把平台所有全局工具名抄全，漏一个就悄悄少一个工具（协调者还会把只读工具也遮掉）。保留式（`allow`）形态仍留在模块里兼容旧 profile 与探针，新配置不再使用。真机语义实验见 `docs/probes/preset-scope-restrict.mjs`（10/10 PASS，含「deny 名单只遮点名项」「`keep` 晚注册后补确认」）。
 - **`keep` 是正向声明**：声明这些全局工具必须对子会话出生即可用；挂载后随 `tools/change` 校验，确认到就写 `preset.keep` 审计（写 `$DSH_HOME/state/orchestrator/logs/*.jsonl`），未注册先静默、不抛——可见性以平台真值为准。
-- **引导写在预设 prompt 里**（不是每条 brief）：worker persona prefix 带上 `src/prompt-layers.js` 的 `WORKER_CONTEXT_HINT`（「需要历史经验/项目背景时主动调 context，不要等协调者注入；写记忆只属协调者…」），`test/prompt-layers.test.js` 逐字校验；brief 仍是 4 行纯指路，不重复这句。
+- **引导写在预设 prompt 里**（不是每条 brief）：worker persona prefix 带上 `src/prompt-layers.js` 的 `WORKER_CONTEXT_HINT`（「需要历史经验/项目背景时主动调 context：查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入；写记忆只属协调者…」），`test/prompt-layers.test.js` 逐字校验；brief 仍是 4 行纯指路，不重复这句。
 - **注入侧只做减法**：brief 自 T1 起就没有记忆正文；`task_detail` 的 `【经验文件】<路径>（N 条）` 保留（关键指针），只在末尾加一句出口「更多历史与项目背景用 `context({ mode: 'history' | 'project' })`」。
+
+### 记忆检索与容量（0.25.1，审 t-c8df6366 后的最小落地包）
+
+审计（`reports/memory-and-main-session-audit.md`）的结论是「写健康、读靠运气」：默认 `history` 只查 `global`（254 条项目记忆一条查不到）、注入命中 token 重合度均值 20%、日志层占 65% 却在混算配额里淘汰手记事实、worktree 任务的记忆落在 8 个分裂键下。落地包只改检索与配额、不改表：
+
+- **检索范围可见（P0-a）**：`historyView` 首行固定打印 `【检索范围】<project_key>｜+ global` 或 `【检索范围】global（未含项目记忆）`；L1 硬规则与 worker persona 都写明「查本项目经验要显式传 `project:<target_dir 或工作区名>`」。**默认键仍是 global**（不采纳「默认改 `defaultDir()`」：协调者 cwd 是指挥舱，推断出来的项目键对指挥舱无效）。
+- **多键与 all（P0-b）**：`resolveHistoryScope` 接受 绝对路径 / 工作区名 / 数组（去重后取前 **2** 个键）/ `'all'`；`normalizeProjectKeys` 统一归一（自动补 `global`，`'all'` = 不按项目过滤），`searchMemories` 合并后统一按分数截 `limit`。未知名项目给一行 `【警告】`，不再静默回落。
+- **质量门槛**：`memoryTokens` 的停用词表扩到 27 个（任务/插件/测试/代码/文件/项目… + 常见英文）；`searchMemories` 对多词查询要求命中 ≥2 个词或 `score ≥ 2`（decision 的 +2 权重也算分），单词查询命中即相关。
+- **分层配额**：`pickLayered` 让 `decision`/`preference` 在一次结果里最多占 2 条，剩余槽位先给 `lesson`/`note`；候选全是决策类时按分数补满。
+- **结果分块**：`historyView` 把事实层（`MEMORY_FACT_KINDS`）与日志层（`task-log`/旧 `task-done`）分两次查，日志单独成块、最多 2 条、排在事实层之后，不再挤占 `limit` 槽位。
+- **淘汰分层**：`addMemory` 只在写入日志层时执行淘汰，单项目保留最新 `MAX_TASK_LOG_PER_PROJECT = 200` 条；事实层一条不删（旧「单项目 300 条」常量已删除）。
+- **worktree 归一**：`task_report done` 的 projectKey 取 `brief.target ?? repo_root ?? target_dir`——隔离任务的 `target_dir` 是检出目录，以前直接用它写出 `.agents/worktrees/t-*` 分裂键。
+- **项目背景白名单**：`projectContextFor` 增加 `docs/ARCHITECTURE.md`（默认前 1200 字，`include:['docs/ARCHITECTURE.md']` 给前 4000 字；总输出 ≤8000 字），未识别 include 给一行提示。
+- **旧偏好迁移**：`migrateLegacyPreferences`（`src/preferences.js`）启动时把 `memories` 的 global `preference` 搬进 `settings.orchestrator_preferences`：带「更正/修正/纠正/推翻/不再用」标记的条目按共享主题词（≥3）取代旧条目，写成功后删除 memories 行（不双写），失败不写标记、下次重试；没有旧行时不动 settings。
 
 ## 产物
 
@@ -337,11 +373,22 @@
 
 子会话产物按契约落在 **target 目录**内，只有一部分落在主会话工作区（`$DSH_HOME/state/orchestrator/workspace`）。所以边界是**两个判据的并集**：工作区包含性 **OR** 已登记产物（台账 `tasks.artifacts_json`）。
 
-- **为什么不开放原生 `read`/`glob`**：平台读路径没有白名单——`dsh-fs-sandbox` 只给写操作加栅栏，`dsh-fs-local` 的 `cwd` 只是相对路径基准，`glob` 直接 spawn ripgrep 全树枚举。给协调者开原生 `read` = 给它全盘可读的宿主进程读者（含 `~/.dsh/.credentials.yaml`），叠加 IM 双向同步还会外发。
+- **为什么还要保留它（0.26.0 已另挂原生 `read`/`glob`/`grep`）**：原生读没有路径白名单、看得到全盘的凭据（`dsh-fs-sandbox` 只给写操作加栅栏，`dsh-fs-local` 的 `cwd` 只是相对路径基准，`glob` 直接 spawn ripgrep 全树枚举）。`read_workspace` 是**产物边界**的受控读：只认工作区 ∪ 已登记产物，越界/`../`/符号链接逃逸/未登记都拒并写 `workspace.read.rejected`。两者并存：全盘读用来核对改动与读技能，受控读用来读产物；1.0 前不退役。
 - **实现分层**：`src/read-workspace.js` 是纯函数 + 一次有界读（路径判定、行窗口切分、目录列条目、二进制识别、文案渲染）；`src/tools.js` 只做 `requireMain` 身份校验、调用、审计日志。
 - **判据分层**：`src/artifact-location.js` 是产物唯一合法性判据（`registeredArtifacts` / `registeredMatch` / `deliverableOf`）；`read_workspace`、`preview`、右侧栏、`present` 四条路径对「什么算合法产物」同源。
 - **闸**：① 形状（空 / NUL / `~` 拒绝，不做家目录展开）；② `realpathSync` 真实路径包含性（挡符号链接逃逸）；③ 解析失败时退回词法包含性，把「越界」与「不存在」分开报；④ 都不放行时查**已登记产物**（文件本身或已登记目录子树），登记表不借符号链接放行。
 - **体积与截断**：单文件 > 4 MB 直接拒绝；正文按行窗口返回（默认 400 行 / 上限 2000 行，单次 ≤ 64 K 字符），截断给 `nextOffset`；单行超上限时截断该行并标 `truncatedLine`。目录只列一层、最多 200 项。
+
+## 协调者只读工具与 grill-me 技能（0.26.0，`t-48e8ce06`）
+
+用户决策：「工作区只读权限下没必要限制工具；手切 full 是用户自担风险」。落地分两片，都只对本插件自己的两个预设生效：
+
+- **B 片：只读文件工具**。协调者预设挂 `tool-fs`（`read: true`，`write` / `edit` / `applyPatch` / `readImage` 全 `false`）与 `tool-fs-search`（`sampleOverCapGlobResults: false`）→ 协调者拿到 `read` / `glob` / `grep`，工具表里**没有写工具**。执行层 `COORDINATOR_DENY` 同步缩到「编排正确性」名单（`wait_agent` / 团队工具 / `plugin_manager` / 密钥 / IM）；角色专属的 `task_report` / `task_detail` / `plan_save` 改由预设 `preset-tools` 的 `deny` 遮掉（工具表里看不到，执行层各自还有归属校验）。`bash` / `pwsh` **不挂**；默认权限仍是钉死的 `read-only`，用户手切 `full` 时插件不加限制、也不放宽工具面。
+- **`working_directory` 被两处遮掉**（发版前真机复验补漏）：宿主全局工具 `@deepseek-ai/dsh-tool-working-directory` 在 0.25.x 的 `allow` 补集下被顺带遮住，0.26.0 改遮挡式后漏进了协调者工具表。它会改**协调者会话的 cwd**——而 cwd 是指挥锚（`task_create` 未给 `target` 时子会话继承它、工作区/写域判定与 `projectKeyOf` 推断都以它为准），会话内切目录会让锚点静默漂移。所以协调者预设 `preset-tools` 的 `deny` 与执行层 `COORDINATOR_DENY` 各列一份（预设层出生即生效、执行层再硬拦），`test/config.test.js` / `test/index.test.js` 双锁。看文件不需要它：`read`/`glob`/`grep` 收绝对路径。
+- **A 片：grill-me 技能**。`skills/grill-me/SKILL.md` 随包发（`package.json.files` 含 `skills/`），`skill-grill-me.js` 在 `apply()` 里读该文件 → `parseSkillMarkdown` 解析 frontmatter（name/description/whenToUse，只认顶层标量）→ `ctx.skills.register({ name, description, whenToUse, content, source: 'bundled', path })`。注册进的是**调用方 context 的作用域层**（dsh-skill 的分层注册表：预设挂载的插件进该预设层，unscoped 插件进全局层），所以协调者预设挂的这份**只有协调者可见**，worker 预设没挂这个模块就看不到。`@deepseek-ai/dsh-tool-skill` 同挂该预设，提供模型面 `skill({name})` 与技能目录（目录随会话注入、只含 name+description，正文按需加载）。
+- **不用 `customSkillDirs` 指目录**：patch 里的 `!!js` 表达式在磁盘上求值，`createRequire(baseUrl)` 在 bundle 里会 `MODULE_NOT_FOUND`（`test/config.test.js` 锁了这条）。运行时注册只依赖 `import.meta.url` 解析出的 SKILL.md 文本，安装目录在哪都成立。
+- **L1 只加一行触发语**（判为 T2/T3 时先 `skill({ name: 'grill-me' })`），技能正文不进系统提示；SKILL.md 缺失或格式不合法时只 `warn`、不注册——技能是增强项，不能让协调者预设挂载失败（`test/skill-grill-me.test.js` 覆盖）。
+- **协议**：多轮前沿提问（一次一个决定性问题）、每问带我的推荐、事实自己查、决策归用户、最多 2 轮 8 问、最后给三栏决策记录（决策点｜你定的｜影响），与交互三闸门 T2/T3 衔接；**grill ≠ 批准**。灵感来自 Matt Pocock 的 grilling（MIT），措辞重写。
 
 ## 只读子任务
 
@@ -349,7 +396,7 @@
 
 ## per-task 完整访问（`access:'full'`）
 
-`access:'full'`（只认显式 `'full'`）**复用只读的整条注入路径**，只是模式换成 `danger-full-access`：`ensureSandboxMode(childId, mode)` 在 `agent/created` 一到就 append（`source:'delegation'`），激活返回后再幂等补一次，续派/冷恢复再补；`taskOf` 只把 `tasks.access='full'` 当真。不传 → 一次 append 都没有、不碰默认配置、不碰父会话。视图：brief `【访问级别】完整`、`task_detail`「访问级别：完整」、`task_list`「·完整访问」、`task_status`「访问级别：完整」、通知标题「（完整访问）」、日志 `subagent.full-access`。
+`access:'full'`（只认显式 `'full'`）**复用只读的整条注入路径**，只是模式换成 `danger-full-access`：`ensureSandboxMode(childId, mode)` 在 `agent/created` 一到就 append（`source:'delegation'`），激活返回后再幂等补一次，续派/冷恢复再补；`taskOf` 只把 `tasks.access='full'` 当真。普通任务（不传 `readOnly`/`planFirst`/`access`）同样走这条入口，显式钉 `workspace-write`：宿主会把父会话的显式 `sandbox/mode` 覆盖按 `source:'delegation'` 种进每个子会话（`@deepseek-ai/dsh-subagent` 的 `appendDelegatedPolicyOverrides`），主会话钉成只读后不写回来，子任务就会跟着只读、写不了文件。都不碰默认配置、不碰父会话。视图：brief `【访问级别】完整`、`task_detail`「访问级别：完整」、`task_list`「·完整访问」、`task_status`「访问级别：完整」、通知标题「（完整访问）」、日志 `subagent.full-access` / `subagent.read-only` / `subagent.workspace-write`。
 
 ## 计划阶段（P8）
 
@@ -359,7 +406,7 @@
 - **计划落盘（`plan_save`）**：计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：`src/plan-doc.js` 只做纯函数——`planDocPath()` 算出 `<主会话工作区>/reports/plans/<taskId>.md`（没有 `path` 入参；编号白名单 + `relative()` 包含性校验把 `..`/绝对路径/盘符拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头，`writePlanDocument()` 只做一次 mkdir + 覆盖写。写完登记为任务产物。子会话拿到结果后只上报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**。
 - **交付顺序（0.25.0）**：先回复计划摘要 + 计划文档**绝对路径**并 `present` 该文档 → 再 `ask_user_question`（选项至少 **批准执行 / 先看计划文档 / 调整计划**）→ 用户选「先看计划文档」只展示正文/路径、不推进不催 → 只有明确「批准」才续派实现。
 - **出口**：`plan_save` 落盘 → `task_report blocked` 上报摘要 + 路径 → 用户决定 → `task_message` 续派，**不用** `exit_plan_mode`（子会话没有直接人类）。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`（插件根的 guard 是全局的，会误伤协调者）。
-- **批准闸门（人工，协调者不得自行批准）**：**计划批准必须由用户拍板**——计划任务 `blocked` 后，协调者必须把摘要 + 计划文档路径转交用户，并用 `ask_user_question` 请用户明确批准（options 至少「批准执行 / 调整计划」）；**协调者不得自行批准**——不得自己判断计划没问题就直接 `task_message` 续派实现，也不得把用户沉默、含糊回应当成批准。只有用户消息里明确批准才可续派（续派成功才走下面的「退出（批准）」）；用户答「调整」则把修改点原样转回同一个子会话，让它先出修订版计划（消息里写明「只修订计划、不要开始实现」）并再 `blocked` 一次，重新请用户拍板；用户没回答就保持「计划中」，协调者不续派、不代批。
+- **批准闸门（人工，协调者不得自行批准）**：**计划批准必须由用户拍板**——计划任务 `blocked` 后，协调者必须把摘要 + 计划文档路径转交用户，并用 `ask_user_question` 请用户明确批准（options 至少「批准执行 / 调整计划」）；**协调者不得自行批准**——不得自己判断计划没问题就直接 `task_message` 续派实现，也不得把用户沉默、含糊回应当成批准。只有用户消息里明确批准才可续派（续派成功才走下面的「退出（批准）」）；用户答「调整」则把修改点原样转回同一个子会话，让它先出修订版计划（消息里写明「只修订计划、不要开始实现」）并再 `blocked` 一次，重新请用户拍板；用户没回答就保持「计划中」，协调者不续派、不代批（开工前的判级与追加调整的分档见「交互三闸门」；本段只讲计划这一条硬闸门）。
 - **调整路径的已知口径**：`task_message` 在计划中任务上本身即「批准」（投递成功 → 沙箱 `workspace-write` + `plan_state='approved'`），所以「调整」那一轮已经切回可写；约束只能落在消息措辞上（只修订计划），修订版再次 `blocked` 后仍必须由用户重新拍板——不能拿第一次的批准当实现对修订版的授权。
 - **退出（批准）**：投递成功、任务回到 `running` 后 `sandbox/mode = workspace-write` + `planMode.set(agent,false)` + 台账 `plan_state='approved'`，同时补登记 target 可写根；投递失败不碰 plan 状态。
 - **停止/终态**：释放 guard；还在 `planning` 就结束的收口成 `rejected`，已 `approved` 的保留。
@@ -435,7 +482,7 @@
 
 插件页只展示一段简介与文档链接；这里只留运维需要口径：
 
-- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace`；子会话 `task_report` / `task_detail` / `plan_save` / 共用的只读 `context`（写记忆的 `memory_note` 不在子会话工具表里）。
+- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace`（另有预设自有的只读 `read` / `glob` / `grep`、`skill`、`present`、`schedule_*`，不计入这 10 个）；子会话 `task_report` / `task_detail` / `plan_save` / 共用的只读 `context`（写记忆的 `memory_note` 不在子会话工具表里）。
 - **面板动作与错误码同源**：面板 stop / retry / message / delete 与 `task_message({action})` 共用 `src/action-errors.js` 的 code 与门控；面板失败返回 `{ok:false, code, error}`，`host-route` 按 code 映射 HTTP 状态（400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部）。
 - `stop`：已结束再 stop 返回 `{ok:true, already:true}`；收子会话失败不阻断取消（`warnings[].code=STOP_DISPATCH_FAILED`）。
 - `retry`：只允许 failed/orphaned；已有活跃重派直接返回那条任务；同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。
