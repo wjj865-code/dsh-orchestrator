@@ -13,7 +13,7 @@
 //      与 docs/probes 的语义实验，别再往新配置里用。
 //   2. `deny`（遮挡式，协调者与子会话同形）：只 deny 点名的全局工具，其余原样继承。
 //      - 协调者：只点名「编排正确性」项 + 三个角色专属工具（task_report / task_detail / plan_save）；
-//        工具面其余部分全开（read/glob/grep/skill 由预设行自己挂，写由 read-only 权限预设兜底）。
+//        工具面其余部分全开（read/skill 由预设行自己挂，写由 read-only 权限预设兜底）。
 //      - 子会话：只遮 `memory_note`（写记忆仍仅主会话）。
 //      两边都不用 allow 补集：那需要把平台所有全局工具名抄全，漏一个 = 悄悄少一个工具。
 //

@@ -36,7 +36,7 @@
 | G5 | 工具 schema 契约 | 逐个工具体检 | `parameters.type === 'object'`、根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 中文可读；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面 |
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
-| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 22 键；全局工具 10 个（协调者可见 7 + 子会话 3）；协调者另有预设自有的只读 `read`/`glob`/`grep` 与 `skill`（不计入 10）；deny/keep 名单与工具表一致 |
+| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 22 键；全局工具 10 个（协调者可见 7 + 子会话 3）；协调者另有预设自有的只读 `read` 与 `skill`（不计入 10）；**协调者预设不得出现 `tool-fs-search`**（`glob`/`grep` 已移除，`test/config.test.js` 直接断言无该行/无该包名）；deny/keep 名单与工具表一致 |
 | G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、配置表/工具表同源、内链可达） |
 | G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **148 KiB**；148 KiB 之下按子预算表（脚本头部，合计 = 148）逐块核算，某一页超了先删重复渲染/收敛样式，再谈抬预算。**为什么从 95 调到 148**：工作台 v1 要新增总览/任务组/组工作台/排期/自动化五页与常驻只读 dock，平台只 serve 一个 `client.js`（无代码分割），全功能实测 143–146 KiB；先定 128 KiB 实测不够（差 12–16 KiB），用户拍板保留全功能 → 148 KiB（留 2–5 KiB 余量）。中间不设 148 之外的档位，超了就回头砍重复渲染 |
 
@@ -53,10 +53,12 @@
 
 - `test/copy-consistency.test.js` 锁口径：`done` 不是终态、协调者默认不主动确认交付、`present` 1–4 个、
   brief 不越权定义交付语义、计划/完整访问的原子句只允许在 `src/copy.js` 定义一次。
-- `test/prompt-layers.test.js` 锁分层：L1 policy / L2 brief / L3 task_detail / L4 onboarding / 通知 hint 各自独占，
-  `layerViolations` 防「删掉的重叠又抄回来」；brief 行数为 **4 行基准，完整访问 / 隔离各加一行 → 4–6 行**。
-  worker 预设 persona 是 L2 的第二个载体：`cordis.patch.yml` 必须**逐字包含** `WORKER_CONTEXT_HINT`（主动读 `context`），
-  brief 不重复它（只留任务信息）。
+- `test/prompt-layers.test.js` 锁分层：L1 policy / W1 任务执行者 policy / L2 brief / L3 task_detail / L4 onboarding / 通知 hint 各自独占，
+  `layerViolations` 防「删掉的重叠又抄回来」（L2 探针会抓「W1 的静态句被抄回 brief」）；brief 行数为 **2 行基准，
+  `access:'full'` 多一行 → 2–3 行**，静态提示（上报 / 交付 / 装依赖 / 主动读 `context`）只在 W1 出现一次。
+- `test/index.test.js` 锁 W1 注入：`orchestrator:worker-policy` 的 `order` 是 131（与 L1 的 130 分开注册）、
+  只命中 `tasks.session_id` 属于任务的子会话（协调者、无关会话、孙会话都拿到空串）；隔离任务（台账
+  `worktree_state=created`）多一句装依赖授权。worker 预设 persona 只剩身份一句，不再内联 `WORKER_CONTEXT_HINT`。
 - `test/preset-tools.test.js` 锁预设层收窄：保留式（`allow` 补集）与遮挡式（`deny` 点名 + `keep` 声明）二选一、
   互斥/冲突配置直接抛错、`preset.deny` / `preset.keep` 审计；真机语义（真实 `ToolsService`）由
   `docs/probes/preset-scope-restrict.mjs` 覆盖（10/10 PASS）。
@@ -160,6 +162,7 @@
 | P2-6 文档收口 | 文档 ≤1,800 行（预算常量与失败提示同改）、README 首屏重写 + 结构断言、P2 变更入档 | `scripts/check-docs.mjs`、本文件 §3.4 |
 | 外部依赖 | ds-bot Bot 模式不撤外部 root 会话皮肤、rc.3 子会话沙箱根=父目录、团队工具残留 | CHANGELOG `0.13.0`/`0.14.0`；[LIMITATIONS](LIMITATIONS.md) |
 | 任务链规则（0.28.0） | L1 五条规则（判据与建链时机 / 不阻塞 / 失败传播 / delivered≠done / 同检出串行）逐字来自 `src/copy.js`；`task_create.dependsOn` 描述与 `waiting_dep` 回执同源；L2/L3 探针；机制用 `dependencyState`/`promoteDependents` 复核 | `test/task-chain-policy.test.js`、`test/prompt-layers.test.js`；CHANGELOG `0.28.0` |
+| 协调者去 grep + W1 任务执行者 policy（t-4f7ce108） | 协调者预设移除 `tool-fs-search` 整行（该包无按工具开关、`deny` 遮不到预设自有行）→ 只留 `read`；W1 由 `renderWorkerPolicy` 渲染、`index.js` 第二条 `systemPrompt.context`（order 131）按 `tasks.session_id` 注入，静态提示（详情/上报/交付/装依赖/context）只在此出现一次；brief 收到 2–3 行、persona 只剩身份 | `test/config.test.js`、`test/index.test.js`、`test/prompt-layers.test.js`、`test/brief.test.js`、`test/copy-consistency.test.js`、`test/worktree.test.js` |
 
 ## 7. 真机复核清单（装 profile + 彻底重启后逐条勾）
 

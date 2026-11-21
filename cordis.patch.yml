@@ -6,13 +6,13 @@
       config:
         id: dsh-orchestrator-coordinator
         name: 协调者
-        description: 协调与原生自动化管理：拆任务、派子会话、看回报、交付产物；可只读看文件（read/glob/grep），不写文件、不执行命令。
+        description: 协调与原生自动化管理：拆任务、派子会话、看回报、交付产物；可只读看单个文件（read），不搜索、不写文件、不执行命令。
         order: 80
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报，用 present 交付子会话产物；可以只读看文件（read/glob/grep）补事实，但不写文件、不执行命令。
+              prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报，用 present 交付子会话产物；可以只读看单个文件（read），但不搜索、不枚举目录，也不写文件、不执行命令。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
@@ -25,7 +25,11 @@
             name: '@deepseek-ai/dsh-tool-schedule'
           # B（0.26.0）：协调者只读工具面。tool-fs 只开 read —— write / edit / apply_patch / read_image
           # 全部关掉，协调者工具表里**没有写工具**；写仍由钉死的 read-only 权限预设（沙箱写全拒）兜底。
-          # glob / grep 由 tool-fs-search 提供（与 worker 预设同形，只是不采样超量结果）。
+          # t-4f7ce108：**不挂 tool-fs-search**。该包（@deepseek-ai/dsh-tool-fs-search）的 Config 只有
+          # sampleOverCapGlobResults 与各 max* 上限，glob/grep 在 apply() 里**无条件一起注册**，没有按工具
+          # 开关；而 preset-tools 的 deny 只作用于「已注册的全局工具」（restrict 遮不到预设自有行），
+          # 遮不住它。所以只能整行移除：协调者拿到 read，没有 glob/grep——否则主会话会自己搜索文件、
+          # 绕过派发自行调研（用户原话）。检索/枚举类工作走 task_create 派只读任务。
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
             config:
@@ -34,10 +38,6 @@
               write: false
               edit: false
               applyPatch: false
-          - id: tool-fs-search
-            name: '@deepseek-ai/dsh-tool-fs-search'
-            config:
-              sampleOverCapGlobResults: false
           # A（0.26.0）：grill-me 技能。注册模块读包内 skills/grill-me/SKILL.md，注册进**本预设作用域**
           # （只对协调者可见；worker 预设不挂这个模块，子会话看不到）。tool-skill 提供模型面 skill({name})
           # 与首个可用技能的目录 —— 两者都挂在本预设里，目录才会随会话注入。
@@ -128,12 +128,14 @@
           # 对应的「工具行」——子会话工具表里直接继承它们，preset-tools 只在下面做**点名遮挡**（不遮它们）。
           # plan_save 只在计划模式任务里被放行（普通任务/协调者调用都会被工具层拒绝）。
           # 只读的 get_goal 由下面的 tool-goal 行提供（web-app 关掉了 host plane 的同名行）。
-          # persona：子会话的静态行为期望（主动读上下文）写在这里，不靠协调者每条 brief 临时注入；
-          # 句子真源是 src/prompt-layers.js 的 WORKER_CONTEXT_HINT（test/prompt-layers.test.js 逐字校验）。
+          # persona：只留身份一句。任务执行者的静态提示（先读详情 / 执行中上报 / 交付回报 / 主动读 context /
+          # 装依赖授权）已迁到 W1 per-turn policy（src/copy.js 定义句子、src/prompt-layers.js 的
+          # renderWorkerPolicy 渲染、index.js 按 tasks.session_id 注册 ctx.systemPrompt.context）：
+          # 出生即带的东西现在每回合重渲染，「同一句只在一层出现」由 test/prompt-layers.test.js 锁住。
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: '你是 dsh-orchestrator 的任务执行者，在目标目录里把活干完，并用 task_report 回报。需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读）：查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入；写记忆只属协调者，要沉淀的结论写进 task_report 的 summary。'
+              prefix: 你是 dsh-orchestrator 的任务执行者，在目标目录里把活干完，并用 task_report 回报。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:

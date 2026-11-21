@@ -4,9 +4,8 @@
 // 不碰任务状态；经验文件只 stat 存在性，不读正文（子会话自己有 read 工具，读全文由它决定）。
 import { statSync } from 'node:fs'
 import { statusLabel } from './state.js'
-import { SUMMARY_FIELDS } from './brief.js'
 import { PLAN_FIRST_DETAIL, isPlanTask, planStateOf, PLAN_STATE_LABEL } from './plan-mode.js'
-import { ACCESS_FULL, finishHint } from './copy.js'
+import { ACCESS_FULL } from './copy.js'
 import { acceptanceDetailBlock, checksOf } from './acceptance.js'
 import { worktreeDetailLines, worktreeHasCap } from './worktree-request.js'
 
@@ -19,9 +18,8 @@ const READ_ONLY_HINT = '只读任务：读与回报正常，但不要写文件�
 // 完整访问（access:'full'）：沙箱不再限制写入，但任务边界还在——风险文案必须写清楚，别让它以为「哪都能改」。
 // 文案本身在 src/copy.js（brief / 工具回执 / 状态行同一句），这里只引用。
 const FULL_ACCESS_HINT = ACCESS_FULL.workerHint
-// 完成动作（L3 的独占职责）。交付口径与 brief 的 CONFIRM_HINT **同源**：
-// 都从 `SUMMARY_FIELDS` 拼出「改了什么、改了哪些文件、怎么验证的」，不再一处说「要点」、一处说「三问」。
-const FINISH_HINT = finishHint(SUMMARY_FIELDS)
+// 完成动作 / 交付口径**不在这里**（t-4f7ce108）：它们迁到 W1 任务执行者 policy（每回合注入一次），
+// 本层只给任务自己的东西（目标/验收/约束/目录与权限/隔离说明），同一句不在两层各写一份。
 
 const fileExists = value => {
   if (typeof value !== 'string' || value.trim() === '') return false
@@ -153,6 +151,5 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   if (experienceBlock !== '') lines.push(experienceBlock)
   const artifactLines = (Array.isArray(artifacts) ? artifacts : []).map(artifactLine).filter(Boolean)
   if (artifactLines.length > 0) lines.push(`【已有产物】\n${artifactLines.join('\n')}`)
-  lines.push(FINISH_HINT)
   return lines.join('\n')
 }

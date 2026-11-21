@@ -129,12 +129,10 @@ test('retry 的 brief 与 task_create 同口径：任务编号 + task_detail 指
   const row = db.prepare("SELECT rendered FROM messages WHERE task_id = ? AND kind = 'brief'").get(result.taskId)
   assert.ok(row !== undefined, '重派也要写 brief 消息')
   const lines = row.rendered.split('\n')
-  // T1：面板重派与 task_create 同口径——新任务编号 + task_detail 指引 + 执行中待确认 + 确认方式，不再内联目标。
-  assert.equal(lines.length, 4)
+  // t-4f7ce108：面板重派与 task_create 同口径——只剩新任务编号 + 详情指针（静态提示归 W1，不再内联目标）。
+  assert.equal(lines.length, 2)
   assert.equal(lines[0], `【任务编号】${result.taskId}`)
-  assert.match(lines[1], /task_detail/)
-  assert.match(lines[2], /^【执行中待确认】/)
-  assert.match(lines[3], /^【确认方式】/)
+  assert.match(lines[1], /^【任务详情】.*task_detail/)
   assert.equal(row.rendered.includes('把目标写得很长把目标写得很长'), false)
   assert.equal(row.rendered.includes('【目标】'), false)
   db.close()

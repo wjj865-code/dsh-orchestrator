@@ -1622,7 +1622,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }),
 
     // 受控读（协调者读产物）：平台的文件工具没有读路径白名单（沙箱只管写、cwd 不是边界、
-    // glob 直接 ripgrep 全树枚举），所以不开放原生 read/glob，而是自建一条边界由插件算的入口。
+    // glob 直接 ripgrep 全树枚举），所以产物侧自建一条边界由插件算的入口；协调者预设的原生工具
+    // 只剩 read（t-4f7ce108 起 glob/grep 不挂），也仍是全盘可读、没有产物边界。
     // 边界 = **主会话工作区包含性 OR 已登记产物**（审计 §2.1 方案 C）：子会话按契约把产物写在
     // target 目录内，而 target 通常不在工作区里；把台账 artifacts 当第二判据，读取面仍然只有
     // 「工作区 + 已登记集合」，不必为看一眼产物新派任务，也不把整个 target 仓库暴露出来。

@@ -36,137 +36,32 @@ test('类型容错：非数组按空处理，数组里的非法项被过滤', ()
   assert.deepEqual(validateBrief({ title: 't', goal: 'g', acceptance: ['a'], constraints: 'x' }), [])
 })
 
-// ---- T1 brief 纯指引化 ---------------------------------------------------------
+// ---- t-4f7ce108：brief 只留一次性参数（任务编号 / 访问级别 / 一行详情指针） ----------------
+// 静态提示（执行中上报 / 交付回报 / worktree 装依赖 / 主动读 context）迁到 W1 每回合注入，
+// 这一组锁「brief 不再内联静态句」，W1 的措辞在 test/worker-policy.test.js 锁。
 
-test('renderBrief 输出任务编号 + 指引 + 执行中待确认 + 确认方式四行', () => {
+test('renderBrief 只输出任务编号 + 详情指针两行', () => {
   const text = renderBrief({ taskId: 't-1a2b3c4d' })
   assert.deepEqual(text.split('\n'), [
     '【任务编号】t-1a2b3c4d',
     `【任务详情】${DETAIL_POINTER_TEXT}`,
-    `【执行中待确认】${BLOCKED_HINT}`,
-    `【确认方式】${CONFIRM_HINT}`,
   ])
 })
 
-// ---- 提示三：执行中待确认事项用 blocked 上报，由主会话问用户 ----------------------
-
-test('执行中待确认提示：用 task_report blocked 上报「问题 + 选项建议」', () => {
-  const text = renderBrief({ taskId: 't-1' })
-  assert.match(text, /【执行中待确认】/)
-  assert.match(BLOCKED_HINT, /执行中/)
-  assert.match(BLOCKED_HINT, /task_report/)
-  assert.match(BLOCKED_HINT, /blocked/)
-  assert.match(BLOCKED_HINT, /问题 \+ 选项建议/)
-  // 0.26.0：执行期只报堵塞项（四类口径引用 copy.js 的 BLOCKER_RULE），不再按「业务取舍/方案歧义」泛问——
-  // 那两类属于开工前的 T2/T3 意图确认，归协调者；子会话在执行期只把「继续做就是错」的事交回来。
-  assert.ok(BLOCKED_HINT.includes(BLOCKER_RULE), '堵塞项四类必须逐字引用 copy.js 的 BLOCKER_RULE')
-  for (const kind of ['不可逆', '远端写', 'blocked', '工具面外']) {
-    assert.equal(BLOCKER_RULE.includes(kind), true, `堵塞项口径应提到 ${kind}`)
+test('brief 不带任何静态提示（这些句子归 W1 per-turn policy）', () => {
+  const text = renderBrief({ taskId: 't-1', access: 'full' })
+  for (const staticHint of [BLOCKED_HINT, CONFIRM_HINT, WORKTREE_INSTALL_HINT, SUMMARY_FIELDS, BLOCKER_RULE]) {
+    assert.equal(text.includes(staticHint), false, `brief 不应内联 W1 的静态句：${staticHint.slice(0, 20)}…`)
   }
-  assert.match(BLOCKED_HINT, /执行中只把\*\*堵塞项\*\*交给用户拍板/)
-})
-
-test('执行中待确认提示：由主会话 ask_user_question 确认后 task_message 续派', () => {
-  assert.match(BLOCKED_HINT, /协调者用 ask_user_question 向用户确认/)
-  assert.match(BLOCKED_HINT, /task_message 续派/)
-  // 三种不许：不自行假设、不阻塞等待、不等不到就跳过。
-  assert.match(BLOCKED_HINT, /不要自行假设用户意图/)
-  assert.match(BLOCKED_HINT, /不要阻塞等待/)
-  assert.match(BLOCKED_HINT, /不要等不到回复就跳过/)
-})
-
-test('执行中待确认提示：blocked 只是上报，不等于已获授权（不绕过双审查）', () => {
-  assert.match(BLOCKED_HINT, /blocked 只是上报，不等于已获授权/)
-  // 三段提示都不得给「免审查 / 免确认 / 跳过门禁」的口子。
-  for (const hint of [BLOCKED_HINT, CONFIRM_HINT, WORKTREE_INSTALL_HINT]) {
-    assert.doesNotMatch(hint, /跳过(?:推送前)?(?:双)?审查|免审查|无需审查|不用审查|免确认/)
+  for (const section of ['【执行中待确认】', '【确认方式】', '【worktree 依赖】']) {
+    assert.equal(text.includes(section), false, `brief 不应出现 ${section}`)
   }
 })
 
-test('执行中待确认提示对所有任务都出现（一开始就要能看到，不是只在交付环节）', () => {
-  for (const options of [{ taskId: 't-1' }, { taskId: 't-1', access: 'full' }, { taskId: 't-1', worktreeState: 'created' }]) {
-    assert.equal(renderBrief(options).includes(`【执行中待确认】${BLOCKED_HINT}`), true, JSON.stringify(options))
-  }
-  // 没有任务编号（队列兜底/旧数据）时也带。
-  assert.equal(renderBrief().includes(`【执行中待确认】${BLOCKED_HINT}`), true)
-  // 且排在【确认方式】之前：执行期提示先于交付期提示。
-  const lines = renderBrief({ taskId: 't-1' }).split('\n')
-  assert.equal(lines.findIndex(line => line.startsWith('【执行中待确认】')) < lines.findIndex(line => line.startsWith('【确认方式】')), true)
-})
-
-// ---- 提示一：交付口径（summary 三问 + 待确认要点，不催关闭） -----------------------
-
-test('确认方式提示：交付时给结构化摘要，不只在正文里问', () => {
-  const text = renderBrief({ taskId: 't-1' })
-  assert.match(text, /【确认方式】/)
-  assert.match(CONFIRM_HINT, /报 done/)
-  // 交付阶段走 summary（done 会清空 question/options，这条是平台事实，必须写明）。
-  assert.match(CONFIRM_HINT, /待确认要点/)
-  assert.match(CONFIRM_HINT, /summary/)
-  assert.match(CONFIRM_HINT, /done 会清空 question\/options/)
-  // 交付口径与 task_detail 的 FINISH_HINT 同源（审计 §5.1.2 矛盾 2）：都从 SUMMARY_FIELDS 拼出。
-  assert.ok(CONFIRM_HINT.includes(SUMMARY_FIELDS), 'brief 与 task_detail 的三问要素必须逐字一致')
-  // 0.22.1：协调者不再追问「确认 / 要改？」，子会话要知道交付后不会被催确认。
-  assert.doesNotMatch(CONFIRM_HINT, /确认 \/ 要改？/)
-  assert.match(CONFIRM_HINT, /不会为「能不能关闭」来问你/)
-  assert.match(CONFIRM_HINT, /等超时自动完成/)
-  // 措辞不能顺手放宽推送前双审查或人工确认门禁。
-  assert.doesNotMatch(CONFIRM_HINT, /跳过|免确认|不用审查|无需审查/)
-})
-
-test('确认方式提示不指挥子会话去调 ask_user_question（平台会以 DELEGATED_CALLER 拒绝）', () => {
-  // 子会话是 subagent 来源，ask_user_question 的 assertLiveRoot 会直接抛 DELEGATED_CALLER
-  // （本会话已实测：子会话调用返回 "human interaction is unavailable while the calling agent is
-  // owned by another live agent"）。提示必须点明边界并把「问用户」指回协调者，
-  // 否则每个子会话每轮都会撞一次墙。
-  assert.match(CONFIRM_HINT, /DELEGATED_CALLER/)
-  assert.match(CONFIRM_HINT, /子会话直接调 ask_user_question 会被平台拒/)
-  // 问用户仍只由协调者做（这里说清「不会有人来问你确认」即可，不必再教协调者怎么问）。
-  assert.match(CONFIRM_HINT, /协调者/)
-})
-
-test('确认方式提示对所有任务都出现（交付待确认是每个任务的出口）', () => {
-  for (const options of [{ taskId: 't-1' }, { taskId: 't-1', access: 'full' }, { taskId: 't-1', worktreeState: 'created' }]) {
-    assert.equal(renderBrief(options).includes(`【确认方式】${CONFIRM_HINT}`), true, JSON.stringify(options))
-  }
-  // 没有任务编号（队列兜底/旧数据）时也照样带确认方式。
-  assert.equal(renderBrief().includes(`【确认方式】${CONFIRM_HINT}`), true)
-})
-
-// ---- 提示二：worktree 任务可安装依赖（只装不升） --------------------------------
-
-test('worktree 任务：brief 带装依赖提示（只安装不升级）', () => {
-  for (const worktreeState of ['requested', 'created', 'reused']) {
-    const text = renderBrief({ taskId: 't-1', worktreeState })
-    assert.equal(text.includes(`【worktree 依赖】${WORKTREE_INSTALL_HINT}`), true, worktreeState)
-  }
-  assert.match(WORKTREE_INSTALL_HINT, /worktree/)
-  assert.match(WORKTREE_INSTALL_HINT, /pnpm install/)
-  assert.match(WORKTREE_INSTALL_HINT, /npm install/)
-  assert.match(WORKTREE_INSTALL_HINT, /uv sync/)
-  assert.match(WORKTREE_INSTALL_HINT, /只安装不升级/)
-  // 只给装依赖授权，不改依赖声明/版本，也不碰门禁。
-  assert.match(WORKTREE_INSTALL_HINT, /不改依赖声明与版本/)
-  assert.doesNotMatch(WORKTREE_INSTALL_HINT, /跳过|免确认|无需审查/)
-})
-
-test('普通任务不出现 worktree 装依赖提示（未隔离/降级/被拒都没有检出）', () => {
-  for (const worktreeState of [undefined, 'none', 'degraded', 'rejected', 'failed', 'cleaned']) {
-    const text = renderBrief({ taskId: 't-1', worktreeState })
-    assert.equal(text.includes('【worktree 依赖】'), false, String(worktreeState))
-    assert.equal(text.includes(WORKTREE_INSTALL_HINT), false, String(worktreeState))
-  }
-  // 传了非布尔/非状态值时也不误触发。
-  assert.equal(renderBrief({ taskId: 't-1', worktreeState: true }).includes('【worktree 依赖】'), false)
-  assert.equal(renderBrief({ taskId: 't-1', worktreeState: 'created ' }).includes('【worktree 依赖】'), false)
-})
-
-test('指引里点名 task_detail 与要读的字段', () => {
-  for (const word of ['task_detail', 'task_id', '目标全文', '验收标准', '背景资料', '工作目录', '前置任务', '经验文件', '产物']) {
-    assert.equal(DETAIL_POINTER_TEXT.includes(word), true, `指引应提到 ${word}`)
-  }
-  // 明确告诉模型「本行不是任务内容」，避免拿指引当目标猜。
-  assert.match(DETAIL_POINTER_TEXT, /不要凭它猜任务内容/)
+test('指引里点名 task_detail 与 task_id（字段清单归 W1）', () => {
+  assert.match(DETAIL_POINTER_TEXT, /task_detail/)
+  assert.match(DETAIL_POINTER_TEXT, /task_id/)
+  assert.equal(DETAIL_POINTER_TEXT.includes('目标全文'), false, '字段清单在 W1 的 WORKER_DETAIL_HINT 里')
 })
 
 test('brief 不再内联目标/验收/约束/背景/原话/工作目录（详情都在 task_detail）', () => {
@@ -179,9 +74,9 @@ test('brief 不再内联目标/验收/约束/背景/原话/工作目录（详情
   assert.equal(text.includes(valid.acceptance[0]), false)
 })
 
-test('没有任务编号时只输出指引与确认方式，不出现空编号行', () => {
+test('没有任务编号时只有详情指针，不出现空编号行', () => {
   const text = renderBrief()
-  assert.equal(text, `【任务详情】${DETAIL_POINTER_TEXT}\n【执行中待确认】${BLOCKED_HINT}\n【确认方式】${CONFIRM_HINT}`)
+  assert.equal(text, `【任务详情】${DETAIL_POINTER_TEXT}`)
   assert.equal(text.includes('【任务编号】'), false)
   assert.equal(renderBrief({}).includes('【任务编号】'), false)
   assert.equal(renderBrief({ taskId: '   ' }).includes('【任务编号】'), false)
@@ -204,11 +99,10 @@ test('渲染是纯函数：同一输入两次输出相同，且不是 JSON', () 
 test('完整访问任务：任务编号后多一行【访问级别】，其余行不变', () => {
   const text = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
   const lines = text.split('\n')
+  assert.equal(lines.length, 3)
   assert.equal(lines[0], '【任务编号】t-1a2b3c4d')
   assert.match(lines[1], /^【访问级别】完整（danger-full-access/)
   assert.equal(lines[2], `【任务详情】${DETAIL_POINTER_TEXT}`)
-  assert.equal(lines[3], `【执行中待确认】${BLOCKED_HINT}`)
-  assert.equal(lines[4], `【确认方式】${CONFIRM_HINT}`)
   // 默认任务一字不提。
   assert.equal(renderBrief({ taskId: 't-1' }).includes('访问级别'), false)
   assert.equal(renderBrief({ taskId: 't-1', access: 'read-only' }).includes('访问级别'), false)
@@ -226,17 +120,14 @@ test('validateTargetDir：相对路径/不存在/非目录都拒绝', () => {
 
 // ---- 台账行 → brief 的单点映射（四个入口共用） --------------------------------
 
-test('renderBriefForTask：从台账行取 access / worktree_state，四个入口不各写一份', () => {
+test('renderBriefForTask：只从台账行取 access，worktree_state 不再进 brief', () => {
   const task = { id: 't-1a2b3c4d', access: 'full', worktree_state: 'created' }
-  assert.equal(renderBriefForTask(task), renderBrief({
-    taskId: 't-1a2b3c4d', access: 'full', worktreeState: 'created',
-  }))
-  // 默认任务：不传 access、worktree_state=none → 无访问级别、无装依赖提示。
+  assert.equal(renderBriefForTask(task), renderBrief({ taskId: 't-1a2b3c4d', access: 'full' }))
+  // 隔离任务的 worktree_state 不影响 brief：装依赖提示由 W1 按同一字段条件渲染。
+  assert.equal(renderBriefForTask(task), renderBriefForTask({ id: 't-1a2b3c4d', access: 'full', worktree_state: 'none' }))
+  // 默认任务：不传 access → 无访问级别。
   const plain = renderBriefForTask({ id: 't-1', access: null, worktree_state: 'none' })
   assert.equal(plain.includes('【访问级别】'), false)
-  assert.equal(plain.includes('【worktree 依赖】'), false)
-  // 降级任务也不给装依赖提示。
-  assert.equal(renderBriefForTask({ id: 't-1', worktree_state: 'degraded' }).includes('【worktree 依赖】'), false)
   // 空行/null 都不炸（台账行理论上不会是 null，但渲染不该因此抛错）。
   assert.equal(renderBriefForTask().includes('【任务编号】'), false)
   assert.equal(renderBriefForTask(null).includes('【任务编号】'), false)

@@ -12,6 +12,8 @@ import {
   checkoutPathFor, classifyGitFailure, cleanupTaskWorktree, createWorktreeService, prepareTaskWorktree,
   retryWorktreeOf, targetInCheckout, targetOffset,
 } from '../src/worktree.js'
+import { WORKTREE_INSTALL_HINT } from '../src/copy.js'
+import { renderWorkerPolicy } from '../src/prompt-layers.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 const NOW = 1_700_000_000_000
@@ -459,28 +461,31 @@ test('P9 task_create：worktree:true 建分支 + 检出，spawn cwd 是检出目
   db.close()
 })
 
-test('P9 brief：隔离任务的 brief 带「可装依赖、只装不升」提示，普通任务不带', async () => {
+test('P9 brief：brief 只留一次性参数；装依赖提示改由 W1 按 worktree_state 条件渲染', async () => {
   const repoRoot = tempDir()
   const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot, n: 1, suggestedBase: 'main' }) })
   const briefOf = taskId => recentMessages(db, taskId, 1)[0].rendered
 
-  // 隔离任务（worktree_state=created）→ 有装依赖提示。
+  // 隔离任务（worktree_state=created）→ brief 不再内联装依赖提示（t-4f7ce108 归 W1 per-turn policy）。
   await call(tools, 'task_create', sampleBrief({ title: '隔离装依赖', goal: 'g', target: repoRoot, worktree: true }), {})
   const isolated = listTasks(db, { active: true }).find(task => task.title === '隔离装依赖')
   assert.equal(isolated.worktree_state, 'created')
   const isolatedBrief = briefOf(isolated.id)
-  assert.match(isolatedBrief, /【worktree 依赖】/)
-  assert.match(isolatedBrief, /pnpm install/)
-  assert.match(isolatedBrief, /只安装不升级/)
-  // 确认方式提示对所有任务都在（交付待确认场景）。
-  assert.match(isolatedBrief, /【确认方式】/)
+  assert.doesNotMatch(isolatedBrief, /【worktree 依赖】/)
+  assert.doesNotMatch(isolatedBrief, /pnpm install/)
+  assert.equal(isolatedBrief.includes(WORKTREE_INSTALL_HINT), false)
+  assert.match(isolatedBrief, /【任务详情】/)
+  // W1 的渲染按同一台账字段给授权（每回合注入，不靠 brief）。
+  const policy = renderWorkerPolicy({ worktreeState: isolated.worktree_state })
+  assert.match(policy, /pnpm install/)
+  assert.match(policy, /只安装不升级/)
 
-  // 普通任务（worktree_state=none）→ 没有装依赖提示。
+  // 普通任务（worktree_state=none）→ W1 不给装依赖授权。
   await call(tools, 'task_create', sampleBrief({ title: '普通任务', goal: 'g', target: repoRoot }), {})
   const plain = listTasks(db, { active: true }).find(task => task.title === '普通任务')
   assert.equal(plain.worktree_state, 'none')
   assert.equal(briefOf(plain.id).includes('【worktree 依赖】'), false)
-  assert.match(briefOf(plain.id), /【确认方式】/)
+  assert.equal(renderWorkerPolicy({ worktreeState: plain.worktree_state }).includes(WORKTREE_INSTALL_HINT), false)
   db.close()
 })
 
@@ -491,10 +496,11 @@ test('P9 brief：隔离降级（不是 git 仓库）不给装依赖提示——�
   const [task] = listTasks(db, { active: true })
   assert.equal(task.worktree_state, 'degraded')
   assert.equal(recentMessages(db, task.id, 1)[0].rendered.includes('【worktree 依赖】'), false)
+  assert.equal(renderWorkerPolicy({ worktreeState: task.worktree_state }).includes(WORKTREE_INSTALL_HINT), false)
   db.close()
 })
 
-test('P9 brief：重派隔离任务时重渲染的 brief 也带装依赖提示（复用检出）', async () => {
+test('P9 brief：重派隔离任务时 brief 仍是纯参数（装依赖归 W1，按重派后的 state 渲染）', async () => {
   const repoRoot = tempDir()
   const checkout = checkoutPathFor(repoRoot, 't-old')
   const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot }) })
@@ -510,8 +516,9 @@ test('P9 brief：重派隔离任务时重渲染的 brief 也带装依赖提示�
   // 检出目录已不在 → 按原基线重建（requested → 派发后 created），仍是隔离任务。
   assert.ok(['requested', 'created', 'reused'].includes(retried.worktree_state), retried.worktree_state)
   const rendered = recentMessages(db, retried.id, 1)[0].rendered
-  assert.match(rendered, /【worktree 依赖】/)
-  assert.match(rendered, /【确认方式】/)
+  assert.doesNotMatch(rendered, /【worktree 依赖】/)
+  assert.match(rendered, /【任务详情】/)
+  assert.match(renderWorkerPolicy({ worktreeState: retried.worktree_state }), /pnpm install/)
   db.close()
 })
 

@@ -3,8 +3,8 @@
 // 为什么必须自建：平台的文件工具没有读路径白名单——`dsh-fs-sandbox` 只给写操作加栅栏
 // （"Reads pass through untouched: every mode permits reading."），`LocalFileSystem` 的 cwd
 // 只是相对路径基准、不是包含性边界（"a resolution default, NOT a containment boundary"），
-// `glob` 更是直接 spawn ripgrep 用 `--no-ignore --hidden` 全树枚举。所以给协调者开放原生
-// read/glob 等于给主会话一个全盘可读可枚举的宿主进程读者（含 `~/.dsh/.credentials.yaml`）。
+// `glob` 更是直接 spawn ripgrep 用 `--no-ignore --hidden` 全树枚举。所以协调者的原生工具只留
+// read（t-4f7ce108 起 glob/grep 连预设行一起去掉），产物这一侧仍用本模块的受控读收窄边界。
 // 本模块把「读」收窄成一条：调用方只能给路径，边界由插件算。
 //
 // 为什么边界有第二个判据（审计 §2.1 方案 C）：子会话的产物**按契约写在 target 目录内**

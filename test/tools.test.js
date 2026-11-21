@@ -1292,14 +1292,15 @@ test('T1 brief 纯指引：目标与经验都不进提示词，详情在 task_de
   await call(tools, 'task_create', { ...sampleBrief({ title: '修复登录模块', goal: longGoal }), target })
   const task = listTasks(db).find(item => item.title === '修复登录模块')
   const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
-  // 提示词只有编号 + 指引 + 执行中待确认 + 确认方式四行（非 worktree 任务不带装依赖提示）。
+  // t-4f7ce108：提示词只剩编号 + 详情指针两行；静态提示（上报/交付/装依赖）归 W1 每回合注入。
   const promptLines = prompt.split('\n')
-  assert.equal(promptLines.length, 4)
+  assert.equal(promptLines.length, 2)
   assert.equal(promptLines[0], `【任务编号】${task.id}`)
   assert.match(prompt, /task_detail/)
-  assert.match(promptLines[2], /^【执行中待确认】/)
-  assert.match(promptLines[3], /^【确认方式】/)
+  assert.match(promptLines[1], /^【任务详情】/)
   assert.equal(prompt.includes('【worktree 依赖】'), false)
+  assert.equal(prompt.includes('【执行中待确认】'), false)
+  assert.equal(prompt.includes('【确认方式】'), false)
   assert.equal(prompt.includes(longGoal.slice(0, 20)), false)
   assert.equal(prompt.includes('session cookie'), false)
   for (const section of ['【目标】', '【目标兜底】', '【历史经验】', '【验收标准】', 'get_goal']) {

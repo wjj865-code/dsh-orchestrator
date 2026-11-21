@@ -73,7 +73,7 @@
 ## 主会话与工具面
 
 - `spawn_teammate`/`send_message`/`list_agents`/`interrupt_agent`/`wait_agent`/`team_task_*` 是 **agent scope 自注册**的团队工具，`restrict` 遮不到；执行层 `guard` 硬拦协调者，但工具表里仍可能看到残留。
-- **协调者的 deny 名单只剩「编排正确性」**（0.26.0）：`read`/`glob`/`grep`/`skill` 已放开（工具由预设行自己挂），`write`/`edit`/`bash`/`pwsh` 不挂；`task_report`/`task_detail`/`plan_save` 改由预设 `preset-tools` 的 `deny` 遮掉（工具表里看不到），执行层仍按任务归属拒绝越权调用。只读工具的读取面风险见「协调者读文件」。
+- **协调者的 deny 名单只剩「编排正确性」**（0.26.0）：`read`/`skill` 由预设行自己挂（t-4f7ce108 起协调者的原生只读工具只剩 `read`，`glob`/`grep` 已随 `tool-fs-search` 行移除），`write`/`edit`/`bash`/`pwsh` 不挂；`task_report`/`task_detail`/`plan_save` 改由预设 `preset-tools` 的 `deny` 遮掉（工具表里看不到），执行层仍按任务归属拒绝越权调用。只读工具的读取面风险见「协调者读文件」。
 - `config.coordinatorSession` 覆盖的会话没有预设保证，运行期 `restrict` 挂在回合边界：绑定当回合仍是全工具表，下一回合才收窄。同一回合并行发出、且在 guard 判定前就开始执行的 `wait_agent` 不承诺拦住。
 - `run_code` / PTC：平台禁止 `restrict` 指名 PTC 保留传输 `run_code`；profile 配了 PTC executor 时协调者可能经它间接调用被 deny 的工具（desktop 默认没有）。
 - **`workerPreset` 只在派发时生效**：续派/冷恢复沿用会话创建时的 `agentPreset`，改配置不切换已有子会话；值非法时静默回落 `dsh-orchestrator-worker`（日志一行 warn）。
@@ -130,9 +130,10 @@
 - **IM 外发风险**：profile 开了 IM 双向同步时，读进上下文的正文可能随「最终助手文字」同步到外部且**不可撤回**；涉密产物不要读进主会话——这是本能力最主要的残余风险，不是可配置项。
 - **不用于校验存在性**：存在性仍由插件（通知路径已 `lstat`）与子任务保证。
 
-## 协调者读文件（read / glob / grep）
+## 协调者读文件（read）
 
-- **读取面是整台机器**：0.26.0 起协调者预设挂 `tool-fs`（只开 `read`）与 `tool-fs-search`（`glob`/`grep`），它们没有产物边界——`read_workspace` 的「工作区 ∪ 已登记产物」约束只属于 `read_workspace`。能读到 `~/.dsh/.credentials.yaml`、`.env`、SSH key、token 文件等；插件**只靠提示词**要求「不读凭据、不转述」，没有路径黑名单、没有执行层拦截。
+- **读取面是整台机器**：协调者预设挂 `tool-fs`（只开 `read`），它没有产物边界——`read_workspace` 的「工作区 ∪ 已登记产物」约束只属于 `read_workspace`。能读到 `~/.dsh/.credentials.yaml`、`.env`、SSH key、token 文件等；插件**只靠提示词**要求「不读凭据、不转述」，没有路径黑名单、没有执行层拦截。
+- **没有 `glob`/`grep`（t-4f7ce108 起）**：0.26.0 曾挂 `tool-fs-search`；该包没有「只关 grep」的开关（`Config` 只有采样与上限字段，`glob`/`grep` 在 `apply()` 里无条件一起注册），`preset-tools` 的 `deny` 只作用于已注册的全局工具、遮不到预设自有行，所以整行移除。副作用是**协调者不能自己检索/枚举目录**：需要跨文件找证据、批量 grep 或列目录时，只能派一条只读任务（`readOnly:true`）让子会话把结果带回来——这是有意的取舍（搜索会让主会话绕过派发自行调研），代价是多一次派发往返。
 - **IM / 外发风险叠加**：读进上下文的正文可能随「最终助手文字」同步到外部且不可撤回（与 `read_workspace` 同一条风险）。涉密文件不要读进主会话。
 - **写仍然没有工具**：`tool-fs` 的 `write` / `edit` / `applyPatch` / `readImage` 全部关掉，`bash` / `pwsh` 也没挂；写路径只由钉死的 `read-only` 权限预设（沙箱写全拒）兜底，两处都**不是**「审批门禁」。
 - **`working_directory` 不给协调者**：这个宿主全局工具改的是会话 cwd，而协调者 cwd 是指挥锚（子会话未给 `target` 时继承它、工作区/写域判定与记忆项目键推断都以它为准）。它被预设 `preset-tools` 的 `deny` 与 `COORDINATOR_DENY` 两处遮掉，工具表里看不到、硬调被拒。所以**协调者不能切目录**：相对路径读文件会落在主会话默认 cwd（`<state>/workspace`）下，跨目录一律写绝对路径；真要换目录属于用户/子任务侧的事（`task_create` 的 `target` 决定子会话 cwd）。

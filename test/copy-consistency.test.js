@@ -10,7 +10,7 @@ import { renderCoordinatorPolicy } from '../index.js'
 import { renderBrief } from '../src/brief.js'
 import { renderTaskDetail } from '../src/task-detail.js'
 import { DELIVERED_HINT, PRESENT_HINT } from '../src/notify.js'
-import { DELIVERY_NOT_FINAL } from '../src/prompt-layers.js'
+import { DELIVERY_NOT_FINAL, renderWorkerPolicy } from '../src/prompt-layers.js'
 import {
   EXIT_PLAN_MODE_DENIAL, PLAN_FIRST_DETAIL, PLAN_PHASE_LINES, PLAN_STATE_LABEL, PLAN_STATUS_LINES,
 } from '../src/plan-mode.js'
@@ -102,13 +102,14 @@ test('协调者 policy：需要拍板必须用 ask_user_question 结构化提问
   assertNoConflicts('COORDINATOR_POLICY', policy)
 })
 
-test('协调者 policy：交互三闸门与 brief 同源，T1 不免确认、追加调整先评估', () => {
+test('协调者 policy：交互三闸门与 W1 同源，T1 不免确认、追加调整先评估', () => {
   const policy = renderCoordinatorPolicy({})
   assert.ok(policy.includes('## 交互三闸门'), 'L1 缺少交互三闸门段落')
-  // 四类堵塞项与评估要素都只从 copy.js 取（brief / task_message 描述共用同一句）。
+  // 四类堵塞项与评估要素都只从 copy.js 取（W1 policy / task_message 描述共用同一句）。
   assert.ok(policy.includes(BLOCKER_RULE))
   assert.ok(policy.includes(CHANGE_REVIEW_FIELDS))
-  assert.ok(renderBrief({ taskId: 't-1a2b3c4d' }).includes(BLOCKER_RULE), 'brief 的【执行中待确认】与 L1 的堵塞项不同源')
+  assert.ok(renderWorkerPolicy().includes(BLOCKER_RULE), 'W1 的执行期上报与 L1 的堵塞项不同源')
+  assert.equal(renderBrief({ taskId: 't-1a2b3c4d' }).includes(BLOCKER_RULE), false, 'brief 不再内联堵塞项口径（归 W1）')
   // 判级不是免确认：T1 不提问，但不可逆最低 T2、必须拍板（正向断言保留，别被反向断言挤掉）。
   assert.match(policy, /T1 不是「不问就干」/)
   assert.match(policy, /不可逆仍必须拍板/)
@@ -181,17 +182,20 @@ test('协调者 policy：主动提问与「默认保持待确认、不主动关�
   assertNoConflicts('COORDINATOR_POLICY', policy)
 })
 
-test('task_detail 对子会话讲清：done 只是交付，不是任务结束', () => {
+test('W1 对子会话讲清：done 只是交付，不是任务结束（task_detail 不再重复）', () => {
+  const w1 = renderWorkerPolicy()
+  assert.match(w1, /报 done 只是「交付」/)
+  assert.match(w1, /已交付待确认/)
+  assert.match(w1, /不要自行宣告任务结束/)
+  assertNoConflicts('W1', w1)
+  // task_detail 只给任务详情：交付口径只在 W1 一份（t-4f7ce108）。
   const detail = renderTaskDetail({
     id: 't-1',
     title: '示例',
     status: 'running',
     brief: { title: '示例', goal: '目标', acceptance: ['验收'] },
   })
-  assert.match(detail, /报 done 只是「交付」/)
-  assert.match(detail, /已交付待确认/)
-  assert.match(detail, /不要自行宣告任务结束/)
-  assertNoConflicts('task_detail', detail)
+  assert.equal(detail.includes('报 done 只是「交付」'), false, 'task_detail 不许再重复 W1 的交付口径')
 })
 
 test('交付通知口径：默认保持待确认、要改走追问；不再以「确认」开头催关闭', () => {
@@ -337,11 +341,14 @@ test('计划文案只有一处真源：详情 / 创建回执 / 工具描述 / �
   assert.ok(policy.includes('plan_save'))
 })
 
-test('交付文案只有一处真源：brief / 详情 / 通知 / 分层常量引用同一批原子句', () => {
+test('交付文案只有一处真源：W1 / 通知 / 分层常量引用同一批原子句', () => {
+  const w1 = renderWorkerPolicy()
+  // W1 与通知的「交付不是结束」都从 copy.js 来（不是各写一句相似的）。
+  assert.ok(w1.includes(DELIVERY_LINES.state))
+  assert.ok(w1.includes(DELIVERY_LINES.timeout))
+  // task_detail 不再重复交付口径（t-4f7ce108：完成动作归 W1）。
   const detail = renderTaskDetail({ id: 't-1', title: '示例', status: 'running', brief: { title: '示例', goal: '目标', acceptance: ['验收'] } })
-  // 详情与通知的「交付不是结束」都从 copy.js 来（不是各写一句相似的）。
-  assert.ok(detail.includes(DELIVERY_LINES.state))
-  assert.ok(detail.includes(DELIVERY_LINES.timeout))
+  assert.equal(detail.includes(DELIVERY_LINES.state), false, 'task_detail 不再重复两段式终态口径')
   assert.equal(DELIVERY_NOT_FINAL, DELIVERY_NOT_FINAL_COPY)
   assert.ok(DELIVERY_NOT_FINAL.includes(DELIVERY_LINES.notFinal))
   assert.ok(DELIVERED_HINT.includes(DELIVERY_LINES.followupRule))

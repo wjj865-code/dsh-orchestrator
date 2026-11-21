@@ -11,7 +11,7 @@
 
 1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.28.0`。
 2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）：宿主侧代码在 DSH 进程启动时加载，**刷新页面不会换版本**，装完还是旧行为就是没重启。
-3. 自检：插件页有「任务编排」与详情页；侧栏「插件」下方有「◈ 主会话」；插件全局 **10 个工具**（协调者能用其中 7 个；子会话 4：`task_report` / `task_detail` / `plan_save` / 只读的 `context`），协调者另外挂宿主原生的只读工具 `read` / `glob` / `grep` 与技能加载器 `skill`；派一条任务回报后主会话收到「已交付待确认」，`task_message({action:'close'})` 能收成「已完成」。
+3. 自检：插件页有「任务编排」与详情页；侧栏「插件」下方有「◈ 主会话」；插件全局 **10 个工具**（协调者能用其中 7 个；子会话 4：`task_report` / `task_detail` / `plan_save` / 只读的 `context`），协调者另外挂宿主原生的只读工具 `read`（**没有** `glob`/`grep`）与技能加载器 `skill`；派一条任务回报后主会话收到「已交付待确认」，`task_message({action:'close'})` 能收成「已完成」。
 4. 升级 = 装新版 + 彻底重启。registry 包用插件页的更新入口；从 GitHub 装（`https://github.com/wjj865-code/dsh-orchestrator`）的先卸载旧版。旧包名 `dsh-orchestrator` 与新版不兼容，先移除。
 5. `npm i @latest` 装到旧版 = 镜像还没同步（几十分钟到几小时）：过一会儿重装，或直接用上面的显式版本号。
 
@@ -21,9 +21,9 @@
 
 ### 1. 打开主会话
 
-侧栏「◈ 主会话」或面板「打开主会话」。协调者预设只做协调：**没有** `write`/`edit`/`bash`/`pwsh`，也不阻塞等待子任务；但可以**只读看文件**——原生 `read` / `glob` / `grep`（0.26.0 起挂上，用来核对子会话的改动、读 target 与技能文件）加上受控的 `read_workspace`（边界 = 主会话工作区 ∪ 任务登记过的产物）。宿主导航工具 `working_directory` **不在**协调者工具表里（协调者 cwd 是指挥锚：子会话默认继承目录、记忆项目键都以它为准；看文件直接用绝对路径即可）。看产物正文、交付产物仍走 `read_workspace` 与 `present`。新建主会话会自动介绍能力并派一个只读「工作区与仓库索引」任务，细节见 [ARCHITECTURE](docs/ARCHITECTURE.md#首次打开与工作区索引)。
+侧栏「◈ 主会话」或面板「打开主会话」。协调者预设只做协调：**没有** `write`/`edit`/`bash`/`pwsh`，也不阻塞等待子任务；但可以**只读看单个文件**——原生 `read` 加上受控的 `read_workspace`（边界 = 主会话工作区 ∪ 任务登记过的产物）。**没有 `glob`/`grep`**（0.26.0 曾挂上，现已移除：主会话一有搜索就会自行调研、绕过派发；检索/枚举类工作派一条只读任务）。宿主导航工具 `working_directory` **不在**协调者工具表里（协调者 cwd 是指挥锚：子会话默认继承目录、记忆项目键都以它为准；看文件直接用绝对路径即可）。看产物正文、交付产物仍走 `read_workspace` 与 `present`。新建主会话会自动介绍能力并派一个只读「工作区与仓库索引」任务，细节见 [ARCHITECTURE](docs/ARCHITECTURE.md#首次打开与工作区索引)。
 
-**权限徽标**：协调者会话的权限预设会被显式钉成宿主的 **`read-only`**（沙箱只读 + 审批 ask），输入区徽标显示「Read Only / 仅可查看」——与「协调者只读」的实际工具面一致（读有 `read`/`glob`/`grep`/`read_workspace`，写没有任何工具，沙箱也一律拒写；0.25.1 起钉、0.26.0 起工具面与之一致）。普通任务子会话仍是 `workspace-write`，照常写文件。钉不是锁：`/permission` 或输入区选择器仍可切走（宿主没有锁权限选择器的 API），下次「打开主会话」/协调者重新加载时拉回，边界见 [LIMITATIONS](docs/LIMITATIONS.md#主会话权限徽标0251)。
+**权限徽标**：协调者会话的权限预设会被显式钉成宿主的 **`read-only`**（沙箱只读 + 审批 ask），输入区徽标显示「Read Only / 仅可查看」——与「协调者只读」的实际工具面一致（读有 `read`/`read_workspace`，写没有任何工具，沙箱也一律拒写；0.25.1 起钉、0.26.0 起工具面与之一致）。普通任务子会话仍是 `workspace-write`，照常写文件。钉不是锁：`/permission` 或输入区选择器仍可切走（宿主没有锁权限选择器的 API），下次「打开主会话」/协调者重新加载时拉回，边界见 [LIMITATIONS](docs/LIMITATIONS.md#主会话权限徽标0251)。
 
 ### 2. 说需求 = 派单
 
@@ -122,7 +122,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 
 ## 工具清单
 
-协调者（插件工具 7 个；另有宿主原生的只读 `read` / `glob` / `grep` 与 `skill`，见下面「技能与只读工具」）：
+协调者（插件工具 7 个；另有宿主原生的只读 `read` 与 `skill`，见下面「技能与只读工具」）：
 
 | 工具 | 作用 |
 |---|---|
@@ -143,13 +143,27 @@ task_create({ ..., target: '/abs/path/to/repo',
 | `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为产物（计划阶段唯一写入口） |
 
 - 10 个工具**全局注册**（`index.js` 的 `createTools(...).map(ctx.tools.register)`），角色差异全在**预设层**（两个预设都是**遮挡式 deny + keep**）：协调者预设遮「编排正确性」项（`wait_agent`、团队工具、`plugin_manager`、密钥/IM）与三个子会话专属工具，并用 `keep` 声明 7 个任务工具出生即可用；worker 预设只遮 `memory_note`（写记忆仍仅主会话），其余全局工具子会话都继承。所以 `context` 子会话也能调——**只读**、与协调者同一条实现（同参数输出逐字一致）；`task_report`/`task_detail`/`plan_save` 只对任务自己的子会话开放；`memory_note` 万一被别的 profile 露出，执行层会拒绝并给替代路径（写 `task_report` 的 summary / 用 `context` 只读查 / 请协调者记）。
-- 派发给子会话的 **brief 是纯指引**（4 行，`access:'full'` 与隔离任务各多一行 → 4–6 行）：只给任务编号 +「先调 `task_detail`」+「执行中用 `blocked` 上报」+「交付时怎么回报」；目标、验收、经验、前置、产物都不内联进提示词，由子会话用 `task_detail` 现读。交付后协调者**不会**来问「确认 / 要改？」，任务保持待确认、等超时自动完成；用户要改时协调者用 `task_message` 回到同一个子会话。
+- 派发给子会话的 **brief 只留一次性参数**（2–3 行，`access:'full'` 多一行）：任务编号 + 一行「先调 `task_detail`」指针；目标、验收、经验、前置、产物都不内联进提示词，由子会话用 `task_detail` 现读。**执行中怎么上报 / 交付怎么回报 / 隔离任务装依赖 / 主动读 context** 这些静态提示不再写进 brief，而是由 W1「任务执行者 policy」**每回合注入**（只命中该任务的子会话，见下面「提示词分层」）。交付后协调者**不会**来问「确认 / 要改？」，任务保持待确认、等超时自动完成；用户要改时协调者用 `task_message` 回到同一个子会话。
 
-### 技能与只读工具（0.26.0）
+### 技能与只读工具
 
-- **`read` / `glob` / `grep`（只读，协调者预设挂 `tool-fs` + `tool-fs-search`）**：核对子会话说的改动、看 target 目录、读插件安装目录里的技能与文档都可以，不必为此新派任务。`tool-fs` 只开 `read`（`write` / `edit` / `apply_patch` / `read_image` 全关），所以协调者工具表里**没有任何写工具**；写路径由钉死的 `read-only` 权限预设（沙箱写全拒）兜底。它们**没有产物边界、能读到全盘**——凭据类文件（`~/.dsh/.credentials.yaml`、`.env`、SSH key、token）一律不读、不转述，风险见 [LIMITATIONS](docs/LIMITATIONS.md#协调者读文件read-glob-grep)。
+- **`read`（只读，协调者预设只挂 `tool-fs` 的 `read`）**：核对子会话说的改动、看 target 里的某个文件、读插件安装目录里的技能与文档都可以，不必为此新派任务。`tool-fs` 只开 `read`（`write` / `edit` / `apply_patch` / `read_image` 全关），所以协调者工具表里**没有任何写工具**；写路径由钉死的 `read-only` 权限预设（沙箱写全拒）兜底。**`glob`/`grep` 已移除**（协调者预设不再挂 `tool-fs-search`）：主会话一有搜索能力就会自行检索文件、绕过派发自行调研。`@deepseek-ai/dsh-tool-fs-search` 没有「只关 grep」的开关（`Config` 只有采样与上限字段，两个工具在 `apply()` 里无条件一起注册），`preset-tools` 的 `deny` 又只作用于已注册的全局工具、遮不到预设自有行，所以只能整行移除；**要批量检索/枚举目录就派一条只读任务**（`readOnly:true`），让子会话把结果带回来。`read` **没有产物边界、能读到全盘**——凭据类文件（`~/.dsh/.credentials.yaml`、`.env`、SSH key、token）一律不读、不转述，风险见 [LIMITATIONS](docs/LIMITATIONS.md#协调者读文件read)。
 - **`skill` + grill-me 技能**：插件随包发 `skills/grill-me/SKILL.md`（`files` 含 `skills/`），注册模块 `@wjj865-code/dsh-orchestrator/skill-grill-me` 在**协调者预设作用域**里调 `ctx.skills.register`，所以只有协调者看得到、子会话看不到。技能内容是多轮**前沿提问**的澄清协议：一次只问一个决定性问题、每问带我的推荐、事实我自己查、决策归用户、最多 **2 轮 8 问**、最后给一张「决策点｜你定的｜影响」三栏决策记录，与 T2/T3 闸门衔接。**grill ≠ 批准**：澄清完仍要按闸门确认，T3 的计划批准只能由用户拍板。协议灵感来自 Matt Pocock 的 grilling（MIT），措辞重写。
-- **不挂 `working_directory`**（0.26.0 发版前真机复验补漏）：这个宿主全局工具会把**协调者会话的 cwd** 改掉，而 cwd 是指挥锚——`task_create` 不给 `target` 时子会话继承它、工作区/写域判定与记忆项目键推断都以它为准，会话内切目录会让这些锚点静默漂移。所以协调者预设的 `preset-tools` `deny` 与执行层 `COORDINATOR_DENY` 两处都遮（工具表里看不到、硬调被拒）；协调者看文件用 `read`/`glob`/`grep` 的绝对路径，不需要切目录。
+- **不挂 `working_directory`**（0.26.0 发版前真机复验补漏）：这个宿主全局工具会把**协调者会话的 cwd** 改掉，而 cwd 是指挥锚——`task_create` 不给 `target` 时子会话继承它、工作区/写域判定与记忆项目键推断都以它为准，会话内切目录会让这些锚点静默漂移。所以协调者预设的 `preset-tools` `deny` 与执行层 `COORDINATOR_DENY` 两处都遮（工具表里看不到、硬调被拒）；协调者看文件用 `read` 的绝对路径，不需要切目录。
+
+### 提示词分层（L1 / W1 / L2 / L3 / L4）
+
+同一句口径只许出现在一层；层归属表在 `src/prompt-layers.js` 的 `PROMPT_LAYERS`，测试用 `layerViolations` 探针锁住：
+
+| 层 | 载体 | 谁看 | 独占职责 |
+|---|---|---|---|
+| **L1** 协调者 policy | `ctx.systemPrompt.context`（每回合重渲染） | 协调者 | 硬规则、工具面、交付/确认决策口径、交互三闸门、推进循环、任务链、worktree/写域策略、偏好、能力诊断 |
+| **W1** 任务执行者 policy | 同一个 `ctx.systemPrompt.context`（**只命中 `tasks.session_id` 属于任务的子会话**） | 任务子会话 | 开工先读 `task_detail`、执行中 `blocked` 上报、交付 `task_report` 的 summary/两段式终态、隔离任务装依赖授权、主动调 `context` |
+| **L2** brief / persona | 派发消息 + worker 预设 persona（出生即带） | 任务子会话 | 只留一次性参数（任务编号、访问级别）与一行详情指针；persona 只说身份 |
+| **L3** `task_detail` | 子会话按需调用 | 任务子会话 | 任务创建详情（目标/验收/约束/背景/原话/目录与权限/前置/经验/产物/计划/隔离说明） |
+| **L4** onboarding | 一次性 `agent.steer`（新主会话首次） | 协调者 | 自我介绍一句 + 派一次只读索引任务 |
+
+W1 的句子全部来自 `src/copy.js`（`WORKER_POLICY_LINES`），`src/prompt-layers.js` 的 `renderWorkerPolicy` 只负责分层归属与条件（隔离任务多一句装依赖授权），`index.js` 分开注册第二条 `systemPrompt.context`（order 131，与 L1 的 130 互不覆盖）。为什么迁：brief/persona 只在出生那一刻到达子会话，续派或多轮之后容易被上下文挤掉；per-turn policy 每回合重渲染。
 
 ### 工具迁移映射
 
@@ -272,7 +286,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 ### 交付口径：`present` 与读文件
 
 - 协调者**不写文件、不执行命令**（预设没挂 `write`/`edit`/`bash`/`pwsh`，权限又钉在 `read-only`），交付靠 `present`：默认展示 **1–4 个最关键的真实产物**（绝对路径），没有产物就不提。
-- 看文件有两条路：① 原生 `read` / `glob` / `grep`——全盘可读、没有产物边界，用来核对改动与读技能/文档；② `read_workspace`——受控读**主会话工作区内**文件，或**任务登记过**的产物（子会话产物通常在 target 目录里，登记过就能读）。越界/`../`/符号链接逃逸/未登记都被拒，大文件按行窗口截断给 `nextOffset`。
+- 看文件有两条路：① 原生 `read`——全盘可读、没有产物边界，用来核对某个改动或读技能/文档（**没有 `glob`/`grep`**：检索/枚举类工作派只读任务）；② `read_workspace`——受控读**主会话工作区内**文件，或**任务登记过**的产物（子会话产物通常在 target 目录里，登记过就能读）。越界/`../`/符号链接逃逸/未登记都被拒，大文件按行窗口截断给 `nextOffset`。
 - 存在性由插件与子任务保证（通知里的路径已 `lstat` 校验），`present` 只声明交付、不读内容。
 - ⚠️ 若本机开了 IM 双向同步，读进上下文的正文可能随回复同步到外部且不可撤回——涉密产物不要读进主会话；凭据类文件（`~/.dsh/.credentials.yaml`、`.env`、SSH key、token）任何情况下都不读。
 
@@ -342,7 +356,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 - **主会话不再自动换**：0.25.0 起没有「轮换」（`mainRotation`/`rotate*` 8 键已删除，只在启动时给弃用提示）；上下文过长交给宿主 compaction-basic 自动压缩，插件只在压力达到 `contextPressureThreshold` 时弹问题卡问你要不要换新协调者会话。换会话只切指针：旧会话不改名、不归档、随时可回看；日志 append-only 只增不减，重置靠人工换会话。
 - **主会话权限徽标是「钉」不是「锁」**：协调者会话被钉 `read-only`（徽标与实际工具面一致），但宿主没有锁权限选择器的 API——`/permission` 或输入区选择器仍能切走，插件只在下次「打开主会话」/协调者重新加载时拉回（需要宿主预设表里有 `read-only`，DSH 出厂表有）。
 - **交互三闸门是提示词软约束，不是执行层门禁**：T1/T2 的边界是模型判断，没有代码校验——判错表现为「该问没问」或「不该问又问」，纠正方式见 [LIMITATIONS](docs/LIMITATIONS.md#交互规范软约束)。
-- **只读工具的读取面是整台机器**：`read` / `glob` / `grep` 没有产物边界（`read_workspace` 才有），能读到 `~/.dsh`、`.env`、SSH key 等凭据；插件只靠提示词要求「别碰凭据」，不拦路径。同理 `bash` 仍然没挂，但它一旦由用户手动切到 `full` 权限也不会多出来——工具面不随权限变。
+- **只读工具的读取面是整台机器**：`read` 没有产物边界（`read_workspace` 才有），能读到 `~/.dsh`、`.env`、SSH key 等凭据；插件只靠提示词要求「别碰凭据」，不拦路径。同理 `bash` 仍然没挂，但它一旦由用户手动切到 `full` 权限也不会多出来——工具面不随权限变。
 - **grill-me 只是澄清协议**：技能本体是提示词，没有执行层校验；它能减少「需求没问清就动手」，但不能保证一定问够，「grill 完 = 批准」这种理解仍是错的（计划批准只能由你拍板）。
 - worktree 产物不在你的工作树里（合并由你决定）；计划文档只有一版、没有审批流 UI；面板轮询 2 秒、没有 SSE；产物预览依赖宿主右侧栏。
 - 结算自动收场只覆盖「一次 activation」，上报过 progress 的回合异常结束落 `orphaned`。

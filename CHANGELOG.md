@@ -1,5 +1,32 @@
 # Changelog
 
+## 未发布（Unreleased）—— 协调者去掉 grep + 任务执行者 per-turn policy（t-4f7ce108）
+
+两条用户直接提的改动，**没有改派发语义、状态机、权限、工具数量，也没有新增工具**。用户原话：「目前发现 grep 工具会让主会话自行搜索，导致有时主会话会自主搜索文件调研，现在把这个工具从协调者预设中移除。另外协调者预设有 policy，但任务执行者却没有，建议参考协调者，将静态提示词内容都统一移入任务执行者的 policy，这样每次跑都会注入，效果更好。」
+
+**升级注意**：装包后要**彻底退出 DSH 再启动**（刷新页面无效），新的预设与 W1 policy 才生效；台账无 schema 变更，旧库直接可用。
+
+**1. 协调者移除 `glob` / `grep`（整行移除 `tool-fs-search`）**
+
+- **为什么整行移除而不是只关 grep**：先查了实际安装的 `@deepseek-ai/dsh-tool-fs-search`（`app.asar` 内的 `src/index.ts` 与 `lib/index.js`）——`Config` 只有 `sampleOverCapGlobResults` 与 `globMaxResults` / `grepMaxMatches` / `grepMaxLineBytes` / `searchMetaMaxBytes` / `rawOutputMaxBytes` / `graceMs` / `stderrMaxBytes` / `timeoutMs`，**没有按工具开关**；`apply()` 无条件同时 `applyGlobTool` + `applyGrepTool`。而 `preset-tools` 的 `deny` 只作用于「已注册的全局工具」（`ctx.tools.view().restrictableNames`），`restrict` 遮不到预设自有行。所以「只关 grep、保留 glob」在本平台做不到，只能把协调者预设的 `tool-fs-search` 整行移除：协调者的原生只读工具只剩 `read`。
+- **预设与文案**：`cordis.patch.yml` 协调者预设删掉 `tool-fs-search` 行并写明取舍（含包内 schema 证据）；预设 `description` / persona prefix 不再提 glob/grep；`index.js` 的 L1 硬规则（看文件只留 `read`、检索类工作派只读任务）、工具清单句、`DENY_HINT`、`COORDINATOR_DENY` 注释、`src/prompt-layers.js` 的 L1 `owns`、`skills/grill-me/SKILL.md` 的「先只读调研」步骤、`src/read-workspace.js` / `src/tools.js` / `preset-tools.js` 的取舍注释全部同步，源码里不再暗示协调者可以搜索。
+- **测试**：`test/config.test.js` 改为断言「协调者预设没有 `tool-fs-search` 行、没有该包名、worker 仍挂」；`test/index.test.js` 的 deny/guard 名单去掉 glob/grep；`test/prompt-layers.test.js` 加「L1 不许再出现 `read / glob / grep`」。
+- **代价**：协调者不能自己枚举目录/跨文件检索，需要时派一条 `readOnly:true` 任务（多一次派发往返）；`read` 仍是全盘可读、没有产物边界，凭据纪律不变。
+
+**2. 新增 W1「任务执行者 policy」（per-turn，只命中任务子会话）**
+
+- **新增层**：`src/copy.js` 定义句子（`SUMMARY_FIELDS` / `WORKER_DETAIL_HINT` / `BLOCKED_HINT` / `CONFIRM_HINT` / `WORKTREE_INSTALL_HINT` / `WORKER_CONTEXT_HINT` / `WORKER_POLICY_HEADING` / `WORKER_POLICY_LINES`），`src/prompt-layers.js` 的 `renderWorkerPolicy({ worktreeState })` 渲染（固定四句 + 隔离任务才有的装依赖授权），`index.js` 用**第二条** `ctx.systemPrompt.context` 注册（`name: 'orchestrator:worker-policy'`、`order: 131`，与 L1 的 130 分开、互不覆盖）。
+- **归属判定**：只命中任务子会话——`subagent.spawn.accepted` 事件先记「子会话 id → 任务 id」，台账 `tasks.session_id`（`transition(..., 'running', { sessionId })` 写入）是唯一真相，两者都查；协调者、无关会话、孙会话一律返回空串。
+- **迁移的句子（从 brief / persona 移出，brief 收到的只是一次性参数）**：①「先调 `task_detail` 读详情」的字段清单与「不要凭 brief 猜任务内容」；②执行中怎么上报（`blocked` + `问题/选项建议` + 四条「不要」+ 追加调整先评估）；③交付怎么回报（`task_report` 四状态、summary = 结论 + 三问、`done` 清空 `question`/`options`、两段式终态、`DELEGATED_CALLER`、不催关闭）；④隔离任务装依赖（只装不升）；⑤主动调 `context` 找历史/项目背景（原 worker persona）。task_detail 末尾的 `FINISH_HINT` 删除（完成动作归 W1，同一句只在一层）。
+- **brief / persona 精简**：`renderBrief({ taskId, access })` 从 4–6 行收到 **2–3 行**（任务编号 + 可选访问级别 + 一行详情指针）；`worktree_state` 不再进 brief；worker 预设 persona 从「身份 + 主动读 context」收到**身份一句**。
+- **测试**：`test/brief.test.js` 重写为「只留一次性参数」；`test/prompt-layers.test.js` 重写为六层（L1/W1/L2/L3/L4/NOTIFY）+ W1 逐字同源 + L2 探针抓「W1 静态句被抄回 brief」；`test/index.test.js` 加 W1 注入/归属用例（协调者/无关/孙会话拿空串、隔离任务多一句装依赖）；`test/copy-consistency.test.js` / `test/interaction-policy.test.js` / `test/task-detail.test.js` / `test/tools.test.js` / `test/panel-actions.test.js` / `test/worktree.test.js` / `test/status-property.test.js` 同步到新分层。
+- **文档**：README（工具清单、技能与只读工具、新增「提示词分层」表、已知限制）、`docs/ARCHITECTURE.md`（六层表 + W1 注入判定 + brief 节重写 + B 片取舍）、`docs/LIMITATIONS.md`（「协调者读文件（read）」节 + 无检索能力的代价）、`docs/testing.md`（G8、§3.2、里程碑表新增一行）。
+
+**验证**
+
+- `pnpm test`（含 `pretest` 的 build + `check:client-size` + `check:docs`）、`pnpm run check:version`、`pnpm run check:client-size`、`pnpm run check:docs` 结果见交付回报；本次未改 `client/**`，`dist/client.js` 应保持入库字节。
+- 未 bump 版本、未 tag、未 publish（发版另排）。
+
 ## 0.28.0（2026-11-21）—— 任务链（dependsOn）进 L1：依赖完成自动开始，不再「等 A 完成再派 B」
 
 本版只有一类改动：把**早就存在**的依赖编排机制写成协调者每回合都在的规则，并小版本发布。**没有改派发语义、状态机、权限，也没有新增工具**。用户原话：「你可以使用 dependson，依赖任务结束时会自动开始。这个机制是不是没写到预设或者提示词，怎么没怎么使用。」

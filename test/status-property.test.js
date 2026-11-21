@@ -12,6 +12,7 @@ import { CAP_KEYS, STATUS_CAPS, TRANSITIONS, statusesWith } from '../src/status-
 import { PLAN_STATES, PLAN_STATE_LABEL, PLAN_FIRST_DETAIL, PLAN_PHASE_LINES } from '../src/plan-mode.js'
 import { ACCESS_FULL, DELIVERY_LINES, planDocPathText } from '../src/copy.js'
 import { renderTaskDetail } from '../src/task-detail.js'
+import { renderWorkerPolicy } from '../src/prompt-layers.js'
 
 /** 固定种子（0x9e3779b9 = 黄金比例常数）：失败只报种子，任何人都能复现同一条路径。 */
 const SEED = 0x9e3779b9
@@ -211,9 +212,13 @@ test('属性：10,000 组随机任务字段渲染稳定、口径唯一（计划/
       assert.equal(text.includes(PLAN_PHASE_LINES.heading), false, `第 ${index} 组：普通任务混进了计划说明`)
       assert.equal(text.includes('计划状态：'), false, `第 ${index} 组：普通任务混进了计划状态`)
     }
-    // 交付口径唯一：完成动作里只说一次「已交付待确认」（两段式终态只有一套说法）。
-    assert.equal(count(text, DELIVERY_LINES.state), 1, `第 ${index} 组：交付口径重复/缺失`)
-    assert.equal(text.includes('不要自行宣告任务结束'), true, `第 ${index} 组：缺少「交付不是结束」的提醒`)
+    // 交付口径归 W1（t-4f7ce108）：task_detail 不再出现「已交付待确认」，W1 里恰出现一次。
+    assert.equal(text.includes(DELIVERY_LINES.state), false, `第 ${index} 组：task_detail 不该重复交付口径（归 W1）`)
+    if (index === 0) {
+      const w1 = renderWorkerPolicy()
+      assert.equal(count(w1, DELIVERY_LINES.state), 1, '第 0 组：W1 的交付口径重复/缺失')
+      assert.equal(w1.includes('不要自行宣告任务结束'), true, '第 0 组：W1 缺少「交付不是结束」的提醒')
+    }
   }
   // 覆盖度：随机空间确实走到了四条分支（否则断言等于没测）。
   assert.ok(seen.plan > 0 && seen.readOnly > 0 && seen.full > 0 && seen.plain > 0, `分支覆盖不足：${JSON.stringify(seen)}`)

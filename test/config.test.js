@@ -266,7 +266,7 @@ test('协调者预设挂 present 交付工具：主会话可交付子会话产�
   assert.equal((source.match(/id: present/g) ?? []).length, 2, '整份补丁应有协调者、worker 两行 present')
 })
 
-test('协调者只读工具面：read 只开读、glob/grep 挂 tool-fs-search，写工具不挂', () => {
+test('协调者只读工具面：只开 read，不挂 tool-fs-search（glob/grep 已移除），写工具不挂', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
   const worker = presetPlugins(source, 'dsh-orchestrator-worker')
@@ -278,16 +278,25 @@ test('协调者只读工具面：read 只开读、glob/grep 挂 tool-fs-search�
   for (const [key, value] of [['read', 'true'], ['write', 'false'], ['edit', 'false'], ['applyPatch', 'false'], ['readImage', 'false']]) {
     assert.match(fsText, new RegExp(`^\\s+${key}: ${value}\\s*$`, 'm'), `tool-fs.${key} 应为 ${value}`)
   }
-  // glob / grep 由 tool-fs-search 提供（与 worker 同形，只是不采样超量结果）。
-  const searchRows = coordinator.rows.filter(row => row.id === 'tool-fs-search')
-  assert.equal(searchRows.length, 1, '协调者预设应恰好一行 tool-fs-search')
-  assert.match(searchRows[0].lines.join('\n'), /@deepseek-ai\/dsh-tool-fs-search/)
-  assert.match(searchRows[0].lines.join('\n'), /sampleOverCapGlobResults: false/)
+  // t-4f7ce108：tool-fs-search 整行移除。该包没有「只关 grep、保留 glob」的开关（Config 只有
+  // sampleOverCapGlobResults 与各 max* 上限，apply() 无条件注册两个工具），而 preset-tools 的 deny
+  // 只作用于已注册的全局工具、遮不到预设自有行 —— 所以协调者拿不到 glob/grep，检索类工作派任务。
+  assert.equal(coordinator.rows.some(row => row.id === 'tool-fs-search'), false,
+    '协调者预设不得挂 tool-fs-search（glob/grep 会让主会话自行搜索、绕过派发）')
+  assert.equal(/name:\s*'@deepseek-ai\/dsh-tool-fs-search'/.test(coordinator.text), false,
+    '协调者预设不许再注册 tool-fs-search（注释里的移除原因不算）')
   // 写/执行类工具**不挂行**：bash/pwsh 只有 worker 挂，协调者只在只读层收口。
   for (const rowId of ['tool-bash', 'tool-pwsh']) {
     assert.equal(coordinator.rows.some(row => row.id === rowId), false, `协调者预设不应挂 ${rowId}`)
   }
   assert.equal(worker.rows.some(row => row.id === 'tool-fs'), true, 'worker 仍挂 tool-fs（可写）')
+  assert.equal(worker.rows.some(row => row.id === 'tool-fs-search'), true, 'worker 仍挂 tool-fs-search（子会话要能检索）')
+  // 预设描述与 persona 也不许再写「协调者能 glob/grep」（注释行可以有，那是移除原因的说明）。
+  const coordinatorText = coordinator.text
+  for (const line of coordinatorText.split('\n')) {
+    if (!/^\s*(description|prefix):/.test(line)) continue
+    assert.doesNotMatch(line, /glob|grep/, `协调者预设文案不许再暗示能搜索：${line.trim()}`)
+  }
 })
 
 test('协调者挂 grill-me 技能：注册模块 + tool-skill 各一行，worker 看不到', () => {

@@ -68,8 +68,8 @@ test('renderTaskDetail：目标全文/验收/约束/背景/用户原话/工作�
   assert.match(text, /【约束】- 只改 src\/login\.js/)
   assert.match(text, /【背景资料】- src\/login\.js:66/)
   assert.match(text, /【用户原话】\n> 登录挂了\n> 日志在附件里/)
-  // 完成口径也随详情给出（brief 纯指引后不再有）。
-  assert.match(text, /完成后用 task_report 回报/)
+  // 完成口径不再由详情给（t-4f7ce108：归 W1 per-turn policy，同一句只在一层出现）。
+  assert.doesNotMatch(text, /完成后用 task_report 回报/)
   // 不是 JSON、不含 schema 字段名。
   assert.equal(text.includes('acceptance'), false)
   assert.throws(() => JSON.parse(text))

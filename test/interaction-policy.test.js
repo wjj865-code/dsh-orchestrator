@@ -1,7 +1,7 @@
 // 交互三闸门（0.26.0）：开工前确认（T0–T3）→ 执行期少打扰（B1–B4）→ 变更先评估（R0–R2）。
 //
 // 这组用例锁的是**结构与口径**，不是逐字措辞：段在 L1 且排在 worktree/写域之前、四级判级表齐全、
-// 堵塞项四类与 brief 同源、R0–R2 三档与「先评估 → 再确认 → 才通知」的顺序闸门都在。
+// 堵塞项四类与 W1 同源、R0–R2 三档与「先评估 → 再确认 → 才通知」的顺序闸门都在。
 // 为什么单独一个文件：三闸门是协调者每回合都要读的行为规则，删掉一段或把顺序调换都不会报错，
 // 只会让「该问没问 / 不该问又问」在真机上悄悄回来。
 import test from 'node:test'
@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { renderCoordinatorPolicy, renderInteractionPolicy } from '../index.js'
 import { renderBrief } from '../src/brief.js'
 import { BLOCKER_RULE, CHANGE_REVIEW_FIELDS } from '../src/copy.js'
+import { renderWorkerPolicy } from '../src/prompt-layers.js'
 import { createTools } from '../src/tools.js'
 import { loadConfig } from '../src/config.js'
 
@@ -35,9 +36,10 @@ test('判级表齐全：T0 直答 / T1 直接做 / T2 先确认 / T3 先计划',
   assert.match(section(), /同一需求后续轮次沿用已判级别，不重复确认/)
 })
 
-test('堵塞项四类与 brief 同源：L1 与 L2 都逐字引用 copy.js 的 BLOCKER_RULE', () => {
+test('堵塞项四类与 W1 同源：L1 与 W1 都逐字引用 copy.js 的 BLOCKER_RULE', () => {
   assert.ok(section().includes(BLOCKER_RULE), 'L1 的堵塞项必须逐字引用 BLOCKER_RULE')
-  assert.ok(renderBrief({ taskId: 't-1a2b3c4d' }).includes(BLOCKER_RULE), 'brief 的 BLOCKED_HINT 必须逐字引用 BLOCKER_RULE')
+  assert.ok(renderWorkerPolicy().includes(BLOCKER_RULE), 'W1 的 BLOCKED_HINT 必须逐字引用 BLOCKER_RULE')
+  assert.equal(renderBrief({ taskId: 't-1a2b3c4d' }).includes(BLOCKER_RULE), false, 'brief 不再内联堵塞项口径（归 W1）')
   // 四类本身：验收/范围不可达、要新授权、子会话 blocked 且选项要用户定、工具面外查不到。
   for (const fragment of ['已确认的验收/范围/方案不可达', '需要新授权', '子会话报 blocked 且选项要用户定', '事实在你的工具面外查不到']) {
     assert.equal(BLOCKER_RULE.includes(fragment), true, `BLOCKER_RULE 缺少：${fragment}`)

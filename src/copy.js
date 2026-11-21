@@ -225,7 +225,7 @@ export const PROGRESS_NOTICE_HINT = 'progress 只是进度信号、不是终态�
   + '要结论就 task_message 追问同一子会话（复用已有上下文），别为此重派任务'
 
 /**
- * 堵塞项四类（L1 交互闸门与 L2 brief 的 `BLOCKED_HINT` 共用，措辞只此一处）。
+ * 堵塞项四类（L1 交互闸门与 W1 执行期上报的 `BLOCKED_HINT` 共用，措辞只此一处）。
  *
  * 为什么要把「四类」写死：执行期的打断只有在「继续做就是错」时才值得；其余（进度、能否关闭、
  * 自己查得清的事实）都该按建议继续，否则「少打扰」只是一句空话。L1 的 B1–B4 展开是这四类的解释，
@@ -234,6 +234,73 @@ export const PROGRESS_NOTICE_HINT = 'progress 只是进度信号、不是终态�
 export const BLOCKER_RULE = '已确认的验收/范围/方案不可达、需要新授权（权限/远端写/发布/删数据/不可逆）、'
   + '子会话报 blocked 且选项要用户定、事实在你的工具面外查不到'
 
+// ── 任务子会话（W1 per-turn policy）的句子 ─────────────────────────────────────
+// 背景（t-4f7ce108，用户原话：「协调者预设有 policy，但任务执行者却没有……将静态提示词内容都统一移入
+// 任务执行者的 policy，这样每次跑都会注入，效果更好。」）：这些句子原先分两处——brief 内联（执行中上报 /
+// 交付确认 / worktree 装依赖 / task_detail 指引）与 worker 预设 persona（主动读 context）。
+// 两者都只在**派发那一刻**到达子会话，续派/多轮之后容易被上下文挤掉；而 per-turn policy 每回合重渲染。
+// 现在句子只在本模块定义一次，`src/prompt-layers.js` 的 `renderWorkerPolicy` 负责渲染，
+// `index.js` 的 `systemPrompt.context` 负责按任务子会话注入；brief 与 persona 只留一次性参数与身份。
+
+/** 交付 summary 的三要素（W1 的交付口径引用；brief / task_detail 都不再各写一份）。 */
+export const SUMMARY_FIELDS = '改了什么、改了哪些文件、怎么验证的'
+
+/** 开工先读详情（W1 唯一措辞）：brief 只留一行指针，字段清单在这里讲一次。 */
+export const WORKER_DETAIL_HINT = '开工前先调 task_detail（参数 task_id 就是任务编号）：'
+  + '目标全文、验收标准、约束、背景资料、用户原话、工作目录与权限、前置任务、经验文件、已有产物都以台账为准；'
+  + 'brief 只是指针，不要凭它猜任务内容。'
+
+/**
+ * 执行期上报（W1 唯一措辞）。
+ *
+ * 关键事实（平台约束，别写错）：`ask_user_question` 对 subagent 来源的会话直接拒绝——
+ * `assertLiveRoot` 见到 `session.header.origin === 'subagent'` 就抛 `DELEGATED_CALLER`。
+ * 所以「问用户」始终由协调者做：子会话只负责把问题与选项交回去（blocked + question/options）。
+ */
+export const BLOCKED_HINT = `执行中只把**堵塞项**交给用户拍板：${BLOCKER_RULE}；`
+  + '用 task_report 的 blocked 上报「问题 + 选项建议」，由协调者用 ask_user_question 向用户确认后经 task_message 续派再继续；'
+  + '不要自行假设用户意图、不要阻塞等待、也不要等不到回复就跳过。blocked 只是上报，不等于已获授权。'
+  + '协调者转来的方向调整以追加消息为准：先按新方向评估影响面，超出原验收标准或范围就先 blocked 要新范围，不要自行扩大范围。'
+
+/** 交付与确认（W1 唯一措辞；`done` 会清空 question/options 是平台事实）。 */
+export const CONFIRM_HINT = `完成后用 task_report 回报（progress / done / blocked / needs_auth）：`
+  + `把 summary 写成「结论 + ${SUMMARY_FIELDS}」，并带上待确认要点；`
+  + 'done 会清空 question/options，所以要点必须在 summary 里；'
+  + `报 done 只是「交付」：任务停在「${DELIVERY_LINES.state}」，由协调者/用户确认或${DELIVERY_LINES.timeout}；`
+  + '收到追问就在同一个会话里继续，不要自行宣告任务结束；'
+  + '子会话直接调 ask_user_question 会被平台拒（DELEGATED_CALLER）：交付后协调者不会为「能不能关闭」来问你。'
+
+/**
+ * worktree 检出依赖（W1 的条件句，只在任务的 `worktree_state` 属于真隔离时渲染）。
+ *
+ * 检出是全新目录，node_modules/虚拟环境这类依赖不在库里 → 子会话常因依赖缺失跑不了测试/构建。
+ * 只说「可以装、只装不升」：不授权改依赖版本，也不放宽任何推送前审查/人工确认门禁。
+ */
+export const WORKTREE_INSTALL_HINT = '本任务在独立检出里跑，检出目录没有依赖：可执行安装命令（pnpm install / npm install / uv sync 等），'
+  + '只安装不升级（不改依赖声明与版本）。'
+
+/**
+ * 子会话「主动读上下文」的引导（W1 唯一措辞）。
+ *
+ * 配套事实（不在本句里重复讲）：`context` 只读且子会话可用（worker 预设 keep 声明它出生即可用）；
+ * `memory_note` 子会话不可用（worker 预设 deny 掉，执行层再兜一层拒绝理由含迁移提示）。
+ */
+export const WORKER_CONTEXT_HINT = '需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读）：'
+  + '查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入；'
+  + '写记忆只属协调者，要沉淀的结论写进 task_report 的 summary。'
+
+/** W1 段标题（渲染入口在 `src/prompt-layers.js` 的 `renderWorkerPolicy`）。 */
+export const WORKER_POLICY_HEADING = '回报与确认（任务子会话每回合都在，不必等 brief 再说）'
+
+/** W1 的固定句子：一句一件事，渲染顺序也在这里定。 */
+export const WORKER_POLICY_LINES = Object.freeze({
+  detail: WORKER_DETAIL_HINT,
+  blocked: BLOCKED_HINT,
+  report: CONFIRM_HINT,
+  context: WORKER_CONTEXT_HINT,
+  worktree: WORKTREE_INSTALL_HINT,
+})
+
 /**
  * 追加调整的评估要素（L1 交互闸门与 `task_message` 描述共用）。
  *
@@ -241,16 +308,6 @@ export const BLOCKER_RULE = '已确认的验收/范围/方案不可达、需要�
  * 反过来先给建议等于替用户拍板。
  */
 export const CHANGE_REVIEW_FIELDS = '影响面（哪些任务/产物/已交付结论会变）、风险（验收是否失效、是否触碰不可逆或授权）、建议（继续/增量追加/停下重派）'
-
-/**
- * L3（`task_detail`）的完成动作：交付口径与 brief 的 `CONFIRM_HINT` 同源（summary 三问）。
- *
- * @param {string} summaryFields 例如 brief.js 的 `SUMMARY_FIELDS`（改了什么、改了哪些文件、怎么验证的）
- */
-export const finishHint = summaryFields => '完成后用 task_report 回报（progress / done / blocked / needs_auth），'
-  + `summary 写：${summaryFields}。`
-  + `报 done 只是「交付」：任务会停在「${DELIVERY_LINES.state}」，由协调者/用户确认或${DELIVERY_LINES.timeout}；`
-  + '收到追问就在同一个会话里继续，不要自行宣告任务结束。'
 
 /** `task_report` 交付回执：交付不是结束，确认/超时才收成完成。 */
 export const deliveredReceiptNote = `\n${DELIVERY_LINES.state}：这是交付、${DELIVERY_LINES.notFinal}；`

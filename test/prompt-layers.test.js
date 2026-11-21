@@ -1,17 +1,22 @@
-// 提示词分层（prompt-layers）：五层职责边界、消除的 6 处重叠、修掉的 3 处矛盾。
+// 提示词分层（prompt-layers）：层职责边界、消除的重叠、修掉的矛盾。
 //
 // 这一组不锁具体措辞，锁**归层**：同一条口径只许出现在一个层，跨层共享的必须逐字同源。
 // 判据表在 `src/prompt-layers.js` 的 `PROMPT_LAYERS`；探针在 `layerViolations`。
+//
+// t-4f7ce108：新增 W1（任务执行者 per-turn policy）。brief 与 worker persona 里的静态提示全部迁进 W1，
+// 这一组同时锁住「brief 只剩一次性参数」「persona 只剩身份」「W1 的句子逐字来自 copy.js」。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   DELIVERY_NOT_FINAL, LAYER_NAME, PRESENT_LIMIT_TEXT, PRESENT_MAX_FILES, PROMPT_LAYERS, WORKER_CONTEXT_HINT,
-  layerViolations, renderAdvanceLoopPolicy, renderTaskChainPolicy,
+  layerViolations, renderAdvanceLoopPolicy, renderTaskChainPolicy, renderWorkerPolicy,
 } from '../src/prompt-layers.js'
-import { ADVANCE_LOOP_LINES, ADVANCE_NOTICE_HINT, TASK_CHAIN_LINES } from '../src/copy.js'
+import {
+  ADVANCE_LOOP_LINES, ADVANCE_NOTICE_HINT, TASK_CHAIN_LINES, WORKER_POLICY_HEADING, WORKER_POLICY_LINES,
+} from '../src/copy.js'
 import { renderCoordinatorPolicy } from '../index.js'
-import { CONFIRM_HINT, SUMMARY_FIELDS, renderBrief } from '../src/brief.js'
+import { BLOCKED_HINT, CONFIRM_HINT, SUMMARY_FIELDS, renderBrief } from '../src/brief.js'
 import { renderTaskDetail } from '../src/task-detail.js'
 import { ONBOARDING_PROMPT } from '../src/onboarding.js'
 import { DELIVERED_HINT, PRESENT_HINT } from '../src/notify.js'
@@ -24,8 +29,8 @@ const sampleDetail = () => renderTaskDetail({
   brief: { title: '示例', goal: '目标', acceptance: ['验收'], constraints: ['约束'] },
 })
 
-test('五层清单完整：L1/L2/L3/L4/NOTIFY 各有载体、受众与独占职责', () => {
-  assert.deepEqual(PROMPT_LAYERS.map(layer => layer.id), ['L1', 'L2', 'L3', 'L4', 'NOTIFY'])
+test('六层清单完整：L1/W1/L2/L3/L4/NOTIFY 各有载体、受众与独占职责', () => {
+  assert.deepEqual(PROMPT_LAYERS.map(layer => layer.id), ['L1', 'W1', 'L2', 'L3', 'L4', 'NOTIFY'])
   for (const layer of PROMPT_LAYERS) {
     assert.ok(layer.name !== '', `${layer.id} 缺名称`)
     assert.ok(layer.carrier !== '', `${layer.id} 缺载体说明`)
@@ -34,6 +39,7 @@ test('五层清单完整：L1/L2/L3/L4/NOTIFY 各有载体、受众与独占职�
     assert.ok(Array.isArray(layer.forbids), `${layer.id} 缺 forbids`)
   }
   assert.equal(LAYER_NAME.L1, '协调者 policy')
+  assert.equal(LAYER_NAME.W1, '任务执行者 policy')
   assert.equal(LAYER_NAME.L4, 'onboarding')
 })
 
@@ -42,9 +48,12 @@ test('L1 承担全部协调者规则（每回合重渲染的那一层）', () =>
   for (const fragment of ['wait_agent', 'task_close', 'task_message', 'present', 'read_workspace', 'ask_user_question', 'schedule_create', 'grill-me']) {
     assert.ok(policy.includes(fragment), `L1 缺 ${fragment}`)
   }
-  // 0.26.0：只读工具与 grill-me 的用法都在 L1（每回合都在，不会被 compaction 吃掉）。
+  // 0.26.0：grill-me 的调用形状在 L1。
   assert.match(policy, /skill\(\{ name: 'grill-me' \}\)/, 'L1 应给出加载 grill-me 的调用形状')
-  assert.match(policy, /read \/ glob \/ grep（只读/, 'L1 应说明只读工具面')
+  // t-4f7ce108：协调者的原生只读工具只剩 read —— glob/grep 从预设移除，检索类工作派任务。
+  assert.match(policy, /看文件用原生 read/, 'L1 应说明只读工具面只有 read')
+  assert.doesNotMatch(policy, /看文件用原生 read \/ glob/, 'L1 不许再暗示协调者能搜索')
+  assert.doesNotMatch(policy, /read \/ glob \/ grep/, 'L1 不许再暗示协调者能搜索')
   // 策略段也在 L1（结构化配置渲染）。
   assert.match(policy, /## worktree 隔离/)
   assert.match(policy, /## 同写域并发防护/)
@@ -52,7 +61,7 @@ test('L1 承担全部协调者规则（每回合重渲染的那一层）', () =>
   assert.match(policy, /## 交互三闸门/)
   assert.match(policy, /T0 直答/)
   assert.match(policy, /R0 只补细节/)
-  // owns 要登记这两条，否则「谁该说什么」的分层表与实现脱节。
+  // owns 要登记这些条，否则「谁该说什么」的分层表与实现脱节。
   const l1 = PROMPT_LAYERS.find(layer => layer.id === 'L1')
   assert.ok(l1.owns.some(item => item.includes('交互三闸门')), 'L1 owns 应登记交互三闸门')
   assert.ok(l1.owns.some(item => item.includes('BLOCKER_RULE')), 'L1 owns 应登记堵塞项口径的措辞源')
@@ -68,12 +77,13 @@ test('推进循环归 L1：句子逐字来自 copy.js，通知尾部动作指令
     assert.ok(block.includes(line), `推进循环段落缺少 ${key}`)
     assert.ok(policy.includes(line), `L1 policy 缺少 ${key}`)
   }
-  // 归层：L1 独占；L2/L3 不许出现（子会话只回报，不判断下一步该推进还是提问）。
+  // 归层：L1 独占；W1/L2/L3 不许出现（子会话只回报，不判断下一步该推进还是提问）。
   const l1 = PROMPT_LAYERS.find(layer => layer.id === 'L1')
   assert.ok(l1.owns.some(item => item.includes('推进循环')), 'L1 owns 应登记推进循环')
   assert.ok(l1.owns.some(item => item.includes('ADVANCE_LOOP_LINES')), 'L1 owns 应写明措辞源')
   assert.deepEqual(layerViolations('L1', policy), [])
   for (const leaked of ['推进循环：收到回报必须推进', '用 ask_user_question 问「还有新任务吗」']) {
+    assert.notDeepEqual(layerViolations('W1', leaked), [], `W1 不该复述：${leaked}`)
     assert.notDeepEqual(layerViolations('L2', leaked), [], `L2 不该复述：${leaked}`)
     assert.notDeepEqual(layerViolations('L3', leaked), [], `L3 不该复述：${leaked}`)
   }
@@ -84,7 +94,7 @@ test('推进循环归 L1：句子逐字来自 copy.js，通知尾部动作指令
   assert.ok(notify.owns.some(item => item.includes('ADVANCE_NOTICE_HINT')), 'NOTIFY owns 应登记动作指令')
 })
 
-test('任务链归 L1：五条规则逐字来自 copy.js，L2/L3 不许复述', () => {
+test('任务链归 L1：五条规则逐字来自 copy.js，W1/L2/L3 不许复述', () => {
   const policy = renderCoordinatorPolicy({})
   const block = renderTaskChainPolicy()
   // 每一句都逐字来自 copy.js 的 TASK_CHAIN_LINES（改一处两处一起变，不许各写一套）。
@@ -102,9 +112,69 @@ test('任务链归 L1：五条规则逐字来自 copy.js，L2/L3 不许复述', 
   assert.ok(l1.owns.some(item => item.includes('TASK_CHAIN_LINES')), 'L1 owns 应写明措辞源')
   assert.deepEqual(layerViolations('L1', policy), [])
   for (const leaked of ['任务链：B 的输入是 A 的产物', 'dependsOn 不是阻塞等待：先落 waiting_dep']) {
+    assert.notDeepEqual(layerViolations('W1', leaked), [], `W1 不该复述：${leaked}`)
     assert.notDeepEqual(layerViolations('L2', leaked), [], `L2 不该复述：${leaked}`)
     assert.notDeepEqual(layerViolations('L3', leaked), [], `L3 不该复述：${leaked}`)
   }
+})
+
+// ---- W1：任务执行者 per-turn policy（t-4f7ce108） ---------------------------------
+
+test('W1 段落固定四句 + 条件一句：句子逐字来自 copy.js', () => {
+  const plain = renderWorkerPolicy()
+  assert.match(plain, new RegExp(`^## ${WORKER_POLICY_HEADING}`))
+  for (const [key, line] of Object.entries(WORKER_POLICY_LINES)) {
+    if (key === 'worktree') {
+      assert.equal(plain.includes(line), false, '非隔离任务不给装依赖授权')
+      continue
+    }
+    assert.ok(plain.includes(line), `W1 缺少 ${key} 的句子`)
+  }
+  // 条件句只在真隔离（requested / created / reused）出现。
+  for (const worktreeState of ['requested', 'created', 'reused']) {
+    assert.ok(renderWorkerPolicy({ worktreeState }).includes(WORKER_POLICY_LINES.worktree), `${worktreeState} 应给装依赖授权`)
+  }
+  for (const worktreeState of [undefined, 'none', 'degraded', 'rejected', 'failed', 'cleaned']) {
+    assert.equal(renderWorkerPolicy({ worktreeState }).includes(WORKER_POLICY_LINES.worktree), false, String(worktreeState))
+  }
+})
+
+test('W1 拥有执行中上报 / 交付回报 / 装依赖 / 主动读 context（brief 与 persona 不再各写一份）', () => {
+  const w1 = PROMPT_LAYERS.find(layer => layer.id === 'W1')
+  assert.equal(w1.audience, 'worker')
+  for (const marker of ['BLOCKED_HINT', 'CONFIRM_HINT', 'WORKTREE_INSTALL_HINT', 'WORKER_CONTEXT_HINT', 'WORKER_DETAIL_HINT']) {
+    assert.ok(w1.owns.some(item => item.includes(marker)), `W1 owns 应登记 ${marker}`)
+  }
+  // 归层自检：W1 段落本身干净（不讲协调者口径），L2 不许把它抄回去。
+  const policy = renderWorkerPolicy({ worktreeState: 'created' })
+  assert.deepEqual(layerViolations('W1', policy), [])
+  for (const leaked of [
+    `执行中只把**堵塞项**交给用户拍板：${BLOCKED_HINT}`,
+    `完成后用 task_report 回报（progress / done / blocked / needs_auth）`,
+    `本任务在独立检出里跑，检出目录没有依赖`,
+    `需要历史经验/项目背景时主动调 context`,
+  ]) {
+    assert.notDeepEqual(layerViolations('L2', leaked), [], `L2 不该复述 W1 的口径：${leaked.slice(0, 24)}…`)
+  }
+})
+
+test('W1 与 brief / persona / task_detail 的句子不重复（同一句只在一层）', () => {
+  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
+  const detail = sampleDetail()
+  const policy = renderWorkerPolicy({ worktreeState: 'created' })
+  for (const line of Object.values(WORKER_POLICY_LINES)) {
+    assert.equal(brief.includes(line), false, 'brief 不许内联 W1 的句子')
+    assert.equal(detail.includes(line), false, 'task_detail 不许内联 W1 的句子')
+  }
+  // 反向：brief 的指针也不许出现在 W1（两层各说一句，不互相抄）。
+  assert.equal(policy.includes('【任务详情】'), false)
+  // persona 只剩身份：静态引导已迁到 W1。
+  const yml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const workerPrefix = yml.split('id: dsh-orchestrator-worker')[1] ?? ''
+  assert.equal(workerPrefix.includes(WORKER_CONTEXT_HINT), false, 'worker persona 不再内联上下文引导（归 W1）')
+  assert.match(workerPrefix, /你是 dsh-orchestrator 的任务执行者/, 'persona 只留身份一句')
+  assert.match(WORKER_CONTEXT_HINT, /主动调 context/)
+  assert.match(WORKER_CONTEXT_HINT, /不要等协调者注入/)
 })
 
 test('L4 onboarding 瘦身：不再复述 L1 的 6 条能力边界（审计 §2.7）', () => {
@@ -119,19 +189,20 @@ test('L4 onboarding 瘦身：不再复述 L1 的 6 条能力边界（审计 §2.
   assert.match(ONBOARDING_PROMPT, /系统提示词/)
 })
 
-test('L2 brief 只指路：不定义交付/关闭口径，不讲协调者工具', () => {
-  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full', worktreeState: 'created' })
+test('L2 brief 只指路：不定义交付/关闭口径，不讲协调者工具，也不内联静态提示', () => {
+  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
   assert.deepEqual(layerViolations('L2', brief), [])
   assert.match(brief, /【任务编号】t-1a2b3c4d/)
   assert.match(brief, /task_detail/)
-  // 协调者口径一律不出现。
+  // 协调者口径与 W1 静态口径一律不出现。
   assert.doesNotMatch(brief, /task_close|present|read_workspace|已交付待确认/)
+  assert.doesNotMatch(brief, /task_report|worktree 检出|主动调 context/)
 })
 
-test('L2 只报送商品：堵塞项口径引用 copy.js，不复述 L1 的分级与评估', () => {
-  const l2 = PROMPT_LAYERS.find(layer => layer.id === 'L2')
-  assert.ok(l2.owns.some(item => item.includes('BLOCKER_RULE')), 'L2 owns 应写明堵塞项口径引用 BLOCKER_RULE')
-  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full', worktreeState: 'created' })
+test('L2 只报送商品：堵塞项口径的渲染归 W1，brief 不复述 L1 的分级与评估', () => {
+  const w1 = PROMPT_LAYERS.find(layer => layer.id === 'W1')
+  assert.ok(w1.owns.some(item => item.includes('BLOCKER_RULE')), 'W1 owns 应写明堵塞项口径引用 BLOCKER_RULE')
+  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
   assert.deepEqual(layerViolations('L2', brief), [])
   // 探针：把分级/评估抄进 brief 或 task_detail 就红（这是 L1 的判断，不是子会话的规则）。
   for (const leaked of ['T0 / T1 判级：简单任务不提问', 'R0 / R1 先评估再确认', '见「三闸门」的分级表']) {
@@ -140,40 +211,24 @@ test('L2 只报送商品：堵塞项口径引用 copy.js，不复述 L1 的分�
   }
 })
 
-test('L2 行数：4 行基准，full 与隔离各加一行（修「四件事」漂移）', () => {
+test('L2 行数：2 行基准，full 加一行；worktree 状态不再进 brief', () => {
   const plain = renderBrief({ taskId: 't-1' }).split('\n')
   const full = renderBrief({ taskId: 't-1', access: 'full' }).split('\n')
-  const isolated = renderBrief({ taskId: 't-1', worktreeState: 'created' }).split('\n')
-  const both = renderBrief({ taskId: 't-1', access: 'full', worktreeState: 'created' }).split('\n')
-  assert.equal(plain.length, 4)
-  assert.equal(full.length, 5)
-  assert.equal(isolated.length, 5)
-  assert.equal(both.length, 6)
+  assert.equal(plain.length, 2)
+  assert.equal(full.length, 3)
   assert.match(full[1], /^【访问级别】/)
-  assert.match(isolated[1], /^【worktree 依赖】/)
+  assert.match(plain[1], /^【任务详情】/)
 })
 
-test('L2 的第二个载体（worker 预设 persona）：主动读 context 的引导逐字同源，brief 不重复它', () => {
-  const yml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
-  // 措辞只在 src/prompt-layers.js 定义一次；cordis.patch.yml 的 worker persona prefix 必须逐字包含。
-  assert.ok(yml.includes(WORKER_CONTEXT_HINT), `worker persona 未逐字包含 WORKER_CONTEXT_HINT：\n${WORKER_CONTEXT_HINT}`)
-  assert.match(WORKER_CONTEXT_HINT, /主动调 context/)
-  assert.match(WORKER_CONTEXT_HINT, /不要等协调者注入/)
-  // 归层：这条引导属 L2（发给子会话的指引），且是「出生即带」的静态前缀，不是每条 brief 的临时注入。
-  const l2 = PROMPT_LAYERS.find(layer => layer.id === 'L2')
-  assert.match(l2.carrier, /persona/)
-  assert.ok(l2.owns.some(item => item.includes('WORKER_CONTEXT_HINT')), 'L2 owns 应登记这条引导的措辞源')
-  const brief = renderBrief({ taskId: 't-1a2b3c4d' })
-  assert.equal(brief.includes(WORKER_CONTEXT_HINT), false, 'brief 只留任务信息，不重复 persona 的引导')
-})
-
-test('L3 task_detail 只给任务详情与完成动作：不重复 brief 的指路，不讲协调者口径', () => {
+test('L3 task_detail 只给任务详情：不重复 brief 的指路，不讲协调者口径，不重复 W1 的回报口径', () => {
   const detail = sampleDetail()
   assert.deepEqual(layerViolations('L3', detail), [])
   assert.match(detail, /【验收标准】/)
   assert.match(detail, /【约束】/)
-  assert.match(detail, /task_report/)
   assert.doesNotMatch(detail, /先调 task_detail/)
+  // 完成动作归 W1：task_detail 不再写 summary 三问 / 四状态。
+  assert.doesNotMatch(detail, new RegExp(SUMMARY_FIELDS))
+  assert.doesNotMatch(detail, /progress \/ done \/ blocked \/ needs_auth/)
 })
 
 test('通知只讲动作：交付指令与 present 上限不重复解释能力边界', () => {
@@ -183,15 +238,15 @@ test('通知只讲动作：交付指令与 present 上限不重复解释能力�
   assert.match(DELIVERED_HINT, /默认保持待确认/)
 })
 
-test('矛盾 2 已修：brief 与 task_detail 的交付口径同源（都从 SUMMARY_FIELDS 拼）', () => {
-  // 两处必须逐字包含同一组要素，子会话才不会一个写「要点」一个写「三问」。
+test('矛盾 2 已修：交付口径只有 W1 一份（summary 三问 + done 清空 question/options）', () => {
+  const policy = renderWorkerPolicy()
   assert.ok(CONFIRM_HINT.includes(SUMMARY_FIELDS))
-  assert.ok(sampleDetail().includes(SUMMARY_FIELDS))
+  assert.ok(policy.includes(SUMMARY_FIELDS))
   // 且都不许再出现「选项进 question+options」这种教用户用不存在能力的措辞。
-  for (const text of [CONFIRM_HINT, sampleDetail(), renderCoordinatorPolicy({}), ONBOARDING_PROMPT, DELIVERED_HINT]) {
+  for (const text of [CONFIRM_HINT, policy, renderCoordinatorPolicy({}), ONBOARDING_PROMPT, DELIVERED_HINT]) {
     assert.doesNotMatch(text, /选项进\s*question\+options/)
   }
-  // done 不支持 question/options 这条平台事实必须在 brief 里写明。
+  // done 不支持 question/options 这条平台事实必须在 W1 写明。
   assert.match(CONFIRM_HINT, /done 会清空 question\/options/)
 })
 
@@ -205,12 +260,11 @@ test('矛盾 1 已修：文档不再教「交付时选项进 question+options」
   assert.match(limits, /done\*\*?不支持|不支持 `question`\/`options`|会把它们清空/)
 })
 
-test('矛盾 3 已修：文档的 brief 行数描述与实现一致（4–6 行）', () => {
+test('矛盾 3 已修：文档的 brief 行数描述与实现一致（2–3 行）', () => {
   const doc = readFileSync(new URL('../docs/testing.md', import.meta.url), 'utf8')
-  assert.match(doc, /4 行/)
-  assert.match(doc, /4–6 行/)
-  // 实现侧核对：不隔离不 full 就是 4 行。
-  assert.equal(renderBrief({ taskId: 't-1' }).split('\n').length, 4)
+  assert.match(doc, /2–3 行/)
+  // 实现侧核对：不 full 就是 2 行。
+  assert.equal(renderBrief({ taskId: 't-1' }).split('\n').length, 2)
 })
 
 test('跨层共享口径只有一个来源：present 上限、交付不是结束', () => {
@@ -219,11 +273,11 @@ test('跨层共享口径只有一个来源：present 上限、交付不是结束
   // policy 与通知都用同一个常量拼，改了常量两边一起变。
   assert.ok(renderCoordinatorPolicy({}).includes(PRESENT_LIMIT_TEXT))
   assert.ok(PRESENT_HINT.includes(PRESENT_LIMIT_TEXT))
-  // 「done 不是终态」这条口径的三层都必须与共享常量同义（不许出现「done 即结束」）。
+  // 「done 不是终态」这条口径的各层都必须与共享常量同义（不许出现「done 即结束」）。
   assert.match(DELIVERY_NOT_FINAL, /不是终态/)
   for (const [name, text] of [
     ['L1', renderCoordinatorPolicy({})],
-    ['L3', sampleDetail()],
+    ['W1', renderWorkerPolicy()],
     ['NOTIFY', DELIVERED_HINT],
   ]) {
     assert.doesNotMatch(text, /done\s*即(?:任务)?(?:结束|终态|完成)/, `${name} 出现「done 即结束」`)

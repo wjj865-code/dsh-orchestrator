@@ -32,7 +32,7 @@ import {
   confirmOnBoard, linkBoardTask, readTeamBoard, setTeamBoardSink, teamLinkView,
 } from './src/team-board.js'
 import { loadPreferences, migrateLegacyPreferences, renderPreferenceBlock } from './src/preferences.js'
-import { PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy, renderTaskChainPolicy } from './src/prompt-layers.js'
+import { PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy, renderTaskChainPolicy, renderWorkerPolicy } from './src/prompt-layers.js'
 // P1-C 文案单源：协调者 policy 里的计划/交付口径引用 src/copy.js，避免与 L2/L3 说法漂移。
 import {
   BLOCKER_RULE, CHANGE_REVIEW_FIELDS, PLAN_PHASE_LINES, PLAN_SAVE_DIR, PROGRESS_NOTICE_HINT,
@@ -70,7 +70,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - **任务链**：B 的输入是 A 的产物（实现 → 验收/冒烟、构建 → 发布、修复 → 回归）时，派 A 之后**同一回合**就把 B 建出来并传 dependsOn:[A 的编号]——不要等 A 完成再建、也不要轮询；机制与五条规则见下「任务链」段。同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域（与活跃未隔离任务重叠会被拒，见下「同写域并发防护」）；紧急任务用 priority（-10..10）。
 - 子任务回报产物路径后，默认用 present 展示 ${PRESENT_LIMIT_TEXT}产物（只列**已登记产物**里的真实文件、写绝对路径），不必等用户点名；没有产物就不提 present。要看产物正文（多文件产物挑着看、核对文件里到底写了什么）用 read_workspace({ path })：边界是**主会话工作区 ∪ 已登记产物**——子会话按契约把产物写在 target 目录内（仓库、worktree 检出），那些路径不在工作区里，但只要登记过就能读；未登记的同目录文件、越界、路径穿越、符号链接逃逸会被拒。present 仍只声明交付、不读文件内容。
 - 需要「看一眼产物」时先用 read_workspace，不要为此新派一个子任务；但**不要**用 read_workspace 校验产物是否真实存在（存在性由插件与子任务保证，present 只列真实文件）。
-- **看文件用原生 read / glob / grep（只读，已挂给你）**：核对子会话说的改动、看 target 里的文件、读插件安装目录里的技能与文档都可以，不必为此新派任务；它们没有产物边界、能读到全盘。**别碰凭据**：~/.dsh/.credentials.yaml、.env、SSH key、各类 token 一律不读、不转述、不写进回复或产物；读到敏感内容就地停手并说明原因。
+- **看文件用原生 read（只读，已挂给你）**：核对子会话说的改动、看 target 里的某个文件、读插件安装目录里的技能与文档都可以，不必为此新派任务；它没有产物边界、能读到全盘。**不要自己搜文件**：协调者不挂 glob/grep（会绕过派发自行调研）——需要批量检索、枚举目录或跨文件取证时，派一条只读任务（readOnly:true）让子会话把结果带回来。**别碰凭据**：~/.dsh/.credentials.yaml、.env、SSH key、各类 token 一律不读、不转述、不写进回复或产物；读到敏感内容就地停手并说明原因。
 - **复杂任务必须走计划闸门**（T3：跨仓库/跨工作区、重构·替换·迁移、不可逆、要推远端或发布、要写仓库外、动 5 个以上文件、范围不确定——判据见下「## 交互三闸门」）：task_create({ planFirst: true })：子会话只读探索后先 plan_save 把计划落盘到${PLAN_SAVE_DIR}<taskId>.md，再用 task_report blocked 只上报摘要 + ${PLAN_PHASE_LINES.reportQuestion}。planFirst 与 readOnly 互斥。
 - **计划批准必须由用户拍板（最硬的人工闸门，协调者不得自行批准、禁止代批）**：收到计划任务的 blocked（摘要 + 计划文档路径）后，严格按这四步（顺序不能换）：
   1. **先交付**：把计划摘要与计划文档的**绝对路径**原样转给用户，并用 present 声明该计划文档（present 只声明交付、不读内容）；
@@ -90,7 +90,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - **收到 progress 通知**：${PROGRESS_NOTICE_HINT}——它不是完成汇报，也不需要你当场回话；用户问起进度就照它报，要结论才追问。
 - **只在真正需要拍板时提问，且必须用 ask_user_question 结构化提问**：出现方案歧义/业务取舍、范围变更、权限变更、不可逆操作（删数据、覆盖历史、强推）、或需要远端写授权（推送、建 MR、发布、改权限）时，**必须用 ask_user_question 结构化提问**（question + 2–4 个 options），**不得用纯文字问句代替**——纯文字问句容易被用户忽略，也没有选项可点，等于让决策悬空。不可逆操作必须先拿到用户拍板，不能先做后报。一次把待拍板的点合成一条清单问完（每行一项，带任务名与要点），不逐任务连问。「任务能否关闭」不属于需要提问的范畴。开工前的意图确认、用户追加调整的评估确认都属于「需要拍板」：同样用结构化提问、同样一次问完。
 - 需要看“待你决定/失败/长时间没动静”时用 task_list({ view: 'inbox' })。
-- 本插件的工具就这 10 个（你能用 7 个）：task_create / task_list / task_status / task_message / context / memory_note / read_workspace，加上只对子会话开放的 task_report / task_detail / plan_save（它们不在你的工具表里）。除此之外你还能用宿主原生的 read / glob / grep（只读看文件）、skill（按名加载技能）、present（交付）、ask_user_question、schedule_*（原生自动化）：没有 write / edit / bash / pwsh——写与执行不在你的职责里，权限也钉在只读。旧的 task_stop / task_retry / task_close 已并入 task_message 的 action（stop / retry / close），task_inbox 并入 task_list({ view: 'inbox' })，history_search / project_context 并入 context 的 mode（history / project / workspaces）；旧名已删除，硬调会拿到迁移提示（映射表见 README「工具迁移映射」）。
+- 本插件的工具就这 10 个（你能用 7 个）：task_create / task_list / task_status / task_message / context / memory_note / read_workspace，加上只对子会话开放的 task_report / task_detail / plan_save（它们不在你的工具表里）。除此之外你还能用宿主原生的 read（只读看单个文件；glob/grep 已从预设移除，检索类工作派任务）、skill（按名加载技能）、present（交付）、ask_user_question、schedule_*（原生自动化）：没有 write / edit / bash / pwsh——写与执行不在你的职责里，权限也钉在只读。旧的 task_stop / task_retry / task_close 已并入 task_message 的 action（stop / retry / close），task_inbox 并入 task_list({ view: 'inbox' })，history_search / project_context 并入 context 的 mode（history / project / workspaces）；旧名已删除，硬调会拿到迁移提示（映射表见 README「工具迁移映射」）。
 - 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
 - 本回合没有别的事就立即结束回合；通知会开启新回合。
@@ -200,9 +200,10 @@ export function renderCoordinatorPolicy(config = {}) {
 // 协调者只做协调：这些是**编排正确性**上不该由协调者做的事（派队友/团队板会绕过 task_create 的台账与
 // 依赖编排；插件管理与密钥/IM 属于宿主运维面）。
 //
-// 0.26.0（t-48e8ce06）起这里**不再**是「协调者能调什么」的完整清单：read/glob/grep 已挂给协调者，
-// 写与执行不靠名单——协调者预设没挂 tool-bash/tool-pwsh，tool-fs 只开 read，写路径另有钉死的
-// read-only 权限预设（沙箱写全拒）兜底。角色专属的三个子会话工具（task_report / task_detail /
+// 0.26.0（t-48e8ce06）起这里**不再**是「协调者能调什么」的完整清单；t-4f7ce108 起协调者的只读工具面
+// 收窄成**只有 read**（glob/grep 随 tool-fs-search 行一起从预设移除：协调者一有搜索就会自行调研、
+// 绕过派发）。写与执行不靠名单——协调者预设没挂 tool-bash/tool-pwsh，tool-fs 只开 read，写路径另有
+// 钉死的 read-only 权限预设（沙箱写全拒）兜底。角色专属的三个子会话工具（task_report / task_detail /
 // plan_save）从这份名单移出，改由协调者预设的 preset-tools deny 遮掉（工具表里看不到），
 // 执行层各自再校验归属。
 // present / read_workspace / skill / ask_user_question / schedule_* 都不在名单里（协调者要用）。
@@ -214,7 +215,7 @@ export const COORDINATOR_DENY = [
   // 宿主全局工具 `working_directory`（@deepseek-ai/dsh-tool-working-directory）会改协调者会话的 cwd，
   // 而 cwd 是指挥锚：`task_create` 不给 target 时子会话继承父会话 cwd、工作区/写域判定、
   // 记忆项目键推断都以它为准——会话内切目录会让这些锚点静默漂移。看文件不需要它
-  // （read/glob/grep 收绝对路径），所以预设层与执行层都遮掉（0.26.0 发版前真机复验补漏）。
+  // （read 收绝对路径），所以预设层与执行层都遮掉（0.26.0 发版前真机复验补漏）。
   'working_directory',
   'request_secret', 'request_connector',
   'list_bots', 'message_bot', 'post_to_group',
@@ -570,9 +571,10 @@ export async function apply(ctx, rawConfig = {}) {
   // guard 在绑定后对后续调用立即生效，连 task_create 当回合的 wait_agent 也能拒绝。
   // 预设层删不掉 agent-scope 自注册的团队工具（ToolsService 无移除 API、restrict 遮不到 own），
   // 所以执行层对主会话硬拦整个 COORDINATOR_DENY 名单；agent-scope 工具只剩这一道硬闸。
-  // 名单只覆盖「编排正确性」（派队友/团队板/插件/密钥/IM）：读写工具不在这里，读由 read/glob/grep
-  // 与 read_workspace 提供，写没有工具（预设没挂 tool-bash/tool-pwsh，tool-fs 只开 read）。
-  const DENY_HINT = toolName => `${toolName} 是协调者禁止的工具：协调者只做协调（派活走 task_create，查进度 task_list / task_status），不派队友、不操作团队任务板、不管理插件或密钥、不发 IM。看文件用 read / glob / grep（只读），看产物正文用 read_workspace，交付用 present。`
+  // 名单只覆盖「编排正确性」（派队友/团队板/插件/密钥/IM）：读写工具不在这里，读由原生 read
+  // 与 read_workspace 提供（glob/grep 已随 tool-fs-search 行从预设移除：搜索类工作走 task_create），
+  // 写没有工具（预设没挂 tool-bash/tool-pwsh，tool-fs 只开 read）。
+  const DENY_HINT = toolName => `${toolName} 是协调者禁止的工具：协调者只做协调（派活走 task_create，查进度 task_list / task_status），不派队友、不操作团队任务板、不管理插件或密钥、不发 IM。看文件用 read（只读），看产物正文用 read_workspace，交付用 present。`
   const guardDisposer = ctx.tools?.guard?.(exec => {
     const toolName = exec?.name
     if (typeof toolName !== 'string') return undefined
@@ -586,6 +588,21 @@ export async function apply(ctx, rawConfig = {}) {
     if (id === undefined || exec.agent?.id !== id) return undefined
     return toolName === 'wait_agent' ? WAIT_AGENT_DENIAL : DENY_HINT(toolName)
   })
+
+  // W1（t-4f7ce108）：任务子会话的 per-turn policy。子会话 id → 任务 id 的快照在派发被接受时记下，
+  // 台账 `tasks.session_id` 是**唯一真相**，映射只是「首回合台账还没写 session_id」的兜底
+  // （`transition(db, id, 'running', { sessionId })` 在 spawn 返回后立刻写）。
+  const workerTasks = new Map()
+  const workerTaskOf = agentId => {
+    if (typeof agentId !== 'string' || agentId === '') return undefined
+    const mapped = workerTasks.get(agentId)
+    if (mapped !== undefined) {
+      const task = getTask(db, mapped)
+      if (task !== undefined) return task
+      workerTasks.delete(agentId)
+    }
+    return findTaskBySession(db, agentId)
+  }
 
   // 系统提示只给当前已绑定的协调者；按回合动态渲染，非协调者返回空。
   const promptDisposer = ctx.systemPrompt?.context?.({
@@ -606,6 +623,21 @@ export async function apply(ctx, rawConfig = {}) {
       return [renderCoordinatorPolicy(config), preferences, capability]
         .filter(part => part !== '')
         .join('\n\n')
+    },
+  })
+
+  // W1 单独注册（order 在 L1 之后一位）：两条 context 各自按 agent id 判定，互不覆盖——
+  // 协调者只拿 L1，任务子会话只拿 W1，其它会话（不含任务子会话、也不是协调者）两条都空。
+  const workerPromptDisposer = ctx.systemPrompt?.context?.({
+    name: 'orchestrator:worker-policy',
+    order: 131,
+    interpolate: false,
+    text: context => {
+      const agentId = context?.agent?.id
+      if (agentId === undefined || agentId === resolvedCoordinatorId()) return ''
+      const task = workerTaskOf(agentId)
+      if (task === undefined) return ''
+      return renderWorkerPolicy({ worktreeState: task.worktree_state })
     },
   })
 
@@ -634,6 +666,12 @@ export async function apply(ctx, rawConfig = {}) {
     goalBridge,
     onEvent: (event, fields) => {
       logger.log(event, fields)
+      // W1：派发被接受时先记下「子会话 id → 任务 id」，首回合就能拿到 agent policy（不等台账回写）。
+      if (event === 'subagent.spawn.accepted') {
+        const sessionId = typeof fields.sessionId === 'string' ? fields.sessionId : ''
+        const taskId = typeof fields.taskId === 'string' ? fields.taskId : ''
+        if (sessionId !== '' && taskId !== '') workerTasks.set(sessionId, taskId)
+      }
       if (event === 'subagent.settled') {
         reportSettle({
           taskId: fields.taskId,
@@ -989,7 +1027,7 @@ export async function apply(ctx, rawConfig = {}) {
     try { disposeTeamBoardSink() } catch { /* 官方板反写 sink 解绑失败不阻断卸载 */ }
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
-    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, guardDisposer, artifactDisposer, settleDisposer, routeDisposer].reverse()) {
+    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, workerPromptDisposer, guardDisposer, artifactDisposer, settleDisposer, routeDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
     // 卸载期间的收尾也不能变成未处理拒绝（宿主会判 fatal load failure）。

@@ -14,9 +14,10 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 // （个别用例要「窗口没到」时再自己临时改大，用完还原。）
 process.env.DSH_ORCH_NOTIFY_MERGE_MS = '5'
 
-// 0.26.0：协调者的 deny 名单只剩「编排正确性」项（read/glob/grep/skill 都已放开），
+// 0.26.0：协调者的 deny 名单只剩「编排正确性」项（read/skill 等预设自有工具都不在名单里；
+// t-4f7ce108 起 glob/grep 随 tool-fs-search 行一起从预设移除），
 // 所以替身默认带上这些项，否则 restrict 会算成空集合（= 不装白名单），断言就失去意义。
-const DENY_FIXTURE = [...COORDINATOR_DENY, 'read', 'write', 'bash', 'glob', 'grep', 'skill', 'task_report', 'task_detail', 'plan_save', 'ask_user', 'show_view']
+const DENY_FIXTURE = [...COORDINATOR_DENY, 'read', 'write', 'bash', 'skill', 'task_report', 'task_detail', 'plan_save', 'ask_user', 'show_view']
 
 function makeAgent(id, { knownTools = DENY_FIXTURE, restrictableTools = knownTools } = {}) {
   const restrictions = []
@@ -453,8 +454,9 @@ test('协调者工具面：只读工具与 skill 不再被遮，名单只剩编�
   await apply(ctx, { coordinatorSession: 's-1' })
   assert.equal(agent.restrictions.length, 1)
   const deny = agent.restrictions[0].deny
-  // 0.26.0（t-48e8ce06）：read/glob/grep 已挂给协调者、skill 用来加载 grill-me，都不再遮。
-  for (const name of ['read', 'glob', 'grep', 'skill', 'write', 'bash']) {
+  // 0.26.0（t-48e8ce06）：read 已挂给协调者、skill 用来加载 grill-me，都不再遮。
+  // t-4f7ce108：glob/grep 已从预设移除，它们本来也不在执行层名单里（工具表里就没有它们）。
+  for (const name of ['read', 'skill', 'write', 'bash']) {
     assert.equal(deny.includes(name), false, `${name} 不再进协调者 deny 名单`)
   }
   // 编排正确性项保留：派队友/团队板/插件/密钥/IM 执行层一律拒绝。
@@ -490,7 +492,7 @@ test('主会话保留四个原生自动化工具，团队工具仍被 guard 硬�
     assert.equal(f.guards[0]({ name, agent: otherRoot }), undefined)
   }
   // 只读工具与子会话专属工具不再是执行层硬拦项：读工具放行，专属工具由各自执行层校验归属。
-  for (const name of ['read', 'glob', 'grep', 'skill', 'task_report', 'task_detail', 'plan_save']) {
+  for (const name of ['read', 'skill', 'task_report', 'task_detail', 'plan_save']) {
     assert.equal(f.guards[0]({ name, agent: main }), undefined, `${name} 不应被协调者 guard 拦`)
   }
   const create = f.registered.find(tool => tool.name === 'task_create')
@@ -669,10 +671,16 @@ test('系统提示只渲染给已绑定协调者，绑定后下一步生效', wi
   const other = makeAgent('s-2')
   const { ctx, promptContexts } = fakeCtx({ agents: [s1, other] })
   await apply(ctx, { coordinatorSession: 's-1' })
-  assert.equal(promptContexts.length, 1)
-  const entry = promptContexts[0]
+  // 两条 context：协调者 policy（L1）+ 任务执行者 policy（W1，t-4f7ce108）；各自按 agent id 判定。
+  assert.equal(promptContexts.length, 2)
+  const entry = promptContexts.find(item => item.name === 'orchestrator:coordinator-policy')
+  const worker = promptContexts.find(item => item.name === 'orchestrator:worker-policy')
+  assert.ok(entry !== undefined && worker !== undefined)
   assert.equal(entry.order, 130)
   assert.equal(entry.interpolate, false)
+  // W1 与 L1 分开注册、顺序不同，互不覆盖（两份都在时各说各的）。
+  assert.equal(worker.order, 131)
+  assert.equal(worker.interpolate, false)
   assert.equal(entry.text({ agent: other }), '')
   assert.match(entry.text({ agent: s1 }), /禁止使用 wait_agent/)
   assert.match(entry.text({ agent: s1 }), /task_list \/ task_status/)
@@ -682,7 +690,44 @@ test('系统提示只渲染给已绑定协调者，绑定后下一步生效', wi
   assert.match(entry.text({ agent: s1 }), /team_task_create/)
   assert.match(entry.text({ agent: s1 }), /预设层删不掉/)
   assert.equal(entry.text({ agent: other }), '')
+  // 协调者与无关会话都拿不到 W1（只命中任务子会话）。
+  assert.equal(worker.text({ agent: s1 }), '')
+  assert.equal(worker.text({ agent: other }), '')
+  assert.equal(worker.text({}), '')
 }))
+
+// W1（t-4f7ce108）：按 tasks.session_id 注入任务子会话的 per-turn policy。
+test('任务子会话拿到 worker policy；协调者/无关会话/孙会话拿不到', withHome(async () => {
+  const coordinator = makeAgent('s-1')
+  const { ctx, registered, promptContexts } = fakeCtx({ agent: coordinator })
+  await apply(ctx, { coordinatorSession: 's-1' })
+  const worker = promptContexts.find(item => item.name === 'orchestrator:worker-policy')
+  assert.ok(worker !== undefined, '应注册 orchestrator:worker-policy')
+  const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
+  // 派发前：子会话 id 还没进台账（fakeCtx 的 spawn 返回 m-1）→ 不注入。
+  assert.equal(worker.text({ agent: { id: 'm-1' } }), '')
+  const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
+  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  // 派发被接受时 index.js 记下 id 映射：首回合即可注入（不必等台账 session_id 回写）。
+  const policy = worker.text({ agent: { id: 'm-1' } })
+  assert.match(policy, /## 回报与确认/)
+  assert.match(policy, /task_report 回报（progress \/ done \/ blocked \/ needs_auth）/)
+  assert.match(policy, /主动调 context/)
+  // 协调者自己永远不拿 W1；无关会话与孙会话（不在 tasks.session_id 里）也不拿。
+  assert.equal(worker.text({ agent: coordinator }), '')
+  assert.equal(worker.text({ agent: { id: 'grandchild-1' } }), '')
+  // 普通任务没有装依赖授权；隔离任务才有（W1 按台账 worktree_state 条件渲染）。
+  assert.equal(/pnpm install/.test(policy), false)
+  // 台账真值兜底：即使没有派发映射，tasks.session_id 命中也能注入。
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))
+  db.prepare('UPDATE tasks SET session_id = ?, worktree_state = ? WHERE id = ?').run('m-2', 'created', taskId)
+  db.close()
+  const isolated = worker.text({ agent: { id: 'm-2' } })
+  assert.match(isolated, /pnpm install/, '隔离任务（台账 worktree_state=created）应给装依赖授权')
+  assert.match(isolated, /只安装不升级/)
+}))
+
 
 test('guard 拒绝协调者的 wait_agent，子任务不受影响', withHome(async () => {
   const s1 = makeAgent('s-1')
@@ -1566,7 +1611,7 @@ test('guard 覆盖整个 COORDINATOR_DENY 名单：主会话全拒、子会话�
     assert.match(denied, toolName === 'wait_agent' ? /禁止阻塞等待/ : /协调者禁止的工具/)
     assert.equal(guard({ name: toolName, agent: sub }), undefined, `${toolName} 不应影响子会话`)
   }
-  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'context', 'memory_note', 'read_workspace', 'present', 'ask_user_question', 'read', 'glob', 'grep', 'skill', 'task_report', 'task_detail', 'plan_save']) {
+  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'context', 'memory_note', 'read_workspace', 'present', 'ask_user_question', 'read', 'skill', 'task_report', 'task_detail', 'plan_save']) {
     assert.equal(guard({ name: allowed, agent: main }), undefined, `${allowed} 应放行`)
   }
   // P1-B：旧工具名已删除，调用时执行层给「改成什么」，不是静默失败（映射表单源 src/tool-migrations.js）。
