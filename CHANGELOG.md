@@ -34,6 +34,8 @@
 
 **未验 / 明确不做**：真实公众号 `publish` 联调（需测试号 + IP 白名单，未做）；宿主 UI 预设选择器的刷新时机（P0 未验项）；Web 分支的安装执行（v1 只在 Windows 执行）；不做群发/发布、不做 server 模式、不自研渲染、不自动升级 CLI、不 vendor 二进制、不写 PATH。
 
+**同版修复（t-8a81264c，2026-11-21）—— 开包会话 `sessions.retain: unknown session`**：`pack-open` 的结果走 HTTP、新会话的目录行走 WebSocket（`api-session/added`），宿主 `sessions.retain()` 只认已进客户端会话目录的 id，所以「建好就立刻切过去」会偶发未知会话。客户端改成短退避重试 4 次（≈1.2 秒，`client/src/open-session.js`），仍失败就给「已建好（session-xxx），但打不开：<原因>。请从左侧列表打开。」的可读降级（不重试创建、不吞错）。同时 `open` 先用 `workspaceRegistry.resolveByPath(cwd)` 找目标目录所属工作区、找到就传 `workspaceId`（宿主只在该分支 `attachSession`；只给 `cwd` 的会话会落「未分组」、UI 只显示「选择一个工作区开始」），找不到才退回 `cwd`，不自动建工作区。真机复现/验收：`reports/pack-open-fix.md`。
+
 ## 0.31.0（2026-11-21）—— 台账正文去重（P1）+ 抽屉正文徽标 + 测试 skip 守卫（t-90651ad4 / 9f38721）
 
 **本版三件事**：① **P1 台账正文去重**（主体，`3cb364e`）：正文类消息只存借条、读时冷读宿主会话日志、读不到就降级、旧行零迁移；② **抽屉正文徽标**（`client/src/views.js`）：详情抽屉「最新回复」标出「正文来自子会话 / 正文不可读（摘要）」并给降级说明行；③ **测试 skip 守卫**（`9f38721`）：配置模块加载用例在管道 spawn 不可用（受限沙箱 EPERM）时 `skip`，不再把环境限制判成失败。

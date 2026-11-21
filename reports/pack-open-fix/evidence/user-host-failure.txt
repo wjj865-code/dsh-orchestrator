@@ -1,0 +1,14 @@
+﻿## 用户真机失败证据（2026-11-21，真实 DSH_HOME = C:\Users\72489\.dsh）
+
+### 1) 插件日志：pack.open 成功、返回了 sessionId（不是创建失败）
+```json
+{"at":"2026-11-21T13:31:38.407Z","event":"pack.open","detail":{"id":"wechat-mp-article","sessionId":"session-003fe106-12d8-46b1-9029-78200fa8c127"}}
+```
+
+### 2) 该会话确实落到磁盘（同 id，440 B 的裸会话头，没有 turn）
+```
+C:\Users\72489\.dsh\sessions\--C-Users-72489-.dsh-state-orchestrator-workspace--\session-003fe106-12d8-46b1-9029-78200fa8c127\session.v4.jsonl.zstd  440 B  2026-11-21T21:31:38
+```
+
+### 3) 用户在 UI 里看到的报错（原话）：sessions.retain: unknown session session-003fe106-12d8-46b1-9029-78200fa8c127
+=> 创建成功、但客户端会话目录里还没有这一行：openSession -> sessions.retain -> manager.resolveTarget 抛错。

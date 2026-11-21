@@ -11,6 +11,7 @@
  * 不显示长度、不写日志；「复制设置命令」复制的是带 `<你的值>` 占位符的命令。
  */
 import { PACK_POLL_MS } from './constants.js'
+import { openSessionWhenReady } from './open-session.js'
 import {
   readPackSnapshot, openPackSession, installPackCli, uninstallPackCli, deletePack,
   copyPackEnvCommand, setPackEnv,
@@ -178,7 +179,14 @@ export function createCapabilityPacksPanel({
       setMessage(null)
       try {
         const body = await openPackSession(pack.id)
-        openSession(body.sessionId)
+        // 会话已建好；「切过去」还要等客户端会话目录收到新行（见 open-session.js）。
+        const outcome = await openSessionWhenReady(openSession, body?.sessionId)
+        if (!outcome.ok) {
+          setMessage({
+            tone: 'bad',
+            text: `已建好（${body?.sessionId}），但打不开：${outcome.reason}。请从左侧列表打开。`,
+          })
+        }
       } catch (failure) {
         setMessage({ tone: 'bad', text: `开包会话失败：${errorText(failure)}` })
       } finally {

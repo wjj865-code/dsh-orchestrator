@@ -1,0 +1,51 @@
+## 修复后真机验证证据（隔离 DSH_HOME = C:/Users/72489/AppData/Local/Temp/orch-packfix-home，临时 profile `packfix`）
+
+### 1) 插件日志：pack.open 带 workspaceId（会话挂进「指挥舱」工作区；修复前是 workspaceId:null）
+```json
+{"at":"2026-11-21T13:47:29.627Z","event":"pack.open","detail":{"id":"wechat-mp-article","sessionId":"session-2e37af39-7afd-4283-8c19-0afe4e1a56ce","workspaceId":"1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b"}}
+```
+
+### 2) 宿主 workspace.json：sessionIds 里有这次新建的会话（attachSession 生效）
+```json
+{
+  "unit": {
+    "name": "workspace",
+    "version": 2
+  },
+  "global": {
+    "initialized": true,
+    "workspaceIds": [
+      "76edd625-d235-4fd6-abe1-5cf5ae7473df",
+      "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b"
+    ],
+    "archivedSessionIds": [],
+    "pinnedSessionIds": [],
+    "defaultWorkspaceId": "76edd625-d235-4fd6-abe1-5cf5ae7473df"
+  },
+  "tables": {
+    "workspaces": {
+      "76edd625-d235-4fd6-abe1-5cf5ae7473df": {
+        "path": "C:\\Users\\72489\\Documents\\deepseek-harness\\default-workspace",
+        "title": "default-workspace",
+        "sessionIds": [
+          "session-cc200068-b4cc-4530-b842-f9778b042c49"
+        ],
+        "createdAt": "2026-11-21T13:36:07.867Z",
+        "updatedAt": "2026-11-21T13:36:08.107Z"
+      },
+      "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b": {
+        "path": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-packfix-home\\state\\orchestrator\\workspace",
+        "title": "指挥舱",
+        "sessionIds": [
+          "session-2e37af39-7afd-4283-8c19-0afe4e1a56ce",
+          "session-d25ecfff-9810-4e0f-9bc6-63349a04b452"
+        ],
+        "createdAt": "2026-11-21T13:40:00.000Z",
+        "updatedAt": "2026-11-21T13:47:29.621Z"
+      }
+    }
+  }
+}
+```
+
+### 3) 探针断言：reports/pack-open-fix/evidence/after-fix-result.json（9/9 PASS）

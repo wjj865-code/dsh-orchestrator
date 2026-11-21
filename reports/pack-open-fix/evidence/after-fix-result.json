@@ -1,0 +1,45 @@
+{
+  "checks": [
+    {
+      "name": "panel-entry",
+      "ok": true
+    },
+    {
+      "name": "pack-card-visible",
+      "ok": true
+    },
+    {
+      "name": "preset-registered",
+      "ok": true
+    },
+    {
+      "name": "open-button-clicked",
+      "ok": true,
+      "tag": "BUTTON"
+    },
+    {
+      "name": "no-open-failure",
+      "ok": true
+    },
+    {
+      "name": "conversation-open",
+      "ok": true
+    },
+    {
+      "name": "in-cockpit-workspace",
+      "ok": true
+    },
+    {
+      "name": "no-workspace-placeholder",
+      "ok": true
+    },
+    {
+      "name": "session-tab-title",
+      "ok": true,
+      "packTitle": "公众号文章"
+    }
+  ],
+  "pageText": "新会话\nCtrl\n+\nAlt\n+\nN\n插件\n◈\n主会话\n自动化任务\n◫\n能力包\n更多\n工作区\n默认工作区\n指挥舱\n新会话\n更多\n设为协调者\n探索未至之境\n预览版\n指挥舱\n公众号文章\n描述你想要构建的内容, / 调用指令, @ 文件或对话\n工作区内修改\n请选择模型\n开始使用\n\n登录 DeepSeek 账号，或添加 API Key，即可开始使用。你的项目和文件保存在本地。\n\n添加 API Key\n登录",
+  "consoleErrors": [],
+  "ok": true
+}

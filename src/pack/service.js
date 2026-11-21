@@ -42,6 +42,7 @@ const stableStringify = value => {
  * @param {{ desktop: boolean, profileName?: string }} [options.hostInfo]
  * @param {Array<{id: string, packRoot: string, manifest: object, definition?: object, mode?: string}>} [options.builtin]
  * @param {() => any} [options.sessionController]
+ * @param {() => any} [options.workspaces] - 宿主 workspaceRegistry（可空）：开包会话优先挂到目标目录所属工作区
  * @param {() => (string | undefined)} [options.workspaceDir]
  * @param {Record<string, string | undefined>} [options.env]
  * @param {() => number} [options.now]
@@ -56,6 +57,7 @@ export function createPackService({
   hostInfo = { desktop: false },
   builtin = [],
   sessionController = () => undefined,
+  workspaces = () => undefined,
   workspaceDir = () => undefined,
   env = process.env,
   now = Date.now,
@@ -376,6 +378,25 @@ export function createPackService({
   }
 
   // ── 开包会话 ────────────────────────────────────────────────
+  /**
+   * 目标目录 → 宿主已登记的工作区 id（找不到/服务缺失/抛错都返回 undefined）。
+   *
+   * 为什么要这一步：`sessionController.create` 只给 `cwd` 时宿主**不会** `workspace.attachSession`
+   * （只有 `workspaceId` 分支才 attach，宿主 `commands.ts` 的 create）。不挂工作区的会话在 UI 里
+   * 落在「未分组」，会话视图只显示「选择一个工作区开始」——真机复现过（reports/pack-open-fix.md）。
+   * 这里**不自动建工作区**（那是主会话「指挥舱」的语义）：目录不是工作区就退回旧的 cwd 创建。
+   */
+  const workspaceIdFor = async target => {
+    if (text(target) === '') return undefined
+    try {
+      const services = typeof workspaces === 'function' ? workspaces() : workspaces
+      const found = await services?.resolveByPath?.(target)
+      return typeof found?.id === 'string' && found.id !== '' ? found.id : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   const open = async (id, { cwd } = {}) => {
     const denied = requireUsable()
     if (denied !== undefined) return denied
@@ -399,14 +420,24 @@ export function createPackService({
     const target = text(cwd) !== '' ? cwd : workspaceDir()
     if (text(target) === '') return { ok: false, code: 'CWD_REQUIRED', error: '缺少 cwd：请给包会话工作目录（默认取主会话目录）' }
     try {
-      const created = await controller.create({ cwd: target, agentPreset: definition.id })
+      const workspaceId = await workspaceIdFor(target)
+      // workspaceId 与 cwd 不能同时传（宿主 create 会拒）；工作区分支的 cwd 就是工作区路径。
+      const created = workspaceId === undefined
+        ? await controller.create({ cwd: target, agentPreset: definition.id })
+        : await controller.create({ workspaceId, agentPreset: definition.id })
       const sessionId = created?.sessionId
       if (typeof sessionId !== 'string' || sessionId === '') {
         return { ok: false, code: 'SESSION_CREATE_FAILED', error: 'sessionController.create 未返回 sessionId' }
       }
       try { store.touchPack(entry.id) } catch { /* 打开时间写失败不影响会话 */ }
-      log('pack.open', { detail: { id, sessionId } })
-      return { ok: true, sessionId, presetId: definition.id, cwd: target }
+      log('pack.open', { detail: { id, sessionId, workspaceId: workspaceId ?? null } })
+      return {
+        ok: true,
+        sessionId,
+        presetId: definition.id,
+        cwd: target,
+        ...(workspaceId === undefined ? {} : { workspaceId }),
+      }
     } catch (error) {
       return { ok: false, code: 'SESSION_CREATE_FAILED', error: `开包会话失败：${error?.message ?? error}` }
     }

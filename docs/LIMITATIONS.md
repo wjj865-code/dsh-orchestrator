@@ -203,6 +203,8 @@
 - **凭据边界**：插件不读值、不落盘；`setx` 会把密钥短暂暴露在进程命令行并写入 `HKCU\Environment`（需用户二次确认）；文颜自己可能缓存 `access_token`，已重定向到包内 `.state/wenyan`，删包即清，但插件不读不管。
 - **用户包技能质量无保证**：工厂只生成声明与文本（不生成脚本），也不做内容评分；`dry-run + 健康检查 + 一键删除` 是全部兜底。真实公众号联调（一条草稿）仍属人工验收项。
 - **删除包时若会话仍开着（Windows）**：skill watcher 可能占住 `skills/` 目录，整目录 rename 恒 `EPERM`。此时只撤预设 + registry + tools，目录延后到下次启动 `purgeUnregistered()` 清理（不硬删，避免运行中会话中途丢技能）。
+- **开包会话的跳转有宿主侧竞态（降级，不静默）**：`pack-open` 的结果走 HTTP，而新会话的目录行经 `api-session/added` 事件走 WebSocket；宿主 `sessions.retain()` 只认已经进客户端会话目录的 id，事件还没落地时会同步抛 `sessions.retain: unknown session <id>`。客户端对这类错误短退避重试 4 次（≈1.2 秒，`client/src/open-session.js`）；仍失败就如实提示「已建好（session-xxx），但打不开：<原因>。请从左侧列表打开。」——**不重试创建、不吞错**。同一竞态在「新建协调者会话」链早就有（见主会话上下文维护一节）。
+- **包会话挂工作区**：`sessionController.create` 只给 `cwd` 时宿主不会 `attachSession`（只有 `workspaceId` 分支才挂），会话会落在「未分组」且 UI 只显示「选择一个工作区开始」。所以 open 先用 `workspaceRegistry.resolveByPath(cwd)` 找目标目录所属工作区，找到就传 `workspaceId`；目录不是已登记工作区（或服务缺失）才退回只给 `cwd`——插件**不自动建工作区**（那是主会话「指挥舱」的语义）。
 
 ## UI
 

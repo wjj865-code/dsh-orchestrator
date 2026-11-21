@@ -944,6 +944,9 @@ export async function apply(ctx, rawConfig = {}) {
     hostInfo: { desktop: capabilityPacksDesktop },
     builtin: builtinPackState,
     sessionController: () => service('sessionController'),
+    // 开包会话：目标目录已是宿主工作区时就挂进去（宿主只在 workspaceId 分支 attachSession；
+    // 只给 cwd 的会话会落在「未分组」，UI 打不开正常会话视图）。
+    workspaces: () => service('workspaceRegistry'),
     workspaceDir: () => resolveCoordinator()?.session?.header?.cwd ?? join(dir, 'workspace'),
     env: process.env,
     log: (event, fields) => logger.log(event, fields),

@@ -41,7 +41,7 @@ const builtinFixture = () => {
   return { kind: 'builtin', id: 'builtin-pack', packRoot, manifest, mode: 'runtime' }
 }
 
-const setup = ({ builtin = [], config = {} } = {}) => {
+const setup = ({ builtin = [], config = {}, workspaces } = {}) => {
   const stateDir = tempDir()
   const store = createPackStore({ stateDir, now: () => 1700000000000 })
   const registered = new Map()
@@ -65,6 +65,7 @@ const setup = ({ builtin = [], config = {} } = {}) => {
     hostInfo: { desktop: true },
     builtin,
     sessionController: () => controller,
+    ...(workspaces === undefined ? {} : { workspaces }),
     workspaceDir: () => 'C:/work',
     env: {},
     now: () => 1700000000000,
@@ -170,6 +171,42 @@ test('P3 service：open 只传 cwd + agentPreset，返回 sessionId；未注册�
   assert.equal(missing.ok, false)
   assert.equal(missing.code, 'PRESET_NOT_REGISTERED')
   assert.match(missing.staticYaml, /insert:/)
+})
+
+test('t-8a81264c：开包会话的目标目录属于宿主工作区时用 workspaceId 建会话（宿主才会 attachSession）', async () => {
+  // 只传 cwd 时宿主不 attachSession，会话在 UI 里落在「未分组」、只显示「选择一个工作区开始」。
+  const resolved = []
+  const { service, sessions } = setup({
+    workspaces: () => ({
+      resolveByPath: async path => { resolved.push(path); return { id: 'ws-cockpit' } },
+    }),
+  })
+  await service.create(draftOf(), { confirm: true })
+  const opened = await service.open('demo-pack')
+  assert.equal(opened.ok, true, opened.error)
+  assert.equal(opened.workspaceId, 'ws-cockpit')
+  assert.deepEqual(resolved, ['C:/work'], '按目标目录（默认主会话目录）找工作区')
+  assert.deepEqual(sessions[0], { workspaceId: 'ws-cockpit', agentPreset: 'dsh-orchestrator-pack-demo-pack' })
+  assert.equal('cwd' in sessions[0], false, '宿主 create 不接受 workspaceId + cwd 同时出现')
+
+  // 显式 cwd 同样走工作区判定。
+  await service.open('demo-pack', { cwd: 'D:/other' })
+  assert.equal(resolved.at(-1), 'D:/other')
+})
+
+test('t-8a81264c：目录不是工作区（或工作区服务报错/缺失）时退回 cwd 创建，不自动建工作区', async () => {
+  const notFound = setup({ workspaces: () => ({ resolveByPath: async () => undefined }) })
+  await notFound.service.create(draftOf(), { confirm: true })
+  const fallback = await notFound.service.open('demo-pack')
+  assert.equal(fallback.ok, true, fallback.error)
+  assert.equal('workspaceId' in fallback, false)
+  assert.deepEqual(notFound.sessions[0], { cwd: 'C:/work', agentPreset: 'dsh-orchestrator-pack-demo-pack' })
+
+  const broken = setup({ workspaces: () => ({ resolveByPath: async () => { throw new Error('ENOENT') } }) })
+  await broken.service.create(draftOf(), { confirm: true })
+  const opened = await broken.service.open('demo-pack')
+  assert.equal(opened.ok, true, opened.error)
+  assert.deepEqual(broken.sessions[0], { cwd: 'C:/work', agentPreset: 'dsh-orchestrator-pack-demo-pack' })
 })
 
 test('P3 service：健康检查 files 硬、env soft；未设变量不判包失败', async () => {

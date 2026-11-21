@@ -49,3 +49,16 @@ test('P4 产物：能力包面板真的打进 dist/client.js（不是只写源�
     assert.ok(artifact.includes(marker), `产物缺少能力包标记 ${marker}`)
   }
 })
+
+test('t-8a81264c：开包会话经 openSessionWhenReady 等会话目录，失败给「请从左侧列表打开」', () => {
+  // 宿主 sessions.retain 对新会话有竞态（HTTP 结果先于 WS 目录行）：直接 openSession 会把
+  // 「会话已建好」报成「开包会话失败」。面板必须走重试 + 可读降级，且降级提示要留在产物里。
+  const panel = source('capability-packs.js')
+  assert.match(panel, /openSessionWhenReady\(openSession, body\?\.sessionId\)/, '开包会话必须经 openSessionWhenReady')
+  assert.doesNotMatch(panel, /openSession\(body\.sessionId\)/, '不能直接 openSession（丢掉可读降级）')
+  const helper = source('open-session.js')
+  assert.match(helper, /unknown session/, '重试只认宿主 unknown session 文案')
+  assert.match(helper, /attempts/, '重试次数可配（单测注入）')
+  const artifact = readFileSync(new URL('dist/client.js', root), 'utf8')
+  assert.ok(artifact.includes('请从左侧列表打开'), '产物必须带「打不开就手动打开」的提示')
+})
