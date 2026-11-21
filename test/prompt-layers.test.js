@@ -7,8 +7,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   DELIVERY_NOT_FINAL, LAYER_NAME, PRESENT_LIMIT_TEXT, PRESENT_MAX_FILES, PROMPT_LAYERS, WORKER_CONTEXT_HINT,
-  layerViolations,
+  layerViolations, renderAdvanceLoopPolicy,
 } from '../src/prompt-layers.js'
+import { ADVANCE_LOOP_LINES, ADVANCE_NOTICE_HINT } from '../src/copy.js'
 import { renderCoordinatorPolicy } from '../index.js'
 import { CONFIRM_HINT, SUMMARY_FIELDS, renderBrief } from '../src/brief.js'
 import { renderTaskDetail } from '../src/task-detail.js'
@@ -57,6 +58,30 @@ test('L1 承担全部协调者规则（每回合重渲染的那一层）', () =>
   assert.ok(l1.owns.some(item => item.includes('BLOCKER_RULE')), 'L1 owns 应登记堵塞项口径的措辞源')
   assert.ok(l1.owns.some(item => item.includes('grill-me')), 'L1 owns 应登记 grill-me 技能的触发口径')
   assert.equal(layerViolations('L1', policy).length, 0)
+})
+
+test('推进循环归 L1：句子逐字来自 copy.js，通知尾部动作指令与它同源', () => {
+  const policy = renderCoordinatorPolicy({})
+  const block = renderAdvanceLoopPolicy()
+  // 每一句都逐字来自 copy.js 的 ADVANCE_LOOP_LINES（改一处两处一起变，不许各写一套）。
+  for (const [key, line] of Object.entries(ADVANCE_LOOP_LINES)) {
+    assert.ok(block.includes(line), `推进循环段落缺少 ${key}`)
+    assert.ok(policy.includes(line), `L1 policy 缺少 ${key}`)
+  }
+  // 归层：L1 独占；L2/L3 不许出现（子会话只回报，不判断下一步该推进还是提问）。
+  const l1 = PROMPT_LAYERS.find(layer => layer.id === 'L1')
+  assert.ok(l1.owns.some(item => item.includes('推进循环')), 'L1 owns 应登记推进循环')
+  assert.ok(l1.owns.some(item => item.includes('ADVANCE_LOOP_LINES')), 'L1 owns 应写明措辞源')
+  assert.deepEqual(layerViolations('L1', policy), [])
+  for (const leaked of ['推进循环：收到回报必须推进', '用 ask_user_question 问「还有新任务吗」']) {
+    assert.notDeepEqual(layerViolations('L2', leaked), [], `L2 不该复述：${leaked}`)
+    assert.notDeepEqual(layerViolations('L3', leaked), [], `L3 不该复述：${leaked}`)
+  }
+  // 通知层只贴动作指令：指向 L1 同一段，不重复解释能力边界。
+  assert.ok(ADVANCE_NOTICE_HINT.includes(ADVANCE_LOOP_LINES.heading), '通知指令要指向 L1 的同一段')
+  assert.deepEqual(layerViolations('NOTIFY', ADVANCE_NOTICE_HINT), [])
+  const notify = PROMPT_LAYERS.find(layer => layer.id === 'NOTIFY')
+  assert.ok(notify.owns.some(item => item.includes('ADVANCE_NOTICE_HINT')), 'NOTIFY owns 应登记动作指令')
 })
 
 test('L4 onboarding 瘦身：不再复述 L1 的 6 条能力边界（审计 §2.7）', () => {

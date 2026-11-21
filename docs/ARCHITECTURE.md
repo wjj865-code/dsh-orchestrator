@@ -228,7 +228,7 @@
 
 | 层 | 载体 | 生命周期 | 唯一职责 |
 |---|---|---|---|
-| **L1** | `ctx.systemPrompt.context().text`（`index.js`） | 每回合重渲染 | 协调者行为规则：**能直接答就不委派**、工具可用/禁用（含原生只读 `read`/`glob`/`grep` 与 `skill`）、交付与确认口径（**不主动问「能否关闭」**，只在真歧义/不可逆/远端写授权时提问）、`present` 与两条读路径（`read`/`read_workspace`）的用法、**复杂需求先 `skill({name:'grill-me'})` 拷问**、**交互三闸门（T0–T3 判级、堵塞项四类、追加调整 R0–R2）**、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
+| **L1** | `ctx.systemPrompt.context().text`（`index.js`） | 每回合重渲染 | 协调者行为规则：**能直接答就不委派**、工具可用/禁用（含原生只读 `read`/`glob`/`grep` 与 `skill`）、交付与确认口径（**不主动问「能否关闭」**，只在真歧义/不可逆/远端写授权时提问）、`present` 与两条读路径（`read`/`read_workspace`）的用法、**复杂需求先 `skill({name:'grill-me'})` 拷问**、**交互三闸门（T0–T3 判级、堵塞项四类、追加调整 R0–R2）**、**推进循环（回报后必须落到推进/提问/问新任务之一，不许只汇报）**、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
 | **L2** | 派发消息（`src/brief.js`）＋ worker 预设 persona（`cordis.patch.yml`） | 每次派发/续派；persona 出生即带 | 只指路：任务编号、访问级别、worktree 装依赖提示、`task_detail` 指引、执行中/交付时怎么回报；persona 只说子会话的**行为期望**（需要历史经验/项目背景时主动调 `context`，措辞真源 `WORKER_CONTEXT_HINT`） |
 | **L3** | 子会话按需调用（`src/task-detail.js`） | 按需 | 任务创建详情 + 完成动作 |
 | **L4** | 一次性 `agent.steer`（`src/onboarding.js`） | 仅新主会话首次 | 只开场：一句话自我介绍 + 派索引任务（能力边界一条都不重复） |
@@ -253,6 +253,7 @@
 - **追加调整（R0–R2）**：先给评估三行（`CHANGE_REVIEW_FIELDS`：影响面 / 风险 / 建议），再分档——R0 只补细节、不动验收与已交付结论 → 直接 `task_message` 转原会话；R1 动验收/范围/方案 → 评估 + 确认；R2 不可逆/权限/推翻已交付结论/换 target 或仓库 → 必须拍板。**顺序闸门**：评估与确认必须早于 `task_message`（计划中的任务收到追加消息即视为批准、沙箱当场切回可写，见「计划阶段（P8）」）。
 - 与既有机制衔接：T3 的唯一闸门就是 `planFirst`（审批四步不变）；T2/R1/R2 的确认只用宿主 `ask_user_question`（由协调者发起，子会话调用会被平台拒）；「少打扰」限定在执行期，与硬规则里「不催关闭」「能直接回答就不派任务」同向，不推翻任何既有口径。
 - **grill-me 技能是 T2/T3 的澄清动作**（0.26.0）：协调者判为 T2/T3 后先 `skill({ name: 'grill-me' })` 加载技能，按它一次只问一个决定性问题（每问带推荐）、事实自己查、决策归用户、最多 2 轮 8 问、给三栏决策记录。它只负责**澄清需求**，不替代 T2 的 `ask_user_question` 确认，也不替代 T3 的计划批准（grill ≠ 批准）。技能只挂在协调者预设作用域，子会话看不到。
+- **回报之后必须推进（推进循环，独立一段）**：`renderCoordinatorPolicy()` 在三闸门之后、worktree/写域之前拼 `src/prompt-layers.js` 的 `renderAdvanceLoopPolicy()`（句子全部来自 `src/copy.js` 的 `ADVANCE_LOOP_LINES`）。三闸门回答「**什么时候可以打断用户**」，这一段回答「**回报之后必须做什么**」——分开成段是因为混在一起时模型容易只记住「少打扰」，把「不推进」当成合规：收到任何回报（progress / done / delivered / blocked / needs_auth）或用户消息后必须落到三类动作之一（推进 = 按已批准计划 `task_message` 续派/追问；提问 = `ask_user_question`；问新任务 = 仅无活跃且无待确认时问「还有新任务吗」），**禁止只输出汇报文字**；已批准计划立即续派实现；卡点必须提问、不自批；全部完成先问新任务、同一事件只问一次、不许宣称「已全部完成」后静默。边界：与「不催关闭」明确区分（问新任务 ≠ 问能否关闭，交付仍默认待确认）、与 T0 直答不冲突（直接回答就是本轮动作）、与「少打扰」同向（不新增打断点）。通知侧用同一份文案（`ADVANCE_NOTICE_HINT`）贴在 done / delivered / blocked / needs_auth 通知末尾；progress 已有追问指令、不重复贴，结算异常（failed/cancelled/orphaned）只报事实。**这是提示词约束（软门禁），没有执行层拦截**。
 
 ## 文案单源（`src/copy.js`）
 
@@ -264,6 +265,7 @@
 | 两段式终态 | `DELIVERY_LINES` / `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`、`brief`、`notify`、`prompt-layers`、`write-guard`、`tools`、`deps` / `tool-migrations` |
 | 完整访问 | `ACCESS_FULL.label` / `.briefLine` / `.workerHint` / `.createNote` | `brief`、`task-detail`、`tools` |
 | 交互闸门 | `BLOCKER_RULE` / `CHANGE_REVIEW_FIELDS` | `index.js`（L1 交互三闸门）、`brief`（`BLOCKED_HINT`）、`tools`（`task_message` 描述） |
+| 推进循环 | `ADVANCE_LOOP_LINES` / `ADVANCE_NOTICE_HINT` | `prompt-layers`（`renderAdvanceLoopPolicy`，L1 独占）、`index.js`（`renderCoordinatorPolicy` 拼接）、`notify`（done / delivered / blocked / needs_auth 通知尾部） |
 
 1. **判据**：这句话会不会在第二个模块出现？会 → 放 `copy.js`；不会 → 留在本层（协调者规则归 L1、面板短标签归客户端）。
 2. `copy.js` 是**叶子**：不 import 任何模块，谁都能引用而不引入环。

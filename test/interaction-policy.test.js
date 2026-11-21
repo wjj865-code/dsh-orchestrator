@@ -83,6 +83,37 @@ test('T1 不是免确认挡箭牌：不可逆最低 T2，且必须拍板', () =>
   assert.match(text, /至多把 T2 降一档/)
 })
 
+test('推进循环：五条规则都在 L1，与「少打扰 / 不催关闭」不冲突也不重复', () => {
+  const text = policy()
+  const loop = text.indexOf('## 推进循环')
+  assert.ok(loop > 0, 'L1 缺少推进循环段')
+  // 位置：三闸门之后（先讲什么时候能打断，再讲回报后必须做什么），worktree/写域之前。
+  assert.ok(loop > text.indexOf('## 交互三闸门'), '推进循环应在三闸门之后')
+  assert.ok(loop < text.indexOf('## worktree 隔离'), '推进循环应在 worktree 段之前')
+  // 规则 1：三类动作 + 禁止只输出汇报文字。
+  assert.match(text, /禁止只输出汇报文字/)
+  assert.match(text, /1\. 推进：按已批准的计划 task_message 续派\/追问同一个子会话/)
+  assert.match(text, /2\. 提问：ask_user_question（结构化、2–4 个选项、每项带你的建议/)
+  assert.match(text, /3\. 问新任务：仅当「没有活跃任务、也没有待确认任务」时/)
+  // 规则 2：已批准计划必须立即续派，不许只回确认文字。
+  assert.match(text, /已批准的计划任务（plan_state=approved）：用户批准后立即 task_message 续派实现，不要只回一句确认/)
+  // 规则 3：卡点必须结构化提问，不能拖、不能自批。
+  assert.match(text, /卡点（B1–B4）与需要用户拍板的事：必须用 ask_user_question 推进，不能拖着不问，也不能自己代批/)
+  // 规则 4：全部完成先问新任务；只问一次；不许宣称「已全部完成」然后静默。
+  assert.match(text, /全部任务完成（无活跃、无待确认）：先问「还有新任务吗」/)
+  assert.match(text, /同一事件只问一次，用户不答不重复轰炸/)
+  assert.match(text, /不许宣称「已全部完成」然后静默/)
+  // 规则 5：与既有口径的边界——不催关闭仍在，问新任务 ≠ 问能否关闭，T0 直答不违反。
+  assert.match(text, /任务能否关闭/, '「不算堵塞项」清单仍在（不催关闭不变）')
+  assert.match(text, /「问是否有新任务」与「问任务能否关闭」是两件事/)
+  assert.match(text, /交付仍默认保持待确认、不主动问能否关闭/)
+  assert.match(text, /T0 直答不违反这条/)
+  // 不重复：堵塞项四类只在三闸门里逐字出现一次（推进循环只写 B1–B4 代号，不重抄 BLOCKER_RULE）。
+  assert.equal(text.split(BLOCKER_RULE).length - 1, 1, 'BLOCKER_RULE 只该出现一次')
+  // 如实标注软门禁：没有任何执行层拦截，措辞不得暗示是硬门禁。
+  assert.match(text, /提示词约束（软门禁），不是执行层拦截/)
+})
+
 test('与既有三原则互引不冲突：能直接回答就不派任务 / 少打扰只在执行期', () => {
   const text = policy()
   // 硬规则里的三条既有口径都还在，且都指向同一段交互闸门。

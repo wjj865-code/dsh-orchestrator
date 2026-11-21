@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { openLedger, addNotification } from '../src/ledger.js'
 import { levelOf, createNotifier } from '../src/notify.js'
-import { PROGRESS_NOTICE_HINT } from '../src/copy.js'
+import { ADVANCE_NOTICE_HINT, PROGRESS_NOTICE_HINT } from '../src/copy.js'
 import { canCreateFileSymlink, SYMLINK_SKIP_REASON, tempDir } from './helpers.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -38,6 +38,30 @@ test('交付通知：写「已交付待确认」并带 action:close / task_messa
   await wait(20)
   assert.match(delivered[1], /2 个任务已交付待确认/)
   assert.equal(delivered[1].match(/action: "close"/g).length, 1)
+})
+
+test('推进循环：done / delivered / blocked / needs_auth 通知末尾都带动作指令，progress 不重复贴', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 5 })
+  for (const [taskId, status] of [['t-d', 'done'], ['t-v', 'delivered'], ['t-b', 'blocked'], ['t-a', 'needs_auth']]) {
+    notifier.push({ taskId, title: status, status, summary: '回报' })
+    await wait(20)
+  }
+  assert.equal(delivered.length, 4)
+  for (const text of delivered) {
+    // 动作指令与 L1 推进循环同源（copy.js 单一真源），不是各写一套。
+    assert.ok(text.includes(ADVANCE_NOTICE_HINT), `通知缺少动作指令：${text}`)
+    assert.match(text, /下一步：推进 \/ 提问 \/ 宣布完成前先问新任务/)
+  }
+  // progress 有自己的追问指令，不重复贴通用动作指令（避免一段通知两个「下一步」）。
+  notifier.push({ taskId: 't-p', title: '跑', status: 'progress', summary: '一半' })
+  await wait(20)
+  assert.ok(delivered[4].includes(PROGRESS_NOTICE_HINT))
+  assert.equal(delivered[4].includes(ADVANCE_NOTICE_HINT), false)
+  // 结算异常只报事实，不加动作指令（由 L1 推进循环约束）。
+  notifier.push({ taskId: 't-x', title: 'X', status: 'cancelled', summary: '被中断' })
+  await wait(20)
+  assert.equal(delivered[5].includes(ADVANCE_NOTICE_HINT), false)
 })
 
 test('结算异常状态的通知文案：已取消 / 会话已结束但没有终态回报', async () => {
@@ -240,10 +264,11 @@ test('只读任务通知标「只读」；普通任务不变', async () => {
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
   notifier.push({ taskId: 't-1', title: '分析', status: 'done', summary: '完成', readOnly: true })
   await wait(25)
-  assert.deepEqual(delivered, ['任务「分析（只读）」完成：完成'])
+  // 首行是任务行；推进循环的动作指令追加在末尾（见「通知带动作指令」用例）。
+  assert.equal(delivered[0].split('\n')[0], '任务「分析（只读）」完成：完成')
   notifier.push({ taskId: 't-2', title: '修复', status: 'done', summary: '完成' })
   await wait(25)
-  assert.deepEqual(delivered[1], '任务「修复」完成：完成')
+  assert.equal(delivered[1].split('\n')[0], '任务「修复」完成：完成')
 })
 
 test('完整访问任务通知标「完整访问」；只读优先、普通任务不变', async () => {
@@ -251,14 +276,14 @@ test('完整访问任务通知标「完整访问」；只读优先、普通任�
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
   notifier.push({ taskId: 't-1', title: '构建', status: 'done', summary: '打好了', access: 'full' })
   await wait(25)
-  assert.deepEqual(delivered, ['任务「构建（完整访问）」完成：打好了'])
+  assert.equal(delivered[0].split('\n')[0], '任务「构建（完整访问）」完成：打好了')
   // 只读标记压过 access（互斥兜底：正常运行期不会同时出现）。
   notifier.push({ taskId: 't-2', title: '分析', status: 'done', summary: '完成', readOnly: true, access: 'full' })
   await wait(25)
-  assert.deepEqual(delivered[1], '任务「分析（只读）」完成：完成')
+  assert.equal(delivered[1].split('\n')[0], '任务「分析（只读）」完成：完成')
   notifier.push({ taskId: 't-3', title: '修复', status: 'done', summary: '完成', access: null })
   await wait(25)
-  assert.deepEqual(delivered[2], '任务「修复」完成：完成')
+  assert.equal(delivered[2].split('\n')[0], '任务「修复」完成：完成')
 })
 
 test('显示名优先：用 item.displayName，不裸露 t-xxx', async () => {
@@ -266,7 +291,7 @@ test('显示名优先：用 item.displayName，不裸露 t-xxx', async () => {
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
   notifier.push({ taskId: 't-aaaa1111', title: '同名', displayName: '同名（aaaa）', status: 'done', summary: '完成' })
   await wait(25)
-  assert.deepEqual(delivered, ['任务「同名（aaaa）」完成：完成'])
+  assert.equal(delivered[0].split('\n')[0], '任务「同名（aaaa）」完成：完成')
   assert.doesNotMatch(delivered[0], /t-[0-9a-f]{8}/)
 })
 

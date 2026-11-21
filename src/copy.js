@@ -104,6 +104,42 @@ export const PLAN_SAVE_TOOL_DESC = `计划模式专用：把计划正文写入${
 export const planSavedNextStep = `下一步用 ${PLAN_PHASE_LINES.reportCall}：${PLAN_PHASE_LINES.reportRule}`
 
 /**
+ * 推进循环（「报告之后必须推进，不许只汇报」）：协调者收到任何回报或用户消息后，必须落到
+ * 三类动作之一——推进 / 提问 / 问新任务——不允许只输出一段汇报文字。
+ *
+ * 为什么集中在这里：这条口径同时出现在 L1 协调者 policy（`src/prompt-layers.js`
+ * 的 `renderAdvanceLoopPolicy` 逐字渲染）与 done/delivered/blocked/needs_auth 通知尾部的
+ * 动作指令（`ADVANCE_NOTICE_HINT`）两处；两处必须逐字同源，否则模型会读到两套说法。
+ *
+ * 与既有口径的边界（不得互相推翻）：
+ * - 「不主动问任务能否关闭」不变：问新任务 ≠ 问能否关闭（`distinct` 一句写死这个区别）；
+ * - 「少打扰」是执行期口径：本段不新增打断点，只是把「回报之后要接动作」补上；
+ * - 计划批准四步与两段式交付不变：已批准计划的续派仍只由用户在协调者这条链上批准之后发生。
+ */
+export const ADVANCE_LOOP_LINES = Object.freeze({
+  heading: '推进循环（报告之后必须推进，不许只汇报）',
+  rule: '收到任何任务回报（progress / done / delivered / blocked / needs_auth）或用户消息后，必须落到下面三类动作之一；'
+    + '**禁止只输出汇报文字（「X 完成了」/「进展如下」）——那不算响应**：',
+  advance: '推进：按已批准的计划 task_message 续派/追问同一个子会话（复用上下文），或任务已授权时 task_create 继续做',
+  ask: '提问：ask_user_question（结构化、2–4 个选项、每项带你的建议；多个待决合成一条清单一次问完）',
+  askNewTask: '问新任务：仅当「没有活跃任务、也没有待确认任务」时，用 ask_user_question 问「还有新任务吗」；用户明确说没有之后才可以静默',
+  approvedPlan: '已批准的计划任务（plan_state=approved）：用户批准后立即 task_message 续派实现，不要只回一句确认；'
+    + '计划需要调整或遇到卡点就 ask_user_question 请用户拍板，不自己改范围',
+  blockers: '卡点（B1–B4）与需要用户拍板的事：必须用 ask_user_question 推进，不能拖着不问，也不能自己代批',
+  allDone: '全部任务完成（无活跃、无待确认）：先问「还有新任务吗」；用户明确说没有才静默；'
+    + '同一事件只问一次，用户不答不重复轰炸，但也不许宣称「已全部完成」然后静默',
+  distinct: '「问是否有新任务」与「问任务能否关闭」是两件事：交付仍默认保持待确认、不主动问能否关闭；'
+    + '问新任务只在没有活跃任务且没有待确认任务时问一次',
+  directAnswer: 'T0 直答不违反这条：用户问的是事实或看法、答案已在你手里时，直接回答就是本轮的「动作」，'
+    + '不必为凑动作去派任务（硬规则「能直接回答就不派任务」仍优先）',
+  soft: '这段是提示词约束（软门禁），不是执行层拦截：仍然可能只汇报、不推进；出现时按本段纠正并继续，不要假装它是硬拦截',
+})
+
+/** 通知尾部的动作指令（done / delivered / blocked / needs_auth 的通知末尾各贴一次）。 */
+export const ADVANCE_NOTICE_HINT = '下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进'
+  + `（口径见协调者「${ADVANCE_LOOP_LINES.heading}」）。`
+
+/**
  * 两段式终态（delivered）的原子句：状态名 / 非终态 / 追问 / 确认 / 超时。
  *
  * 口径（0.14.x 起）：`done` 只是交付，任务停在「已交付待确认」；要改就追问原会话（复用同一个子会话），

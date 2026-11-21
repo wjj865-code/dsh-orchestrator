@@ -1,5 +1,28 @@
 # Changelog
 
+## 未发布 —— 交互优化：报告之后必须推进（L1 推进循环 + 通知动作指令）
+
+**新增**
+
+- **L1 推进循环段**（`src/prompt-layers.js` 的 `renderAdvanceLoopPolicy()`，`renderCoordinatorPolicy()` 拼在三闸门之后、worktree/写域之前）：收到任何回报（`progress` / `done` / `delivered` / `blocked` / `needs_auth`）或用户消息后，协调者必须落到三类动作之一——**推进**（按已批准计划 `task_message` 续派/追问同一子会话，或已授权时 `task_create` 继续做）、**提问**（`ask_user_question`，2–4 个选项带建议、多个待决合成一条清单）、**问新任务**（仅无活跃且无待确认时问「还有新任务吗」）——**禁止只输出汇报文字**。另四条：已批准计划（`plan_state=approved`）批准后立即续派实现、不许只回确认；卡点（B1–B4）与待拍板必须提问、不能拖也不能自批；全部完成先问新任务、同一事件只问一次、不答不重复轰炸，也不许宣称「已全部完成」然后静默；与既有口径的边界写死（问新任务 ≠ 问能否关闭、交付仍默认待确认、T0 直答不违反、软门禁不假装硬拦截）。
+- **通知动作指令**（`src/notify.js`）：`done` / `delivered` / `blocked` / `needs_auth` 的通知末尾各贴一行「下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进」；打断级（blocked / needs_auth）的即时通知也带。`progress` 仍只贴它自己的追问指令（不重复「下一步」），结算异常（failed / cancelled / orphaned）只报事实。
+- **文案单源**：句子本体在 `src/copy.js`（`ADVANCE_LOOP_LINES` / `ADVANCE_NOTICE_HINT`），policy 与通知逐字同源；`PROMPT_LAYERS` 的 L1 与 NOTIFY 条目登记了这条归属，`layerViolations` 新增 L2/L3 探针（推进循环与「还有新任务吗」属 L1，子会话不许复述）。
+
+**行为变更（用户可感知）**
+
+1. 回报之后协调者不再只回一段「XX 完成了」：要么续派/追问、要么结构化提问、要么在全部完成时问一句「还有新任务吗」；2. `done` / `delivered` / `blocked` / `needs_auth` 的通知末尾多一行动作指令，照着做就不会停在转述；3. 已批准的计划任务在批准后会立刻续派实现，不再出现「只回一句好的」然后卡住。
+
+**不变**
+
+- 派发语义（`task_create` 仍只由协调者调用）、计划批准四步与人工闸门、两段式交付（`delivered` 仍等确认或超时）、「不主动问任务能否关闭」、四类堵塞项与「少打扰」、四类工具的权限模型，一字不改；没有新增工具、没有自动代批、没有执行层拦截（仍是提示词约束）。
+
+**验证**
+
+- `test/prompt-layers.test.js` 新增：`ADVANCE_LOOP_LINES` 每句都逐字出现在 `renderAdvanceLoopPolicy()` 与 `renderCoordinatorPolicy()` 里；L1 `owns` 登记措辞源；L2/L3 探针命中即失败；`ADVANCE_NOTICE_HINT` 归 NOTIFY 且不重复能力边界。
+- `test/interaction-policy.test.js` 新增：五条规则逐条断言 + 位置（三闸门之后、worktree 之前）+ 与「不催关闭」「T0 直答」的边界 + `BLOCKER_RULE` 只出现一次（不重抄）+ 软门禁措辞。
+- `test/notify.test.js` 新增：四种状态通知都含动作指令、progress 不重复贴、结算异常不贴；三条受影响的通知文案断言改为「首行 + 动作指令」口径（原本是整段严格相等，标签断言意图不变）。
+- **软门禁如实记录**：这条规则是提示词约束，插件不检查协调者这回合是否真的调了 `task_message` / `ask_user_question`，也没有「只汇报就重试」的拦截；模型仍可能只汇报。已写进 `docs/LIMITATIONS.md`「交互规范（软约束）」。
+
 ## 未发布 —— 工作台 v1（P11）：任务台改版为「组 / 排期 / 自动化 / 复盘 / 右侧 dock」工作台
 
 **新增**

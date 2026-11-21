@@ -32,9 +32,31 @@
 //   3. 它是不是「收到通知后马上要做的动作」？——是 → 通知 hint；否则别写进通知。
 import { BLOCKED_HINT, CONFIRM_HINT } from './brief.js'
 // P1-C 文案单源：跨层共享的「交付不是结束」与通知/详情/工具回执同源（src/copy.js）。
-import { DELIVERY_NOT_FINAL } from './copy.js'
+import { ADVANCE_LOOP_LINES, DELIVERY_NOT_FINAL } from './copy.js'
 
-export { DELIVERY_NOT_FINAL }
+export { DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES }
+
+/**
+ * L1「推进循环」段落（唯一渲染入口）：句子全部来自 `src/copy.js` 的 `ADVANCE_LOOP_LINES`，
+ * 本模块只负责分层归属与渲染顺序，`index.js` 只把它拼进协调者 policy 的固定位置。
+ *
+ * 为什么单独成段而不是塞进「交互三闸门」：三闸门回答「**什么时候可以打断用户**」，
+ * 本段回答「**回报之后必须做什么**」。混在一起时模型容易只记住「少打扰」而把「不推进」当成合规。
+ */
+export function renderAdvanceLoopPolicy() {
+  return `## ${ADVANCE_LOOP_LINES.heading}
+
+- ${ADVANCE_LOOP_LINES.rule}
+  1. ${ADVANCE_LOOP_LINES.advance}
+  2. ${ADVANCE_LOOP_LINES.ask}
+  3. ${ADVANCE_LOOP_LINES.askNewTask}
+- ${ADVANCE_LOOP_LINES.approvedPlan}。
+- ${ADVANCE_LOOP_LINES.blockers}。
+- ${ADVANCE_LOOP_LINES.allDone}。
+- ${ADVANCE_LOOP_LINES.distinct}。
+- ${ADVANCE_LOOP_LINES.directAnswer}。
+- ${ADVANCE_LOOP_LINES.soft}。`
+}
 
 /**
  * 五层清单（机器可读）：文档、测试与排障都按这张表核对「谁该说什么」。
@@ -56,6 +78,7 @@ export const PROMPT_LAYERS = Object.freeze([
       'worktree 隔离策略（renderWorktreePolicy）',
       '同写域并发防护（renderWriteGuardPolicy）',
       '交互三闸门（T0–T3 判级、开工前确认、执行期只报堵塞项、追加调整先评估；renderInteractionPolicy）',
+      '推进循环（收到回报/用户消息后必须落到推进/提问/问新任务三类动作之一，不许只汇报；renderAdvanceLoopPolicy，措辞源 copy.js 的 ADVANCE_LOOP_LINES）',
       '堵塞项四类与「不算堵塞项」清单（措辞源 copy.js 的 BLOCKER_RULE）',
       '用户偏好（第 4 段，src/preferences.js）',
       '能力诊断（schedule 服务缺失时的降级说明）',
@@ -117,6 +140,7 @@ export const PROMPT_LAYERS = Object.freeze([
     audience: 'coordinator',
     owns: Object.freeze([
       '这条通知要求协调者**现在**做什么（present 交付 / 保持待确认 / 追问 / 停止）',
+      'done/delivered/blocked/needs_auth 通知尾部的动作指令（ADVANCE_NOTICE_HINT，与 L1 推进循环同源）',
       '产物清单与「不能交付」的原因计数',
     ]),
     forbids: Object.freeze(['解释能力边界或工具清单（属 L1）', '任务详情（属 L3）']),
@@ -198,12 +222,15 @@ export function layerViolations(layerId, text) {
       [/read_workspace/, 'L1 的读产物口径'],
       // 分级与评估是协调者的判断，子会话只报送商品（这条最容易顺手抄进 brief）。
       [/三闸门|T0\s*\/\s*T1|R0\s*\/\s*R1/, 'L1 的交互闸门分级'],
+      // 推进循环是协调者的行为规则：子会话只负责回报，不判断「下一步该推进还是提问」。
+      [/推进循环|还有新任务吗/, 'L1 的推进循环口径'],
     ],
     // L3 不许重复 brief 的指路，也不许讲协调者口径。
     L3: [
       [/先调\s*task_detail/, 'L2 的指路指引'],
       [/task_close|action:\s*['\"]close['\"]/, 'L1 的确认交付口径'],
       [/三闸门|T0\s*\/\s*T1|R0\s*\/\s*R1/, 'L1 的交互闸门分级'],
+      [/推进循环|还有新任务吗/, 'L1 的推进循环口径'],
     ],
     // 通知只讲动作，不讲能力边界。
     NOTIFY: [

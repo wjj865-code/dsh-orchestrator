@@ -32,7 +32,7 @@ import {
   confirmOnBoard, linkBoardTask, readTeamBoard, setTeamBoardSink, teamLinkView,
 } from './src/team-board.js'
 import { loadPreferences, migrateLegacyPreferences, renderPreferenceBlock } from './src/preferences.js'
-import { PRESENT_LIMIT_TEXT } from './src/prompt-layers.js'
+import { PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy } from './src/prompt-layers.js'
 // P1-C 文案单源：协调者 policy 里的计划/交付口径引用 src/copy.js，避免与 L2/L3 说法漂移。
 import {
   BLOCKER_RULE, CHANGE_REVIEW_FIELDS, PLAN_PHASE_LINES, PLAN_SAVE_DIR, PROGRESS_NOTICE_HINT,
@@ -190,8 +190,10 @@ export function renderInteractionPolicy() {
 
 /** 协调者系统提示 = 固定规则 + 结构化配置渲染（worktree 策略等）。 */
 export function renderCoordinatorPolicy(config = {}) {
-  // 拼接顺序：硬规则 → 交互闸门 → worktree → 写域。交互判级决定「要不要派单、怎么派」，逻辑上先于隔离与写域判定。
-  return `${COORDINATOR_POLICY}\n\n${renderInteractionPolicy()}\n\n${renderWorktreePolicy(config)}\n\n${renderWriteGuardPolicy(config)}`
+  // 拼接顺序：硬规则 → 交互闸门 → 推进循环 → worktree → 写域。
+  // 三闸门回答「什么时候可以打断用户」，推进循环回答「回报之后必须做什么」（两者不能互相顶替：
+  // 只记住「少打扰」会把「不推进」当成合规），所以紧挨在三闸门之后、隔离/写域判定之前。
+  return `${COORDINATOR_POLICY}\n\n${renderInteractionPolicy()}\n\n${renderAdvanceLoopPolicy()}\n\n${renderWorktreePolicy(config)}\n\n${renderWriteGuardPolicy(config)}`
 }
 
 // 协调者只做协调：这些是**编排正确性**上不该由协调者做的事（派队友/团队板会绕过 task_create 的台账与

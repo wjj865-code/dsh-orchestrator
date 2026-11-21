@@ -12,9 +12,9 @@
 // 不存在一律被拒；平台单次硬上限 8，本插件按「1-4 个最关键的、最多 4 个」收敛成产品上限。
 import { deliverableOf as artifactKindOf } from './artifact-location.js'
 // P1-C 文案单源：交付指令与 task_detail / 文档 / 协调者 policy 共用 src/copy.js 的句子。
-import { DELIVERED_HINT, DELIVERY_LINES, PROGRESS_NOTICE_HINT } from './copy.js'
+import { ADVANCE_NOTICE_HINT, DELIVERED_HINT, DELIVERY_LINES, PROGRESS_NOTICE_HINT } from './copy.js'
 
-export { DELIVERED_HINT }
+export { DELIVERED_HINT, ADVANCE_NOTICE_HINT }
 
 const LEVEL = {
   // coalesce：默认送达 + 同任务合并/节流（progress）。与 notify 的区别只是「有水位、可被后续同类合并」。
@@ -237,6 +237,15 @@ const deliveredBatchHint = batch => (batch.some(item => item.status === 'deliver
   ? `\n  ${DELIVERED_HINT}`
   : '')
 
+// 推进循环（用户反馈「报告后只汇报、不推进」）：done/delivered/blocked/needs_auth 的通知末尾
+// 各贴一次动作指令，避免只讲状态、不讲下一步。progress 有自己的追问指令（PROGRESS_NOTICE_HINT），
+// 不重复贴；结算异常（failed/cancelled/orphaned）由 L1 推进循环约束，通知只报事实。
+// 文案本体在 src/copy.js（ADVANCE_NOTICE_HINT），与 L1 的「推进循环」段逐字同源。
+const ADVANCE_STATUSES = new Set(['done', 'delivered', 'blocked', 'needs_auth'])
+const advanceHint = batch => (batch.some(item => ADVANCE_STATUSES.has(item.status))
+  ? `\n  ${ADVANCE_NOTICE_HINT}`
+  : '')
+
 export function createNotifier({
   send,
   record = () => {},
@@ -454,8 +463,8 @@ export function createNotifier({
     const allProgress = batch.every(isProgress)
     const allSettled = batch.every(item => item.status === 'done' || item.status === 'delivered')
     const text = batch.length === 1
-      ? `任务「${nameOf(batch[0])}」${labelOfItem(batch[0])}：${batch[0].summary}${detailOf(batch[0])}${progressHint(batch)}`
-      : `${batch.length} 个任务${allDone ? '完成' : (allProgress ? PROGRESS_LABEL : (allSettled ? DELIVERY_LINES.state : '状态更新'))}：\n${batch.map(line).join('\n')}${batchHint(batch)}${deliveredBatchHint(batch)}${progressHint(batch)}`
+      ? `任务「${nameOf(batch[0])}」${labelOfItem(batch[0])}：${batch[0].summary}${detailOf(batch[0])}${progressHint(batch)}${advanceHint(batch)}`
+      : `${batch.length} 个任务${allDone ? '完成' : (allProgress ? PROGRESS_LABEL : (allSettled ? DELIVERY_LINES.state : '状态更新'))}：\n${batch.map(line).join('\n')}${batchHint(batch)}${deliveredBatchHint(batch)}${progressHint(batch)}${advanceHint(batch)}`
     // 水位按「尝试投递时刻」先记：异步 send 期间到达的同任务 progress 不该再单独送一条。
     // 投递没成功（skipped/failed）就撤回——否则一次「主会话没打开」会把接下来的 progress 也压住。
     const startedAt = Date.now()
@@ -480,7 +489,8 @@ export function createNotifier({
       const level = levelOf(item.status)
       if (level === 'silent') return
       if (level === 'interrupt') {
-        void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item)}`, [item])
+        // 打断级（blocked / needs_auth）：问题必须当场回答 → 文案末尾直接带推进循环的动作指令。
+        void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item)}${advanceHint([item])}`, [item])
         return
       }
       if (level === 'coalesce') {
