@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import { canSpawnWithPipes, PIPE_SPAWN_SKIP_REASON } from './helpers.js'
 import {
   Config,
   configSchemaAvailable,
@@ -188,7 +189,10 @@ test('本环境正常安装：Config 非空，诊断快照与运行时一致且�
   assert.ok(Object.keys(validated.value).length >= 20)
 })
 
-test('真实模块加载：无 schemastery、无可用锚点 → Config=undefined 且 warn 打到 stderr（不静默）', () => {
+test('真实模块加载：无 schemastery、无可用锚点 → Config=undefined 且 warn 打到 stderr（不静默）', t => {
+  // 这条用例靠 spawnSync 捕获子进程输出（stdio:'pipe'）：DSH 受限沙箱禁止子进程打开命名管道（EPERM），
+  // 与 test/helpers.js 的 canSpawnWithPipes 同一口径——能力不可用时跳过，本地全权/CI 照样真跑。
+  if (!canSpawnWithPipes()) return t.skip(PIPE_SPAWN_SKIP_REASON)
   // 子进程 + 临时目录副本：让 createRequire 的插件自身路径与宿主兜底同时失效，
   // 走的是**真实模块加载**代码，不是注入替身——证明 warn 真的会出现在进程输出里。
   const dir = mkdtempSync(join(tmpdir(), 'orch-config-schema-'))
