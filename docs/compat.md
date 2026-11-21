@@ -42,6 +42,8 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 
 期望：`version` 为 `0.2.2-rc.3`/`-rc.5`、`versionStatus: inside`、`available: 10`（`missing: []`）。缺项时按 §4 的降级行为判读，不要当成「偶发失败」。
 
+**启动瞬间读数 ≠ 最终能力面**：全新 profile 刚加载那一刻，`host.capabilities` 可能报 `available: 8`、`missing: ["registry","team-board"]`——这两项按需懒挂载，不是缺能力；等协调者会话起来（或延迟加载）后即可用：面板快照的 `teamBoard` 不再带 `degraded`、worktree 建树正常。§3 三条冒烟都不依赖这两项，所以「首次加载行不是 10/10」不构成冒烟失败；判能力面缺失前先等主会话起来再看一行。（0.28.0 隔离 web 冒烟实测：启动瞬间 8/10，会话起来后 teamBoard 可用、worktree 正常建出 `orch/<taskId>` 检出。）
+
 **冒烟 1：派 3 个活 → 交付确认 → 追问复用同一子会话**
 协调者会话里说：*「用 task_create 给三个不同目录各派一个只读任务，标题分别 call-A/B/C」* → 期望 `task_list` 出现 3 行、`task_status` 可查；让其中一个 `task_report(done)` → 状态变「已交付待确认」；`task_message` 追问 → **同一个 sessionId** 继续；`task_message({action:'close'})` → `done`。
 失败判据：`task_create` 报「缺少 subagents 服务」= `team-api` 缺失（§4），不是任务本身的问题。

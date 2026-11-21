@@ -184,6 +184,7 @@
 - **追问必达只覆盖第一条**：`task_message` / `resume` 投递成功后的**下一份**回报必达（跳过水位与合并窗口）；之后的 progress 回到正常节奏。子会话一次连发多条时，只有第一条保证即时送达，其余按水位合并（最新一条仍会补投）。
 - **结算自动收场（S1）只覆盖「一次 activation」**：派发侧 `activation.result` 只对第一次生效，续派/冷恢复起的轮次只能靠 `subagent/end` 观察；平台若停发该事件，续派轮次退回「只有 `task_report` 才推终态」。
 - **`completed` 不等于「工作做完了」**：continuable 子会话可以一轮正常收场等续派，所以只在「没上报过 progress」时自动 `done`；上报过 progress 的回合结束落 `orphaned`（可 `resume` 续跑，会话真不可达才 `retry`）。
+- **追问/续跑后只报 `progress` 就结束回合是预期路径，不是缺陷**：`task_message` 追问或 `resume` 起的新一轮里，子会话若只调了 `task_report(progress)` 就收场，台账按上一条判 `running → orphaned`——**progress-only 不当成交付**，也不猜它已经做完；协调者的「推进循环」会接住，按需 `task_message({action:'resume'})`（同会话冷恢复）或再追问，续上后照常 `delivered → done`。0.28.0 隔离 web 冒烟实测的就是这条链路（progress → `orphaned` → `resume` → `delivered` → `done`，task id 与子会话 id 全程不变），排查时不要把它当成状态机 bug。
 - `refusal` 只有源码级依据（pre-step hook deny / 策略拒绝），真机没有稳定构造；`max-tokens` 由 `maxTokens` 截断触发，真实长输出落同一个值。
 - headless 一次性进程在 5 秒合并窗口内退出时，`steer` 可能因 initiator scope dispose 失败；`notifications` 记 `failed` 是正确审计。重启窗口内子会话已完成但结算未消费时，会对账为 `orphaned`，重建即可。
 - Bot 模式：ds-bot 的 Bot 表面只认自己的 DSH Agent 会话，打开主会话后视图可能仍停在 Bot 会话；纯 dsh 表面不受影响。
