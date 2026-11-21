@@ -106,7 +106,7 @@ export const PROMPT_LAYERS = Object.freeze([
       '派一次「工作区与仓库索引」只读任务',
     ]),
     forbids: Object.freeze([
-      '能力边界（只协调不写文件 / 原生 read-glob 被拒 / read_workspace 边界 / 默认 worker 无自动化 / full 只改单任务沙箱）——全部属 L1，L1 每回合都在且不会被 compaction 吃掉',
+      '能力边界（只协调不写文件 / 原生只读工具与 skill 的用法 / read_workspace 边界 / 默认 worker 无自动化 / full 只改单任务沙箱）——全部属 L1，L1 每回合都在且不会被 compaction 吃掉',
       '交付与确认口径（属 L1）',
     ]),
   }),

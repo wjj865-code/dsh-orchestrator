@@ -6,13 +6,13 @@
       config:
         id: dsh-orchestrator-coordinator
         name: 协调者
-        description: 协调与原生自动化管理：拆任务、派子会话、看回报、交付产物；不读写文件、不执行命令。
+        description: 协调与原生自动化管理：拆任务、派子会话、看回报、交付产物；可只读看文件（read/glob/grep），不写文件、不执行命令。
         order: 80
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报，用 present 交付子会话产物。
+              prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报，用 present 交付子会话产物；可以只读看文件（read/glob/grep）补事实，但不写文件、不执行命令。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
@@ -23,10 +23,31 @@
             name: '@deepseek-ai/dsh-tool-ask-user'
           - id: tool-schedule
             name: '@deepseek-ai/dsh-tool-schedule'
+          # B（0.26.0）：协调者只读工具面。tool-fs 只开 read —— write / edit / apply_patch / read_image
+          # 全部关掉，协调者工具表里**没有写工具**；写仍由钉死的 read-only 权限预设（沙箱写全拒）兜底。
+          # glob / grep 由 tool-fs-search 提供（与 worker 预设同形，只是不采样超量结果）。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: true
+              readImage: false
+              write: false
+              edit: false
+              applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          # A（0.26.0）：grill-me 技能。注册模块读包内 skills/grill-me/SKILL.md，注册进**本预设作用域**
+          # （只对协调者可见；worker 预设不挂这个模块，子会话看不到）。tool-skill 提供模型面 skill({name})
+          # 与首个可用技能的目录 —— 两者都挂在本预设里，目录才会随会话注入。
+          - id: skill-grill-me
+            name: '@wjj865-code/dsh-orchestrator/skill-grill-me'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
           # 交付：协调者用 present 把子会话产物（reports 文件）声明给客户端。
           # 与标准预设（dsh-web-app/presets/cordis.patch.yml）和 worker 预设同形。
-          # present 在 web/desktop 由本预设行自己注册（own 工具，deny 补集遮不到）；
-          # SDK 等 profile 也会在 host plane 注册同名全局工具，所以 allow 里也列一份保底。
+          # present 在 web/desktop 由本预设行自己注册（own 工具，preset-tools 的遮挡式 deny 遮不到它）。
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
           - id: compaction
@@ -49,14 +70,44 @@
           - id: preset-tools
             name: '@wjj865-code/dsh-orchestrator/preset-tools'
             config:
-              # 全局工具白名单；把预设自有工具（present）也列进来是幂等的（只用于过滤 deny，不交给 restrict），
-              # 这样 SDK 等把 present 注册成全局工具的 profile 也不会被 deny 掉。
-              allow:
-                - present
-                - schedule_create
-                - schedule_list
-                - schedule_view
-                - schedule_edit
+              # 遮挡式（0.26.0 起与 worker 同形）：工具面默认全开，只点名遮「编排正确性」项。
+              # 只有这些项是**协调者不该有**的：派队友/团队板会绕过 task_create 的台账与依赖编排，
+              # 插件管理与密钥/IM 属于宿主运维面。写与执行不靠名单：协调者预设没挂 tool-bash/tool-pwsh，
+              # tool-fs 也只开 read，写路径另有钉死的 read-only 权限预设（沙箱写全拒）兜底。
+              # 另外遮住三个**角色专属**的子会话工具（task_report / task_detail / plan_save）：
+              # 它们是全局工具，不遮就会出现在协调者工具表里；执行层各自还会再校验归属。
+              # `working_directory` 也在这里遮：宿主全局工具会改协调者会话的 cwd，而 cwd 是指挥锚
+              # （子会话继承目录、工作区/写域判定、记忆项目键推断都以它为准），看文件用 read/glob/grep
+              # 的绝对路径即可。执行层 `COORDINATOR_DENY` 是同一份口径（双保险，预设层遮出生即生效）。
+              deny:
+                - wait_agent
+                - spawn_teammate
+                - send_message
+                - list_agents
+                - interrupt_agent
+                - team_task_create
+                - team_task_get
+                - team_task_list
+                - team_task_update
+                - plugin_manager
+                - request_secret
+                - request_connector
+                - list_bots
+                - message_bot
+                - post_to_group
+                - create_bot
+                - create_group
+                - delete_group
+                - update_group
+                - update_bot
+                - task_report
+                - task_detail
+                - plan_save
+                # 宿主全局工具（dsh-tool-working-directory）：会改协调者会话 cwd，见上面的说明。
+                - working_directory
+              # 正向声明：这 7 个全局工具必须对协调者「出生即可用」；挂载后校验并写 preset.keep 审计。
+              # （preset 自有工具如 present / ask_user_question / schedule_* 不受 deny 影响，不列在这里。）
+              keep:
                 - task_create
                 - task_list
                 - task_status

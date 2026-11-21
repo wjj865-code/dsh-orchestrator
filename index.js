@@ -193,22 +193,28 @@ export function renderCoordinatorPolicy(config = {}) {
   return `${COORDINATOR_POLICY}\n\n${renderInteractionPolicy()}\n\n${renderWorktreePolicy(config)}\n\n${renderWriteGuardPolicy(config)}`
 }
 
-// 协调者只做协调：这些是设计 §10 明令禁止或属于别人职责的工具。
-// present 不在名单里：协调者要把子会话产物（reports 文件）交付给用户，
-// 由协调者预设的 tool-present 行提供，执行层不再拦。
+// 协调者只做协调：这些是**编排正确性**上不该由协调者做的事（派队友/团队板会绕过 task_create 的台账与
+// 依赖编排；插件管理与密钥/IM 属于宿主运维面）。
+//
+// 0.26.0（t-48e8ce06）起这里**不再**是「协调者能调什么」的完整清单：read/glob/grep 已挂给协调者，
+// 写与执行不靠名单——协调者预设没挂 tool-bash/tool-pwsh，tool-fs 只开 read，写路径另有钉死的
+// read-only 权限预设（沙箱写全拒）兜底。角色专属的三个子会话工具（task_report / task_detail /
+// plan_save）从这份名单移出，改由协调者预设的 preset-tools deny 遮掉（工具表里看不到），
+// 执行层各自再校验归属。
+// present / read_workspace / skill / ask_user_question / schedule_* 都不在名单里（协调者要用）。
 export const COORDINATOR_DENY = [
-  'read', 'write', 'edit', 'glob', 'grep',
-  'bash', 'pwsh', 'web_search', 'web_fetch', 'read_browser',
-  'plugin_manager', 'skill',
-  'job_list', 'job_output', 'job_kill',
+  'wait_agent',
+  'spawn_teammate', 'send_message', 'list_agents', 'interrupt_agent',
+  'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',
+  'plugin_manager',
+  // 宿主全局工具 `working_directory`（@deepseek-ai/dsh-tool-working-directory）会改协调者会话的 cwd，
+  // 而 cwd 是指挥锚：`task_create` 不给 target 时子会话继承父会话 cwd、工作区/写域判定、
+  // 记忆项目键推断都以它为准——会话内切目录会让这些锚点静默漂移。看文件不需要它
+  // （read/glob/grep 收绝对路径），所以预设层与执行层都遮掉（0.26.0 发版前真机复验补漏）。
+  'working_directory',
   'request_secret', 'request_connector',
   'list_bots', 'message_bot', 'post_to_group',
   'create_bot', 'create_group', 'delete_group', 'update_group', 'update_bot',
-  'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
-  'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',
-  // 子会话专属工具：task_report 回报、task_detail 只读自己的创建详情（T1）、plan_save 计划落盘（计划阶段
-  // 唯一写入口）；协调者看任务用 task_status，写文件一律不允许。
-  'task_report', 'task_detail', 'plan_save',
 ]
 
 export async function apply(ctx, rawConfig = {}) {

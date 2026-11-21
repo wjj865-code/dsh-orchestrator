@@ -238,12 +238,15 @@ test('P8 计划交付链路：详情/创建提示/协调者 policy 都写明落�
   assert.match(created, /reports\/plans\//)
   assert.match(created, /3–8 行摘要/)
 
-  // 协调者 policy：汇报用任务名；plan_save 是子会话工具，协调者硬拦。
+  // 协调者 policy：汇报用任务名；plan_save 是子会话工具，协调者调不到。
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /用\*\*任务名\*\*/)
   assert.match(policy, /不要只甩 t-xxxx 编号/)
   assert.match(policy, /plan_save/)
-  assert.ok(COORDINATOR_DENY.includes('plan_save'))
+  // 0.26.0：角色专属工具改在预设层遮（执行层名单只留编排正确性项），工具表里仍然看不到 plan_save。
+  assert.equal(COORDINATOR_DENY.includes('plan_save'), false, 'plan_save 不再进执行层名单')
+  const preset = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  assert.match(preset, /^\s+- plan_save\s*$/m, '协调者预设的 preset-tools deny 应遮住 plan_save')
   db.close()
 })
 

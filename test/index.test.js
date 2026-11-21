@@ -14,7 +14,11 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 // （个别用例要「窗口没到」时再自己临时改大，用完还原。）
 process.env.DSH_ORCH_NOTIFY_MERGE_MS = '5'
 
-function makeAgent(id, { knownTools = ['read', 'write', 'bash', 'task_report', 'task_detail', 'ask_user', 'show_view'], restrictableTools = knownTools } = {}) {
+// 0.26.0：协调者的 deny 名单只剩「编排正确性」项（read/glob/grep/skill 都已放开），
+// 所以替身默认带上这些项，否则 restrict 会算成空集合（= 不装白名单），断言就失去意义。
+const DENY_FIXTURE = [...COORDINATOR_DENY, 'read', 'write', 'bash', 'glob', 'grep', 'skill', 'task_report', 'task_detail', 'plan_save', 'ask_user', 'show_view']
+
+function makeAgent(id, { knownTools = DENY_FIXTURE, restrictableTools = knownTools } = {}) {
   const restrictions = []
   const injected = []
   return {
@@ -443,25 +447,35 @@ test('重启后从 settings.main_session_id 恢复主会话并补装白名单', 
   await second.disposers[0]()
 }))
 
-test('协调者白名单：只 deny 已知的危险工具，保留 ask_user/show_view/present', withHome(async () => {
+test('协调者工具面：只读工具与 skill 不再被遮，名单只剩编排正确性项', withHome(async () => {
   const agent = makeAgent('s-1')
   const { ctx } = fakeCtx({ agent })
   await apply(ctx, { coordinatorSession: 's-1' })
   assert.equal(agent.restrictions.length, 1)
   const deny = agent.restrictions[0].deny
-  assert.ok(deny.includes('read'))
-  assert.ok(deny.includes('write'))
-  assert.ok(deny.includes('bash'))
-  assert.ok(deny.includes('task_report'))
-  assert.ok(deny.includes('task_detail'), 'task_detail 也是子会话专属工具')
+  // 0.26.0（t-48e8ce06）：read/glob/grep 已挂给协调者、skill 用来加载 grill-me，都不再遮。
+  for (const name of ['read', 'glob', 'grep', 'skill', 'write', 'bash']) {
+    assert.equal(deny.includes(name), false, `${name} 不再进协调者 deny 名单`)
+  }
+  // 编排正确性项保留：派队友/团队板/插件/密钥/IM 执行层一律拒绝。
+  for (const name of ['wait_agent', 'spawn_teammate', 'team_task_create', 'plugin_manager', 'request_secret']) {
+    assert.ok(deny.includes(name), `${name} 仍应被遮`)
+  }
+  // 宿主导航工具：会改协调者会话 cwd（指挥锚：子会话继承目录 / 记忆项目键 / 写域判定都以它为准）。
+  // 真机复验（0.26.0）发现它漏在协调者工具表里，预设 deny + 执行层名单两处都遮。
+  assert.ok(deny.includes('working_directory'), 'working_directory 应被协调者执行层名单遮住')
+  // 角色专属工具改由预设层遮（cordis.patch.yml），不在执行层名单里。
+  for (const name of ['task_report', 'task_detail', 'plan_save']) {
+    assert.equal(deny.includes(name), false, `${name} 移到预设层遮挡`)
+  }
   assert.equal(deny.includes('ask_user'), false)
   assert.equal(deny.includes('show_view'), false)
   assert.equal(deny.includes('present'), false)
 }))
 
-test('主会话保留四个原生自动化工具，文件/团队/子任务 guard 不变', withHome(async () => {
+test('主会话保留四个原生自动化工具，团队工具仍被 guard 硬拦', withHome(async () => {
   const schedule = ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']
-  const blocked = ['read', 'write', 'edit', 'glob', 'grep', 'bash', 'pwsh', 'skill', 'wait_agent', 'spawn_teammate', 'send_message', 'team_task_create', 'task_report', 'task_detail', 'plan_save']
+  const blocked = ['wait_agent', 'spawn_teammate', 'send_message', 'list_agents', 'interrupt_agent', 'team_task_create', 'plugin_manager', 'request_secret', 'list_bots']
   const main = makeAgent('s-1', { knownTools: [...schedule, ...blocked] })
   const otherRoot = makeAgent('scheduled-new-root')
   const f = fakeCtx({ agents: [main, otherRoot] })
@@ -474,6 +488,10 @@ test('主会话保留四个原生自动化工具，文件/团队/子任务 guard
   for (const name of blocked) {
     assert.equal(typeof f.guards[0]({ name, agent: main }), 'string')
     assert.equal(f.guards[0]({ name, agent: otherRoot }), undefined)
+  }
+  // 只读工具与子会话专属工具不再是执行层硬拦项：读工具放行，专属工具由各自执行层校验归属。
+  for (const name of ['read', 'glob', 'grep', 'skill', 'task_report', 'task_detail', 'plan_save']) {
+    assert.equal(f.guards[0]({ name, agent: main }), undefined, `${name} 不应被协调者 guard 拦`)
   }
   const create = f.registered.find(tool => tool.name === 'task_create')
   assert.match(await create.execute({ title: 'new/new_once', goal: 'g', acceptance: ['a'] }, { agent: otherRoot }), /主会话/)
@@ -601,24 +619,24 @@ test('协调者可用 present 交付产物：不在 COORDINATOR_DENY，执行层
 
 test('白名单只取 restrictableNames，不把 scope 内工具当全局工具', withHome(async () => {
   const agent = makeAgent('s-1', {
-    knownTools: ['read', 'send_message', 'ask_user'],
-    restrictableTools: ['read', 'ask_user'],
+    knownTools: ['send_message', 'ask_user'],
+    restrictableTools: ['send_message', 'ask_user'],
   })
   const { ctx } = fakeCtx({ agent })
   await apply(ctx, { coordinatorSession: 's-1' })
   assert.equal(agent.restrictions.length, 1)
-  assert.deepEqual(agent.restrictions[0].deny, ['read'])
+  assert.deepEqual(agent.restrictions[0].deny, ['send_message'])
 }))
 
 test('wait_agent 是 scope 注册，不在 restrictableNames 时 deny 不包含它', withHome(async () => {
   const agent = makeAgent('s-1', {
-    knownTools: ['read', 'wait_agent', 'spawn_teammate', 'ask_user'],
-    restrictableTools: ['read', 'ask_user'],
+    knownTools: ['send_message', 'wait_agent', 'spawn_teammate', 'ask_user'],
+    restrictableTools: ['send_message', 'ask_user'],
   })
   const { ctx } = fakeCtx({ agent })
   await apply(ctx, { coordinatorSession: 's-1' })
   const deny = agent.restrictions[0].deny
-  assert.ok(deny.includes('read'))
+  assert.ok(deny.includes('send_message'))
   assert.equal(deny.includes('wait_agent'), false)
   assert.equal(deny.includes('spawn_teammate'), false)
 }))
@@ -1548,7 +1566,7 @@ test('guard 覆盖整个 COORDINATOR_DENY 名单：主会话全拒、子会话�
     assert.match(denied, toolName === 'wait_agent' ? /禁止阻塞等待/ : /协调者禁止的工具/)
     assert.equal(guard({ name: toolName, agent: sub }), undefined, `${toolName} 不应影响子会话`)
   }
-  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'context', 'memory_note', 'read_workspace', 'present', 'ask_user_question']) {
+  for (const allowed of ['task_create', 'task_list', 'task_status', 'task_message', 'context', 'memory_note', 'read_workspace', 'present', 'ask_user_question', 'read', 'glob', 'grep', 'skill', 'task_report', 'task_detail', 'plan_save']) {
     assert.equal(guard({ name: allowed, agent: main }), undefined, `${allowed} 应放行`)
   }
   // P1-B：旧工具名已删除，调用时执行层给「改成什么」，不是静默失败（映射表单源 src/tool-migrations.js）。

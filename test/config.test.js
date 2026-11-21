@@ -161,16 +161,15 @@ test('cordis.patch.yml 注册协调者与 worker 两个预设行', () => {
   assert.match(source, /dsh-orchestrator-coordinator/)
   assert.match(source, /dsh-orchestrator-worker/)
   assert.match(source, /@wjj865-code\/dsh-orchestrator\/preset-tools/)
+  const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
+  // 0.26.0：协调者改为遮挡式（deny + keep），7 个全局任务工具在 keep 里正向声明「出生即可用」。
   for (const tool of ['task_create', 'task_list', 'task_status', 'task_message', 'context', 'memory_note', 'read_workspace']) {
-    assert.match(source, new RegExp(`- ${tool}`), `协调者 allow 名单应包含 ${tool}`)
+    assert.match(coordinator.text, new RegExp(`^\\s+- ${tool}\\s*$`, 'm'), `协调者 keep 名单应包含 ${tool}`)
   }
-  // P1-B：被合并掉的 6 个旧名必须从 allow 名单里消失（模型面 12 → 7）。
+  // P1-B：被合并掉的 6 个旧名必须从名单里消失（模型面 12 → 7）。
   for (const removed of ['task_stop', 'task_retry', 'task_close', 'task_inbox', 'history_search', 'project_context']) {
-    assert.doesNotMatch(source, new RegExp(`- ${removed}\\s*$`, 'm'), `协调者 allow 名单不应再列 ${removed}`)
+    assert.doesNotMatch(coordinator.text, new RegExp(`^\\s+- ${removed}\\s*$`, 'm'), `协调者名单不应再列 ${removed}`)
   }
-  // 受控读只能走 read_workspace：原生 read/glob 不挂行、也不进 allow（它们没有读路径白名单）。
-  assert.doesNotMatch(source, /^\s+- read\s*$/m, '协调者 allow 不得包含原生 read')
-  assert.doesNotMatch(source, /^\s+- glob\s*$/m, '协调者 allow 不得包含原生 glob')
   assert.match(source, /'@deepseek-ai\/dsh-tool-present'/)
   assert.equal((source.match(/'@deepseek-ai\/dsh-tool-present'/g) ?? []).length, 2, '协调者与 worker 预设各挂一行 present')
   assert.doesNotMatch(source, /dsh-present/)
@@ -243,7 +242,7 @@ test('worker 预设只做「遮挡式」收窄：memory_note 遮掉，context/ta
     assert.match(rowText, new RegExp(`- ${tool}\\s*$`, 'm'), `worker 预设 keep 应声明 ${tool}`)
   }
   assert.match(worker.text, /task_report \/ task_detail \/ plan_save \/ context/, 'worker 预设应保留全局工具挂载链的说明')
-  // 协调者那一侧不受影响：allow 名单里仍保留 memory_note（写记忆留在主会话）。
+  // 协调者那一侧同形：keep 里仍保留 memory_note（写记忆留在主会话）。
   const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
   const coordinatorTools = coordinator.rows.find(row => row.id === 'preset-tools')
   assert.match(coordinatorTools.lines.join('\n'), /^\s+- memory_note\s*$/m)
@@ -261,11 +260,50 @@ test('协调者预设挂 present 交付工具：主会话可交付子会话产�
   assert.match(rowText, /name:\s*'@deepseek-ai\/dsh-tool-present'/, '要用标准包名 @deepseek-ai/dsh-tool-present')
   // 纯行：present 默认 maxFiles=8，不需要配置项，也不按平台禁用。
   assert.doesNotMatch(rowText, /^\s+(config|disabled):/m)
-  // present 在 web/desktop 是预设自有工具（own），allow 里列一份作为跨 profile 保底：
-  // allow 只用于过滤 deny，不交给 restrict，所以写 own 名字不会 unknown global tool。
-  assert.match(coordinator.text, /^\s+- present\s*$/m, '协调者 allow 名单应包含 present 保底')
+  // present 是预设自有（own）工具，遮挡式 deny 遮不到它，所以不写进任何名单。
+  assert.doesNotMatch(coordinator.text, /^\s+- present\s*$/m, 'present 是 own 工具，不需进 keep/deny 名单')
   // 协调者与 worker 各一行：整份补丁恰好 2 行。
   assert.equal((source.match(/id: present/g) ?? []).length, 2, '整份补丁应有协调者、worker 两行 present')
+})
+
+test('协调者只读工具面：read 只开读、glob/grep 挂 tool-fs-search，写工具不挂', () => {
+  const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
+  const worker = presetPlugins(source, 'dsh-orchestrator-worker')
+  // tool-fs：只开 read，write/edit/apply_patch/read_image 全关 —— 协调者工具表里没有写工具。
+  const fsRows = coordinator.rows.filter(row => row.id === 'tool-fs')
+  assert.equal(fsRows.length, 1, '协调者预设应恰好一行 tool-fs')
+  const fsText = fsRows[0].lines.join('\n')
+  assert.match(fsText, /name:\s*'@deepseek-ai\/dsh-tool-fs'/)
+  for (const [key, value] of [['read', 'true'], ['write', 'false'], ['edit', 'false'], ['applyPatch', 'false'], ['readImage', 'false']]) {
+    assert.match(fsText, new RegExp(`^\\s+${key}: ${value}\\s*$`, 'm'), `tool-fs.${key} 应为 ${value}`)
+  }
+  // glob / grep 由 tool-fs-search 提供（与 worker 同形，只是不采样超量结果）。
+  const searchRows = coordinator.rows.filter(row => row.id === 'tool-fs-search')
+  assert.equal(searchRows.length, 1, '协调者预设应恰好一行 tool-fs-search')
+  assert.match(searchRows[0].lines.join('\n'), /@deepseek-ai\/dsh-tool-fs-search/)
+  assert.match(searchRows[0].lines.join('\n'), /sampleOverCapGlobResults: false/)
+  // 写/执行类工具**不挂行**：bash/pwsh 只有 worker 挂，协调者只在只读层收口。
+  for (const rowId of ['tool-bash', 'tool-pwsh']) {
+    assert.equal(coordinator.rows.some(row => row.id === rowId), false, `协调者预设不应挂 ${rowId}`)
+  }
+  assert.equal(worker.rows.some(row => row.id === 'tool-fs'), true, 'worker 仍挂 tool-fs（可写）')
+})
+
+test('协调者挂 grill-me 技能：注册模块 + tool-skill 各一行，worker 看不到', () => {
+  const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
+  const worker = presetPlugins(source, 'dsh-orchestrator-worker')
+  const register = coordinator.rows.filter(row => row.id === 'skill-grill-me')
+  assert.equal(register.length, 1, '协调者预设应恰好一行 skill-grill-me')
+  assert.match(register[0].lines.join('\n'), /name:\s*'@wjj865-code\/dsh-orchestrator\/skill-grill-me'/)
+  const skillTool = coordinator.rows.filter(row => row.id === 'tool-skill')
+  assert.equal(skillTool.length, 1, '协调者预设应恰好一行 tool-skill（模型面 skill 工具 + 技能目录）')
+  assert.match(skillTool[0].lines.join('\n'), /name:\s*'@deepseek-ai\/dsh-tool-skill'/)
+  // 技能只对协调者可见：worker 预设不挂注册模块（工具行 skill-filesystem / tool-skill 它本来就有）。
+  assert.equal(worker.rows.some(row => row.id === 'skill-grill-me'), false, 'worker 预设不得挂 grill-me 注册模块')
+  assert.equal((source.match(/skill-grill-me/g) ?? []).length >= 1, true)
+  assert.equal((source.match(/id: skill-grill-me/g) ?? []).length, 1, '整份补丁只挂一行 skill-grill-me')
 })
 
 test('原生自动化只挂协调者预设，四工具显式保留', () => {
@@ -278,10 +316,45 @@ test('原生自动化只挂协调者预设，四工具显式保留', () => {
   assert.doesNotMatch(rows[0].lines.join('\n'), /^\s+(config|disabled):/m)
   assert.equal(worker.rows.some(row => row.id === 'tool-schedule'), false)
   assert.equal((source.match(/name: '@deepseek-ai\/dsh-tool-schedule'/g) ?? []).length, 1)
+  // 四个 schedule 工具是预设自有行注册的（own），不写在 keep/deny 名单里，也不该被遮。
   for (const name of ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']) {
-    assert.match(coordinator.text, new RegExp(`^\\s+- ${name}\\s*$`, 'm'))
+    assert.doesNotMatch(coordinator.text, new RegExp(`^\\s+- ${name}\\s*$`, 'm'))
     assert.doesNotMatch(worker.text, new RegExp(`^\\s+- ${name}\\s*$`, 'm'))
   }
+})
+
+test('协调者 preset-tools：遮挡式 deny 只列编排正确性 + 角色专属工具，keep 声明 7 个任务工具', () => {
+  const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
+  const rows = coordinator.rows.filter(row => row.id === 'preset-tools')
+  assert.equal(rows.length, 1, '协调者预设应恰好一行 preset-tools')
+  const text = rows[0].lines.join('\n')
+  assert.doesNotMatch(text, /^\s+allow:/m, '协调者改用遮挡式 deny，不再用 allow 补集')
+  // 编排正确性：派队友 / 团队板 / 插件 / 密钥 / IM 一律遮掉（执行层 COORDINATOR_DENY 同一份口径）。
+  for (const name of [
+    'wait_agent', 'spawn_teammate', 'send_message', 'list_agents', 'interrupt_agent',
+    'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',
+    'plugin_manager', 'request_secret', 'request_connector',
+    'list_bots', 'message_bot', 'post_to_group', 'create_bot', 'create_group', 'delete_group', 'update_group', 'update_bot',
+  ]) {
+    assert.match(text, new RegExp(`^\\s+- ${name}\\s*$`, 'm'), `协调者 deny 缺少 ${name}`)
+  }
+  // 角色专属：三个子会话工具遮在预设层，协调者工具表里才不会冒出它们。
+  for (const name of ['task_report', 'task_detail', 'plan_save']) {
+    assert.match(text, new RegExp(`^\\s+- ${name}\\s*$`, 'm'), `协调者 deny 应遮住角色专属工具 ${name}`)
+  }
+  // 宿主导航工具：0.26.0 发版前真机复验发现它漏在协调者工具表里（改 cwd = 改指挥锚）。
+  assert.match(text, /^\s+- working_directory\s*$/m, '协调者 deny 应遮住宿主全局 working_directory（会改会话 cwd）')
+  // 只读工具与技能不靠名单：它们是预设自有行（own），restrict 指不到，也不该出现在名单里。
+  for (const name of ['read', 'glob', 'grep', 'skill', 'present', 'ask_user_question']) {
+    assert.doesNotMatch(text, new RegExp(`^\\s+- ${name}\\s*$`, 'm'), `${name} 是预设自有工具，不应进 deny/keep 名单`)
+  }
+  // keep：7 个全局任务工具正向声明「出生即可用」（挂载后校验并写 preset.keep 审计）。
+  const keepBlock = text.split(/^\s+keep:\s*$/m)[1] ?? ''
+  for (const name of ['task_create', 'task_list', 'task_status', 'task_message', 'context', 'memory_note', 'read_workspace']) {
+    assert.match(keepBlock, new RegExp(`^\\s+- ${name}\\s*$`, 'm'), `协调者 keep 缺少 ${name}`)
+  }
+  assert.doesNotMatch(keepBlock, /^\s+- working_directory\s*$/m, 'working_directory 不能进 keep（deny 与 keep 冲突会被 preset-tools 直接抛错）')
 })
 
 test('package.json 导出 preset-tools', () => {
@@ -291,6 +364,12 @@ test('package.json 导出 preset-tools', () => {
   assert.equal(pkg.publishConfig.access, 'public')
   assert.equal(pkg.exports['./preset-tools'], './preset-tools.js')
   assert.ok(pkg.files.includes('preset-tools.js'))
+  // A（0.26.0）：grill-me 技能随包发——注册模块有子路径导出，技能文件在 files 白名单里。
+  assert.equal(pkg.exports['./skill-grill-me'], './skill-grill-me.js')
+  assert.ok(pkg.files.includes('skill-grill-me.js'))
+  assert.ok(pkg.files.includes('skills/'), 'files 白名单要带 skills/，否则技能文件不发货')
+  assert.equal(existsSync(new URL('../skills/grill-me/SKILL.md', import.meta.url)), true, 'skills/grill-me/SKILL.md 必须在')
+  assert.equal(existsSync(new URL('../skill-grill-me.js', import.meta.url)), true)
   // P1-E：调试预设生成器已外移到开发仓库 tools/debug-preset/，不随 npm 包发货。
   assert.ok(pkg.files.includes('scripts/'))
   assert.equal(pkg.files.includes('docs/DEBUG-PRESET.md'), false)
