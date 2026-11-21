@@ -1,9 +1,9 @@
 # dsh-orchestrator
 
-> **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目标目录里把活干完，进度与结论落进持久台账，浏览器里有任务面板。
+> **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目标目录里把活干完，进度与结论落进持久台账，DSH 界面里有任务面板。
 
 - npm：`@wjj865-code/dsh-orchestrator`（当前 `0.31.0`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
-- Node `>= 22.15`（`engines`）｜DSH 兼容基线 **`0.2.2-rc.3` – `rc.5`**（CI 与真机实测在 `rc.3`，Web 表面为主，Desktop 同构）
+- Node `>= 22.15`（`engines`）｜DSH 兼容基线 **`0.2.2-rc.3` – `rc.5`**（CI 与真机实测在 `rc.3`；主要在 **DeepSeek Harness Desktop** 上开发与使用，Web 同构）
 
 **三分钟看懂**：装插件 → 打开「主会话」→ 用自然语言说需求（协调者拆成 `task_create` 派给子会话）→ 子会话回报「已交付待确认」→ 你看面板与产物，确认或追问。下面按这个顺序走一遍。
 
