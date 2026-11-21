@@ -228,7 +228,12 @@ test('P3 service：env 只给复制命令 + 未声明拒绝 + 执行只回 ok �
   await service.create(draftOf(), { confirm: true })
   const copy = await service.envCopy('demo-pack', 'DEMO_TOKEN')
   assert.equal(copy.ok, true)
-  assert.match(copy.command, /setx DEMO_TOKEN "<你的值>"/)
+  // 复制命令按**宿主**平台给（src/pack/env.js）：Windows=setx、POSIX=export。
+  // 断言各平台的确切文案（不放宽成「包含任意命令」），这样跨平台 CI 与本地都能守住「只给占位符」。
+  const expectedCopy = process.platform === 'win32'
+    ? 'setx DEMO_TOKEN "<你的值>"'
+    : 'export DEMO_TOKEN="<你的值>"'
+  assert.equal(copy.command, expectedCopy)
   assert.doesNotMatch(copy.command, /secret-value/)
 
   const undeclared = await service.envCopy('demo-pack', 'OTHER_TOKEN')

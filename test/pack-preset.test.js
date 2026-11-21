@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   PACK_DENY_TOOLS, buildPresetDefinition, exportStaticPreset, renderPackPersona,
@@ -54,12 +54,18 @@ test('P2 预设行：包名与 cordis.patch.yml 的 worker 预设同源（不引
 
 test('P2 预设行：customSkillDirs 是绝对路径，工具面禁编排能力', () => {
   const manifest = validateManifest(validManifest()).manifest
+  // 路径拼接走**宿主** path.join，真实运行时 packRoot 也是本机绝对路径：
+  // 所以假根目录按宿主风格给（Linux/CI 用 POSIX 斜杠路径），不能写死 Windows 盘符。
+  const packRoot = process.platform === 'win32' ? 'C:\\packs\\demo' : '/packs/demo'
+  const separator = process.platform === 'win32' ? '\\' : '/'
   const definition = buildPresetDefinition({
-    manifest, packRoot: 'C:\\packs\\demo', installStatePath: 'C:\\state\\install.json', stateDir: 'C:/state', platform: 'linux',
+    manifest, packRoot, installStatePath: join(packRoot, '.state', 'install.json'), stateDir: 'C:/state', platform: 'linux',
   })
   const skillRow = definition.plugins.find(row => row.id === 'skill-filesystem')
-  assert.deepEqual(skillRow.config.customSkillDirs, ['C:\\packs\\demo\\skills'])
-  assert.match(skillRow.config.customSkillDirs[0], /^(?:[A-Za-z]:|[\\/])/)
+  assert.deepEqual(skillRow.config.customSkillDirs, [`${packRoot}${separator}${manifest.skillsDir}`])
+  assert.equal(isAbsolute(skillRow.config.customSkillDirs[0]), true, `customSkillDirs 必须是绝对路径：${skillRow.config.customSkillDirs[0]}`)
+  // 只允许宿主分隔符：混拼（Windows 上出现 / 或 POSIX 上出现 \）说明用了错误的 join。
+  assert.equal(skillRow.config.customSkillDirs[0].includes(separator === '\\' ? '/' : '\\'), false)
   const presetTools = definition.plugins.find(row => row.id === 'preset-tools').config
   for (const denied of ['task_create', 'task_report', 'plan_save', 'capability_pack']) {
     assert.ok(presetTools.deny.includes(denied), `必须 deny ${denied}`)
