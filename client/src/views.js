@@ -332,6 +332,9 @@ export function createViews({
     const [groupState, setGroupState] = React.useState({ data: null, error: null })
     const [calendarState, setCalendarState] = React.useState({ data: null, error: null })
     const [automationState, setAutomationState] = React.useState({ data: null, error: null })
+    // 复盘页（P11 阶段 3）：窗口天数与统计投影各自独立，切页才拉，页面不可见时停表。
+    const [reviewState, setReviewState] = React.useState({ data: null, error: null })
+    const [reviewDays, setReviewDays] = React.useState(7)
     const [monthAnchor, setMonthAnchor] = React.useState(() => startOfMonth(Date.now()))
     const [wbBusy, setWbBusy] = React.useState(false)
 
@@ -424,6 +427,14 @@ export function createViews({
         if (signal === undefined || !signal.aborted) setAutomationState(current => ({ data: current.data, error: String((failure && failure.message) || failure) }))
       }
     }, [])
+    const loadReview = React.useCallback(async (days, signal) => {
+      try {
+        const data = await workbenchApi.readStats(days, signal)
+        setReviewState({ data, error: null })
+      } catch (failure) {
+        if (signal === undefined || !signal.aborted) setReviewState(current => ({ data: current.data, error: String((failure && failure.message) || failure) }))
+      }
+    }, [])
 
     // 轮询壳：页面不可见时只续排程、不打请求（宿主没有 visibility 事件 API，靠 document 判断）。
     const pollWhileVisible = React.useCallback((run, intervalMs) => {
@@ -468,6 +479,13 @@ export function createViews({
       const stop = pollWhileVisible(() => loadAutomations(controller.signal), WORKBENCH_POLL_MS)
       return () => { stop(); controller.abort() }
     }, [page, loadAutomations, pollWhileVisible])
+
+    React.useEffect(() => {
+      if (page !== 'review') return undefined
+      const controller = new AbortController()
+      const stop = pollWhileVisible(() => loadReview(reviewDays, controller.signal), WORKBENCH_POLL_MS)
+      return () => { stop(); controller.abort() }
+    }, [page, reviewDays, loadReview, pollWhileVisible])
     // 工作台写动作：统一 busy / 错误通道，成功后按影响面刷新对应数据源。
     const runWorkbench = async (work, after) => {
       setWbBusy(true)
@@ -1920,6 +1938,17 @@ export function createViews({
       </div>
     )
 
+    const reviewPage = () => (
+      <div className="orch-wb" data-page="review">
+        <Wb.ReviewPage
+          state={reviewState}
+          days={reviewDays}
+          onDays={setReviewDays}
+          onReload={() => { void loadReview(reviewDays) }}
+        />
+      </div>
+    )
+
     const pageNav = () => (
       <Wb.PageNav
         page={page === 'group' ? 'groups' : page}
@@ -1948,6 +1977,7 @@ export function createViews({
             {page === 'group' ? groupPageView() : null}
             {page === 'schedule' ? schedulePage() : null}
             {page === 'automations' ? automationsPage() : null}
+            {page === 'review' ? reviewPage() : null}
           </main>
         </div>
         {/* 第三段：抽屉常驻挂载，靠 data-open 触发 transform 过渡（关闭时滑出而不是瞬移）。 */}

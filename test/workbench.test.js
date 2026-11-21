@@ -2,11 +2,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   openLedger, createTask, transition, getTask, setTaskPlannedAt, listGroupMeta, getGroupMeta,
-  backfillGroups, setSetting, deleteSetting, GROUPS_BACKFILLED_KEY, listAutomations,
+  backfillGroups, setSetting, deleteSetting, GROUPS_BACKFILLED_KEY, listAutomations, addMessage,
 } from '../src/ledger.js'
 import {
   createWorkbench, groupRollups, calendarWindow, normalizeTiming, timingText, dayKeyOf, localZone,
-  nextPlanned, defaultPrompt, WORKBENCH_LIMITS,
+  nextPlanned, defaultPrompt, WORKBENCH_LIMITS, reviewStats, failureReasonOf, artifactKindOf,
 } from '../src/workbench.js'
 import { planSetGate, groupSaveGate, groupArchiveGate, automationGate } from '../src/panel-gates.js'
 import { tempDir, sampleBrief } from './helpers.js'
@@ -414,4 +414,105 @@ test('门控纯函数：组改名 / 归档 / 自动化（与端点下发的布�
   assert.equal(automationGate({ available: false }).reason, 'unavailable')
   assert.equal(automationGate({ confirmed: false }).reason, 'not_confirmed')
   assert.equal(automationGate({ exists: false }).reason, 'not_found')
+})
+
+// ---------------------------------------------------------------------------
+// 复盘（P11 阶段 3）：只用台账既有时间戳 + error 首行 + 产物路径 + messages 计数
+// ---------------------------------------------------------------------------
+
+test('failureReasonOf / artifactKindOf：错误取首行、产物只看扩展名（不读文件内容）', () => {
+  assert.equal(failureReasonOf({ error: 'TypeError: boom\n  at x.js:1:1' }), 'TypeError: boom')
+  assert.equal(failureReasonOf({ error: '   ' , status: 'orphaned' }), '会话丢失（没有错误信息）')
+  assert.equal(failureReasonOf({ error: null, status: 'failed' }), '失败（没有错误信息）')
+  assert.equal(failureReasonOf({ error: 'x'.repeat(200) }).length, 60, '首行截到 60 字')
+  assert.equal(artifactKindOf('/w/reports/a.md'), 'md')
+  assert.equal(artifactKindOf('C:\\w\\dist\\client.JS'), 'js')
+  assert.equal(artifactKindOf('/w/Makefile'), '无扩展名')
+  assert.equal(artifactKindOf('/w/archive.tar.gz'), 'gz')
+  assert.equal(artifactKindOf('/w/a.verylongext'), '其他')
+})
+
+test('reviewStats：交付/确认/平均时长/失败归因/产物类型/组排行 + 窗口口径', () => {
+  const now = Date.parse('2026-11-21T12:00:00+08:00')
+  const DAY = 24 * HOUR
+  const row = (id, patch) => ({
+    id, title: id, status: 'done', group_id: null, error: null, artifacts: [],
+    created_at: now - 10 * DAY, updated_at: now - 9 * DAY, delivered_at: null, accepted_at: null, ...patch,
+  })
+  const tasks = [
+    // 窗口外（9 / 8 天前）：不算交付/确认，也没有窗口内活动 → 不进组排行。
+    row('t-old', { group_id: 'gzh', created_at: now - 10 * DAY, delivered_at: now - 9 * DAY, accepted_at: now - 8 * DAY, artifacts: [{ path: '/w/reports/old.md' }] }),
+    // 窗口内（2 天前交付，12 天前创建）：交付 1、时长 10 天、产物 js 1 个。
+    row('t-slow', { group_id: 'gzh', created_at: now - 12 * DAY, delivered_at: now - 2 * DAY, artifacts: [{ path: '/w/reports/a.md' }, { path: 'C:\\w\\dist\\client.js' }] }),
+    row('t-fail-1', { status: 'failed', group_id: 'skills', updated_at: now - 1 * DAY, error: 'TypeError: boom\n  at x' }),
+    row('t-fail-2', { status: 'failed', group_id: 'skills', updated_at: now - 2 * DAY, error: 'TypeError: boom' }),
+    row('t-fail-old', { status: 'failed', updated_at: now - 40 * DAY, error: 'old' }),
+    row('t-orphan', { status: 'orphaned', updated_at: now - 1 * DAY, error: '' }),
+    row('t-out', { created_at: now - 40 * DAY, updated_at: now - 40 * DAY, delivered_at: now - 40 * DAY, group_id: 'gzh' }),
+  ]
+  const stats = reviewStats({ tasks, groups: [{ id: 'gzh', name: '公众号' }], messages: 12, days: 7, now })
+  assert.equal(stats.ok, true)
+  assert.equal(stats.days, 7)
+  assert.equal(stats.from, now - 7 * DAY)
+  assert.equal(stats.to, now)
+  // 交付只算窗口内 delivered_at；t-old 的 9 天前交付与 t-out 的 40 天前都不算。
+  assert.equal(stats.delivered, 1)
+  assert.equal(stats.accepted, 0, 't-old 的确认在窗口外')
+  assert.equal(stats.avgDeliverMs, 10 * DAY, '平均创建→交付只统计窗口内交付的行')
+  // 失败 = 窗口内 updated_at 且 failed/orphaned；按 error 首行归类。
+  assert.equal(stats.failed, 3)
+  assert.deepEqual(stats.failures, [
+    { reason: 'TypeError: boom', count: 2 },
+    { reason: '会话丢失（没有错误信息）', count: 1 },
+  ])
+  // 产物：只统计窗口内「创建或交付」的任务；t-old 的 9 天前交付 → 它的 md 不计。
+  assert.deepEqual(stats.artifacts, [{ ext: 'js', count: 1 }, { ext: 'md', count: 1 }])
+  // 组排行：交付数优先，其次失败数；未分组用固定行（id 为空）。
+  assert.deepEqual(stats.groups.map(item => [item.id, item.name, item.delivered, item.failed, item.total]), [
+    ['gzh', '公众号', 1, 0, 1],
+    ['skills', 'skills', 0, 2, 2],
+    ['', '未分组', 0, 1, 1],
+  ])
+  assert.equal(stats.messages, 12)
+  // 窗口口径：days 非法回落 7，上限 62，下限 1。
+  assert.equal(reviewStats({ tasks: [], days: 'x', now }).days, 7)
+  assert.equal(reviewStats({ tasks: [], days: 0, now }).days, 7)
+  assert.equal(reviewStats({ tasks: [], days: 500, now }).days, 62)
+  assert.equal(reviewStats({ tasks: [], now }).avgDeliverMs, null, '没有交付时平均时长为 null（面板显示 —）')
+  assert.equal(reviewStats({ tasks: [], days: 7, now }).failures.length, 0)
+})
+
+test('createWorkbench.stats：窗口内交付/确认/失败与 messages 计数，只读不改台账', async () => {
+  const db = await openLedger(tempDir())
+  const at = Date.parse('2026-11-21T12:00:00+08:00')
+  const bench = createWorkbench({ db, mainSessionId: () => 's-main', now: () => at })
+  const done = makeTask(db, { group: 'gzh', title: '交付一条', status: 'done' })
+  const failed = makeTask(db, { group: 'gzh', title: '失败一条' })
+  db.prepare('UPDATE tasks SET created_at = ?, delivered_at = ?, accepted_at = ?, updated_at = ? WHERE id = ?')
+    .run(at - 3 * 24 * HOUR, at - 2 * 24 * HOUR, at - 24 * HOUR, at - 24 * HOUR, done.id)
+  db.prepare('UPDATE tasks SET status = ?, error = ?, created_at = ?, updated_at = ? WHERE id = ?')
+    .run('failed', 'boom: 命令失败\n第二行不该进归因', at - 3 * 24 * HOUR, at - 2 * HOUR, failed.id)
+  addMessage(db, done.id, { kind: 'report', rendered: '回来了' })
+  db.prepare('UPDATE messages SET at = ? WHERE task_id = ?').run(at - 2 * HOUR, done.id)
+  const stats = bench.stats({ days: 7 })
+  assert.equal(stats.ok, true)
+  assert.equal(stats.days, 7)
+  assert.equal(stats.delivered, 1)
+  assert.equal(stats.accepted, 1)
+  assert.equal(stats.avgDeliverMs, 24 * HOUR)
+  assert.equal(stats.messages, 1, '窗口内 messages 条数')
+  assert.deepEqual(stats.failures, [{ reason: 'boom: 命令失败', count: 1 }])
+  assert.equal(stats.groups[0].id, 'gzh')
+  assert.equal(stats.groups[0].delivered, 1)
+  assert.equal(stats.groups[0].failed, 1)
+  // 只读：换窗口再读一次，台账行与状态都不动。
+  const before = db.prepare('SELECT count(*) AS n FROM tasks').get().n
+  const wide = bench.stats({ days: 30 })
+  assert.equal(wide.days, 30)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM tasks').get().n, before)
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(failed.id).status, 'failed')
+  // 缺省 / 上限。
+  assert.equal(bench.stats({}).days, 7)
+  assert.equal(bench.stats({ days: 1000 }).days, 62)
+  db.close()
 })

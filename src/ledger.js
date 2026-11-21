@@ -511,6 +511,15 @@ export function countFollowups(db, taskId) {
   return Number.isFinite(row?.n) ? row.n : 0
 }
 
+/** 窗口内的消息条数（工作台复盘页用：只数台账既有 messages，不新增埋点、不加索引以外的 schema）。
+ *  时间口径取 `messages.at`（写入时间），窗口由调用方按 [from, to] 闭区间给。 */
+export function countMessagesBetween(db, { from = 0, to = Number.MAX_SAFE_INTEGER } = {}) {
+  const start = Number.isFinite(from) ? from : 0
+  const end = Number.isFinite(to) ? to : Number.MAX_SAFE_INTEGER
+  const row = db.prepare('SELECT count(*) AS n FROM messages WHERE at >= ? AND at <= ?').get(start, end)
+  return Number.isFinite(row?.n) ? row.n : 0
+}
+
 /** 记录子会话最后一次返回消息（B1）：只写镜像，不改状态。
  *  同一段正文（digest 相同）重复落库是幂等的：不重写行、不动 updated_at，
  *  所以派发侧与生命周期事件重复送达、或手动重试，都不会把内容写两遍。 */

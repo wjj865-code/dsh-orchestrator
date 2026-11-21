@@ -447,6 +447,19 @@ textarea.orch-input { height: auto; padding: 6px 8px; resize: vertical; }
 .orch-wb-autometa { gap: 10px; }
 .orch-wb-details { font-size: 11px; color: var(--dsw-alias-label-secondary, #55585f); }
 .orch-wb-autoactions { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; }
+/* 复盘页（P11 阶段 3）：数字卡 + 横向条 + 排行行；不引图表库，宽度用百分比内联。 */
+.orch-wb-rstats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.orch-wb-rstat { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04)); border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-alias-card-fill, #f7f8fa); font-size: 11px; color: var(--dsw-alias-label-secondary, #55585f); }
+.orch-wb-rstat b { font-size: 18px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); font-variant-numeric: tabular-nums; }
+.orch-wb-bar { display: flex; align-items: center; gap: 8px; font-size: 11px; min-width: 0; }
+.orch-wb-barlabel { flex: 0 0 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.orch-wb-bartrack { flex: 1 1 auto; height: 6px; border-radius: 999px; background: var(--dsw-alias-bg-multi-select, #eef0f3); overflow: hidden; }
+.orch-wb-bartrack span { display: block; height: 100%; background: var(--dsw-alias-state-error-primary, #ec1313); }
+.orch-wb-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+@media (max-width: 760px) {
+  .orch-wb-rstats { grid-template-columns: minmax(0, 1fr); }
+  .orch-wb-barlabel { flex-basis: 50%; }
+}
 @media (max-width: 1100px) {
   .orch-wb-cols, .orch-wb-split { grid-template-columns: minmax(0, 1fr); flex-direction: column; }
   .orch-wb-rail, .orch-wb-dock { flex: 1 1 auto; }

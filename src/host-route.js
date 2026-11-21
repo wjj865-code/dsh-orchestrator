@@ -17,7 +17,7 @@ const ENDPOINTS = new Set(['snapshot', 'session-role'])
 const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message', 'close', 'delete'])
 // 工作台 v1（P11）：只读投影与窄写口。**注意这里刻意没有** task-create / plan-approve / message /
 // close-all / patch-task（设计稿 §5.3 的反例清单）：派发、计划批准、交付确认都必须走既有闸门。
-const WORKBENCH_READS = new Set(['groups', 'group', 'calendar', 'automations'])
+const WORKBENCH_READS = new Set(['groups', 'group', 'calendar', 'automations', 'stats'])
 const WORKBENCH_WRITES = new Set([
   'group-save', 'group-archive', 'plan-set',
   'automation-save', 'automation-toggle', 'automation-delete',
@@ -227,7 +227,9 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
             ? workbench.group(body?.groupId)
             : endpoint === 'calendar'
               ? workbench.calendar({ from: body?.from, to: body?.to })
-              : await workbench.automations()
+              : endpoint === 'stats'
+                ? workbench.stats({ days: body?.days })
+                : await workbench.automations()
         return json(result, panelHttpStatus(result))
       } catch (error) {
         return json(panelFailure('ACTION_FAILED', { reason: error?.message ?? error }), 500)

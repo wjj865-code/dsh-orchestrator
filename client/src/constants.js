@@ -105,13 +105,15 @@ export const TONE_COLOR = {
 // ---------------------------------------------------------------------------
 // 工作台 v1（P11）：页面 / 看板列 / 日历 / 右侧 dock
 // ---------------------------------------------------------------------------
-// 工作台是**一个** main 面板的内部五页（不新开第二个 main key：宿主一次只显示一个面板，
+// 工作台是**一个** main 面板的内部六页（不新开第二个 main key：宿主一次只显示一个面板，
 // 切 key 会丢状态、还会起两份快照轮询）。页面状态记在 sessionStorage，因为预览产物会
 // `selectPanel(null)` 卸载面板，回来要能复原到同一页同一组。
-export const WORKBENCH_PAGES = [['overview', '总览'], ['groups', '任务组'], ['schedule', '排期'], ['automations', '自动化']]
+export const WORKBENCH_PAGES = [['overview', '总览'], ['groups', '任务组'], ['schedule', '排期'], ['automations', '自动化'], ['review', '复盘']]
 export const WORKBENCH_STORAGE_KEY = 'dsh-orchestrator:workbench'
-// 工作台的独立数据源（组/日历/自动化）不跟 2s 快照轮询：15s 或动作后刷新，页面不可见时停表。
+// 工作台的独立数据源（组/日历/自动化/复盘）不跟 2s 快照轮询：15s 或动作后刷新，页面不可见时停表。
 export const WORKBENCH_POLL_MS = 15000
+// 复盘页的两个窗口（天）。窗口口径由服务端 stats 夹到 ≤62 天，客户端只提供这两个入口。
+export const REVIEW_DAYS = [7, 30]
 // 看板列：把台账 10 个状态压成 6 列（列只承载筛选，**不能靠拖拽改状态**——状态机是插件的核心）。
 export const BOARD_COLUMNS = [
   { key: 'queue', label: '等前置 / 待派发', statuses: ['waiting_dep', 'pending'], tone: 'muted' },

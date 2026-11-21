@@ -5,14 +5,14 @@ import {
   monthGrid, dateKeyOf, startOfMonth, planStampOnDay, planWhenLabel, clockOf,
   groupBoard, groupTasksOf, trayTasks, plannedOnDay, nextPlannedTask, automationStateLabel,
 } from '../client/src/logic.js'
-import { BOARD_COLUMNS, WORKBENCH_PAGES, WORKBENCH_POLL_MS, DEFAULT_PLAN_HOUR } from '../client/src/constants.js'
+import { BOARD_COLUMNS, WORKBENCH_PAGES, WORKBENCH_POLL_MS, DEFAULT_PLAN_HOUR, REVIEW_DAYS } from '../client/src/constants.js'
 
 // 工作台 v1（P11）：纯逻辑直接 import 断言；JSX 组件的结构用源码断言
 // （源码是 JSX，只有 vite 能编译，测试进程不能 import——与 test/client.test.js 的 dist vm 口径互补）。
 const source = name => readFileSync(new URL(`../client/src/${name}`, import.meta.url), 'utf8')
 
-test('工作台页面表：四页 + 组工作台子页；独立数据源 15s 分频（不跟 2s 快照）', () => {
-  assert.deepEqual(WORKBENCH_PAGES.map(([key]) => key), ['overview', 'groups', 'schedule', 'automations'])
+test('工作台页面表：五页 + 组工作台子页；独立数据源 15s 分频（不跟 2s 快照）', () => {
+  assert.deepEqual(WORKBENCH_PAGES.map(([key]) => key), ['overview', 'groups', 'schedule', 'automations', 'review'])
   assert.equal(WORKBENCH_POLL_MS, 15000)
   assert.ok(WORKBENCH_POLL_MS > 2000)
   assert.equal(DEFAULT_PLAN_HOUR, 20)
@@ -145,8 +145,32 @@ test('工作台只有三个写动作族 + 组/排期；客户端不提供派发�
   assert.match(api, /const workbenchAction = \(endpoint, payload\) => postEndpoint\(\{/)
 })
 
-test('面板没有第二个 main 槽位：工作台挂在同一个面板内部导航（不新增 main key）', () => {
-  const client = source('client.js')
+test('复盘页（P11 阶段 3）：导航第 6 项、7/30 天窗口、三态齐全、只读（不引图表库/不加写口）', () => {
+  const wb = source('workbench.js')
+  // 导航与页面表同源：第 6 项是复盘，接在四个既有页之后（原 5 页不变）。
+  assert.match(wb, /\['review', '复盘', null\]/, '一级导航要有复盘')
+  assert.deepEqual(REVIEW_DAYS, [7, 30])
+  const start = wb.indexOf('const ReviewPage = (')
+  assert.ok(start > 0, '找不到 ReviewPage')
+  const page = wb.slice(start, wb.indexOf('return { PageNav', start))
+  // 三态：加载骨架 / 错误 Banner + 重试按钮 / 空态；数据来自 stats（只读）。
+  for (const marker of ['SkeletonList', '<Banner', 'EmptyState', '重试', 'orch-wb-rstat', 'orch-wb-bartrack', 'orch-wb-autorow']) {
+    assert.ok(page.includes(marker), `复盘页缺少 ${marker}`)
+  }
+  // 图表只用数字卡 + 横向条 + 排行行：不引图表库、不写 SVG 图表。
+  assert.doesNotMatch(page, /echarts|chart\.js|d3|recharts/i)
+  // 只读：复盘页不发写请求（写动作仍只有 group-save / plan-set / automation-*）。
+  for (const forbidden of ['workbenchAction', 'clientRequestId', 'confirm: true']) {
+    assert.equal(page.includes(forbidden), false, `复盘页不该出现 ${forbidden}`)
+  }
+  // 数据源与渲染都接上了 stats 端点，且窗口天数可切（7/30）。
+  assert.match(source('api.js'), /endpoint: 'stats'/)
+  assert.match(source('views.js'), /readStats\(/)
+  assert.match(source('views.js'), /page === 'review' \? reviewPage\(\)/)
+  assert.match(source('views.js'), /WORKBENCH_POLL_MS/)
+})
+
+test('面板没有第二个 main 槽位：工作台挂在同一个面板内部导航（不新增 main key）', () => {  const client = source('client.js')
   const mainRegistrations = [...client.matchAll(/slots\.register\(\{\s*\n\s*name: 'main', key: ([A-Z_]+)/g)].map(match => match[1])
   assert.deepEqual(mainRegistrations, ['PANEL_ID', 'LAUNCHER_ID'], 'main 槽位仍只有面板 + 启动器两个 key')
   // 页面状态持久化用 sessionStorage（产物预览会卸载面板，回来要复原）。

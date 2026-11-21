@@ -150,6 +150,9 @@ export const readCalendar = (from, to, signal) => postEndpoint({ endpoint: 'cale
 
 export const readAutomations = (signal) => postEndpoint({ endpoint: 'automations' }, signal)
 
+/** 复盘页：窗口内交付/确认/平均时长/失败归因/产物类型/组排行（服务端只读台账既有时间戳）。 */
+export const readStats = (days, signal) => postEndpoint({ endpoint: 'stats', days }, signal)
+
 /** 工作台写动作：统一补 clientRequestId，失败按 code 抛（与面板动作同一套错误格式）。 */
 const workbenchAction = (endpoint, payload) => postEndpoint({
   endpoint,

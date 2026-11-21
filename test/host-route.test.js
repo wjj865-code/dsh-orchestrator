@@ -649,8 +649,34 @@ test('工作台只读端点：groups / group / calendar / automations 都可读�
   db.close()
 })
 
-test('工作台端点未装配时返回 500，未知端点仍 400；反例端点不存在', async () => {
-  const db = await openLedger(tempDir())
+test('stats 端点：复盘页只读统计（days 缺省 7、上限 62、非法回落 7），不需要 panel', async () => {
+  const { db, handler } = await workbenchSetup()
+  const task = createTask(db, { brief: sampleBrief({ title: '复盘' }), coordinatorSession: 's-main', groupId: 'gzh' })
+  transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  transition(db, task.id, 'delivered')
+  // 台账时间戳对齐 workbenchSetup 的固定 now（2026-11-21T10:00+08:00）→ 落在 30/7 天窗口内。
+  const at = Date.parse('2026-11-21T10:00:00+08:00')
+  db.prepare('UPDATE tasks SET created_at = ?, delivered_at = ?, updated_at = ? WHERE id = ?')
+    .run(at - 2 * 24 * 60 * 60 * 1000, at - 24 * 60 * 60 * 1000, at - 60 * 60 * 1000, task.id)
+  const response = await handler(request({ endpoint: 'stats', days: 30 }))
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.days, 30)
+  assert.ok(Number.isFinite(body.from) && Number.isFinite(body.to) && body.to > body.from)
+  for (const key of ['delivered', 'accepted', 'failed', 'messages']) assert.equal(typeof body[key], 'number', key)
+  for (const key of ['failures', 'artifacts', 'groups']) assert.ok(Array.isArray(body[key]), key)
+  assert.equal(body.groups[0].id, 'gzh')
+  // 缺省 7 天；超上限夹到 62；非法值回落 7。
+  assert.equal((await (await handler(request({ endpoint: 'stats' }))).json()).days, 7)
+  assert.equal((await (await handler(request({ endpoint: 'stats', days: 999 }))).json()).days, 62)
+  assert.equal((await (await handler(request({ endpoint: 'stats', days: 'x' }))).json()).days, 7)
+  // 只读：任务状态没被统计读改写。
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(task.id).status, 'delivered')
+  db.close()
+})
+
+test('工作台端点未装配时返回 500，未知端点仍 400；反例端点不存在', async () => {  const db = await openLedger(tempDir())
   const handler = createHostRoute({ db })
   const unavailable = await handler(request({ endpoint: 'groups' }))
   assert.equal(unavailable.status, 500)

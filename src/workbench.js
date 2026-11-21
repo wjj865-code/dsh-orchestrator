@@ -11,7 +11,7 @@
 import {
   getTask, listTasks, listAutomations, getAutomation, insertAutomation, updateAutomationRow,
   listGroupMeta, getGroupMeta, listGroupKeys, groupStatusCounts, upsertGroupMeta, setGroupArchived,
-  setTaskPlannedAt, getMainSessionId,
+  setTaskPlannedAt, getMainSessionId, countMessagesBetween,
 } from './ledger.js'
 import { panelFailure } from './action-errors.js'
 import {
@@ -28,6 +28,11 @@ export const WORKBENCH_LIMITS = Object.freeze({
   groupArtifacts: 200,
   calendarWindowDays: 62,
   calendarNext: 5,
+  // 复盘页（P11 阶段 3）：窗口上限与三个投影的条数上限（面板只画数字卡 + 条 + 排行表）。
+  reviewWindowDays: 62,
+  reviewGroups: 10,
+  reviewReasons: 5,
+  reviewArtifacts: 8,
 })
 
 /** 组名 / 自动化标题 / 话术的长度上限（标题跟宿主 `title ≤ 120` 对齐）。 */
@@ -277,6 +282,114 @@ const parseStamp = value => {
   return Number.isFinite(ms) ? ms : null
 }
 
+/** 未分组任务在组排行里的固定键（不落库，与组页的「未分组」虚拟卡同口径）。 */
+export const UNGROUPED_KEY = '__ungrouped__'
+
+/** 失败归因：取 `tasks.error` 首行（截 60 字）；没有错误信息时回落状态名，不猜原因。 */
+export function failureReasonOf(task) {
+  const line = String(task?.error ?? '').split('\n')[0].trim()
+  if (line !== '') return line.slice(0, 60)
+  return task?.status === 'orphaned' ? '会话丢失（没有错误信息）' : '失败（没有错误信息）'
+}
+
+/** 产物类型：只按路径扩展名归类，**不读文件内容**。 */
+export function artifactKindOf(path) {
+  const name = String(path ?? '').split(/[\\/]/).pop() ?? ''
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0 || dot === name.length - 1) return '无扩展名'
+  const ext = name.slice(dot + 1).toLowerCase()
+  return /^[a-z0-9]{1,8}$/.test(ext) ? ext : '其他'
+}
+
+/**
+ * 复盘页的纯投影（设计稿 §3.6）：**只用台账既有时间戳**（created_at / delivered_at / accepted_at /
+ * updated_at）、`tasks.error` 首行、产物路径与 messages 条数。不新增埋点、不读产物文件内容。
+ * 口径：交付/确认 = 落在窗口内的 delivered_at / accepted_at；平均时长只统计窗口内交付且有 created_at 的行；
+ * 失败 = 窗口内 updated_at 且状态 failed/orphaned；组排行 = 窗口内有创建/交付/失败的任务。
+ */
+export function reviewStats({ tasks = [], groups = [], messages = 0, days = 7, now = Date.now() } = {}) {
+  const windowDays = Math.min(WORKBENCH_LIMITS.reviewWindowDays, Math.max(1, Math.trunc(Number(days)) || 7))
+  const to = now
+  const from = to - windowDays * DAY_MS
+  const inWindow = ms => Number.isFinite(ms) && ms >= from && ms <= to
+  const delivered = tasks.filter(task => inWindow(task.delivered_at))
+  const accepted = tasks.filter(task => inWindow(task.accepted_at)).length
+  const spans = delivered
+    .map(task => task.delivered_at - task.created_at)
+    .filter(ms => Number.isFinite(ms) && ms >= 0)
+  const avgDeliverMs = spans.length === 0 ? null : Math.round(spans.reduce((sum, ms) => sum + ms, 0) / spans.length)
+  const failed = tasks.filter(task => (task.status === 'failed' || task.status === 'orphaned') && inWindow(task.updated_at))
+  const failedIds = new Set(failed.map(task => task.id))
+  const reasons = new Map()
+  for (const task of failed) {
+    const reason = failureReasonOf(task)
+    reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
+  }
+  const failures = [...reasons.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason))
+    .slice(0, WORKBENCH_LIMITS.reviewReasons)
+  // 产物：窗口内「创建或交付」的任务的产物，按扩展名计数，同一路径只算一次（不读文件内容）。
+  const kinds = new Map()
+  const paths = new Set()
+  for (const task of tasks) {
+    if (!inWindow(task.created_at) && !inWindow(task.delivered_at)) continue
+    for (const artifact of Array.isArray(task.artifacts) ? task.artifacts : []) {
+      const path = text(artifact?.path)
+      if (path === '' || paths.has(path)) continue
+      paths.add(path)
+      const kind = artifactKindOf(path)
+      kinds.set(kind, (kinds.get(kind) ?? 0) + 1)
+    }
+  }
+  const artifacts = [...kinds.entries()]
+    .map(([ext, count]) => ({ ext, count }))
+    .sort((left, right) => right.count - left.count || left.ext.localeCompare(right.ext))
+    .slice(0, WORKBENCH_LIMITS.reviewArtifacts)
+  const names = new Map(groups.map(row => [row.id, row.name]))
+  const rank = new Map()
+  const bump = (key, field) => {
+    if (!rank.has(key)) {
+      rank.set(key, {
+        id: key === UNGROUPED_KEY ? '' : key,
+        name: key === UNGROUPED_KEY ? '未分组' : (text(names.get(key)) || key),
+        delivered: 0, failed: 0, total: 0,
+      })
+    }
+    rank.get(key)[field] += 1
+  }
+  for (const task of tasks) {
+    const active = inWindow(task.created_at) || inWindow(task.delivered_at) || failedIds.has(task.id)
+    if (!active) continue
+    const key = text(task.group_id) === '' ? UNGROUPED_KEY : text(task.group_id)
+    bump(key, 'total')
+    if (inWindow(task.delivered_at)) bump(key, 'delivered')
+    if (failedIds.has(task.id)) bump(key, 'failed')
+  }
+  const rows = [...rank.entries()]
+    .sort((left, right) => right[1].delivered - left[1].delivered
+      || right[1].failed - left[1].failed
+      || right[1].total - left[1].total
+      || left[1].name.localeCompare(right[1].name))
+    .slice(0, WORKBENCH_LIMITS.reviewGroups)
+    .map(([, row]) => row)
+  return {
+    ok: true,
+    at: to,
+    days: windowDays,
+    from,
+    to,
+    delivered: delivered.length,
+    accepted,
+    avgDeliverMs,
+    failed: failed.length,
+    messages: Number.isFinite(messages) ? messages : 0,
+    failures,
+    artifacts,
+    groups: rows,
+  }
+}
+
 /**
  * 工作台动作/投影工厂。
  * @param {object} deps
@@ -484,6 +597,20 @@ export function createWorkbench({ db, schedule, mainSessionId, log = () => {}, n
         .slice(0, WORKBENCH_LIMITS.calendarNext)
         .map(task => ({ id: task.id, title: task.title, plannedAt: task.planned_at, groupId: task.group_id ?? null }))
       return { ok: true, at, from: start, to: end, days: window.days, upcoming }
+    },
+
+    /** 只读：复盘页统计（窗口内交付/确认/平均创建→交付时长/失败归因/产物类型/组排行/消息数）。 */
+    stats({ days } = {}) {
+      const at = now()
+      const requested = Math.trunc(Number(days))
+      const windowDays = Number.isFinite(requested) && requested > 0 ? requested : 7
+      return reviewStats({
+        tasks: allTasks(),
+        groups: listGroupMeta(db),
+        messages: countMessagesBetween(db, { from: at - Math.min(windowDays, WORKBENCH_LIMITS.reviewWindowDays) * DAY_MS, to: at }),
+        days: windowDays,
+        now: at,
+      })
     },
 
     /** 只读：自动化清单（宿主不可用时 available=false，整页降级为只读镜像）。 */

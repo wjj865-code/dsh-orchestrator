@@ -11,6 +11,7 @@
  */
 import {
   BOARD_COLUMNS, WEEKDAY_LABELS, AUTOMATION_KINDS, AUTOMATION_WEEKDAYS, DEFAULT_PLAN_HOUR, TONE_COLOR,
+  REVIEW_DAYS,
 } from './constants.js'
 import {
   groupBoard, groupTasksOf, trayTasks, plannedOnDay, nextPlannedTask, planStampOnDay, planWhenLabel,
@@ -49,10 +50,10 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
 
   const statusBadge = status => <Badge tone={statusTone(status)}>{STATUS_LABEL[status] || status || '未知'}</Badge>
 
-  // ---- 一级导航（工作台内部五页；不新开 main 面板）----
+  // ---- 一级导航（工作台内部六页；不新开 main 面板）----
   const PageNav = ({ page, onPage, inboxCount, groupCount, automationCount }) => (
     <nav className="orch-wb-nav" aria-label="工作台页面">
-      {[['overview', '总览', null], ['groups', '任务组', groupCount], ['schedule', '排期', null], ['automations', '自动化', automationCount]].map(([key, label, count]) => (
+      {[['overview', '总览', null], ['groups', '任务组', groupCount], ['schedule', '排期', null], ['automations', '自动化', automationCount], ['review', '复盘', null]].map(([key, label, count]) => (
         <button
           key={key}
           type="button"
@@ -61,7 +62,7 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
           aria-pressed={page === key}
           onClick={() => onPage(key)}
         >
-          <Icon name={key === 'overview' ? 'inbox' : key === 'groups' ? 'folder' : key === 'schedule' ? 'calendar' : 'bolt'} size={13} />
+          <Icon name={key === 'overview' ? 'inbox' : key === 'groups' ? 'folder' : key === 'schedule' ? 'calendar' : key === 'review' ? 'check' : 'bolt'} size={13} />
           <span>{label}</span>
           {key === 'overview' && inboxCount > 0 ? <span className="orch-wb-navcount" data-tone="warn">{String(inboxCount)}</span> : null}
           {key !== 'overview' && Number.isFinite(count) && count > 0 ? <span className="orch-wb-navcount">{String(count)}</span> : null}
@@ -806,5 +807,120 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
     )
   }
 
-  return { PageNav, OverviewPage, GroupsPage, GroupPage, SchedulePage, AutomationsPage, Dock }
+  // ---- 复盘（P11 阶段 3）：只用台账既有时间戳 + 产物路径 + messages 条数，不新增埋点、不读产物内容 ----
+  const durationLabel = ms => {
+    if (!Number.isFinite(ms) || ms <= 0) return '—'
+    const minutes = Math.round(ms / 60000)
+    if (minutes < 60) return `${minutes} 分钟`
+    return minutes < 1440 ? `${(minutes / 60).toFixed(1)} 小时` : `${(minutes / 1440).toFixed(1)} 天`
+  }
+  const ReviewPage = ({ state, days, onDays, onReload }) => {
+    const data = state.data
+    const retry = <button type="button" className="orch-btn orch-btn--sm" onClick={onReload}>{'重试'}</button>
+    const head = (
+      <header className="orch-wb-cardhead">
+        <span className="orch-wb-cardtitle"><Icon name="check" size={13} />{'复盘'}</span>
+        <span className="orch-wb-grow" />
+        {REVIEW_DAYS.map(value => (
+          <button
+            key={value} type="button"
+            className={days === value ? 'orch-btn orch-btn--primary orch-btn--sm' : 'orch-btn orch-btn--ghost orch-btn--sm'}
+            aria-pressed={days === value} onClick={() => onDays(value)}
+          >{`最近 ${value} 天`}</button>
+        ))}
+        <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={onReload}>{'刷新'}</button>
+      </header>
+    )
+    if (data === null) {
+      return (
+        <div className="orch-wb-page" data-page="review">
+          <section className="orch-wb-card">
+            {head}
+            {state.error !== null
+              ? <Banner tone="error" icon="alert" action={retry}>{`复盘读取失败：${state.error}`}</Banner>
+              : <SkeletonList rows={4} />}
+          </section>
+        </div>
+      )
+    }
+    const empty = data.delivered === 0 && data.failed === 0 && data.groups.length === 0
+    const top = data.failures.length === 0 ? 1 : data.failures[0].count
+    return (
+      <div className="orch-wb-page" data-page="review">
+        <section className="orch-wb-card">
+          {head}
+          <div className="orch-wb-details">{`窗口 ${data.days} 天：交付 ${data.delivered} · 确认 ${data.accepted} · 失败 ${data.failed} · 消息 ${data.messages} 条`}</div>
+          {state.error !== null
+            ? <Banner tone="error" icon="alert" action={retry}>{`复盘读取失败（显示上一次结果）：${state.error}`}</Banner>
+            : null}
+          {empty
+            ? (
+                <EmptyState
+                  icon="check"
+                  title="这段时间没有交付或失败记录"
+                  hint="窗口内创建或交付的任务才会进入复盘；数据全部来自台账既有时间戳，不额外埋点。"
+                  action={retry}
+                />
+              )
+            : (
+                <div className="orch-wb-rstats">
+                  <div className="orch-wb-rstat"><b>{String(data.delivered)}</b><span>{'交付'}</span></div>
+                  <div className="orch-wb-rstat"><b>{String(data.accepted)}</b><span>{'确认'}</span></div>
+                  <div className="orch-wb-rstat"><b>{durationLabel(data.avgDeliverMs)}</b><span>{'平均创建 → 交付'}</span></div>
+                </div>
+              )}
+        </section>
+        <section className="orch-wb-card">
+          <header className="orch-wb-cardhead">
+            <span className="orch-wb-cardtitle">{`失败归因 · ${data.failed} 条`}</span>
+            <span className="orch-wb-grow" />
+            <span className="orch-wb-details">{'按 error 首行归类'}</span>
+          </header>
+          {data.failures.length === 0
+            ? <div className="orch-muted">{'窗口内没有失败任务。'}</div>
+            : data.failures.map(row => (
+                <div key={row.reason} className="orch-wb-bar">
+                  <span className="orch-wb-barlabel" title={row.reason}>{row.reason}</span>
+                  <span className="orch-wb-bartrack">
+                    <span style={{ width: `${Math.max(4, Math.round((row.count / top) * 100))}%` }} />
+                  </span>
+                  <span className="orch-wb-details">{String(row.count)}</span>
+                </div>
+              ))}
+        </section>
+        <section className="orch-wb-card">
+          <header className="orch-wb-cardhead">
+            <span className="orch-wb-cardtitle">{`产物类型 · ${data.artifacts.length} 类`}</span>
+            <span className="orch-wb-grow" />
+            <span className="orch-wb-details">{'按扩展名，不读文件内容'}</span>
+          </header>
+          {data.artifacts.length === 0
+            ? <div className="orch-muted">{'窗口内没有登记产物。'}</div>
+            : (
+                <div className="orch-wb-chips">
+                  {data.artifacts.map(row => <Chip key={row.ext}>{`${row.ext} ×${row.count}`}</Chip>)}
+                </div>
+              )}
+        </section>
+        <section className="orch-wb-card">
+          <header className="orch-wb-cardhead">
+            <span className="orch-wb-cardtitle">{'组维度排行'}</span>
+            <span className="orch-wb-grow" />
+            <span className="orch-wb-details">{'窗口内有活动的组'}</span>
+          </header>
+          {data.groups.length === 0
+            ? <div className="orch-muted">{'窗口内没有组活动。'}</div>
+            : data.groups.map((row, index) => (
+                <div key={row.id || 'ungrouped'} className="orch-wb-autorow">
+                  <span className="orch-wb-details">{String(index + 1)}</span>
+                  <span className="orch-wb-automain">{row.name}</span>
+                  <span className="orch-wb-gstats">{`交付 ${row.delivered} · 失败 ${row.failed} · 共 ${row.total}`}</span>
+                </div>
+              ))}
+        </section>
+      </div>
+    )
+  }
+
+  return { PageNav, OverviewPage, GroupsPage, GroupPage, SchedulePage, AutomationsPage, ReviewPage, Dock }
 }

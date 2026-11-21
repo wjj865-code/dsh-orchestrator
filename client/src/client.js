@@ -23,7 +23,7 @@ import {
 } from './logic.js'
 import {
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce, adoptCoordinator,
-  readGroups, readGroup, readCalendar, readAutomations,
+  readGroups, readGroup, readCalendar, readAutomations, readStats,
   saveGroup, archiveGroup, setPlan, saveAutomation, toggleAutomation, deleteAutomation,
 } from './api.js'
 import { createTaskFeed } from './feed.js'
@@ -101,7 +101,7 @@ export const createClient = (req) => {
     WORKBENCH_STORAGE_KEY,
     WORKBENCH_POLL_MS,
     workbenchApi: {
-      readGroups, readGroup, readCalendar, readAutomations,
+      readGroups, readGroup, readCalendar, readAutomations, readStats,
       saveGroup, archiveGroup, setPlan, saveAutomation, toggleAutomation, deleteAutomation,
     },
     startOfMonth,
