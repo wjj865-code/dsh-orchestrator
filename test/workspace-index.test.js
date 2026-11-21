@@ -34,6 +34,25 @@ test('只扫描登记名单，单项非仓库/不存在/无权限继续，git只
   assert.ok(calls.every(([args]) => !args.some(arg => ['fetch', 'pull', 'status', 'add', 'commit'].includes(arg))))
 })
 
+
+test('spawn blocked (EPERM) falls back to fs and still reports real git state', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'orch-index-fs-'))
+  const { execFileSync } = await import('node:child_process')
+  const repo = join(root, 'repo')
+  execFileSync('git', ['init', '-q', repo])
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 't@e.st'])
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 't'])
+  execFileSync('git', ['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'init'])
+  const plain = join(root, 'plain')
+  execFileSync('mkdir', ['-p', plain])
+  const list = [{ id: 'git', title: 'repo', path: repo }, { id: 'p', title: 'plain', path: plain }]
+  const blocked = async () => ({ ok: false, spawnError: 'EPERM', stdout: '', stderr: '' })
+  const snapshot = await scanWorkspaces(list, { git: blocked })
+  assert.deepEqual(snapshot.entries.map(e => e.status), ['git', 'not_git'])
+  assert.equal(snapshot.entries[0].repoRoot, repo)
+  assert.ok(snapshot.entries[0].head && snapshot.entries[0].head.length >= 7)
+})
+
 test('名单持久化到settings保留别名和采样，验证覆盖/身份，手写记忆不变', async () => {
   const db = await openLedger(mkdtempSync(join(tmpdir(), 'orch-index-')))
   const task = { id: 't-index', read_only: true, brief: { workspaceIndexEntries: entries } }

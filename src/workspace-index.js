@@ -1,6 +1,9 @@
-// 已登记工作区的只读索引：worker 扫描，task_report 持久化到既有 settings；不改用户记忆。
-import { statSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+// Registered-workspace read-only index: worker scan, task_report persists to settings; no user memory writes.
+// When the git child process cannot start (spawnError EPERM/EACCES/ENOENT, e.g. a restricted shell),
+// fall back to plain fs reads of .git metadata instead of silently marking every entry unavailable.
+// Status semantics and persistence logic are otherwise unchanged.
+import { statSync, readFileSync, existsSync } from 'node:fs'
+import { isAbsolute, resolve } from 'node:path'
 import { runGit } from './worktree.js'
 import { getSetting, setSetting } from './ledger.js'
 
@@ -8,7 +11,6 @@ export const WORKSPACE_INDEX_KEY = 'workspace_repo_index'
 export const INDEX_TITLE = '工作区与仓库索引'
 export const workspaceIndexSavedKey = taskId => `workspace_index_saved:${taskId}`
 
-// remote 只留定位部分：移除 userinfo、query、fragment；不回传 git stderr（可能带凭证）。
 export function redactRemote(value) {
   const text = String(value ?? '').trim()
   if (text.includes('://')) {
@@ -19,7 +21,6 @@ export function redactRemote(value) {
     } catch { return '[remote 已隐藏]' }
   }
   if (/^[^/@\s]+@[^:\s]+:/.test(text)) return text.replace(/^[^@]+@/, '').split(/[?#]/)[0]
-  // 仅保留普通路径或 scp host:path；含凭证式 @ 的未知格式不猜。
   return text.includes('@') ? '[remote 已隐藏]' : text.split(/[?#]/)[0]
 }
 
@@ -30,6 +31,87 @@ export function registeredWorkspaces(service) {
     .map(({ id, title, path }) => ({ id, title: typeof title === 'string' ? title : '', path }))
 }
 
+// ---------- FS_FALLBACK_PATCH_v1 起始 ----------
+const fsTrim = v => (typeof v === 'string' ? v.trim() : '')
+const fsIsDir = p => { try { return statSync(p).isDirectory() } catch { return false } }
+const fsRead = p => { try { return readFileSync(p, 'utf8') } catch { return null } }
+
+function gitDirOf(dir) {
+  let cur = resolve(dir)
+  for (;;) {
+    const dotgit = resolve(cur, '.git')
+    if (existsSync(dotgit)) {
+      if (fsIsDir(dotgit)) return { gitdir: dotgit, worktree: false }
+      const m = fsTrim(fsRead(dotgit) ?? '').match(/^gitdir:\s*(.+)$/m)
+      if (m) return { gitdir: resolve(cur, m[1]), worktree: true }
+    }
+    const parent = resolve(cur, '..')
+    if (parent === cur) return null
+    cur = parent
+  }
+}
+
+// 严格：.git 内必须有 HEAD 与 config，排除 C:\.git 空目录伪影。
+function isRealRepo(gitdir) {
+  return existsSync(resolve(gitdir, 'HEAD')) && existsSync(resolve(gitdir, 'config'))
+}
+
+function headOf(gitdir) {
+  const head = fsTrim(fsRead(resolve(gitdir, 'HEAD')) ?? '')
+  if (head === '') return {}
+  if (head.startsWith('ref:')) {
+    const ref = fsTrim(head.slice(4))
+    const branch = ref.replace(/^refs\/heads\//, '')
+    let sha = fsTrim(fsRead(resolve(gitdir, ...ref.split('/'))) ?? '')
+    if (sha === '') {
+      const packed = fsTrim(fsRead(resolve(gitdir, 'packed-refs')) ?? '')
+      const line = packed.split(/\r?\n/).find(l => l && !l.startsWith('#') && !l.startsWith('^') && l.endsWith(` ${ref}`))
+      sha = line ? line.split(' ')[0] : ''
+    }
+    return { branch, headSha: sha || null }
+  }
+  return { branch: 'HEAD', headSha: head.slice(0, 40) }
+}
+
+function originOf(gitdir) {
+  const config = fsRead(resolve(gitdir, 'config')) ?? ''
+  let inOrigin = false
+  for (const line of config.split(/\r?\n/)) {
+    const t = line.trim()
+    if (/^\[remote\s+["'][^"']+["']\]$/.test(t)) { inOrigin = /["']origin["']/.test(t); continue }
+    if (/^\[/.test(t)) { inOrigin = false; continue }
+    if (inOrigin) { const m = t.match(/^url\s*=\s*(.+)$/); if (m) return redactRemote(m[1]) }
+  }
+  return null
+}
+
+function commonDirOf(gitdir) {
+  const cd = fsTrim(fsRead(resolve(gitdir, 'commondir')) ?? '')
+  return cd === '' ? gitdir : resolve(gitdir, cd)
+}
+
+/** 纯 fs 读一个工作区；返回与 git 路径同形的字段集，status 只可能是 git/not_git/unavailable。 */
+function fromFs(workspace) {
+  const found = gitDirOf(workspace.path)
+  if (!found || !isRealRepo(found.gitdir)) return { status: 'not_git' }
+  const { branch, headSha } = headOf(found.gitdir)
+  return {
+    status: 'git',
+    repoRoot: resolve(found.gitdir, '..'),
+    branch: branch ?? null,
+    head: headSha,
+    origin: originOf(found.gitdir),
+    commonDir: commonDirOf(found.gitdir),
+  }
+}
+
+/** 判定是否是「子进程根本起不来」的 spawn 错误（沙箱 EPERM / 缺 git 等）。 */
+function isSpawnBlocked(result) {
+  const code = result?.spawnError
+  return code === 'EPERM' || code === 'EACCES' || code === 'ENOENT'
+}
+// ---------- FS_FALLBACK_PATCH_v1 结束 ----------
+
 export async function scanWorkspaces(workspaces, { git = runGit, isDirectory = path => statSync(path).isDirectory() } = {}) {
   const entries = []
   for (const workspace of workspaces) {
@@ -39,11 +121,18 @@ export async function scanWorkspaces(workspaces, { git = runGit, isDirectory = p
       if (!isDirectory(workspace.path)) continue
       const root = await git(['rev-parse', '--show-toplevel'], { cwd: workspace.path })
       if (!root.ok) {
+        // FS_FALLBACK_PATCH_v1：子进程被沙箱拒绝时改走纯 fs，不再静默 unavailable。
+        if (isSpawnBlocked(root)) {
+          Object.assign(entry, fromFs(workspace))
+          continue
+        }
         entry.status = /not a git repository/i.test(root.stderr ?? '') ? 'not_git' : 'unavailable'
         continue
       }
       entry.status = 'git'
       entry.repoRoot = root.stdout.trim()
+      // FS_FALLBACK_PATCH_v1：后续四查若 spawn 被拒，整体改用 fs 重算，避免半截数据。
+      let blocked = false
       for (const [field, args] of [
         ['branch', ['branch', '--show-current']],
         ['head', ['rev-parse', '--verify', 'HEAD']],
@@ -51,8 +140,10 @@ export async function scanWorkspaces(workspaces, { git = runGit, isDirectory = p
         ['commonDir', ['rev-parse', '--path-format=absolute', '--git-common-dir']],
       ]) {
         const result = await git(args, { cwd: workspace.path })
+        if (isSpawnBlocked(result)) { blocked = true; break }
         entry[field] = result.ok ? (field === 'origin' ? redactRemote(result.stdout) : result.stdout.trim()) : null
       }
+      if (blocked) Object.assign(entry, fromFs(workspace))
     } catch { entry.status = 'unavailable' }
   }
   return { entries }
@@ -62,7 +153,6 @@ export function loadWorkspaceIndex(db) {
   try { return JSON.parse(getSetting(db, WORKSPACE_INDEX_KEY) ?? 'null') } catch { return null }
 }
 
-// 只接收该索引任务创建时名单中的每一项，title/path 使用名单真值，不采信 worker 的别名。
 export function saveWorkspaceIndex(db, task, value) {
   const expected = task.brief?.workspaceIndexEntries
   if (!task.read_only || !Array.isArray(expected)) throw new Error('只有只读工作区索引任务可回报索引')
@@ -87,7 +177,6 @@ export function saveWorkspaceIndex(db, task, value) {
     return entry
   })
   const snapshot = { recordedAt: new Date().toISOString(), sourceTaskId: task.id, entries }
-  // 结果与本任务成功标记同事务，其他索引覆盖全局快照不抹掉本任务的完成证据。
   db.exec('SAVEPOINT workspace_index_save')
   try {
     setSetting(db, WORKSPACE_INDEX_KEY, JSON.stringify(snapshot))
