@@ -115,6 +115,8 @@
                 - context
                 - memory_note
                 - read_workspace
+                # 0.32.0：能力包工厂只对协调者开放（worker 与包会话也在 preset-tools 里 deny 掉）。
+                - capability_pack
     - id: orchestrator-worker-preset
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -203,6 +205,9 @@
           - id: preset-tools
             name: '@wjj865-code/dsh-orchestrator/preset-tools'
             config:
+              # 0.32.0：能力包工厂只属于协调者；子会话与包会话都不该创建/修改包。
+              deny:
+                - capability_pack
               keep:
                 - context
                 - task_detail

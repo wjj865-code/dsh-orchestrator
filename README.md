@@ -11,7 +11,7 @@
 
 1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.31.0`。
 2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）：宿主侧代码在 DSH 进程启动时加载，**刷新页面不会换版本**，装完还是旧行为就是没重启。
-3. 自检：插件页有「任务编排」与详情页；侧栏「插件」下方有「◈ 主会话」；插件全局 **10 个工具**（协调者能用其中 7 个；子会话 4：`task_report` / `task_detail` / `plan_save` / 只读的 `context`），协调者另外挂宿主原生的只读工具 `read`（**没有** `glob`/`grep`）与技能加载器 `skill`；派一条任务回报后主会话收到「已交付待确认」，`task_message({action:'close'})` 能收成「已完成」。
+3. 自检：插件页有「任务编排」与详情页；侧栏「插件」下方有「◈ 主会话」与「能力包」；插件全局 **11 个工具**（协调者能用其中 8 个；子会话 4：`task_report` / `task_detail` / `plan_save` / 只读的 `context`），协调者另外挂宿主原生的只读工具 `read`（**没有** `glob`/`grep`）与技能加载器 `skill`；派一条任务回报后主会话收到「已交付待确认」，`task_message({action:'close'})` 能收成「已完成」。
 4. 升级 = 装新版 + 彻底重启。registry 包用插件页的更新入口；从 GitHub 装（`https://github.com/wjj865-code/dsh-orchestrator`）的先卸载旧版。旧包名 `dsh-orchestrator` 与新版不兼容，先移除。
 5. `npm i @latest` 装到旧版 = 镜像还没同步（几十分钟到几小时）：过一会儿重装，或直接用上面的显式版本号。
 
@@ -133,6 +133,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 | `context` | 只读读上下文（协调者与子会话都能调）：`mode:'history'`（默认，记忆/历史任务/历史会话；首行【检索范围】，查项目记忆要传 `project`）/ `'project'`（项目白名单文件含 `docs/ARCHITECTURE.md`、结构、最近任务、相关记忆）/ `'workspaces'`（已登记工作区与仓库采样索引） |
 | `memory_note` | 记一条跨任务有效的决策/经验，或一条偏好。协调者（主会话）可写任意项目与全局偏好；任务子会话只能写**自己任务 `target_dir`** 的项目记忆（`note`/`lesson`/`decision`，`project` 强制为本任务目录、单任务最多 3 条、同 `kind`+`text` 幂等），写 `preference` 与全局/跨项目记忆会被拒并给替代路径；`kind:'preference'` 不传 `project` 时写进协调者偏好（每回合注入、立即生效） |
 | `read_workspace` | 读产物正文：主会话工作区内文件/目录，或任务已登记产物；越界/`../`/符号链接逃逸/未登记均被拒；大文件按行窗口截断给续读 `offset` |
+| `capability_pack` | 能力包工厂（0.32.0）：`list` / `describe` / `create` / `update` / `delete` / `open` / `install` / `uninstall` / `health` / `export-static`。写动作先不传 `confirm` 看 dry-run 计划（文件树 + 预设行 + 安装确认卡），再带 `confirm:true` + `clientRequestId` 执行；装 CLI 须先看确认卡（实测体积/耗时）再带 `planHash`；内置包只读；包会话是普通根会话（不写台账、不进队列） |
 
 子任务（3 个，外加与协调者共用的只读 `context`）：
 
@@ -142,7 +143,7 @@ task_create({ ..., target: '/abs/path/to/repo',
 | `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收标准、可执行检查、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物 |
 | `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为产物（计划阶段唯一写入口） |
 
-- 10 个工具**全局注册**（`index.js` 的 `createTools(...).map(ctx.tools.register)`），角色差异全在**预设层**（两个预设都是**遮挡式**）：协调者预设遮「编排正确性」项（`wait_agent`、团队工具、`plugin_manager`、密钥/IM）与三个子会话专属工具，并用 `keep` 声明 7 个任务工具出生即可用；worker 预设**不遮任何工具**（keep-only），只正向声明 `context` / `task_detail` / `task_report` / `memory_note` 出生即可用——所以 `context` 与 `memory_note` 子会话都能调：`context` **只读**、与协调者同一条实现（同参数输出逐字一致）；`memory_note` 在子会话里只能写自己任务目录的项目记忆（全局偏好与跨项目记忆由执行层按任务归属拒绝并给替代路径）；`task_report`/`task_detail`/`plan_save` 只对任务自己的子会话开放。
+- 11 个工具**全局注册**（`index.js` 的 `createTools(...).map(ctx.tools.register)`），角色差异全在**预设层**（两个预设都是**遮挡式**）：协调者预设遮「编排正确性」项（`wait_agent`、团队工具、`plugin_manager`、密钥/IM）与三个子会话专属工具，并用 `keep` 声明 7 个任务工具与 `capability_pack` 出生即可用；worker 预设只点名遮 `capability_pack`（能力包工厂只属于协调者），并用 `keep` 声明 `context` / `task_detail` / `task_report` / `memory_note` 出生即可用——所以 `context` 与 `memory_note` 子会话都能调：`context` **只读**、与协调者同一条实现（同参数输出逐字一致）；`memory_note` 在子会话里只能写自己任务目录的项目记忆（全局偏好与跨项目记忆由执行层按任务归属拒绝并给替代路径）；`task_report`/`task_detail`/`plan_save` 只对任务自己的子会话开放。
 - 派发给子会话的 **brief 只留一次性参数**（2–3 行，`access:'full'` 多一行）：任务编号 + 一行「先调 `task_detail`」指针；目标、验收、经验、前置、产物都不内联进提示词，由子会话用 `task_detail` 现读。**执行中怎么上报 / 交付怎么回报 / 隔离任务装依赖 / 主动读 context** 这些静态提示不再写进 brief，而是由 W1「任务执行者 policy」**每回合注入**（只命中该任务的子会话，见下面「提示词分层」）。交付后协调者**不会**来问「确认 / 要改？」，任务保持待确认、等超时自动完成；用户要改时协调者用 `task_message` 回到同一个子会话。
 
 ### 技能与只读工具
@@ -325,7 +326,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 ### 主会话原生自动化
 
-协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 10 个工具（契约核实于 DSH `0.2.2-rc.3`，升级宿主需复核）。
+协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 11 个工具（契约核实于 DSH `0.2.2-rc.3`，升级宿主需复核）。
 
 | 原生工具 | 用法 |
 |---|---|

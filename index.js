@@ -50,6 +50,9 @@ import { createPackStore } from './src/pack/store.js'
 import { buildPresetDefinition } from './src/pack/preset-template.js'
 import { createPresetRegistry, loadBuiltinPacks } from './src/pack/preset-registry.js'
 import { isDesktopHost } from './src/pack/platform.js'
+import { createInstaller } from './src/pack/install.js'
+import { createPackService } from './src/pack/service.js'
+import { createPackPanel } from './src/pack/panel.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
@@ -922,6 +925,28 @@ export async function apply(ctx, rawConfig = {}) {
   queue.load()
   if (config.autoResumeQueue) queue.pump()
 
+  // 能力包 service（0.32.0）：工具 / 面板路由共用同一份闸门、安装器与会话入口。
+  // 写入仍只落到 capability-packs 根；open 只调 sessionController.create（普通根会话）。
+  const packInstaller = createInstaller({
+    store: packStore,
+    log: (event, fields) => logger.log(event, fields),
+  })
+  const packService = createPackService({
+    store: packStore,
+    presets: presetRegistry,
+    installer: packInstaller,
+    config,
+    hostInfo: { desktop: capabilityPacksDesktop },
+    builtin: builtinPackState,
+    sessionController: () => service('sessionController'),
+    workspaceDir: () => resolveCoordinator()?.session?.header?.cwd ?? join(dir, 'workspace'),
+    env: process.env,
+    log: (event, fields) => logger.log(event, fields),
+    onWarn: warnings,
+  })
+  // 面板投影：只读快照 + 窄写口（开包会话/装卸载 CLI/环境变量/删除用户包）。
+  const packPanel = createPackPanel({ service: packService })
+
   const toolDisposers = createTools({
     db, dispatcher, queue, notifier, config, coordinatorStatus, logger,
     workspaces: () => service('workspaceRegistry'),
@@ -943,6 +968,8 @@ export async function apply(ctx, rawConfig = {}) {
     // P9：worktree 能力共享同一份服务（recentDays 取配置），终态清理由 index 统一注入。
     worktree: worktreeService,
     cleanupWorktree,
+    // 0.32.0：能力包工厂工具（capability_pack）。
+    capabilityPacks: packService,
   }).map(tool => ctx.tools.register(tool))
 
   // task_report done 所在回合的 workspace/changes 事件在 turn stopping 时才追加：
@@ -1010,6 +1037,8 @@ export async function apply(ctx, rawConfig = {}) {
       coordinatorStatus,
       panel,
       workbench,
+      // 0.32.0：能力包面板（只读快照 + 窄写口；confirm/planHash 在 service 层再判）。
+      packs: packPanel,
       // P2-4（D6）：官方 Team 板只读快照（服务缺失/未开启/读失败都在 handler 里降级）。
       teamBoard: () => teamBoard.read(resolveCoordinator()),
       // 0.25.0：上下文观测缓存（只读诊断；面板不常驻渲染压力）。

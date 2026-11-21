@@ -180,7 +180,7 @@ test('inject 不再硬依赖 agentTeams（缺服务也要能激活）', () => {
 test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subagent 可用', withHome(async () => {
   const f = fakeCtx({ withAgentTeams: false })
   await apply(f.ctx, {})
-  assert.equal(f.registered.length, 10)
+  assert.equal(f.registered.length, 11)
   assert.equal(f.routes.length, 1)
   assert.equal(f.warnings.some(message => /agentTeams|waiting for service/.test(message)), false)
 }))
@@ -190,7 +190,7 @@ test('旧配置键（backend）仍能加载：warn 一次、工具照常注册�
   resetDeprecatedKeyWarnings()
   const f = fakeCtx({ withAgentTeams: false })
   await assert.doesNotReject(() => apply(f.ctx, { backend: 'team' }))
-  assert.equal(f.registered.length, 10)
+  assert.equal(f.registered.length, 11)
   assert.ok(f.warnings.some(message => /配置键 backend 已删除/.test(message)), f.warnings.join(' | '))
 }))
 
@@ -202,12 +202,12 @@ test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {
   assert.equal(guards.length, 1)
 }))
 
-test('apply 注册 10 个工具（P1-B 15 → 10），只写 $DSH_HOME/state/orchestrator', withHome(async home => {
+test('apply 注册 11 个工具（P1-B 15 → 10，0.32.0 +capability_pack），只写 $DSH_HOME/state/orchestrator', withHome(async home => {
   const { ctx, registered } = fakeCtx()
   await apply(ctx, { coordinatorSession: 's-1' })
-  assert.equal(registered.length, 10)
+  assert.equal(registered.length, 11)
   assert.deepEqual(registered.map(tool => tool.name).sort(),
-    ['context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
+    ['capability_pack', 'context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
   assert.deepEqual(readdirSync(home), ['state'])
   assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), ['logs', 'snapshots'])
 }))
@@ -291,7 +291,7 @@ test('apply 给 createTools 传 defaultCwd：无 target 时相对产物按主会
 test('无 coordinatorSession：warn 但工具注册；派活给「先打开主会话」提示', withHome(async () => {
   const { ctx, registered, warnings } = fakeCtx()
   await apply(ctx, {})
-  assert.equal(registered.length, 10)
+  assert.equal(registered.length, 11)
   assert.ok(warnings.some(message => /尚未打开主会话/.test(message)))
   const create = registered.find(tool => tool.name === 'task_create')
   const text = await create.execute({ title: 't', goal: 'g', acceptance: ['a'] })
@@ -582,7 +582,7 @@ test('主会话保留四个原生自动化工具，团队工具仍被 guard 硬�
   }
   const create = f.registered.find(tool => tool.name === 'task_create')
   assert.match(await create.execute({ title: 'new/new_once', goal: 'g', acceptance: ['a'] }, { agent: otherRoot }), /主会话/)
-  assert.equal(f.registered.length, 10, '不在 host plane 注册自动化包装')
+  assert.equal(f.registered.length, 11, '不在 host plane 注册自动化包装')
 }))
 
 test('自动化诊断在边界重查、warning 去重、恢复可见且不污染其他会话', withHome(async () => {
@@ -748,7 +748,7 @@ test('缺 tools.guard 时 warn 不崩，10 工具照常注册', withHome(async (
   delete ctx.tools.guard
   await apply(ctx, {})
   assert.ok(warnings.some(message => /tools\.guard/.test(message)))
-  assert.equal(registered.length, 10)
+  assert.equal(registered.length, 11)
 }))
 
 test('系统提示只渲染给已绑定协调者，绑定后下一步生效', withHome(async () => {
@@ -1592,7 +1592,7 @@ test('P2-4 快照：装了官方板就下发只读行，且读板不创建任务
   assert.equal('description' in body.teamBoard.rows[0], false)
   // 只读：快照只调 isEnabled/listTasks，绝不写官方板。
   assert.deepEqual(agentTeams.calls.filter(([kind]) => kind === 'updateTask'), [])
-  assert.equal(f.registered.length, 10, '没有新增工具面')
+  assert.equal(f.registered.length, 11, '没有新增工具面')
   await f.disposers.at(-1)?.()
 }))
 

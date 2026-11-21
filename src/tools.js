@@ -58,6 +58,8 @@ import {
 } from './worktree-request.js'
 import { checkoutPathFor, createWorktreeService, retryWorktreeOf } from './worktree.js'
 import { ISOLATED_WORKTREE_STATES, decideWriteGuard } from './write-guard.js'
+// 0.32.0 能力包工厂：工具定义在 src/pack/tool.js（参数校验 + 文案），闸门/回滚在 src/pack/service.js。
+import { createCapabilityPackTool } from './pack/tool.js'
 
 const objectSchema = properties => ({ type: 'object', properties, additionalProperties: false })
 const str = description => ({ type: 'string', description })
@@ -144,7 +146,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
   return parts.join('｜')
 }
 
-export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, bodySource, workspaceChanges, goalBridge, teamBoard, stateDir, worktree, cleanupWorktree, taskOfAgent, runAcceptance = runChecks }) {
+export function createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus, logger, workspaces, defaultCwd, sessionQuery, sessions, bodySource, workspaceChanges, goalBridge, teamBoard, stateDir, worktree, cleanupWorktree, taskOfAgent, capabilityPacks, runAcceptance = runChecks }) {
   const staleMinutes = config?.staleMinutes ?? 30
   const coordinatorSession = config?.coordinatorSession ?? 'unknown'
   // P9：宿主侧 git 能力（测试注入 fake；生产用 execFile）。普通任务一次都不会调用它。
@@ -2131,6 +2133,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       })
       return planSavedNote(written)
     }),
+
+    // 0.32.0 能力包工厂（协调者专用；worker/包会话由 preset-tools deny 掉）：
+    // list/describe/create/update/delete/open/install/uninstall/health/export-static。
+    createCapabilityPackTool({ packs: capabilityPacks, wrap, schema: { objectSchema, str } }),
 
   ]
 }

@@ -17,7 +17,7 @@ import {
 } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { PACK_ID, normalizeRelativePath, relativePathProblem, validateManifest, validateSkillMarkdown } from './manifest.js'
-import { emptyRegistry, normalizeRegistry, upsertEntry } from './registry.js'
+import { emptyRegistry, normalizeRegistry, touchOpened, upsertEntry } from './registry.js'
 
 /** 包状态目录布局（append-only：只加字段，不改已有字段含义）。 */
 export function packPaths(stateDir) {
@@ -167,6 +167,27 @@ export function createPackStore({ stateDir, now = Date.now, log = () => {} } = {
     const packages = { ...registry.packages }
     delete packages[id]
     return writeRegistry({ ...registry, packages })
+  }
+
+  /** 记一次「打开包会话」的时间（面板排序/提示用；不凭空造条目）。 */
+  const touchPack = id => {
+    const { registry } = readRegistry()
+    const next = touchOpened(registry, id, now())
+    return next === undefined ? undefined : writeRegistry(next)
+  }
+
+  /** 更新失败回滚：把 `.trash` 里的旧目录搬回来（先删当前失败版本）。 */
+  const restoreTrash = (id, trashPath) => {
+    const target = idDir(id)
+    if (!existsSync(trashPath)) return { ok: false, error: `trash 里找不到旧版本：${trashPath}` }
+    try {
+      if (existsSync(target)) rmSync(target, { recursive: true, force: true })
+      renameWithRetry(trashPath, target)
+      log('pack.restore', { detail: { id } })
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: `回滚旧版本失败：${error?.message ?? error}` }
+    }
   }
 
   // ── manifest ────────────────────────────────────────────────
@@ -348,6 +369,8 @@ export function createPackStore({ stateDir, now = Date.now, log = () => {} } = {
     listLocalPacks,
     writePack,
     removePack,
+    restoreTrash,
+    touchPack,
     purgeTrash,
     packDir: idDir,
     toolsDir,

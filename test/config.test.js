@@ -234,8 +234,11 @@ test('worker 预设不再遮 memory_note（keep-only）：context/task_detail/ta
   assert.equal(rows.length, 1, 'worker 预设应恰好挂一行 preset-tools（遮挡式）')
   const rowText = rows[0].lines.join('\n')
   assert.match(rowText, /name:\s*'@wjj865-code\/dsh-orchestrator\/preset-tools'/)
-  // 0.29.x（2026-11-21 用户方向）：子会话也能写项目记忆 → 不再遮 memory_note，worker 是 keep-only 形态。
-  assert.doesNotMatch(rowText, /^\s+deny:/m, 'worker 预设不应再有 deny 名单（不再遮 memory_note）')
+  // 0.29.x（2026-11-21 用户方向）：子会话也能写项目记忆 → 不再遮 memory_note。
+  // 0.32.0：能力包工厂只属于协调者 → worker 只点名遮 capability_pack（其余仍全开，仍是遮挡式）。
+  assert.match(rowText, /^\s+deny:\s*$/m, 'worker 预设用遮挡式 deny 点掉 capability_pack')
+  assert.doesNotMatch(rowText, /- memory_note\s*\n\s+keep:/, 'deny 名单里不应出现 memory_note')
+  assert.match(rowText, /- capability_pack\s*$/m, 'worker 预设应遮住 capability_pack')
   assert.doesNotMatch(rowText, /^\s+allow:/m, 'worker 预设不能用 allow 补集（会把全局工具全遮掉）')
   // 正向声明：这些全局工具必须对子会话出生即可用（preset-tools 挂载后校验并写 preset.keep 审计）。
   for (const tool of ['context', 'task_detail', 'task_report', 'memory_note']) {

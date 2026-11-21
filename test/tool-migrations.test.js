@@ -14,7 +14,7 @@ import { REMOVED_TOOLS, REMOVED_TOOL_NAMES, legacyToolHint } from '../src/tool-m
 import { tempDir } from './helpers.js'
 
 const EXPECTED_TOOLS = [
-  'context', 'memory_note', 'plan_save', 'read_workspace', 'task_create',
+  'capability_pack', 'context', 'memory_note', 'plan_save', 'read_workspace', 'task_create',
   'task_detail', 'task_list', 'task_message', 'task_report', 'task_status',
 ]
 const EXPECTED_REMOVED = ['task_stop', 'task_retry', 'task_close', 'task_inbox', 'history_search', 'project_context']
@@ -28,9 +28,9 @@ async function makeTools() {
   return createTools({ db, dispatcher, queue, notifier, config, coordinatorStatus: () => ({ id: 's-1', live: true }) })
 }
 
-test('工具面 15 → 10：名字集合精确相等，旧名一个都不在', async () => {
+test('工具面 15 → 10（0.32.0 +capability_pack = 11）：名字集合精确相等，旧名一个都不在', async () => {
   const tools = await makeTools()
-  assert.equal(tools.length, 10, 'createTools 必须返回 10 个工具')
+  assert.equal(tools.length, 11, 'createTools 必须返回 11 个工具')
   assert.deepEqual(tools.map(tool => tool.name).sort(), EXPECTED_TOOLS)
   for (const removed of EXPECTED_REMOVED) {
     assert.equal(tools.some(tool => tool.name === removed), false, `${removed} 不该还注册着`)

@@ -24,6 +24,20 @@ const WORKBENCH_WRITES = new Set([
   'group-save', 'group-archive', 'plan-set',
   'automation-save', 'automation-toggle', 'automation-delete',
 ])
+// 0.32.0 能力包面板（P4）：一个只读快照 + 窄写口。
+// 注意这里**没有** create/update（工厂只在协调者工具里）；面板只做「开包会话 / 装卸载 CLI /
+// 环境变量 / 删除用户包」，每个写动作都要宿主侧 confirm（面板按钮不是授权）。
+const PACK_READS = new Set(['pack-snapshot', 'pack-describe'])
+const PACK_WRITES = new Set(['pack-open', 'pack-install', 'pack-uninstall', 'pack-delete', 'pack-env-copy', 'pack-env-set'])
+
+/** 能力包动作的 HTTP 状态：确认缺失/计划过期用 409（客户端可据 code 给二次确认），其余 400/500。 */
+const packHttpStatus = code => {
+  if (code === 'CONFIRM_REQUIRED' || code === 'PLAN_STALE' || code === 'IDEMPOTENCY_CONFLICT') return 409
+  if (code === 'PACK_NOT_FOUND' || code === 'CLI_UNKNOWN') return 404
+  if (code === 'PLATFORM_UNSUPPORTED' || code === 'CAPABILITY_PACKS_DISABLED') return 400
+  if (code === 'BUILTIN_READONLY' || code === 'PACK_EXISTS' || code === 'DRAFT_INVALID' || code === 'ENV_NOT_DECLARED') return 409
+  return 500
+}
 const ACTIVE = new Set(ACTIVE_STATUSES)
 // 「待拍板」口径：等人（waiting_user/waiting_auth）+ 已交付待确认（delivered）——`waiting` 能力
 // 不含 delivered（它不 waiting 于某个问题，而是等确认），所以这里用两份能力拼，不再写内联三态判断。
@@ -34,11 +48,14 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession, mainNav, contextSnapshot, panel, workbench, teamBoard, staleMinutes = 30, limit = 200, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession, mainNav, contextSnapshot, panel, workbench, teamBoard, packs, staleMinutes = 30, limit = 200, now = Date.now }) {
   // message 请求级幂等：按 (taskId, clientRequestId) 去重，只在进程内（重启失效，见 request-dedupe.js）。
   const dedupe = createRequestDedupe({ max: 200 })
   // 工作台写动作的请求级幂等（同一个 endpoint + 目标 id + clientRequestId 只执行一次）。
   const workbenchDedupe = createRequestDedupe({ max: 200 })
+  // 能力包写动作（开包会话/安装/删除/环境变量）同样按 clientRequestId 去重：
+  // 面板重复点击/网络重发不该装两次、开两个会话。env-set 的值不参与缓存键（键只含 endpoint+id+ref）。
+  const packDedupe = createRequestDedupe({ max: 200 })
   // 官方 Team 板：读失败也只降级（快照是面板的轮询入口，不能因为一块只读分区 500）。
   const boardSnapshot = () => {
     if (typeof teamBoard !== 'function') {
@@ -282,6 +299,42 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
         ? { ...outcome.result, already: true, duplicate: true }
         : outcome.result
       return json(result, panelHttpStatus(result))
+    }
+    if (PACK_READS.has(endpoint)) {
+      // 只读投影：snapshot 不写盘、不 spawn；describe 只补充安装卡与静态兜底。
+      if (packs === undefined) return json({ ok: false, code: 'CAPABILITY_PACKS_UNAVAILABLE', error: '能力包未装配（宿主侧 pack service 缺失）' }, 500)
+      try {
+        const result = endpoint === 'pack-snapshot' ? packs.snapshot() : await packs.describe(String(body?.id ?? ''))
+        return json(result, result?.ok === true ? 200 : packHttpStatus(result?.code))
+      } catch (error) {
+        return json({ ok: false, code: 'PACK_ACTION_FAILED', error: error?.message ?? String(error) }, 500)
+      }
+    }
+    if (PACK_WRITES.has(endpoint)) {
+      // 窄写口：owner-only（connection 统一鉴权）+ 请求级幂等 + 宿主侧 confirm/planHash。
+      // env-set 的 `value` 只在本次请求体内存在：这里不读日志、不回显、不参与幂等键。
+      if (packs === undefined) return json({ ok: false, code: 'CAPABILITY_PACKS_UNAVAILABLE', error: '能力包未装配（宿主侧 pack service 缺失）' }, 500)
+      const id = typeof body?.id === 'string' ? body.id : ''
+      const ref = typeof body?.ref === 'string' ? body.ref : ''
+      const cliId = typeof body?.cliId === 'string' ? body.cliId : undefined
+      const requestId = typeof body?.clientRequestId === 'string' ? body.clientRequestId.trim().slice(0, 128) : ''
+      const execute = async () => {
+        try {
+          if (endpoint === 'pack-open') return await packs.open(id, body?.cwd)
+          if (endpoint === 'pack-install') return await packs.install(id, cliId, { confirm: body?.confirm === true, planHash: body?.planHash })
+          if (endpoint === 'pack-uninstall') return await packs.uninstall(id, cliId)
+          if (endpoint === 'pack-delete') return await packs.remove(id, { confirm: body?.confirm === true })
+          if (endpoint === 'pack-env-copy') return await packs.envCopy(id, ref)
+          return await packs.envSet(id, ref, typeof body?.value === 'string' ? body.value : '', { confirm: body?.confirm === true })
+        } catch (error) {
+          return { ok: false, code: 'PACK_ACTION_FAILED', error: error?.message ?? String(error) }
+        }
+      }
+      const key = `${endpoint}|${id}|${ref}|${cliId ?? ''}`
+      const result = requestId === ''
+        ? await execute()
+        : (await packDedupe.run(key, requestId, execute)).result
+      return json(result, result?.ok === true ? 200 : packHttpStatus(result?.code))
     }
     if (ACTIONS.has(endpoint)) {
       if (panel === undefined) return json(panelFailure('PANEL_ACTIONS_UNAVAILABLE'), 500)

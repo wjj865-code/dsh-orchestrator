@@ -70,7 +70,7 @@
 
 ### 3.3 文档一致性（`test/copy-consistency.test.js` 静态部分）
 
-- 任何「N 个工具」的说法都必须是 10（全局工具），修旧数会红。
+- 任何「N 个工具」的说法都必须是 11（全局工具；0.32.0 加入 `capability_pack`），修旧数会红。
 - 维护者内容放 `docs/`，README 只留用户内容与链接；README 必须链到 CONTRIBUTING / ARCHITECTURE / LIMITATIONS / testing / CHANGELOG。
 
 ### 3.4 `scripts/check-docs.mjs` 校验什么

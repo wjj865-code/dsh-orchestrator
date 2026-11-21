@@ -89,11 +89,11 @@ const call = (tools, name, args, exec) => {
   return tools[name].execute(args, resolved)
 }
 
-test('注册 10 个工具（P1-B 15 → 10），schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
+test('注册 11 个工具（P1-B 15 → 10，0.32.0 +capability_pack），schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
   const { db, tools } = await setup()
-  assert.equal(Object.keys(tools).length, 10)
+  assert.equal(Object.keys(tools).length, 11)
   assert.deepEqual(Object.keys(tools).sort(),
-    ['context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
+    ['capability_pack', 'context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
   const walk = (value, path) => {
     if (value === null || typeof value !== 'object') return
     for (const [key, child] of Object.entries(value)) {
