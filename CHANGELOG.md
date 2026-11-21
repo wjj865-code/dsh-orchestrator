@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.30.0（2026-11-21）—— 有任务在跑不再弹切换卡、确认后真跳过去 + 子会话可写项目记忆（t-a79e12d8 / t-94b99f3f）
+
+两条用户直接提的改动合并发版，**没有改派发语义、状态机、权限模型，也没有新增工具**（`createTools()` 仍是 10 个）。用户原话：「目前超过40%，自动切新的主会话逻辑不太对，例如有运行中任务时，依然会询问用户是否切换，选择确认后，当前会话不是主会话了，但没有新建和跳转到新会话」、「另外写记忆为啥只属于协调者，按理说子会话在执行任务也能读到很多项目背景和已有实践，也需要进行写入记忆。A 子会话写项目记忆（推荐）。」
+
+**升级注意**：装包后要**彻底退出 DSH 再启动**（刷新页面无效），worker 预设的 keep-only 形态与 W1 policy 才生效；台账 schema 有一处**加列**（`memories.source`，旧库自动 `ALTER TABLE` 补列），旧库直接可用。
+
+**1. 压力提醒不再打扰运行中任务，确认「新建」后真的会跳过去（t-a79e12d8）**
+
+**根因（实读 + 真机日志）**：① `src/main-context.js` 的 `decideAlert` 只看压力 band，完全不看台账任务状态——真机 08:29:10 弹卡时 `t-4f7ce108` 正在跑（08:40:38 才交付）；② 代建只做到「create + 切指针」（`index.js` 的 `requestNewCoordinator` → `mainSession.createCoordinatorSession`），**跳转是客户端能力**（宿主 `uiWorkspace.openSession`），插件当年没有任何通道让浏览器知道要跳过去：真机 08:29:20 `main.adopt.created` 成功（newId=session-341c…），用户仍停在旧会话、看到会话头变成「设为协调者」，08:33:52 又把它点了回去。
+
+**行为变化（2 条）**
+
+1. **有非终态任务就不弹卡**：`decideAlert` 在「该问」时检查 `DEFERRED_TASK_STATUSES`（`pending` / `running` / `waiting_dep` / `waiting_user` / `waiting_auth`；`delivered` 不算在跑），命中就改成 `defer`：只记 `main.context.alert.deferred`（按 band + 任务集合去重），**不写 `settings.main_context_alert`、不占 band**；任务收尾后下一次打开主会话仍会问（同一 band 也问）。
+2. **确认「新建协调者会话」后真的会跳过去**：代建成功 → 写一条进程内导航待办（`src/main-nav.js`，TTL 5 分钟）→ 浏览器每 5s 轮询 `main-nav` → `uiWorkspace.openSession(新会话 id)` → `main-nav-ack` 清待办。失败全部降级、不留「当前不是主会话又没新会话可跳」的中间态：create 失败零处置（不切指针）并给可读提示；切指针失败保持旧主会话 + 提示；导航失败保留指针（用户从会话列表打开「主会话」）+ 面板顶部可读提示 + 审计 `main.nav.navigate-failed`。旧宿主没有 `openSession` 时只给提示、不崩。**不新增归档/删除旧会话**。
+
+**代码**：新增 `src/main-nav.js`（`createMainNav` / `planCoordinatorNav` / `MAIN_NAV_TEXT`）、`client/src/nav.js`（`createMainNavPoller` / `createNavNotice`）；改 `src/main-context.js`（`DEFERRED_TASK_STATUSES`、`decideAlert({activeTasks})`、`remind` 的 defer 分支）、`src/host-route.js`（`main-nav` / `main-nav-ack`，未装配时降级）、`index.js`（`activeTasks` 注入、`requestNewCoordinator` 发布待办、路由装配 `mainNav`）、`client/src/{api,client,views}.js`（轮询 + 面板可读提示）。文案：问题卡「新建」项改成「新建一个空白协调者会话、切过去并跳到新会话（旧会话保留）」。
+
+**测试**：新增 `test/main-nav.test.js`（4 条：代建结果→待办、单条/覆盖/id 匹配 ack、失败审计、TTL 过期）；`test/main-context.test.js` 加 3 条（defer 纯函数与 delivered 口径、deferred 不写 asked 且收尾后再问、只有 delivered 照常问）；`test/host-route.test.js` 加 1 条（读/ack/降级/零写入）；`test/index.test.js` 加 2 条装配级用例（有任务在跑时 `open-main` 走 deferred、停止后再问；选「新建」→ 代建 + 切指针 + `main-nav` 待办 + ack 才清）；`test/client.test.js` 加 4 条（navigate 跳转 + 不重复、拒绝后重试 3 次 + 可读提示、notice 原样显示 + 缺 openSession 降级、面板顶部提示已挂载订阅/未挂载 take）；`test/client-build.test.js` 同步 `__test` 出口与源码文件清单。文档：README（提醒/延后/跳转三条 + 排障一行）、`docs/ARCHITECTURE.md`（模块/延后/跳转/日志/路由）、`docs/LIMITATIONS.md`（延后代价 + 跳转尽力而为）。
+
+**边界（未做）**：不改 `contextPressureThreshold`、不改宿主压缩、不恢复轮换/归档；不新增工具、不改权限模型；跳转不保证成功（尽力而为，失败的手动路径已在提示里写明）。
+
+**2. 子会话可写项目记忆（note / lesson / decision），全局偏好仍只协调者（t-94b99f3f）**
+
+**行为变化（3 条）**
+
+1. **子会话可以沉淀项目经验**：任务执行者的工具表里恢复 `memory_note`（worker 预设 `preset-tools` 改成 **keep-only**：deny 为空、`keep` 声明 `context` / `task_detail` / `task_report` / `memory_note`）。子会话只能写**自己任务 `target_dir`** 那个项目的 `note` / `lesson` / `decision`；不传 `project` 就落本项目，传别的项目或 `global` 一律拒绝（点名本任务项目键），不会串到别的项目。
+2. **全局偏好与跨项目记忆仍只协调者**：子会话写 `kind:'preference'`、没有 `target` 的任务、或找不到任务归属的会话（别的 profile / 孙会话）都被拒绝，并给可执行替代路径（写 `task_report` 的 summary / 让协调者 `memory_note`）。协调者行为不变（全局偏好仍进 `settings.orchestrator_preferences`，任意项目仍可写）。
+3. **硬护栏**：同 `project + kind + text` 幂等（重复返回 `already`）；单任务最多 **3 条**（`MAX_WORKER_MEMORIES_PER_TASK`，`countWorkerMemories` 按 `source='worker'` + `source_task_id` 计数，超限拒绝）；`memories` 新增 `source` 列（旧库 ALTER 补），子会话写入记 `source='worker'` + taskId/sessionId，写入/拒绝都记日志（`memory.note` / `memory.note.rejected`，含 `written`/`cap`）。
+
+**代码**：`src/tools.js` 的 `memory_note` 按角色分流（协调者原路由不变；子会话走归属 → 项目 → kind → 去重/上限的硬护栏），新增 `taskOfWorker`（优先用注入的 spawn 映射，再退 `findTaskBySession`，首回合 `tasks.session_id` 没回写也认得出），拒绝原因 `worker-no-task` / `worker-no-target` / `worker-preference-denied` / `worker-project-mismatch` / `worker-quota-denied`；`src/memory.js` 的 `addMemory` / `remember` 增加 `source`，新增 `MEMORY_SOURCE_WORKER` / `MAX_WORKER_MEMORIES_PER_TASK` / `countWorkerMemories`，`searchMemories` 结果带 `source`；`src/ledger.js` 建表列 + 旧库 `ALTER TABLE` 补列；`preset-tools.js` 允许 **keep-only**（deny 空 + keep 非空）形态，worker 预设不再遮 `memory_note`；`src/copy.js` / `src/prompt-layers.js` 的 W1 新增 `WORKER_MEMORY_HINT`（「有值得复用的项目经验就用 memory_note 写一条 note/lesson/decision，project 只能是你自己任务的 target_dir、单任务最多 3 条；不写 preference、不写全局/跨项目记忆，也不写日志」），`WORKER_CONTEXT_HINT` 删掉「写记忆只属协调者」，`PROMPT_LAYERS` 的 W1 owns 登记、L2 探针加「W1 记忆沉淀句被抄回 brief 就红」；`cordis.patch.yml` 的 worker `preset-tools` 从 `deny: [memory_note]` 改为 keep-only 并写明放开范围与理由；`index.js` 的 `createTools` 注入 `taskOfAgent: workerTaskOf`（与 W1 同一份归属解析）。
+
+**测试**：`test/tools.test.js` 新增两条——子会话写自己任务项目记忆成功（project 强制 target、去重 `already`、来源字段、单任务上限 3 条 + 审计日志）与「preference / global / 别的项目 / 无 target / 无归属」全部拒绝且不写库，schema 描述断言同步；`test/memory.test.js` 来源审计（`source`/taskId/sessionId 落行、检索可见、`countWorkerMemories` 单任务计数）；`test/preset-tools.test.js` 新增 keep-only 形态（不遮任何工具、只写 keep 审计）+ 配置互斥用例；`test/config.test.js` worker 预设不再有 `deny`、`keep` 含 `memory_note`、`index.js` 注入 `taskOfAgent`；`test/prompt-layers.test.js` / `test/index.test.js` 的 W1 五句 + `WORKER_MEMORY_HINT` 逐字断言 + L2 探针。
+
+**文档**：README（工具清单 `memory_note` 行、预设收窄形态、W1 层职责、记忆与偏好）、`docs/ARCHITECTURE.md`（权限矩阵、preset 形态、W1 句子、新增「子会话写入项目记忆」一节）、`docs/LIMITATIONS.md`（「子会话能读上下文，也能写项目记忆」的边界与代价）。
+
+**3. 工具面口径（两张表各自说清）**
+
+- **协调者（宿主真实下发 15 个）**：`ask_user_question` / `context` / `memory_note` / `present` / `read` / `read_workspace` / `schedule_create` / `schedule_edit` / `schedule_list` / `schedule_view` / `skill` / `task_create` / `task_list` / `task_message` / `task_status`——`read` 在，`grep` / `glob` 不在（0.29.0 起 `tool-fs-search` 整行移除），也没有 `write` / `edit` / `pwsh` / `bash` / `apply_patch`，以及角色专属的 `task_report` / `task_detail` / `plan_save` 与会改 cwd 的 `working_directory`。
+- **子会话（worker 预设 keep-only）**：`preset-tools` 的 `deny` 为空、`keep` 声明 `context` / `task_detail` / `task_report` / `memory_note`——即这 4 个插件工具出生即可用，`memory_note` 不再被遮（0.29.x 是 `deny: [memory_note]`）；其余按预设自有行照旧（`pwsh`（Windows）/ `bash`、`glob` / `grep` / `read` / `write` / `edit`、`web` / `todo` / `skill` / `present` / `get_goal` / `jobs`）。
+- **工具总数没变**：`createTools()` 仍是 10 个（`task_create` / `task_list` / `task_status` / `task_detail` / `task_message` / `read_workspace` / `context` / `memory_note` / `task_report` / `plan_save`），`check:docs` 的 README 工具表与代码同源。
+
+**验证**
+
+- `pnpm test`（含 `pretest` 的 build + `check:client-size` + `check:docs`）= **1,170 项 / 1,165 pass / 0 fail / 5 skip**；5 条 skip 全是「当前环境无法创建文件符号链接」的环境跳过（Windows 未开开发者模式），与本次改动无关。
+- `pnpm run check:version`（0.30.0 三处一致：`package.json` / README 定位行与 3 处命令 / CHANGELOG 首条）/ `check:docs`（**1,677 行 / 预算 1,800**）/ `check:client-size`（**150,446 B / 151,552 B**，余 1,106 B）全绿。
+- 本次改了 `client/src/{api,client,views}.js` + 新增 `client/src/nav.js`，`pnpm run build` 重建后的 `dist/client.js` 与入库副本逐字一致（SHA-256 未变），`dist/client.js.map` 同批入库。
+- 发版前本机 web 冒烟（0.30.0 本地 tgz，隔离 `DSH_HOME` + 独立 profile，空闲端口不碰 49682）：结果见下方「冒烟记录」。
+
+**冒烟记录（0.30.0 本地 tgz）**
+
+- **环境**：Windows 11 + DSH `0.2.2-rc.5`；隔离 `DSH_HOME=<临时目录>/home2` + 独立 profile `smoke`（`--from-default-profile web` 生成）；`npm pack` 出 `wjj865-code-dsh-orchestrator-0.30.0.tgz`，`dsh plugin --profile smoke add <tgz>` 安装（安装副本 `version` 实测 **0.30.0**）；`dsh --profile smoke --no-open --port 49734`（空闲端口，**不碰 49682 / 55726**）；冒烟进程全程用 `DSH_HOME` 覆盖，真实 `~/.dsh` 零读写；用完关服务、清 headless Chrome。
+- **模型**：本地 `127.0.0.1:49911` 的 DeepSeek Messages 兼容 stub（假 key `sk-smoke-local`，只记录宿主真实请求的 `tools[]` / system / messages，回固定助手文本；需要造数据时只回一次 `task_create` tool_use），**没有复制、也没有读取任何真实凭据**。
+- **结果 33/33 ✓**（21 项 HTTP/静态 + 12 项浏览器/面板；工具表与日志按读数核对）：
+  - **插件加载零 error / 零 warn**：插件日志 21 行，覆盖 `main.session.created` / `main.session.permission-pinned` / `subagent.spawn.requested` / `subagent.spawn.accepted` / `task.spawn.ok` / `task.transition`×2 / `task.settle` / `notify.delivered` / `preset.keep`×2 / `preset.deny`×1 / `host.capabilities` / `snapshot.created`，**无 error/warn 行**；`host.capabilities` 报 rc.5、`inside`、8/10 能力（缺 `registry` / `team-board` 属该隔离环境的懒挂载预期）。
+  - **协调者工具表（宿主真实下发，15 个）**：`ask_user_question` / `context` / `memory_note` / `present` / `read` / `read_workspace` / `schedule_create` / `schedule_edit` / `schedule_list` / `schedule_view` / `skill` / `task_create` / `task_list` / `task_message` / `task_status`——**没有 `grep` / `glob`**，也没有 `write` / `edit` / `pwsh` / `bash` / `task_report` / `task_detail` / `plan_save` / `working_directory`；`read` + `read_workspace` + `memory_note` + 4 个 `task_*` 都在。
+  - **worker 工具表（宿主真实下发，30 个）含 `memory_note`**：`memory_note` / `context` / `task_detail` / `task_report` / `task_create` / `task_list` / `task_status` / `task_message` / `plan_save` / `read` / `read_workspace` / `read_image` / `write` / `edit` / `glob` / `grep` / `pwsh` / `job_*` / `web_*` / `todo_write` / `skill` / `present` / `get_goal` / `create_goal` / `update_goal` / `working_directory` / `ask_user_question`。安装副本 `cordis.patch.yml` 的 worker `preset-tools` 只有 `keep: [context, task_detail, task_report, memory_note]`、**没有 `deny`**；`preset.keep` 审计行同口径，`preset.deny` 只有协调者那一行（worker 预设全程没有 deny 行）。
+  - **端点**：`snapshot` / `session-role` / `groups` / `calendar` / `automations` / `stats` 全 200；`main-nav` → `200 {ok:true,nav:null}`，`main-nav-ack`（无待办）→ `200 {ok:true,cleared:false}`；反例 `task-create` 返回 400 `UNKNOWN_ENDPOINT`；壳页 200 且已登记 `@wjj865-code/dsh-orchestrator/client.js`（token→cookie：303 → 带 cookie 200）。
+  - **面板六页 / 组工作台 / dock / 排期**（真实 Chrome headless 驱动，隔离 profile）：会话头「任务」打开面板（`data-page` 命中）；`总览` / `任务组` / `排期` / `自动化` / `复盘` 五次点击都切到 `overview` / `groups` / `schedule` / `automations` / `review`；从「任务组」卡片进入组工作台 `data-page="group"`（组里一条夹具任务，`readOnly`，落「已交付待确认」）；dock 实渲染 `.orch-wb-dock`、**0 个 input/textarea/form/select**、文案「dock 是只读镜像：不代发消息、不代批计划」。
+  - **bundle**：平台 serve 的多模块组里含本插件模块；入库 `dist/client.js`（150,446 B）的头/尾片段逐字出现（只差平台补的 `;\n` 分隔与 `??…&rev=…` sourceMappingURL 改写）；bundle 含 `main-nav` / `main-nav-ack` / `openSession` / 「打开『主会话』」提示、六页 `data-page` 标记与「只读镜像」文案；**浏览器实测每 5s 轮询 `main-nav`**（12s 窗口 7 次），客户端 console **零 error / 零 warn**。
+- **未验（附原因）**：① **真实压力提醒 deferred 弹卡**（有任务在跑时不弹、收尾后再问）——需要一个真实长任务把上下文压到阈值，stub 只能证明接口与纯函数（单测覆盖），冒烟未触发；② **真实「确认新建后跳转」**——同上，`main-nav` 只验到空待办的降级口径（`nav:null` / `cleared:false`），没有一次真实待办让浏览器跳过去；③ **worker 实际写项目记忆**——工具面已证明 `memory_note` 在子会话表里，但 stub 不会真调它，去重 / 单任务上限 / 来源审计仍由单测覆盖；④ **模型是否照着 W1 policy 行动**——stub 只证明注入内容与每回合重渲染，不证明模型服从；⑤ **排期拖拽与自动化新建/暂停的写动作**——只验到页面可进入 + 只读接口 200（写动作会真建调度，不在本次冒烟范围）；⑥ 暗色主题 / 多语言外观未覆盖。
+- **证据**（临时目录，未入库）：`probe-results2.json`（21 项）、`drive-results2.json`（12 项）、`10-page-*.png` / `11-group-dock.png` / `05-after-create.png`、`mock-requests2.jsonl`（宿主真实请求体）、隔离 home 下 `logs/orchestrator-2026-11-21.jsonl`（插件日志 21 行）。
+- **过程备注**：第一次驱动时 stub 每回合重放同一个 `task_create` tool_use，宿主按「已存在任务…未重复创建」去重门控连续拒绝（info 级，零 error/warn）；随后换成「只造一次」的 stub 在全新 `home2` 重跑取最终证据，台账里只留一条夹具任务（`delivered`、`readOnly`）。
+
 ## 0.29.0（2026-11-21）—— 协调者去掉 grep/glob 只留 read + 任务执行者 W1 policy（t-4f7ce108）
 
 两条用户直接提的改动，**没有改派发语义、状态机、权限、工具数量，也没有新增工具**。用户原话：「目前发现 grep 工具会让主会话自行搜索，导致有时主会话会自主搜索文件调研，现在把这个工具从协调者预设中移除。另外协调者预设有 policy，但任务执行者却没有，建议参考协调者，将静态提示词内容都统一移入任务执行者的 policy，这样每次跑都会注入，效果更好。」
@@ -41,53 +104,6 @@
   - **接口与产物**：`snapshot` / `session-role` / `groups` / `calendar` / `automations` / `stats` 全 200，反例 `task-create` 返回 400 `UNKNOWN_ENDPOINT`；壳页 200 且已登记 `@wjj865-code/dsh-orchestrator/client.js`；平台 serve 的 bundle 内含入库 `dist/client.js` 全文（源文件 148,323 B）。
 - **未验（附原因）**：① 真实模型回合下「模型是否照着 W1 行动」——stub 只证明注入内容与每回合重渲染，不证明模型服从；② 排期拖拽与自动化新建/暂停的交互动作——只验到页面可进入、接口 200；拖拽需要真实指针序列，自动化写动作会真建调度，不在本次冒烟范围；③ 暗色主题 / 多语言外观未覆盖。
 - **证据**（临时目录，未入库）：`probe-results.json`（15 项）、`drive-results.json`（16 项）、`06-page-*.png` / `07-group-dock.png` 等截图、`mock/requests.jsonl`（宿主真实请求体）、`plugin-log-scan.json`。
-
-### 未发布：子会话可写项目记忆（note / lesson / decision），全局偏好仍只协调者（t-94b99f3f）
-
-> 本节是**未发布改动**（不 bump 版本号、不 tag、不 publish），随下一次发版并入。用户原话：「另外写记忆为啥只属于协调者，按理说子会话在执行任务也能读到很多项目背景和已有实践，也需要进行写入记忆。A 子会话写项目记忆（推荐）。」
-
-**行为变化（用户可感知）**
-
-1. **子会话可以沉淀项目经验**：任务执行者的工具表里恢复 `memory_note`（worker 预设 `preset-tools` 改成 **keep-only**：deny 为空、`keep` 声明 `context` / `task_detail` / `task_report` / `memory_note`）。子会话只能写**自己任务 `target_dir`** 那个项目的 `note` / `lesson` / `decision`；不传 `project` 就落本项目，传别的项目或 `global` 一律拒绝（点名本任务项目键），不会串到别的项目。
-2. **全局偏好与跨项目记忆仍只协调者**：子会话写 `kind:'preference'`、没有 `target` 的任务、或找不到任务归属的会话（别的 profile / 孙会话）都被拒绝，并给可执行替代路径（写 `task_report` 的 summary / 让协调者 `memory_note`）。协调者行为不变（全局偏好仍进 `settings.orchestrator_preferences`，任意项目仍可写）。
-3. **硬护栏**：同 `project + kind + text` 幂等（重复返回 `already`）；单任务最多 **3 条**（`MAX_WORKER_MEMORIES_PER_TASK`，`countWorkerMemories` 按 `source='worker'` + `source_task_id` 计数，超限拒绝）；`memories` 新增 `source` 列（旧库 ALTER 补），子会话写入记 `source='worker'` + taskId/sessionId，写入/拒绝都记日志（`memory.note` / `memory.note.rejected`，含 `written`/`cap`）。
-
-**代码**
-
-- `src/tools.js`：`memory_note` 按角色分流（协调者原路由不变；子会话走归属 → 项目 → kind → 去重/上限的硬护栏），新增 `taskOfWorker`（优先用注入的 spawn 映射，再退 `findTaskBySession`，首回合 `tasks.session_id` 没回写也认得出），拒绝原因 `worker-no-task` / `worker-no-target` / `worker-preference-denied` / `worker-project-mismatch` / `worker-quota-denied`。
-- `src/memory.js`：`addMemory` / `remember` 增加 `source`；新增 `MEMORY_SOURCE_WORKER` / `MAX_WORKER_MEMORIES_PER_TASK` / `countWorkerMemories`；`searchMemories` 结果带 `source`。
-- `src/ledger.js`：`memories.source` 建表列 + 旧库 `ALTER TABLE` 补列。
-- `preset-tools.js`：允许 **keep-only**（deny 空 + keep 非空）形态；worker 预设不再遮 `memory_note`。
-- `src/copy.js` / `src/prompt-layers.js`：W1 新增 `WORKER_MEMORY_HINT`（「有值得复用的项目经验就用 memory_note 写一条 note/lesson/decision，project 只能是你自己任务的 target_dir、单任务最多 3 条；不写 preference、不写全局/跨项目记忆，也不写日志」），`WORKER_CONTEXT_HINT` 删掉「写记忆只属协调者」；`PROMPT_LAYERS` 的 W1 owns 登记、L2 探针加「W1 记忆沉淀句被抄回 brief 就红」。
-- `cordis.patch.yml`：worker 预设的 `preset-tools` 从 `deny: [memory_note]` 改为 keep-only，注释写明放开范围与理由。
-- `index.js`：`createTools` 注入 `taskOfAgent: workerTaskOf`（与 W1 同一份归属解析）。
-
-**测试**
-
-- `test/tools.test.js`：新增两条——子会话写自己任务项目记忆成功（project 强制 target、去重 `already`、来源字段、单任务上限 3 条 + 审计日志）与「preference / global / 别的项目 / 无 target / 无归属」全部拒绝且不写库；schema 描述断言同步。
-- `test/memory.test.js`：来源审计（`source`/taskId/sessionId 落行、检索可见、`countWorkerMemories` 单任务计数）。
-- `test/preset-tools.test.js`：新增 keep-only 形态（不遮任何工具、只写 keep 审计）；配置互斥用例同步。
-- `test/config.test.js`：worker 预设不再有 `deny`、`keep` 含 `memory_note`；`index.js` 注入 `taskOfAgent`。
-- `test/prompt-layers.test.js` / `test/index.test.js`：W1 固定五句 + `WORKER_MEMORY_HINT` 逐字断言 + L2 探针；W1 注入用例加记忆沉淀句断言。
-
-**文档**：README（工具清单 `memory_note` 行、预设收窄形态、W1 层职责、记忆与偏好）、`docs/ARCHITECTURE.md`（权限矩阵、preset 形态、W1 句子、新增「子会话写入项目记忆」一节）、`docs/LIMITATIONS.md`（「子会话能读上下文，也能写项目记忆」的边界与代价）、本节。
-
-### 未发布：压力提醒不再打扰运行中任务 + 「新建」确认后真的跳过去（t-a79e12d8）
-
-> 本节是**未发布改动**（不 bump 版本号、不 tag、不 publish），随下一次发版并入。用户原话：「目前超过40%，自动切新的主会话逻辑不太对，例如有运行中任务时，依然会询问用户是否切换，选择确认后，当前会话不是主会话了，但没有新建和跳转到新会话」。
-
-**根因（实读 + 真机日志）**：① `src/main-context.js` 的 `decideAlert` 只看压力 band，完全不看台账任务状态——真机 08:29:10 弹卡时 `t-4f7ce108` 正在跑（08:40:38 才交付）；② 代建只做到「create + 切指针」（`index.js` 的 `requestNewCoordinator` → `mainSession.createCoordinatorSession`），**跳转是客户端能力**（宿主 `uiWorkspace.openSession`），插件当年没有任何通道让浏览器知道要跳过去：真机 08:29:20 `main.adopt.created` 成功（newId=session-341c…），用户仍停在旧会话、看到会话头变成「设为协调者」，08:33:52 又把它点了回去。
-
-**行为变化（2 条）**
-
-1. **有非终态任务就不弹卡**：`decideAlert` 在「该问」时检查 `DEFERRED_TASK_STATUSES`（`pending` / `running` / `waiting_dep` / `waiting_user` / `waiting_auth`；`delivered` 不算在跑），命中就改成 `defer`：只记 `main.context.alert.deferred`（按 band + 任务集合去重），**不写 `settings.main_context_alert`、不占 band**；任务收尾后下一次打开主会话仍会问（同一 band 也问）。
-2. **确认「新建协调者会话」后真的会跳过去**：代建成功 → 写一条进程内导航待办（`src/main-nav.js`，TTL 5 分钟）→ 浏览器每 5s 轮询 `main-nav` → `uiWorkspace.openSession(新会话 id)` → `main-nav-ack` 清待办。失败全部降级、不留「当前不是主会话又没新会话可跳」的中间态：create 失败零处置（不切指针）并给可读提示；切指针失败保持旧主会话 + 提示；导航失败保留指针（用户从会话列表打开「主会话」）+ 面板顶部可读提示 + 审计 `main.nav.navigate-failed`。旧宿主没有 `openSession` 时只给提示、不崩。**不新增归档/删除旧会话**。
-
-**代码**：新增 `src/main-nav.js`（`createMainNav` / `planCoordinatorNav` / `MAIN_NAV_TEXT`）、`client/src/nav.js`（`createMainNavPoller` / `createNavNotice`）；改 `src/main-context.js`（`DEFERRED_TASK_STATUSES`、`decideAlert({activeTasks})`、`remind` 的 defer 分支）、`src/host-route.js`（`main-nav` / `main-nav-ack`，未装配时降级）、`index.js`（`activeTasks` 注入、`requestNewCoordinator` 发布待办、路由装配 `mainNav`）、`client/src/{api,client,views}.js`（轮询 + 面板可读提示）。文案：问题卡「新建」项改成「新建一个空白协调者会话、切过去并跳到新会话（旧会话保留）」。
-
-**验证**：新增 `test/main-nav.test.js`（4 条：代建结果→待办、单条/覆盖/id 匹配 ack、失败审计、TTL 过期）；`test/main-context.test.js` 加 3 条（defer 纯函数与 delivered 口径、deferred 不写 asked 且收尾后再问、只有 delivered 照常问）；`test/host-route.test.js` 加 1 条（读/ack/降级/零写入）；`test/index.test.js` 加 2 条装配级用例（有任务在跑时 `open-main` 走 deferred、停止后再问；选「新建」→ 代建 + 切指针 + `main-nav` 待办 + ack 才清）；`test/client.test.js` 加 4 条（navigate 跳转 + 不重复、拒绝后重试 3 次 + 可读提示、notice 原样显示 + 缺 openSession 降级、面板顶部提示已挂载订阅/未挂载 take）；`test/client-build.test.js` 同步 `__test` 出口与源码文件清单。文档：README（提醒/延后/跳转三条 + 排障一行）、ARCHITECTURE（模块/延后/跳转/日志/路由）、LIMITATIONS（延后代价 + 跳转尽力而为）、本节。
-
-**边界（未做）**：不改 `contextPressureThreshold`、不改宿主压缩、不恢复轮换/归档；不新增工具、不改权限模型；跳转不保证成功（尽力而为，失败的手动路径已在提示里写明）。
 
 ## 0.28.0（2026-11-21）—— 任务链（dependsOn）进 L1：依赖完成自动开始，不再「等 A 完成再派 B」
 
