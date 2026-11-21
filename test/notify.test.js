@@ -4,12 +4,14 @@ import { lstatSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { openLedger, addNotification } from '../src/ledger.js'
 import { levelOf, createNotifier } from '../src/notify.js'
+import { PROGRESS_NOTICE_HINT } from '../src/copy.js'
 import { canCreateFileSymlink, SYMLINK_SKIP_REASON, tempDir } from './helpers.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 test('状态到级别映射', () => {
-  assert.equal(levelOf('progress'), 'silent')
+  // progress 默认送达（0.25.x）：coalesce = 合并窗口 + 同任务水位，不再 silent。
+  assert.equal(levelOf('progress'), 'coalesce')
   assert.equal(levelOf('done'), 'notify')
   assert.equal(levelOf('delivered'), 'notify')
   assert.equal(levelOf('blocked'), 'interrupt')
@@ -49,7 +51,149 @@ test('结算异常状态的通知文案：已取消 / 会话已结束但没有�
   assert.match(delivered[1], /任务「B」会话已结束但没有终态回报/)
 })
 
-test('silent 不投递，notify 合并，interrupt 立刻投递', async () => {
+test('progress 默认送达：进合并窗口后投递，文案标明「有新进展」并带追问出口', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: '长任务', status: 'progress', summary: '跑完一半' })
+  // 不是 silent：它在 5 秒合并窗口里等（同一批任务并成一条），而不是被丢掉。
+  assert.equal(delivered.length, 0)
+  await wait(25)
+  assert.equal(delivered.length, 1)
+  assert.match(delivered[0], /任务「长任务」有新进展：跑完一半/)
+  // 动作指令：这是信号不是终态，出口是追问同一子会话（别重派）。句子来自 src/copy.js 单一真源，
+  // L1 协调者 policy 用的是同一句（test/copy-consistency.test.js 断言同源）。
+  assert.ok(delivered[0].includes(PROGRESS_NOTICE_HINT))
+  assert.match(delivered[0], /progress 只是进度信号、不是终态/)
+  assert.match(delivered[0], /task_message 追问同一子会话/)
+  assert.match(delivered[0], /别为此重派任务/)
+  // progress 不写产物/交付候选：中间文件不是交付。
+  assert.doesNotMatch(delivered[0], /调用 present/)
+})
+
+test('progress 与其他状态同窗口合并：一条消息里既有进展又有完成', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
+  notifier.push({ taskId: 't-1', title: '甲', status: 'progress', summary: '还在写' })
+  notifier.push({ taskId: 't-2', title: '乙', status: 'done', summary: '完成了' })
+  await wait(25)
+  assert.equal(delivered.length, 1)
+  assert.match(delivered[0], /2 个任务状态更新/)
+  assert.match(delivered[0], /- 甲（有新进展）：还在写/)
+  assert.match(delivered[0], /- 乙：完成了/)
+})
+
+test('同任务合并窗口内的第二条 progress 覆盖前一条：只送最新，被覆盖的留审计行', async () => {
+  const db = await openLedger(tempDir())
+  const delivered = []
+  const notifier = createNotifier({
+    send: async text => delivered.push(text),
+    mergeWindowMs: 25,
+    record: entry => addNotification(db, entry),
+  })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '第一步' })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '第二步' })
+  await wait(50)
+  assert.equal(delivered.length, 1)
+  assert.match(delivered[0], /第二步/)
+  assert.doesNotMatch(delivered[0], /第一步/)
+  const rows = db.prepare("SELECT level, status, reason FROM notifications WHERE task_id = 't-1' ORDER BY rowid").all()
+  assert.deepEqual(rows.map(row => row.status), ['skipped', 'delivered'])
+  // silent 时代连行都不写；现在每条 progress 都有审计行，压住/覆盖写原因。
+  assert.equal(rows[0].level, 'coalesce')
+  assert.equal(rows[0].reason, 'progress_merged')
+  db.close()
+})
+
+test('同任务水位：窗口内第二条压住，到水位线补投最新一条（不刷屏也不丢）', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 5, progressWatermarkMs: 60 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '一' })
+  await wait(20)
+  assert.equal(delivered.length, 1)
+  // 水位内连发两条：都压住，只留最新。
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '二' })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '三' })
+  await wait(20)
+  assert.equal(delivered.length, 1)
+  // 到水位线（首条投递后 60ms）补投「三」——尾沿保留最新状态。
+  await wait(70)
+  assert.equal(delivered.length, 2)
+  assert.match(delivered[1], /三/)
+  assert.doesNotMatch(delivered[1], /二/)
+})
+
+test('追问必达：answeredFollowup 的 progress 立刻投递，不等合并窗口也不看水位', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 1000, progressWatermarkMs: 600_000 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '第一轮心跳' })
+  await notifier.drain()
+  assert.equal(delivered.length, 1)
+  // 协调者刚追问过 → 这一条就是它等的答案：同步送出。
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '部分结论：PR 已开，等 CI', answeredFollowup: true })
+  assert.equal(delivered.length, 2)
+  assert.match(delivered[1], /有新进展（回答你的追问）：部分结论：PR 已开，等 CI/)
+  // 必达只对追问后第一条生效；之后的 progress 回到水位节奏（不刷屏）。
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '第二条' })
+  assert.equal(delivered.length, 2)
+})
+
+test('同任务的 progress 被同窗口的 done 取代：一条消息里不重复列同一任务', async () => {
+  const db = await openLedger(tempDir())
+  const delivered = []
+  const notifier = createNotifier({
+    send: async text => delivered.push(text),
+    mergeWindowMs: 25,
+    record: entry => addNotification(db, entry),
+  })
+  // 子会话先报进展、紧接着交付：旧 progress 不该和「已交付待确认」挤在同一条消息里（读起来像两个任务）。
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '已定位分支' })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'delivered', summary: '改完了' })
+  await wait(50)
+  assert.equal(delivered.length, 1)
+  assert.match(delivered[0], /^任务「A」已交付待确认：改完了/)
+  assert.doesNotMatch(delivered[0], /已定位分支/)
+  const rows = db.prepare("SELECT status, reason FROM notifications WHERE task_id = 't-1' ORDER BY rowid").all()
+  assert.deepEqual(rows.map(row => row.status), ['skipped', 'delivered'])
+  assert.equal(rows[0].reason, 'progress_superseded')
+  db.close()
+})
+
+test('progress 投递失败不占水位：下一次 progress 仍照常尝试送达', async () => {
+  const delivered = []
+  let failing = true
+  const notifier = createNotifier({
+    send: async text => {
+      if (failing) return false
+      delivered.push(text)
+      return true
+    },
+    mergeWindowMs: 5,
+    progressWatermarkMs: 600_000,
+    onWarn: () => {},
+  })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '一' })
+  await wait(20)
+  assert.equal(delivered.length, 0)
+  failing = false
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '二' })
+  await wait(20)
+  assert.equal(delivered.length, 1)
+  assert.match(delivered[0], /二/)
+})
+
+test('卸载收尾（flushNow / drain）把水位压住的 progress 一并送掉：进程要走时不留悬账', async () => {
+  const delivered = []
+  const notifier = createNotifier({ send: text => { delivered.push(text); return true }, mergeWindowMs: 5, progressWatermarkMs: 600_000 })
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '一' })
+  await notifier.drain()
+  assert.equal(delivered.length, 1)
+  notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '二' })
+  notifier.flushNow()
+  assert.equal(delivered.length, 2)
+  assert.match(delivered[1], /二/)
+})
+
+test('progress 并入合并窗口，done 批量合并，interrupt 立刻投递', async () => {
   const delivered = []
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 20 })
   notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '在跑' })
@@ -57,21 +201,28 @@ test('silent 不投递，notify 合并，interrupt 立刻投递', async () => {
   notifier.push({ taskId: 't-2', title: 'B', status: 'done', summary: '完成' })
   notifier.push({ taskId: 't-3', title: 'C', status: 'done', summary: '完成' })
   await wait(40)
+  // progress 与两条 done 同窗口合并成一条（progress 不再消失，也不单独刷一条）。
   assert.equal(delivered.length, 1)
-  assert.match(delivered[0], /2 个任务完成/)
+  assert.match(delivered[0], /3 个任务状态更新/)
+  assert.match(delivered[0], /- A（有新进展）：在跑/)
+  assert.match(delivered[0], /- B：完成/)
+  assert.match(delivered[0], /- C：完成/)
   notifier.push({ taskId: 't-4', title: 'D', status: 'blocked', summary: '要授权' })
   await wait(10)
   assert.equal(delivered.length, 2)
   assert.match(delivered[1], /需要你/)
 })
 
-test('单条 done 文案与进度不计入合并', async () => {
+test('progress 与单条 done 同窗口时合并成一条（不丢 progress，也不拆成两条刷屏）', async () => {
   const delivered = []
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 10 })
   notifier.push({ taskId: 't-1', title: 'A', status: 'progress', summary: '在跑' })
   notifier.push({ taskId: 't-2', title: 'B', status: 'done', summary: '完成' })
   await wait(25)
-  assert.deepEqual(delivered, ['任务「B」完成：完成'])
+  assert.equal(delivered.length, 1)
+  assert.match(delivered[0], /2 个任务状态更新/)
+  assert.match(delivered[0], /- A（有新进展）：在跑/)
+  assert.match(delivered[0], /- B：完成/)
 })
 
 test('合并窗口外再投一条', async () => {

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0,
   question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER,
+  report_expected_at INTEGER,
   goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0,
   goal_rounds INTEGER NOT NULL DEFAULT 0,
   plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT,
@@ -72,6 +73,8 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('question_options_json')) db.exec('ALTER TABLE tasks ADD COLUMN question_options_json TEXT')
     if (!taskColumns.includes('progress_count')) db.exec('ALTER TABLE tasks ADD COLUMN progress_count INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('stall_notified_at')) db.exec('ALTER TABLE tasks ADD COLUMN stall_notified_at INTEGER')
+    // 追问必达（t-99d4a98c）：追问/续跑投递成功后置位、任何回报到达后清空。旧库/存量行 NULL = 没在等回报。
+    if (!taskColumns.includes('report_expected_at')) db.exec('ALTER TABLE tasks ADD COLUMN report_expected_at INTEGER')
     if (!taskColumns.includes('goal_state_json')) db.exec('ALTER TABLE tasks ADD COLUMN goal_state_json TEXT')
     if (!taskColumns.includes('last_message_json')) db.exec('ALTER TABLE tasks ADD COLUMN last_message_json TEXT')
     // K2 的轮数列：P2-2 删掉自建续跑器后**停写**，列保留只为旧库/历史导出一致
@@ -206,6 +209,8 @@ const taskOf = row => row === undefined ? undefined : ({
   question: row.question ?? null,
   options: parseStringArray(row.question_options_json),
   progress_count: Number.isFinite(row.progress_count) ? row.progress_count : 0,
+  // 追问必达（t-99d4a98c）：追问/续跑投递成功后置位，下一条回报按「必达」投递；旧行 NULL = 没在等回报。
+  report_expected_at: Number.isFinite(row.report_expected_at) ? row.report_expected_at : null,
   goal_state: parseGoalState(row.goal_state_json),
   last_message: parseLastMessage(row.last_message_json),
   // K2 的轮数列：P2-2 起插件不再写（停写），只为旧库/历史导出保留读取。
@@ -593,6 +598,23 @@ export function recordProgress(db, id, { stallRounds = 3, staleMinutes = 30, now
   db.prepare(`UPDATE tasks SET progress_count = ?, stall_notified_at = ?, updated_at = ?, last_event_at = ? WHERE id = ?`)
     .run(count, shouldNotify ? now : (task.stall_notified_at ?? null), now, now, id)
   return { task: getTask(db, id), count, shouldNotify }
+}
+
+/**
+ * 追问/续跑投递成功：标记「这条任务的下一条回报必达」（notify 的追问必达判据）。
+ *
+ * 为什么落台账、而不是在 notify 里靠「最近一条 followup」猜：追问可能发生在很久以前，中间还夹着
+ * 结算、状态迁移、插件重启；台账一行是唯一能跨回合活下来的事实，也让「谁在等回报」可审计。
+ */
+export function markReportExpected(db, id, now = Date.now()) {
+  db.prepare('UPDATE tasks SET report_expected_at = ? WHERE id = ?').run(now, id)
+  return getTask(db, id)
+}
+
+/** 回报到达（progress / done / blocked / needs_auth）：清标记——追问已得到回答，下一条回归正常节奏。 */
+export function clearReportExpected(db, id) {
+  db.prepare('UPDATE tasks SET report_expected_at = NULL WHERE id = ?').run(id)
+  return getTask(db, id)
 }
 
 /** 启动清理：把超时仍未派发出子会话的 pending 标成 failed；排队中的（queued_at 非空）和 running 不动。 */

@@ -12,14 +12,15 @@ import { statusesWith } from './status-facts.js'
 import { dependencyState, promoteDependents, upstreamBrief, validateDepends } from './deps.js'
 import { renderTaskDetail } from './task-detail.js'
 import {
-  GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock,
-  distillLessons, distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember, searchMemories, taskLogText,
+  GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, MEMORY_FACT_KINDS, TASK_LOG_KIND, addMemory, buildLessonBlock,
+  buildMemoryBlock, distillLessons, distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember,
+  searchMemories, taskLogText,
 } from './memory.js'
 import {
   addMessage, createTask, getTask, listTasks, recentMessages, setMessageDelivery,
   setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
-  countTaskMessages, incrementResumeCount,
+  countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected,
 } from './ledger.js'
 import {
   acceptanceFailureText, acceptancePassText, acceptanceStatusLines,
@@ -496,6 +497,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }
     setMessageDelivery(db, task.id, seq, 'delivered')
     touchTask(db, task.id)
+    // 追问必达（t-99d4a98c）：投递成功 = 协调者在等这条任务的下一份回报。下一份 progress 不看
+    // 通知水位、立刻送达（判据在 task_report → notify.push 的 answeredFollowup）。
+    markReportExpected(db, task.id)
     const current = getTask(db, task.id)
     // 「等批准」状态收到续派 = 用户批准计划；先记住，投递成功回到 running 之后才切可写。
     const wasWaiting = WAITING_STATUS.has(current.status)
@@ -679,6 +683,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     // 旧问题也不再有效）——都跟下一次结算重新写。
     transition(db, task.id, 'running', { error: null, lastStopReason: null, closeReason: null })
     clearTaskQuestion(db, task.id)
+    // 续跑也是「协调者在等回报」：冷恢复后子会话的第一份 progress 同样必达（不然续跑完还是看不见）。
+    markReportExpected(db, task.id)
     incrementAttempts(db, task.id)
     const updated = incrementResumeCount(db, task.id)
     touchTask(db, task.id)
@@ -1751,6 +1757,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       addMessage(db, task.id, { kind: 'report', rendered: `[${args.status}] ${args.summary ?? ''}` })
       if (acceptanceNotice !== '') addMessage(db, task.id, { kind: 'acceptance', rendered: acceptanceNotice })
+      // 追问必达（t-99d4a98c）：台账里「在等回报」的标记 = 这份回报就是协调者追问/续跑后等的答案。
+      // 读迁移前的行（迁移不碰这一列），读完立刻清标记：必达只对追问后的**第一条**回报生效，
+      // 之后同任务再报 progress 回到正常水位节奏（否则一次追问会让整段长任务都变成即时唤醒）。
+      const answeredFollowup = task.report_expected_at !== null && task.report_expected_at !== undefined
+      if (answeredFollowup) clearReportExpected(db, task.id)
       let next = task
       // 两段式终态：子会话报 done 先落 delivered（已交付待确认），协调者 task_close / 超时才收成 done。
       // 已经在 delivered/done 上的回报是重复/迟到事件：只记消息，不迁移、不重复通知。
@@ -1832,6 +1843,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           worktree: notifyWorktreeOf(next),
           sender: exec?.agent,
           signal: exec?.signal,
+          // 追问后必达：notify 对 progress 用它跳过水位与合并窗口（其余状态照旧走原分级）。
+          answeredFollowup,
         })
       }
       if (progressInfo?.shouldNotify === true) {
@@ -1851,7 +1864,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         taskId: next.id,
         sessionId: task.session_id,
         agentId: exec?.agent?.id,
-        detail: { status: args.status, summary: args.summary ?? '', delivered: deliveredNow, access: next.access ?? null, callId: exec?.callId },
+        detail: { status: args.status, summary: args.summary ?? '', delivered: deliveredNow, access: next.access ?? null, answeredFollowup, callId: exec?.callId },
       })
       // 交付/终态都让出一个并发位，唤醒队列补位。可写根与 goal 要留到 done（确认/超时）再收：
       // delivered 还要复用同一个子会话追问。

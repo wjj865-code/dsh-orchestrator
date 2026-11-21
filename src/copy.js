@@ -130,6 +130,34 @@ export const DELIVERED_HINT = `默认保持待确认（别急着关闭）：要�
   + `用户明确说确认完成时再 ${DELIVERY_LINES.closeCallWithTaskId}；一直不确认则${DELIVERY_LINES.timeout}。`
 
 /**
+ * progress 进展通知的一句话口径（`src/notify.js` 的通知尾部 + L1 协调者 policy 共用）。
+ *
+ * 为什么必须说死：progress 是「任务还在跑」的信号，不是终态。协调者读成「汇报完了」就会去
+ * 转述/重派；读成「要它回话」就会原地等。唯一的动作是**追问同一子会话**（复用已有上下文），
+ * 这也正是「不设显式终态、靠 resume/追问继续」这条方向在日常回合里的入口。
+ */
+export const PROGRESS_NOTICE_HINT = 'progress 只是进度信号、不是终态：任务还在跑，'
+  + '要结论就 task_message 追问同一子会话（复用已有上下文），别为此重派任务'
+
+/**
+ * 堵塞项四类（L1 交互闸门与 L2 brief 的 `BLOCKED_HINT` 共用，措辞只此一处）。
+ *
+ * 为什么要把「四类」写死：执行期的打断只有在「继续做就是错」时才值得；其余（进度、能否关闭、
+ * 自己查得清的事实）都该按建议继续，否则「少打扰」只是一句空话。L1 的 B1–B4 展开是这四类的解释，
+ * 不重抄本句；两处引用同一个常量。
+ */
+export const BLOCKER_RULE = '已确认的验收/范围/方案不可达、需要新授权（权限/远端写/发布/删数据/不可逆）、'
+  + '子会话报 blocked 且选项要用户定、事实在你的工具面外查不到'
+
+/**
+ * 追加调整的评估要素（L1 交互闸门与 `task_message` 描述共用）。
+ *
+ * 顺序（影响面 → 风险 → 建议）不能换：先算影响再给建议，用户才能选「继续还是停」；
+ * 反过来先给建议等于替用户拍板。
+ */
+export const CHANGE_REVIEW_FIELDS = '影响面（哪些任务/产物/已交付结论会变）、风险（验收是否失效、是否触碰不可逆或授权）、建议（继续/增量追加/停下重派）'
+
+/**
  * L3（`task_detail`）的完成动作：交付口径与 brief 的 `CONFIRM_HINT` 同源（summary 三问）。
  *
  * @param {string} summaryFields 例如 brief.js 的 `SUMMARY_FIELDS`（改了什么、改了哪些文件、怎么验证的）

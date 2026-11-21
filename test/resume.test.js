@@ -91,6 +91,8 @@ test('端到端：failed → resume 冷恢复同一个子会话，计数自增�
   const text = await resume(call, task.id)
   const after = getTask(db, task.id)
   assert.deepEqual([after.status, after.resume_count, after.attempts, after.last_stop_reason], ['running', 1, 1, null])
+  // 续跑也是「协调者在等回报」：冷恢复后的第一条 progress 必达（t-99d4a98c 的 answeredFollowup 判据）。
+  assert.ok(after.report_expected_at > 0)
   assert.deepEqual([sent.length, sent[0].target], [1, 'c-1'], '只投一次，且必须投给原会话')
   assert.match(sent[0].message, /【续跑】/)
   assert.match(text, /第 1 次续跑/)

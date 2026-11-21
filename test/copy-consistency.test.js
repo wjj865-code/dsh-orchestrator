@@ -16,7 +16,7 @@ import {
 } from '../src/plan-mode.js'
 import * as planMode from '../src/plan-mode.js'
 import {
-  ACCESS_FULL, DELIVERY_LINES, DELIVERY_NOT_FINAL as DELIVERY_NOT_FINAL_COPY,
+  ACCESS_FULL, BLOCKER_RULE, CHANGE_REVIEW_FIELDS, DELIVERY_LINES, DELIVERY_NOT_FINAL as DELIVERY_NOT_FINAL_COPY, PROGRESS_NOTICE_HINT,
   PLAN_SAVE_TOOL_DESC, planCreateReceipt, planDocPathText,
 } from '../src/copy.js'
 import { planSavedNote } from '../src/plan-doc.js'
@@ -52,6 +52,16 @@ test('协调者 policy：done 后默认保持待确认，不主动 action:close'
   assert.match(policy, /默认\*\*保持待确认、不要主动 task_message\(\{ action: 'close' \}\)\*\*/)
   assert.match(policy, /task_message 追问（复用同一个子会话/)
   assert.match(policy, /超时/)
+  assertNoConflicts('COORDINATOR_POLICY', policy)
+})
+
+test('协调者 policy：收到 progress 通知按「信号不是终态」处理，与通知提示同源', () => {
+  const policy = renderCoordinatorPolicy({})
+  // progress 送达后，协调者的动作只有一个：要结论就追问同一子会话（复用上下文），别重派。
+  assert.ok(policy.includes(PROGRESS_NOTICE_HINT), 'L1 与通知必须逐字引用同一句 PROGRESS_NOTICE_HINT')
+  assert.match(policy, /收到 progress 通知/)
+  assert.match(policy, /task_message 追问同一子会话/)
+  assert.match(policy, /别为此重派任务/)
   assertNoConflicts('COORDINATOR_POLICY', policy)
 })
 

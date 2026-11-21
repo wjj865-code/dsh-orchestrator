@@ -4,7 +4,7 @@ import { closeSync, openSync, readSync, statSync } from 'node:fs'
 import { renderBriefForTask } from './brief.js'
 import {
   addMessage, clearTaskQuestion, createTask, deleteTask, findRecentDeliveredFollowup, getTask, listTasks,
-  recentMessages, setMessageDelivery, setTaskError, transition, touchTask, incrementAttempts,
+  recentMessages, setMessageDelivery, setTaskError, transition, touchTask, incrementAttempts, markReportExpected,
 } from './ledger.js'
 import { dependencyState, validateDepends } from './deps.js'
 import { taskLabel } from './task-label.js'
@@ -424,6 +424,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     }
     setMessageDelivery(db, task.id, seq, 'delivered')
     touchTask(db, task.id)
+    // 追问必达（与工具层 task_message 同口径）：面板「追加」投递成功 = 在等这条任务的下一条回报，
+    // 下一份 progress 跳过通知水位立刻送达（t-99d4a98c）。
+    markReportExpected(db, task.id)
     const latest = getTask(db, task.id)
     // 「等批准」状态收到追加消息 = 用户批准计划（与 task_message 同口径）；
     // 「待确认」上追问 = 回到 running 复用同一个子会话（可写根没释放）。

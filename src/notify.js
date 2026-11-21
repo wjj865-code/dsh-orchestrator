@@ -1,23 +1,30 @@
-// 通知分级：progress 静默，done 批量合并，blocked/needs_auth 立即打断。
-// cancelled/orphaned 来自结算自动上报（S1）：异常收场，按 notify 合并窗口提醒。
+// 通知分级：progress **默认送达**（同任务合并 + 水位节流；追问后的第一条必达），done 批量合并，
+// blocked/needs_auth 立即打断。cancelled/orphaned 来自结算自动上报（S1）：异常收场，按 notify 合并窗口提醒。
+//
+// progress 为什么不再 silent（0.25.x）：它是「任务还在跑」的协调信号——协调者据此决定 task_message
+// 追问同一子会话 / resume，而不是重派新任务。静默时「追问 → 子会话先报部分结论 → 继续跑」这条
+// 最需要被看见的路径对主会话永久不可见（t-1f70bedb：追问后子会话回了 [progress]，主会话 0 消息，
+// 15 分钟后只有看门狗）。一条都不送会刷屏，所以按「合并窗口 + 同任务水位 + 尾沿补投」送达：
+// 见 levelOf('progress') 与 createNotifier 的 pushCoalesced。
 //
 // 产物 → 交付（P6）：通知里只列「present 能接住」的绝对路径，并明确要求协调者在自己回合里交付。
 // 判据与平台一致（reports/t0.1-probes.md §3.3 + D6/D7）：present 用 lstat 判 type，目录 / 符号链接 /
 // 不存在一律被拒；平台单次硬上限 8，本插件按「1-4 个最关键的、最多 4 个」收敛成产品上限。
 import { deliverableOf as artifactKindOf } from './artifact-location.js'
 // P1-C 文案单源：交付指令与 task_detail / 文档 / 协调者 policy 共用 src/copy.js 的句子。
-import { DELIVERED_HINT, DELIVERY_LINES } from './copy.js'
+import { DELIVERED_HINT, DELIVERY_LINES, PROGRESS_NOTICE_HINT } from './copy.js'
 
 export { DELIVERED_HINT }
 
 const LEVEL = {
-  progress: 'silent', done: 'notify', delivered: 'notify', blocked: 'interrupt', needs_auth: 'interrupt',
+  // coalesce：默认送达 + 同任务合并/节流（progress）。与 notify 的区别只是「有水位、可被后续同类合并」。
+  progress: 'coalesce', done: 'notify', delivered: 'notify', blocked: 'interrupt', needs_auth: 'interrupt',
   failed: 'notify', stalled: 'notify', cancelled: 'notify', orphaned: 'notify',
 }
 
 const DONE_LABEL = {
   failed: '失败', stalled: '可能卡住', cancelled: '已取消', orphaned: '会话已结束但没有终态回报',
-  done: '完成', delivered: DELIVERY_LINES.state,
+  done: '完成', delivered: DELIVERY_LINES.state, progress: '有新进展',
 }
 
 export function levelOf(status) {
@@ -42,6 +49,36 @@ export const NOTIFY_MERGE_WINDOW_MS = 5000
 export function notifyMergeWindowMs(env = process.env) {
   const raw = Number(env?.DSH_ORCH_NOTIFY_MERGE_MS)
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : NOTIFY_MERGE_WINDOW_MS
+}
+
+/**
+ * 同任务 progress 的**水位**（毫秒）：窗口内同一任务最多单独送一条，被压住的只留最新一条，
+ * 到水位线再补投（trailing edge）——既不会把长任务的每条心跳都变成一次唤醒，也不会漏掉
+ * 「任务最后到哪了」。60 秒的依据：一次真实追问的往返通常以分钟计；比它更密的 progress
+ * 对协调者没有新信息（同一回合内的多条 progress 本来就在 5 秒合并窗口里并成一条）。
+ *
+ * 与 `NOTIFY_MERGE_WINDOW_MS` 一样**固定**、不进插件配置面（不是需要现场调参的策略）；
+ * 单测/冒烟用环境变量 `DSH_ORCH_PROGRESS_MS` 只调窗口、不改语义。
+ */
+export const NOTIFY_PROGRESS_WATERMARK_MS = 60_000
+
+/** 水位生效值：生产恒为 {@link NOTIFY_PROGRESS_WATERMARK_MS}，只有测试环境变量旁路。 */
+export function notifyProgressWatermarkMs(env = process.env) {
+  const raw = Number(env?.DSH_ORCH_PROGRESS_MS)
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : NOTIFY_PROGRESS_WATERMARK_MS
+}
+
+/**
+ * coalesce（progress）被合并/节流的审计原因。每一条 progress 都会在 `notifications` 里留下**一行**
+ * （delivered 或 skipped + 原因）：排查「主会话为什么没收到这条」时不必再靠猜（旧口径 silent 连行都不写）。
+ */
+const COALESCE_REASON = {
+  /** 同任务水位内压住，尾沿补投最新一条。 */
+  watermark: 'progress_watermark',
+  /** 5 秒合并窗口内同一任务的第二条 progress 覆盖了前一条（同一件事的重复汇报）。 */
+  merge: 'progress_merged',
+  /** 同任务的 done/blocked 等已在队列里：旧 progress 被取代（同一批里既列「有新进展」又列「完成」是噪音）。 */
+  superseded: 'progress_superseded',
 }
 
 /** 非交付项的分类文案：告诉模型「为什么这条没进交付候选」。 */
@@ -175,9 +212,19 @@ const nameOf = item => {
   if (item.access === 'full') return `${base}（完整访问）`
   return base
 }
+// progress 是一档独立语义：没有产物、没有交付确认、也没有「等你决定」的问题，只有「还在跑 + 到哪了」。
+// 追问后的第一条额外标「回答你的追问」——否则协调者会把它当成又一次心跳，追问等于没问。
+const PROGRESS_LABEL = '有新进展'
+const PROGRESS_ANSWERED_LABEL = `${PROGRESS_LABEL}（回答你的追问）`
+const progressLabel = item => (item.answeredFollowup === true ? PROGRESS_ANSWERED_LABEL : PROGRESS_LABEL)
+const isProgress = item => item.status === 'progress'
 // 合并通知里每条任务只列产物；交付指令在整条消息末尾写一次（避免 N 条任务刷 N 遍指令）。
-const line = item => `- ${nameOf(item)}：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item, { hint: false })}`
+const line = item => (isProgress(item)
+  ? `- ${nameOf(item)}（${progressLabel(item)}）：${item.summary}`
+  : `- ${nameOf(item)}：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item, { hint: false })}`)
 const batchHint = batch => (batch.some(hasDeliverable) ? `\n  ${PRESENT_HINT}` : '')
+// progress 的动作指令：告诉协调者这是信号、出口是追问同一子会话（文案本体在 src/copy.js）。
+const progressHint = batch => (batch.some(isProgress) ? `\n  ${PROGRESS_NOTICE_HINT}` : '')
 
 // 两段式终态（delivered）：交付通知必须带动作指令，否则协调者只会转述「完成了」，
 // 也会忘了 task_message 追问能复用原会话（用户随后只能新派任务）。
@@ -190,9 +237,22 @@ const deliveredBatchHint = batch => (batch.some(item => item.status === 'deliver
   ? `\n  ${DELIVERED_HINT}`
   : '')
 
-export function createNotifier({ send, record = () => {}, mergeWindowMs = notifyMergeWindowMs(), onWarn = () => {}, onEvent = () => {} }) {
+export function createNotifier({
+  send,
+  record = () => {},
+  mergeWindowMs = notifyMergeWindowMs(),
+  progressWatermarkMs = notifyProgressWatermarkMs(),
+  onWarn = () => {},
+  onEvent = () => {},
+}) {
   let buffer = []
   let timer = null
+  // 同任务 progress 水位（进程内）：taskId → 最近一次尝试投递的时刻。
+  // 不落库是有意的——进程重启后第一条 progress 会立刻送，正是重启后最需要的那条状态。
+  const progressWatermark = new Map()
+  // 水位内被压住的 progress：taskId → { item, deadline }；只留最新一条，到点补投。
+  const progressPending = new Map()
+  let progressTimer = null
 
   const emit = (event, item, detail = {}) => {
     try {
@@ -233,6 +293,12 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = notify
       recordOne(item, 'skipped', null, reason)
       emit('notify.skipped', item, { reason })
     }
+  }
+  // coalesce 的审计：压住/覆盖也是**一次明确的决定**，必须留一行（旧口径 silent 连行都不写，
+  // 「主会话为什么没收到」只能靠猜）。status 用 skipped + reason 区分原因。
+  const recordCoalesced = (item, reason) => {
+    recordOne(item, 'skipped', null, reason)
+    emit('notify.coalesced', item, { reason })
   }
   const recordFailed = (items, error) => {
     const reason = error?.message ?? String(error)
@@ -284,18 +350,129 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = notify
     return { delivered: true }
   }
 
+  // —— coalesce（progress）的小状态机：buffer（5 秒合并窗口） + progressPending（水位尾沿） ——
+
+  /** 进合并窗口；同任务窗口内的第二条 progress 覆盖前一条（只留最新摘要），被覆盖的留审计行。 */
+  const bufferize = item => {
+    if (!isProgress(item)) {
+      // 终态/等待类回报到了，同一任务积压的 progress 已过时：别再尾沿补投一条旧状态；
+      // 已在合并窗口里的旧 progress 也撤掉，避免同一条消息里同任务既「有新进展」又「完成」。
+      progressPending.delete(item.taskId)
+      for (let index = buffer.length - 1; index >= 0; index -= 1) {
+        if (buffer[index].taskId === item.taskId && isProgress(buffer[index])) {
+          recordCoalesced(buffer[index], COALESCE_REASON.superseded)
+          buffer.splice(index, 1)
+        }
+      }
+    }
+    const existing = isProgress(item)
+      ? buffer.findIndex(entry => entry.taskId === item.taskId && isProgress(entry))
+      : -1
+    if (existing === -1) {
+      buffer.push(item)
+    } else {
+      recordCoalesced(buffer[existing], COALESCE_REASON.merge)
+      buffer[existing] = item
+    }
+    if (timer === null) timer = setTimeout(() => { void flush() }, mergeWindowMs)
+  }
+
+  const nextProgressDeadline = () => {
+    let min = Infinity
+    for (const entry of progressPending.values()) min = Math.min(min, entry.deadline)
+    return min
+  }
+
+  const scheduleProgressRelease = () => {
+    if (progressTimer !== null) { clearTimeout(progressTimer); progressTimer = null }
+    const deadline = nextProgressDeadline()
+    if (!Number.isFinite(deadline)) return
+    progressTimer = setTimeout(() => {
+      progressTimer = null
+      if (releasePendingProgress() > 0) void flush()
+      scheduleProgressRelease()
+    }, Math.max(0, deadline - Date.now()) + 1)
+    // 不 unref 的话，一条等 60 秒的 progress 水位会把进程（以及测试进程）挂住：
+    // 水位只是节流手段，不是「有活儿没干完」的信号——进程该退出时就退出，积压由 drain/flushNow 兜。
+    progressTimer.unref?.()
+  }
+
+  /** 把到点的（或 `force` 时全部）待发 progress 放进合并窗口；返回释放条数。 */
+  const releasePendingProgress = ({ force = false } = {}) => {
+    const now = Date.now()
+    let released = 0
+    for (const [taskId, entry] of [...progressPending]) {
+      if (!force && entry.deadline > now) continue
+      progressPending.delete(taskId)
+      bufferize(entry.item)
+      released += 1
+    }
+    return released
+  }
+
+  /**
+   * progress 的三条出路（顺序即优先级）：
+   * 1. 追问必达：台账 `report_expected_at` 置位后的第一条回报（协调者刚追问/续跑过）→ 立刻送，
+   *    不看水位、不等合并窗口。这一条是「追问石沉大海」的正面解答。
+   * 2. 首条 / 已过水位 → 进 5 秒合并窗口（同批任务的 progress 并成一条）。
+   * 3. 水位内 → 只留最新一条，到水位线补投；被压住的这一条写 `skipped + progress_watermark`。
+   */
+  const pushCoalesced = item => {
+    if (item.answeredFollowup === true) {
+      // 追问的答案比水位重要：它已经把积压的旧 progress 覆盖掉，还应该立刻送。
+      progressPending.delete(item.taskId)
+      bufferize(item)
+      if (timer !== null) { clearTimeout(timer); timer = null }
+      void flush()
+      return
+    }
+    const now = Date.now()
+    const last = progressWatermark.get(item.taskId)
+    if (last === undefined || now - last >= progressWatermarkMs) {
+      bufferize(item)
+      return
+    }
+    progressPending.set(item.taskId, { item, deadline: last + progressWatermarkMs })
+    recordCoalesced(item, COALESCE_REASON.watermark)
+    scheduleProgressRelease()
+  }
+
   const flush = () => {
+    // 尾沿补投/卸载路径会先 bufferize 再立刻 flush：这里把刚排上的合并定时器收掉，不留悬空定时器。
+    if (timer !== null) clearTimeout(timer)
     timer = null
     const batch = buffer
     buffer = []
     if (batch.length === 0) return undefined
     const label = status => DONE_LABEL[status] ?? '完成'
+    const labelOfItem = item => (isProgress(item) ? progressLabel(item) : label(item.status))
+    // progress 没有产物交付/隔离/问题语义，只报「还在跑 + 到哪了」，别把中间文件写成交付候选。
+    const detailOf = item => (isProgress(item)
+      ? ''
+      : `${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item)}${deliveredBlock(item)}`)
     const allDone = batch.every(item => item.status === 'done')
+    const allProgress = batch.every(isProgress)
     const allSettled = batch.every(item => item.status === 'done' || item.status === 'delivered')
     const text = batch.length === 1
-      ? `任务「${nameOf(batch[0])}」${label(batch[0].status)}：${batch[0].summary}${questionBlock(batch[0])}${worktreeBlock(batch[0])}${artifactBlock(batch[0])}${deliveredBlock(batch[0])}`
-      : `${batch.length} 个任务${allDone ? '完成' : (allSettled ? DELIVERY_LINES.state : '状态更新')}：\n${batch.map(line).join('\n')}${batchHint(batch)}${deliveredBatchHint(batch)}`
-    return deliver(text, batch)
+      ? `任务「${nameOf(batch[0])}」${labelOfItem(batch[0])}：${batch[0].summary}${detailOf(batch[0])}${progressHint(batch)}`
+      : `${batch.length} 个任务${allDone ? '完成' : (allProgress ? PROGRESS_LABEL : (allSettled ? DELIVERY_LINES.state : '状态更新'))}：\n${batch.map(line).join('\n')}${batchHint(batch)}${deliveredBatchHint(batch)}${progressHint(batch)}`
+    // 水位按「尝试投递时刻」先记：异步 send 期间到达的同任务 progress 不该再单独送一条。
+    // 投递没成功（skipped/failed）就撤回——否则一次「主会话没打开」会把接下来的 progress 也压住。
+    const startedAt = Date.now()
+    const progressItems = batch.filter(isProgress)
+    if (progressItems.length > 0) {
+      for (const item of progressItems) progressWatermark.set(item.taskId, startedAt)
+    }
+    const settleWatermark = outcome => {
+      if (outcome?.delivered === true) return outcome
+      for (const item of progressItems) {
+        if (progressWatermark.get(item.taskId) === startedAt) progressWatermark.delete(item.taskId)
+      }
+      return outcome
+    }
+    const result = deliver(text, batch)
+    if (result !== null && typeof result?.then === 'function') return result.then(settleWatermark)
+    return settleWatermark(result)
   }
 
   return {
@@ -306,8 +483,11 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = notify
         void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item)}`, [item])
         return
       }
-      buffer.push(item)
-      if (timer === null) timer = setTimeout(() => { void flush() }, mergeWindowMs)
+      if (level === 'coalesce') {
+        pushCoalesced(item)
+        return
+      }
+      bufferize(item)
     },
     /**
      * 汇总通知（启动对账等）：多条任务共用一条文案、只投递一次，notifications 仍按任务逐条落库。
@@ -321,11 +501,16 @@ export function createNotifier({ send, record = () => {}, mergeWindowMs = notify
     },
     async drain() {
       if (timer !== null) clearTimeout(timer)
+      if (progressTimer !== null) { clearTimeout(progressTimer); progressTimer = null }
+      // 卸载/测试收尾时把水位里压着的 progress 一并送掉：进程都要走了，节流没有意义。
+      releasePendingProgress({ force: true })
       await flush()
     },
     /** 卸载用：同步 flush；sync send 时通知与落库都在本调用内完成。 */
     flushNow() {
       if (timer !== null) clearTimeout(timer)
+      if (progressTimer !== null) { clearTimeout(progressTimer); progressTimer = null }
+      releasePendingProgress({ force: true })
       return flush()
     },
   }

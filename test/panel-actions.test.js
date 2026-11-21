@@ -174,6 +174,8 @@ test('message 投递续派并记录 attempts/清问题', async () => {
   const next = getTask(db, task.id)
   assert.equal(next.attempts, 1)
   assert.equal(next.question, null)
+  // 追问必达（与工具层 task_message 同口径）：面板追问投递成功也要置「等回报」，下一条 progress 才必达。
+  assert.ok(next.report_expected_at > 0)
   db.close()
 })
 

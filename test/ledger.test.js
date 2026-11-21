@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts, setTaskLastMessage, setTaskAcceptance } from '../src/ledger.js'
+import { DatabaseSync } from 'node:sqlite'
+import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts, setTaskLastMessage, setTaskAcceptance, markReportExpected, clearReportExpected } from '../src/ledger.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -177,6 +178,44 @@ test('notifications 可写入并返回自增 id', async () => {
   assert.equal(rows.length, 2)
   assert.equal(rows[1].merged_into, first)
   assert.ok(rows[0].delivered_at > 0)
+  db.close()
+})
+
+test('追问必达标记：markReportExpected 置位、clearReportExpected 清空，旧库自动补列', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief(), coordinatorSession: 's-1' })
+  // 新行默认「没在等回报」（NULL 归一成 null，不是 0）。
+  assert.equal(getTask(db, task.id).report_expected_at, null)
+  assert.equal(markReportExpected(db, task.id, 1234).report_expected_at, 1234)
+  assert.equal(getTask(db, task.id).report_expected_at, 1234)
+  assert.equal(clearReportExpected(db, task.id).report_expected_at, null)
+  db.close()
+})
+
+test('迁移兼容：旧库（无 report_expected_at）自动补列，存量行读 null、写入照常', async () => {
+  const dir = tempDir()
+  const dbPath = join(dir, 'tasks.sqlite')
+  const legacy = new DatabaseSync(dbPath)
+  legacy.exec(`CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
+    status TEXT NOT NULL, session_id TEXT, target TEXT, target_dir TEXT, artifacts_json TEXT, coordinator_session TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER, read_only INTEGER NOT NULL DEFAULT 0,
+    retry_of TEXT, depends_json TEXT, group_id TEXT, write_scopes_json TEXT, priority INTEGER NOT NULL DEFAULT 0,
+    question TEXT, question_options_json TEXT, progress_count INTEGER NOT NULL DEFAULT 0, stall_notified_at INTEGER,
+    goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0,
+    plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT,
+    worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
+    worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT
+  )`)
+  legacy.prepare(`INSERT INTO tasks (id, title, goal, brief_json, status, coordinator_session, attempts, created_at, updated_at, last_event_at)
+    VALUES (?, ?, ?, ?, ?, ?, 1, 100, 200, 200)`).run('t-legacy', '旧任务', '旧目标', '{}', 'running', 's-1')
+  legacy.close()
+
+  const db = await openLedger(dir)
+  assert.ok(db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name).includes('report_expected_at'))
+  assert.equal(getTask(db, 't-legacy').report_expected_at, null)
+  assert.equal(markReportExpected(db, 't-legacy', 99).report_expected_at, 99)
   db.close()
 })
 

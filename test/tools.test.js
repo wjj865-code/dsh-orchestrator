@@ -722,6 +722,50 @@ test('task_report：progress 只 touch 不改状态', async () => {
   assert.equal(getTask(db, task.id).status, 'running')
   assert.ok(getTask(db, task.id).last_event_at > before.last_event_at)
   assert.equal(notifier.pushed.length, 1)
+  // progress 默认送达（0.25.x）：不再被 notifier 分级吞掉，而是按 coalesce 合并/节流送出。
+  assert.equal(notifier.pushed[0].status, 'progress')
+  assert.equal(notifier.pushed[0].answeredFollowup, false)
+  db.close()
+})
+
+test('追问必达：task_message 投递成功 → 下一条 progress 标 answeredFollowup 并清标记', async () => {
+  const { db, notifier, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲' }))
+  const task = listTasks(db)[0]
+  assert.equal(getTask(db, task.id).report_expected_at, null)
+  // 协调者追问：投递成功 = 在等这条任务的回报。
+  await call(tools, 'task_message', { task_id: task.id, message: '先给部分结论再继续' })
+  assert.ok(getTask(db, task.id).report_expected_at > 0)
+  await call(tools, 'task_report', { task_id: task.id, status: 'progress', summary: '部分结论：PR 已开，等 CI' }, { agent: { id: task.session_id } })
+  assert.equal(notifier.pushed.at(-1).status, 'progress')
+  assert.equal(notifier.pushed.at(-1).answeredFollowup, true)
+  // 必达只对追问后的第一条生效：清标记，后面的 progress 回到正常水位节奏。
+  assert.equal(getTask(db, task.id).report_expected_at, null)
+  await call(tools, 'task_report', { task_id: task.id, status: 'progress', summary: '还在等 CI' }, { agent: { id: task.session_id } })
+  assert.equal(notifier.pushed.at(-1).answeredFollowup, false)
+  db.close()
+})
+
+test('追问必达：blocked/needs_auth 之后被续派，下一条 done 也清标记（不污染下一条回报）', async () => {
+  const { db, notifier, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲' }))
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', { task_id: task.id, status: 'blocked', summary: '等拍板' })
+  await call(tools, 'task_message', { task_id: task.id, message: '用户选 A' })
+  assert.ok(getTask(db, task.id).report_expected_at > 0)
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '按 A 做完' }, { agent: { id: task.session_id } })
+  assert.equal(notifier.pushed.at(-1).status, 'delivered')
+  assert.equal(getTask(db, task.id).report_expected_at, null)
+  db.close()
+})
+
+test('追问必达：投递失败不置标记（没送到就没有「在等回报」）', async () => {
+  const { db, tools } = await setup({ failSend: true })
+  await call(tools, 'task_create', sampleBrief({ title: '甲' }))
+  const task = listTasks(db)[0]
+  const text = await call(tools, 'task_message', { task_id: task.id, message: '先给结论' })
+  assert.match(text, /投递失败|失败/)
+  assert.equal(getTask(db, task.id).report_expected_at, null)
   db.close()
 })
 
