@@ -65,15 +65,13 @@
 
 | 参数 | 作用 |
 |---|---|
-| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**，流程顺序固定：①子会话只读探索 → ②`plan_save` 把计划落盘到 `reports/plans/<任务名>.md`（计划阶段唯一写入口；只有 `content`，插件原样落盘、不解析/不改写；文件名=任务名，安全化与同名 `-2` 见 `src/plan-doc.js`）→ ③`blocked` 只上报摘要 + **绝对路径** + question 里逐条列出的待拍板清单 → ④协调者**先**把摘要与绝对路径回给用户并 `present` 计划文档，**再**用 `ask_user_question` 请拍板（四选一「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」）；选「逐项确认」按清单**一项一问**、答完先给决策汇总再做总批准核对（「均按推荐」必须用户明确点选）→ ⑤**计划批准必须由用户拍板、协调者不得自行批准**，只有用户明确批准才 `task_message` 续派并切回可写。与 `readOnly` 互斥 |
+| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**，流程顺序固定：①子会话只读探索 → ②`plan_save` 把计划落盘到 `reports/plans/<任务名>.md`（计划阶段唯一写入口；只有 `content`，插件原样落盘、不解析/不改写；文件名=任务名，安全化与同名 `-2` 见 `src/plan-doc.js`）→ ③`blocked` 只上报摘要 + **绝对路径** + question 里逐条列出的待拍板清单 → ④协调者**先**把摘要与绝对路径回给用户并 `present` 计划文档，**再**用 `ask_user_question` 请拍板（四选一「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」）；选「逐项确认」按清单**一项一问**、答完先给决策汇总再做总批准核对（「均按推荐」必须用户明确点选）→ ⑤**计划批准必须由用户拍板、协调者不得自行批准**，批准动作只能是 `task_message({ action: 'approve' })`（切可写 + 落审计），再用 `task_message` 续派实现；普通 `message` 只记讨论/修订、不会批准。与 `readOnly` 互斥；批准顺序与失败分支见「计划阶段（P8）」 |
 | `readOnly` | 只读任务：只认显式 `true`，续派也**不会**转可写 |
 | `access: 'full'` | 这一条任务跑在 `danger-full-access`：沙箱不限制写入、`bash`/`pwsh` 解封。只接受 `'full'`，不继承、不改部署默认；与 `readOnly`/`planFirst` 互斥 |
 | `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup` | 在 `<repo>/.agents/worktrees/<taskId>` 独立检出里干活，产物在分支上、**合并由用户决定**；多活跃分支且没给基线时先返回候选让用户选 |
 | `goalRounds` | 1–50；`>0` 时交宿主 `dsh-goal-round-driver` 续跑，默认 0 = 不续跑（见「子会话目标（G1）与续跑」） |
 | `teamTaskId` | 关联官方 Team 板任务；**人/协调者确认交付**时按 CAS 反写官方任务 `complete`（超时自动完成不反写） |
 | `allowConcurrent` | 显式放行同写域并发（返回里标注风险并记日志） |
-
-worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖，可以执行安装命令（`pnpm install` / `npm install` / `uv sync`），**只安装不升级**。计划任务的批准顺序与失败分支见「计划阶段（P8）」。
 
 ## 回报、通知、收件箱、日报
 
@@ -220,8 +218,6 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 | `cancelled` | 被 `stop` 停掉（尊重意图，不续跑） | — |
 | `orphaned` | 会话丢了（上报过 progress 的回合异常结束；重启后常见） | `resume` 续跑 / `retry` 新派 |
 
-- 依赖就绪**只认 `done`**：`delivered` 会短暂挡住下游，确认或超时后自动晋升。
-- **能复用会话的三条收尾态各有出口**：`delivered` 用 `task_message` 追问；`failed`/`orphaned` 用 `resume` 冷恢复同一个子会话（上下文还在）；只有超时自动完成的 `done` 允许 `resume`——确认过的 `done` 要改只能新派。
 - **`resume` vs `retry`**：`resume` = 同一任务同一子会话接着跑（失败/额度中断/重启中断的默认出口）；`retry` = 新任务编号 + 新子会话（上下文跑偏、换检出/权限、会话真的不可达时用）。会话不可达时 `resume` **报错回退**、不静默新建；历史消息 > 60 条只**建议** `retry`，不拦截。
 - 状态集合与转移表只有一份（`src/status-facts.js`），面板、工具、结算、对账都从它派生。
 
@@ -236,7 +232,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 | `deletable` / `retryable` | 能删吗 / 能重派吗？ | 面板删除、`retry` |
 | `resume` | 能续跑**原会话**吗？（`failed`/`orphaned`/超时收尾的 `done`） | `task_message({action:'resume'})`（判定与阈值在 `src/resume.js`） |
 | `terminal` / `releases` | 是流程终态吗 / 要释放可写根与 goal 吗？ | `close` 判定、结算收尾、面板与工具的 stop 幂等判定 |
-| `waiting` | 是等人（用户/授权）的停顿态吗？ | 续派即批准计划 |
+| `waiting` | 是等人（用户/授权）的停顿态吗？ | `task_message` 续派 / 面板门控（计划批准另走显式 `approve`） |
 | `liveness` / `catalog` / `watchdog` | 要对账活着吗 / 要查目录吗 / 要巡检空闲吗？ | `reconcile`、`watchdog` |
 | `planSettled` | 计划任务进这个状态要收口 `plan_state` 吗？ | `ledger.transition` |
 
@@ -274,8 +270,6 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 | 旁路 | 通知（`src/notify.js`） | 每次通知 | 只讲「现在要你做什么」的动作指令 |
 
 - **W1 是 t-4f7ce108 新增的层**（用户原话：「协调者预设有 policy，但任务执行者却没有……将静态提示词内容都统一移入任务执行者的 policy」）：brief 与 persona 只在出生那一刻到达子会话，续派/多轮之后容易被上下文挤掉；per-turn policy 每回合重渲染。注入判定：`subagent.spawn.accepted` 事件先记「子会话 id → 任务 id」，台账 `tasks.session_id`（`transition(..., 'running', { sessionId })` 写入）是唯一真相，两者都查；协调者、无关会话、孙会话一律拿到空串。两条 context 用不同 `order`（130 / 131）分开注册，互不覆盖。
-- L4 从 708 字瘦到 525 字（删掉与 L1 重复的 6 条能力边界）：L1 每回合都在且不会被 compaction 吃掉，onboarding 是一次性消息、轮换时还会被直接标 `sent` 跳过；两处都写 = 每次改 policy 都要同步改它（已漂移过）。
-- **三处矛盾已修**：① 文档不再声称交付时可以带结构化选项（`done` 会清空 `question`/`options`）；② 交付口径只剩 W1 一份（`CONFIRM_HINT` 含 `SUMMARY_FIELDS`：结论 + 改了什么/改了哪些文件/怎么验证的 + 待确认要点），brief / task_detail 都不再各写一套；③ 文档里的 brief 行数改为「2 行基准，`access:'full'` 多一行 → 2–3 行」（`docs/testing.md` 有锁定断言）。
 - **偏好归 L1 末尾**（`src/preferences.js`）：存 `settings.orchestrator_preferences` 单键 JSON，每回合现渲染；字数 1200 为主约束、条数 12 为安全阀；超限**显式告知**被截条数；全局偏好只写 settings（不双写 memories），项目偏好只写 memories。偏好只是提示词文本，不进 config、不改 dispatch、不碰沙箱。
 
 ## 交互三闸门（T0–T3 / 堵塞项 / 调整评估）
@@ -290,7 +284,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 - **判级（T0–T3）**：T0 不动文件不跑命令 → 直接答；T1 单点、可回退、不动用户数据、不碰远端 → 直接做（回复里先写「我的理解：…」）；T2 给的是现象/方案代价不同/改可见默认行为/目标或验收有歧义 → 只读调研 + `ask_user_question` 问一次；T3 跨仓库或跨工作区、动 5 个以上文件、重构·迁移、不可逆、要推远端或发布、要写仓库外、范围不确定 → `task_create({ planFirst: true })` → `plan_save` → 用户拍板 → 才实现。**判级只做一次**；不可逆永远最低 T2；用户说「你看着办」至多降一档。
 - **堵塞项四类**（措辞真源 `src/copy.js` 的 `BLOCKER_RULE`，brief 的 `BLOCKED_HINT` 共用同一句）：B1 已确认的验收/范围/方案不可达；B2 要新授权（权限/远端写/发布/删数据/不可逆）；B3 子会话报 `blocked` 且选项要用户定；B4 事实在协调者工具面外查不到。其余（进度、能否关闭、可给默认值的细节、自己查得清的事实、能回退的取舍）**不算堵塞项**；一个堵塞项只问一次，多个合成一条清单，用户不答按建议继续——B2 与计划批准除外（必须等明确答复、不代批）。
-- **追加调整（R0–R2）**：先给评估三行（`CHANGE_REVIEW_FIELDS`：影响面 / 风险 / 建议），再分档——R0 只补细节、不动验收与已交付结论 → 直接 `task_message` 转原会话；R1 动验收/范围/方案 → 评估 + 确认；R2 不可逆/权限/推翻已交付结论/换 target 或仓库 → 必须拍板。**顺序闸门**：评估与确认必须早于 `task_message`（计划中的任务收到追加消息即视为批准、沙箱当场切回可写，见「计划阶段（P8）」）。
+- **追加调整（R0–R2）**：先给评估三行（`CHANGE_REVIEW_FIELDS`：影响面 / 风险 / 建议），再分档——R0 只补细节、不动验收与已交付结论 → 直接 `task_message` 转原会话；R1 动验收/范围/方案 → 评估 + 确认；R2 不可逆/权限/推翻已交付结论/换 target 或仓库 → 必须拍板。**顺序闸门**：评估与确认必须早于 `task_message`；计划任务上的普通 message 只记讨论/修订、**不会批准计划**（批准必须显式 `approve`，见「计划阶段（P8）」）。
 - 与既有机制衔接：T3 的唯一闸门就是 `planFirst`（审批四步不变）；T2/R1/R2 的确认只用宿主 `ask_user_question`（由协调者发起，子会话调用会被平台拒）；「少打扰」限定在执行期，与硬规则里「不催关闭」「能直接回答就不派任务」同向，不推翻任何既有口径。
 - **grill-me 技能是 T2/T3 的澄清动作**（0.26.0）：协调者判为 T2/T3 后先 `skill({ name: 'grill-me' })` 加载技能，按它一次只问一个决定性问题（每问带推荐）、事实自己查、决策归用户、最多 2 轮 8 问、给三栏决策记录。它只负责**澄清需求**，不替代 T2 的 `ask_user_question` 确认，也不替代 T3 的计划批准（grill ≠ 批准）。技能只挂在协调者预设作用域，子会话看不到。
 - **回报之后必须推进（推进循环，独立一段）**：`renderCoordinatorPolicy()` 在三闸门之后、worktree/写域之前拼 `src/prompt-layers.js` 的 `renderAdvanceLoopPolicy()`（句子全部来自 `src/copy.js` 的 `ADVANCE_LOOP_LINES`）。三闸门回答「**什么时候可以打断用户**」，这一段回答「**回报之后必须做什么**」——分开成段是因为混在一起时模型容易只记住「少打扰」，把「不推进」当成合规：收到任何回报（progress / done / delivered / blocked / needs_auth）或用户消息后必须落到三类动作之一（推进 = 按已批准计划 `task_message` 续派/追问；提问 = `ask_user_question`；问新任务 = 仅无活跃且无待确认时问「还有新任务吗」），**禁止只输出汇报文字**；已批准计划立即续派实现；卡点必须提问、不自批；全部完成先问新任务、同一事件只问一次、不许宣称「已全部完成」后静默。边界：与「不催关闭」明确区分（问新任务 ≠ 问能否关闭，交付仍默认待确认）、与 T0 直答不冲突（直接回答就是本轮动作）、与「少打扰」同向（不新增打断点）。通知侧用同一份文案（`ADVANCE_NOTICE_HINT`）贴在 done / delivered / blocked / needs_auth 通知末尾；progress 已有追问指令、不重复贴，结算异常（failed/cancelled/orphaned）只报事实。**这是提示词约束（软门禁），没有执行层拦截**。
@@ -301,7 +295,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 | 文案域 | 真源常量 | 复用到 |
 |---|---|---|
-| 计划阶段 | `PLAN_PHASE_LINES` / `PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `PLAN_STATUS_LINES` / `planDocPathText()` / `planCreateReceipt()` / `PLAN_SAVE_TOOL_DESC` / `planSavedNextStep` | `task-detail`（L3）、`plan-mode`、`plan-doc`、`tools`、`dispatch`、`index.js` |
+| 计划阶段 | `PLAN_PHASE_LINES` / `PLAN_FIRST_DETAIL` / `EXIT_PLAN_MODE_DENIAL` / `PLAN_STATUS_LINES` / `PLAN_APPROVE_CALL` / `PLAN_MESSAGE_NOTES` / `planDocPathText()` / `planCreateReceipt()` / `PLAN_SAVE_TOOL_DESC` / `planSavedNextStep` | `task-detail`（L3）、`plan-mode`、`plan-doc`、`tools`、`panel-actions`、`dispatch`、`index.js` |
 | 两段式终态 | `DELIVERY_LINES` / `DELIVERY_NOT_FINAL` / `DELIVERED_HINT` / `finishHint()` / `deliveredReceiptNote` | `task-detail`、`brief`、`notify`、`prompt-layers`、`write-guard`、`tools`、`deps` / `tool-migrations` |
 | 完整访问 | `ACCESS_FULL.label` / `.briefLine` / `.workerHint` / `.createNote` | `brief`、`task-detail`、`tools` |
 | 交互闸门 | `BLOCKER_RULE` / `CHANGE_REVIEW_FIELDS` | `index.js`（L1 交互三闸门）、`brief`（`BLOCKED_HINT`）、`tools`（`task_message` 描述） |
@@ -489,12 +483,19 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 - **进入**：`queue.pump` 从台账透传 `plan_first` 给 `dispatcher.spawn`；派发时复用 `ensureReadOnly`（压首回合窗口），再用**子 agent 作用域**的 `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 缺失只 warn（降级为只有只读沙箱）。批准前**不注册** target 可写根。
 - **计划落盘（`plan_save`）**：计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：`src/plan-doc.js` 只做纯函数——`planFileName()` 由任务名生成安全文件名（NFC/控制符/非法字符/保留名/stem ≤ 60/路径 ≤ 240/同名 `-2`），`planDocPath()` 算出 `<主会话工作区>/reports/plans/<taskId>.md`（没有 `path` 入参；编号白名单 + `relative()` 包含性校验把 `..`/绝对路径/盘符拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头，`writePlanDocument()` 只做一次 mkdir + 覆盖写。写完登记为任务产物。子会话拿到结果后只上报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**。拍板流程（版本 A）**只改提示词/文案**：`plan_save` 仍只有 `task_id` / `content`，正文原样落盘；插件不解析正文、不渲染 `## 待拍板` 段、不做文档 lint、不存待拍板元数据。待拍板问题由模型自己生成并经 `ask_user_question` 逐项提问。
 - **交付顺序（0.25.0）**：先回复计划摘要 + 计划文档**绝对路径**并 `present` 该文档 → 再 `ask_user_question`（四选一 **逐项确认 / 均按推荐 / 先看计划文档 / 放弃**；「均按推荐」必须用户明确点选）→ 用户选「先看计划文档」只展示正文/路径、不推进不催 → 选「逐项确认」按清单一项一问、答完先贴决策汇总（`renderDecisionSummary`）再做总批准核对 → 只有明确「批准」才续派实现。
-- **出口**：`plan_save` 落盘 → `task_report blocked` 上报摘要 + 路径 → 用户决定 → `task_message` 续派，**不用** `exit_plan_mode`（子会话没有直接人类）。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`（插件根的 guard 是全局的，会误伤协调者）。
-- **批准闸门（人工，协调者不得自行批准）**：**计划批准必须由用户拍板**——计划任务 `blocked` 后，协调者必须把摘要 + 计划文档路径转交用户，并用 `ask_user_question` 请用户明确批准（四选一「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」；逐项确认要先逐项问完并给决策汇总，最后才总批准核对）；**协调者不得自行批准**——不得自己判断计划没问题就直接 `task_message` 续派实现，也不得把用户沉默、含糊回应当成批准。只有用户消息里明确批准才可续派（续派成功才走下面的「退出（批准）」）；用户答「调整」则把修改点原样转回同一个子会话，让它先出修订版计划（消息里写明「只修订计划、不要开始实现」）并再 `blocked` 一次，重新请用户拍板；用户没回答就保持「计划中」，协调者不续派、不代批（开工前的判级与追加调整的分档见「交互三闸门」；本段只讲计划这一条硬闸门）。
-- **调整路径的已知口径**：`task_message` 在计划中任务上本身即「批准」（投递成功 → 沙箱 `workspace-write` + `plan_state='approved'`），所以「调整」那一轮已经切回可写；约束只能落在消息措辞上（只修订计划），修订版再次 `blocked` 后仍必须由用户重新拍板——不能拿第一次的批准当实现对修订版的授权。
-- **退出（批准）**：投递成功、任务回到 `running` 后 `sandbox/mode = workspace-write` + `planMode.set(agent,false)` + 台账 `plan_state='approved'`，同时补登记 target 可写根；投递失败不碰 plan 状态。
-- **停止/终态**：释放 guard；还在 `planning` 就结束的收口成 `rejected`，已 `approved` 的保留。
-- **台账视图**：`plan_first` + `plan_state`（`none`/`planning`/`approved`/`rejected`）+ `plan_path`（版本 B：已落盘的计划文档绝对路径，幂等覆写的依据）；面板「计划中」小标与抽屉「计划」行；非计划任务不下发任何计划字样。`planFirst` 与 `readOnly` 互斥。
+- **出口**：`plan_save` 落盘 → `task_report blocked` 上报摘要 + 路径 → 用户决定 → 协调者 `task_message` 续派，**不用** `exit_plan_mode`（子会话没有直接人类）。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`（插件根的 guard 是全局的，会误伤协调者）。
+- **批准闸门（人工 + 显式动作）**：**计划批准必须由用户拍板，协调者不得自行批准**（不得把用户沉默/含糊回应当成批准），且批准动作只能是 `task_message({ action: 'approve' })`——插件校验通过才切可写并落审计。普通 `task_message` 在计划任务上**不会批准**：`planning` 只记讨论、`waiting_user`/`revising` 转「修订中」，沙箱始终只读；用户答「调整」就把修改点原样转回同一个子会话（写明「只修订计划、不要开始实现」）并再 `blocked` 一次重新拍板。
+- **approve 前置与结果**：`plan_state='waiting_user'`（= 已收到 blocked 报告）+ `status='waiting_user'`（子会话空闲）+ `plan_path` 已落盘，三条缺一给可读拒绝（`PLAN_APPROVE_*`，不动沙箱、不写审计）；成功 = `sandbox/mode=workspace-write` + `planMode.set(agent,false)` + 释放 guard + 补 target 可写根 + `plan_state='approved'` + 审计 `accepted_kind='plan'`，**不投递消息、不改 status**（协调者紧接着 `task_message` 续派实现）。
+- **四态迁移**：
+
+| `plan_state` | 进入条件 | 可用动作 |
+|---|---|---|
+| `planning` | 派发后只读探索 | `message`（只记讨论）/ `plan_save` / `task_report blocked` |
+| `waiting_user` | 子会话 `blocked` 交回计划 | **`approve`（唯一批准入口）** / `message`（转修订）/ `stop` |
+| `revising` | 用户在 `waiting_user` 上要求调整（收到 `message`） | `message`（继续修订）/ 再 `blocked` 回 `waiting_user` |
+| `approved` | 显式 `approve` 成功 | `message` 续派实现 / `stop` / `close` |
+
+- **停止/终态与视图**：释放 guard；`planning`/`waiting_user`/`revising` 进 `planSettled` 状态（含 `delivered`）收口成 `rejected`，`approved` 保留；台账 `plan_first` + `plan_state`（六值：`none`/`planning`/`waiting_user`/`revising`/`approved`/`rejected`）+ `plan_path`，审批审计复用 `accepted_by`/`accepted_at` + `accepted_kind`（`plan` vs 交付确认的 `delivery`；历史以 `task.plan.approved` 日志为准）；面板「计划」小标覆盖批准前三态，**面板没有批准入口**（`plan-approve` 仍是反例清单，计划批准只走协调者），非计划任务不下发任何计划字样；`planFirst` 与 `readOnly` 互斥。
 
 ## 任务引用（tk-）：ID 出口网关（版本 B）
 

@@ -132,6 +132,24 @@ export const ACTION_ERRORS = Object.freeze({
     panel: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有「待确认」的任务能确认完成；在跑的先等它交付，卡住的用「追加」续派或「停止」取消。`,
     tool: ({ label, statusLabel }) => `任务「${label}」当前是${statusLabel}，只有「待确认」的任务能确认完成；在跑的先等它交付，卡住的用 task_message 续派或 task_message({ action: 'stop' }) 取消。`,
   }),
+  // P0-4 显式计划批准（task_message action:'approve'）：只有工具通道（面板刻意没有批准入口）。
+  // 拒绝时不动沙箱、不写审计；文案要能直接告诉协调者「下一步等什么 / 该换哪个动作」。
+  PLAN_APPROVE_NOT_PLAN: define({
+    http: 409,
+    tool: ({ label }) => `任务「${label}」不是计划任务（planFirst），没有计划可批准；要推进直接 task_message 续派，要新活请 task_create。`,
+  }),
+  PLAN_APPROVE_NOT_WAITING: define({
+    http: 409,
+    tool: ({ label, detail }) => `任务「${label}」现在不能批准：${detail}。`,
+  }),
+  PLAN_APPROVE_NO_BLOCKED: define({
+    http: 409,
+    tool: ({ label }) => `任务「${label}」还没交回计划（plan_state=planning，子会话仍在只读探索）：等它 task_report blocked 上报摘要 + 计划文档路径后再批准。`,
+  }),
+  PLAN_APPROVE_NO_PLAN_PATH: define({
+    http: 409,
+    tool: ({ label }) => `任务「${label}」还没有落盘的计划文档（plan_path 为空）：让子会话先 plan_save 把计划写进 reports/plans/，再批准。`,
+  }),
   // delete：只允许删终态任务；活跃的还有子会话/队列占位，先停止。
   DELETE_TASK_ACTIVE: define({
     http: 409,

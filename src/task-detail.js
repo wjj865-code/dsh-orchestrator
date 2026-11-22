@@ -4,7 +4,7 @@
 // 不碰任务状态；经验文件只 stat 存在性，不读正文（子会话自己有 read 工具，读全文由它决定）。
 import { statSync } from 'node:fs'
 import { statusLabel } from './state.js'
-import { PLAN_FIRST_DETAIL, isPlanTask, planStateOf, PLAN_STATE_LABEL } from './plan-mode.js'
+import { PLAN_FIRST_DETAIL, UNAPPROVED_PLAN_STATES, isPlanTask, planStateOf, PLAN_STATE_LABEL } from './plan-mode.js'
 import { ACCESS_FULL } from './copy.js'
 import { acceptanceDetailBlock, checksOf } from './acceptance.js'
 import { worktreeDetailLines, worktreeHasCap } from './worktree-request.js'
@@ -87,8 +87,9 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   const readOnly = brief.readOnly === true || task.read_only === true
   const planTask = isPlanTask(task)
   const planState = planStateOf(task)
-  // 计划阶段（还没批准）运行期就是只读：权限文案必须如实，否则子会话会以为自己能写。
-  const planning = planTask && planState === 'planning'
+  // 计划阶段（批准前的三态：planning / waiting_user / revising）运行期都是只读：
+  // 权限文案必须如实，否则子会话会以为自己能写；只有显式 approve 之后才可写。
+  const planning = planTask && UNAPPROVED_PLAN_STATES.includes(planState)
   const effectiveReadOnly = readOnly || planning
   // per-task 完整访问：只读/计划阶段永远压过它（运行期事实优先），台账与 brief 任一处标了 full 都算。
   const fullAccess = !effectiveReadOnly && (brief.access === 'full' || task.access === 'full')

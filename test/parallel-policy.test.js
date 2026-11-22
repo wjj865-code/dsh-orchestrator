@@ -93,8 +93,8 @@ test('代价与例外写清：合并由用户决定 / 检出要先装依赖 / �
   assert.match(text, /pnpm install/)
   assert.match(text, /只装不升/)
   assert.match(text, /并发 `git commit` 会争 `\.git` 锁/)
-  // 例外：只读/计划任务不必隔离；同一检出永远只能一个任务写（不推翻既有硬规则）。
-  assert.match(text, /例外（不必隔离）：\*\*只读任务\*\*（`readOnly: true`）与\*\*计划阶段\*\*（`planFirst: true`）不改文件/)
+  // 例外：只读/计划（批准前）任务不必隔离；同一检出永远只能一个任务写（不推翻既有硬规则）。
+  assert.match(text, /例外（不必隔离）：\*\*只读任务\*\*（`readOnly: true`）与\*\*计划阶段\*\*（`planFirst: true` 批准前）不改文件/)
   assert.match(text, /同目录并行也不冲突，直接派/)
   assert.match(text, /同一 worktree 检出永远只能一个任务在写/)
   assert.match(text, /必须 dependsOn 串行/)

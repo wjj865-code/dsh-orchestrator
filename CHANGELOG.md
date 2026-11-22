@@ -1,5 +1,11 @@
 # Changelog
 
+## 未发布——P0-4：计划批准改为显式动作（`task_message({ action: 'approve' })`）
+
+**一句话**：计划批准不再是「任何 `task_message` 投递成功 = 批准」的软门禁——普通 `message` 在计划任务上只记讨论（`planning`）或把它转「修订中」（`waiting_user`/`revising`），沙箱始终只读；批准只能显式 `task_message({ action: 'approve' })`，前置为「收到过 blocked 报告（`plan_state='waiting_user'`）+ 子会话停在等你确认 + 计划文档已落盘」，成功切回可写并落审批审计（复用 `accepted_by`/`accepted_at`，新增 `accepted_kind='plan'`；交付确认仍记 `delivery`），**不投递消息**——协调者随后 `task_message` 续派实现。`plan_state` 从四值扩成六值（`none`/`planning`/`waiting_user`/`revising`/`approved`/`rejected`），未批准进终态（含 `delivered`）统一收口 `rejected`；升级时旧库把「`planning` + 等确认」的行幂等回填成 `waiting_user`。面板**不加**批准入口（`plan-approve` 仍是 `UNKNOWN_ENDPOINT` 反例清单），面板 `message` 与工具同口径只是不批准、不改 `plan_state`；无新配置开关、工具面仍 11 个、两段式交付语义未动。
+- 验证：`test/plan-mode.test.js`（message 不批准 / approve 前置四种拒绝 / 审批审计 / 幂等 / 四态收口 / 旧库回填）、`test/contract-snapshot.test.js`（enum 加 `approve`、任务行加 `accepted_kind`）、`test/interaction-policy.test.js`（L1「批准是显式动作」）、`test/status-property.test.js`（未批准三态都只读）。
+- 本轮未跑 `pnpm run build` / 未提交：`dist/client.js` 的重建、`check:client-size` 与 commit 留给后续全权限任务。
+
 ## 未发布——三条 P0：交付即释放写根 / 结算验收闸门 / 复用检出占用
 
 **一句话**：修三条「护栏被绕过」的 P0——① `delivered` 交付即释放写根、退出同写域判定，追问回 `running` 前复判写域（被占用返回 `MESSAGE_WRITE_CONFLICT`，面板与工具同口径）；② 配了 `checks` 的任务自然结束（`completed`）不再绕过验收：结算落 `delivered` 前必须有本轮通过证据（`acceptance.ok` 且 `attempts` 匹配），否则落 `failed` 并写明原因；③ `worktreeMode:'continue'` 复用检出前按 `worktree_path` 判活跃占用，冲突拒绝并给「`dependsOn` 串行 / `worktreeMode:'new'` 新建」两条路。

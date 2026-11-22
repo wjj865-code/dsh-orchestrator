@@ -77,9 +77,15 @@ export const GOAL_PHASE_LABEL = {
   active: '进行中', paused: '已暂停', blocked: '受阻', complete: '已完成', cleared: '已清除',
 }
 export const GOAL_ACTIVATION_LABEL = { armed: '自动续轮已启用', disarmed: '不自动续轮' }
-// P8 计划模式：plan_state 由服务端台账下发（none/planning/approved/rejected），面板只读展示。
+// P8 计划模式：plan_state 由服务端台账下发（none/planning/waiting_user/revising/approved/rejected），面板只读展示。
+// 文案必须与 src/plan-mode.js 的 PLAN_STATE_LABEL 同值（test/copy-consistency.test.js 锁）。
 export const PLAN_STATE_LABEL = {
-  none: '无计划状态', planning: '计划中（等批准）', approved: '已批准执行', rejected: '计划未通过',
+  none: '无计划状态',
+  planning: '计划中（子会话只读探索）',
+  waiting_user: '计划待拍板（已提交计划）',
+  revising: '修订中（子会话只读改计划）',
+  approved: '已批准执行',
+  rejected: '计划未通过',
 }
 // P9 worktree 隔离：worktreeState 由服务端台账下发（none/requested/created/reused/degraded/rejected/failed/cleaned）。
 export const WORKTREE_STATE_LABEL = {

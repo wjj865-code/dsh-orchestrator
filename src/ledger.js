@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
   worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT,
   delivered_at INTEGER, close_reason TEXT, acceptance_json TEXT,
-  accepted_by TEXT, accepted_at INTEGER,
+  accepted_by TEXT, accepted_at INTEGER, accepted_kind TEXT,
   resume_count INTEGER NOT NULL DEFAULT 0, last_stop_reason TEXT,
   team_task_id TEXT, team_task_revision INTEGER
 );
@@ -142,6 +142,9 @@ export async function openLedger(stateDir) {
     // 旧库/存量行都是 NULL：读出来是「没确认记录」，面板与 task_status 按「未确认」显示，存量行一律不动。
     if (!taskColumns.includes('accepted_by')) db.exec('ALTER TABLE tasks ADD COLUMN accepted_by TEXT')
     if (!taskColumns.includes('accepted_at')) db.exec('ALTER TABLE tasks ADD COLUMN accepted_at INTEGER')
+    // P0-4：确认的种类 —— 'delivery'（两段式交付确认）或 'plan'（显式计划批准）。
+    // 复用 accepted_by/accepted_at 两列（用户 2026-11-23 拍板：不新增 plan_approved_*）；旧行 NULL。
+    if (!taskColumns.includes('accepted_kind')) db.exec('ALTER TABLE tasks ADD COLUMN accepted_kind TEXT')
     // P2-4（D6）：可选关联官方 Team 板任务 —— id 与「创建时读到的 revision」（确认反写时的 CAS 基线）。
     // 旧库/存量行都是 NULL = 没关联官方任务，确认时不做任何反写。
     if (!taskColumns.includes('team_task_id')) db.exec('ALTER TABLE tasks ADD COLUMN team_task_id TEXT')
@@ -160,6 +163,10 @@ export async function openLedger(stateDir) {
     // 引用回填（版本 B）：存量任务逐条补 tk-（幂等、只补缺的；已删除任务的墓碑行不会被补）。
     // 打开台账就做，保证「面板/回执/详情读到的任务行永远有 ref」，读取方不必各自兜底。
     backfillTaskRefs(db)
+    // P0-4 计划四态：升级前停在「等批准」的旧行 plan_state 还是两态时代的 'planning'，
+    // 而 'waiting_user' 只可能来自子会话的 blocked 报告 —— 它本身就是 blocked 证据，
+    // 这里按状态回填一次（幂等、零新列），否则旧行永远批不了（approve 前置要求 plan_state==='waiting_user'）。
+    db.exec("UPDATE tasks SET plan_state = 'waiting_user' WHERE plan_first = 1 AND plan_state = 'planning' AND status = 'waiting_user'")
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -271,6 +278,8 @@ const taskOf = row => row === undefined ? undefined : ({
   // P2-3 交接契约：确认人（coordinator / panel / timeout）与确认时间；未确认（含存量行）都是 null。
   accepted_by: typeof row.accepted_by === 'string' && row.accepted_by !== '' ? row.accepted_by : null,
   accepted_at: Number.isFinite(row.accepted_at) ? row.accepted_at : null,
+  // P0-4：确认种类 —— 'delivery'（交付确认）或 'plan'（计划批准）；旧行/坏值按 null（没记录）。验证
+  accepted_kind: row.accepted_kind === 'delivery' || row.accepted_kind === 'plan' ? row.accepted_kind : null,
   // P2-4（D6）：官方 Team 板关联（可选）。id 为空/旧库 → null = 没关联，确认时不反写。
   team_task_id: typeof row.team_task_id === 'string' && row.team_task_id !== '' ? row.team_task_id : null,
   team_task_revision: Number.isSafeInteger(row.team_task_revision) && row.team_task_revision >= 0 ? row.team_task_revision : null,
@@ -436,16 +445,21 @@ export function briefText(db, id) {
 // 计划收口口径来自 status-facts 的 `planSettled` 能力（done/failed/cancelled/orphaned/delivered）。
 const TERMINAL_PLAN_STATUSES = new Set(statusesWith('planSettled'))
 
+// 计划四态里「还没批准」的三个值（P0-4：任何未批准态进终态都按 rejected 收口）。
+// 用数组而不是 Set：`plan_state` 的取值与任务状态同名（waiting_user），静态断言不允许 src 里再出现
+// `new Set([... 'waiting_xxx' ...])` 这类本地「状态集合」——口径仍只有 plan-mode.js 一份。
+const UNAPPROVED_PLAN_STATES = Object.freeze(['planning', 'waiting_user', 'revising'])
+
 /**
- * 计划任务进终态时收口 `plan_state`：还在「等批准」（planning）就结束的，按「未批准」记；
- * 已 approved 的不改——历史里要看得出「用户批准过，并且执行到终态」。
+ * 计划任务进终态时收口 `plan_state`：还在「没批准」（planning / waiting_user / revising）就结束的，
+ * 按「未批准」记；已 approved 的不改——历史里要看得出「用户批准过，并且执行到终态」。
  * 非终态迁移（如 waiting_user → running 之外的路径）不动 plan_state。
  * delivered（已交付待确认）也在这里收口：计划阶段已经结束，追问时不该再走一次「批准」。
  */
 const nextPlanStateOnTransition = (task, to) => {
   if (task.plan_first !== true) return undefined
   if (!TERMINAL_PLAN_STATUSES.has(to)) return undefined
-  if (task.plan_state !== 'planning') return undefined
+  if (!UNAPPROVED_PLAN_STATES.includes(task.plan_state)) return undefined
   return 'rejected'
 }
 
@@ -551,10 +565,12 @@ export function setTaskAcceptance(db, id, record) {
  * 只写列 + 时间戳，不改状态机——状态迁移由 `closeDelivered` 调 `transition` 完成。
  * 幂等由调用方保证（`closeDelivered` 的 `already` 分支直接返回，不重复写）。
  */
-export function setTaskAccepted(db, id, { acceptedBy = null, acceptedAt = Date.now() } = {}) {
+export function setTaskAccepted(db, id, { acceptedBy = null, acceptedAt = Date.now(), kind = null } = {}) {
   const at = Number.isFinite(acceptedAt) ? acceptedAt : Date.now()
-  db.prepare('UPDATE tasks SET accepted_by = ?, accepted_at = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
-    .run(typeof acceptedBy === 'string' && acceptedBy !== '' ? acceptedBy : null, at, at, at, id)
+  // P0-4：`accepted_kind` 区分「交付确认（delivery）」与「计划批准（plan）」；其它值一律写 null。
+  const kindValue = kind === 'delivery' || kind === 'plan' ? kind : null
+  db.prepare('UPDATE tasks SET accepted_by = ?, accepted_at = ?, accepted_kind = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
+    .run(typeof acceptedBy === 'string' && acceptedBy !== '' ? acceptedBy : null, at, kindValue, at, at, id)
   return getTask(db, id)
 }
 

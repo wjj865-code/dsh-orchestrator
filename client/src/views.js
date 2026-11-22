@@ -43,6 +43,10 @@ export function createViews({
 }) {
   // 工作台页面组件（只吃 props，自己不发请求；数据与节流在下面的 TasksPanel 里统一管）。
   const Wb = createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banner, SkeletonList, STATUS_LABEL })
+  // P0-4 计划四态：批准前的三态（运行期只读）才占视觉；approved 正常执行、rejected 已结束都不加小标。
+  const PLAN_OPEN_STATES = ['planning', 'waiting_user', 'revising']
+  const PLAN_OPEN_BADGE = { planning: '计划中', waiting_user: '计划待批', revising: '修订中' }
+  const planOpen = task => task?.planFirst === true && PLAN_OPEN_STATES.includes(task.planState)
   // 日历窗口：当前可见的 42 格（周一起始、固定 6 行）→ 服务端 calendar 端点的时间窗。
   const monthGridRange = anchorMs => {
     const grid = monthGrid(anchorMs)
@@ -1161,7 +1165,7 @@ export function createViews({
         : null,
       task.readOnly === true ? <Chip tone="warn" title="只读任务：写文件/写 shell 会被沙箱拒绝">{'只读'}</Chip> : null,
       task.planFirst === true
-        ? <Chip tone={task.planState === 'planning' ? 'info' : 'muted'} title="计划模式：plan_state 由台账下发（只读展示）">{`计划·${labelOf(PLAN_STATE_LABEL, task.planState, '无计划状态')}`}</Chip>
+        ? <Chip tone={planOpen(task) ? 'info' : 'muted'} title="计划模式：plan_state 由台账下发（只读展示）；批准只用协调者 task_message({action:'approve'})">{`计划·${labelOf(PLAN_STATE_LABEL, task.planState, '无计划状态')}`}</Chip>
         : null,
       task.worktreeState && task.worktreeState !== 'none'
         ? (
@@ -1223,11 +1227,11 @@ export function createViews({
             <span className="orch-dot" style={{ background: tone, color: tone }} />
             <span className="orch-card-title" title={displayName}>{displayName}</span>
             {statusBadge(task.status)}
-            {/* P8：计划阶段小标（只在「等批准」时出现；批准后正常执行，不占视觉）。 */}
-            {task.planState === 'planning'
+            {/* P8/P0-4：计划阶段小标（只在批准前的三态出现；批准后正常执行、不占视觉）。 */}
+            {planOpen(task)
               ? (
-                  <Badge tone="info" title="计划模式：子会话只读探索，用 task_report blocked 上报计划，批准后自动切回可写">
-                    {'计划中'}
+                  <Badge tone="info" title="计划模式：子会话只读探索/改计划，用 task_report blocked 上报计划；批准只在协调者侧 task_message({action:'approve'})（面板不代批）">
+                    {PLAN_OPEN_BADGE[task.planState] ?? '计划中'}
                   </Badge>
                 )
               : null}

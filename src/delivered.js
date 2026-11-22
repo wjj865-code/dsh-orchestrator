@@ -81,7 +81,8 @@ export function closeDelivered({
   }
   try {
     // 交接契约 v1：先落「谁确认、何时确认」，再写审计消息——两者失败都不能回滚已落库的 done。
-    next = setTaskAccepted(db, task.id, { acceptedBy })
+    // P0-4：accepted_kind 区分「交付确认」与「计划批准」，这里恒为 delivery。
+    next = setTaskAccepted(db, task.id, { acceptedBy, kind: 'delivery' })
   } catch (error) {
     log('task.handoff.accept-failed', { taskId: task.id, detail: { acceptedBy, error: error?.message ?? String(error) } })
   }

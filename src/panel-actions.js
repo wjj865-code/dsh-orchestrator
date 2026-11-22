@@ -15,7 +15,9 @@ import { panelFailure } from './action-errors.js'
 // P0-3：面板「追加」与 task_message 同口径复判写域（不判就会绕过工具层的并发防护）。
 import { decideFollowupGuard } from './write-guard.js'
 import { objectiveForMessage } from './goal.js'
-import { approvePlan, approvalNote, isPlanTask, planStateOf } from './plan-mode.js'
+// P0-4：面板**没有**批准入口（plan-approve 仍是 UNKNOWN_ENDPOINT 的反例清单），message 只记讨论/修订。
+import { isPlanTask, planStateOf } from './plan-mode.js'
+import { PLAN_MESSAGE_NOTES } from './copy.js'
 import { retryWorktreeOf } from './worktree.js'
 import {
   ACTIVE_STATUSES, RETRYABLE_STATUSES, TERMINAL_STATUSES, canClose, canDelete, canFollowup,
@@ -503,19 +505,24 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     // 下一份 progress 跳过通知水位立刻送达（t-99d4a98c）。
     markReportExpected(db, task.id)
     const latest = getTask(db, task.id)
-    // 「等批准」状态收到追加消息 = 用户批准计划（与 task_message 同口径）；
     // 「待确认」上追问 = 回到 running 复用同一个子会话（可写根没释放）。
-    const wasWaiting = latest !== undefined && WAITING.has(latest.status)
     if (latest !== undefined && RESUMABLE.has(latest.status)) {
       try { transition(db, task.id, 'running', { error: null }) } catch { /* ignore */ }
     }
     clearTaskQuestion(db, task.id)
     incrementAttempts(db, task.id)
-    // P8：投递成功且回到 running 之后才切沙箱、关 plan mode；失败路径不碰 plan 状态。
+    // P0-4：面板「追加」**不再批准计划**（用户 2026-11-23 拍板：面板不加批准入口、message 不改 plan_state）。
+    // 与工具 message 同口径：只记讨论/修订，沙箱与 plan_state 都不动；批准只在协调者侧 task_message({action:'approve'})。
     let plan
-    if (wasWaiting && isPlanTask(task) && planStateOf(task) === 'planning') {
-      const approved = await approvePlan({ db, dispatcher, task, log })
-      plan = { approved: approved?.ok === true, note: approvalNote(approved) }
+    if (isPlanTask(task)) {
+      const planState = planStateOf(task)
+      if (planState === 'planning' || planState === 'waiting_user' || planState === 'revising') {
+        plan = {
+          approved: false,
+          revising: planState === 'waiting_user' || planState === 'revising',
+          note: planState === 'planning' ? PLAN_MESSAGE_NOTES.discussion : PLAN_MESSAGE_NOTES.revising,
+        }
+      }
     }
     log('ui.message', { taskId: task.id })
     return {

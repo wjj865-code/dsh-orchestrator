@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, transition, setPlanState } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, transition, setPlanState, setTaskPlanPath } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import { createSubagentDispatcher } from '../src/dispatch.js'
@@ -14,34 +14,54 @@ import { createHostRoute } from '../src/host-route.js'
 import { createPanelActions } from '../src/panel-actions.js'
 import { renderTaskDetail } from '../src/task-detail.js'
 import {
-  PLAN_STATE_LABEL, PLAN_FIRST_DETAIL, EXIT_PLAN_MODE_DENIAL, planListMarker, planStatusLine,
+  PLAN_STATE_LABEL, PLAN_STATES, PLAN_FIRST_DETAIL, EXIT_PLAN_MODE_DENIAL, UNAPPROVED_PLAN_STATES,
+  planApproveGate, planListMarker, planStatusLine,
 } from '../src/plan-mode.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
-const planTaskRow = (db, { status = 'running' } = {}) => {
+const planTaskRow = (db, { status = 'running', planPath = null } = {}) => {
   const task = createTask(db, { brief: sampleBrief({ title: '计划任务', goal: 'g' }), coordinatorSession: 's-1', planFirst: true })
   if (status !== 'pending') transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
   if (status === 'waiting_user') transition(db, task.id, 'waiting_user')
   if (status === 'cancelled') transition(db, task.id, 'cancelled')
+  if (planPath !== null) setTaskPlanPath(db, task.id, planPath)
   return getTask(db, task.id)
 }
 
 // —— 一、纯映射：文案/标记只从这里来，避免工具与面板各写一套 ——
 
-test('P8 计划状态映射：列表只标 planning，status 行区分 planning/approved/rejected', () => {
-  assert.deepEqual(Object.keys(PLAN_STATE_LABEL), ['none', 'planning', 'approved', 'rejected'])
+test('P8 计划状态映射：六值 = 四态 + none/rejected；列表只标未批准三态', () => {
+  assert.deepEqual(Object.keys(PLAN_STATE_LABEL), ['none', 'planning', 'waiting_user', 'revising', 'approved', 'rejected'])
+  assert.deepEqual(PLAN_STATES, ['none', 'planning', 'waiting_user', 'revising', 'approved', 'rejected'])
+  assert.deepEqual(UNAPPROVED_PLAN_STATES, ['planning', 'waiting_user', 'revising'])
   const task = { id: 't-1', plan_first: true, plan_state: 'planning' }
   assert.equal(planListMarker(task), '·计划中')
   assert.match(planStatusLine(task), /计划中/)
-  assert.match(planStatusLine(task), /task_message/)
+  assert.match(planStatusLine(task), /action: "approve"/)
+  // 未批准三态各自有小标与状态行；approved 不占视觉。
+  assert.equal(planListMarker({ id: 't-1', plan_first: true, plan_state: 'waiting_user' }), '·计划待批')
+  assert.equal(planListMarker({ id: 't-1', plan_first: true, plan_state: 'revising' }), '·计划修订')
+  assert.match(planStatusLine({ id: 't-1', plan_first: true, plan_state: 'waiting_user' }), /待拍板/)
+  assert.match(planStatusLine({ id: 't-1', plan_first: true, plan_state: 'revising' }), /修订中/)
   assert.equal(planListMarker({ id: 't-1', plan_first: true, plan_state: 'approved' }), '')
   assert.match(planStatusLine({ id: 't-1', plan_first: true, plan_state: 'approved' }), /已批准/)
   assert.match(planStatusLine({ id: 't-1', plan_first: true, plan_state: 'rejected' }), /未批准/)
   // 非计划任务不加任何字样。
   assert.equal(planListMarker({ id: 't-1', plan_first: false, plan_state: 'none' }), '')
   assert.equal(planStatusLine({ id: 't-1', plan_first: false, plan_state: 'none' }), undefined)
+})
+
+test('P0-4 planApproveGate：四条前置（计划任务 / 已交回 blocked / 停在等你确认 / 计划已落盘）', () => {
+  const base = { id: 't-1', plan_first: true, status: 'waiting_user', plan_state: 'waiting_user', plan_path: 'C:/ws/reports/plans/x.md' }
+  assert.deepEqual(planApproveGate({ ...base, plan_first: false, plan_state: 'none' }), { ok: false, code: 'PLAN_APPROVE_NOT_PLAN' })
+  assert.equal(planApproveGate({ ...base, plan_state: 'planning' }).code, 'PLAN_APPROVE_NO_BLOCKED')
+  assert.equal(planApproveGate({ ...base, plan_state: 'revising' }).code, 'PLAN_APPROVE_NOT_WAITING')
+  assert.equal(planApproveGate({ ...base, status: 'running' }).code, 'PLAN_APPROVE_NOT_WAITING')
+  assert.equal(planApproveGate({ ...base, plan_path: null }).code, 'PLAN_APPROVE_NO_PLAN_PATH')
+  assert.deepEqual(planApproveGate(base), { ok: true, planState: 'waiting_user' })
+  assert.deepEqual(planApproveGate({ ...base, plan_state: 'approved' }), { ok: true, already: true, planState: 'approved' })
 })
 
 test('P8 exit_plan_mode 拒绝文案指向 task_report blocked（不是 exit_plan_mode）', () => {
@@ -102,11 +122,48 @@ test('P8 台账：旧库自动补 plan_first/plan_state，旧行读成 false/non
   db.close()
 })
 
+test('P0-4 台账：旧库补 accepted_kind，旧行读成 null；planning+waiting_user 的旧行回填 planning→waiting_user', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orch-plan-backfill-'))
+  const { DatabaseSync } = await import('node:sqlite')
+  const legacy = new DatabaseSync(join(dir, 'tasks.sqlite'))
+  legacy.exec(`CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
+    status TEXT NOT NULL, session_id TEXT, target TEXT, coordinator_session TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER,
+    plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT, plan_path TEXT)`)
+  legacy.prepare(`INSERT INTO tasks (id, title, goal, brief_json, status, coordinator_session, created_at, updated_at, last_event_at, plan_first, plan_state, plan_path)
+    VALUES ('t-old-plan', '旧计划', 'g', '{}', 'waiting_user', 's-1', 1, 1, 1, 1, 'planning', 'C:/ws/reports/plans/old.md')`).run()
+  legacy.close()
+  const db = await openLedger(dir)
+  const cols = db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name)
+  assert.ok(cols.includes('accepted_kind'))
+  const row = getTask(db, 't-old-plan')
+  assert.equal(row.plan_state, 'waiting_user')
+  assert.equal(row.accepted_kind, null)
+  db.close()
+  // 幂等：再开一次还是 waiting_user（回填条件不再命中），旧行可批准。
+  const again = await openLedger(dir)
+  assert.equal(getTask(again, 't-old-plan').plan_state, 'waiting_user')
+  again.close()
+})
+
 test('P8 台账：计划任务在「等批准」时进终态按 rejected 收口；已批准保持 approved', async () => {
   const db = await openLedger(tempDir())
   const stopped = planTaskRow(db, { status: 'waiting_user' })
   transition(db, stopped.id, 'cancelled')
   assert.equal(getTask(db, stopped.id).plan_state, 'rejected')
+
+  // P0-4：四态里没批准的两个新态同样收口成 rejected。
+  const waiting = planTaskRow(db)
+  setPlanState(db, waiting.id, 'waiting_user')
+  transition(db, waiting.id, 'delivered')
+  assert.equal(getTask(db, waiting.id).plan_state, 'rejected')
+
+  const revising = planTaskRow(db)
+  setPlanState(db, revising.id, 'revising')
+  transition(db, revising.id, 'cancelled')
+  assert.equal(getTask(db, revising.id).plan_state, 'rejected')
 
   const approved = planTaskRow(db)
   setPlanState(db, approved.id, 'approved')
@@ -178,7 +235,7 @@ test('P8 task_create：planFirst 落库 + 派发透传 + 工具结果带批准�
   assert.equal(spawn[1].prompt.includes('计划阶段'), false)
 
   const detail = await tools.task_detail.execute({ task_id: task.id }, { agent: { id: task.session_id } })
-  assert.match(detail, /计划状态：计划中（等批准）/)
+  assert.match(detail, /计划状态：计划中（子会话只读探索）/)
   assert.match(detail, /【计划阶段】/)
   assert.match(detail, /权限：只读/)
   assert.match(detail, /task_report 报 blocked/)
@@ -225,36 +282,139 @@ test('P8 task_list/task_status：计划中标记只给等待批准的任务', as
   db.close()
 })
 
-test('P8 task_message：等批准的任务续派成功 = 批准（切沙箱 + plan_state=approved）', async () => {
+// —— P0-4：普通 message 只记讨论/修订，批准只走显式 action:'approve' ——
+
+test('P0-4 task_message：planning 上的普通 message 只记讨论（不改 plan_state、不切沙箱）', async () => {
   const { db, dispatcher, tools } = await setupTools()
-  const task = planTaskRow(db, { status: 'waiting_user' })
-  const text = await mainCall(tools, 'task_message', { task_id: task.id, message: '批准执行' })
-  assert.match(text, /计划已批准/)
-  assert.equal(getTask(db, task.id).plan_state, 'approved')
-  assert.equal(getTask(db, task.id).status, 'running')
-  assert.ok(dispatcher.calls.some(item => item[0] === 'approvePlan'))
+  const task = planTaskRow(db, { status: 'running' })
+  const text = await mainCall(tools, 'task_message', { task_id: task.id, message: '补充一点方向' })
+  assert.match(text, /只记讨论、不会批准计划/)
+  assert.match(text, /action: "approve"/)
+  const after = getTask(db, task.id)
+  assert.equal(after.plan_state, 'planning')
+  assert.equal(after.status, 'running')
+  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
   db.close()
 })
 
-// 用户现场（t-2aa984e5）：计划子会话 task_report blocked 后，批准要回到 running 并在**原子会话**里继续，
-// 不能新建 activation/新会话。这条同时锁住「谁负责状态迁移」（task_message 投递成功 → transition）与
-// 「续派复用 sessionId」（dispatcher.sendReliable(target=task.target)，不是 spawn）。
-test('P8 生命周期：blocked → 批准续派 → 回 running 且复用原会话（不新建）', async () => {
+test('P0-4 task_message：waiting_user 上的普通 message 转 revising（仍只读、不批准）', async () => {
   const { db, dispatcher, tools } = await setupTools()
-  const task = planTaskRow(db)
+  const task = planTaskRow(db, { status: 'waiting_user', planPath: 'C:/ws/reports/plans/x.md' })
+  setPlanState(db, task.id, 'waiting_user')
+  const text = await mainCall(tools, 'task_message', { task_id: task.id, message: '把测试再细化一点' })
+  assert.match(text, /按「修订」转回子会话/)
+  assert.match(text, /action: "approve"/)
+  const after = getTask(db, task.id)
+  assert.equal(after.plan_state, 'revising')
+  assert.equal(after.status, 'running')
+  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  db.close()
+})
+
+test('P0-4 task_report blocked：计划任务交回计划 → plan_state=waiting_user（blocked 证据）', async () => {
+  const { db, tools } = await setupTools()
+  const task = planTaskRow(db, { planPath: 'C:/ws/reports/plans/x.md' })
   await tools.task_report.execute(
-    { task_id: task.id, status: 'blocked', summary: '计划已就绪', question: '批准执行？', options: ['批准执行', '调整计划'] },
+    { task_id: task.id, status: 'blocked', summary: '计划已就绪', question: '批准执行？' },
     { agent: { id: task.session_id } },
   )
   const blocked = getTask(db, task.id)
   assert.equal(blocked.status, 'waiting_user')
-  assert.equal(blocked.question, '批准执行？')
-  const text = await mainCall(tools, 'task_message', { task_id: task.id, message: '批准执行' })
+  assert.equal(blocked.plan_state, 'waiting_user')
+  // 修订版再交回：revising → waiting_user（证据刷新，仍无新列）。
+  setPlanState(db, task.id, 'revising')
+  transition(db, task.id, 'running', { error: null })
+  await tools.task_report.execute(
+    { task_id: task.id, status: 'blocked', summary: '修订版已就绪', question: '批准？' },
+    { agent: { id: task.session_id } },
+  )
+  assert.equal(getTask(db, task.id).plan_state, 'waiting_user')
+  db.close()
+})
+
+test('P0-4 approve：前置满足 → 切沙箱 + plan_state=approved + accepted_kind=plan（不投递）', async () => {
+  const { db, dispatcher, tools } = await setupTools()
+  const task = planTaskRow(db, { planPath: 'C:/ws/reports/plans/x.md' })
+  await tools.task_report.execute(
+    { task_id: task.id, status: 'blocked', summary: '计划已就绪', question: '批准执行？' },
+    { agent: { id: task.session_id } },
+  )
+  const text = await mainCall(tools, 'task_message', { action: 'approve', task_id: task.id })
   assert.match(text, /计划已批准/)
+  assert.match(text, /续派实现/)
+  const approved = getTask(db, task.id)
+  assert.equal(approved.plan_state, 'approved')
+  // 批准 ≠ 投递：状态仍停在等你确认，等协调者下一步 task_message。
+  assert.equal(approved.status, 'waiting_user')
+  assert.equal(approved.accepted_kind, 'plan')
+  assert.equal(approved.accepted_by, 'coordinator')
+  assert.ok(Number.isFinite(approved.accepted_at))
+  assert.ok(dispatcher.calls.some(item => item[0] === 'approvePlan'))
+  assert.equal(dispatcher.calls.some(item => item[0] === 'sendReliable'), false)
+  db.close()
+})
+
+test('P0-4 approve：前置不满足给可读拒绝（不切沙箱、不写审计）', async () => {
+  const { db, dispatcher, tools } = await setupTools()
+  const plain = createTask(db, { brief: sampleBrief({ title: '普通' }), coordinatorSession: 's-1' })
+  transition(db, plain.id, 'running', { sessionId: 'c-9', target: 'c-9' })
+  const notPlan = await mainCall(tools, 'task_message', { action: 'approve', task_id: plain.id })
+  assert.match(notPlan, /不是计划任务/)
+
+  const noBlocked = planTaskRow(db, { status: 'running' })
+  const planning = await mainCall(tools, 'task_message', { action: 'approve', task_id: noBlocked.id })
+  assert.match(planning, /还没交回计划/)
+
+  const noPlanPath = planTaskRow(db, { status: 'waiting_user' })
+  setPlanState(db, noPlanPath.id, 'waiting_user')
+  const noPath = await mainCall(tools, 'task_message', { action: 'approve', task_id: noPlanPath.id })
+  assert.match(noPath, /还没有落盘的计划文档/)
+
+  // plan_state=waiting_user 但子会话还在跑：不能批（避开跑着的时候被批）。
+  const running = planTaskRow(db, { status: 'running', planPath: 'C:/ws/reports/plans/x.md' })
+  setPlanState(db, running.id, 'waiting_user')
+  const busy = await mainCall(tools, 'task_message', { action: 'approve', task_id: running.id })
+  assert.match(busy, /子会话还在跑/)
+
+  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  for (const id of [noBlocked.id, noPlanPath.id, running.id]) {
+    assert.equal(getTask(db, id).plan_state === 'approved', false)
+    assert.equal(getTask(db, id).accepted_kind, null)
+  }
+  db.close()
+})
+
+test('P0-4 approve：已批准走幂等（already，不重复写审计）', async () => {
+  const { db, dispatcher, tools } = await setupTools()
+  const task = planTaskRow(db, { planPath: 'C:/ws/reports/plans/x.md' })
+  await tools.task_report.execute(
+    { task_id: task.id, status: 'blocked', summary: '计划已就绪', question: '批准？' },
+    { agent: { id: task.session_id } },
+  )
+  await mainCall(tools, 'task_message', { action: 'approve', task_id: task.id })
+  const first = getTask(db, task.id)
+  const again = await mainCall(tools, 'task_message', { action: 'approve', task_id: task.id })
+  assert.match(again, /无需重复批准/)
+  const second = getTask(db, task.id)
+  assert.equal(second.accepted_at, first.accepted_at)
+  assert.equal(dispatcher.calls.filter(item => item[0] === 'approvePlan').length, 1)
+  db.close()
+})
+
+test('P0-4 生命周期：blocked → approve → 续派仍复用原会话（不新建）', async () => {
+  const { db, dispatcher, tools } = await setupTools()
+  const task = planTaskRow(db, { planPath: 'C:/ws/reports/plans/x.md' })
+  await tools.task_report.execute(
+    { task_id: task.id, status: 'blocked', summary: '计划已就绪', question: '批准执行？' },
+    { agent: { id: task.session_id } },
+  )
+  await mainCall(tools, 'task_message', { action: 'approve', task_id: task.id })
+  const text = await mainCall(tools, 'task_message', { task_id: task.id, message: '就按这个计划执行' })
+  assert.equal(text.includes('计划已批准'), false)
   const resumed = getTask(db, task.id)
   assert.equal(resumed.status, 'running')
+  assert.equal(resumed.plan_state, 'approved')
   assert.equal(resumed.question, null)
-  assert.equal(resumed.target, task.target)
   const send = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
   assert.equal(send[1], task.target)
   assert.equal(dispatcher.calls.some(item => item[0] === 'spawn'), false)
@@ -307,15 +467,21 @@ test('P8 task_retry：计划任务重派后重新进入计划阶段', async () =
   db.close()
 })
 
-test('P8 task_detail 纯渲染：计划任务权限显示只读、批准后显示可写', () => {
+test('P8 task_detail 纯渲染：批准前三态只读、批准后可写', () => {
   const base = {
     id: 't-1', title: '计划', goal: 'g', status: 'running', plan_first: true, plan_state: 'planning',
     brief: { title: '计划', goal: 'g', acceptance: ['a'], target: 'C:/work' },
   }
   const planning = renderTaskDetail(base)
   assert.match(planning, /权限：只读/)
-  assert.match(planning, /计划状态：计划中（等批准）/)
+  assert.match(planning, /计划状态：计划中（子会话只读探索）/)
   assert.match(planning, /【计划阶段】/)
+  // 等拍板 / 修订中同样是只读（运行期事实优先于 access:'full'）。
+  for (const [state, label] of [['waiting_user', '计划待拍板（已提交计划）'], ['revising', '修订中（子会话只读改计划）']]) {
+    const detail = renderTaskDetail({ ...base, plan_state: state, access: 'full', brief: { ...base.brief, access: 'full' } })
+    assert.match(detail, /权限：只读/, `${state} 应只读`)
+    assert.match(detail, new RegExp(`计划状态：${label}`), `${state} 状态行`)
+  }
   const approved = renderTaskDetail({ ...base, plan_state: 'approved' })
   assert.match(approved, /权限：可写/)
   assert.match(approved, /计划状态：已批准执行/)
@@ -576,33 +742,41 @@ test('P8 snapshot/detail：下发 planFirst/planState，非计划任务固定 fa
   db.close()
 })
 
-test('P8 面板「追加」：等批准的计划任务同样走批准链路', async () => {
+test('P0-4 面板「追加」：不批准计划、不改 plan_state（面板无批准入口）', async () => {
   const db = await openLedger(tempDir())
   const dispatcher = fakeDispatcher()
   const queue = createQueue({ db, dispatcher, config: {} })
   const panel = createPanelActions({ db, dispatcher, queue, config: {}, coordinatorStatus: () => ({ id: 's-1', live: true }) })
-  const task = planTaskRow(db, { status: 'waiting_user' })
-  const result = await panel.message(task.id, '批准，按计划执行')
+  const task = planTaskRow(db, { status: 'waiting_user', planPath: 'C:/ws/reports/plans/x.md' })
+  setPlanState(db, task.id, 'waiting_user')
+  const result = await panel.message(task.id, '把验收再细化一点')
   assert.equal(result.ok, true)
-  assert.equal(result.plan.approved, true)
-  assert.match(result.plan.note, /计划已批准/)
-  assert.equal(getTask(db, task.id).plan_state, 'approved')
-  assert.ok(dispatcher.calls.some(item => item[0] === 'approvePlan'))
+  assert.equal(result.plan.approved, false)
+  assert.equal(result.plan.revising, true)
+  assert.match(result.plan.note, /action: "approve"/)
+  // 用户决策 1：面板 message 不改 plan_state、不切沙箱。
+  assert.equal(getTask(db, task.id).plan_state, 'waiting_user')
+  assert.equal(getTask(db, task.id).accepted_kind, null)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
   db.close()
 })
 
-// —— 六、客户端：计划小标/计划状态确实进了源码与产物 ——
+// —— 六、客户端：计划小标/计划状态确实进了源码（dist 由后续 build 任务重建） ——
 
-test('P8 客户端：源码与 dist 产物都带计划状态文案与小标', async () => {
+test('P0-4 客户端源码：六值文案与未批准三态小标（dist 待 build 任务复核）', async () => {
   const { readFileSync } = await import('node:fs')
   const source = readFileSync(new URL('../client/src/views.js', import.meta.url), 'utf8')
   const constants = readFileSync(new URL('../client/src/constants.js', import.meta.url), 'utf8')
-  const dist = readFileSync(new URL('../dist/client.js', import.meta.url), 'utf8')
-  assert.match(source, /计划中/)
-  for (const text of [constants, dist]) {
-    assert.match(text, /计划中/)
-    assert.match(text, /已批准执行/)
+  const workbench = readFileSync(new URL('../client/src/workbench.js', import.meta.url), 'utf8')
+  // 六值文案在 constants.js（与服务端同值）；面板小标覆盖未批准三态。
+  for (const label of ['计划中', '计划待拍板（已提交计划）', '修订中（子会话只读改计划）', '已批准执行']) {
+    assert.equal(constants.includes(label), true, `constants 缺文案：${label}`)
   }
-  assert.match(source, /planState === 'planning'/)
-  assert.match(source, /planFirst === true/)
+  for (const label of ['计划中', '计划待批', '修订中']) {
+    assert.equal(source.includes(label), true, `views 缺小标：${label}`)
+  }
+  // 未批准三态都占视觉（不再只认 planning）；面板没有任何批准入口。
+  assert.match(source, /PLAN_OPEN_STATES = \['planning', 'waiting_user', 'revising'\]/)
+  assert.match(workbench, /\['planning', 'waiting_user', 'revising'\]\.includes\(task\.planState\)/)
+  assert.equal(source.includes("endpoint === 'plan-approve'"), false)
 })

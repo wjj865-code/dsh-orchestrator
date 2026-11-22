@@ -301,7 +301,7 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
         {task.dependencies > 0 ? <Chip title="依赖数">{`依赖 ${task.dependencies}`}</Chip> : null}
         {task.artifactCount > 0 ? <Chip title="产物数">{`产物 ${task.artifactCount}`}</Chip> : null}
         {task.question ? <Chip tone="warn" title={task.question}>{'等你回答'}</Chip> : null}
-        {task.planFirst === true && task.planState === 'planning' ? <Chip tone="warn">{'计划待批'}</Chip> : null}
+        {task.planFirst === true && ['planning', 'waiting_user', 'revising'].includes(task.planState) ? <Chip tone="warn">{'计划待批'}</Chip> : null}
         {task.worktreeState && task.worktreeState !== 'none' ? <Chip title={task.worktreeBranch || ''}>{'隔离'}</Chip> : null}
       </div>
       <div className="orch-wb-tfoot">

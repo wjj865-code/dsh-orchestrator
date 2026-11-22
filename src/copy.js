@@ -27,6 +27,12 @@ export const PLAN_SAVE_DIR = '主会话工作区的 reports/plans/'
 /** 计划批准的四选一（顺序固定；「均按推荐」必须用户明确点选，协调者不得默认）。 */
 export const PLAN_APPROVAL_OPTIONS = Object.freeze(['逐项确认', '均按推荐', '先看计划文档', '放弃'])
 
+/**
+ * 显式批准的唯一调用写法（P0-4）：L1 决策段、计划状态行、创建回执、`task_message` 回执都引用它，
+ * 避免「续派即批准」的旧口径再长回来。
+ */
+export const PLAN_APPROVE_CALL = 'task_message({ action: "approve" })'
+
 /** 四选一的展示串（L1 / 文档 / 测试共用，避免各写一遍把顺序改掉）。 */
 export const PLAN_APPROVAL_OPTIONS_TEXT = PLAN_APPROVAL_OPTIONS.join(' / ')
 
@@ -47,11 +53,13 @@ export const DECISION_FLOW_LINES = Object.freeze({
     + '仍是每项一问，不是合成一个总体确认',
   planApproval: `**计划审批先逐项**：计划 blocked 后先把摘要 + 计划文档绝对路径交给用户并 present，再用 ask_user_question 问「${PLAN_APPROVAL_OPTIONS_TEXT}」；`
     + '选「逐项确认」就按 blocked 的 question 里列出的待拍板项顺序逐项问完、先给决策汇总，**最后**才做一次总批准核对（只问「就按这些执行？」，不混入新问题）；'
-    + '「均按推荐」必须用户明确点选——协调者不得默认、不得替用户选',
+    + '「均按推荐」必须用户明确点选——协调者不得默认、不得替用户选；'
+    + `用户明确批准后走两步：先 \`${PLAN_APPROVE_CALL}\`（插件切可写 + 落审批审计），再 task_message 续派实现`,
   summary: '**决策汇总**：每项按提问顺序写「问句原文 → 选择」贴给用户（`renderDecisionSummary`），总批准只核对这份汇总',
   document: '**文档只由模型写**：`plan_save` 的 `content` 原样落盘（工具不加参数、不注入/不改写任何段、不解析正文）；'
     + '用户确认后由模型自己把决策写进新正文，再调一次 `plan_save` 覆盖即可',
-  soft: '**软门禁**：逐项提问是提示词约束，不是执行层拦截；工具层不做格式校验，也不存待拍板元数据',
+  soft: `**软门禁**：逐项提问是提示词约束，不是执行层拦截；工具层不做格式校验，也不存待拍板元数据；`
+    + `批准是**显式动作**——普通 task_message 只记讨论/修订、不会批准计划（见 \`${PLAN_APPROVE_CALL}\`）`,
 })
 
 /**
@@ -133,7 +141,7 @@ export const PLAN_PHASE_LINES = Object.freeze({
     + '不要把计划正文贴进 question（上限 500 字，会截断）。',
   reportCallFull: `task_report({ status: "blocked", summary: "<${REPORT_SUMMARY_SHORT}>", question: "<${REPORT_QUESTION}>" })`,
   noExitPlanMode: `不要调用 exit_plan_mode：${NO_DIRECT_HUMAN}（调用会被插件拒绝）。`,
-  resume: '用户批准后协调者会 task_message 续派，插件把沙箱切回可写，再按计划执行。',
+  resume: `用户明确批准后协调者先 ${PLAN_APPROVE_CALL}（切可写 + 落审计）再 task_message 续派，插件不会因为普通 message 自动批准。`,
   options: `- options 可给「${PLAN_APPROVAL_OPTIONS_TEXT}」（批准要逐项确认或均按推荐，再总批准核对）。`,
 })
 
@@ -152,13 +160,16 @@ export const PLAN_FIRST_DETAIL = [
 /** 子会话被拒 `exit_plan_mode` 时的出口文案（dispatch 层直接返回，不改任何状态）。 */
 export const EXIT_PLAN_MODE_DENIAL = `exit_plan_mode 在编排子任务里不可用：${NO_DIRECT_HUMAN}。`
   + `计划阶段的出口是先在 plan_save 里把计划写进${planDocPathText()}，再用 ${PLAN_PHASE_LINES.reportCallFull} 上报，`
-  + '由协调者转交用户批准；批准后协调者用 task_message 续派，插件会把沙箱切回可写再执行。'
+  + `由协调者转交用户批准；用户明确批准后协调者先 ${PLAN_APPROVE_CALL} 切回可写，再 task_message 续派执行。`
 
-/** 计划状态行（`task_status` 与面板同口径）。 */
+/** 计划状态行（`task_status` 与面板同口径；六值 = 四态 + none/rejected）。 */
 export const PLAN_STATUS_LINES = Object.freeze({
   planning: `计划：计划中｜子会话只读探索，计划用 plan_save 落盘到${PLAN_SAVE_DIR}；`
-    + '用 task_message（或面板「追加」）批准后自动切回可写执行',
-  approved: '计划：已批准｜沙箱已切回可写，子会话按计划执行',
+    + `交回后等用户拍板，批准只能由协调者 ${PLAN_APPROVE_CALL}`,
+  waiting_user: '计划：待拍板｜已收到 blocked 报告与计划文档，等用户拍板；'
+    + `批准只走 ${PLAN_APPROVE_CALL}（普通 message 只记修订）`,
+  revising: '计划：修订中｜子会话仍在只读改计划；修订版 blocked 后再由用户拍板批准',
+  approved: '计划：已批准｜沙箱已切回可写；下一步 task_message 续派实现',
   rejected: '计划：未批准｜计划阶段已结束（停止或结算时未获批准）',
   none: '计划：无进行中的计划',
 })
@@ -166,7 +177,18 @@ export const PLAN_STATUS_LINES = Object.freeze({
 /** `task_create` 回执里的计划模式提示（给协调者看的动作指令；路径按**任务名**说）。 */
 export const planCreateReceipt = title => `计划模式：子会话只读探索，探索完先 plan_save 把计划写入${planDocPathText(title)}（文件名=任务名，自动登记为产物），`
   + `再用 ${PLAN_PHASE_LINES.reportCall} 只上报 ${PLAN_PHASE_LINES.reportSummaryShort} + ${PLAN_PHASE_LINES.reportQuestion}；`
-  + '你转交用户，批准后用 task_message 续派（插件自动切回可写）。'
+  + `你转交用户，用户明确批准后先 ${PLAN_APPROVE_CALL} 再 task_message 续派（插件不会因为普通 message 自动批准）。`
+
+/**
+ * 普通 `message` 在计划任务上的回执（P0-4）：只记讨论/修订，绝不批准。
+ *
+ * `discussion` = `planning`（子会话还在探索，没有计划可批准）；`revising` = `waiting_user`/`revising`
+ * （把消息当「修订方向」转回同一个子会话，沙箱仍是只读）。两者都由 `task_message` 与面板共用。
+ */
+export const PLAN_MESSAGE_NOTES = Object.freeze({
+  discussion: `普通 message 只记讨论、不会批准计划（子会话仍在只读探索）；要批准请用 ${PLAN_APPROVE_CALL}。`,
+  revising: `已按「修订」转回子会话（沙箱仍是只读）；修订版 blocked 后再由用户拍板，批准用 ${PLAN_APPROVE_CALL}。`,
+})
 
 /** `plan_save` 工具描述（模型侧唯一的入口说明；只有 content，不加参数、不做格式校验）。 */
 export const PLAN_SAVE_TOOL_DESC = `计划模式专用：把计划正文写入${planDocPathText()}并登记为任务产物。${PLAN_PHASE_LINES.saveEntry}`
@@ -196,7 +218,7 @@ export const ADVANCE_LOOP_LINES = Object.freeze({
     + '（每问独立 options、不合成一个总体确认，见下「拍板流程」段），其余待决可合成一条清单一次问完',
   askNewTask: '问新任务：仅当「没有活跃任务、也没有待确认任务」时，用 ask_user_question 问「还有新任务吗」；用户明确说没有之后才可以静默',
   approvedPlan: '已批准的计划任务（plan_state=approved）：用户批准后立即 task_message 续派实现，不要只回一句确认；'
-    + '计划需要调整或遇到卡点就 ask_user_question 请用户拍板，不自己改范围',
+    + `批准本身是显式动作（${PLAN_APPROVE_CALL}），计划需要调整或遇到卡点就 ask_user_question 请用户拍板，不自己改范围`,
   blockers: '卡点（B1–B4）与需要用户拍板的事：必须用 ask_user_question 推进，不能拖着不问，也不能自己代批',
   allDone: '全部任务完成（无活跃、无待确认）：先问「还有新任务吗」；用户明确说没有才静默；'
     + '同一事件只问一次，用户不答不重复轰炸，但也不许宣称「已全部完成」然后静默',
@@ -286,7 +308,7 @@ export const PARALLEL_LINES = Object.freeze({
   cost: '代价（并行前跟用户说清楚）：① 产物在各自分支的检出里，**合并由用户决定**——并行越多合并面越大，'
     + '别把同一批文件拆成两条并行；② 每个检出都是空目录，子会话要先装依赖'
     + '（`pnpm install` / `npm install` / `uv sync`，只装不升），第一个任务会慢一点；③ 并发 `git commit` 会争 `.git` 锁',
-  exceptions: '例外（不必隔离）：**只读任务**（`readOnly: true`）与**计划阶段**（`planFirst: true`）不改文件，'
+  exceptions: '例外（不必隔离）：**只读任务**（`readOnly: true`）与**计划阶段**（`planFirst: true` 批准前）不改文件，'
     + '同目录并行也不冲突，直接派；**同一 worktree 检出永远只能一个任务在写**——'
     + '`worktreeMode:"continue"` 复用或同一条链上的任务必须 dependsOn 串行',
   align: '与三段口径的关系（一致，不互相推翻）：① 「同写域并发防护」默认**拒绝**同目录并行，'

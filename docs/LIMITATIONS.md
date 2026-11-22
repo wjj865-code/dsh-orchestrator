@@ -19,7 +19,7 @@
 - **默认不续跑**：`goalRounds` 默认 0 —— 派发后 `create` 立刻 `disarm`，与旧行为完全一致。要续跑必须按任务显式传 `task_create({ goalRounds: N })`（1–50）；配置面上的 `keepAlive*` 四键已删除（弃用警告 + 按默认运行）。
 - **续跑能力属于宿主，不属于插件**：插件只把平台 goal 建成 armed 并给 `maxGoalRounds`，之后由 `dsh-goal-round-driver` 在回合结束后续轮。旧宿主没有这个 driver（或裁剪 profile 没挂）时**不会续跑**，插件只记一条 `goal.degraded`，不注入消息、不模拟续跑。插件不再订阅 `agent/turn-stopping`，也就不会和别的插件抢 inbox。
 - **轮次预算不归插件管**：`tasks.keep_alive_rounds` 停写（列保留兼容旧库），进度看平台 goal 的 `roundsStarted` / `maxGoalRounds`。`maxGoalRounds` 是「最多续几轮」，**不是成本上限**：单轮工作量、工具调用次数都不受它约束，子会话仍可能继续花钱。
-- **计划模式不接受 `goalRounds`**：计划任务每轮结束都要停下来等人批准，自动续轮会绕过批准闸门；批准后用 `task_message` 续派。
+- **计划模式不接受 `goalRounds`**：计划任务每轮结束都要停下来等人批准，自动续轮会绕过批准闸门；显式 `task_message({action:'approve'})` 批准后再用 `task_message` 续派实现。
 - **外部 re-arm 不实时压回**：`goalRounds=0` 的任务只在 spawn/续派/终态钩子上压 `disarmed`；别的组件（宿主 `/goal resume`）把同一子会话重新 arm 时，下一次钩子才处理，中间平台可能自动续轮。
 - **不是所有环境都有 goal**：`ctx.goals` 缺失、旧 profile 或方法被裁剪时静默降级——不创建、不 warn、不影响派发/续派/结算；台账与面板不显示 goal 状态。
 - **子会话写入限制**：goal 只能由宿主对本插件注册表里的 live agent 操作。冷恢复/重启后子 agent 未进注册表时 `attach`/`update` 最多等 3 秒，超时跳过；该轮不补建，下一次 `task_message` 成功后才可能补上。
@@ -98,7 +98,6 @@
 - **「新建」之后的跳转是尽力而为**：服务端只建会话 + 切指针；跳转由浏览器插件每 5 秒轮询 `main-nav` 后调 `uiWorkspace.openSession`。宿主拒绝（新会话还没在客户端会话表里）最多重试 3 次（约 15 秒），仍失败就 ack 失败并在面板顶部给可读提示——**指针保持已切状态**（当前会话会失去「主会话」身份），用户从左侧会话列表打开标题「主会话」的会话即可；离线客户端在 5 分钟内回到页面会被补跳，超过 TTL（5 分钟）就不跳（避免很久以后把人拽走）。没有 `uiWorkspace.openSession` 的旧宿主/裁剪 profile 只给提示、不崩。
 - **换协调者只切指针**：adopt（会话头「设为协调者」）与代建都只写 `settings.main_session_id` / `main_session_preset`；旧会话不改名、不归档、不退役。adopt 只接受**指挥舱工作区**里的会话，已用其他预设开始（宿主拒绝换预设）会被拒并给可读原因；同一时刻只允许一次切换（`ADOPT_BUSY`）。代建 create 失败零处置；**切指针失败时新建会话留着待重用**（不归档）。
 - **多会话并存**：`main_session_id` 仍是唯一指针；通知/日报/`task_*` 只认它，其余会话的上下文增长用户看不见（观测范围目前只覆盖主会话；`readContextPressure` 已按 session 参数化，扩范围只需遍历 `sessions.list()` 的存活会话）。
-- **官方计划模式 UI 不可接**：`planMode` 是**预设隔离域**服务（`agentPresets.serviceFor(agent,'planMode')`），且本体是「子会话里挂 plan-mode + `exit_plan_mode` 工具」那套；协调者预设不挂它、宿主也没有对插件开放的「计划审批端点」，所以协调者侧仍走「摘要 + present + ask_user_question」这条人工闸门（选项含「先看计划文档」）。
 
 ## 首次打开与仓库索引
 
@@ -161,13 +160,13 @@
 - **判错的两种表现**：「该问没问」（T2/T3 被当成 T1 直接开做）与「不该问又问」（把进度、能否关闭当成堵塞项）。纠正方式是把用户偏好写成偏好条目（`memory_note(kind:'preference')`，每回合注入）或改 policy 代码；**没有配置档位**能一键关掉三闸门（配置面固定 25 键）。
 - **T1/T2 边界是模型判断**：同一需求在两次会话里可能判成不同级别；判据里的「动 5 个以上文件」「跨仓库」是经验阈值，不是代码常量。
 - **确认只能由协调者发起**：`ask_user_question` 对子会话直接拒绝（`DELEGATED_CALLER`），所以 T2/T3/R1/R2 的确认都由主会话做；子会话只能 `task_report blocked` 报问题 + 选项。选项数按 policy 2–4 个，多条目清单写进 question 正文。
-- **顺序闸门靠措辞**：计划中的任务收到 `task_message` 即视为批准、沙箱当场切回可写（平台行为，本次未改）；所以「先评估 → 再确认 → 才通知」只能靠 L1 的措辞约束，插件不拦「先追加后解释」。
+- **顺序闸门靠措辞**：P0-4 起普通 `task_message` 在计划任务上只记讨论/修订、**不会批准**（批准必须显式 `approve`），但「先评估 → 再确认 → 才通知」仍只能靠 L1 的措辞约束，插件不拦「先追加后解释」。
 - **「回报之后必须推进」也是提示词约束**：L1 的推进循环段（`renderAdvanceLoopPolicy`）要求协调者收到任何回报后落到推进 / 提问 / 问新任务三类动作之一，但插件**不检查**它这回合是否真的调了 `task_message` / `ask_user_question`，也没有「只汇报就重试」的执行层拦截。仍然可能只回一段汇报文字——此时按同一段的措辞纠正（推进或提问），不要把这段当成硬门禁。同一事件是否已经问过「还有新任务吗」也只在模型上下文里，插件不记账。
-- **回退**：改动集中在 L1 一段 + copy/brief 两处小改，`git revert` 单个 commit 即可整段回退；无数据迁移、无宿主契约变化。
 
 ## 计划阶段（P8）
 
 - **plan mode 是软引导**：平台只注入一段系统提示，不拦工具、不写沙箱状态；真正挡住写入的是只读沙箱。模型仍可能反复尝试写，被拒错误会回灌给它。
+- **四态、审计与「没有官方审批端点」**：`plan_state` 走 `planning → waiting_user → revising → approved`，未批准进终态收口 `rejected`；审批审计复用 `accepted_by`/`accepted_at` + `accepted_kind`（`plan`），后续交付确认会把它覆盖成 `delivery`——完整审批历史以 `task.plan.approved` 日志为准（刻意不加 `plan_blocked_at` 列，「有 blocked 报告」由 `plan_state='waiting_user'` 表达）。`planMode` 是预设隔离域服务、宿主也没有对插件开放的计划审批端点，所以批准只能由插件自己的 `task_message({action:'approve'})` 承担，面板刻意没有批准入口。
 - **服务可见性**：`planMode` 挂在子会话预设作用域，插件必须走 `agent.ctx.get('planMode')`；没挂时静默降级为「只有只读沙箱」并 warn 一行，派发不受影响。`exit_plan_mode` 被拒（子会话没有直接人类），出口固定是「`plan_save` 落盘 + `task_report blocked`」。
 - **计划文档只有一版**：重复 `plan_save` **覆盖**同一份文件，没有版本对比、没有审批流 UI。计划路径绑主会话工作区：换主会话/工作区后新计划落新目录，旧文件留原处。
 - **`plan_save` 是插件的写，不是沙箱写**：由宿主进程按固定路径写，只能写这一个路径，不能当通用写入。

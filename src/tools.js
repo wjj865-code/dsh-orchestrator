@@ -23,7 +23,7 @@ import {
   addMessage, createTask, findTaskBySession, getTask, listTasks, recentMessages, setMessageDelivery,
   setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
-  countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected, setTaskPlanPath,
+  countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected, setTaskPlanPath, setPlanState,
 } from './ledger.js'
 import {
   acceptanceFailureText, acceptancePassText, acceptanceStatusLines,
@@ -48,12 +48,12 @@ import { objectiveForMessage, normalizeGoalRounds } from './goal.js'
 import { followupGate, stopIsIdempotent } from './panel-gates.js'
 // v0.24 resume：续跑的判定/阈值/投递文案单一来源（面板第二批与提示词都从这里取）。
 import { RESUME_HISTORY_THRESHOLD, resumeGate, resumePrompt } from './resume.js'
-import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, planStatusLine } from './plan-mode.js'
+import { approvePlan, approvalNote, isPlanTask, planApproveGate, planListMarker, planStateOf, planStatusLine, PLAN_STATE_LABEL } from './plan-mode.js'
 import { MAX_PLAN_CHARS, planSavedNote, writePlanDocument } from './plan-doc.js'
 // P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
 import {
-  ACCESS_FULL, CHANGE_REVIEW_FIELDS, DELIVERY_LINES, PLAN_SAVE_TOOL_DESC, TASK_CHAIN_TOOL_DESC, TASK_CHAIN_WAITING_NOTE,
-  deliveredReceiptNote, planCreateReceipt,
+  ACCESS_FULL, CHANGE_REVIEW_FIELDS, DELIVERY_LINES, PLAN_MESSAGE_NOTES, PLAN_SAVE_TOOL_DESC, TASK_CHAIN_TOOL_DESC,
+  TASK_CHAIN_WAITING_NOTE, deliveredReceiptNote, planCreateReceipt,
 } from './copy.js'
 import {
   branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, reusableCheckoutCandidates,
@@ -72,7 +72,7 @@ const textOutput = {
   render: (_args, value) => [{ type: 'text', text: value === undefined ? '' : String(value) }],
 }
 
-const MESSAGE_ACTIONS = ['message', 'resume', 'stop', 'retry', 'close']
+const MESSAGE_ACTIONS = ['message', 'approve', 'resume', 'stop', 'retry', 'close']
 const CONTEXT_MODES = ['history', 'project', 'workspaces']
 const REPORT_STATUS = ['progress', 'done', 'blocked', 'needs_auth']
 const MAX_ARTIFACTS = 20
@@ -631,25 +631,33 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     // 通知水位、立刻送达（判据在 task_report → notify.push 的 answeredFollowup）。
     markReportExpected(db, task.id)
     const current = getTask(db, task.id)
-    // 「等批准」状态收到续派 = 用户批准计划；先记住，投递成功回到 running 之后才切可写。
+    // 「等你确认」状态收到续派：计划任务上只是「讨论/修订」，**不是批准**（P0-4）。
     const wasWaiting = WAITING_STATUS.has(current.status)
     // 「已交付待确认」上的追问：投递成功即回到 running，复用同一个子会话（可写根没释放，仍能写）。
     const wasDelivered = current.status === 'delivered'
     if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
     clearTaskQuestion(db, task.id)
     incrementAttempts(db, task.id)
-    // P8：计划阶段出口 —— 批准 = 投递成功且回到 running；失败路径不碰 plan 状态（仍在等你确认）。
+    // P0-4：计划任务的普通 message 只记讨论/修订 —— 不切沙箱、不改 approved（批准只走 action:'approve'）。
+    //   plan_state 以**投递前**的快照判断（投递失败在上面已 return，这里的状态已是成功后的）。
     let planNote = ''
-    if (wasWaiting && isPlanTask(task) && planStateOf(task) === 'planning') {
-      const approved = await approvePlan({ db, dispatcher, task, log })
-      planNote = `\n${approvalNote(approved)}`
+    if (isPlanTask(task)) {
+      const planState = planStateOf(task)
+      if (planState === 'planning') {
+        planNote = `\n${PLAN_MESSAGE_NOTES.discussion}`
+      } else if (planState === 'waiting_user' || planState === 'revising') {
+        // 投递成功 = 用户要求调整：转「修订中」，子会话仍在只读里改计划，改完再 blocked 交回。
+        setPlanState(db, task.id, 'revising')
+        log('task.plan.revising', { taskId: task.id, sessionId: task.target ?? null, detail: { from: planState } })
+        planNote = `\n${PLAN_MESSAGE_NOTES.revising}`
+      }
     }
     // 只读任务的「等你确认」/「待确认」续派：沙箱仍是 read-only（契约如此，见 docs/LIMITATIONS.md）。
     // 真机踩过：协调者拿不准这条，最后新开可写任务/新会话，原会话永远停在「等你确认」。
     // 这里如实说清代价并给出两条出口，别让「投递成功」被误解成「已切可写」。
     const readOnlyNote = (wasWaiting || wasDelivered) && task.read_only === true && isPlanTask(task) !== true
       ? '\n注意：该任务是只读任务（readOnly），续派后子会话仍是 read-only 沙箱、写操作会被拒。'
-        + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，批准后同一会话会自动切回可写。'
+        + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，用 action:\'approve\' 批准后同一会话会切回可写。'
       : ''
     const deliveredNote = wasDelivered
       ? `\n该任务此前是「${DELIVERY_LINES.state}」，已回到进行中并在同一子会话继续；`
@@ -658,6 +666,44 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       : ''
     const riskNote = followupGuard.note === '' ? '' : `\n${followupGuard.note}`
     return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}${riskNote}`
+  }
+
+  // 「现在为什么不能批准」的一句人话（按计划态/任务态分别说下一步等什么）。
+  const approveWaitingDetail = (task, planState) => {
+    const planLabel = PLAN_STATE_LABEL[planState] ?? planState
+    if (planState === 'revising') {
+      return `计划状态是「${planLabel}」，修订版还没交回；等子会话再次 task_report blocked 后再批`
+    }
+    if (task.status === 'running') {
+      return `子会话还在跑（任务状态「${labelOf(task.status)}」）；等它 task_report blocked 停下来后再批`
+    }
+    return `任务状态是「${labelOf(task.status)}」、计划状态是「${planLabel}」，`
+      + '要停在「等你确认」且计划状态为「计划待拍板」才能批准'
+  }
+
+  // P0-4 显式计划批准（唯一批准入口）：`task_message({ action: 'approve' })`。
+  //
+  // 前置（plan-mode.planApproveGate）：是计划任务、plan_state==='waiting_user'（= 已交回 blocked 报告）、
+  // status==='waiting_user'（子会话空闲）、plan_path 已落盘。任何一条不满足都只回可读拒绝：
+  // 不动沙箱、不写审计、不改状态。成功 = 切可写 + 关 plan mode + plan_state='approved' + accepted_kind='plan'，
+  // **不投递消息**（批准 ≠ 续派；协调者下一步自己 task_message 让子会话按计划执行）。
+  const approveTask = async (args, exec) => {
+    const denied = requireMain(exec)
+    if (denied !== undefined) return denied
+    if (unbound()) return UNBOUND_HINT
+    const found = findTaskInput(args.task_id)
+    if (found.ok !== true) return found.message
+    const task = found.task
+    const gate = planApproveGate(task)
+    if (gate.ok !== true) {
+      if (gate.code === 'PLAN_APPROVE_NOT_WAITING') {
+        return toolFailure(gate.code, { label: labelFor(task), detail: approveWaitingDetail(task, gate.planState) })
+      }
+      return toolFailure(gate.code, { label: labelFor(task) })
+    }
+    if (task.target === null || task.target === undefined) return toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
+    const result = await approvePlan({ db, dispatcher, task, log, acceptedBy: 'coordinator' })
+    return `任务「${labelFor(task)}」${approvalNote(result)}`
   }
 
   // 停止（原 task_stop 的实现，行为不变）。
@@ -1730,24 +1776,26 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
 
     // P1-B：task_stop / task_retry / task_close 并入本工具的 action（业务实现一字未改，只换入口）。
     // v0.24：新增 action:"resume"（续跑原会话），与 retry 的分工见 resumeTask 的注释。
-    wrap('task_message', '子任务动作统一入口：action:"message"（默认）给已有子任务追加消息（续派），进行中/等你确认/要授权/待确认都能续派，投递失败会重试 3 次；action:"resume" 续跑 failed/orphaned（或超时完成）的任务——同一任务、同一子会话冷恢复，上下文延续；action:"stop" 停止任务（运行中/排队/等前置/待确认）；action:"retry" 重派 failed/orphaned 任务（新任务编号 + 新子会话，旧任务留审计）；action:"close" 把「已交付待确认」确认成 done。task_id 必填，message 仅 action:"message"/"resume" 可选。', objectSchema({
+    wrap('task_message', '子任务动作统一入口：action:"message"（默认）给已有子任务追加消息（续派/讨论），进行中/等你确认/要授权/待确认都能续派，投递失败会重试 3 次；对计划任务只记讨论或把它转「修订中」，**不会批准计划**。action:"approve" 显式批准计划（前置：计划任务 + 已交回 blocked 报告 + 计划文档已落盘 + 子会话停在等你确认；成功切回可写并落审批审计，之后需再 task_message 续派实现）。action:"resume" 续跑 failed/orphaned（或超时完成）的任务——同一任务、同一子会话冷恢复，上下文延续；action:"stop" 停止任务（运行中/排队/等前置/待确认）；action:"retry" 重派 failed/orphaned 任务（新任务编号 + 新子会话，旧任务留审计）；action:"close" 把「已交付待确认」确认成 done。task_id 必填，message 仅 action:"message"/"resume" 可选。', objectSchema({
       task_id: str('任务编号'),
       action: {
         type: 'string',
         enum: MESSAGE_ACTIONS,
-        description: '动作：message（默认，追加消息/续派）｜resume（续跑原会话：同任务同子会话冷恢复，用于失败/会话丢失后接着干）｜stop（停止任务，吸收原 task_stop）｜retry（重派 failed/orphaned：新任务新会话，吸收原 task_retry）｜close（确认已交付待确认 → done，吸收原 task_close）',
+        description: '动作：message（默认，追加消息/续派；计划任务上只记讨论或转修订，不批准）｜approve（显式批准计划：切可写 + 落审批审计，之后再用 message 续派实现）｜resume（续跑原会话：同任务同子会话冷恢复，用于失败/会话丢失后接着干）｜stop（停止任务，吸收原 task_stop）｜retry（重派 failed/orphaned：新任务新会话，吸收原 task_retry）｜close（确认已交付待确认 → done，吸收原 task_close）',
       },
       message: str('要追加的内容（action:"message" 必填；action:"resume" 可选，作为本轮续跑指示）。用户追加调整时先按协调者 policy 评估（'
         + `${CHANGE_REVIEW_FIELDS}）并取得确认，消息里写清新方向、不动的部分、验收是否变`),
     }), async (args, exec) => {
       const action = typeof args.action === 'string' ? args.action.trim() : ''
+      if (action === 'approve') return approveTask(args, exec)
       if (action === 'resume') return resumeTask(args, exec)
       if (action === 'stop') return stopTask(args, exec)
       if (action === 'retry') return retryTask(args, exec)
       if (action === 'close') return closeTask(args, exec)
       if (action !== '' && action !== 'message') {
         return `action 只能是 ${MESSAGE_ACTIONS.join(' / ')}（默认 message）：收到的是 ${JSON.stringify(args.action)}。`
-          + '旧的 task_stop / task_retry / task_close 已并入本工具，分别对应 action: "stop" / "retry" / "close"（映射见 CHANGELOG「P1-B 工具面 15 → 10」）。'
+          + '旧的 task_stop / task_retry / task_close 已并入本工具，分别对应 action: "stop" / "retry" / "close"（映射见 CHANGELOG「P1-B 工具面 15 → 10」）；'
+          + '计划批准用 action: "approve"。'
       }
       // message 动作必须有内容：旧 task_message 允许空串（等于「什么都没说」却改了状态），这里顺手收紧，
       // 顺带把「你是不是想 stop/retry/close」说清楚，别让旧调用只拿到一句「缺参数」。
@@ -2117,6 +2165,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         if (!settled) next = setTaskQuestion(db, task.id, { question, options })
       } else if (args.status === 'progress' || args.status === 'done') {
         next = clearTaskQuestion(db, task.id)
+      }
+      // P0-4 计划四态：计划任务交回计划（blocked）= 从 planning/revising 进 waiting_user。
+      // `plan_blocked_at` 不另开列——`plan_state='waiting_user'` 本身就是「有 blocked 报告」的持久证据，
+      // approve 的前置直接读它。迟到 report（任务已 delivered/done）不做这次迁移。
+      if (args.status === 'blocked' && !settled && isPlanTask(next) && planStateOf(next) !== 'approved') {
+        next = setPlanState(db, task.id, 'waiting_user')
+        log('task.plan.reported', {
+          taskId: next.id,
+          sessionId: next.session_id,
+          detail: { planPath: next.plan_path ?? null, callId: exec?.callId },
+        })
       }
       let progressInfo
       if (args.status === 'progress') {

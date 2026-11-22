@@ -97,8 +97,9 @@ test('推进循环：五条规则都在 L1，与「少打扰 / 不催关闭」�
   assert.match(text, /1\. 推进：按已批准的计划 task_message 续派\/追问同一个子会话/)
   assert.match(text, /2\. 提问：ask_user_question（结构化、2–4 个选项、每项带你的建议/)
   assert.match(text, /3\. 问新任务：仅当「没有活跃任务、也没有待确认任务」时/)
-  // 规则 2：已批准计划必须立即续派，不许只回确认文字。
+  // 规则 2：已批准计划必须立即续派，不许只回确认文字；批准本身是显式动作（P0-4）。
   assert.match(text, /已批准的计划任务（plan_state=approved）：用户批准后立即 task_message 续派实现，不要只回一句确认/)
+  assert.match(text, /批准本身是显式动作（task_message\(\{ action: "approve" \}\)）/)
   // 规则 3：卡点必须结构化提问，不能拖、不能自批。
   assert.match(text, /卡点（B1–B4）与需要用户拍板的事：必须用 ask_user_question 推进，不能拖着不问，也不能自己代批/)
   // 规则 4：全部完成先问新任务；只问一次；不许宣称「已全部完成」然后静默。

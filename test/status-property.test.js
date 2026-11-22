@@ -9,7 +9,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { canTransition, nextStatus, STATUSES } from '../src/state.js'
 import { CAP_KEYS, STATUS_CAPS, TRANSITIONS, statusesWith } from '../src/status-facts.js'
-import { PLAN_STATES, PLAN_STATE_LABEL, PLAN_FIRST_DETAIL, PLAN_PHASE_LINES } from '../src/plan-mode.js'
+import { PLAN_STATES, PLAN_STATE_LABEL, PLAN_FIRST_DETAIL, PLAN_PHASE_LINES, UNAPPROVED_PLAN_STATES } from '../src/plan-mode.js'
 import { ACCESS_FULL, DELIVERY_LINES, planDocPathText } from '../src/copy.js'
 import { renderTaskDetail } from '../src/task-detail.js'
 import { renderWorkerPolicy } from '../src/prompt-layers.js'
@@ -146,7 +146,7 @@ test('属性：能力位与转移表不矛盾（delivered 可追问不可轮换�
   }
 })
 
-/** 随机造一份任务行：覆盖只读 / 完整访问 / 计划（四种 plan_state）/ 隔离 / 编排字段。 */
+/** 随机造一份任务行：覆盖只读 / 完整访问 / 计划（六种 plan_state）/ 隔离 / 编排字段。 */
 function randomTask(random) {
   const planFirst = random() < 0.4
   const planState = pick(random, PLAN_STATES)
@@ -187,7 +187,7 @@ test('属性：10,000 组随机任务字段渲染稳定、口径唯一（计划/
     const text = renderTaskDetail(task)
     // 输出稳定：同样输入渲染两次逐字相同（没有随机/时间依赖）。
     assert.equal(renderTaskDetail(task), text, `第 ${index} 组渲染不稳定`)
-    const planning = planFirst && planState === 'planning'
+    const planning = planFirst && UNAPPROVED_PLAN_STATES.includes(planState)
     const effectiveReadOnly = readOnly || planning
     // 权限口径唯一：只读（含计划阶段）时不许出现完整访问标签，反之亦然。
     if (effectiveReadOnly) {

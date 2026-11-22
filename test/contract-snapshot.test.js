@@ -80,7 +80,7 @@ test('schema 快照：五个 task_* + plan_save 的入参结构冻结（仍是 t
     task_status: { task_id: { type: 'string' }, include: { type: 'string' } },
     task_message: {
       task_id: { type: 'string' },
-      action: { type: 'string', enum: ['message', 'resume', 'stop', 'retry', 'close'] },
+      action: { type: 'string', enum: ['message', 'approve', 'resume', 'stop', 'retry', 'close'] },
       message: { type: 'string' },
     },
     task_detail: { task_id: { type: 'string' } },
@@ -152,7 +152,7 @@ test('任务行结构：ref 是新增字段，原有字段一个不少（台账�
     'coordinator_session', 'attempts', 'created_at', 'updated_at', 'last_event_at', 'error',
     'read_only', 'depends_on', 'group_id', 'write_scopes', 'priority', 'question', 'options',
     'plan_first', 'plan_state', 'access', 'worktree_state', 'delivered_at', 'close_reason',
-    'acceptance', 'accepted_by', 'accepted_at', 'resume_count', 'team_task_id', 'team_task_revision',
+    'acceptance', 'accepted_by', 'accepted_at', 'accepted_kind', 'resume_count', 'team_task_id', 'team_task_revision',
     'planned_at', 'goal_rounds', 'goal_state', 'last_message',
   ]) {
     assert.equal(Object.hasOwn(task, field), true, `任务行缺字段：${field}`)
@@ -160,6 +160,8 @@ test('任务行结构：ref 是新增字段，原有字段一个不少（台账�
   // 新增两列（版本 B）：ref（出口引用）与 plan_path（计划文档路径，幂等依据）。
   assert.match(task.ref, /^tk-[0-9a-z]{6}$/)
   assert.equal(task.plan_path, null)
+  // P0-4：确认种类默认 null（交付确认落 delivery、计划批准落 plan）。
+  assert.equal(task.accepted_kind, null)
   // 主键仍是台账编号：不改主键、不改派发/依赖语义。
   assert.match(task.id, /^t-[0-9a-f]{8}$/)
   assert.equal(getTask(db, task.id).id, task.id)
