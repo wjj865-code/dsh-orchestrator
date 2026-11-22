@@ -165,6 +165,7 @@
 | P2-6 文档收口 | 文档 ≤1,800 行（预算常量与失败提示同改）、README 首屏重写 + 结构断言、P2 变更入档 | `scripts/check-docs.mjs`、本文件 §3.4 |
 | 外部依赖 | ds-bot Bot 模式不撤外部 root 会话皮肤、rc.3 子会话沙箱根=父目录、团队工具残留 | CHANGELOG `0.13.0`/`0.14.0`；[LIMITATIONS](LIMITATIONS.md) |
 | 任务链规则（0.28.0） | L1 五条规则（判据与建链时机 / 不阻塞 / 失败传播 / delivered≠done / 同检出串行）逐字来自 `src/copy.js`；`task_create.dependsOn` 描述与 `waiting_dep` 回执同源；L2/L3 探针；机制用 `dependencyState`/`promoteDependents` 复核 | `test/task-chain-policy.test.js`、`test/prompt-layers.test.js`；CHANGELOG `0.28.0` |
+| 并行策略（t-c8adaeb1） | L1 独立一段（互不依赖 + 无需复用上下文 + 同写域撞车 → 优先 `worktree:true` 并行；有依赖/复用上下文才串行；代价与只读/计划例外；同一检出必须串行）逐字来自 `src/copy.js` 的 `PARALLEL_LINES`；与 worktree/写域/任务链三段口径对齐（不再暗示默认先串行）；派发/队列/写域判定未动 | `test/parallel-policy.test.js`、`test/prompt-layers.test.js` |
 | 协调者去 grep + W1 任务执行者 policy（t-4f7ce108） | 协调者预设移除 `tool-fs-search` 整行（该包无按工具开关、`deny` 遮不到预设自有行）→ 只留 `read`；W1 由 `renderWorkerPolicy` 渲染、`index.js` 第二条 `systemPrompt.context`（order 131）按 `tasks.session_id` 注入，静态提示（详情/上报/交付/装依赖/context）只在此出现一次；brief 收到 2–3 行、persona 只剩身份 | `test/config.test.js`、`test/index.test.js`、`test/prompt-layers.test.js`、`test/brief.test.js`、`test/copy-consistency.test.js`、`test/worktree.test.js` |
 
 ## 7. 真机复核清单（装 profile + 彻底重启后逐条勾）
