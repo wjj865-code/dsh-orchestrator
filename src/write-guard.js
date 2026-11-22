@@ -27,6 +27,8 @@ import { taskLabelWithRef } from './task-label.js'
 import { worktreeStatesWithout } from './worktree-facts.js'
 import { statusLabel } from './state.js'
 import { hasCap } from './status-facts.js'
+// 写域瞬时占位：追问/续跑/批准在「guard 通过 → 真正投递」之间先占住目标（内存 hold，不动状态机）。
+import { heldTaskView } from './write-hold.js'
 
 /** 防护档位：require（默认，拒绝）/ warn（只警告）/ off（关闭）。 */
 export const SAME_DIR_GUARD_MODES = Object.freeze(['require', 'warn', 'off'])
@@ -101,10 +103,15 @@ export const occupiesTarget = task => !readOnlyTask(task) && !isolatedTask(task)
  */
 export const occupiesTargetOnFollowup = task => !readOnlyTask(task) && !isolatedTask(task)
 
-/** 任务对外的目标目录：优先 target_dir（隔离任务派发后已换算成检出目录），退回 brief.target。 */
+/** 任务对外的目标目录：优先 target_dir（隔离任务派发后已换算成检出目录），退回 brief.target / brief.inheritedTarget。 */
 export const taskTargetDir = task => {
   const dir = trim(task?.target_dir)
-  return dir !== '' ? dir : trim(task?.brief?.target)
+  if (dir !== '') return dir
+  const target = trim(task?.brief?.target)
+  if (target !== '') return target
+  // 无 target 的任务按「派发时的父 cwd」归一（`brief.inheritedTarget`，task_create 建任务时写入）：
+  // 否则两条无 target 的并发任务都判「无冲突」，实际却在同一个父 cwd 里写。
+  return trim(task?.brief?.inheritedTarget)
 }
 
 /**
@@ -128,17 +135,55 @@ export function serializedIdsOf(tasks, dependsOn = []) {
 }
 
 /**
+ * 把内存 hold 展开成虚拟任务行合并进 tasks（v6 规格：同一 taskId 可以有**多条视图**）。
+ *
+ * - 台账里同 id 的行：移除原行，为每条 hold 视图生成一条合并行（hold 说「正在写」，台账行说别的都不算）；
+ * - 空字段回退台账行（`targetDir` 为空时不要让 `target_dir:''` 把继承目标清掉）；
+ * - 台账里没有的 id：每条视图追加 `heldTaskView`；
+ * - 不重叠的多 owner 是**并列视图**（`C:\a\b` + `C:\a\c` 不合成 `C:\a`），所以这里必须按视图逐条产出。
+ */
+export function tasksWithHolds(tasks, holds) {
+  const base = Array.isArray(tasks) ? tasks : []
+  const list = Array.isArray(holds) ? holds : []
+  if (list.length === 0) return base
+  const viewsByTask = new Map()
+  for (const hold of list) {
+    if (hold === null || typeof hold !== 'object' || hold.taskId === undefined) continue
+    const views = viewsByTask.get(hold.taskId) ?? []
+    views.push(hold)
+    viewsByTask.set(hold.taskId, views)
+  }
+  if (viewsByTask.size === 0) return base
+  const merged = base.filter(task => !viewsByTask.has(task?.id))
+  for (const [id, views] of viewsByTask) {
+    const ledger = base.find(task => task?.id === id)
+    for (const view of views) {
+      merged.push(ledger === undefined ? heldTaskView(view) : {
+        ...ledger,
+        status: 'running',
+        read_only: false,
+        // 空字段必须回退台账行；target_dir 为空时再由 brief.inheritedTarget / fallbackTarget 兜底。
+        target_dir: trim(view.targetDir) !== '' ? view.targetDir : ledger.target_dir,
+        write_scopes: Array.isArray(view.writeScopes) && view.writeScopes.length > 0 ? view.writeScopes : ledger.write_scopes,
+        worktree_path: trim(view.checkoutPath) !== '' ? view.checkoutPath : ledger.worktree_path,
+      })
+    }
+  }
+  return merged
+}
+
+/**
  * 同 target 冲突：新任务 target 与某个活跃未隔离任务的 target 相同或互相包含。
  * `includeDelivered:true` 把「已交付待确认」也算潜在写者（追问复判用；它随时能被追问重新拿到写根）。
  * @returns {Array<{task: object, target: string}>}
  */
-export function targetConflicts(tasks, { target, excludeId, serializedIds, includeDelivered = false } = {}) {
+export function targetConflicts(tasks, { target, excludeId, serializedIds, includeDelivered = false, holds = [] } = {}) {
   const wanted = trim(target)
   if (wanted === '') return []
   const serialized = serializedIds instanceof Set ? serializedIds : new Set()
   const occupies = includeDelivered === true ? occupiesTargetOnFollowup : occupiesTarget
   const conflicts = []
-  for (const task of Array.isArray(tasks) ? tasks : []) {
+  for (const task of tasksWithHolds(tasks, holds)) {
     if (task === null || typeof task !== 'object') continue
     if (excludeId !== undefined && task.id === excludeId) continue
     if (serialized.has(task.id)) continue
@@ -155,14 +200,14 @@ export function targetConflicts(tasks, { target, excludeId, serializedIds, inclu
  * 写域冲突：新任务 writeScopes 与活跃未隔离任务的 writeScopes 重叠。
  * 同 target 的冲突已由 targetConflicts 覆盖，这里跳过它们，只报「不同目录但写域撞了」。
  */
-export function scopeConflicts(tasks, { scopes = [], excludeId, skipTaskIds = [], serializedIds, includeDelivered = false } = {}) {
+export function scopeConflicts(tasks, { scopes = [], excludeId, skipTaskIds = [], serializedIds, includeDelivered = false, holds = [] } = {}) {
   const wanted = (Array.isArray(scopes) ? scopes : []).map(normalizeScope).filter(scope => scope !== '')
   if (wanted.length === 0) return []
   const skip = new Set(Array.isArray(skipTaskIds) ? skipTaskIds : [])
   const serialized = serializedIds instanceof Set ? serializedIds : new Set()
   const occupies = includeDelivered === true ? occupiesTargetOnFollowup : occupiesTarget
   const conflicts = []
-  for (const task of Array.isArray(tasks) ? tasks : []) {
+  for (const task of tasksWithHolds(tasks, holds)) {
     if (task === null || typeof task !== 'object') continue
     if (excludeId !== undefined && task.id === excludeId) continue
     if (skip.has(task.id) || serialized.has(task.id)) continue
@@ -200,12 +245,12 @@ export const occupiesCheckout = task => checkoutPath(task) !== '' && hasCap(task
  * 同一个 worktree_path 的并发占用：两个子会话写同一份检出，git 索引会互相踩。
  * @returns {Array<{task: object, path: string}>}
  */
-export function checkoutConflicts(tasks, { path, excludeId, serializedIds } = {}) {
+export function checkoutConflicts(tasks, { path, excludeId, serializedIds, holds = [] } = {}) {
   const wanted = normalizePath(path)
   if (wanted === '') return []
   const serialized = serializedIds instanceof Set ? serializedIds : new Set()
   const conflicts = []
-  for (const task of Array.isArray(tasks) ? tasks : []) {
+  for (const task of tasksWithHolds(tasks, holds)) {
     if (task === null || typeof task !== 'object') continue
     if (excludeId !== undefined && task.id === excludeId) continue
     if (serialized.has(task.id)) continue
@@ -282,14 +327,14 @@ export const guardModeOf = value => (SAME_DIR_GUARD_MODES.includes(value) ? valu
  *   - action='reject'：不创建，text 是可操作错误信息。
  */
 export function decideWriteGuard({
-  tasks = [], target, scopes = [], dependsOn = [], excludeId, mode = DEFAULT_SAME_DIR_GUARD, allowConcurrent = false, skipChecks = false,
+  tasks = [], target, scopes = [], dependsOn = [], excludeId, mode = DEFAULT_SAME_DIR_GUARD, allowConcurrent = false, skipChecks = false, holds = [],
 } = {}) {
   const guard = guardModeOf(mode)
   if (skipChecks || guard === 'off') return { action: 'pass', mode: guard, targetConflicts: [], scopeConflicts: [], note: '', text: '' }
   // dependsOn 链上的前置任务不会与新任务同时跑（等它们 done 才派发），同目录不算并发写。
   const serializedIds = serializedIdsOf(tasks, dependsOn)
-  const same = targetConflicts(tasks, { target, excludeId, serializedIds })
-  const scopeHits = scopeConflicts(tasks, { scopes, excludeId, skipTaskIds: same.map(({ task }) => task.id), serializedIds })
+  const same = targetConflicts(tasks, { target, excludeId, serializedIds, holds })
+  const scopeHits = scopeConflicts(tasks, { scopes, excludeId, skipTaskIds: same.map(({ task }) => task.id), serializedIds, holds })
   if (same.length === 0 && scopeHits.length === 0) {
     return { action: 'pass', mode: guard, targetConflicts: [], scopeConflicts: [], note: '', text: '' }
   }
@@ -351,30 +396,49 @@ export function downstreamSerializedIds(tasks, taskId) {
 }
 
 /**
- * 追问被拒文案：说清「谁占着 + 两条出路」。
+ * 重新拿写根的拒绝文案：说清「谁占着 + 两条出路」，开头按动作区分（追问 / 续跑 / 重派 / 批准）。
  * 追问只能投回原会话（无法中途加隔离），所以这里没有 allowConcurrent 那条路。
  */
-export function followupConflictText({ target, conflicts = [], scopes = [], checkouts = [] } = {}) {
+export const REGRANT_KIND_LABELS = Object.freeze({
+  followup: '追问',
+  resume: '续跑',
+  retry: '重派',
+  approve: '批准',
+  dispatch: '派发',
+})
+
+export function regrantConflictText({ target, conflicts = [], scopes = [], checkouts = [], kind = 'followup' } = {}) {
+  const label = REGRANT_KIND_LABELS[kind] ?? REGRANT_KIND_LABELS.followup
   return [
-    `目标目录 ${trim(target) || '(未指定)'}${checkouts.length > 0 ? '（或它所在的检出）' : ''} 正被下面这些任务占着——现在追问会让两个子会话同时写同一份工作树/检出：`,
+    `不能${label}：目标目录 ${trim(target) || '(未指定)'}${checkouts.length > 0 ? '（或它所在的检出）' : ''} 正被下面这些任务占着——现在${label}会让两个子会话同时写同一份工作树/检出：`,
     ...conflicts.map(conflictLine),
     ...scopes.map(({ task, scope, other }) => `- 「${taskLabelWithRef(task)}」（${statusLabel(task.status)}）：写域重叠 ${other}（本任务 ${scope}）`),
     ...checkouts.map(({ task, path }) => `- 「${taskLabelWithRef(task)}」（${statusLabel(task.status)}）：同一个检出 ${trim(path) || '(未记录)'}`),
     '两种做法（任选其一）：',
-    '1. 等占用任务交付并确认（task_message({ action: \'close\' })）或取消（task_message({ action: \'stop\' })）之后再追问；',
-    '2. 这次改动确实要并行 → 新派一个带 worktree:true 的任务（原会话无法中途加隔离，追问也不改变它的目录）。',
+    '1. 等占用任务交付并确认（task_message({ action: \'close\' })）或取消（task_message({ action: \'stop\' })）之后再试；',
+    '2. 这次改动确实要并行 → 新派一个带 worktree:true 的任务（原会话无法中途加隔离，追问/续跑也不改变它的目录）。',
   ].join('\n')
 }
 
 /**
- * 追问（delivered → running）前的写域复判：交付时写根已释放，重新开工前必须确认目录/写域/检出没人占。
+ * 「重新拿写根」的唯一判定：**任何把写权限交回某个任务的路径都走这里**
+ * （追问 delivered→running、resume 冷恢复、retry 新任务、批准回切沙箱、派发前的 chokepoint）。
  *
- * 只对 `delivered` 生效：其余可追问状态（running / waiting_*）本来就还占着写域，
- * 同目录的并发在 `task_create` 那侧就会拦（那侧用 `occupiesTarget`，不看 delivered）。
+ * 与 `decideWriteGuard`（建任务）的分工：
+ * - 建任务判「新任务 target/scopes」vs 活跃任务；
+ * - 这里判「这个已有任务重新开工」vs 活跃任务 + 内存 hold，并把 `worktree_path` 冲突一起算
+ *   （隔离任务复用自己的检出时，检出被别人占着同样会互相踩 git 索引）。
+ *
+ * `includeDelivered` 跟着**任务自身**的状态走：`delivered` 的写根已释放，它随时可能被追问，
+ * 所以复判时要把别的 delivered 也算潜在写者；已占着写域的任务（running / waiting_*）不必——
+ * 反过来「我一定是当前写者」，此时别的 delivered 不写文件，不应误拦。
+ *
+ * `serialized` = 上游祖先（dependsOn 链，等它们 done 才轮到我）∪ 下游（它们等我 done 才派发）：
+ * 两类都不会与我同时写，不算并发。
  *
  * @returns {{action:'pass'|'reject', mode:string, targetConflicts:Array, scopeConflicts:Array, checkoutConflicts:Array, note:string, text:string}}
  */
-export function decideFollowupGuard({ tasks = [], task, mode = DEFAULT_SAME_DIR_GUARD } = {}) {
+export function decideRegrantGuard({ tasks = [], task, mode = DEFAULT_SAME_DIR_GUARD, kind = 'followup', holds = [], fallbackTarget } = {}) {
   const guard = guardModeOf(mode)
   const pass = {
     action: 'pass',
@@ -387,19 +451,25 @@ export function decideFollowupGuard({ tasks = [], task, mode = DEFAULT_SAME_DIR_
   }
   if (guard === 'off' || task === undefined || task === null) return pass
   if (readOnlyTask(task)) return pass
-  if (deliveredTask(task) !== true) return pass
-  const serializedIds = downstreamSerializedIds(tasks, task.id)
-  const target = taskTargetDir(task)
-  const same = targetConflicts(tasks, { target, excludeId: task.id, serializedIds, includeDelivered: true })
+  // 已交付待确认 = 写根已释放，才需要「复判」；running/waiting_* 本来就占着写域（建任务那侧已拦）。
+  const includeDelivered = deliveredTask(task) === true
+  const serializedIds = new Set([
+    ...serializedIdsOf(tasks, Array.isArray(task.depends_on) ? task.depends_on : []),
+    ...downstreamSerializedIds(tasks, task.id),
+  ])
+  // 无 target 的任务按父 cwd 归一（调用方给 `fallbackTarget`：派发层是子会话/父会话 cwd，动作层是 defaultCwd）。
+  const target = taskTargetDir(task) || trim(fallbackTarget)
+  const same = targetConflicts(tasks, { target, excludeId: task.id, serializedIds, includeDelivered, holds })
   const scopeHits = scopeConflicts(tasks, {
     scopes: Array.isArray(task.write_scopes) ? task.write_scopes : [],
     excludeId: task.id,
     skipTaskIds: same.map(({ task: item }) => item.id),
     serializedIds,
-    includeDelivered: true,
+    includeDelivered,
+    holds,
   })
   // 隔离任务的写域是检出目录（它不占原 target），单独按 worktree_path 判。
-  const checkouts = checkoutConflicts(tasks, { path: checkoutPath(task), excludeId: task.id, serializedIds })
+  const checkouts = checkoutConflicts(tasks, { path: checkoutPath(task), excludeId: task.id, serializedIds, holds })
   if (same.length === 0 && scopeHits.length === 0 && checkouts.length === 0) return pass
   if (guard === 'warn') {
     return {
@@ -419,6 +489,19 @@ export function decideFollowupGuard({ tasks = [], task, mode = DEFAULT_SAME_DIR_
     scopeConflicts: scopeHits,
     checkoutConflicts: checkouts,
     note: '',
-    text: followupConflictText({ target, conflicts: same, scopes: scopeHits, checkouts }),
+    text: regrantConflictText({ target, conflicts: same, scopes: scopeHits, checkouts, kind }),
   }
+}
+
+/**
+ * 追问（delivered → running）前的写域复判：`delivered` 的写根已释放，重新开工前必须确认没人占。
+ *
+ * 薄包装：只保留「delivered 特例」这条历史语义（其它状态本来就占着写域、由建任务那侧拦），
+ * 判定本体一律委派给 `decideRegrantGuard`——**所有重新拿写根的路径共用同一份判定**。
+ *
+ * @returns {{action:'pass'|'reject', mode:string, targetConflicts:Array, scopeConflicts:Array, checkoutConflicts:Array, note:string, text:string}}
+ */
+export function decideFollowupGuard({ tasks = [], task, mode = DEFAULT_SAME_DIR_GUARD, holds = [], fallbackTarget } = {}) {
+  if (task === undefined || task === null || deliveredTask(task) !== true) return decideRegrantGuard({ tasks, task: undefined, mode, holds, fallbackTarget })
+  return decideRegrantGuard({ tasks, task, mode, kind: 'followup', holds, fallbackTarget })
 }

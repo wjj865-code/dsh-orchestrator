@@ -268,7 +268,7 @@ export const TASK_CHAIN_LINES = Object.freeze({
   // 下游晋升仍由 `queue.pump()` 开头的 `promoteDependents` 负责，本段不新增执行语义。
   chainAuto: '链式自动放行（`chain: "auto"`，派上游时显式加）：带标记的任务交付时**仍有 waiting_dep 下游在等**就自动确认完成'
     + '（`accepted_by` / `close_reason` 都是 `chain`），下游随即由队列晋升；没有下游时照旧停在「已交付待确认」，'
-    + '不带标记的链行为不变。自动放行后**没有追问窗口**（`done` 不能追问/续跑），要改只能 `retry` 新任务',
+    + '不带标记的链行为不变。自动放行后**没有追问窗口**（`done` 不能追问；要接着改用 `resume` 续跑原会话，或 `retry` 新任务）',
   worktreeSerial: '同一 worktree 检出必须用 dependsOn 串行：两个任务同时写一个检出会互相覆盖——后一个带 dependsOn 排队，'
     + '或者各建一个检出（worktree:true）**并行**（互不依赖、无需复用上下文时首选，见下「并行策略」段）；'
     + 'worktreeMode:"continue" 复用检出同样只能串行',
@@ -300,18 +300,18 @@ export const TASK_CHAIN_WAITING_NOTE = `依赖完成由插件队列自动晋升�
  */
 export const CHAIN_AUTO_TOOL_DESC = '链式自动放行：只接受 "auto"。带该标记的任务交付（落「已交付待确认」）时，'
   + '若仍有 waiting_dep 的下游在等，插件直接按确认逻辑收成 done（accepted_by=chain、accepted_kind=delivery、close_reason=chain），'
-  + '下游自动晋升；没有下游时保持「已交付待确认」，不传则完全不自动放行。自动放行后不能追问/续跑（要改只能重新派任务）'
+  + '下游自动晋升；没有下游时保持「已交付待确认」，不传则完全不自动放行。自动放行后不能追问（要改请 resume 续跑原会话或重新派任务）'
 
 /** task_create 回执的补充行：让协调者在建链那一刻就知道这条链不会再卡在确认上。 */
 export const CHAIN_AUTO_CREATE_NOTE = '链式自动放行：本任务交付时若仍有下游在等，插件会自动确认完成（不必再等 close）；没有下游时仍停在「已交付待确认」。'
 
 /** task_report done 的回执（替代 deliveredReceiptNote）：子会话拿到的是「已自动放行」而不是「等确认」。 */
 export const CHAIN_AUTO_RECEIPT_NOTE = '交付即自动放行（chain:"auto"）：交付时仍有下游在等，本任务已自动确认完成并唤醒下游；'
-  + 'done 不能追问/续跑，要改请重派。'
+  + 'done 不能追问；要改请 resume 续跑原会话（写域判定仍生效）或重派。'
 
 /** 通知正文追加句（结算与 task_report 两条交付路径共用）：协调者看到的是「已完成」，不再被要求去 close。 */
 export const CHAIN_AUTO_NOTICE = '链式自动放行（chain:"auto"）：交付时仍有下游在等，已自动确认完成并唤醒下游；'
-  + 'done 不能追问/续跑，要改请 retry 新任务'
+  + 'done 不能追问，要改请 resume 续跑原会话或 retry 新任务'
 
 /**
  * 并行策略的原子句：协调者 L1 的「什么时候并行、什么时候串行」判断口径。

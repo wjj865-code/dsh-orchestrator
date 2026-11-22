@@ -16,6 +16,13 @@ import { taskLabel } from './src/task-label.js'
 import { createMainSession } from './src/main-session.js'
 import { createOnboarding } from './src/onboarding.js'
 import { createDispatcher } from './src/dispatch.js'
+// P0-2 写域 chokepoint：派发层（spawn/send/queue preflight）注入同一个判定闭包（唯一判定在 write-gate）。
+import { decideDispatchGrant } from './src/write-gate.js'
+// 写域瞬时占位：cleanup/终态要强清占位；合并/并列视图日志走同一个 logger。
+import { releaseWriteHold, setWriteHoldLogger } from './src/write-hold.js'
+import { normalizePath } from './src/write-guard.js'
+// 清理 wrapper 的「有下游在等」判据与链式自动放行同源（只读台账）。
+import { listWaitingDependents } from './src/deps.js'
 import { createNotifier } from './src/notify.js'
 import { createTools } from './src/tools.js'
 import { legacyToolHint } from './src/tool-migrations.js'
@@ -351,8 +358,43 @@ export async function apply(ctx, rawConfig = {}) {
     log: worktreeLog,
   })
   // 终态清理（默认 off）：只清台账里有记录的那份检出，失败只记日志、不影响任务终态。
+  //
+  // **唯一 wrapper + 只登记**（v5 §5.1 / v6 Z4）：所有调用点（settlement onTerminal / closeDelivered /
+  // 面板 stop / 派发失败 / chain-auto；tool stop 也走这里）都只调它，判据集中在这一处：
+  // - 有 `waiting_dep` 下游在等 → 不删（下游很可能 `worktreeMode:'continue'` 复用这份检出）；
+  // - 检出被另一条活跃任务共享 → 不删（删了另一个任务就写丢了）；
+  // - 命中只写 `task.worktree.cleanup.registered`（进程内同任务去重），不动磁盘；
+  // - 未命中才按 `brief.worktreeCleanup` 档位清（默认 off = 保留）。
+  const registeredCleanups = new Set()
+  const cleanupDeferReason = task => {
+    const path = typeof task.worktree_path === 'string' ? task.worktree_path.trim() : ''
+    // 没有检出就没有「延后清理」这回事（清理本体自己会 skip）。
+    if (path === '') return null
+    try {
+      if (listWaitingDependents(db, task.id).length > 0) return 'waiting-dependent'
+    } catch { /* 判据读失败按「没下游」处理，清理本体仍按档位 */ }
+    try {
+      const wanted = normalizePath(path)
+      const shared = listTasks(db, { active: true })
+        .some(other => other.id !== task.id && normalizePath(other.worktree_path ?? '') === wanted)
+      if (shared) return 'shared-checkout'
+    } catch { /* 同上 */ }
+    return null
+  }
   const cleanupWorktree = task => {
     if (task === undefined || task === null) return
+    const reason = cleanupDeferReason(task)
+    if (reason !== null) {
+      if (registeredCleanups.has(task.id)) return
+      registeredCleanups.add(task.id)
+      try {
+        logger.log('task.worktree.cleanup.registered', {
+          taskId: task.id,
+          detail: { path: task.worktree_path ?? null, reason },
+        })
+      } catch { /* 日志失败不影响清理判定 */ }
+      return
+    }
     void cleanupTaskWorktree({ db, task, service: worktreeService, log: worktreeLog })
       .catch(error => warnings(`dsh-orchestrator: worktree 清理失败：${error?.message ?? error}`))
   }
@@ -735,6 +777,12 @@ export async function apply(ctx, rawConfig = {}) {
   // 结算上报器：子会话结束/中断时把台账从 running 推到终态（S1）。
   // 队列/派发器后面才创建，这里用惰性引用；事件可能早于赋值，所以都走可选调用。
   let settlement
+  // P0-2：写域判定闭包（唯一判定在 write-gate；这里只补 db + 配置档位）。
+  // 任务不在台账（非编排会话）→ 放行；只读 / 显式 allowConcurrent → 放行。
+  // `directory` 透传（v6 Z5）：非 isolated / 无 target 的 fallback 判定要用「本次真正派发的目录」。
+  const writableRootJudge = ({ taskId, directory } = {}) => decideDispatchGrant({ db, taskId, directory, mode: config.sameDirGuard })
+  // 写域占位的合并/并列视图只留日志（判定本身不依赖日志；失败也不影响占位）。
+  setWriteHoldLogger((event, fields) => logger.log(event, fields))
   const dispatcher = createDispatcher({
     subagents: host.subagents(),
     getAgent: resolveCoordinator,
@@ -751,6 +799,7 @@ export async function apply(ctx, rawConfig = {}) {
     // 只读子任务：agent/created 一到就设沙箱，压掉首回合窗口。
     onAgentCreated: handler => ctx.on('agent/created', ({ agent } = {}) => handler(agent)),
     goalBridge,
+    writableRootJudge,
     onEvent: (event, fields) => {
       logger.log(event, fields)
       // W1：派发被接受时先记下「子会话 id → 任务 id」，首回合就能拿到 agent policy（不等台账回写）。
@@ -830,7 +879,7 @@ export async function apply(ctx, rawConfig = {}) {
     ? ctx.on('tools/result', (exec, result) => toolFailure.handle(exec, result))
     : undefined
 
-  queue = createQueue({ db, dispatcher, config, logger, notifier, worktree: worktreeService, cleanupWorktree })
+  queue = createQueue({ db, dispatcher, config, logger, notifier, worktree: worktreeService, cleanupWorktree, writableRootJudge })
 
   reconciler = createStartupReconciler({
     db,
@@ -889,7 +938,9 @@ export async function apply(ctx, rawConfig = {}) {
     // G1：结算自动收场时收敛平台 goal：done → complete；其余终态（cancelled/failed/orphaned）→ clear。
     onTerminal: (task, status) => {
       void (status === 'done' ? goalBridge.complete(task.id, task.session_id) : goalBridge.clear(task.id, task.session_id))
-      // P9：终态按 worktreeCleanup 档位清理检出（默认 off = 全保留）；异步、失败只 warn。
+      // S10'：终态允许无 token 强清该任务的写域占位（在途投递已随会话收口）。
+      try { releaseWriteHold(task.id) } catch { /* 占位释放失败只影响 TTL */ }
+      // P9：终态按 worktreeCleanup 档位清理检出（默认 off = 全保留）；wrapper 判 defer（有下游/共享 → 只登记）。
       cleanupWorktree(task)
     },
   })
@@ -1051,6 +1102,8 @@ export async function apply(ctx, rawConfig = {}) {
     teamBoard: task => teamBoard.linkView(task),
     // P1：抽屉的「最新回复」正文按需从宿主会话日志冷读（读不到降级为摘要 + unavailable）。
     bodySource,
+    // F：面板 message/retry 的「无 target 归一目录」与工具层 defaultCwd 同源。
+    defaultCwd: () => resolveCoordinator()?.session?.header?.cwd ?? join(dir, 'workspace'),
   })
 
   // 工作台 v1（P11）：组 / 排期（L1）/ 自动化（L2，宿主 ctx.schedule 的桥）。

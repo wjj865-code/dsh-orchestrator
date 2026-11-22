@@ -1,7 +1,7 @@
 // 工具层：只做参数校验、编排与可读文案；规则都在 brief / ledger / state / notify。
 import { basename, isAbsolute, join, resolve } from 'node:path'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { validateBrief, renderBriefForTask, validateTargetDir } from './brief.js'
 import { inferWorkspaceTarget } from './workspace-match.js'
 import { INDEX_TITLE, registeredWorkspaces, loadWorkspaceIndex, saveWorkspaceIndex, workspaceIndexText } from './workspace-index.js'
@@ -20,7 +20,7 @@ import {
   distillLessons, distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember, searchMemories, taskLogText,
 } from './memory.js'
 import {
-  addMessage, createTask, findTaskBySession, getTask, listTasks, recentMessages, setMessageDelivery,
+  addMessage, createTask, findTaskBySession, getTask, lastSentMessageId, listTasks, recentMessages, setMessageDelivery,
   setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
   countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected, setTaskPlanPath, setPlanState,
@@ -51,7 +51,10 @@ import { objectiveForMessage, normalizeGoalRounds } from './goal.js'
 import { followupGate, stopIsIdempotent } from './panel-gates.js'
 // v0.24 resume：续跑的判定/阈值/投递文案单一来源（面板第二批与提示词都从这里取）。
 import { RESUME_HISTORY_THRESHOLD, resumeGate, resumePrompt } from './resume.js'
-import { approvePlan, approvalNote, isPlanTask, planApproveGate, planListMarker, planStateOf, planStatusLine, PLAN_STATE_LABEL } from './plan-mode.js'
+import {
+  approvalNote, isPlanTask, needsPlanWriteSwitch, planApproveGate,
+  planListMarker, planStateOf, planStatusLine, PLAN_STATE_LABEL, recordApproval,
+} from './plan-mode.js'
 import { MAX_PLAN_CHARS, planSavedNote, writePlanDocument } from './plan-doc.js'
 // P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
 import {
@@ -64,7 +67,14 @@ import {
   notifyWorktreeOf, parseWorktreeRequest, worktreeListMarker, worktreeNoteLines, worktreeStatusLine,
 } from './worktree-request.js'
 import { checkoutPathFor, createWorktreeService, retryWorktreeOf } from './worktree.js'
-import { ISOLATED_WORKTREE_STATES, checkoutRejection, decideFollowupGuard, decideWriteGuard, occupiesCheckout, serializedIdsOf } from './write-guard.js'
+import { ISOLATED_WORKTREE_STATES, checkoutRejection, occupiesCheckout, serializedIdsOf, taskTargetDir } from './write-guard.js'
+// P0-2 写域判定下沉：动作层只调门面（判定本体 + 内存占位都在它后面，新增动作漏拼参数不可能发生）。
+import { decideCreate, decideFollowup, decideRegrant } from './write-gate.js'
+import { acquireWriteHold, releaseWriteHold, touchWriteHold } from './write-hold.js'
+// 投递幂等：sendMessage 返回值归一（{messageId}/裸 id），投递结果落 followup 行 meta 供重放。
+import { normalizeMessageId } from './dispatch.js'
+// 派发层拒绝码：写域判定在 chokepoint 被拒时把错误码映射成动作层可读拒绝。
+import { WRITE_DOMAIN_DENIED } from './action-errors.js'
 // 0.32.0 能力包工厂：工具定义在 src/pack/tool.js（参数校验 + 文案），闸门/回滚在 src/pack/service.js。
 import { createCapabilityPackTool } from './pack/tool.js'
 
@@ -495,9 +505,38 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
 
   // targetDir 用于续派前幂等补注册 target 可写根（resume 后 session 对象会换，旧授权不生效）。
   // readOnly 用于只读任务续派时幂等补设沙箱（只读任务不注册可写根）；access='full' 同理补设 danger-full-access。
-  const sendFollowup = async (target, message, signal, targetDir, taskId, readOnly, objective, access) => {
-    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access)
-    return dispatcher.send(target, message, signal, targetDir, taskId, readOnly, objective, access)
+  // options（第 9 参）：`{ planApproved?, messageId?, attemptKey? }` —— 已批准计划任务的写入意图与投递幂等链。
+  const sendFollowup = async (target, message, signal, targetDir, taskId, readOnly, objective, access, options) => {
+    if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access, options)
+    return dispatcher.send(target, message, signal, targetDir, taskId, readOnly, objective, access, options)
+  }
+  // 投递期间的写域 owner token（S10'）：工具投递用 `tool:<callId>`，缺失回退一次性随机串；
+  // acquire 与**所有** release（成功/失败/planSandbox 提前/finally）共用同一个 token——否则 finally 一次就误放别人的占位。
+  const toolHoldToken = exec => `tool:${typeof exec?.callId === 'string' && exec.callId !== '' ? exec.callId : randomUUID()}`
+  // 占住写域 + 30s 心跳（`await send` 可能跨多秒）；返回幂等的释放函数（带自己的 token，绝不抛）。
+  const holdWriteDomain = (task, ownerToken, { signalLog } = {}) => {
+    acquireWriteHold({
+      taskId: task.id,
+      ownerToken,
+      targetDir: taskTargetDir(task),
+      writeScopes: task.write_scopes,
+      checkoutPath: task.worktree_path,
+    })
+    const heartbeat = setInterval(() => {
+      try { touchWriteHold(task.id, ownerToken) } catch { /* 续期失败只影响 TTL */ }
+    }, 30_000)
+    heartbeat.unref?.()
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      clearInterval(heartbeat)
+      try {
+        releaseWriteHold(task.id, ownerToken)
+      } catch (error) {
+        signalLog?.(error)
+      }
+    }
   }
   // 「已交付待确认」交付那一刻就释放可写根（同目录才能新建任务）；追问/续派投递成功后由
   // dispatch.send 幂等重建，真终态再兜一次释放。参数可以是任务行，也可以直接是子会话 id。
@@ -568,11 +607,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }
     // P0-3：交付时已释放写根，追问会让原会话重新开工——投递前按 target / 写域复判（与面板「追加」同源）。
     // 被占用就不投递、不改状态、不写 followup 行：否则等于静默放行两个子会话写同一份工作树。
-    const followupGuard = decideFollowupGuard({
-      tasks: listTasks(db, { active: true }),
-      task,
-      mode: config?.sameDirGuard,
-    })
+    const followupGuard = decideFollowup({ db, task, mode: config?.sameDirGuard, fallbackTarget: defaultDir() })
     if (followupGuard.action === 'reject') {
       log('task.followup.rejected', {
         taskId: task.id,
@@ -598,14 +633,47 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         },
       })
     }
+    // P0-3：guard 通过后先用内存 hold 占住目标（与检出），再 await 投递——
+    // 否则 `await send` 的窗口里另一条 task_create 能通过判定，两个子会话同时写同一目录。
+    // owner token 固定 `tool:<callId>`：finally 只放自己那一条（面板同时投递时不能互放）。
+    const holdToken = toolHoldToken(exec)
+    const releaseHold = holdWriteDomain(task, holdToken, {
+      signalLog: error => log('task.followup.hold-release-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } }),
+    })
+    // 已批准计划任务：投递即记账（B 语义）——写权限在 dispatch.send 的 post-send 授予，投递前不再切沙箱。
+    const planApproved = needsPlanWriteSwitch(task)
     const message = args.message ?? ''
     // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
     // P1：正文不再进台账（真源是子会话在宿主的 user/message），这里只留 digest + 摘要。
     const followupBody = compactMessage('followup', message)
     const seq = addMessage(db, task.id, { kind: 'followup', rendered: followupBody.rendered, meta: { ...(followupBody.meta ?? {}), delivery: 'pending' } })
+    let messageId
     try {
-      await sendFollowup(task.target, message, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, message), task.access === 'full' ? 'full' : undefined)
+      const sent = await sendFollowup(
+        task.target,
+        message,
+        exec?.signal,
+        taskTargetDir(task) || undefined,
+        task.id,
+        task.read_only === true,
+        objectiveForMessage(task.goal, message),
+        task.access === 'full' ? 'full' : undefined,
+        // attemptKey 同一次 followup 行的逻辑投递键：重放时只重试授予，不再二次投递。
+        { planApproved, attemptKey: `followup:${task.id}:${seq}` },
+      )
+      messageId = normalizeMessageId(sent)
     } catch (error) {
+      // chokepoint 竞态（hold 之外还有别的活跃写者）：消息没发出去，按写域冲突回执，不写失败行以外的状态。
+      if (error?.code === WRITE_DOMAIN_DENIED) {
+        setMessageDelivery(db, task.id, seq, 'failed', { error: error?.message ?? String(error) })
+        addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${error?.message ?? error}` })
+        log('task.followup.rejected', {
+          taskId: task.id,
+          sessionId: task.session_id,
+          detail: { reason: 'write-domain-denied', callId: exec?.callId },
+        })
+        return toolFailure('MESSAGE_WRITE_CONFLICT', { label: labelFor(task), reason: error?.message ?? String(error) })
+      }
       const reason = error?.message ?? String(error)
       setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
       addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
@@ -628,48 +696,60 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         releaseTaskSession(task)
       }
       return toolFailure('MESSAGE_DELIVERY_FAILED', { label: labelFor(task), reason })
+    } finally {
+      releaseHold()
     }
-    setMessageDelivery(db, task.id, seq, 'delivered')
-    touchTask(db, task.id)
-    // 追问必达（t-99d4a98c）：投递成功 = 协调者在等这条任务的下一份回报。下一份 progress 不看
-    // 通知水位、立刻送达（判据在 task_report → notify.push 的 answeredFollowup）。
-    markReportExpected(db, task.id)
-    const current = getTask(db, task.id)
-    // 「等你确认」状态收到续派：计划任务上只是「讨论/修订」，**不是批准**（P0-4）。
-    const wasWaiting = WAITING_STATUS.has(current.status)
-    // 「已交付待确认」上的追问：投递成功即回到 running，复用同一个子会话（可写根没释放，仍能写）。
-    const wasDelivered = current.status === 'delivered'
-    if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
-    clearTaskQuestion(db, task.id)
-    incrementAttempts(db, task.id)
-    // P0-4：计划任务的普通 message 只记讨论/修订 —— 不切沙箱、不改 approved（批准只走 action:'approve'）。
-    //   plan_state 以**投递前**的快照判断（投递失败在上面已 return，这里的状态已是成功后的）。
-    let planNote = ''
-    if (isPlanTask(task)) {
-      const planState = planStateOf(task)
-      if (planState === 'planning') {
-        planNote = `\n${PLAN_MESSAGE_NOTES.discussion}`
-      } else if (planState === 'waiting_user' || planState === 'revising') {
-        // 投递成功 = 用户要求调整：转「修订中」，子会话仍在只读里改计划，改完再 blocked 交回。
-        setPlanState(db, task.id, 'revising')
-        log('task.plan.revising', { taskId: task.id, sessionId: task.target ?? null, detail: { from: planState } })
-        planNote = `\n${PLAN_MESSAGE_NOTES.revising}`
+    // —— post-send：消息已是事实。这里整段只记账，任何异常只 log，绝不把「已投递」变成「失败」 ——
+    try {
+      setMessageDelivery(db, task.id, seq, 'delivered', {
+        messageId: messageId ?? null,
+        planWrite: planApproved ? (dispatcher.planWriteInfo?.(task.target)?.state ?? null) : null,
+      })
+      touchTask(db, task.id)
+      // 追问必达（t-99d4a98c）：投递成功 = 协调者在等这条任务的下一份回报。下一份 progress 不看
+      // 通知水位、立刻送达（判据在 task_report → notify.push 的 answeredFollowup）。
+      markReportExpected(db, task.id)
+      const current = getTask(db, task.id)
+      // 「等你确认」状态收到续派：计划任务上只是「讨论/修订」，**不是批准**（P0-4）。
+      const wasWaiting = WAITING_STATUS.has(current.status)
+      // 「已交付待确认」上的追问：投递成功即回到 running，复用同一个子会话（可写根没释放，仍能写）。
+      const wasDelivered = current.status === 'delivered'
+      if (RESUME_STATUS.has(current.status)) transition(db, task.id, 'running', { error: null })
+      clearTaskQuestion(db, task.id)
+      incrementAttempts(db, task.id)
+      // P0-4：计划任务的普通 message 只记讨论/修订 —— 不改 approved（批准只走 action:'approve'）。
+      //   plan_state 以**投递前**的快照判断（投递失败在上面已 return，这里的状态已是成功后的）。
+      let planNote = ''
+      if (isPlanTask(task)) {
+        const planState = planStateOf(task)
+        if (planState === 'planning') {
+          planNote = `\n${PLAN_MESSAGE_NOTES.discussion}`
+        } else if (planState === 'waiting_user' || planState === 'revising') {
+          // 投递成功 = 用户要求调整：转「修订中」，子会话仍在只读里改计划，改完再 blocked 交回。
+          setPlanState(db, task.id, 'revising')
+          log('task.plan.revising', { taskId: task.id, sessionId: task.target ?? null, detail: { from: planState } })
+          planNote = `\n${PLAN_MESSAGE_NOTES.revising}`
+        }
       }
+      // 只读任务的「等你确认」/「待确认」续派：沙箱仍是 read-only（契约如此，见 docs/LIMITATIONS.md）。
+      // 真机踩过：协调者拿不准这条，最后新开可写任务/新会话，原会话永远停在「等你确认」。
+      // 这里如实说清代价并给出两条出口，别让「投递成功」被误解成「已切可写」。
+      const readOnlyNote = (wasWaiting || wasDelivered) && task.read_only === true && isPlanTask(task) !== true
+        ? '\n注意：该任务是只读任务（readOnly），续派后子会话仍是 read-only 沙箱、写操作会被拒。'
+          + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，用 action:\'approve\' 批准后同一会话会切回可写。'
+        : ''
+      const deliveredNote = wasDelivered
+        ? `\n该任务此前是「${DELIVERY_LINES.state}」，已回到进行中并在同一子会话继续；`
+          + `完成后会再次落「${DELIVERY_LINES.state}」，等你/用户确认或${DELIVERY_LINES.timeout}。`
+          + (task.read_only === true ? '' : '\n交付时已释放目标目录的写权限，本次追问投递成功后已幂等重建写根。')
+        : ''
+      const riskNote = followupGuard.note === '' ? '' : `\n${followupGuard.note}`
+      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}${riskNote}`
+    } catch (error) {
+      // 投递已成功：记账失败只是台账少一笔，绝不能让它变成「投递失败」触发上层重发。
+      log('task.followup.post-send-failed', { taskId: task.id, detail: { error: error?.message ?? String(error), callId: exec?.callId } })
+      return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）；投递已成功，但投递后的台账记账失败（不影响已投递）：${error?.message ?? error}`
     }
-    // 只读任务的「等你确认」/「待确认」续派：沙箱仍是 read-only（契约如此，见 docs/LIMITATIONS.md）。
-    // 真机踩过：协调者拿不准这条，最后新开可写任务/新会话，原会话永远停在「等你确认」。
-    // 这里如实说清代价并给出两条出口，别让「投递成功」被误解成「已切可写」。
-    const readOnlyNote = (wasWaiting || wasDelivered) && task.read_only === true && isPlanTask(task) !== true
-      ? '\n注意：该任务是只读任务（readOnly），续派后子会话仍是 read-only 沙箱、写操作会被拒。'
-        + '要落地执行请二选一：①新派一个可写任务（不要依赖本任务续派）；②下次用 planFirst 计划任务，用 action:\'approve\' 批准后同一会话会切回可写。'
-      : ''
-    const deliveredNote = wasDelivered
-      ? `\n该任务此前是「${DELIVERY_LINES.state}」，已回到进行中并在同一子会话继续；`
-        + `完成后会再次落「${DELIVERY_LINES.state}」，等你/用户确认或${DELIVERY_LINES.timeout}。`
-        + (task.read_only === true ? '' : '\n交付时已释放目标目录的写权限，本次追问投递成功后已幂等重建写根。')
-      : ''
-    const riskNote = followupGuard.note === '' ? '' : `\n${followupGuard.note}`
-    return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}${riskNote}`
   }
 
   // 「现在为什么不能批准」的一句人话（按计划态/任务态分别说下一步等什么）。
@@ -689,8 +769,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   //
   // 前置（plan-mode.planApproveGate）：是计划任务、plan_state==='waiting_user'（= 已交回 blocked 报告）、
   // status==='waiting_user'（子会话空闲）、plan_path 已落盘。任何一条不满足都只回可读拒绝：
-  // 不动沙箱、不写审计、不改状态。成功 = 切可写 + 关 plan mode + plan_state='approved' + accepted_kind='plan'，
-  // **不投递消息**（批准 ≠ 续派；协调者下一步自己 task_message 让子会话按计划执行）。
+  // 不动沙箱、不写审计、不改状态。
+  //
+  // v6/v7 语义：**首批准 = 纯记账**（plan_state='approved' + 审计 + 清问题），不投递、不碰沙箱、不调 dispatcher；
+  // 写权限在协调者下一步续派投递的 post-send 授予。已 approved 的重批 = **retry grant**（只重试授予，
+  // 不重写审计、不投递）：底层 `dispatcher.retryPlanGrant` 不调 `sendMessage`，所以消息绝不重复。
   const approveTask = async (args, exec) => {
     const denied = requireMain(exec)
     if (denied !== undefined) return denied
@@ -706,7 +789,23 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return toolFailure(gate.code, { label: labelFor(task) })
     }
     if (task.target === null || task.target === undefined) return toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
-    const result = await approvePlan({ db, dispatcher, task, log, acceptedBy: 'coordinator' })
+    if (gate.already === true) {
+      // 幂等重批：只重试授予（写域判定 + 切 ws + 注册可写根），带 followup 行的 messageId 供跨重启重放。
+      const info = typeof dispatcher?.retryPlanGrant === 'function'
+        ? dispatcher.retryPlanGrant(task.target, {
+          taskId: task.id,
+          targetDir: taskTargetDir(task),
+          messageId: lastSentMessageId(db, task.id) ?? undefined,
+        })
+        : { state: 'unknown' }
+      log('task.plan.regrant', {
+        taskId: task.id,
+        sessionId: task.target,
+        detail: { state: info?.state ?? null, reason: info?.reason ?? null, callId: exec?.callId },
+      })
+      return `任务「${labelFor(task)}」${approvalNote({ ok: true, already: true, deferred: info?.state !== 'granted' })}`
+    }
+    const result = recordApproval({ db, task, log, acceptedBy: 'coordinator' })
     return `任务「${labelFor(task)}」${approvalNote(result)}`
   }
 
@@ -728,6 +827,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       queue.remove(task.id)
       transition(db, task.id, 'cancelled')
       releaseTaskSession(task)
+      releaseWriteHold(task.id) // S10'：stop（排队/等前置）是终态动作，允许无 token 强清占位
       queue.pump()
       cleanupWorktree?.(getTask(db, task.id))
       return task.status === 'waiting_dep'
@@ -747,6 +847,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     queue.remove(task.id)
     transition(db, task.id, 'cancelled')
     releaseTaskSession(task)
+    releaseWriteHold(task.id) // S10'：stop（有会话）是终态动作，允许无 token 强清占位
     queue.pump()
     cleanupWorktree?.(getTask(db, task.id))
     return `任务「${labelFor(task)}」已停止。`
@@ -775,14 +876,61 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const depends = validateDepends(db, task.depends_on)
     if (depends.ok === false) return toolFailure('RETRY_DEPENDS_INVALID', { reason: depends.error })
     const depState = dependencyState(db, { depends_on: depends.ids })
-    // G1：旧尝试的目标到此为止（failed/orphaned），清掉后再建新任务；新子会话派发时重新 create。
-    void goalBridge?.clear?.(task.id, task.session_id)
     // P9：隔离任务重派复用原检出（目录还在就复用，被清理过按原基线重建）；普通任务零变化。
     const retryWorktree = retryWorktreeOf(task)
+    const retryTarget = retryWorktree === null ? task.target_dir : (task.brief?.target ?? task.target_dir)
+    // P0-2：重派等于「给新任务写权限」，以前完全绕过写域判定（`decideWriteGuard` 只在 task_create 里）。
+    // 这里用**同一个门面**在同一个同步段里判完再建（中间没有 await，并发也不会一起通过）。
+    // 隔离任务（复用/新建检出）不占原 target → 跳过 target/写域判定，改成判它要复用的检出有没有被占。
+    const isolatedRetry = retryWorktree !== null
+    const retryGuard = decideCreate({
+      db,
+      // F：无 target 的老任务按协调者 cwd 归一（判定口径与派发一致）。
+      target: retryTarget ?? defaultDir(),
+      scopes: task.write_scopes,
+      dependsOn: depends.ids,
+      mode: config?.sameDirGuard,
+      skipChecks: isolatedRetry || task.read_only === true,
+    })
+    if (retryGuard.action === 'reject') {
+      log('task.retry.rejected', {
+        taskId: task.id,
+        detail: {
+          reason: retryGuard.targetConflicts.length > 0 ? 'same-dir' : 'write-scope',
+          mode: retryGuard.mode,
+          targetDir: retryTarget ?? null,
+          conflicts: [...retryGuard.targetConflicts, ...retryGuard.scopeConflicts].map(({ task: item }) => item.id),
+          callId: exec?.callId,
+        },
+      })
+      return toolFailure('RETRY_WRITE_CONFLICT', { label: labelFor(task), reason: retryGuard.text })
+    }
+    if (retryGuard.note !== '') {
+      log('task.retry.concurrent-write', {
+        taskId: task.id,
+        detail: { mode: retryGuard.mode, targetDir: retryTarget ?? null, callId: exec?.callId },
+      })
+    }
+    // 复用检出：同一份 worktree 被另一条活跃任务占着 → 两个子会话会互相踩 git 索引，必须拒。
+    if (isolatedRetry && retryWorktree.state === 'reused') {
+      const regrant = decideRegrant({ db, task, kind: 'retry', mode: config?.sameDirGuard, fallbackTarget: defaultDir() })
+      if (regrant.action === 'reject' && regrant.checkoutConflicts.length > 0) {
+        log('task.retry.rejected', {
+          taskId: task.id,
+          detail: { reason: 'checkout-busy', path: retryWorktree.path ?? null, conflicts: regrant.checkoutConflicts.map(({ task: item }) => item.id), callId: exec?.callId },
+        })
+        return toolFailure('RETRY_WRITE_CONFLICT', {
+          label: labelFor(task),
+          reason: checkoutRejection({ path: retryWorktree.path, conflicts: regrant.checkoutConflicts }),
+        })
+      }
+    }
+    // G1：旧尝试的目标到此为止（failed/orphaned），清掉后再建新任务；新子会话派发时重新 create。
+    void goalBridge?.clear?.(task.id, task.session_id)
     const retried = createTask(db, {
       brief: task.brief,
       coordinatorSession: current.id ?? coordinatorSession,
-      targetDir: retryWorktree === null ? task.target_dir : (task.brief?.target ?? task.target_dir),
+      targetDir: retryTarget,
       readOnly: task.read_only === true,
       // P8：计划任务重派后重新走一次计划阶段（新会话要重新探索/批准）。
       planFirst: task.plan_first === true,
@@ -852,13 +1000,62 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const text = typeof args.message === 'string' ? args.message.trim() : ''
     const body = resumePrompt(task, { history, message: text })
     const from = task.status
+    // P0-2：续跑也会重新拿写根（原会话冷恢复后就能写 target），必须与追问/建任务走**同一次判定**。
+    // 以前这里完全绕过判定：同一目录上一条活跃任务在写，resume 照样投进去，两个子会话互相覆盖。
+    const regrant = decideRegrant({ db, task, kind: 'resume', mode: config?.sameDirGuard, fallbackTarget: defaultDir() })
+    if (regrant.action === 'reject') {
+      log('task.resume.rejected', {
+        taskId: task.id,
+        sessionId: task.session_id,
+        detail: {
+          mode: regrant.mode,
+          targetDir: task.target_dir ?? null,
+          conflicts: [...regrant.targetConflicts, ...regrant.scopeConflicts, ...regrant.checkoutConflicts].map(({ task: item }) => item.id),
+          callId: exec?.callId,
+        },
+      })
+      return toolFailure('RESUME_WRITE_CONFLICT', { label: labelFor(task), reason: regrant.text })
+    }
+    if (regrant.note !== '') {
+      log('task.resume.concurrent-write', {
+        taskId: task.id,
+        sessionId: task.session_id,
+        detail: { mode: regrant.mode, targetDir: task.target_dir ?? null, callId: exec?.callId },
+      })
+    }
     // P1：续跑指令正文同样只留借条（宿主 user/message 是真源）。
     const resumeBody = compactMessage('resume', body)
+    // guard 通过 → 先占住目标，再 await 投递（失败/成功都释放；状态纪律不变：投递成功才迁 running）。
+    // owner token 固定 `tool:<callId>`：与 messageTask 同口径，释放只放自己那一条。
+    const holdToken = toolHoldToken(exec)
+    const releaseHold = holdWriteDomain(task, holdToken, {
+      signalLog: error => log('task.resume.hold-release-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } }),
+    })
+    // 已批准计划任务：写权限在 post-send 授予（resume 也走同一条 send 链）。
+    const planApproved = needsPlanWriteSwitch(task)
     const seq = addMessage(db, task.id, { kind: 'resume', rendered: resumeBody.rendered, meta: { ...(resumeBody.meta ?? {}), delivery: 'pending', from, stopReason: task.last_stop_reason } })
+    let messageId
     try {
       // 与追问同一条投递链：dispatch.send 内部就是冷恢复 + 幂等补沙箱 / target 可写根 / goal。
-      await sendFollowup(task.target, body, exec?.signal, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, body), task.access === 'full' ? 'full' : undefined)
+      const sent = await sendFollowup(
+        task.target,
+        body,
+        exec?.signal,
+        taskTargetDir(task) || undefined,
+        task.id,
+        task.read_only === true,
+        objectiveForMessage(task.goal, body),
+        task.access === 'full' ? 'full' : undefined,
+        { planApproved, attemptKey: `resume:${task.id}:${seq}` },
+      )
+      messageId = normalizeMessageId(sent)
     } catch (error) {
+      if (error?.code === WRITE_DOMAIN_DENIED) {
+        // chokepoint 竞态：消息没发出去。状态、死因、resume_count 全不变（与投递失败同一纪律）。
+        setMessageDelivery(db, task.id, seq, 'failed', { error: error?.message ?? String(error) })
+        log('task.resume.rejected', { taskId: task.id, sessionId: task.session_id, detail: { reason: 'write-domain-denied' } })
+        return toolFailure('RESUME_WRITE_CONFLICT', { label: labelFor(task), reason: error?.message ?? String(error) })
+      }
       const reason = error?.message ?? String(error)
       setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
       addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[续跑投递失败] ${reason}` })
@@ -866,8 +1063,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       // 不新建、不改状态：原状态与死因都留着。不可达是终局（只能换新会话）→ 专门错误码并指 retry；
       // 其余投递错误可能是暂时的，回执里留「可再试一次 resume」的口子。
       return toolFailure(isUnreachable(error) ? 'RESUME_UNREACHABLE' : 'RESUME_DELIVERY_FAILED', { label: labelFor(task), reason })
+    } finally {
+      releaseHold()
     }
-    setMessageDelivery(db, task.id, seq, 'delivered')
+    setMessageDelivery(db, task.id, seq, 'delivered', { messageId: messageId ?? null })
     // 投递成功才迁状态（gate 已保证这条边存在）。清死因/关闭原因（done(timeout) 续跑后不再是「已关闭」、
     // 旧问题也不再有效）——都跟下一次结算重新写。
     transition(db, task.id, 'running', { error: null, lastStopReason: null, closeReason: null })
@@ -1285,6 +1484,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return 'checks 需要 target 目录：验收命令只在任务目标目录（或 worktree 检出）里执行，不继承主会话目录。'
           + '请给 target 绝对路径后再派；没有目标目录就不传 checks。'
       }
+      // P0-2/F：无 target 的任务按**派发时的父 cwd**归一（判定口径），并把归一结果写进 brief.inheritedTarget——
+      // 否则两条无 target 的任务都判「无冲突」，实际却在同一个父 cwd 里写（派发用父会话 cwd 当子会话 cwd）。
+      // 只写 brief 快照（不加 DB 列）：台账 target_dir 仍保持 null（回执/视图不假装有目标目录）。
+      const guardTarget = effectiveTarget ?? defaultDir()
       const current = status()
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
       // 版本 B：标题是回执/面板/计划文件名/通知的公共出口——写入前把台账已知编号换成 tk-（硬清洗）。
@@ -1464,6 +1667,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         // 链式自动放行标记只进 brief 快照（不加 DB 列、不做迁移）：读侧一律 task.brief.chain。
         ...(chainAuto ? { [CHAIN_AUTO_FIELD]: CHAIN_AUTO } : {}),
         target: effectiveTarget,
+        // F：无 target 的任务在 brief 快照里记「继承协调者 cwd」——写域判定与 task_detail 都按它归一。
+        ...(effectiveTarget === undefined && typeof guardTarget === 'string' && guardTarget.trim() !== '' ? { inheritedTarget: guardTarget } : {}),
         ...(readOnly ? { readOnly: true } : {}),
         ...(planFirst ? { planFirst: true } : {}),
         ...(fullAccess ? { access: 'full' } : {}),
@@ -1478,9 +1683,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       // 计划任务照常判：计划阶段虽然只读，但批准后会转可写，放过去等于把冲突推迟到批准那一刻。
       // allowConcurrent:true 是唯一的显式放行开关。
       const newTaskIsolated = ISOLATED_WORKTREE_STATES.includes(worktreeRecord?.state)
-      const guard = decideWriteGuard({
-        tasks: listTasks(db, { active: true }),
-        target: effectiveTarget,
+      const guard = decideCreate({
+        db,
+        target: guardTarget,
         scopes: writeScopes,
         dependsOn: depends.ids,
         mode: config?.sameDirGuard,
@@ -1493,7 +1698,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           detail: {
             reason: guard.targetConflicts.length > 0 ? 'same-dir' : 'write-scope',
             mode: guard.mode,
-            targetDir: effectiveTarget ?? null,
+            targetDir: guardTarget ?? null,
             conflicts: [...guard.targetConflicts, ...guard.scopeConflicts].map(({ task }) => task.id),
             callId,
           },
@@ -1506,7 +1711,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           detail: {
             mode: guard.mode,
             allowed: args.allowConcurrent === true,
-            targetDir: effectiveTarget ?? null,
+            targetDir: guardTarget ?? null,
             conflicts: [...guard.targetConflicts, ...guard.scopeConflicts].map(({ task }) => task.id),
             callId,
           },
@@ -1543,7 +1748,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         detail: {
           title,
           callId,
-          targetDir: effectiveTarget ?? null,
+          targetDir: guardTarget ?? null,
           readOnly,
           planFirst,
           access: fullAccess ? 'full' : null,
@@ -1806,7 +2011,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       action: {
         type: 'string',
         enum: MESSAGE_ACTIONS,
-        description: '动作：message（默认，追加消息/续派；计划任务上只记讨论或转修订，不批准）｜approve（显式批准计划：切可写 + 落审批审计，之后再用 message 续派实现）｜resume（续跑原会话：同任务同子会话冷恢复，用于失败/会话丢失后接着干）｜stop（停止任务，吸收原 task_stop）｜retry（重派 failed/orphaned：新任务新会话，吸收原 task_retry）｜close（确认已交付待确认 → done，吸收原 task_close）',
+        description: '动作：message（默认，追加消息/续派；计划任务上只记讨论或转修订，不批准）｜approve（显式批准计划：只记账（plan_state=approved + 审批审计 + 清问题），沙箱在下一次续派时切回可写）｜resume（续跑原会话：同任务同子会话冷恢复，用于失败/会话丢失后接着干）｜stop（停止任务，吸收原 task_stop）｜retry（重派 failed/orphaned：新任务新会话，吸收原 task_retry）｜close（确认已交付待确认 → done，吸收原 task_close）',
       },
       message: str('要追加的内容（action:"message" 必填；action:"resume" 可选，作为本轮续跑指示）。用户追加调整时先按协调者 policy 评估（'
         + `${CHANGE_REVIEW_FIELDS}）并取得确认，消息里写清新方向、不动的部分、验收是否变`),

@@ -83,7 +83,12 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   const checkoutTarget = worktreeHasCap(task.worktree_state, 'hasCheckout') && task.worktree_state !== 'cleaned'
     ? text(task.target_dir)
     : ''
-  const target = checkoutTarget !== '' ? checkoutTarget : text(brief.target ?? task.target_dir)
+  // F：没有显式 target 的任务按「继承协调者 cwd」归一（`brief.inheritedTarget`，task_create 写入）——
+  // 详情要如实说清工作目录从哪来，否则子会话会以为「没指定 = 随便写」。
+  const inheritedTarget = text(brief.inheritedTarget)
+  const explicitTarget = text(brief.target ?? task.target_dir)
+  const target = checkoutTarget !== '' ? checkoutTarget : (explicitTarget !== '' ? explicitTarget : inheritedTarget)
+  const targetInherited = checkoutTarget === '' && explicitTarget === '' && inheritedTarget !== ''
   const readOnly = brief.readOnly === true || task.read_only === true
   const planTask = isPlanTask(task)
   const planState = planStateOf(task)
@@ -103,7 +108,7 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   ]
   // 工作目录最多出现一个：就是 target_dir；写提示紧跟其后（与旧 brief 同口径）。
   if (target !== '') {
-    lines.push(`工作目录：${target}`)
+    lines.push(`工作目录：${target}${targetInherited ? '（继承协调者 cwd：任务没有显式 target）' : ''}`)
     lines.push(`权限：${effectiveReadOnly ? '只读' : '可写'}`)
     if (fullAccess) lines.push(`访问级别：${ACCESS_FULL.label}`)
     lines.push(effectiveReadOnly ? READ_ONLY_HINT : (fullAccess ? FULL_ACCESS_HINT : WRITE_HINT))

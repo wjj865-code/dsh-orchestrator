@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { resolve as resolvePath } from 'node:path'
 import { messageText } from './last-message.js'
 import { EXIT_PLAN_MODE_DENIAL } from './plan-mode.js'
+import { WRITE_DOMAIN_DENIED } from './action-errors.js'
 
 let counter = 0
 
@@ -21,6 +22,16 @@ const sleep = ms => ms <= 0 ? Promise.resolve() : new Promise(resolve => setTime
 const noop = () => {}
 
 const errorText = error => `${error?.code === undefined ? '' : `[${error.code}] `}${error?.message ?? error}`
+
+/**
+ * `sendMessage` 返回值归一（X4）：`{messageId}` / `{id}` / 裸字符串都收成 `string | undefined`。
+ * 归一后的 string 才进 `planWrite.messageId` / `sentCache` / followup 行 `meta.messageId`（幂等链的同一口径）。
+ */
+export const normalizeMessageId = raw => {
+  if (typeof raw === 'string') return raw === '' ? undefined : raw
+  const value = raw?.messageId ?? raw?.id
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
 
 // 结算事件带一段可读输出（与平台 SubagentResult.output 同形），供台账记「死因」用。
 const settleOutput = (output, max = 240) => {
@@ -46,7 +57,7 @@ export function sameDirectory(left, right) {
   }
 }
 
-export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000, goalBridge }) {
+export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000, goalBridge, writableRootJudge }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
   const requireAgent = () => {
     const current = currentAgent()
@@ -80,6 +91,46 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   const planModeWarned = new Set()
   // 已经成功置过 plan mode 的子会话：agent/created 与激活返回两条路都会调一次，靠它去重。
   const planApplied = new Set()
+  // 已批准计划任务的「写入意图」：targetId → { targetDir, taskId, state:'switching'|'granted', reason, messageId, updatedAt }。
+  // 批准只记账（台账事实），真正的可写根授予发生在**续派投递的 post-send**；hook 只是「尽力提前」。
+  // 这张表不随 activation 结算清理（冷恢复要按同一个 target 重试授予），只在 stop/终态/重批重置时删。
+  const planWrite = new Map()
+  // 投递幂等：attemptKey → messageId。同一逻辑投递（同一 followup 行 / 同一续派）重放时不再 sendMessage。
+  const sentCache = new Map()
+  const PLAN_WRITE_LIMIT = 500
+  const SENT_CACHE_LIMIT = 1000
+  /** 任务结束时清掉该任务的幂等缓存（attemptKey 形如 `followup:<taskId>:<seq>`，按 taskId 段匹配）。 */
+  const clearSentCacheFor = taskId => {
+    if (typeof taskId !== 'string' || taskId === '') return
+    const marker = `:${taskId}:`
+    for (const key of [...sentCache.keys()]) {
+      if (key.includes(marker)) sentCache.delete(key)
+    }
+  }
+  const trimDispatchCaches = () => {
+    if (planWrite.size > PLAN_WRITE_LIMIT) {
+      const entries = [...planWrite.entries()].sort((left, right) => (left[1]?.updatedAt ?? 0) - (right[1]?.updatedAt ?? 0))
+      for (const [key] of entries.slice(0, planWrite.size - PLAN_WRITE_LIMIT)) planWrite.delete(key)
+    }
+    while (sentCache.size > SENT_CACHE_LIMIT) {
+      const oldest = sentCache.keys().next().value
+      sentCache.delete(oldest)
+    }
+  }
+  const markPlanSwitching = (targetId, reason) => {
+    const pending = planWrite.get(targetId)
+    if (pending === undefined) return
+    pending.state = 'switching'
+    pending.reason = reason ?? 'unknown'
+    pending.updatedAt = Date.now()
+  }
+  /** 审计事件出口：任何阶段都不能让事件消费方把投递/授予带崩。 */
+  const safeEvent = (event, fields) => {
+    try {
+      onEvent(event, fields)
+    } catch { /* 审计事件失败不能外溢 */ }
+  }
+
   // 服务按调用时惰性取：插件加载顺序不保证 agents/sessions/sandboxPolicy 已就绪。
   const serviceOf = value => typeof value === 'function' ? value() : value
   // 可写根授权按 targetId → (Session 对象 → (目录 → disposer)) 记：同一会话 resume 前后可能有多个会话对象，
@@ -147,30 +198,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     if (defaultChildren.has(childId)) return 'workspace-write'
     return undefined
   }
-  // agent/created 早于首个模型请求，能压掉「首回合还没设只读」的窗口。
-  // P8：计划任务同一时机把 plan mode 置上并装 exit_plan_mode guard（都在 agent 作用域）。
-  if (typeof onAgentCreated === 'function') {
-    try {
-      onAgentCreated(created => {
-        if (created?.id === undefined) return
-        const plan = planChildren.has(created.id)
-        const mode = sandboxModeFor(created.id)
-        if (mode === undefined) return
-        ensureSandboxMode(created.id, mode, created.session)
-        if (!plan) return
-        installExitPlanGuard(created.id, created)
-        const applied = applyPlanMode(created.id, true, created)
-        try {
-          onEvent('subagent.plan-mode.entered', {
-            sessionId: created.id,
-            detail: { planMode: applied.outcome ?? null, reason: applied.ok === true ? null : (applied.reason ?? null) },
-          })
-        } catch { /* 审计事件失败不能外溢 */ }
-      })
-    } catch (error) {
-      onWarn(`dsh-orchestrator: 订阅 agent/created 失败：${errorText(error)}`)
-    }
-  }
+  // agent/created 监听器在下方（grant chokepoint 定义之后）注册：approved 分支要先于
+  // sandboxModeFor / `mode===undefined` 的提前 return 生效，且整段 try/catch、绝不抛错、返回恒 undefined。
 
   // P8：取子 agent。
   const childAgentOf = (childId, hint) => hint ?? serviceOf(agents)?.get?.(childId)
@@ -301,6 +330,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     planModeWarned.delete(childId)
     planApplied.delete(childId)
     releasePlanGuard(childId)
+    // S11：终态/stop 连「已批准待授予」的写入意图与幂等缓存一起删（别留下永远 switching 的幽灵行）。
+    planWrite.delete(childId)
+    clearSentCacheFor(childId)
   }
   // 激活返回时子 Session 可能还没进表：等一次 session/created 再设只读，不阻塞派发。
   const ensureModeReady = (childId, mode) => {
@@ -362,31 +394,273 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
     }
   }
-  // rc.3 平台缺陷：子会话 header.cwd 取父会话目录（childSessionMeta），spec.cwd 只记一条 working-directory 事件，
-  // 而 sandboxPolicy 的 workspaceRoot 只读 session.header.cwd → workspace-write 下子会话写不进 target。
-  // 兜法：给子会话登记 target 为可写根（幂等）。注意 Windows 上只对 harness 文件工具生效，pwsh 进程写仍会被拒。
-  // wait=true 只用于派发（子 Session 可能晚几毫秒进表）；续派走非等待解析，避免冷恢复时干等超时。
-  const ensureWritableRoot = async (childId, target, { wait = false, warnOnMiss = true } = {}) => {
-    if (typeof target !== 'string' || target === '') return
-    const policy = serviceOf(sandboxPolicy)
-    if (policy === undefined || typeof policy.registerWritableRoot !== 'function') return
-    const session = wait ? await resolveChildSession(childId) : childSessionOf(childId)
-    if (session === undefined) {
-      if (warnOnMiss) onWarn(`dsh-orchestrator: 未拿到子会话 ${childId}，未登记 target 可写根`)
-      return
+  // —— 写域判定（由 index.js 注入，走 write-gate 的同源判定）——
+  const judgeWritableRoot = (taskId, directory) => {
+    if (typeof writableRootJudge !== 'function') return undefined
+    try {
+      const verdict = writableRootJudge({ taskId, directory })
+      if (verdict === undefined || verdict === null) return undefined
+      return verdict
+    } catch (error) {
+      // 判定自身抛错只降级为 warn：不能因为护栏坏了就停掉全部派发。
+      onWarn(`dsh-orchestrator: 写域判定失败（按放行处理）：${errorText(error)}`)
+      return undefined
     }
-    // 平台根已经是 target 时不用授权；同一个 (session 对象, 目录) 只注册一次。
-    if (sameDirectory(target, session.header?.cwd)) return
+  }
+  const reportWriteDenied = (taskId, sessionId, directory, verdict) => {
+    safeEvent('subagent.writable-root.denied', {
+      taskId,
+      sessionId: sessionId ?? null,
+      detail: { directory: directory ?? null, code: verdict?.code ?? WRITE_DOMAIN_DENIED, reason: verdict?.text ?? null },
+    })
+  }
+  const writeDomainError = text => {
+    const error = new Error(typeof text === 'string' && text.trim() !== '' ? text : '写域被其他任务占用：稍后重试，或先关闭占用任务')
+    error.code = WRITE_DOMAIN_DENIED
+    return error
+  }
+  /** 判定被拒（spawn 前置 / send preflight）→ 返回错误对象；放行/无判定返回 undefined。 */
+  const deniedChild = (taskId, directory, sessionId) => {
+    const verdict = judgeWritableRoot(taskId, directory)
+    if (verdict === undefined || verdict.ok === true) return undefined
+    reportWriteDenied(taskId, sessionId, directory, verdict)
+    return writeDomainError(verdict.text)
+  }
+
+  /**
+   * 可写根授予的**唯一** chokepoint（S1：`registerWritableRoot` 全仓只在这里调用）。
+   *
+   * - 幂等 key = (childId 的登记表, Session 对象, 目录)：resume 换 Session 对象要重新注册，同一对象重复授予跳过；
+   * - disposer 记进 `grantDirs`，stop/终态按 targetId 全量释放；
+   * - 只返回结果、不抛：失败由调用方翻译成 switching / 文案。
+   *
+   * @returns {{ok:true, skipped?:string} | {ok:false, code:string, text?:string}}
+   */
+  const grantWritableRoot = (childId, session, target, taskId) => {
+    const policy = serviceOf(sandboxPolicy)
+    if (policy === undefined || typeof policy.registerWritableRoot !== 'function') return { ok: true, skipped: 'no-policy' }
+    if (session === undefined || session === null) return { ok: false, code: 'WRITE_ROOT_NO_SESSION' }
     const dirs = grantDirs(childId, session)
-    if (dirs.has(target)) return
+    if (dirs.has(target)) return { ok: true, skipped: 'already-granted' }
     try {
       const disposer = policy.registerWritableRoot(session, target)
       if (typeof disposer === 'function') dirs.set(target, disposer)
       // 审计/对表用：sessionId + directory 都带上，能直接和 task_message 投递时间对齐。
-      onEvent('subagent.writable-root', { sessionId: childId, detail: { directory: target } })
+      safeEvent('subagent.writable-root', { sessionId: childId, taskId, detail: { directory: target } })
+      return { ok: true }
     } catch (error) {
       onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
+      return { ok: false, code: 'WRITE_ROOT_FAILED', text: errorText(error) }
     }
+  }
+
+  /**
+   * 已批准计划任务的授予（judge → append workspace-write → grant）。
+   *
+   * 原子化顺序：判定被拒时**不 append、不注册**；沙箱 append 成功但注册失败时，post-send 才做 read-only 补偿
+   * （`compensateOnFailure:true`）；hook 内传 `false`——在 agent/created 的 serial 监听器里 append read-only
+   * 会在投递前生效，等于把刚批的计划又锁回只读。
+   *
+   * 只返回结果、不抛；调用方（hook / post-send / retryPlanGrant）再决定状态。
+   */
+  const grantApprovedWrite = (childId, session, targetDir, taskId, { compensateOnFailure = false } = {}) => {
+    if (session === undefined || session === null) return { ok: false, code: 'WRITE_ROOT_NO_SESSION' }
+    const actual = typeof targetDir === 'string' && targetDir.trim() !== '' ? targetDir : session.header?.cwd
+    if (typeof actual !== 'string' || actual.trim() === '') return { ok: true, skipped: 'no-target' }
+    // 平台根已经是 target 时不用授权（幂等）。
+    if (sameDirectory(actual, session.header?.cwd)) return { ok: true, skipped: 'platform-root' }
+    const denied = judgeWritableRoot(taskId, actual)
+    if (denied !== undefined && denied.ok !== true) {
+      reportWriteDenied(taskId, childId, actual, denied)
+      return { ok: false, code: denied.code ?? WRITE_DOMAIN_DENIED, text: denied.text }
+    }
+    const policy = serviceOf(sandboxPolicy)
+    const alreadyWritable = policy?.overrideOf?.(session) === 'workspace-write'
+    if (!alreadyWritable) {
+      if (typeof session.append !== 'function') return { ok: false, code: 'WRITE_SANDBOX_APPEND_FAILED', text: '会话没有 append' }
+      try {
+        session.append('sandbox/mode', { mode: 'workspace-write' })
+        safeEvent('subagent.sandbox.resumed', { sessionId: childId, detail: { mode: 'workspace-write' } })
+      } catch (error) {
+        return { ok: false, code: 'WRITE_SANDBOX_APPEND_FAILED', text: errorText(error) }
+      }
+    }
+    const granted = grantWritableRoot(childId, session, actual, taskId)
+    if (granted.ok !== true) {
+      if (compensateOnFailure) {
+        // 尽力补偿：把沙箱退回只读，避免「判为切换失败但实际能写」的半吊子状态。
+        ensureSandboxMode(childId, 'read-only', session)
+      }
+      safeEvent('subagent.plan-write.partial', {
+        taskId,
+        sessionId: childId,
+        detail: { directory: actual, reason: granted.code ?? 'WRITE_ROOT_FAILED', compensated: compensateOnFailure === true },
+      })
+      return { ok: false, code: granted.code ?? 'WRITE_ROOT_FAILED', text: granted.text }
+    }
+    return { ok: true, sandbox: 'workspace-write' }
+  }
+  /** 授予包一层 catch：任何异常都翻成结果，绝不外抛（hook/post-send 都不许被它打断）。 */
+  const tryGrant = (childId, session, targetDir, taskId, options) => {
+    try {
+      return grantApprovedWrite(childId, session, targetDir, taskId, options)
+    } catch (error) {
+      return { ok: false, code: 'WRITE_GRANT_THROWN', text: errorText(error) }
+    }
+  }
+
+  // rc.3 平台缺陷：子会话 header.cwd 取父会话目录（childSessionMeta），spec.cwd 只记一条 working-directory 事件，
+  // 而 sandboxPolicy 的 workspaceRoot 只读 session.header.cwd → workspace-write 下子会话写不进 target。
+  // 兜法：给子会话登记 target 为可写根（幂等）。注意 Windows 上只对 harness 文件工具生效，pwsh 进程写仍会被拒。
+  // wait=true 只用于派发（子 Session 可能晚几毫秒进表）；续派走非等待解析，避免冷恢复时干等超时。
+  //
+  // P0-2 chokepoint：授予之前再判一次写域（判定由 index.js 注入 `{taskId, directory} => {ok, code, text}`）；
+  // 拒绝时**不注册**并记 `subagent.writable-root.denied`，把结果交回调用动作（spawn/send/pump）。
+  //
+  // phase（X12）：`spawn` 的 wait 允许 no-session（skipped，会话可能晚入表）；`post-send` 时 session 必已 resolve，
+  // 拿不到就是**诚实失败**（事件 + 结果 ok:false），不再当成功。
+  const ensureWritableRoot = async (childId, target, { wait = false, warnOnMiss = true, taskId, phase } = {}) => {
+    if (typeof target !== 'string' || target === '') return { ok: true, skipped: 'no-target' }
+    const policy = serviceOf(sandboxPolicy)
+    if (policy === undefined || typeof policy.registerWritableRoot !== 'function') return { ok: true, skipped: 'no-policy' }
+    const session = wait ? await resolveChildSession(childId) : childSessionOf(childId)
+    if (session === undefined) {
+      if (phase === 'post-send') {
+        onWarn(`dsh-orchestrator: 续派已投递，但未拿到子会话 ${childId}，未登记 target 可写根（首回合可能是只读）`)
+        safeEvent('subagent.writable-root.no-session', { taskId, sessionId: childId, phase: 'post-send' })
+        return { ok: false, skipped: 'no-session', code: 'WRITE_ROOT_NO_SESSION' }
+      }
+      if (warnOnMiss) onWarn(`dsh-orchestrator: 未拿到子会话 ${childId}，未登记 target 可写根`)
+      return { ok: true, skipped: 'no-session' }
+    }
+    // 平台根已经是 target 时不用授权；同一个 (session 对象, 目录) 只注册一次。
+    if (sameDirectory(target, session.header?.cwd)) return { ok: true, skipped: 'platform-root' }
+    const dirs = grantDirs(childId, session)
+    if (dirs.has(target)) return { ok: true, skipped: 'already-granted' }
+    const verdict = judgeWritableRoot(taskId, target)
+    if (verdict !== undefined && verdict.ok !== true) {
+      reportWriteDenied(taskId, childId, target, verdict)
+      return { ok: false, denied: true, code: verdict.code ?? WRITE_DOMAIN_DENIED, text: verdict.text }
+    }
+    return grantWritableRoot(childId, session, target, taskId)
+  }
+
+  /**
+   * 已批准计划任务的「重试授予」入口（X6/G10）：不投递、不写台账，只按当前 live Session 重试切可写。
+   *
+   * - 每次调用都先把 `planWrite` 重置成 `switching`：旧 `granted` 可能属于已被中止/换对象的 activation；
+   * - 没有 live Session → 停在 `switching`（reason `retry-no-session`），返回 info（可再试）；
+   * - 有 live Session → `tryGrant(compensate:true)`：成功 `granted`，失败 `switching` + 原因。
+   */
+  const retryPlanGrantImpl = (target, { taskId, targetDir, messageId } = {}) => {
+    const existing = planWrite.get(target)
+    const pending = {
+      targetDir: targetDir ?? existing?.targetDir ?? '',
+      taskId: taskId ?? existing?.taskId ?? null,
+      state: 'switching',
+      reason: 'retry',
+      messageId: messageId ?? existing?.messageId ?? null,
+      updatedAt: Date.now(),
+    }
+    planWrite.set(target, pending)
+    trimDispatchCaches()
+    let session
+    try {
+      session = childSessionOf(target)
+    } catch {
+      // 宿主代理读服务抛错只按「没有 live 会话」降级：重试授予是尽力而为，绝不能把批准/续派弄失败。
+      session = undefined
+    }
+    if (session === undefined) {
+      pending.reason = 'retry-no-session'
+      return planWriteInfoOf(target)
+    }
+    const result = tryGrant(target, session, pending.targetDir, pending.taskId, { compensateOnFailure: true })
+    if (result.ok === true) {
+      pending.state = 'granted'
+      pending.reason = result.skipped ?? null
+    } else {
+      pending.state = 'switching'
+      pending.reason = result.code ?? 'grant-failed'
+    }
+    pending.updatedAt = Date.now()
+    return planWriteInfoOf(target)
+  }
+  /** 计划写入意图的只读快照（task_detail/诊断用）；读失败按 unknown，绝不抛。 */
+  const planWriteInfoOf = target => {
+    try {
+      const entry = planWrite.get(target)
+      if (entry === undefined) return { state: 'unknown' }
+      return {
+        state: entry.state,
+        reason: entry.reason ?? null,
+        messageId: entry.messageId ?? null,
+        targetDir: entry.targetDir ?? null,
+        taskId: entry.taskId ?? null,
+        updatedAt: entry.updatedAt ?? null,
+      }
+    } catch {
+      return { state: 'unknown' }
+    }
+  }
+
+  // agent/created 早于首个模型请求，能压掉「首回合还没设只读/可写」的窗口。
+  //
+  // 宿主事实（H1）：`agent/created` 是 cordis serial —— 逐条 await、不吞错；任一监听器 throw 都会让
+  // `announce` reject → `submitMaterialized` 不执行 → **投递不发生**。所以我们的监听器：
+  //   1) 整段 try/catch，绝不抛错；2) 所有分支返回 undefined（返回非 undefined 即 bail）；
+  //   3) 绝不 append read-only（补偿只在 post-send 做）；4) 绝不删 planWrite（只改 state/reason）。
+  // approved 分支必须放在 `sandboxModeFor` 与 `mode===undefined` 的提前 return **之前**：计划任务批准后
+  // `planChildren` 已被 releasePlan 清掉，按沙箱表查就是 undefined，提前 return 会让 hook 永远不授予。
+  if (typeof onAgentCreated === 'function') {
+    try {
+      onAgentCreated(created => {
+        let pending
+        try {
+          if (created?.id === undefined) return undefined
+          pending = planWrite.get(created.id)
+          if (pending !== undefined && created.session !== undefined) {
+            // 即使上一次已 granted 也对**当前 Session 对象**重做一次幂等授予：
+            // 被其它 listener 抛错中止的 activation、或冷恢复换了 Session 后，旧 disposer 不再生效。
+            const result = tryGrant(created.id, created.session, pending.targetDir, pending.taskId, { compensateOnFailure: false })
+            pending.state = result.ok === true ? 'granted' : 'switching'
+            pending.reason = result.ok === true ? (result.skipped ?? null) : (result.code ?? 'grant-failed')
+            pending.updatedAt = Date.now()
+          }
+          const plan = planChildren.has(created.id)
+          const mode = sandboxModeFor(created.id)
+          if (mode === undefined) return undefined
+          ensureSandboxMode(created.id, mode, created.session)
+          if (!plan) return undefined
+          installExitPlanGuard(created.id, created)
+          const applied = applyPlanMode(created.id, true, created)
+          safeEvent('subagent.plan-mode.entered', {
+            sessionId: created.id,
+            detail: { planMode: applied.outcome ?? null, reason: applied.ok === true ? null : (applied.reason ?? null) },
+          })
+        } catch (error) {
+          // 只记录：外抛会 reject announce → 投递不发生。
+          if (pending !== undefined) {
+            pending.state = 'switching'
+            pending.reason = 'hook-error'
+            pending.updatedAt = Date.now()
+          }
+          onWarn(`dsh-orchestrator: approved 写权限提前授予失败（已降级 switching）：${errorText(error)}`)
+        }
+        return undefined
+      })
+    } catch (error) {
+      onWarn(`dsh-orchestrator: 订阅 agent/created 失败：${errorText(error)}`)
+    }
+  }
+
+  // 起过又必须收掉的子会话：登记表 + 本地的只读/计划/完整访问/普通标记一起清（别攒废弃 UUID）。
+  const forgetChild = childId => {
+    readOnlyChildren.delete(childId)
+    fullAccessChildren.delete(childId)
+    planChildren.delete(childId)
+    defaultChildren.delete(childId)
+    live.delete(childId)
   }
 
   // delivery: 'caller' 时没人 await 会变成未处理拒绝，这里必须挂上；同时把 settle 抛给上层驱动队列。
@@ -475,6 +749,12 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
       const shapeError = error => /reading '(parent|request)'|spec\.(parent|request)|request\.parent/.test(error?.message ?? '')
       let activation
+      // 写域 chokepoint：起子会话之前最后判一次（动作层 guard 是快速失败，这里才是唯一授予点）。
+      // 拒绝 → 一个子会话都不起，直接把可读拒绝抛给 queue（走既有非可重试分支标 failed + 通知）。
+      if (readOnly !== true && planFirst !== true) {
+        const denied = deniedChild(taskId, cwd)
+        if (denied !== undefined) throw denied
+      }
       onEvent('subagent.spawn.requested', { taskId, detail: { childId, label: spec.label, provider } })
       try {
         try {
@@ -521,9 +801,18 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       // 计划任务同理：批准前不注册，批准后的续派由 send() 按 readOnly=false 补。
       // 完整访问任务照旧注册（danger-full-access 下它用不上，只当注入失败时的兜底可写面）。
       if (readOnly !== true && planFirst !== true && typeof cwd === 'string' && cwd !== '') {
-        void ensureWritableRoot(activation.childId, cwd, { wait: true }).catch(error => {
-          onWarn(`dsh-orchestrator: 登记 target 可写根失败：${errorText(error)}`)
-        })
+        const granted = await ensureWritableRoot(activation.childId, cwd, { wait: true, taskId, phase: 'spawn' })
+        // 竞态兜底：判定在授予前又变了 → 尽力收掉刚起的子会话，再抛同一 code（不留白占并发位的孤儿）。
+        if (granted.ok !== true && granted.denied === true) {
+          try {
+            await activation.dispose?.()
+          } catch (error) {
+            onWarn(`dsh-orchestrator: 写域被拒后收子会话失败：${errorText(error)}`)
+          }
+          forgetChild(activation.childId)
+          throw writeDomainError(granted.text)
+        }
+        if (granted.ok !== true) onWarn(`dsh-orchestrator: 登记 target 可写根失败：${granted.text}`)
       }
       // G1：子会话起来后声明式建 goal（create + disarm，不驱动续轮）。
       // 不 await：goal 服务不可用/子 agent 晚出现都不能拖慢派发；桥内部吞错。
@@ -535,42 +824,132 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       return { id: activation.childId, name: spec.label, sessionId: activation.childId, target: activation.childId }
     },
     // access 是尾部可选参数（新参数只追加不改位置：老调用方按位置传 readOnly/objective 不受影响）。
-    async send(target, message, signal, targetDir, taskId, readOnly, objective, access) {
-      const sent = await subagents.sendMessage(requireAgent(), target, [{ type: 'text', text: message }], {
-        signal: signal ?? new AbortController().signal,
-      })
-      // 投递成功先记事件（代码顺序：投递 → 注册），日志时间序可自证「注册在投递之后」。
-      try {
-        onEvent('task.message.sent', { taskId, sessionId: target, detail: { targetDir: targetDir ?? null } })
-      } catch { /* 审计事件失败不能外溢 */ }
-      // 只读任务续派：resume 后按同一会话日志仍应保留 read-only；这里幂等补一次（已有则跳过）。
-      if (readOnly === true) ensureReadOnly(target)
-      // 完整访问续派同理（resume 出的新 Session 对象投影可能还没读回模式；已有则跳过）。
-      if (access === 'full' && readOnly !== true) ensureModeReady(target, 'danger-full-access')
-      // 冷恢复/续派时子会话在发送前还取不到，sendMessage 之后才 resolve 出**新的 Session 对象**；
-      // 投递成功后再幂等补注册（失败路径不注册；失败只 warn，不影响投递结果）。
+    // options（第 9 参，X5）：`{ planApproved?, messageId?, attemptKey? }`
+    //   - planApproved：已批准计划任务的续派 → 先关 plan mode，再在 post-send 授予可写根；
+    //   - messageId / attemptKey：同一逻辑投递的重放（跨重启靠 followup 行 meta.messageId）→ 只重试授予，不再投递。
+    async send(target, message, signal, targetDir, taskId, readOnly, objective, access, options = {}) {
+      const opts = options ?? {}
+      // 0) 幂等：已有一条「同一次投递」的记录 → 只重试授予并返回原 messageId，绝不二次 sendMessage。
+      if (typeof opts.messageId === 'string' && opts.messageId !== '') {
+        retryPlanGrantImpl(target, { taskId, targetDir, messageId: opts.messageId })
+        return opts.messageId
+      }
+      if (typeof opts.attemptKey === 'string' && opts.attemptKey !== '' && sentCache.has(opts.attemptKey)) {
+        const messageId = sentCache.get(opts.attemptKey)
+        retryPlanGrantImpl(target, { taskId, targetDir, messageId })
+        return messageId
+      }
+      const parent = requireAgent()
+      // 1) 投递前 preflight：写域判定被拒 → 消息**不外发**（投递之后注册失败只能 warn，无法回滚）。
+      // 无 target 的任务按「父会话 cwd」归一：否则两条无 target 的任务会同时从同一个 cwd 写。
       if (readOnly !== true) {
+        const denied = deniedChild(taskId, targetDir ?? parent.session?.header?.cwd, target)
+        if (denied !== undefined) throw denied
+      }
+      const planApproved = opts.planApproved === true && readOnly !== true
+      // 2) 已批准计划任务：先关 plan mode / 释放 guard，再把「写入意图」登记成 switching（等 post-send 授予）。
+      //    顺序写死（v7）：必须在 planChildren 被删之前取 wasPlan，否则 planEvents 里永远没有 set(false)。
+      //    失败只记事件/日志，**不阻断投递**（plan mode 是软引导；只读由 grant 决定）。
+      if (planApproved) {
         try {
-          await ensureWritableRoot(target, targetDir)
+          const wasPlan = planChildren.has(target) || planApplied.has(target)
+          if (wasPlan) {
+            const applied = applyPlanMode(target, false)
+            releasePlan(target) // 清 planChildren/planApplied/guard（也会清旧的 planWrite 行）
+            safeEvent('subagent.plan-mode.approved', {
+              sessionId: target,
+              detail: { planMode: applied.outcome ?? null, reason: applied.ok === true ? null : (applied.reason ?? null) },
+            })
+          }
+          planChildren.delete(target) // 防御性（releasePlan 已清）
+          planWrite.set(target, {
+            targetDir: targetDir ?? parent.session?.header?.cwd ?? '',
+            taskId,
+            state: 'switching',
+            reason: 'pending',
+            messageId: null,
+            updatedAt: Date.now(),
+          })
+          trimDispatchCaches()
         } catch (error) {
-          onWarn(`dsh-orchestrator: 续派后补注册可写根失败：${errorText(error)}`)
+          onWarn(`dsh-orchestrator: 续派前关 plan mode 失败（不影响投递）：${errorText(error)}`)
         }
       }
-      // G1：续派后目标文本可能变化 → edit（桥内部比较文本；agent 冷恢复晚出现时等一会儿）。
-      if (goalBridge !== undefined && typeof goalBridge.update === 'function' && typeof objective === 'string' && objective.trim() !== '') {
-        void Promise.resolve(goalBridge.update(taskId, target, objective)).catch(error => {
-          onWarn(`dsh-orchestrator: 更新子会话目标失败：${errorText(error)}`)
-        })
+      // 3) 只有 sendMessage 失败才算「未投递」。
+      const raw = await subagents.sendMessage(parent, target, [{ type: 'text', text: message }], {
+        signal: signal ?? new AbortController().signal,
+      })
+      const messageId = normalizeMessageId(raw)
+      // 4) post-send：消息已是事实。**从这里到 return 整段 try/catch，任何异常只 warn，绝不外抛**（option ①）。
+      //    否则 action 层会把「已投递」当「失败」、sendReliable 还可能重发同一条消息。
+      try {
+        // 投递成功先记事件（代码顺序：投递 → 注册），日志时间序可自证「注册在投递之后」。
+        safeEvent('task.message.sent', { taskId, sessionId: target, detail: { targetDir: targetDir ?? null } })
+        if (typeof opts.attemptKey === 'string' && opts.attemptKey !== '' && messageId !== undefined) {
+          sentCache.set(opts.attemptKey, messageId)
+          trimDispatchCaches()
+        }
+        if (planApproved) {
+          const pending = planWrite.get(target)
+          if (pending !== undefined) pending.messageId = messageId ?? null
+        }
+        // 只读任务续派：resume 后按同一会话日志仍应保留 read-only；这里幂等补一次（已有则跳过）。
+        if (readOnly === true) ensureReadOnly(target)
+        // 完整访问续派同理（resume 出的新 Session 对象投影可能还没读回模式；已有则跳过）。
+        if (access === 'full' && readOnly !== true) ensureModeReady(target, 'danger-full-access')
+        // 冷恢复/续派时子会话在发送前还取不到，sendMessage 之后才 resolve 出**新的 Session 对象**；
+        // 权威授予在这里（hook 只是尽力提前）：投递前的 preflight 已判过，这里失败只改 switching。
+        if (readOnly !== true) {
+          if (planApproved) {
+            const session = childSessionOf(target)
+            if (session === undefined) {
+              markPlanSwitching(target, 'post-send-no-session')
+              safeEvent('subagent.writable-root.no-session', { taskId, sessionId: target, phase: 'post-send' })
+            } else {
+              const granted = tryGrant(target, session, targetDir, taskId, { compensateOnFailure: true })
+              const pending = planWrite.get(target)
+              if (pending !== undefined) {
+                pending.state = granted.ok === true ? 'granted' : 'switching'
+                pending.reason = granted.ok === true ? (granted.skipped ?? null) : (granted.code ?? 'grant-failed')
+                pending.updatedAt = Date.now()
+              }
+            }
+          } else {
+            const granted = await ensureWritableRoot(target, targetDir, { taskId, phase: 'post-send' })
+            if (granted.ok !== true) {
+              safeEvent('subagent.writable-root.post-send-failed', {
+                taskId,
+                sessionId: target,
+                detail: { reason: granted.code ?? granted.skipped ?? null, text: granted.text ?? null },
+              })
+            }
+          }
+        }
+        // G1：续派后目标文本可能变化 → edit（桥内部比较文本；agent 冷恢复晚出现时等一会儿）。
+        if (goalBridge !== undefined && typeof goalBridge.update === 'function' && typeof objective === 'string' && objective.trim() !== '') {
+          void Promise.resolve(goalBridge.update(taskId, target, objective)).catch(error => {
+            onWarn(`dsh-orchestrator: 更新子会话目标失败：${errorText(error)}`)
+          })
+        }
+      } catch (error) {
+        onWarn(`dsh-orchestrator: 投递后记账/授予失败（不影响已投递）：${errorText(error)}`)
       }
-      return sent
+      return messageId ?? raw
     },
-    async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access) {
+    async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access, options = {}) {
       let lastError
       for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+        // 已投递标记：send 在 sendMessage 成功后绝不 reject；万一未来有人加了会抛的语句，这里也绝不再发一遍。
+        let delivered = false
         try {
-          return await this.send(target, message, signal, targetDir, taskId, readOnly, objective, access)
+          const sent = await this.send(target, message, signal, targetDir, taskId, readOnly, objective, access, options)
+          delivered = true
+          return sent
         } catch (error) {
+          if (delivered) throw error
           lastError = error
+          // 写域被拒是「等别人收尾」的确定结果，重试 3 次只会把拒绝文案糊成「投递失败」。
+          if (error?.code === WRITE_DOMAIN_DENIED) throw error
           if (attempt < retryDelaysMs.length) {
             onWarn(`续派第 ${attempt + 1} 次投递失败：${error?.message ?? error}`)
             await sleep(retryDelaysMs[attempt])
@@ -580,47 +959,16 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       throw new Error(`投递失败：${lastError?.message ?? lastError}`)
     },
     /**
-     * P8：用户批准计划后的恢复执行。沙箱切回 workspace-write（与 ensureReadOnly 同一入口、同一事件形状），
-     * 关 plan mode，并释放 exit_plan_mode guard（批准后不再需要）。
-     * 只由 tools.js / panel-actions.js 在「投递成功且任务回到 running」之后调用。
+     * 已批准计划任务的「重试授予」入口（`task_message({action:'approve'})` 在已 approved 时走这里）。
+     * 不投递、不重写审计；底层按当前 live Session 重新判写域 + 切 workspace-write + 注册可写根。
+     * 返回 `planWriteInfo`：`{state:'granted'|'switching', reason, messageId, ...}`。
      */
-    async approvePlan(target, targetDir) {
-      const session = childSessionOf(target)
-      let sandbox = 'missing'
-      if (session !== undefined) {
-        try {
-          if (typeof session.append === 'function') {
-            session.append('sandbox/mode', { mode: 'workspace-write' })
-            sandbox = 'workspace-write'
-            onEvent('subagent.sandbox.resumed', { sessionId: target, detail: { mode: 'workspace-write' } })
-          }
-        } catch (error) {
-          onWarn(`dsh-orchestrator: 计划批准后切换沙箱失败：${errorText(error)}`)
-        }
-      }
-      // rc.3 子会话 header.cwd 是父会话目录：批准后补 target 可写根（派发时计划任务跳过注册）。
-      if (sandbox === 'workspace-write' && typeof targetDir === 'string' && targetDir !== '') {
-        try {
-          await ensureWritableRoot(target, targetDir)
-        } catch (error) {
-          onWarn(`dsh-orchestrator: 计划批准后登记可写根失败：${errorText(error)}`)
-        }
-      }
-      const applied = applyPlanMode(target, false)
-      releasePlan(target)
-      onEvent('subagent.plan-mode.approved', {
-        sessionId: target,
-        detail: { sandbox, planMode: applied.outcome ?? null, reason: applied.ok === true ? null : (applied.reason ?? null) },
-      })
-      if (sandbox !== 'workspace-write') {
-        return {
-          ok: false,
-          reason: session === undefined ? `未拿到子会话 ${target}` : '沙箱模式写入失败（会话没有 append）',
-          sandbox,
-          planMode: applied.outcome ?? null,
-        }
-      }
-      return { ok: true, sandbox, planMode: applied.outcome ?? null }
+    retryPlanGrant(target, input = {}) {
+      return retryPlanGrantImpl(target, input)
+    },
+    /** 计划写入意图的只读快照（task_detail/诊断）：`{state, reason, messageId, targetDir, taskId, updatedAt}`。 */
+    planWriteInfo(target) {
+      return planWriteInfoOf(target)
     },
     /** 有本地 activation 直接 dispose（提前取消）；没有（重启后）走 interrupt。两种都释放可写根。 */
     async stop(target, taskId) {
@@ -639,6 +987,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       } finally {
         releaseWritableRoot(target)
         releasePlan(target)
+        // 幂等缓存按 taskId 段清（stop 拿得到 taskId；releaseWritableRoots 只有 session，靠容量上限兜底）。
+        clearSentCacheFor(taskId)
         // G1：停止 = 放弃该目标，清掉平台 goal（不留下「active」误导后续续派/面板）。
         if (goalBridge !== undefined && typeof goalBridge.clear === 'function') {
           void Promise.resolve(goalBridge.clear(taskId, target)).catch(error => {
@@ -668,6 +1018,6 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
 }
 
 // 派发后端只剩 subagent：`backend` 键已随 P1-A 删除（P0-1 已删 team 实现），这里不再有分派。
-export function createDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge }) {
-  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge })
+export function createDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge }) {
+  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge })
 }

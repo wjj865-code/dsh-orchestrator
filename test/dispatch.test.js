@@ -861,6 +861,88 @@ test('G1：续派投递成功后用「原目标 + 最新指示」update，失败
   assert.deepEqual(bridge.calls, [])
 })
 
+test('G1b：post-send 段抛错不影响已投递（send 仍 resolve、sendReliable 不重投）', async () => {
+  // option ①（v6 §2.1）：sendMessage 成功后到 return 之间整段 try/catch——记账/授予失败只 warn。
+  // 这里让 post-send 的会话查询抛错（sandboxPolicy 存在 → ensureWritableRoot 会去查 childSessionOf）。
+  const warnings = []
+  let sends = 0
+  const subagents = {
+    async sendMessage() { sends += 1; return 'm-post' },
+    async interrupt() {},
+    async listDescendants() { return [] },
+  }
+  const dispatcher = createSubagentDispatcher({
+    subagents,
+    agent,
+    sandboxPolicy: () => ({ registerWritableRoot: () => () => {} }),
+    agents: () => ({ get() { throw new Error('agents boom') } }),
+    onWarn: message => { warnings.push(message) },
+    sessionWaitMs: 0,
+  })
+  const sent = await dispatcher.sendReliable('c-9', 'x', undefined, 'C:/target', 't-9', false)
+  assert.equal(sent, 'm-post')
+  assert.equal(sends, 1, '已投递绝不重发')
+  assert.match(warnings.join('\n'), /投递后记账\/授予失败/)
+})
+
+test('V6 M2：send 的 messageId / attemptKey 幂等重放——只重试授予，不二次 sendMessage', async () => {
+  let sends = 0
+  let grants = 0
+  const session = { id: 'c-7', header: { cwd: 'C:\\work' }, append() {} }
+  const dispatcher = createSubagentDispatcher({
+    subagents: {
+      async sendMessage() { sends += 1; return { messageId: 'm-7' } },
+      async interrupt() {},
+      async listDescendants() { return [] },
+    },
+    agent,
+    sessions: () => ({ get: () => session }),
+    agents: () => ({ get: id => id === 'c-7' ? { id, session } : undefined }),
+    sandboxPolicy: () => ({ overrideOf: () => 'workspace-write', registerWritableRoot: () => { grants += 1; return () => {} } }),
+    sessionWaitMs: 0,
+  })
+  const first = await dispatcher.send('c-7', 'x', undefined, 'C:/target', 't-7', false, undefined, undefined, { attemptKey: 'followup:t-7:1' })
+  assert.equal(first, 'm-7')
+  assert.equal(sends, 1)
+  // 同 attemptKey 重放：直接返回缓存 id，只走 retryPlanGrant（不再投递）。
+  const replay = await dispatcher.send('c-7', 'x', undefined, 'C:/target', 't-7', false, undefined, undefined, { attemptKey: 'followup:t-7:1' })
+  assert.equal(replay, 'm-7')
+  assert.equal(sends, 1)
+  // 跨重启重放：调用方带 followup 行 meta.messageId。
+  const replayed = await dispatcher.send('c-7', 'x', undefined, 'C:/target', 't-7', false, undefined, undefined, { messageId: 'm-7' })
+  assert.equal(replayed, 'm-7')
+  assert.equal(sends, 1)
+  assert.equal(grants >= 1, true, '重放仍按当前 Session 幂等重试授予')
+})
+
+test('V6 M2：retryPlanGrant 不投递、按 live Session 切 ws；无 Session 停在 switching', async () => {
+  let sends = 0
+  const modes = new Map()
+  const registrations = []
+  const session = { id: 'c-8', header: { cwd: 'C:\\work' }, append(event, payload) { if (event === 'sandbox/mode') modes.set('c-8', payload.mode) } }
+  const dispatcher = createSubagentDispatcher({
+    subagents: {
+      async sendMessage() { sends += 1; return 'm' },
+      async interrupt() {},
+      async listDescendants() { return [] },
+    },
+    agent,
+    sessions: () => ({ get: id => id === 'c-8' ? session : undefined }),
+    agents: () => ({ get: id => id === 'c-8' ? { id, session } : undefined }),
+    sandboxPolicy: () => ({ overrideOf: s => modes.get(s.id), registerWritableRoot: (s, dir) => { registrations.push([s.id, dir]); return () => {} } }),
+    sessionWaitMs: 0,
+  })
+  const granted = dispatcher.retryPlanGrant('c-8', { taskId: 't-8', targetDir: 'C:/target' })
+  assert.equal(granted.state, 'granted')
+  assert.equal(modes.get('c-8'), 'workspace-write')
+  assert.deepEqual(registrations, [['c-8', 'C:/target']])
+  assert.equal(sends, 0, 'retry grant 绝不投递')
+  // 无 Session：诚实停在 switching（可再试），不抛错。
+  const missing = dispatcher.retryPlanGrant('c-missing', { taskId: 't-8', targetDir: 'C:/target' })
+  assert.equal(missing.state, 'switching')
+  assert.equal(missing.reason, 'retry-no-session')
+})
+
 test('G1：stop 清目标；dispose 抛错也在 finally 里清', async () => {
   const cleared = []
   const bridge = {

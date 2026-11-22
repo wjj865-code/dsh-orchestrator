@@ -22,8 +22,12 @@ export function resumeGate(task, { history = 0 } = {}) {
   const status = String(task.status ?? '')
   // 状态级判据一律查能力表（failed / orphaned / done），别在这里再写一份状态集合。
   if (hasCap(status, 'resume') !== true || canTransition(status, 'running') !== true) return { ok: false, reason: 'state' }
-  // done 的行级白名单：只有「超时被自动收走」的交付能续跑；确认过的完成不改写。
-  if (status === 'done' && task.close_reason !== CLOSE_REASONS.timeout) return { ok: false, reason: 'closed' }
+  // done 的行级白名单：只有「没有经过人确认就被自动收走」的交付能续跑；
+  // - `timeout`：交付超时自动完成；
+  // - `chain`：链式自动放行（`chain:'auto'` 交付时仍有下游在等 → 自动确认完成）——同样没人确认过内容。
+  // 确认过的完成（coordinator / panel）与取消不改写。写域由 `write-gate.decideRegrant` 兜底：
+  // 自动放行后下游可能已经在跑，此时续跑会被判「目录被占」而拒绝。
+  if (status === 'done' && ![CLOSE_REASONS.timeout, CLOSE_REASONS.chain].includes(task.close_reason)) return { ok: false, reason: 'closed' }
   if (task.target === null || task.target === undefined || task.target === '') return { ok: false, reason: 'no_session' }
   // 检出已清理：原会话的 cwd 目录没了，冷恢复也写不进去（retry 会按原基线重建）。
   if (task.worktree_state === 'cleaned') return { ok: false, reason: 'checkout_cleaned' }

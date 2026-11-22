@@ -3,11 +3,12 @@
 // 职责切分（与 docs/ARCHITECTURE.md「计划阶段」一致）：
 // - 进入/退出运行期状态（sandbox/mode、planMode.set、exit_plan_mode guard）在 src/dispatch.js；
 // - 台账只存编排视图：plan_first（是否计划任务）+ plan_state（六值 = 四态 + none/rejected）；
-// - 本模块放纯映射、批准前置判定与一次「批准后恢复执行」的编排函数，tools.js 复用，避免两处口径。
+// - 本模块放纯映射、批准前置判定与**纯记账**函数，tools.js 复用，避免两处口径。
 //
 // P0-4（2026-11-23 用户拍板）：批准是**显式动作** `task_message({ action:'approve' })`。
-// 普通 `message` 在计划任务上只记讨论/修订，不再触发这里的 approvePlan；前置三条见 planApproveGate。
-import { setPlanState, setTaskAccepted } from './ledger.js'
+// 普通 `message` 在计划任务上只记讨论/修订，不会批准；前置三条见 planApproveGate。
+// v6/v7：首批准只记账（`recordApproval`），写权限在**续派投递的 post-send** 由 dispatch 授予。
+import { clearTaskQuestion, setPlanState, setTaskAccepted } from './ledger.js'
 // P1-C 文案单源：计划阶段的原子句在 src/copy.js，这里只做本域的映射与一次「批准后恢复执行」。
 import { EXIT_PLAN_MODE_DENIAL, PLAN_FIRST_DETAIL, PLAN_PHASE_LINES, PLAN_STATUS_LINES } from './copy.js'
 
@@ -98,30 +99,22 @@ export function planApproveGate(task) {
 }
 
 /**
- * 显式批准后恢复执行：切沙箱 + 关 plan mode + 台账 `plan_state='approved'` + 审批审计。
+ * 显式批准 = **纯记账**（B 语义，2026-11-23 用户拍板；v6/v7 收口：投递即记账 + post-send 权威授予）。
  *
- * 顺序：先让派发层切沙箱（workspace-write）+ 关 plan mode（可能服务缺失 → 只降级，不抛），
- * 再把台账 `plan_state` 落 `approved` 并写确认审计（复用 `accepted_by/accepted_at` + `accepted_kind='plan'`）。
- * 台账更新不依赖运行期成功与否——「用户批准了」是事实，运行期失败通过返回值让调用方如实说明。
+ * 只做三件事：`plan_state='approved'` + 审批审计（`accepted_by/accepted_at` + `accepted_kind='plan'`）
+ * + 清 `question`（面板「需要你」横幅随之消失，客户端零字节改动）。
  *
- * **不投递消息、不改 status**：批准 ≠ 续派；协调者下一步自己 `task_message` 让子会话按计划执行。
+ * **不投递、不碰沙箱、不改 status、不调 dispatcher**：批准是台账事实；写权限在**下一次续派投递**时按
+ * `planApproved` 走 `dispatch.send` 的 post-send 授予（`grantApprovedWrite` 内部才判写域 + append + 注册）。
+ * 因此「批准成功」不等于「当场可写」——回执由 `approvalNote` 如实说明。
  *
- * @returns {Promise<{ok: boolean, already?: boolean, reason?: string, planMode?: string|null, sandbox?: string}>}
+ * 幂等：调用方按 `planApproveGate(task).already` 分流——`already` 走 `dispatcher.retryPlanGrant`
+ * 重试授予，**不重写审计**（`accepted_at` 保留首次）。
+ *
+ * @returns {{ok:true, already:false, deferred:true}}
  */
-export async function approvePlan({ db, dispatcher, task, log = () => {}, acceptedBy = 'coordinator', now = Date.now() } = {}) {
+export function recordApproval({ db, task, log = () => {}, acceptedBy = 'coordinator', now = Date.now() } = {}) {
   if (task === undefined || task === null) return { ok: false, reason: 'no-task' }
-  const gate = planApproveGate(task)
-  if (gate.ok !== true) return { ok: false, reason: gate.code ?? 'not-approvable' }
-  if (gate.already === true) return { ok: true, already: true, sandbox: null, planMode: null }
-  const target = task.target ?? task.session_id
-  let result = { ok: false, reason: 'unsupported' }
-  try {
-    if (typeof dispatcher?.approvePlan === 'function') {
-      result = await dispatcher.approvePlan(target, task.target_dir) ?? { ok: false, reason: 'no-result' }
-    }
-  } catch (error) {
-    result = { ok: false, reason: error?.message ?? String(error) }
-  }
   try {
     setPlanState(db, task.id, 'approved')
   } catch (error) {
@@ -133,31 +126,48 @@ export async function approvePlan({ db, dispatcher, task, log = () => {}, accept
   } catch (error) {
     log('task.plan.audit-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } })
   }
+  // 横幅跟随：批准成功即清问题/选项（host-route 下发 question:null，列表卡/抽屉 Banner/工作台 chip 自动不渲染）。
+  try {
+    clearTaskQuestion(db, task.id)
+  } catch (error) {
+    log('task.plan.question-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } })
+  }
   log('task.plan.approved', {
     taskId: task.id,
-    sessionId: target ?? null,
+    sessionId: task.target ?? task.session_id ?? null,
     detail: {
-      ok: result?.ok === true,
-      reason: result?.reason ?? null,
-      planMode: result?.planMode ?? null,
-      sandbox: result?.sandbox ?? null,
       // 审计三件套：谁批的、何时批的、批的是哪份计划（logs 是审批历史的真源）。
       acceptedBy,
       acceptedAt: now,
       planPath: task.plan_path ?? null,
+      // 批准只记账：沙箱/写根都还没动，等下一次续派投递的 post-send 授予。
+      granted: false,
     },
   })
-  return result
+  return { ok: true, already: false, deferred: true }
 }
 
-/** 工具结果里补一句「批准已生效 / 退出失败 / 已经批过」，不让协调者以为切回可写一定成功。 */
+/**
+ * 续派前是否需要「批准后写入」语义（同步判据，供调用方在 `await` 之前分流）：
+ * 只有「计划任务 ∧ plan_state==='approved'」需要——`send(..., { planApproved:true })` 才会先关 plan mode、
+ * 再在 post-send 授予可写根。其余任务（含未批准的计划任务）保持原时序。
+ */
+export const needsPlanWriteSwitch = task =>
+  isPlanTask(task) === true && planStateOf(task) === 'approved'
+
+/** 工具结果里补一句「批准已生效 / 沙箱何时切 / 已经批过」，不让协调者以为批完就能写。 */
 export function approvalNote(result) {
+  const deferred = result?.deferred === true
   if (result?.already === true) {
-    return '计划已经是「已批准执行」，无需重复批准；下一步用 task_message 续派实现。'
+    return deferred
+      ? '计划已经是「已批准执行」，无需重复批准（这次重试授予仍未切回可写——续派投递时会再授予一次）。下一步用 task_message 续派实现。'
+      : '计划已经是「已批准执行」，无需重复批准（本次重试授予已确认可写根）。下一步用 task_message 续派实现。'
   }
   if (result?.ok === true) {
-    return `计划已批准：${result.sandbox === 'workspace-write' ? '沙箱已切回可写' : '已请求切回可写'}；`
-      + '下一步用 task_message 续派实现（子会话按计划继续执行）。'
+    return deferred
+      ? '计划已批准（沙箱待续派时切换）：批准只记账，这次没有改沙箱，也不影响批准生效；'
+        + '下一步用 task_message 续派实现——**续派投递后才切可写**，批完还不能直接写。'
+      : '计划已批准；下一步用 task_message 续派实现（子会话按计划继续执行）。'
   }
   const reason = result?.reason ?? '未知原因'
   return `计划未批准：${reason}。子会话仍是只读；先补前置（计划落盘 / blocked 报告），或 task_message({ action: 'stop' }) 后重派。`

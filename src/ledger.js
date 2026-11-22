@@ -814,6 +814,12 @@ export function findRecentDeliveredFollowup(db, taskId, rendered, since) {
     ORDER BY f.seq DESC LIMIT 1`).get(taskId, String(rendered), since)
 }
 
+/** 最近若干条消息里第一条 followup 的 `meta.messageId`（跨重启的投递幂等链：approve retry grant / 重放用）。 */
+export function lastSentMessageId(db, taskId) {
+  return recentMessages(db, taskId, 10)
+    .find(row => row.kind === 'followup' && typeof row.meta?.messageId === 'string')?.meta.messageId ?? null
+}
+
 export function addNotification(db, { taskId, level, status = 'delivered', deliveredAt = Date.now(), mergedInto = null, reason = null }) {
   const result = db.prepare('INSERT INTO notifications (task_id, level, status, created_at, delivered_at, merged_into, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(String(taskId), String(level), String(status), Date.now(), deliveredAt, mergedInto, reason)

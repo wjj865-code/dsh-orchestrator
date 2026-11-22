@@ -7,6 +7,13 @@
 //   test/action-errors.test.js 断言 code 唯一、状态合法、两个通道取词不抛错。
 const define = ({ http = 400, panel, tool }) => Object.freeze({ http, panel, tool })
 
+/**
+ * 派发层拒绝码：写域判定不许授予时可写根**不注册**、消息**不外发**。
+ * 三个入口共用（`dispatch.spawn` / `dispatch.send` / `queue.pump` preflight），
+ * 由 `src/write-gate.js` 的 `decideDispatchGrant` 产出；不是面板/工具错误码，所以不进下表。
+ */
+export const WRITE_DOMAIN_DENIED = 'WRITE_DOMAIN_DENIED'
+
 export const ACTION_ERRORS = Object.freeze({
   // 台账 / 任务
   // 版本 B《ID 出口网关》：错误文案**不回声入参**——面板 toast 与工具回执都是用户面出口，
@@ -91,6 +98,23 @@ export const ACTION_ERRORS = Object.freeze({
     http: 409,
     panel: ({ label, reason }) => `未把消息追给任务「${label}」：${reason}`,
     tool: ({ label, reason }) => `未把消息追给任务「${label}」：${reason}`,
+  }),
+  // P0-2：续跑 / 重派也走同一次写域判定（以前这两条各自绕过，两个子会话能同时写同一份工作树）。
+  RESUME_WRITE_CONFLICT: define({
+    http: 409,
+    panel: ({ label, reason }) => `未续跑任务「${label}」：${reason}`,
+    tool: ({ label, reason }) => `未续跑任务「${label}」（状态、死因、续跑次数都没变）：${reason}`,
+  }),
+  RETRY_WRITE_CONFLICT: define({
+    http: 409,
+    panel: ({ label, reason }) => `未重派任务「${label}」（没有新建任务）：${reason}`,
+    tool: ({ label, reason }) => `未重派任务「${label}」——台账没有新增任务：${reason}`,
+  }),
+  // 计划批准后**下一次续派才切沙箱**（B 语义）：切不回来就不投递、不留消息行，任务仍是 approved 可重试。
+  PLAN_APPROVE_WRITE_CONFLICT: define({
+    http: 409,
+    panel: ({ label, reason }) => `未续派任务「${label}」：计划已批准，但沙箱这次没切回可写（可重试）。${reason}`,
+    tool: ({ label, reason }) => `未把消息追给任务「${label}」：计划已是「已批准执行」（可重试），但沙箱这次没切回可写——投递已取消、没有写入消息行。${reason}`,
   }),
   MESSAGE_UNREACHABLE: define({
     http: 502,

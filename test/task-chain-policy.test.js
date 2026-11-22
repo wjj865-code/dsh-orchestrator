@@ -169,7 +169,9 @@ test('chain:"auto" 归同一个任务链段：句子单源、dependsOn 描述不
   assert.equal(parameters.properties.dependsOn.description, TASK_CHAIN_TOOL_DESC)
   assert.equal(parameters.properties.chain.description, CHAIN_AUTO_TOOL_DESC)
   assert.match(parameters.properties.chain.description, /没有下游时保持/)
-  assert.match(parameters.properties.chain.description, /不能追问\/续跑/)
+  // 0.34.0：chain 放行的 done 进 resume 白名单 → 文案从「不能追问/续跑」改成「不能追问，可 resume」。
+  assert.match(parameters.properties.chain.description, /不能追问/)
+  assert.match(parameters.properties.chain.description, /resume/)
 })
 
 test('文案单源：任务链的规则句只在 src/copy.js 定义一次', () => {

@@ -66,12 +66,12 @@ test('状态事实与门控：可续跑的状态、done 行级白名单、无会
     resumeGate({ ...base, worktree_state: 'cleaned' }).reason,
     resumeGate(undefined).reason,
   ], [true, 'state', 'no_session', 'checkout_cleaned', 'not_found'])
-  // done：超时自动完成的可以续跑；协调者/用户确认过的不改写——链式自动放行（chain:'auto'）也等同「确认过」。
+  // done：超时自动完成 / 链式自动放行（都没人确认过内容）可以续跑；协调者/用户确认过的不改写。
   assert.deepEqual([
     resumeGate({ status: 'done', target: 'c-1', close_reason: CLOSE_REASONS.timeout }).ok,
+    resumeGate({ status: 'done', target: 'c-1', close_reason: CLOSE_REASONS.chain }).ok,
     resumeGate({ status: 'done', target: 'c-1', close_reason: CLOSE_REASONS.coordinator }).reason,
-    resumeGate({ status: 'done', target: 'c-1', close_reason: CLOSE_REASONS.chain }).reason,
-  ], [true, 'closed', 'closed'])
+  ], [true, true, 'closed'])
   // 软阈值：超过阈值仍放行，只给 warn（长任务正好是「最该续跑」的那类，硬拦会逼出新派）。
   assert.deepEqual([
     resumeGate(base, { history: RESUME_HISTORY_THRESHOLD }).warn,

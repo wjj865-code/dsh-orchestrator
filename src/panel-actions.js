@@ -1,6 +1,7 @@
 // 面板动作：/api/orchestrator 的 stop/retry/message/delete/detail/artifacts/preview。
 // 与工具层共享同一台账/队列/派发器；鉴权由连接层 owner-only 负责。
 import { closeSync, openSync, readSync, statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { renderBriefForTask } from './brief.js'
 import { compactMessage } from './message-body.js'
 import { resolveLastMessage } from './last-message.js'
@@ -12,11 +13,17 @@ import { dependencyState, validateDepends } from './deps.js'
 import { taskLabel } from './task-label.js'
 import { statusLabel } from './state.js'
 import { panelFailure } from './action-errors.js'
-// P0-3：面板「追加」与 task_message 同口径复判写域（不判就会绕过工具层的并发防护）。
-import { decideFollowupGuard } from './write-guard.js'
+// P0-2/P0-3：面板「追加」与 task_message 同口径——判定走 write-gate 门面（共用同一份判定 + 内存占位），
+// 面板重派（retry）同样必须在建任务前判写域（以前这里完全绕过）。
+import { decideCreate, decideFollowup, decideRegrant } from './write-gate.js'
+import { acquireWriteHold, releaseWriteHold, touchWriteHold } from './write-hold.js'
+import { WRITE_DOMAIN_DENIED } from './action-errors.js'
+import { checkoutRejection, taskTargetDir } from './write-guard.js'
 import { objectiveForMessage } from './goal.js'
 // P0-4：面板**没有**批准入口（plan-approve 仍是 UNKNOWN_ENDPOINT 的反例清单），message 只记讨论/修订。
-import { isPlanTask, planStateOf } from './plan-mode.js'
+// 已批准计划任务的写入意图走 `send(..., { planApproved:true })`（授权在 post-send），面板不再有切沙箱前置。
+import { isPlanTask, needsPlanWriteSwitch, planStateOf } from './plan-mode.js'
+import { normalizeMessageId } from './dispatch.js'
 import { PLAN_MESSAGE_NOTES } from './copy.js'
 import { retryWorktreeOf } from './worktree.js'
 import {
@@ -102,9 +109,18 @@ const followupFailure = task => {
   }
 }
 
-export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge, cleanupWorktree, teamBoard, bodySource }) {
+export function createPanelActions({ db, dispatcher, queue, config, coordinatorStatus, logger, goalBridge, cleanupWorktree, teamBoard, bodySource, defaultCwd }) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志不能影响 UI 动作 */ }
+  }
+  // F：面板动作的「无 target 归一目录」与工具层 defaultCwd 同源（message/retry 的写域判定用它）。
+  const defaultDir = () => {
+    try {
+      const value = typeof defaultCwd === 'function' ? defaultCwd() : defaultCwd
+      return typeof value === 'string' && value.trim() !== '' ? value : undefined
+    } catch {
+      return undefined
+    }
   }
   const current = () => typeof coordinatorStatus === 'function' ? coordinatorStatus() : { id: undefined, live: true }
   // 正文读取器（P1）：细节接口按需冷读宿主会话日志；没装配时一律按摘要降级（不报错）。
@@ -343,6 +359,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     try { dispatcher.releaseWritableRoots?.(task.session_id ?? task.target) } catch (error) {
       log('ui.stop.release.failed', { taskId: task.id, detail: { error: warn('STOP_RELEASE_FAILED', error) } })
     }
+    // S10'：stop 是终态动作，允许**无 token 强清**该任务的全部占位（不在途投递会由 dispatch.stop 收口）。
+    try { releaseWriteHold(task.id) } catch { /* 占位释放失败只影响 TTL */ }
     // P9：终态按 worktreeCleanup 档位清理（默认 off = 全保留）。
     try { cleanupWorktree?.(getTask(db, task.id) ?? task) } catch (error) {
       log('ui.stop.cleanup.failed', { taskId: task.id, detail: { error: warn('STOP_CLEANUP_FAILED', error) } })
@@ -379,16 +397,54 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     // 工具层保持历史行为（创建后标 failed 再抛错），两边错误码/文案仍共用 action-errors。
     if (status.live === false) return panelFailure('MAIN_SESSION_UNAVAILABLE')
     const depState = dependencyState(db, { depends_on: depends.ids })
+    // P9：隔离任务重派复用原检出（与工具层重派同一口径，见 worktree.js retryWorktreeOf）。
+    const retryWorktree = retryWorktreeOf(task)
+    const retryTarget = retryWorktree === null ? task.target_dir : (task.brief?.target ?? task.target_dir)
+    // P0-2：面板「重派」等于给新任务写权限——以前完全绕过判定（工具层那侧也只有 task_create 判）。
+    // 与工具层同一条门面、同一个同步段（判定 + createTask 之间没有 await）。
+    const isolatedRetry = retryWorktree !== null
+    const retryGuard = decideCreate({
+      db,
+      // F：无 target 的老任务按协调者 cwd 归一（与工具层重派同口径）。
+      target: retryTarget ?? defaultDir(),
+      scopes: task.write_scopes,
+      dependsOn: depends.ids,
+      mode: config?.sameDirGuard,
+      skipChecks: isolatedRetry || task.read_only === true,
+    })
+    if (retryGuard.action === 'reject') {
+      log('ui.retry.rejected', {
+        taskId: task.id,
+        detail: {
+          reason: retryGuard.targetConflicts.length > 0 ? 'same-dir' : 'write-scope',
+          mode: retryGuard.mode,
+          targetDir: retryTarget ?? null,
+          conflicts: [...retryGuard.targetConflicts, ...retryGuard.scopeConflicts].map(({ task: item }) => item.id),
+        },
+      })
+      return panelFailure('RETRY_WRITE_CONFLICT', { label: taskLabel(task), reason: retryGuard.text })
+    }
+    if (retryGuard.note !== '') {
+      log('ui.retry.concurrent-write', { taskId: task.id, detail: { mode: retryGuard.mode, targetDir: retryTarget ?? null } })
+    }
+    // 复用检出被另一条活跃任务占着 → 拒绝（两个子会话会互相踩 git 索引）。
+    if (isolatedRetry && retryWorktree.state === 'reused') {
+      const regrant = decideRegrant({ db, task, kind: 'retry', mode: config?.sameDirGuard, fallbackTarget: defaultDir() })
+      if (regrant.action === 'reject' && regrant.checkoutConflicts.length > 0) {
+        return panelFailure('RETRY_WRITE_CONFLICT', {
+          label: taskLabel(task),
+          reason: checkoutRejection({ path: retryWorktree.path, conflicts: regrant.checkoutConflicts }),
+        })
+      }
+    }
     // G1：旧尝试进入终态，清掉平台 goal；新任务派发时会重新 create+disarm。
     void goalBridge?.clear?.(task.id, task.session_id)
     let retried
-    // P9：隔离任务重派复用原检出（与工具层重派同一口径，见 worktree.js retryWorktreeOf）。
-    const retryWorktree = retryWorktreeOf(task)
     try {
       retried = createTask(db, {
         brief: task.brief,
         coordinatorSession: status.id ?? task.coordinator_session,
-        targetDir: retryWorktree === null ? task.target_dir : (task.brief?.target ?? task.target_dir),
+        targetDir: retryTarget,
         readOnly: task.read_only === true,
         // P8：计划任务重派后重新走计划阶段（新会话要重新探索/批准）。
         planFirst: task.plan_first === true,
@@ -422,12 +478,14 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     if (outcome.task?.status === 'failed') {
       // P9：重派也可能在建检出之后失败 → 按档位清理（默认 off = 保留）。
       try { cleanupWorktree?.(outcome.task) } catch { /* 清理失败只影响磁盘 */ }
+      // 终态：强清新任务的占位（旧任务在失败态也无法再投递）——S10' 允许终态无 token 释放。
+      try { releaseWriteHold(retried.id) } catch { /* ignore */ }
       return panelFailure('RETRY_FAILED', { reason: outcome.task.error ?? '子会话创建失败' }, { taskId: retried.id })
     }
     return { ok: true, taskId: retried.id, status: outcome.task?.status ?? 'pending' }
   }
 
-  const message = async (taskId, text) => {
+  const message = async (taskId, text, requestId) => {
     const task = getTask(db, String(taskId ?? ''))
     const content = typeof text === 'string' ? text.trim() : ''
     if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
@@ -449,11 +507,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     }
     // P0-3：与工具层 task_message 同口径——交付过的任务写根已释放，追问前复判写域；
     // 被占用就不投递、不改状态、不写 followup 行（否则面板会绕过并发判定）。
-    const guard = decideFollowupGuard({
-      tasks: listTasks(db, { active: true }),
-      task,
-      mode: config?.sameDirGuard,
-    })
+    const guard = decideFollowup({ db, task, mode: config?.sameDirGuard, fallbackTarget: defaultDir() })
     if (guard.action === 'reject') {
       log('ui.message.rejected', {
         taskId: task.id,
@@ -477,16 +531,45 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     }
     // followup 先落 pending（待发），投递成功改 delivered，失败改 failed 再补一行 delivery_failed。
     // 详情抽屉据此显示「待发/已投递/投递失败」，不必猜。
+    // guard 通过 → 先占住写域（内存 hold，owner token = panel:<requestId>），再 await 投递；
+    // 失败/成功都只释放自己那一条（工具同时投递时不会互放）。
+    const holdToken = `panel:${typeof requestId === 'string' && requestId !== '' ? requestId : randomUUID()}`
+    acquireWriteHold({
+      taskId: task.id,
+      ownerToken: holdToken,
+      targetDir: taskTargetDir(task),
+      writeScopes: task.write_scopes,
+      checkoutPath: task.worktree_path,
+    })
+    const heartbeat = setInterval(() => {
+      try { touchWriteHold(task.id, holdToken) } catch { /* 续期失败只影响 TTL */ }
+    }, 30_000)
+    heartbeat.unref?.()
+    let holdReleased = false
+    const releaseHold = () => {
+      if (holdReleased) return
+      holdReleased = true
+      clearInterval(heartbeat)
+      try { releaseWriteHold(task.id, holdToken) } catch { /* 释放失败只影响占位时长 */ }
+    }
+    // 已批准计划任务：写权限在 dispatch.send 的 post-send 授予（投递即记账，投递前不再切沙箱）。
+    const planApproved = needsPlanWriteSwitch(task)
     // P1：正文不进台账（真源 = 子会话在宿主的 user/message），只留 digest + 摘要。
     const panelBody = compactMessage('followup', content)
     const seq = addMessage(db, task.id, { kind: 'followup', rendered: panelBody.rendered, meta: { ...(panelBody.meta ?? {}), delivery: 'pending' } })
+    let messageId
     try {
-      if (typeof dispatcher.sendReliable === 'function') {
-        await dispatcher.sendReliable(task.target, content, undefined, task.target_dir, task.id, task.read_only === true, objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined)
-      } else {
-        await dispatcher.send(task.target, content)
-      }
+      const sent = typeof dispatcher.sendReliable === 'function'
+        ? await dispatcher.sendReliable(task.target, content, undefined, taskTargetDir(task) || undefined, task.id, task.read_only === true, objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined, { planApproved, attemptKey: `followup:${task.id}:${seq}` })
+        : await dispatcher.send(task.target, content)
+      messageId = normalizeMessageId(sent)
     } catch (error) {
+      if (error?.code === WRITE_DOMAIN_DENIED) {
+        setMessageDelivery(db, task.id, seq, 'failed', { error: error?.message ?? String(error) })
+        addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${error?.message ?? error}` })
+        log('ui.message.rejected', { taskId: task.id, detail: { reason: 'write-domain-denied' } })
+        return panelFailure('MESSAGE_WRITE_CONFLICT', { label: taskLabel(task), reason: error?.message ?? String(error) })
+      }
       const reason = error?.message ?? String(error)
       setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
       addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
@@ -498,31 +581,38 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       }
       log('ui.message.failed', { taskId: task.id, detail: { error: reason } })
       return panelFailure('MESSAGE_DELIVERY_FAILED', { reason })
+    } finally {
+      releaseHold()
     }
-    setMessageDelivery(db, task.id, seq, 'delivered')
-    touchTask(db, task.id)
-    // 追问必达（与工具层 task_message 同口径）：面板「追加」投递成功 = 在等这条任务的下一条回报，
-    // 下一份 progress 跳过通知水位立刻送达（t-99d4a98c）。
-    markReportExpected(db, task.id)
-    const latest = getTask(db, task.id)
-    // 「待确认」上追问 = 回到 running 复用同一个子会话（可写根没释放）。
-    if (latest !== undefined && RESUMABLE.has(latest.status)) {
-      try { transition(db, task.id, 'running', { error: null }) } catch { /* ignore */ }
-    }
-    clearTaskQuestion(db, task.id)
-    incrementAttempts(db, task.id)
-    // P0-4：面板「追加」**不再批准计划**（用户 2026-11-23 拍板：面板不加批准入口、message 不改 plan_state）。
-    // 与工具 message 同口径：只记讨论/修订，沙箱与 plan_state 都不动；批准只在协调者侧 task_message({action:'approve'})。
+    // —— post-send：消息已是事实，记账失败只 log（不能变成「投递失败」让用户重发）——
     let plan
-    if (isPlanTask(task)) {
-      const planState = planStateOf(task)
-      if (planState === 'planning' || planState === 'waiting_user' || planState === 'revising') {
-        plan = {
-          approved: false,
-          revising: planState === 'waiting_user' || planState === 'revising',
-          note: planState === 'planning' ? PLAN_MESSAGE_NOTES.discussion : PLAN_MESSAGE_NOTES.revising,
+    try {
+      setMessageDelivery(db, task.id, seq, 'delivered', { messageId: messageId ?? null })
+      touchTask(db, task.id)
+      // 追问必达（与工具层 task_message 同口径）：面板「追加」投递成功 = 在等这条任务的下一条回报，
+      // 下一份 progress 跳过通知水位立刻送达（t-99d4a98c）。
+      markReportExpected(db, task.id)
+      const latest = getTask(db, task.id)
+      // 「待确认」上追问 = 回到 running 复用同一个子会话（可写根没释放）。
+      if (latest !== undefined && RESUMABLE.has(latest.status)) {
+        try { transition(db, task.id, 'running', { error: null }) } catch { /* ignore */ }
+      }
+      clearTaskQuestion(db, task.id)
+      incrementAttempts(db, task.id)
+      // P0-4：面板「追加」**不再批准计划**（用户 2026-11-23 拍板：面板不加批准入口、message 不改 plan_state）。
+      // 与工具 message 同口径：只记讨论/修订，沙箱与 plan_state 都不动；批准只在协调者侧 task_message({action:'approve'})。
+      if (isPlanTask(task)) {
+        const planState = planStateOf(task)
+        if (planState === 'planning' || planState === 'waiting_user' || planState === 'revising') {
+          plan = {
+            approved: false,
+            revising: planState === 'waiting_user' || planState === 'revising',
+            note: planState === 'planning' ? PLAN_MESSAGE_NOTES.discussion : PLAN_MESSAGE_NOTES.revising,
+          }
         }
       }
+    } catch (error) {
+      log('ui.message.post-send-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } })
     }
     log('ui.message', { taskId: task.id })
     return {

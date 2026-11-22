@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, listTasks, transition, setPlanState, setTaskPlanPath } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, recentMessages, transition, setPlanState, setTaskPlanPath } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import { createSubagentDispatcher } from '../src/dispatch.js'
@@ -180,7 +180,7 @@ test('P8 台账：计划任务在「等批准」时进终态按 rejected 收口�
 
 // —— 三、工具层：planFirst 契约 + 批准链路 ——
 
-function fakeDispatcher({ failSend = false } = {}) {
+function fakeDispatcher({ failSend = false, retryState = 'switching' } = {}) {
   const calls = []
   let counter = 0
   return {
@@ -190,15 +190,18 @@ function fakeDispatcher({ failSend = false } = {}) {
       counter += 1
       return { id: `c-${counter}`, name: input.name, sessionId: `c-${counter}`, target: `c-${counter}` }
     },
-    async sendReliable(target, message, signal, targetDir, taskId, readOnly) {
-      calls.push(['sendReliable', target, message, readOnly])
+    // 第 9 参 options（planApproved/attemptKey/messageId）要透传：B 语义下「批准后的写入意图」只靠它。
+    async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access, options) {
+      calls.push(['sendReliable', target, message, readOnly, options])
       if (failSend) throw new Error('投递超时')
       return { messageId: 'm-1' }
     },
-    async approvePlan(target, targetDir) {
-      calls.push(['approvePlan', target, targetDir])
-      return { ok: true, sandbox: 'workspace-write', planMode: 'committed' }
+    // 已 approved 的重批 = retry grant（v5 X6/v6 §1.2）：只重试授予，不投递、不重写审计。
+    retryPlanGrant(target, options) {
+      calls.push(['retryPlanGrant', target, options?.taskId, options?.messageId])
+      return { state: retryState }
     },
+    planWriteInfo() { return { state: retryState } },
     async stop(target) { calls.push(['stop', target]) },
     releaseWritableRoots(target) { calls.push(['release', target]) },
     slug(title) { counter += 1; return `task-${counter}` },
@@ -293,7 +296,7 @@ test('P0-4 task_message：planning 上的普通 message 只记讨论（不改 pl
   const after = getTask(db, task.id)
   assert.equal(after.plan_state, 'planning')
   assert.equal(after.status, 'running')
-  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'retryPlanGrant'), false)
   db.close()
 })
 
@@ -307,7 +310,7 @@ test('P0-4 task_message：waiting_user 上的普通 message 转 revising（仍�
   const after = getTask(db, task.id)
   assert.equal(after.plan_state, 'revising')
   assert.equal(after.status, 'running')
-  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'retryPlanGrant'), false)
   db.close()
 })
 
@@ -332,7 +335,7 @@ test('P0-4 task_report blocked：计划任务交回计划 → plan_state=waiting
   db.close()
 })
 
-test('P0-4 approve：前置满足 → 切沙箱 + plan_state=approved + accepted_kind=plan（不投递）', async () => {
+test('P0-4 approve：首批准 = 纯记账（plan_state=approved + accepted_kind=plan，不投递、不调 dispatcher）', async () => {
   const { db, dispatcher, tools } = await setupTools()
   const task = planTaskRow(db, { planPath: 'C:/ws/reports/plans/x.md' })
   await tools.task_report.execute(
@@ -348,8 +351,10 @@ test('P0-4 approve：前置满足 → 切沙箱 + plan_state=approved + accepted
   assert.equal(approved.status, 'waiting_user')
   assert.equal(approved.accepted_kind, 'plan')
   assert.equal(approved.accepted_by, 'coordinator')
+  assert.equal(approved.question, null)
   assert.ok(Number.isFinite(approved.accepted_at))
-  assert.ok(dispatcher.calls.some(item => item[0] === 'approvePlan'))
+  // v6：首批准不调任何 dispatcher 运行期方法（授予在续派投递的 post-send）。
+  assert.equal(dispatcher.calls.some(item => item[0] === 'retryPlanGrant'), false)
   assert.equal(dispatcher.calls.some(item => item[0] === 'sendReliable'), false)
   db.close()
 })
@@ -376,7 +381,7 @@ test('P0-4 approve：前置不满足给可读拒绝（不切沙箱、不写审�
   const busy = await mainCall(tools, 'task_message', { action: 'approve', task_id: running.id })
   assert.match(busy, /子会话还在跑/)
 
-  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'retryPlanGrant'), false)
   for (const id of [noBlocked.id, noPlanPath.id, running.id]) {
     assert.equal(getTask(db, id).plan_state === 'approved', false)
     assert.equal(getTask(db, id).accepted_kind, null)
@@ -384,7 +389,7 @@ test('P0-4 approve：前置不满足给可读拒绝（不切沙箱、不写审�
   db.close()
 })
 
-test('P0-4 approve：已批准走幂等（already，不重复写审计）', async () => {
+test('P0-4 approve：已批准走幂等（首批准 0 次 retry grant；重批 retryPlanGrant 1 次、审计只写首次）', async () => {
   const { db, dispatcher, tools } = await setupTools()
   const task = planTaskRow(db, { planPath: 'C:/ws/reports/plans/x.md' })
   await tools.task_report.execute(
@@ -393,11 +398,15 @@ test('P0-4 approve：已批准走幂等（already，不重复写审计）', asyn
   )
   await mainCall(tools, 'task_message', { action: 'approve', task_id: task.id })
   const first = getTask(db, task.id)
+  // 首批准 = 纯记账：一次 retry grant 都不该发生（授予在续派 post-send）。
+  assert.equal(dispatcher.calls.filter(item => item[0] === 'retryPlanGrant').length, 0)
   const again = await mainCall(tools, 'task_message', { action: 'approve', task_id: task.id })
   assert.match(again, /无需重复批准/)
   const second = getTask(db, task.id)
   assert.equal(second.accepted_at, first.accepted_at)
-  assert.equal(dispatcher.calls.filter(item => item[0] === 'approvePlan').length, 1)
+  // v6/v7：already 不短路——重批只走一次 retry grant（不投递、不重写审计）。
+  assert.equal(dispatcher.calls.filter(item => item[0] === 'retryPlanGrant').length, 1)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'sendReliable'), false)
   db.close()
 })
 
@@ -417,7 +426,33 @@ test('P0-4 生命周期：blocked → approve → 续派仍复用原会话（不
   assert.equal(resumed.question, null)
   const send = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
   assert.equal(send[1], task.target)
+  // v6：第 9 参必须透传 planApproved（授权在 post-send）+ attemptKey（同一条 followup 的幂等键）。
+  assert.equal(send[4].planApproved, true)
+  assert.match(send[4].attemptKey, new RegExp(`^followup:${task.id}:\\d+$`))
+  // 投递结果落 followup 行 meta.messageId（跨重启 retry grant / 重放的唯一凭据）。
+  const delivered = recentMessages(db, task.id, 5).find(row => row.kind === 'followup')
+  assert.equal(delivered.meta.messageId, 'm-1')
+  assert.equal(delivered.meta.delivery, 'delivered')
   assert.equal(dispatcher.calls.some(item => item[0] === 'spawn'), false)
+  db.close()
+})
+
+test('P0-4 approve（已批准）= retry grant：带上 followup 的 messageId，不投递', async () => {
+  const { db, dispatcher, tools } = await setupTools()
+  const task = planTaskRow(db, { planPath: 'C:/ws/reports/plans/x.md' })
+  await tools.task_report.execute(
+    { task_id: task.id, status: 'blocked', summary: '计划已就绪', question: '批准执行？' },
+    { agent: { id: task.session_id } },
+  )
+  await mainCall(tools, 'task_message', { action: 'approve', task_id: task.id })
+  await mainCall(tools, 'task_message', { task_id: task.id, message: '开始执行' })
+  const sends = dispatcher.calls.filter(item => item[0] === 'sendReliable').length
+  const again = await mainCall(tools, 'task_message', { action: 'approve', task_id: task.id })
+  assert.match(again, /无需重复批准/)
+  const regrant = dispatcher.calls.filter(item => item[0] === 'retryPlanGrant')
+  assert.equal(regrant.length, 1)
+  assert.equal(regrant[0][3], 'm-1', 'retry grant 要带 followup 行的 messageId（幂等重放凭据）')
+  assert.equal(dispatcher.calls.filter(item => item[0] === 'sendReliable').length, sends, '重批绝不二次投递')
   db.close()
 })
 
@@ -428,7 +463,7 @@ test('P8 task_message：投递失败不改计划状态（仍在等你确认）',
   assert.match(text, /投递/)
   assert.equal(getTask(db, task.id).plan_state, 'planning')
   assert.equal(getTask(db, task.id).status, 'waiting_user')
-  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'retryPlanGrant'), false)
   db.close()
 })
 
@@ -437,7 +472,7 @@ test('P8 task_message：running 中的计划任务收到普通消息不算批准
   const task = planTaskRow(db, { status: 'running' })
   await mainCall(tools, 'task_message', { task_id: task.id, message: '再补充一点' })
   assert.equal(getTask(db, task.id).plan_state, 'planning')
-  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'retryPlanGrant'), false)
   db.close()
 })
 
@@ -592,7 +627,7 @@ function planEnv({ service = true, hookOnStart = false, ctxStyle = 'plain', pres
   })
   return {
     dispatcher, sandboxEvents, modes, planEvents, warnings, guards, guardRecords, registrations,
-    agentsById, sessionsById,
+    agentsById, sessionsById, hooks,
   }
 }
 
@@ -610,7 +645,7 @@ test('P8 派发：计划任务设只读沙箱 + planMode.set(true) + agent 作�
   // 别的会话（协调者）与别的工具都不受影响。
   assert.equal(env.guards[0]({ name: 'exit_plan_mode', agent: { id: 's-1' } }), undefined)
   assert.equal(env.guards[0]({ name: 'task_list', agent: childAgent }), undefined)
-  // 计划阶段不注册 target 可写根（批准后由 send/approvePlan 补）。
+  // 计划阶段不注册 target 可写根（批准只记账；首次授予在续派 send 的 post-send）。
   assert.deepEqual(env.registrations, [])
 })
 
@@ -678,43 +713,68 @@ test('P8 生命周期：只读任务 blocked 续派 → 回 running 但明说仍
   assert.match(text, /仍是 read-only 沙箱/)
   assert.match(text, /新派一个可写任务/)
   assert.equal(getTask(db, task.id).status, 'running')
-  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'retryPlanGrant'), false)
   const send = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
   assert.equal(send[1], 'c-2')
   assert.equal(send[3], true)
   db.close()
 })
 
-test('P8 批准：planMode 服务缺失时仍把沙箱切回可写（阻塞→批准→原会话继续）', async () => {
+test('P8 批准：planMode 服务缺失时 post-send 仍把沙箱切回可写（阻塞→批准→续派→原会话继续）', async () => {
   const env = planEnv({ service: false, ctxStyle: 'cordis' })
   const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
-  const result = await env.dispatcher.approvePlan(member.id, 'C:/target')
-  assert.equal(result.ok, true)
-  assert.equal(result.sandbox, 'workspace-write')
+  // v7 §2：批准后的沙箱切换由 send({planApproved}) 负责（先关 plan mode，再 post-send 授予）。
+  await env.dispatcher.send(member.id, '执行', undefined, 'C:/target', 't-1', false, undefined, undefined, { planApproved: true })
   assert.deepEqual(sandboxModeEvents(env).map(item => item.payload.mode), ['read-only', 'workspace-write'])
-  // 服务缺失不产生 plan off 调用，但批准本身不能失败。
+  // 服务缺失不产生 plan off 调用，但投递/授予本身不能失败。
   assert.deepEqual(env.planEvents, [])
   assert.equal(env.guardRecords[0].disposed, true)
+  assert.equal(env.dispatcher.planWriteInfo(member.id).state, 'granted')
 })
 
-test('P8 批准后恢复执行：沙箱切 workspace-write、plan off、释放 guard 并补可写根', async () => {
+test('P8 批准后恢复执行：send({planApproved}) → 沙箱切 workspace-write、plan off、释放 guard 并补可写根', async () => {
   const env = planEnv()
   const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
-  const result = await env.dispatcher.approvePlan(member.id, 'C:/target')
-  assert.equal(result.ok, true)
-  assert.equal(result.sandbox, 'workspace-write')
+  const sent = await env.dispatcher.send(member.id, '执行', undefined, 'C:/target', 't-1', false, undefined, undefined, { planApproved: true })
+  assert.equal(sent, 'm')
   const modes = sandboxModeEvents(env).map(item => item.payload.mode)
   assert.deepEqual(modes, ['read-only', 'workspace-write'])
+  // planEvents=[true,false] 由 send 的 `applyPlanMode(target,false)` 产生（v7 §2 写死）。
   assert.deepEqual(env.planEvents, [[member.id, true], [member.id, false]])
   assert.equal(env.guardRecords[0].disposed, true)
   assert.deepEqual(env.registrations, [[member.id, 'C:/target']])
+  assert.equal(env.dispatcher.planWriteInfo(member.id).state, 'granted')
 })
 
-test('P8 批准失败：拿不到子会话时返回 ok:false（不静默假装切好了）', async () => {
+test('P8 批准失败：拿不到子会话时 retry grant 停在 switching（不静默假装切好了、不抛错）', async () => {
   const env = planEnv()
-  const result = await env.dispatcher.approvePlan('missing-session', 'C:/target')
-  assert.equal(result.ok, false)
-  assert.match(result.reason, /未拿到子会话/)
+  const info = env.dispatcher.retryPlanGrant('missing-session', { taskId: 't-1', targetDir: 'C:/target' })
+  assert.equal(info.state, 'switching')
+  assert.equal(info.reason, 'retry-no-session')
+})
+
+// 宿主事实（H1）：agent/created 是 cordis serial，逐条 await、不吞错——任一监听器 throw 都会 reject announce，
+// 投递根本不发生。我们的监听器因此必须：整段 try/catch、返回恒 undefined、不 append read-only、不删 planWrite。
+test('hook 约束：approved 提前授予时 append 抛错也不外抛、返回 undefined、不 append read-only', async () => {
+  const env = planEnv()
+  const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
+  // 先登记 approved 写入意图（retry grant 用真实 session 成功一次），再让 hook 拿到会抛的 session。
+  env.dispatcher.retryPlanGrant(member.id, { taskId: 't-1', targetDir: 'C:/target' })
+  assert.equal(env.dispatcher.planWriteInfo(member.id).state, 'granted')
+  const before = sandboxModeEvents(env).map(item => item.payload.mode)
+  // 让 hook 走「append workspace-write」分支并失败：清掉该会话的投影模式，append 抛错。
+  env.modes.delete(member.id)
+  const throwing = {
+    id: member.id,
+    header: { cwd: 'C:\\work' },
+    append() { throw new Error('append boom') },
+  }
+  for (const hook of env.hooks) {
+    assert.equal(hook({ id: member.id, session: throwing }), undefined, '监听器绝不能返回非 undefined（返回即 bail）')
+  }
+  // 授予失败只把状态降级为 switching，不删 planWrite、不追加 read-only。
+  assert.equal(env.dispatcher.planWriteInfo(member.id).state, 'switching')
+  assert.deepEqual(sandboxModeEvents(env).map(item => item.payload.mode), before, 'hook 内绝不 append read-only')
 })
 
 // —— 五、面板与快照：字段下发 + 面板追加消息同样批准 ——
@@ -757,7 +817,7 @@ test('P0-4 面板「追加」：不批准计划、不改 plan_state（面板无�
   // 用户决策 1：面板 message 不改 plan_state、不切沙箱。
   assert.equal(getTask(db, task.id).plan_state, 'waiting_user')
   assert.equal(getTask(db, task.id).accepted_kind, null)
-  assert.equal(dispatcher.calls.some(item => item[0] === 'approvePlan'), false)
+  assert.equal(dispatcher.calls.some(item => item[0] === 'retryPlanGrant'), false)
   db.close()
 })
 

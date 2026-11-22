@@ -11,6 +11,8 @@ import { addMessage, getTask, listTasks, setTaskAccepted, transition } from './l
 import { statusLabel } from './state.js'
 // 链式自动放行（chain:'auto'）：交付钩子要知道「有没有 waiting_dep 下游在等」——判据只读台账。
 import { listWaitingDependents } from './deps.js'
+// S10'：close（确认交付）是终态动作，允许强清该任务的写域占位（owner token 只用于在途投递的 finally）。
+import { releaseWriteHold } from './write-hold.js'
 // P2-3 交接契约 v1：确认人/确认时间在这里落库，`task.handoff.confirmed` 也只在这里上报一次
 // （幂等关闭走已 done 的 early return，不会再写第二条事件）。
 import { acceptedByOf, emitHandoffConfirmed } from './handoff.js'
@@ -106,6 +108,12 @@ export function closeDelivered({
   const sessionId = next.session_id ?? next.target
   try { releaseSession(sessionId) } catch { /* 释放失败不影响已落库的 done */ }
   try { completeGoal(next) } catch { /* goal 收口失败不影响关闭 */ }
+  // S10'：close（确认交付）= 终态动作，允许无 token 强清该任务的写域占位（在途投递已随会话收口）。
+  try { releaseWriteHold(next.id) } catch { /* 占位释放失败只影响 TTL */ }
+  // P0-3/v6：清检出的**唯一判据在 index.js 的 cleanupWorktree wrapper**：
+  // 有 waiting_dep 下游（可能 `worktreeMode:'continue'` 复用这份检出）或共享检出 → 只写
+  // `task.worktree.cleanup.registered`，不删目录；其余按 `brief.worktreeCleanup` 档位处理。
+  // 这里不再自己判 waiting（以前只有这一条路径判，chain-auto / stop / 失败终态全漏）。
   try { cleanupWorktree(next) } catch { /* 清理失败只影响磁盘 */ }
   try { pump() } catch { /* 队列补位失败不影响关闭 */ }
   log('task.delivered.closed', { taskId: next.id, sessionId: sessionId ?? null, detail: { reason, acceptedBy } })

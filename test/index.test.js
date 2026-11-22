@@ -1018,8 +1018,12 @@ test('结算唤醒：容量 1 时第二个任务排队，第一个 settle 后自
   const { ctx, registered } = fakeCtx({ agents: [s1], subagents })
   await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
-  await byName.task_create.execute({ title: 'A', goal: 'g', acceptance: ['a'] }, { agent: s1 })
-  const second = await byName.task_create.execute({ title: 'B', goal: 'g', acceptance: ['a'] }, { agent: s1 })
+  // F（v6 §3.3）：无 target 的任务按协调者 cwd 归一，两条无 target 会判「同一目录」被拒（G5）。
+  // 这条用例要测的是「容量 1 的排队补位」，所以显式给两个不同 target。
+  const dirA = mkdtempSync(join(tmpdir(), 'orch-wake-a-'))
+  const dirB = mkdtempSync(join(tmpdir(), 'orch-wake-b-'))
+  await byName.task_create.execute({ title: 'A', goal: 'g', acceptance: ['a'], target: dirA }, { agent: s1 })
+  const second = await byName.task_create.execute({ title: 'B', goal: 'g', acceptance: ['a'], target: dirB }, { agent: s1 })
   assert.match(second, /排队/)
   assert.equal(spawned.length, 1)
 

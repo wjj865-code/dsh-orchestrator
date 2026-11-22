@@ -8,8 +8,19 @@ import { renderBriefForTask } from './brief.js'
 import { taskLabel } from './task-label.js'
 import { WORKTREE_DISPATCH_STATES, prepareTaskWorktree } from './worktree.js'
 
-export function createQueue({ db, dispatcher, config = {}, logger, notifier, worktree, cleanupWorktree, retryDelaysMs = [2000, 5000, 10000, 30000] }) {  const log = (event, fields) => {
+export function createQueue({ db, dispatcher, config = {}, logger, notifier, worktree, cleanupWorktree, retryDelaysMs = [2000, 5000, 10000, 30000], writableRootJudge }) {  const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志不能打断派发 */ }
+  }
+  // 写域 chokepoint（派发前 preflight）：与 dispatch 内那道判定同源（index 注入 write-gate 的同一个闭包）。
+  // 拒绝 → 标 failed + 通知，**不建检出、不起会话**：避免「会话已起再收掉」那一圈副作用。
+  const judge = (taskId, directory) => {
+    if (typeof writableRootJudge !== 'function') return undefined
+    try {
+      return writableRootJudge({ taskId, directory }) ?? undefined
+    } catch (error) {
+      log('task.spawn.write-judge-failed', { taskId, detail: { error: error?.message ?? String(error) } })
+      return undefined
+    }
   }
   const ids = []
   let pumpPromise = null
@@ -77,6 +88,35 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
         const rendered = renderBriefForTask(task)
         // P9：worktree 任务在派发前建检出，子会话 cwd = 检出目录 + 原 target 偏移；普通任务一次 git 都不调。
         let dispatchCwd = task.target_dir ?? undefined
+        // P0-2：派发前写域 preflight（chokepoint 在 spawn 前的同源快速失败）。
+        // 被拒就不建检出、不起会话：标 failed + 通知，下游按依赖链传播。
+        const verdict = task.read_only === true ? undefined : judge(id, dispatchCwd)
+        if (verdict !== undefined && verdict.ok !== true) {
+          remove(id)
+          const message = verdict.text ?? '写域被其他任务占用：稍后重试，或先关闭占用任务'
+          const code = verdict.code ?? 'WRITE_DOMAIN_DENIED'
+          log('task.spawn.write-denied', { taskId: id, detail: { code, error: message } })
+          try {
+            transition(db, id, 'failed', { error: message })
+          } catch (error) {
+            log('task.spawn.transition-failed', { taskId: id, detail: { error: error?.message ?? String(error) } })
+          }
+          try {
+            dispatcher.releaseWritableRoots?.(task.session_id ?? task.target)
+          } catch { /* 释放失败不影响失败通知 */ }
+          notifier?.push({
+            taskId: id,
+            title: task.title,
+            displayName: taskLabel(task, { all: listTasks(db) }),
+            readOnly: task.read_only === true,
+            access: task.access === 'full' ? 'full' : null,
+            status: 'failed',
+            summary: message,
+            system: true,
+          })
+          try { promoteDependents(db, { enqueue, log }) } catch { /* 传播失败只影响下游，不打断队列 */ }
+          continue
+        }
         if (worktree !== undefined && WORKTREE_DISPATCH_STATES.includes(task.worktree_state)) {
           const prepared = await prepareTaskWorktree({ db, task, service: worktree, log })
           if (prepared.ok !== true) {
