@@ -1,0 +1,211 @@
+{
+ "viewport": {
+  "width": 882,
+  "height": 324
+ },
+ "dpr": 1,
+ "variant": "before",
+ "mode": "wide",
+ "rows": [
+  {
+   "panel": "plugins",
+   "icon": {
+    "tag": "svg",
+    "width": 16,
+    "height": 16,
+    "boxCenter": 66.8,
+    "display": "block",
+    "fontSize": "14px",
+    "lineHeight": "22px"
+   },
+   "row": {
+    "height": 32,
+    "center": 66.8,
+    "paddingTop": "5px",
+    "paddingBottom": "5px",
+    "minHeight": "32px",
+    "alignItems": "center",
+    "gap": "6px",
+    "lineHeight": "22px"
+   },
+   "glyphSlot": {
+    "width": 16,
+    "height": 16,
+    "center": 66.8,
+    "display": "flex"
+   },
+   "iconInk": {
+    "top": 60.6,
+    "bottom": 73,
+    "center": 66.8,
+    "height": 12.4,
+    "source": "svg getBBox"
+   },
+   "iconInkVsRowCenter": 0,
+   "iconInkVsSlotCenter": 0,
+   "label": "插件",
+   "labelBox": {
+    "width": 28,
+    "height": 22,
+    "center": 66.8,
+    "left": 58
+   },
+   "labelInk": {
+    "top": 60.8,
+    "bottom": 72.8,
+    "center": 66.8
+   },
+   "iconInkVsLabelInkCenter": 0
+  },
+  {
+   "panel": "orchestrator-launcher",
+   "icon": {
+    "tag": "span",
+    "width": 11.7,
+    "height": 22,
+    "boxCenter": 100.8,
+    "display": "block",
+    "fontSize": "14px",
+    "lineHeight": "22px"
+   },
+   "row": {
+    "height": 32,
+    "center": 100.8,
+    "paddingTop": "5px",
+    "paddingBottom": "5px",
+    "minHeight": "32px",
+    "alignItems": "center",
+    "gap": "6px",
+    "lineHeight": "22px"
+   },
+   "glyphSlot": {
+    "width": 11.7,
+    "height": 22,
+    "center": 100.8,
+    "display": "flex"
+   },
+   "iconInk": {
+    "top": 95.8,
+    "bottom": 105.8,
+    "center": 100.8,
+    "height": 10,
+    "source": "canvas + line box"
+   },
+   "iconInkVsRowCenter": 0,
+   "iconInkVsSlotCenter": 0,
+   "label": "主会话",
+   "labelBox": {
+    "width": 42,
+    "height": 22,
+    "center": 100.8,
+    "left": 53.7
+   },
+   "labelInk": {
+    "top": 94.8,
+    "bottom": 106.8,
+    "center": 100.8
+   },
+   "iconInkVsLabelInkCenter": 0
+  },
+  {
+   "panel": "schedules",
+   "icon": {
+    "tag": "svg",
+    "width": 16,
+    "height": 16,
+    "boxCenter": 134.8,
+    "display": "block",
+    "fontSize": "14px",
+    "lineHeight": "22px"
+   },
+   "row": {
+    "height": 32,
+    "center": 134.8,
+    "paddingTop": "5px",
+    "paddingBottom": "5px",
+    "minHeight": "32px",
+    "alignItems": "center",
+    "gap": "6px",
+    "lineHeight": "22px"
+   },
+   "glyphSlot": {
+    "width": 16,
+    "height": 16,
+    "center": 134.8,
+    "display": "flex"
+   },
+   "iconInk": {
+    "top": 128.6,
+    "bottom": 141,
+    "center": 134.8,
+    "height": 12.4,
+    "source": "svg getBBox"
+   },
+   "iconInkVsRowCenter": 0,
+   "iconInkVsSlotCenter": 0,
+   "label": "自动化任务",
+   "labelBox": {
+    "width": 70,
+    "height": 22,
+    "center": 134.8,
+    "left": 58
+   },
+   "labelInk": {
+    "top": 128.8,
+    "bottom": 140.8,
+    "center": 134.8
+   },
+   "iconInkVsLabelInkCenter": 0
+  },
+  {
+   "panel": "capability-packs",
+   "icon": {
+    "tag": "span",
+    "width": 11.7,
+    "height": 22,
+    "boxCenter": 168.8,
+    "display": "block",
+    "fontSize": "14px",
+    "lineHeight": "22px"
+   },
+   "row": {
+    "height": 32,
+    "center": 168.8,
+    "paddingTop": "5px",
+    "paddingBottom": "5px",
+    "minHeight": "32px",
+    "alignItems": "center",
+    "gap": "6px",
+    "lineHeight": "22px"
+   },
+   "glyphSlot": {
+    "width": 11.7,
+    "height": 22,
+    "center": 168.8,
+    "display": "flex"
+   },
+   "iconInk": {
+    "top": 163.8,
+    "bottom": 173.8,
+    "center": 168.8,
+    "height": 10,
+    "source": "canvas + line box"
+   },
+   "iconInkVsRowCenter": 0,
+   "iconInkVsSlotCenter": 0,
+   "label": "能力包",
+   "labelBox": {
+    "width": 42,
+    "height": 22,
+    "center": 168.8,
+    "left": 53.7
+   },
+   "labelInk": {
+    "top": 162.8,
+    "bottom": 174.8,
+    "center": 168.8
+   },
+   "iconInkVsLabelInkCenter": 0
+  }
+ ]
+}

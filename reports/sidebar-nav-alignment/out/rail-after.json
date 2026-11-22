@@ -1,0 +1,159 @@
+{
+ "viewport": {
+  "width": 882,
+  "height": 324
+ },
+ "dpr": 1,
+ "variant": "after",
+ "mode": "rail",
+ "rows": [
+  {
+   "panel": "plugins",
+   "icon": {
+    "tag": "svg",
+    "width": 18,
+    "height": 18,
+    "boxCenter": 80.8,
+    "display": "block",
+    "fontSize": "14px",
+    "lineHeight": "22px"
+   },
+   "row": {
+    "height": 36,
+    "center": 80.8,
+    "paddingTop": "0px",
+    "paddingBottom": "0px",
+    "minHeight": "32px",
+    "alignItems": "center",
+    "gap": "6px",
+    "lineHeight": "22px"
+   },
+   "glyphSlot": {
+    "width": 18,
+    "height": 18,
+    "center": 80.8,
+    "display": "flex"
+   },
+   "iconInk": {
+    "top": 73.82,
+    "bottom": 87.77,
+    "center": 80.8,
+    "height": 13.95,
+    "source": "svg getBBox"
+   },
+   "iconInkVsRowCenter": 0,
+   "iconInkVsSlotCenter": 0
+  },
+  {
+   "panel": "orchestrator-launcher",
+   "icon": {
+    "tag": "svg",
+    "width": 18,
+    "height": 18,
+    "boxCenter": 128.8,
+    "display": "block",
+    "fontSize": "14px",
+    "lineHeight": "22px"
+   },
+   "row": {
+    "height": 36,
+    "center": 128.8,
+    "paddingTop": "0px",
+    "paddingBottom": "0px",
+    "minHeight": "32px",
+    "alignItems": "center",
+    "gap": "6px",
+    "lineHeight": "22px"
+   },
+   "glyphSlot": {
+    "width": 18,
+    "height": 18,
+    "center": 128.8,
+    "display": "flex"
+   },
+   "iconInk": {
+    "top": 122.05,
+    "bottom": 135.55,
+    "center": 128.8,
+    "height": 13.5,
+    "source": "svg getBBox"
+   },
+   "iconInkVsRowCenter": 0,
+   "iconInkVsSlotCenter": 0
+  },
+  {
+   "panel": "schedules",
+   "icon": {
+    "tag": "svg",
+    "width": 18,
+    "height": 18,
+    "boxCenter": 176.8,
+    "display": "block",
+    "fontSize": "14px",
+    "lineHeight": "22px"
+   },
+   "row": {
+    "height": 36,
+    "center": 176.8,
+    "paddingTop": "0px",
+    "paddingBottom": "0px",
+    "minHeight": "32px",
+    "alignItems": "center",
+    "gap": "6px",
+    "lineHeight": "22px"
+   },
+   "glyphSlot": {
+    "width": 18,
+    "height": 18,
+    "center": 176.8,
+    "display": "flex"
+   },
+   "iconInk": {
+    "top": 169.82,
+    "bottom": 183.77,
+    "center": 176.8,
+    "height": 13.95,
+    "source": "svg getBBox"
+   },
+   "iconInkVsRowCenter": 0,
+   "iconInkVsSlotCenter": 0
+  },
+  {
+   "panel": "capability-packs",
+   "icon": {
+    "tag": "svg",
+    "width": 18,
+    "height": 18,
+    "boxCenter": 224.8,
+    "display": "block",
+    "fontSize": "14px",
+    "lineHeight": "22px"
+   },
+   "row": {
+    "height": 36,
+    "center": 224.8,
+    "paddingTop": "0px",
+    "paddingBottom": "0px",
+    "minHeight": "32px",
+    "alignItems": "center",
+    "gap": "6px",
+    "lineHeight": "22px"
+   },
+   "glyphSlot": {
+    "width": 18,
+    "height": 18,
+    "center": 224.8,
+    "display": "flex"
+   },
+   "iconInk": {
+    "top": 218.8,
+    "bottom": 230.8,
+    "center": 224.8,
+    "height": 12,
+    "source": "svg getBBox"
+   },
+   "iconInkVsRowCenter": 0,
+   "iconInkVsSlotCenter": 0
+  }
+ ]
+}

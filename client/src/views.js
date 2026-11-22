@@ -160,7 +160,18 @@ export function createViews({
   }
 
   // 侧栏「插件」下方的入口图标（面板行渲染的是这个组件）。
-  const LauncherIcon = () => <span aria-hidden={true} className="orch-launcher-icon">{'\u25C8'}</span>
+  //
+  // 对齐约定（与宿主侧栏项同规格）：宿主把这里注册的组件当成本行的**直接图标子元素**塞进
+  // `.panelGlyph`（inline-flex 居中、不带尺寸），并按行状态传 `size`（展开 16 / 收起 18）；
+  // 官方项在这一格放的是 `size × size` 的内联 SVG（见 dsh-client-ui-schedule 的
+  // TaskManagerIcon 注释：图标必须是行的直接图标子，包一层行内 wrapper 会让它落到行盒基线上、
+  // 比文字「抬高」）。我们原来放的是裸字符 `◈`：盒子是 13×16 的行盒、墨迹中线比文字中线低
+  // 0.5px、收起态边长还是 16（官方 18）——三样叠加就是肉眼看到的「图标没跟文字对齐」。
+  // 现在按官方约定画成 SVG：盒子 = size 的正方形、墨迹在 viewBox 居中，展开/收起两态都与
+  // 官方项同规格（中线差按 computed style 实测为 0）。
+  const LauncherIcon = ({ size = 16 }) => (
+    <Icon name="navMain" size={size} className="orch-nav-glyph" />
+  )
 
   // 回复底部「关联任务」chip 行：挂在 ui-chat 官方 conversation.chat.turnTail 列表槽位里，
   // 只在「主会话 + 最新一轮已完成回复」尾部渲染（历史回复不带 chip，子会话一个也收不到）。

@@ -1,0 +1,6 @@
+# 本目录的 CSS 由 extract-host-css.mjs 从**已安装的 DSH** 现场抽出（宿主 CSS 不入库）。
+*.css
+
+# 无头 Chrome 的量测痕迹：JSON/PNG 入库（对比证据），HTML dump 与浏览器 profile 不入库。
+out/*.html
+out/chrome-profile/
