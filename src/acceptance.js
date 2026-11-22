@@ -3,14 +3,18 @@
 // 安全边界（定死，别再放宽）：
 // 1) 命令只来自协调者的 `task_create`（写进 brief 快照）；`task_report` 没有任何命令参数，
 //    子会话无法注入或覆盖要执行的命令。
-// 2) argv 数组 + `shell: false`：不经 cmd.exe / sh 拼串，参数里的 `&` / `|` / `;` / 引号
-//    都只是普通字符，没有 shell 注入面。
+// 2) argv 数组 + `shell: false`：不经 sh 拼串，参数里的 `&` / `|` / `;` / 引号
+//    都只是普通字符，没有 shell 注入面。**唯一的 Windows 例外**是 `.cmd` / `.bat`
+//    （CreateProcess 不能直接执行批处理）：它们经 ComSpec `/d /s /c` 执行，命令行由
+//    `src/check-command.js` 从 argv 逐项转义重建；参数含双引号/控制字符时直接判失败
+//    （cmd 没有引号转义语法，拼下去就是注入面）。
 // 3) cwd 固定为任务自己的目录（worktree 检出优先，否则 target），不继承主会话目录。
 // 4) 每条有超时上限（默认 120s、最多 600s），stdout/stderr 各只留最后 4 KiB。
 // 5) 检查跑在**插件宿主进程**里（宿主权限），不是子会话沙箱——这一点文档里必须如实写明，
 //    不假装它是沙箱隔离。
 import { spawn as spawnProcess } from 'node:child_process'
 import { statSync } from 'node:fs'
+import { planCheckSpawn, searchedText } from './check-command.js'
 
 /** 单任务最多几条检查（再多就该拆任务了，也避免交付时长时间阻塞）。 */
 export const MAX_CHECKS = 5
@@ -168,11 +172,41 @@ const failureBase = check => ({
   error: null,
 })
 
+/** 报错里点名的命令（太长就截断，票据要能读）。 */
+const shortCommand = value => {
+  const textValue = text(value)
+  return textValue.length > 120 ? `${textValue.slice(0, 120)}…` : textValue
+}
+
+/**
+ * Windows 上命令解析失败的说明：必须说清「找过哪些名字/路径」。
+ * 旧行为的坑正是这里——裸 `pnpm` 只给一句 ENOENT，`skipIfMissing` 一开就静默跳过，看起来像没装。
+ */
+function missingNote(command, searched) {
+  const list = searchedText(searched)
+  const where = list === ''
+    ? 'PATH 里没有可用的绝对目录（无法解析）'
+    : `已查找 ${Array.isArray(searched) ? searched.length : 0} 个候选路径：${list}`
+  return '[未执行] 未找到命令「' + shortCommand(command) + '」：Windows 上按 PATH + PATHEXT 只认 .COM/.EXE/.BAT/.CMD 入口'
+    + `（同名的 bash shim 不算）；${where}`
+}
+
+/** `.cmd/.bat` 参数无法安全编码的说明：解释为什么拒绝，而不是硬拼成 shell 字符串。 */
+function unsafeArgNote(plan) {
+  const index = Number.isInteger(plan?.unsafeIndex) ? plan.unsafeIndex : 0
+  const label = index === 0 ? '命令本身' : `command[${index}]`
+  return `[未执行] ${label} 含 cmd.exe 无法安全转义的字符（双引号或控制字符）：cmd 没有引号转义语法，`
+    + '继续拼接就等于命令注入面，所以这里直接判失败。把这一个参数改掉，或改用 .exe 入口。'
+}
+
 /**
  * 跑一条检查。永远 resolve（不抛）：交付流程不能因为子进程怪异行为整段崩掉。
  * spawnImpl 可注入（测试用），签名与 node:child_process.spawn 相同。
+ * `platform` / `env` / `isFile` 只用于决定 Windows 的解析与 ComSpec 边界（测试可注入以跨平台覆盖）。
  */
-function runOne(check, { cwd, spawnImpl, killGraceMs, maxOutputBytes, now }) {
+function runOne(check, {
+  cwd, spawnImpl, killGraceMs, maxOutputBytes, now, platform, env, isFile,
+}) {
   return new Promise(resolve => {
     const startedAt = now()
     const base = failureBase(check)
@@ -202,7 +236,8 @@ function runOne(check, { cwd, spawnImpl, killGraceMs, maxOutputBytes, now }) {
       if (child !== undefined && child.exitCode === null && child.killed !== true) {
         try { child.kill('SIGKILL') } catch { /* 已经没了 */ }
       }
-      const outputTail = [stdout, stderr === '' ? '' : `[stderr]\n${stderr}`].filter(part => part !== '').join('\n')
+      const outputTail = [patch.note ?? '', stdout, stderr === '' ? '' : `[stderr]\n${stderr}`]
+        .filter(part => part !== '').join('\n')
       const exitCode = Number.isInteger(patch.exitCode) ? patch.exitCode : null
       resolve({
         ...base,
@@ -220,11 +255,30 @@ function runOne(check, { cwd, spawnImpl, killGraceMs, maxOutputBytes, now }) {
     }
 
     try {
-      child = spawnImpl(check.argv[0], check.argv.slice(1), {
+      // 解析 → 执行计划：非 Windows 原样 spawn；Windows 上无扩展名命令先按 PATH × PATHEXT 找入口，
+      // .cmd/.bat 再改经 ComSpec（参数在 check-command.js 里逐项转义）。
+      const plan = planCheckSpawn(check.argv, { platform, env, isFile })
+      if (plan.kind === 'missing') {
+        // 解析不到命令：按「命令不存在」处理（skipIfMissing 仍可跳过），但错误里要说清找过哪些路径。
+        finish({
+          error: 'ENOENT',
+          missing: true,
+          skipped: check.skipIfMissing === true,
+          note: missingNote(check.argv[0], plan.searched),
+        })
+        return
+      }
+      if (plan.kind === 'unsafe') {
+        // 不是「没装」而是「参数无法安全传过去」：判失败，不给 skipIfMissing 当挡箭牌。
+        finish({ error: 'UNSAFE_ARG', note: unsafeArgNote(plan) })
+        return
+      }
+      child = spawnImpl(plan.command, plan.args, {
         cwd,
         shell: false,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        ...plan.options,
       })
     } catch (error) {
       const code = error?.code ?? 'SPAWN_FAILED'
@@ -262,6 +316,9 @@ function runOne(check, { cwd, spawnImpl, killGraceMs, maxOutputBytes, now }) {
  *   now?: () => number,
  *   killGraceMs?: number,
  *   maxOutputBytes?: number,
+ *   platform?: string,
+ *   env?: object,
+ *   isFile?: (path: string) => boolean,
  * }} options
  * @returns {Promise<{ok: boolean, ranAt: number, cwd: string|null, total: number, passed: number,
  *   skipped: number, failed: number, results: Array<object>}>}
@@ -269,6 +326,7 @@ function runOne(check, { cwd, spawnImpl, killGraceMs, maxOutputBytes, now }) {
 export async function runChecks({
   checks, cwd, spawnImpl = spawnProcess, now = Date.now,
   killGraceMs = KILL_GRACE_MS, maxOutputBytes = MAX_OUTPUT_BYTES,
+  platform = process.platform, env = process.env, isFile,
 } = {}) {
   const list = Array.isArray(checks) ? checks : []
   const dir = text(cwd)
@@ -294,7 +352,9 @@ export async function runChecks({
     return summarize({ ranAt, cwd: dir === '' ? null : dir, results })
   }
   for (const check of list) {
-    results.push(await runOne(check, { cwd: dir, spawnImpl, killGraceMs, maxOutputBytes, now }))
+    results.push(await runOne(check, {
+      cwd: dir, spawnImpl, killGraceMs, maxOutputBytes, now, platform, env, isFile,
+    }))
   }
   return summarize({ ranAt, cwd: dir, results })
 }
@@ -338,6 +398,7 @@ export function acceptanceFailureText(result) {
     const bits = []
     if (item.error === 'CWD_MISSING') bits.push('未执行（目录问题）')
     else if (item.error === 'ENOENT') bits.push('命令不存在（ENOENT）')
+    else if (item.error === 'UNSAFE_ARG') bits.push('未执行（参数无法安全传给 cmd.exe）')
     else if (item.timedOut === true) bits.push('超时被杀')
     else if (item.exitCode === null) bits.push('未拿到退出码')
     else bits.push(`退出码 ${item.exitCode}`)
@@ -352,7 +413,7 @@ export function acceptanceFailureText(result) {
   }
   const skipped = (Array.isArray(result?.results) ? result.results : [])
     .filter(item => item?.skipped === true)
-    .map(item => `${item.name}（${item.error ?? 'missing'}）`)
+    .map(item => `${item.name}（${item.error ?? 'missing'}${item.missing === true ? '：命令未找到' : ''}）`)
   if (skipped.length > 0) lines.push(`已跳过（skipIfMissing）：${skipped.join('、')}`)
   lines.push('如何继续：修完问题后重新 task_report({status:"done"})；需要用户拍板就 task_report({status:"blocked"})。')
   return lines.join('\n')
@@ -363,7 +424,11 @@ export function acceptancePassText(result) {
   const lines = [`验收通过：${acceptanceCountText(result)}`]
   if (typeof result?.cwd === 'string' && result.cwd !== '') lines.push(`执行目录：${result.cwd}`)
   const skipped = (Array.isArray(result?.results) ? result.results : []).filter(item => item?.skipped === true)
-  if (skipped.length > 0) lines.push(`已跳过（skipIfMissing）：${skipped.map(item => item.name).join('、')}`)
+  if (skipped.length > 0) {
+    // 「跳过」必须写清原因：旧版裸 pnpm 在 Windows 上只会 ENOENT，跳过时看起来像什么都没发生。
+    const reason = item => (item.missing === true ? `${item.name}（命令未找到）` : item.name)
+    lines.push(`已跳过（skipIfMissing）：${skipped.map(reason).join('、')}`)
+  }
   return lines.join('｜')
 }
 
@@ -371,7 +436,8 @@ export function acceptancePassText(result) {
 export function acceptanceDetailBlock(checks) {
   const list = Array.isArray(checks) ? checks : []
   if (list.length === 0) return ''
-  const lines = ['【可执行检查】交付前由插件在任务目录里自动执行（argv 直接执行、不经 shell）；未通过则拒绝交付，任务保持进行中：']
+  const lines = ['【可执行检查】交付前由插件在任务目录里自动执行（argv 直接执行、不经 shell 拼串；'
+    + 'Windows 上 .cmd/.bat 经 ComSpec 传 argv）；未通过则拒绝交付，任务保持进行中：']
   for (const check of list) {
     const extras = [`超时 ${Math.round(check.timeoutMs / 1000)}s`]
     if (check.skipIfMissing === true) extras.push('命令缺失时跳过')
@@ -389,7 +455,7 @@ export function acceptanceStatusLines(record) {
     const state = item.ok === true
       ? '通过'
       : (item.skipped === true
-        ? '已跳过'
+        ? (item.missing === true ? '已跳过（命令未找到）' : '已跳过')
         : (item.timedOut === true ? '超时' : `失败(${item.exitCode ?? item.error ?? '?'})`))
     lines.push(`- ${item.name}（${item.command}）：${state}｜${item.durationMs}ms${item.truncated === true ? '｜输出已截断' : ''}`)
   }

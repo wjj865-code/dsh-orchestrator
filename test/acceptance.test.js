@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -93,6 +93,8 @@ test('runChecks：全通过；argv 原样传参、shell:false、cwd=任务目录
   const result = await runChecks({
     checks: [check('测试', ['node', '--test']), check('类型', ['pnpm', 'typecheck'])],
     cwd,
+    // 用 linux 平台锁「非 Windows 原样 spawn argv」这条契约；Windows 的解析/ComSpec 分支见下面的专测。
+    platform: 'linux',
     spawnImpl: (command, args, options) => {
       calls.push({ command, args, options })
       return fakeChild({ stdout: `ok ${command}\n` })
@@ -157,7 +159,10 @@ test('runChecks：超时 → timedOut=true、exitCode=null、不通过', async (
 test('runChecks：命令不存在 → skipIfMissing 决定「跳过」还是「失败」', async () => {
   const cwd = dir()
   const missing = () => fakeChild({ error: true })
-  const strict = await runChecks({ checks: [check('缺失', ['orch-no-such-cmd'])], cwd, spawnImpl: missing })
+  // 用 linux 平台走「spawn 报 ENOENT」这条路径；Windows 的 PATH 解析失败见下一条专测。
+  const strict = await runChecks({
+    checks: [check('缺失', ['orch-no-such-cmd'])], cwd, platform: 'linux', spawnImpl: missing,
+  })
   assert.equal(strict.ok, false)
   assert.equal(strict.results[0].error, 'ENOENT')
   assert.equal(strict.results[0].skipped, false)
@@ -166,6 +171,7 @@ test('runChecks：命令不存在 → skipIfMissing 决定「跳过」还是「�
   const lenient = await runChecks({
     checks: [check('缺失', ['orch-no-such-cmd'], { skipIfMissing: true })],
     cwd,
+    platform: 'linux',
     spawnImpl: missing,
   })
   assert.equal(lenient.ok, true, '§ 跳过不算失败：缺 pnpm 不该卡死交付')
@@ -176,10 +182,98 @@ test('runChecks：命令不存在 → skipIfMissing 决定「跳过」还是「�
   const syncThrow = await runChecks({
     checks: [check('缺失', ['orch-no-such-cmd'], { skipIfMissing: true })],
     cwd,
+    platform: 'linux',
     spawnImpl: () => { throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }) },
   })
   assert.equal(syncThrow.ok, true)
   assert.equal(syncThrow.skipped, 1)
+  rmSync(cwd, { recursive: true, force: true })
+})
+
+test('runChecks：Windows 上解析不到命令 → 不再 spawn，按 ENOENT 记账并把查找过的路径写进输出尾部', async () => {
+  const cwd = dir()
+  const calls = []
+  const spawnImpl = () => { calls.push(1); return fakeChild() }
+  const options = {
+    cwd,
+    platform: 'win32',
+    env: { PATH: 'C:\\pnpm\\bin', PATHEXT: '.EXE;.CMD' },
+    isFile: () => false,
+    spawnImpl,
+  }
+  const strict = await runChecks({ ...options, checks: [check('缺', ['pnpm', 'test'])] })
+  assert.equal(strict.ok, false)
+  assert.equal(strict.results[0].error, 'ENOENT')
+  assert.equal(strict.results[0].missing, true)
+  assert.equal(strict.results[0].skipped, false)
+  const failure = acceptanceFailureText(strict)
+  assert.match(failure, /命令不存在（ENOENT）/)
+  assert.match(failure, /未找到命令「pnpm」/)
+  assert.match(failure, /C:\\pnpm\\bin\\pnpm\.EXE/)
+  assert.match(failure, /PATHEXT/)
+
+  const lenient = await runChecks({
+    ...options,
+    checks: [check('缺', ['pnpm', 'test'], { skipIfMissing: true })],
+  })
+  assert.equal(lenient.ok, true)
+  assert.equal(lenient.skipped, 1)
+  // 跳过也要说清原因：旧版在 Windows 上就是这么静默跳过的
+  assert.match(acceptancePassText(lenient), /已跳过（skipIfMissing）：缺（命令未找到）/)
+  assert.match(acceptanceStatusLines(lenient)[1], /已跳过（命令未找到）/)
+  assert.deepEqual(calls, [], '没解析到命令就不该再 spawn')
+  rmSync(cwd, { recursive: true, force: true })
+})
+
+test('runChecks：Windows 上无扩展名的 pnpm 解析到 .cmd → 经 ComSpec /d /s /c 执行（逐项转义）', async () => {
+  const cwd = dir()
+  const calls = []
+  const env = { ComSpec: 'C:\\Windows\\system32\\cmd.exe', PATH: 'C:\\pnpm\\bin', PATHEXT: '.COM;.EXE;.BAT;.CMD' }
+  const result = await runChecks({
+    checks: [check('测试', ['pnpm', 'test', '--', 'a&b c'])],
+    cwd,
+    platform: 'win32',
+    env,
+    isFile: candidate => candidate.toLowerCase() === 'c:\\pnpm\\bin\\pnpm.cmd',
+    spawnImpl: (command, args, options) => {
+      calls.push({ command, args, options })
+      return fakeChild({ stdout: 'ok\n' })
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(calls.length, 1)
+  const call = calls[0]
+  assert.equal(call.command, env.ComSpec, '批处理只能由 ComSpec 执行（CreateProcess 直接跑 .cmd 会 EINVAL）')
+  assert.deepEqual(call.args.slice(0, 3), ['/d', '/s', '/c'])
+  const line = call.args[3]
+  assert.match(line, /^".*"$/)
+  assert.ok(line.includes('pnpm.CMD'))
+  assert.ok(line.includes('^&'), '& 必须被 ^ 兜住，不能变成命令分隔符')
+  assert.ok(line.includes('^"a^&b^ c^"'), '含空格/元字符的参数整项被引号包住')
+  // 安全边界：shell 仍是 false，命令行由我们逐项转义后原样交给 ComSpec
+  assert.equal(call.options.shell, false)
+  assert.equal(call.options.windowsVerbatimArguments, true)
+  assert.equal(call.options.cwd, cwd)
+  rmSync(cwd, { recursive: true, force: true })
+})
+
+test('runChecks：Windows 上 .cmd 参数含双引号 → 判失败（不做拼接），skipIfMissing 也不跳过', async () => {
+  const cwd = dir()
+  const calls = []
+  const result = await runChecks({
+    checks: [check('引号', ['pnpm', 'exec', 'node', '-e', 'console.log("x")'], { skipIfMissing: true })],
+    cwd,
+    platform: 'win32',
+    env: { ComSpec: 'C:\\Windows\\system32\\cmd.exe', PATH: 'C:\\pnpm\\bin', PATHEXT: '.CMD' },
+    isFile: () => true,
+    spawnImpl: () => { calls.push(1); return fakeChild() },
+  })
+  assert.equal(result.ok, false, '参数无法安全传递是配置问题，不是「命令缺失」')
+  assert.equal(result.results[0].error, 'UNSAFE_ARG')
+  assert.equal(result.results[0].skipped, false)
+  assert.match(result.results[0].outputTail, /command\[4\]/)
+  assert.match(acceptanceFailureText(result), /参数无法安全传给 cmd\.exe/)
+  assert.deepEqual(calls, [], '拒绝执行，绝不拼串')
   rmSync(cwd, { recursive: true, force: true })
 })
 
@@ -270,5 +364,37 @@ test('真进程：cwd 就是任务目录（命令拿到的 process.cwd() 一致�
   })
   assert.equal(result.ok, true)
   assert.equal(result.results[0].outputTail, cwd)
+  rmSync(cwd, { recursive: true, force: true })
+})
+
+// —— Windows 真机用例：这两条是本次修复的回归点（裸 pnpm 被静默跳过、.cmd 执行不了）。
+// Linux CI 上没有 PATHEXT/.cmd 语义可复现，明确 skip 并说明原因，不假装通过。
+
+test('真进程（Windows）：裸 pnpm 解析到 pnpm.CMD 并真跑通，不再被 skipIfMissing 静默跳过', async t => {
+  if (process.platform !== 'win32') {
+    return t.skip('只有 Windows 才有「无扩展名命令 → *.cmd shim」这套语义（PATHEXT/ComSpec）：Linux CI 无法复现，纯函数分支已由 check-command.test.js 覆盖')
+  }
+  if (!canSpawnWithPipes()) return t.skip(PIPE_SPAWN_SKIP_REASON)
+  const cwd = dir()
+  const result = await runChecks({ checks: [check('pnpm', ['pnpm', '-v'], { skipIfMissing: true })], cwd })
+  if (result.skipped === 1) {
+    return t.skip('这台机器确实没有 pnpm（PATH 里找不到 .cmd/.exe 入口）：跳过，不是被测逻辑静默跳过')
+  }
+  assert.equal(result.ok, true, `有 pnpm 就必须真跑通：${result.results[0].outputTail}`)
+  assert.match(result.results[0].outputTail, /\d+\.\d+/, 'pnpm -v 的版本号应出现在输出里')
+  rmSync(cwd, { recursive: true, force: true })
+})
+
+test('真进程（Windows）：.cmd 经 ComSpec 执行，带空格的参数原样到达', async t => {
+  if (process.platform !== 'win32') {
+    return t.skip('只有 Windows 才有 .cmd/ComSpec 边界：Linux CI 无法复现，ComSpec 参数构造已由 check-command.test.js 断言')
+  }
+  if (!canSpawnWithPipes()) return t.skip(PIPE_SPAWN_SKIP_REASON)
+  const cwd = dir()
+  const probe = join(cwd, 'orch-args-probe.cmd')
+  writeFileSync(probe, '@echo off\r\n> "%~dp0args.txt" echo(%~1\r\nexit /b 0\r\n', 'utf8')
+  const result = await runChecks({ checks: [check('探针', [probe, 'a b'])] , cwd })
+  assert.equal(result.ok, true, `经 ComSpec 的 .cmd 应退出 0：${result.results[0].outputTail}`)
+  assert.equal(readFileSync(join(cwd, 'args.txt'), 'utf8').trim(), 'a b')
   rmSync(cwd, { recursive: true, force: true })
 })

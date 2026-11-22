@@ -1000,7 +1000,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         type: 'array',
         description: '可选：机器可判定验收（交付前由插件执行，失败即拒绝交付、任务保持进行中）。1–5 条；'
           + '每条 { name?, command: argv 数组（如 ["node","--test"]）, timeoutMs?（1000–600000，默认 120000）, skipIfMissing? }。'
-          + '命令在任务 target / worktree 目录里按 argv 直接执行（不经 shell）；task_report 没有任何参数能覆盖它',
+          + '命令在任务 target / worktree 目录里按 argv 直接执行（不经 shell 拼串；Windows 上无扩展名的 pnpm/npm 按 PATH+PATHEXT 找到 .cmd，'
+          + '由 ComSpec 执行且参数逐项转义）；task_report 没有任何参数能覆盖它',
         items: {
           type: 'object',
           additionalProperties: false,
