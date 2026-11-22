@@ -30,11 +30,11 @@ function hostGateAllows(version, baseline = HOST_BASELINE) {
   return compareVersions(version, baseline.min) >= 0 && compareVersions(version, baseline.upperExclusive) < 0
 }
 
-test('区间语义矩阵：证据覆盖的 rc.3/rc.4/rc.5 通过，区间下沿以下与 0.3.0（含预览）被拒', () => {
-  for (const version of ['0.2.2-rc.3', '0.2.2-rc.4', '0.2.2-rc.5', '0.2.2']) {
+test('区间语义矩阵：rc.2–rc.5 通过，rc.1 及以下与 0.3.0（含预览）被拒', () => {
+  for (const version of ['0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.4', '0.2.2-rc.5', '0.2.2']) {
     assert.equal(hostGateAllows(version), true, `${version} 应落在声明区间内`)
   }
-  for (const version of ['0.2.1', '0.2.2-rc.2', '0.3.0-rc.1', '0.3.0-rc.2', '0.3.0-0', '0.3.0']) {
+  for (const version of ['0.2.1', '0.2.2-rc.1', '0.3.0-rc.1', '0.3.0-rc.2', '0.3.0-0', '0.3.0']) {
     assert.equal(hostGateAllows(version), false, `${version} 应被声明区间拒绝`)
   }
   // 探测不到的宿主不会被判「不兼容」：gate 只用于已知版本；unknown 走诊断行。
@@ -65,7 +65,7 @@ test('声明与运行时判读同源：engines.dsh == HOST_BASELINE.range，且�
   // 区间字符串与 min/upperExclusive 两个字段也不能各说各话（诊断行只显示 range，比较用两个字段）。
   assert.equal(HOST_BASELINE.range, `>=${HOST_BASELINE.min} <${HOST_BASELINE.upperExclusive}`)
   // 声明与 versionStatus 必须互不矛盾：inside ⇔ 宿主闸门放行。
-  for (const version of ['0.2.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.5', '0.3.0-rc.1', '0.3.0-0', '0.3.0']) {
+  for (const version of ['0.2.1', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.5', '0.3.0-rc.1', '0.3.0-0', '0.3.0']) {
     assert.equal(versionStatus(version) === 'inside', hostGateAllows(version), `${version} 的诊断状态与闸门判定不一致`)
   }
 })
@@ -73,11 +73,12 @@ test('声明与运行时判读同源：engines.dsh == HOST_BASELINE.range，且�
 test('文档同口径：README 与 docs/compat.md 写明声明区间与硬闸门（拒装/禁用/精确豁免）', async () => {
   const readme = await read('README.md')
   assert.ok(readme.includes(`\`${HOST_BASELINE.range}\``), 'README 首屏必须点名 engines.dsh 的完整区间')
-  assert.match(readme, /兼容基线[\s\S]{0,80}rc\.5/, 'README 首屏仍要有人类可读的 rc.3–rc.5')
+  assert.match(readme, /兼容基线[\s\S]{0,80}rc\.2[\s\S]{0,40}rc\.5/, 'README 首屏仍要有人类可读的 rc.2–rc.5')
 
   const compat = await read('docs/compat.md')
   assert.ok(compat.includes(HOST_BASELINE.range), 'docs/compat.md 缺少声明区间')
   assert.ok(compat.includes('0.3.0-0'), 'docs/compat.md 要写明上界为什么是 `0.3.0-0`（预览一起拒）')
+  assert.ok(compat.includes('0.2.2-rc.1'), 'docs/compat.md 要说明 rc.1 为何不在声明区间内（startActivation 形状不同）')
   for (const needle of ['engines.dsh', 'compatibility.json', 'allow-version', 'incompatible-version', 'disabling profile plugin']) {
     assert.ok(compat.includes(needle), `docs/compat.md 缺少闸门细节：${needle}`)
   }

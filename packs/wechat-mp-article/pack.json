@@ -6,7 +6,7 @@
   "publisher": "builtin",
   "version": "0.2.0",
   "platforms": ["desktop"],
-  "hostBaseline": ">=0.2.2-rc.3 <0.3.0",
+  "hostBaseline": ">=0.2.2-rc.2 <0.3.0-0",
   "preset": {
     "id": "dsh-orchestrator-pack-wechat-mp-article",
     "name": "公众号文章",

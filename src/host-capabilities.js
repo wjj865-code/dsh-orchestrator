@@ -29,9 +29,11 @@ import { join } from 'node:path'
  * 写成 `0.3.0` 反而会被 `0.3.0-rc.1 < 0.3.0` 放进来。
  */
 export const HOST_BASELINE = Object.freeze({
-  min: '0.2.2-rc.3',
+  // 下限 0.32.1 从 rc.3 下调到 rc.2（用户拍板）：rc.2 起 startActivation 已是扁平 spec；
+  // rc.1 及更早是 request 包装形状，契约未按 rc.1 验证，故不声明兼容（派发保留旧包装回退，但不计入声明区间）。
+  min: '0.2.2-rc.2',
   upperExclusive: '0.3.0-0',
-  range: '>=0.2.2-rc.3 <0.3.0-0',
+  range: '>=0.2.2-rc.2 <0.3.0-0',
 })
 
 /** 客户端注册过的宿主槽位（client/src/client.js:226/247/252/267）。缺槽位时面板入口隐藏。 */

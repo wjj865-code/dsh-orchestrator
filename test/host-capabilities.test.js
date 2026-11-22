@@ -127,12 +127,13 @@ test('版本解析与比较：预发布优先级、数字标识符、非法值',
   assert.equal(compareVersions('bad', '0.2.2'), undefined)
 })
 
-test('基线判定：rc.3–rc.5 为基线内，低于/高于/未知各有明确结果', () => {
-  assert.equal(HOST_BASELINE.range, '>=0.2.2-rc.3 <0.3.0-0')
+test('基线判定：rc.2–rc.5 为基线内，低于/高于/未知各有明确结果', () => {
+  assert.equal(HOST_BASELINE.range, '>=0.2.2-rc.2 <0.3.0-0')
+  assert.equal(versionStatus('0.2.2-rc.2'), 'inside')
   assert.equal(versionStatus('0.2.2-rc.3'), 'inside')
   assert.equal(versionStatus('0.2.2-rc.4'), 'inside')
   assert.equal(versionStatus('0.2.2-rc.5'), 'inside')
-  assert.equal(versionStatus('0.2.2-rc.2'), 'below')
+  assert.equal(versionStatus('0.2.2-rc.1'), 'below')
   assert.equal(versionStatus('0.2.1'), 'below')
   assert.equal(versionStatus('0.3.0'), 'above')
   assert.equal(versionStatus('0.3.0-rc.1'), 'above', '上界写 <0.3.0-0，0.3.0 的预览也算越界（同宿主闸门）')
@@ -256,16 +257,16 @@ test('文档同口径：docs/compat.md 写明 10 类 coupling id 与声明基线
   for (const id of COUPLING_IDS) {
     assert.ok(doc.includes(id), `docs/compat.md 缺少 coupling id：${id}`)
   }
-  for (const version of ['0.2.2-rc.3', '0.2.2-rc.5']) {
+  for (const version of ['0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.5']) {
     assert.ok(doc.includes(version), `docs/compat.md 缺少基线版本：${version}`)
   }
-  assert.match(doc, />=0\.2\.2-rc\.3 <0\.3\.0/)
+  assert.match(doc, />=0\.2\.2-rc\.2 <0\.3\.0/)
   // 9 → 10 的口径同步：文档里不能再写旧数量，否则排障时会去数「少的那一类」。
   assert.doesNotMatch(doc, /能力探测与降级（9 类）/)
   assert.match(doc, /能力探测与降级（10 类）/)
 })
 
-test('README 与访问层同口径：首屏声明 rc.3–rc.5 基线（CI 侧锁住声明漂移）', async () => {
+test('README 与访问层同口径：首屏声明 rc.2–rc.5 基线（CI 侧锁住声明漂移）', async () => {
   const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
   assert.ok(readme.includes(HOST_BASELINE.min), `README 未声明最低版本 ${HOST_BASELINE.min}`)
   assert.ok(readme.includes('rc.5'), 'README 未声明上限 rc.5')

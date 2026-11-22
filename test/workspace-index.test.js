@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openLedger, setSetting, getSetting } from '../src/ledger.js'
@@ -44,7 +44,7 @@ test('spawn blocked (EPERM) falls back to fs and still reports real git state', 
   execFileSync('git', ['-C', repo, 'config', 'user.name', 't'])
   execFileSync('git', ['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'init'])
   const plain = join(root, 'plain')
-  execFileSync('mkdir', ['-p', plain])
+  mkdirSync(plain, { recursive: true })
   const list = [{ id: 'git', title: 'repo', path: repo }, { id: 'p', title: 'plain', path: plain }]
   const blocked = async () => ({ ok: false, spawnError: 'EPERM', stdout: '', stderr: '' })
   const snapshot = await scanWorkspaces(list, { git: blocked })

@@ -7,9 +7,9 @@
 
 | 项 | 值 | 真源 |
 |---|---|---|
-| 兼容区间 | `>=0.2.2-rc.3 <0.3.0-0` | `package.json` 的 `engines.dsh`（宿主闸门读这份）；`src/host-capabilities.js` 的 `HOST_BASELINE`（运行时判读）；`test/engines-compat.test.js` 锁死两者逐字一致 |
-| 人类可读 | `0.2.2-rc.3` – `rc.5` | `README.md` 首屏定位行 |
-| 最低验证版本 | `0.2.2-rc.3`（CI 断言基线声明 + 真机冒烟，§2 / §3） | 本文件 |
+| 兼容区间 | `>=0.2.2-rc.2 <0.3.0-0` | `package.json` 的 `engines.dsh`（宿主闸门读这份）；`src/host-capabilities.js` 的 `HOST_BASELINE`（运行时判读）；`test/engines-compat.test.js` 锁死两者逐字一致 |
+| 人类可读 | `0.2.2-rc.2` – `rc.5` | `README.md` 首屏定位行 |
+| 最低声明版本 | `0.2.2-rc.2`（用户拍板下限；实测证据仍以 rc.3–rc.5 为主，§2 / §3） | 本文件 |
 | 边界语义 | `semver.satisfies(宿主版本, 区间, { includePrerelease: true })` | 宿主 `app-boot` 的 `plugin-compatibility`（rc.5 安装包内核实） |
 | 越界行为 | **硬闸门**：拒装 / 启动禁用该 profile 行（不是只 warn）；越界跑要给精确豁免 | §1.1 |
 
@@ -27,7 +27,7 @@
 
 两个容易踩的语义：
 
-- **预发布算进区间，上界特意写成 `-0`**：宿主 `includePrerelease` 让预发布参与比较，写 `<0.3.0` 会把 `0.3.0-rc.1` 也算基线内；本包上界是 `<0.3.0-0`（semver 的「小于 0.3.0 的任何预发布」写法），于是 `0.2.2-rc.3`–`rc.5` 放行，`0.3.0-rc.1` / `0.3.0-rc.2` / `0.3.0` 一律拒绝。
+- **预发布算进区间，上界特意写成 `-0`**：宿主 `includePrerelease` 让预发布参与比较，写 `<0.3.0` 会把 `0.3.0-rc.1` 也算基线内；本包上界是 `<0.3.0-0`（semver 的「小于 0.3.0 的任何预发布」写法），于是 `0.2.2-rc.2`–`rc.5` 放行，`0.2.2-rc.1` 及更早、`0.3.0-rc.1` / `0.3.0-rc.2` / `0.3.0` 一律拒绝（rc.1 的 `startActivation` 是 `request` 包装形状，与 rc.2 起的扁平 spec 不同，本版不声明兼容）。
 - **启动自检 warn 的适用范围**：`index.js` 的越界 warn 还在，但越界时宿主通常已经把插件禁用了；这条 warn 基本只在「给了精确豁免」「本地 link / 非 profile 加载」时看得到——看到它意味着「宿主版本不在声明区间，但插件还是跑起来了」。
 
 已发布过的旧版本（≤ `0.32.0`）没有 `engines.dsh` 字段，宿主对它们不做预检；声明从带上该字段的版本起生效。
@@ -36,6 +36,7 @@
 
 | 宿主 | 核实方式 | 结论 |
 |---|---|---|
+| `0.2.2-rc.2` | 未单独实测 | 本版声明的下限：`startActivation` 已是扁平 spec，按基线内放行；**不代表已逐项验证** |
 | `0.2.2-rc.3` | 本机 desktop 真机实测（P0-1 及之前）+ `docs/probes/*` 契约探针 | 基线内。`agentTeams` 成员 API 已移除 → P0-1 删掉 team 后端 |
 | `0.2.2-rc.4` | 未单独实测 | 同 minor；**按基线内声明，不代表已逐项验证** |
 | `0.2.2-rc.5` | P0-2b 静态复核本机 desktop 安装包（asar 内 338 个 `@deepseek-ai/*` 全为 `0.2.2-rc.5`）；P2-4 复核 `dsh-agent-team` 的任务板契约 | 10 类耦合点的服务仍在（`settings` / `token-meter` / `session-query-sqlite` / 工作区 registry / `plan-mode` / `goal` / `agentTeams` 任务板 / `subagent` 系）；`app-boot` 按插件 `engines.dsh` 做装载前兼容预检（本包已声明，§1.1） |
