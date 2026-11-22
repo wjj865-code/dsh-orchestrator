@@ -198,7 +198,7 @@ dsh --profile verify web --no-open --port <空闲端口> --host 127.0.0.1
 
 **典型步骤（按需挑，证据口径见 §7.3）**
 
-1. HTTP 面：`POST /api/orchestrator` 取 `snapshot` → 结构与筛选档正确；无 cookie 401、跨站 Origin 403；调接口前后 `tasks.sqlite` 行数不变。
+1. HTTP 面：`POST /api/orchestrator` 取 `snapshot` → 结构与筛选档正确；无 cookie 401/405 均可（拒绝即通过）、跨站 Origin 403；调接口前后 `tasks.sqlite` 行数不变。
 2. UI 面：无头 Chrome 打开带 token 的 URL → 侧栏「主会话」/ 会话头「任务」可点、`data-page` 五页切换、抽屉与 dock 实渲染、console 零 error（§7.1 逐条挑）。
 3. 任务流面：派任务 → `task_report` → 「已交付待确认」→ `close` 收 `done`；只读任务写文件被拒；worktree 建出 `orch/<taskId>`（§7.2）。
 4. 插件页：`[data-orchestrator-config]` 存在，配置卡片组数/行数与代码一致。
@@ -214,7 +214,7 @@ dsh --profile verify web --no-open --port <空闲端口> --host 127.0.0.1
 | 4 | 点任务卡/详情 | 抽屉滑入、遮罩变暗；`Esc`/遮罩/关闭都收起 |
 | 5 | 切 6 档筛选与搜索 | 分类正确、无匹配显示「没有匹配的任务。」 |
 | 6 | 点产物「预览」 | 主栏切回会话、右侧栏打开该文件 Tab；缺侧栏时给可读原因 |
-| 7 | 无 cookie / 跨站 Origin 调 `/api/orchestrator` | 401 / 403 |
+| 7 | 无 cookie / 跨站 Origin 调 `/api/orchestrator` | 401/405 均可（拒绝即通过） / 跨站 403 |
 | 8 | 停宿主后看面板 | 5s 内「台账暂不可用」，恢复后刷新或等 30s 自动恢复 |
 | 9 | 官方 Team 开启时打开面板 | 出现「官方 Team（只读）」折叠分区；行内**没有**按钮；关掉 Team 或宿主没装 Agent Teams 时整区不渲染（不显示提示条） |
 | 10 | 在区间外宿主（如 `0.3.0`）装本包 | 插件页**拒装**（`incompatible-version`，列出未满足的 `engines.dsh`）；若已装，启动 stderr 有 `disabling profile plugin …`、该行不加载；按 `docs/compat.md` §1.1 给 `compatibility.json` 精确豁免后能加载 |

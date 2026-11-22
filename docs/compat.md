@@ -9,7 +9,7 @@
 |---|---|---|
 | 兼容区间 | `>=0.2.2-rc.2 <0.3.0-0` | `package.json` 的 `engines.dsh`（宿主闸门读这份）；`src/host-capabilities.js` 的 `HOST_BASELINE`（运行时判读）；`test/engines-compat.test.js` 锁死两者逐字一致 |
 | 人类可读 | `0.2.2-rc.2` – `rc.5` | `README.md` 首屏定位行 |
-| 最低声明版本 | `0.2.2-rc.2`（用户拍板下限；实测证据仍以 rc.3–rc.5 为主，§2 / §3） | 本文件 |
+| 最低声明版本 | `0.2.2-rc.2`（用户拍板下限；rc.2 已有本机 Web 全链路 PASS，rc.3–rc.5 另有实测/复核，§2 / §3） | 本文件 |
 | 边界语义 | `semver.satisfies(宿主版本, 区间, { includePrerelease: true })` | 宿主 `app-boot` 的 `plugin-compatibility`（rc.5 安装包内核实） |
 | 越界行为 | **硬闸门**：拒装 / 启动禁用该 profile 行（不是只 warn）；越界跑要给精确豁免 | §1.1 |
 
@@ -36,7 +36,7 @@
 
 | 宿主 | 核实方式 | 结论 |
 |---|---|---|
-| `0.2.2-rc.2` | 未单独实测 | 本版声明的下限：`startActivation` 已是扁平 spec，按基线内放行；**不代表已逐项验证** |
+| `0.2.2-rc.2` | 本机 Web 测试 profile 全链路 PASS（16 工具；`task_create`→`task_detail`→worker 写文件→`task_report(done)`→delivered；控制台零 error） | 本版声明的下限：`startActivation` 已是扁平 spec，全链路可用 |
 | `0.2.2-rc.3` | 本机 desktop 真机实测（P0-1 及之前）+ `docs/probes/*` 契约探针 | 基线内。`agentTeams` 成员 API 已移除 → P0-1 删掉 team 后端 |
 | `0.2.2-rc.4` | 未单独实测 | 同 minor；**按基线内声明，不代表已逐项验证** |
 | `0.2.2-rc.5` | P0-2b 静态复核本机 desktop 安装包（asar 内 338 个 `@deepseek-ai/*` 全为 `0.2.2-rc.5`）；P2-4 复核 `dsh-agent-team` 的任务板契约 | 10 类耦合点的服务仍在（`settings` / `token-meter` / `session-query-sqlite` / 工作区 registry / `plan-mode` / `goal` / `agentTeams` 任务板 / `subagent` 系）；`app-boot` 按插件 `engines.dsh` 做装载前兼容预检（本包已声明，§1.1） |
@@ -98,5 +98,5 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 
 1. **消费点迁移（6 类）**：`dispatch.js` 仍裸取 `ctx.get('agentPresets')` / `ctx.get('planMode')`；客户端槽位名与 `TurnLocation` 语义仍在 `client/src` 里硬编码（`client.js:226/247/252/267`、`logic.js:233-247`）。迁移完加静态断言：业务模块出现裸 `ctx.get(` 即测试失败。
 2. **面板诊断行**：把 `report()` 渲染成「宿主能力 10/10，缺失 X」一行（复用 `index.js` 里 `checkScheduleCapability` 的降级文案模式）。
-3. **`engines.dsh` 一致性门禁**：声明已接入（§1，`test/engines-compat.test.js` 锁 `engines.dsh` == `HOST_BASELINE` == README/docs 口径逐字一致），`release.yml` 发布前本来就会跑 `pnpm test`，所以**不需要**再补一条发布门禁；缺的只是 CI 红点指向（漂移现在显示成「某个测试失败」，没有独立 `check:engines` 步骤）。区间含 rc.3 不会把自己拒在门外：rc.3 的 `app-boot` 上没有这段预检（rc.5 安装包里已核实；rc.4 未单独核实）。
+3. **`engines.dsh` 一致性门禁**：声明已接入（§1，`test/engines-compat.test.js` 锁 `engines.dsh` == `HOST_BASELINE` == README/docs 口径逐字一致），`release.yml` 发布前本来就会跑 `pnpm test`，所以**不需要**再补一条发布门禁；缺的只是 CI 红点指向（漂移现在显示成「某个测试失败」，没有独立 `check:engines` 步骤）。区间含 rc.3/rc.2 不会把自己拒在门外：rc.3 tarball 的 `app-boot:1811` 有 `evaluatePluginCompatibility`（代码在），但 CLI 安装/启动路径未实测拦截；rc.1 用未放宽 engines 的原包也能装/启动、未被禁用（rc.5 安装包里已核实）。
 4. **CI 宿主矩阵**：当前 CI 跑单测 + 构建 + 版本断言（不装宿主），rc.3 冒烟是真机手工；把 §3 变成 CI 作业（装 `@deepseek-ai/dsh-base@0.2.2-rc.3` 跑契约探针）留待后续。
