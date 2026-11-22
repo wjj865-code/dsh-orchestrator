@@ -52,7 +52,7 @@ import { followupGate, stopIsIdempotent } from './panel-gates.js'
 // v0.24 resume：续跑的判定/阈值/投递文案单一来源（面板第二批与提示词都从这里取）。
 import { RESUME_HISTORY_THRESHOLD, resumeGate, resumePrompt } from './resume.js'
 import {
-  approvalNote, isPlanTask, needsPlanWriteSwitch, planApproveGate,
+  approvalNote, dispatchReadOnly, isPlanTask, needsPlanWriteSwitch, planApproveGate,
   planListMarker, planStateOf, planStatusLine, PLAN_STATE_LABEL, recordApproval,
 } from './plan-mode.js'
 import { MAX_PLAN_CHARS, planSavedNote, writePlanDocument } from './plan-doc.js'
@@ -633,6 +633,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         },
       })
     }
+    // 已批准计划任务：投递即记账（B 语义）——写权限在 dispatch.send 的 post-send 授予，投递前不再切沙箱。
+    const planApproved = needsPlanWriteSwitch(task)
+    const message = args.message ?? ''
+    // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
+    // P1：正文不再进台账（真源是子会话在宿主的 user/message），这里只留 digest + 摘要。
+    // P1-4（审计 2026-11-23）：借条行先落、hold 后占 —— addMessage 抛错时不会再留下没人释放的 hold 与心跳。
+    const followupBody = compactMessage('followup', message)
+    const seq = addMessage(db, task.id, { kind: 'followup', rendered: followupBody.rendered, meta: { ...(followupBody.meta ?? {}), delivery: 'pending' } })
     // P0-3：guard 通过后先用内存 hold 占住目标（与检出），再 await 投递——
     // 否则 `await send` 的窗口里另一条 task_create 能通过判定，两个子会话同时写同一目录。
     // owner token 固定 `tool:<callId>`：finally 只放自己那一条（面板同时投递时不能互放）。
@@ -640,13 +648,6 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const releaseHold = holdWriteDomain(task, holdToken, {
       signalLog: error => log('task.followup.hold-release-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } }),
     })
-    // 已批准计划任务：投递即记账（B 语义）——写权限在 dispatch.send 的 post-send 授予，投递前不再切沙箱。
-    const planApproved = needsPlanWriteSwitch(task)
-    const message = args.message ?? ''
-    // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
-    // P1：正文不再进台账（真源是子会话在宿主的 user/message），这里只留 digest + 摘要。
-    const followupBody = compactMessage('followup', message)
-    const seq = addMessage(db, task.id, { kind: 'followup', rendered: followupBody.rendered, meta: { ...(followupBody.meta ?? {}), delivery: 'pending' } })
     let messageId
     try {
       const sent = await sendFollowup(
@@ -655,7 +656,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         exec?.signal,
         taskTargetDir(task) || undefined,
         task.id,
-        task.read_only === true,
+        // P0-2（审计）：计划任务未批准时也按只读投递，否则批准前就会注册可写根。
+        dispatchReadOnly(task),
         objectiveForMessage(task.goal, message),
         task.access === 'full' ? 'full' : undefined,
         // attemptKey 同一次 followup 行的逻辑投递键：重放时只重试授予，不再二次投递。
@@ -1024,16 +1026,16 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       })
     }
     // P1：续跑指令正文同样只留借条（宿主 user/message 是真源）。
+    // P1-4（审计 2026-11-23）：借条行先落、hold 后占（addMessage 抛错不留泄漏的 hold）。
     const resumeBody = compactMessage('resume', body)
+    const planApproved = needsPlanWriteSwitch(task)
+    const seq = addMessage(db, task.id, { kind: 'resume', rendered: resumeBody.rendered, meta: { ...(resumeBody.meta ?? {}), delivery: 'pending', from, stopReason: task.last_stop_reason } })
     // guard 通过 → 先占住目标，再 await 投递（失败/成功都释放；状态纪律不变：投递成功才迁 running）。
     // owner token 固定 `tool:<callId>`：与 messageTask 同口径，释放只放自己那一条。
     const holdToken = toolHoldToken(exec)
     const releaseHold = holdWriteDomain(task, holdToken, {
       signalLog: error => log('task.resume.hold-release-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } }),
     })
-    // 已批准计划任务：写权限在 post-send 授予（resume 也走同一条 send 链）。
-    const planApproved = needsPlanWriteSwitch(task)
-    const seq = addMessage(db, task.id, { kind: 'resume', rendered: resumeBody.rendered, meta: { ...(resumeBody.meta ?? {}), delivery: 'pending', from, stopReason: task.last_stop_reason } })
     let messageId
     try {
       // 与追问同一条投递链：dispatch.send 内部就是冷恢复 + 幂等补沙箱 / target 可写根 / goal。
@@ -1043,7 +1045,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         exec?.signal,
         taskTargetDir(task) || undefined,
         task.id,
-        task.read_only === true,
+        // P0-2（审计）：计划任务未批准时也按只读投递，否则批准前就会注册可写根。
+        dispatchReadOnly(task),
         objectiveForMessage(task.goal, body),
         task.access === 'full' ? 'full' : undefined,
         { planApproved, attemptKey: `resume:${task.id}:${seq}` },

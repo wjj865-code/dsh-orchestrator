@@ -291,7 +291,11 @@ export function isWriteHeld(taskId, now = Date.now()) {
   for (const [token, owner] of hold.owners) {
     if (owner.expiresAt <= now) hold.owners.delete(token)
   }
-  if (hold.owners.size === 0) holds.delete(text(taskId))
+  if (hold.owners.size === 0) {
+    holds.delete(text(taskId))
+    // 全部 owner 都过期 = 已经不被占：旧实现删空后仍 return true，会让「过期剔除」多误判一次。
+    return false
+  }
   return true
 }
 

@@ -22,7 +22,7 @@ import { checkoutRejection, taskTargetDir } from './write-guard.js'
 import { objectiveForMessage } from './goal.js'
 // P0-4：面板**没有**批准入口（plan-approve 仍是 UNKNOWN_ENDPOINT 的反例清单），message 只记讨论/修订。
 // 已批准计划任务的写入意图走 `send(..., { planApproved:true })`（授权在 post-send），面板不再有切沙箱前置。
-import { isPlanTask, needsPlanWriteSwitch, planStateOf } from './plan-mode.js'
+import { dispatchReadOnly, isPlanTask, needsPlanWriteSwitch, planStateOf } from './plan-mode.js'
 import { normalizeMessageId } from './dispatch.js'
 import { PLAN_MESSAGE_NOTES } from './copy.js'
 import { retryWorktreeOf } from './worktree.js'
@@ -531,6 +531,12 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     }
     // followup 先落 pending（待发），投递成功改 delivered，失败改 failed 再补一行 delivery_failed。
     // 详情抽屉据此显示「待发/已投递/投递失败」，不必猜。
+    // P1-4（审计 2026-11-23）：借条行先落、hold 后占 —— addMessage 抛错时不再泄漏 hold 与 30s 心跳。
+    // 已批准计划任务：写权限在 dispatch.send 的 post-send 授予（投递即记账，投递前不再切沙箱）。
+    const planApproved = needsPlanWriteSwitch(task)
+    // P1：正文不进台账（真源 = 子会话在宿主的 user/message），只留 digest + 摘要。
+    const panelBody = compactMessage('followup', content)
+    const seq = addMessage(db, task.id, { kind: 'followup', rendered: panelBody.rendered, meta: { ...(panelBody.meta ?? {}), delivery: 'pending' } })
     // guard 通过 → 先占住写域（内存 hold，owner token = panel:<requestId>），再 await 投递；
     // 失败/成功都只释放自己那一条（工具同时投递时不会互放）。
     const holdToken = `panel:${typeof requestId === 'string' && requestId !== '' ? requestId : randomUUID()}`
@@ -552,16 +558,15 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       clearInterval(heartbeat)
       try { releaseWriteHold(task.id, holdToken) } catch { /* 释放失败只影响占位时长 */ }
     }
-    // 已批准计划任务：写权限在 dispatch.send 的 post-send 授予（投递即记账，投递前不再切沙箱）。
-    const planApproved = needsPlanWriteSwitch(task)
-    // P1：正文不进台账（真源 = 子会话在宿主的 user/message），只留 digest + 摘要。
-    const panelBody = compactMessage('followup', content)
-    const seq = addMessage(db, task.id, { kind: 'followup', rendered: panelBody.rendered, meta: { ...(panelBody.meta ?? {}), delivery: 'pending' } })
     let messageId
     try {
+      // P2（审计）：没有 sendReliable 的回退也必须带全参数——少传 targetDir/readOnly/attemptKey 会绕过
+      // 写域口径与幂等键（面板「追加」与工具 task_message 必须是同一条投递链）。
+      // P0-2（审计）：计划任务未批准时按只读投递，否则批准前就会注册可写根。
+      const sendArgs = [task.target, content, undefined, taskTargetDir(task) || undefined, task.id, dispatchReadOnly(task), objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined, { planApproved, attemptKey: `followup:${task.id}:${seq}` }]
       const sent = typeof dispatcher.sendReliable === 'function'
-        ? await dispatcher.sendReliable(task.target, content, undefined, taskTargetDir(task) || undefined, task.id, task.read_only === true, objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined, { planApproved, attemptKey: `followup:${task.id}:${seq}` })
-        : await dispatcher.send(task.target, content)
+        ? await dispatcher.sendReliable(...sendArgs)
+        : await dispatcher.send(...sendArgs)
       messageId = normalizeMessageId(sent)
     } catch (error) {
       if (error?.code === WRITE_DOMAIN_DENIED) {

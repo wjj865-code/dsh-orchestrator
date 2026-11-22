@@ -943,6 +943,119 @@ test('V6 M2：retryPlanGrant 不投递、按 live Session 切 ws；无 Session �
   assert.equal(missing.reason, 'retry-no-session')
 })
 
+// —— 审计 2026-11-23 的 3 个 P0（每条一个能复现的最小用例）——
+
+/** 已批准计划任务的授予环境：模式投影可读可写、注册可数、cwd 固定 C:\work。 */
+function approvedWriteEnv(childId) {
+  const modes = new Map()
+  const registrations = []
+  const sessionsById = new Map()
+  const session = {
+    id: childId,
+    header: { cwd: 'C:\\work' },
+    append(event, payload) { if (event === 'sandbox/mode') modes.set(childId, payload.mode) },
+  }
+  sessionsById.set(childId, session)
+  const dispatcher = createSubagentDispatcher({
+    subagents: {
+      async sendMessage() { return 'm-approved' },
+      async interrupt() {},
+      async listDescendants() { return [] },
+    },
+    agent,
+    sessions: () => ({ get: id => sessionsById.get(id) }),
+    agents: () => ({ get: id => id === childId ? { id, session } : undefined }),
+    sandboxPolicy: () => ({
+      overrideOf: target => modes.get(target.id),
+      registerWritableRoot: (target, dir) => { registrations.push([target.id, dir]); return () => {} },
+    }),
+    sessionWaitMs: 0,
+  })
+  return { dispatcher, modes, registrations, session }
+}
+
+test('P0-1 审计：approved 且 target == session.header.cwd → 沙箱仍要切 workspace-write（不能只跳过注册）', async () => {
+  const env = approvedWriteEnv('c-same')
+  env.modes.set('c-same', 'read-only') // 计划期的沙箱是真只读
+  await env.dispatcher.send('c-same', '执行', undefined, 'C:\\work', 't-same', false, undefined, undefined, { planApproved: true })
+  assert.equal(env.modes.get('c-same'), 'workspace-write', '同 cwd 只是「不用注册可写根」，沙箱必须切回可写')
+  assert.deepEqual(env.registrations, [], '平台根就是 target：不重复注册')
+  assert.equal(env.dispatcher.planWriteInfo('c-same').state, 'granted')
+  assert.equal(env.dispatcher.planWriteInfo('c-same').reason, 'platform-root')
+})
+
+test('P0-1 审计：approved 但没有 target（继承父 cwd）→ 同样切可写，不再「granted 但写不了」', async () => {
+  const env = approvedWriteEnv('c-notarget')
+  env.modes.set('c-notarget', 'read-only')
+  await env.dispatcher.send('c-notarget', '执行', undefined, undefined, 't-notarget', false, undefined, undefined, { planApproved: true })
+  assert.equal(env.modes.get('c-notarget'), 'workspace-write')
+  assert.equal(env.dispatcher.planWriteInfo('c-notarget').state, 'granted')
+})
+
+test('P0-3 审计：只读任务的 messageId/attemptKey 重放不 append workspace-write、不注册', async () => {
+  const env = approvedWriteEnv('c-ro')
+  env.modes.set('c-ro', 'read-only')
+  const replayed = await env.dispatcher.send('c-ro', 'x', undefined, 'C:/target', 't-ro', true, undefined, undefined, { messageId: 'm-old' })
+  assert.equal(replayed, 'm-old')
+  assert.equal(env.modes.get('c-ro'), 'read-only', '只读任务重放不许被写成可写')
+  assert.deepEqual(env.registrations, [], '只读任务重放不许注册可写根')
+  // 也不许留一条幽灵 planWrite 行（旧实现无条件 retryPlanGrant 会写 switching）。
+  assert.equal(env.dispatcher.planWriteInfo('c-ro').state, 'unknown')
+})
+
+test('P0-3 审计：attemptKey 命中的只读重放同样不授予（不二次投递）', async () => {
+  let sends = 0
+  const modes = new Map()
+  const registrations = []
+  const session = {
+    id: 'c-ro2',
+    header: { cwd: 'C:\\work' },
+    append(event, payload) { if (event === 'sandbox/mode') modes.set('c-ro2', payload.mode) },
+  }
+  const dispatcher = createSubagentDispatcher({
+    subagents: {
+      async sendMessage() { sends += 1; return 'm-key' },
+      async interrupt() {},
+      async listDescendants() { return [] },
+    },
+    agent,
+    sessions: () => ({ get: id => id === 'c-ro2' ? session : undefined }),
+    agents: () => ({ get: id => id === 'c-ro2' ? { id, session } : undefined }),
+    sandboxPolicy: () => ({ overrideOf: target => modes.get(target.id), registerWritableRoot: (target, dir) => { registrations.push([target.id, dir]); return () => {} } }),
+    sessionWaitMs: 0,
+  })
+  const first = await dispatcher.send('c-ro2', 'x', undefined, 'C:/target', 't-ro2', true, undefined, undefined, { attemptKey: 'followup:t-ro2:1' })
+  assert.equal(first, 'm-key')
+  modes.set('c-ro2', 'read-only')
+  const replay = await dispatcher.send('c-ro2', 'x', undefined, 'C:/target', 't-ro2', true, undefined, undefined, { attemptKey: 'followup:t-ro2:1' })
+  assert.equal(replay, 'm-key')
+  assert.equal(sends, 1, '重放不二次投递')
+  assert.equal(modes.get('c-ro2'), 'read-only')
+  assert.deepEqual(registrations, [], '只读任务首投也不注册可写根')
+})
+
+test('sendReliable：send 在投递成功之后抛错时不得重发（已投递标记真的生效）', async () => {
+  let sends = 0
+  const dispatcher = createSubagentDispatcher({
+    subagents: {
+      async sendMessage() { sends += 1; return 'm-done' },
+      async interrupt() {},
+      async listDescendants() { return [] },
+    },
+    agent,
+    retryDelaysMs: [0, 0, 0],
+    sessionWaitMs: 0,
+  })
+  const original = dispatcher.send.bind(dispatcher)
+  // 模拟「未来有人往 send 里加了会抛的语句」：投递本身已完成。
+  dispatcher.send = async (...args) => {
+    await original(...args)
+    throw new Error('post-deliver boom')
+  }
+  await assert.rejects(() => dispatcher.sendReliable('c-rel', 'x'), /post-deliver boom/)
+  assert.equal(sends, 1, '已投递（onDelivered 已回调）就绝不再发一遍')
+})
+
 test('G1：stop 清目标；dispose 抛错也在 finally 里清', async () => {
   const cleared = []
   const bridge = {

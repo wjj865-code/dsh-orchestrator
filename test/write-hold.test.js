@@ -63,6 +63,16 @@ test('write-hold：过期 owner 剔除——只剩过期者的任务直接删除
   assert.equal(writeHoldCount(), 0)
 })
 
+test('write-hold：全过期后 isWriteHeld 立刻返回 false（过期剔除不能多误判一次）', () => {
+  reset()
+  acquireWriteHold({ taskId: 't-1', ownerToken: 'tool:a', targetDir: 'C:/ws', ttlMs: 100, now: 1000 })
+  assert.equal(isWriteHeld('t-1', 1050), true)
+  // 全过期：删空后必须返回 false（旧实现删空仍 return true，会让「过期剔除」多误判一次）。
+  assert.equal(isWriteHeld('t-1', 1101), false)
+  assert.equal(writeHoldCount(), 0)
+  assert.equal(isWriteHeld('t-1', 1101), false)
+})
+
 test('write-hold：touch 只续自己 token 的 TTL，不延长别人', () => {
   reset()
   acquireWriteHold({ taskId: 't-1', ownerToken: 'tool:a', targetDir: 'C:/ws', ttlMs: 100, now: 1000 })

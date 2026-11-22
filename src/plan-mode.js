@@ -60,6 +60,21 @@ export const planStateOf = task => {
 /** 计划是否还在「批准前」（planning / waiting_user / revising）：这几态的运行期沙箱都是只读。 */
 export const planInPhase = task => isPlanTask(task) && UNAPPROVED_PLAN_STATES.includes(planStateOf(task))
 
+/**
+ * 投递参数用的运行期沙箱口径（P0-2，审计 2026-11-23）：`dispatch.send` 的 `readOnly` 该传什么。
+ *
+ * 返回 true：
+ * - 只读任务（台账 `read_only` 列）；
+ * - **计划任务尚未批准**（plan_state 不是 approved，含 planning/waiting_user/revising/rejected/none）——
+ *   这几态子会话的运行期沙箱本来就是 read-only，续派/续跑必须按只读投递；
+ *   否则 `dispatch.send` 会当「可写任务」走 preflight + post-send `ensureWritableRoot`，
+ *   在**批准前**就把目标目录登记成可写根（违反「批准前不注册」）。
+ *
+ * 已批准计划任务返回 false：可写由 `send({ planApproved: true })` 的 post-send 授予。
+ */
+export const dispatchReadOnly = task =>
+  task?.read_only === true || (isPlanTask(task) === true && planStateOf(task) !== 'approved')
+
 /** `task_list` 行尾标记：只有未批准的三态加小标，其它状态不加字样。 */
 export function planListMarker(task) {
   if (!isPlanTask(task)) return ''

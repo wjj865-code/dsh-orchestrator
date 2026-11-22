@@ -467,8 +467,6 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     if (session === undefined || session === null) return { ok: false, code: 'WRITE_ROOT_NO_SESSION' }
     const actual = typeof targetDir === 'string' && targetDir.trim() !== '' ? targetDir : session.header?.cwd
     if (typeof actual !== 'string' || actual.trim() === '') return { ok: true, skipped: 'no-target' }
-    // 平台根已经是 target 时不用授权（幂等）。
-    if (sameDirectory(actual, session.header?.cwd)) return { ok: true, skipped: 'platform-root' }
     const denied = judgeWritableRoot(taskId, actual)
     if (denied !== undefined && denied.ok !== true) {
       reportWriteDenied(taskId, childId, actual, denied)
@@ -476,6 +474,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     }
     const policy = serviceOf(sandboxPolicy)
     const alreadyWritable = policy?.overrideOf?.(session) === 'workspace-write'
+    // P0-1（审计 2026-11-23）：平台根 == target 只说明「不需要注册可写根」，**不等于**沙箱已经可写。
+    // 计划任务批准前的沙箱是 read-only，所以 append 必须在这条捷径**之前**做——否则「批准了却写不了」
+    // （无 target 的批准任务会继承父 cwd，正是这条路径）。下面平台根分支只跳过注册。
     if (!alreadyWritable) {
       if (typeof session.append !== 'function') return { ok: false, code: 'WRITE_SANDBOX_APPEND_FAILED', text: '会话没有 append' }
       try {
@@ -485,6 +486,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         return { ok: false, code: 'WRITE_SANDBOX_APPEND_FAILED', text: errorText(error) }
       }
     }
+    // 平台根已经是 target：沙箱已切好，但没有额外根要注册（注册同一个 cwd 是多余的，且某些实现会拒绝）。
+    if (sameDirectory(actual, session.header?.cwd)) return { ok: true, sandbox: 'workspace-write', skipped: 'platform-root' }
     const granted = grantWritableRoot(childId, session, actual, taskId)
     if (granted.ok !== true) {
       if (compensateOnFailure) {
@@ -601,6 +604,38 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       }
     } catch {
       return { state: 'unknown' }
+    }
+  }
+
+  /**
+   * 投递幂等重放时的「授予」（P0-3，审计 2026-11-23）。
+   *
+   * 旧行为：`messageId` / `attemptKey` 命中就无条件 `retryPlanGrant`，而它内部会 append `workspace-write`——
+   * 只读任务 / 计划未批准的任务被重放一次就偷偷拿到可写沙箱，绕过了「批准前不切可写」。
+   *
+   * 现在的口径（只按调用方给的运行期事实分流，不新增持久化字段）：
+   * - `readOnly === true`（只读任务，或计划任务未批准——调用方按 `plan-mode.dispatchReadOnly` 算）→ 什么都不做；
+   * - 已登记过写入意图（即已批准计划任务的 planWrite 行）→ `retryPlanGrantImpl`（切可写 + 注册）；
+   * - 其余（普通可写任务）→ 只幂等补注册可写根，**不 append 沙箱**（沙箱从派发起就是 workspace-write）。
+   */
+  const replayGrant = async (target, { taskId, targetDir, readOnly, messageId }) => {
+    if (readOnly === true) return
+    try {
+      if (planWrite.has(target)) {
+        retryPlanGrantImpl(target, { taskId, targetDir, messageId })
+        return
+      }
+      const granted = await ensureWritableRoot(target, targetDir, { taskId, phase: 'post-send' })
+      if (granted.ok !== true) {
+        safeEvent('subagent.writable-root.post-send-failed', {
+          taskId,
+          sessionId: target,
+          detail: { reason: granted.code ?? granted.skipped ?? null, text: granted.text ?? null, replay: true },
+        })
+      }
+    } catch (error) {
+      // 重放只补授予：补不上也不改「已投递」这个事实（调用方已按 attemptKey 幂等返回缓存 messageId）。
+      onWarn(`dsh-orchestrator: 投递重放补授予失败（不影响已投递）：${errorText(error)}`)
     }
   }
 
@@ -829,14 +864,15 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     //   - messageId / attemptKey：同一逻辑投递的重放（跨重启靠 followup 行 meta.messageId）→ 只重试授予，不再投递。
     async send(target, message, signal, targetDir, taskId, readOnly, objective, access, options = {}) {
       const opts = options ?? {}
-      // 0) 幂等：已有一条「同一次投递」的记录 → 只重试授予并返回原 messageId，绝不二次 sendMessage。
+      // 0) 幂等：已有一条「同一次投递」的记录 → 只按运行期事实补授予并返回原 messageId，绝不二次 sendMessage。
+      //    只读/计划未批准的任务在这里**不授予**（P0-3）：否则重放一次就能绕过「批准前不切可写」。
       if (typeof opts.messageId === 'string' && opts.messageId !== '') {
-        retryPlanGrantImpl(target, { taskId, targetDir, messageId: opts.messageId })
+        await replayGrant(target, { taskId, targetDir, readOnly, messageId: opts.messageId })
         return opts.messageId
       }
       if (typeof opts.attemptKey === 'string' && opts.attemptKey !== '' && sentCache.has(opts.attemptKey)) {
         const messageId = sentCache.get(opts.attemptKey)
-        retryPlanGrantImpl(target, { taskId, targetDir, messageId })
+        await replayGrant(target, { taskId, targetDir, readOnly, messageId })
         return messageId
       }
       const parent = requireAgent()
@@ -883,6 +919,11 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       // 4) post-send：消息已是事实。**从这里到 return 整段 try/catch，任何异常只 warn，绝不外抛**（option ①）。
       //    否则 action 层会把「已投递」当「失败」、sendReliable 还可能重发同一条消息。
       try {
+        // 投递已经是事实：第一件事是把「已投递」告诉调用方（sendReliable 的已投递标记），
+        // 之后任何记账/授予异常都不许让它变成「重发一次」。
+        if (typeof opts.onDelivered === 'function') {
+          try { opts.onDelivered(messageId) } catch { /* 标记回调失败不影响已投递 */ }
+        }
         // 投递成功先记事件（代码顺序：投递 → 注册），日志时间序可自证「注册在投递之后」。
         safeEvent('task.message.sent', { taskId, sessionId: target, detail: { targetDir: targetDir ?? null } })
         if (typeof opts.attemptKey === 'string' && opts.attemptKey !== '' && messageId !== undefined) {
@@ -939,10 +980,12 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access, options = {}) {
       let lastError
       for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
-        // 已投递标记：send 在 sendMessage 成功后绝不 reject；万一未来有人加了会抛的语句，这里也绝不再发一遍。
+        // 已投递标记：由 send 在 `sendMessage` 成功的那一刻回调置位（投递是事实，之后任何异常都不许重发）。
+        // 之前这里是「await send 之后才置位」，catch 里永远读到 false，等于没有保护。
         let delivered = false
+        const attemptOptions = { ...(options ?? {}), onDelivered: () => { delivered = true } }
         try {
-          const sent = await this.send(target, message, signal, targetDir, taskId, readOnly, objective, access, options)
+          const sent = await this.send(target, message, signal, targetDir, taskId, readOnly, objective, access, attemptOptions)
           delivered = true
           return sent
         } catch (error) {

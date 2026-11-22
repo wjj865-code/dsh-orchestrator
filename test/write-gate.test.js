@@ -169,22 +169,11 @@ test("S10'：无 token 的 releaseWriteHold 只允许 stop/close/终态；finall
   assert.equal(panel.includes('releaseWriteHold(task.id, holdToken)'), true)
 })
 
-test('S12：send 在 sendMessage 成功后到 return 之间整段 try/catch、无裸 throw；sendReliable 有已投递标记', () => {
-  const dispatch = read('src/dispatch.js')
-  const sendStart = dispatch.indexOf('async send(target, message, signal')
-  const reliableStart = dispatch.indexOf('async sendReliable(')
-  assert.equal(sendStart > 0 && reliableStart > sendStart, true, '找不到 send/sendReliable 的锚点')
-  const send = dispatch.slice(sendStart, reliableStart)
-  const reliable = dispatch.slice(reliableStart, dispatch.indexOf('retryPlanGrant(target, input', reliableStart))
-  const marker = send.indexOf('await subagents.sendMessage')
-  assert.notEqual(marker, -1)
-  const postSend = send.slice(marker)
-  assert.equal(postSend.includes('投递后记账/授予失败'), true, 'post-send 必须有自己的 catch（option ①）')
-  assert.equal(/^\s*throw\b/m.test(postSend), false, 'post-send 段不许有裸 throw（否则已投递会被当失败）')
-  assert.equal(postSend.includes('return messageId ?? raw'), true)
-  assert.equal(reliable.includes('delivered = true'), true)
-  assert.equal(reliable.includes('if (delivered) throw error'), true, '已投递绝不重试')
-})
+// S12（源码文本断言，审计后删）：原用例靠 `dispatch.includes('delivered = true')` 这类文本断言，
+// 与实现写法强绑定、且真的「假绿」过（标记在 await send 之后才置位，catch 永远读不到）。
+// 现在改用行为断言，见 test/dispatch.test.js：
+//   - 'sendReliable：send 在投递成功之后抛错时不得重发（已投递标记真的生效）'；
+//   - 'G1b：post-send 段抛错不影响已投递（send 仍 resolve、sendReliable 不重投）'。
 
 // —— 行为：派发 chokepoint ——
 

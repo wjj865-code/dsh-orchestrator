@@ -15,8 +15,9 @@ import { createPanelActions } from '../src/panel-actions.js'
 import { renderTaskDetail } from '../src/task-detail.js'
 import {
   PLAN_STATE_LABEL, PLAN_STATES, PLAN_FIRST_DETAIL, EXIT_PLAN_MODE_DENIAL, UNAPPROVED_PLAN_STATES,
-  planApproveGate, planListMarker, planStatusLine,
+  planApproveGate, planListMarker, planStatusLine, dispatchReadOnly,
 } from '../src/plan-mode.js'
+import { __resetHolds, isWriteHeld, writeHoldCount } from '../src/write-hold.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -62,6 +63,17 @@ test('P0-4 planApproveGate：四条前置（计划任务 / 已交回 blocked / �
   assert.equal(planApproveGate({ ...base, plan_path: null }).code, 'PLAN_APPROVE_NO_PLAN_PATH')
   assert.deepEqual(planApproveGate(base), { ok: true, planState: 'waiting_user' })
   assert.deepEqual(planApproveGate({ ...base, plan_state: 'approved' }), { ok: true, already: true, planState: 'approved' })
+})
+
+test('P0-2 dispatchReadOnly：只读任务 + 未批准计划任务一律按只读投递', () => {
+  assert.equal(dispatchReadOnly({ read_only: true }), true)
+  assert.equal(dispatchReadOnly({ read_only: false, plan_first: true, plan_state: 'planning' }), true)
+  assert.equal(dispatchReadOnly({ read_only: false, plan_first: true, plan_state: 'waiting_user' }), true)
+  assert.equal(dispatchReadOnly({ read_only: false, plan_first: true, plan_state: 'revising' }), true)
+  assert.equal(dispatchReadOnly({ read_only: false, plan_first: true, plan_state: 'none' }), true)
+  // 已批准的计划任务要按可写投递（授予在 post-send 的 grantApprovedWrite）。
+  assert.equal(dispatchReadOnly({ read_only: false, plan_first: true, plan_state: 'approved' }), false)
+  assert.equal(dispatchReadOnly({ read_only: false, plan_first: false, plan_state: 'none' }), false)
 })
 
 test('P8 exit_plan_mode 拒绝文案指向 task_report blocked（不是 exit_plan_mode）', () => {
@@ -720,6 +732,66 @@ test('P8 生命周期：只读任务 blocked 续派 → 回 running 但明说仍
   db.close()
 })
 
+test('P0-2 审计：计划未批准的续派按只读投递（planning/revising 都不许提前拿可写）', async () => {
+  const { db, dispatcher, tools } = await setupTools()
+  const planning = planTaskRow(db, { status: 'running' })
+  await mainCall(tools, 'task_message', { task_id: planning.id, message: '继续探索' })
+  const planningSend = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
+  assert.equal(planningSend[3], true, 'planning 态续派必须按只读投递（否则 dispatch 会注册可写根）')
+
+  const revising = planTaskRow(db, { status: 'waiting_user' })
+  setPlanState(db, revising.id, 'revising')
+  await mainCall(tools, 'task_message', { task_id: revising.id, message: '按意见改一版' })
+  const revisingSend = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
+  assert.equal(revisingSend[3], true, 'revising 态续派同样按只读投递')
+
+  // 批准之后才是可写投递（授予在 post-send 的 grantApprovedWrite）。
+  const approved = planTaskRow(db, { planPath: 'C:/ws/reports/plans/x.md' })
+  await tools.task_report.execute(
+    { task_id: approved.id, status: 'blocked', summary: '计划已就绪', question: '批准执行？' },
+    { agent: { id: approved.session_id } },
+  )
+  await mainCall(tools, 'task_message', { action: 'approve', task_id: approved.id })
+  await mainCall(tools, 'task_message', { task_id: approved.id, message: '按这个计划执行' })
+  const approvedSend = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
+  assert.equal(approvedSend[3], false, '已批准 → 可写投递')
+  assert.equal(approvedSend[4].planApproved, true)
+  db.close()
+})
+
+test('P1-4 审计：借条行写失败时不泄漏 hold（acquire 必须在 addMessage 之后）', async () => {
+  const db = await openLedger(tempDir())
+  const task = planTaskRow(db, { status: 'running' })
+  const dispatcher = fakeDispatcher()
+  const notifier = { pushed: [], push(item) { this.pushed.push(item) } }
+  const config = { staleMinutes: 30, maxQueue: 50, coordinatorSession: 's-1' }
+  const queue = createQueue({ db, dispatcher, config })
+  // 台账写消息抛错（真实故障面）：hold 若在 addMessage 之前 acquire，就会带着 30s 心跳泄漏下去。
+  const failingDb = new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'prepare') {
+        return sql => {
+          if (/INSERT INTO messages/i.test(sql)) throw new Error('insert boom')
+          return target.prepare(sql)
+        }
+      }
+      const value = Reflect.get(target, prop, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  const tools = Object.fromEntries(createTools({
+    db: failingDb, dispatcher, queue, notifier, config,
+    coordinatorStatus: () => ({ id: 's-1', live: true }),
+  }).map(tool => [tool.name, tool]))
+  __resetHolds()
+  const text = await mainCall(tools, 'task_message', { task_id: task.id, message: '继续' })
+  assert.match(text, /任务协调失败/)
+  assert.equal(isWriteHeld(task.id), false, 'addMessage 抛错后不许还占着写域')
+  assert.equal(writeHoldCount(), 0)
+  __resetHolds()
+  db.close()
+})
+
 test('P8 批准：planMode 服务缺失时 post-send 仍把沙箱切回可写（阻塞→批准→续派→原会话继续）', async () => {
   const env = planEnv({ service: false, ctxStyle: 'cordis' })
   const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
@@ -744,6 +816,16 @@ test('P8 批准后恢复执行：send({planApproved}) → 沙箱切 workspace-wr
   assert.equal(env.guardRecords[0].disposed, true)
   assert.deepEqual(env.registrations, [[member.id, 'C:/target']])
   assert.equal(env.dispatcher.planWriteInfo(member.id).state, 'granted')
+})
+
+test('P0-2 派发：未批准计划任务按只读续派 → 不 append 可写、registrations 仍为空', async () => {
+  const env = planEnv()
+  const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
+  assert.deepEqual(env.registrations, [], '派发阶段就不注册（批准前）')
+  await env.dispatcher.send(member.id, '继续探索', undefined, 'C:/target', 't-1', true)
+  assert.deepEqual(env.registrations, [], '批准前续派同样不得注册可写根')
+  assert.deepEqual(sandboxModeEvents(env).map(item => item.payload.mode), ['read-only'], '沙箱仍只读')
+  assert.equal(env.dispatcher.planWriteInfo(member.id).state, 'unknown', '未批准任务不该有写入意图行')
 })
 
 test('P8 批准失败：拿不到子会话时 retry grant 停在 switching（不静默假装切好了、不抛错）', async () => {
