@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   monthGrid, dateKeyOf, startOfMonth, planStampOnDay, planWhenLabel, clockOf,
-  groupBoard, groupTasksOf, trayTasks, plannedOnDay, nextPlannedTask, automationStateLabel,
+  groupBoard, groupTasksOf, scheduleBucketOf, scheduleGroups, SCHEDULE_GROUP_LIMIT,
+  plannedOnDay, nextPlannedTask, automationStateLabel,
 } from '../client/src/logic.js'
 import { BOARD_COLUMNS, WORKBENCH_PAGES, WORKBENCH_POLL_MS, DEFAULT_PLAN_HOUR, REVIEW_DAYS } from '../client/src/constants.js'
 
@@ -87,7 +88,7 @@ test('groupBoard：按列压任务，列内优先级↓ → 最近事件↓；�
   assert.deepEqual(tasks.map(task => task.status), ['running', 'running', 'delivered', 'failed', 'cancelled'], '渲染只读')
 })
 
-test('组任务 / 待排 / 今日排期 / 下一条：筛选口径', () => {
+test('组任务 / 今日排期 / 下一条：筛选口径', () => {
   const tasks = [
     { id: 'a', groupId: 'g1', status: 'running', plannedAt: null, canPlan: true, lastEventAt: 9 },
     { id: 'b', groupId: 'g1', status: 'done', plannedAt: null, canPlan: false, lastEventAt: 8 },
@@ -96,8 +97,6 @@ test('组任务 / 待排 / 今日排期 / 下一条：筛选口径', () => {
   ]
   assert.deepEqual(groupTasksOf(tasks, 'g1').map(task => task.id), ['a', 'b'])
   assert.deepEqual(groupTasksOf(tasks, null).map(task => task.id), ['d'])
-  // 待排：活跃且没排期（终态不进去，排了也永远不会跑）。
-  assert.deepEqual(trayTasks(tasks, Date.now()).map(task => task.id), ['a', 'c', 'd'])
   const planned = [
     { id: 'p1', status: 'running', plannedAt: new Date(2026, 10, 21, 20, 0, 0).getTime() },
     { id: 'p2', status: 'running', plannedAt: new Date(2026, 10, 21, 9, 0, 0).getTime() },
@@ -109,6 +108,53 @@ test('组任务 / 待排 / 今日排期 / 下一条：筛选口径', () => {
   assert.equal(automationStateLabel({ active: true, nextFireAt: Date.now() }).startsWith('下次'), true)
   assert.equal(automationStateLabel({ active: false }), '已暂停')
   assert.equal(automationStateLabel({ active: true, hostMissing: true }), '宿主侧已不存在')
+})
+
+// 排期页「待排期」是派生分组（方案 C），不是任务状态：状态机与 planned_at 语义都不动，
+// 收窄的只是右栏怎么分组——running/delivered 不再被当成「还没排期」。
+test('排期页派生分组（方案 C）：待排期只认 waiting_dep/pending 且没排期；进行中/待确认分开；已排期只留日历与下一条', () => {
+  const planned = new Date(2026, 10, 22, 20, 0, 0).getTime()
+  const tasks = [
+    { id: 'dep', status: 'waiting_dep', plannedAt: null, lastEventAt: 1 },
+    { id: 'pend', status: 'pending', plannedAt: null, lastEventAt: 9 },
+    { id: 'run', status: 'running', plannedAt: null, lastEventAt: 8 },
+    { id: 'user', status: 'waiting_user', plannedAt: null, lastEventAt: 7 },
+    { id: 'auth', status: 'waiting_auth', plannedAt: null, lastEventAt: 6 },
+    { id: 'deliv', status: 'delivered', plannedAt: null, lastEventAt: 5 },
+    { id: 'planned-pend', status: 'pending', plannedAt: planned, lastEventAt: 4 },
+    { id: 'planned-run', status: 'running', plannedAt: planned, lastEventAt: 3 },
+    { id: 'done', status: 'done', plannedAt: null, lastEventAt: 2 },
+    { id: 'failed', status: 'failed', plannedAt: null, lastEventAt: 1 },
+  ]
+  const groups = Object.fromEntries(scheduleGroups(tasks).map(group => [group.key, group]))
+  assert.deepEqual(Object.keys(groups), ['tray', 'active', 'confirm'], '右栏固定三段')
+  // 待排期只吃 waiting_dep/pending 且没排期的；running/delivered 不再混进来。
+  assert.deepEqual(groups.tray.tasks.map(task => task.id), ['pend', 'dep'])
+  assert.deepEqual(groups.active.tasks.map(task => task.id), ['run', 'user', 'auth'])
+  assert.deepEqual(groups.confirm.tasks.map(task => task.id), ['deliv'])
+  assert.deepEqual(groups.tray.tasks.map(task => task.id).includes('run'), false)
+  // 已排期 → 只在月历与「下一条」；终态哪组都不进。
+  assert.equal(scheduleBucketOf({ status: 'pending', plannedAt: planned }), 'scheduled')
+  assert.equal(scheduleBucketOf({ status: 'running', plannedAt: planned }), 'scheduled')
+  for (const status of ['done', 'failed', 'cancelled', 'orphaned', 'missing']) {
+    assert.equal(scheduleBucketOf({ status }), null, `${status} 不该进右栏任何分组`)
+  }
+  assert.equal(scheduleBucketOf(null), null)
+  // 组内最近事件↓；每组封顶 20 条（count 仍报真实命中数）。
+  const many = Array.from({ length: 25 }, (_, index) => ({ id: `p-${index}`, status: 'pending', plannedAt: null, lastEventAt: index }))
+  const tray = scheduleGroups(many)[0]
+  assert.equal(tray.tasks.length, SCHEDULE_GROUP_LIMIT)
+  assert.equal(tray.count, 25)
+  assert.equal(tray.tasks[0].id, 'p-24')
+  // 渲染只读：分组不改状态、不动 plannedAt。
+  assert.deepEqual(tasks.map(task => task.status), ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered', 'pending', 'running', 'done', 'failed'])
+  assert.equal(tasks[6].plannedAt, planned)
+  // 组件层：右栏按派生分组分段，只有「待排期」是拖回清除的落点（清除落点不按状态过滤）。
+  const wb = source('workbench.js')
+  assert.match(wb, /scheduleGroups\(tasks\)/)
+  assert.match(wb, /group\.key === 'tray'/)
+  assert.match(wb, /onClearPlan\(id\)/)
+  assert.equal(wb.includes('trayTasks'), false, '旧的 tray 过滤已由派生分组取代')
 })
 
 test('dock 是只读的：源码里不出现输入框 / 发送按钮 / 提交动作（D3）', () => {
