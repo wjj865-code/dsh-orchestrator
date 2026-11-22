@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { openLedger, createTask, getTask, setTaskAcceptance, transition } from '../src/ledger.js'
-import { CLOSE_REASONS, closeDelivered, createDeliveredSweeper } from '../src/delivered.js'
+import { CLOSE_REASONS, autoCloseChainDelivered, closeDelivered, createDeliveredSweeper } from '../src/delivered.js'
 import {
   ACCEPTED_BY, HANDOFF_CONTRACT_VERSION, HANDOFF_EVENT, HANDOFF_FIELDS, acceptedByLabel, acceptedByOf,
   createHandoffLog, handoffOf, handoffOfTask, handoffSnapshot, handoffStatusLines, setHandoffSink,
@@ -89,6 +89,23 @@ test('确认三条路径：工具=coordinator、面板=panel、超时=timeout，
     assert.equal(acceptedByLabel(closedCoordinator.accepted_by), '协调者确认')
     assert.equal(acceptedByLabel(closedPanel.accepted_by), '面板确认')
 
+    // 链式自动放行（chain:'auto'）是第四种确认人：必须能落库、能出标签，且不被白名单吃成 null。
+    const chainedUp = createTask(db, {
+      brief: sampleBrief({ title: '链式上游', chain: 'auto' }), coordinatorSession: 's-1',
+    })
+    transition(db, chainedUp.id, 'running', { sessionId: 'c-chain' })
+    transition(db, chainedUp.id, 'delivered')
+    createTask(db, {
+      brief: sampleBrief({ title: '链式下游' }), coordinatorSession: 's-1', dependsOn: [chainedUp.id], status: 'waiting_dep',
+    })
+    assert.equal(autoCloseChainDelivered({ db, taskId: chainedUp.id }).closed, true)
+    const closedChained = getTask(db, chainedUp.id)
+    assert.equal(closedChained.accepted_by, 'chain')
+    assert.equal(closedChained.close_reason, 'chain')
+    assert.equal(acceptedByLabel(closedChained.accepted_by), '链式自动放行')
+    const chainedContract = handoffOfTask(db, closedChained)
+    assert.equal(chainedContract.acceptedBy, 'chain', 'accepted_by 的取值域必须包含 chain，否则契约会读成 null')
+
     // 超时 sweeper 也必须区分出来（by=timeout），不能记成 coordinator；事件照发。
     const late = await deliveredTask(db, { title: '超时' })
     db.prepare('UPDATE tasks SET delivered_at = ? WHERE id = ?').run(Date.now() - 61 * MINUTE, late.id)
@@ -104,7 +121,7 @@ test('确认三条路径：工具=coordinator、面板=panel、超时=timeout，
 
     const confirmed = readLines(stateDir, handoffFiles(stateDir)[0])
       .filter(line => line.event === HANDOFF_EVENT.confirmed)
-    assert.deepEqual(confirmed.map(line => line.detail.handoff.acceptedBy), ['coordinator', 'panel', 'timeout'])
+    assert.deepEqual(confirmed.map(line => line.detail.handoff.acceptedBy), ['coordinator', 'panel', 'chain', 'timeout'])
   } finally {
     dispose()
   }

@@ -68,6 +68,8 @@ test('schema 快照：五个 task_* + plan_save 的入参结构冻结（仍是 t
       refs: { type: 'array', items: 'string' }, user_verbatim: { type: 'string' }, teamTaskId: { type: 'string' },
       target: { type: 'string' }, readOnly: { type: 'boolean' }, planFirst: { type: 'boolean' },
       access: { type: 'string', enum: ['full'] }, dependsOn: { type: 'array', items: 'string' },
+      // 链式自动放行（用户 2026-11-23 拍板）：只认 'auto'，标记只进 brief 快照。
+      chain: { type: 'string', enum: ['auto'] },
       group: { type: 'string' }, goalRounds: { type: 'number' }, writeScopes: { type: 'array', items: 'string' },
       priority: { type: 'number' }, allowConcurrent: { type: 'boolean' }, worktree: { type: 'boolean' },
       worktreeBase: { type: 'string' }, worktreeBranch: { type: 'string' }, worktreeMode: { type: 'string' },

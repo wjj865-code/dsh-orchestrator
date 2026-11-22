@@ -56,7 +56,7 @@
 - `dependsOn` 最多 20 个，必须指向已存在且不是 `failed/cancelled/orphaned` 的任务；创建时不接受未来 id，因此不会成环。
 - 前置未完成 → `waiting_dep`；`queue.pump` 前先晋升：全部 `done` → `pending` 入队；任一失败/取消/丢失/不存在 → 下游 `failed`（写明原因）；晋升是循环的，失败沿依赖链传播。
 - 前置任务摘要与产物不在派发时预渲染：子会话用 `task_detail` 按**当前**台账现读。
-- **任务链规则进 L1（0.28.0）**：`renderTaskChainPolicy()`（`src/prompt-layers.js`，拼在推进循环之后、worktree/写域之前）把既有机制写成协调者每回合都读得到的判断口径，句子唯一真源是 `src/copy.js` 的 `TASK_CHAIN_LINES`，`task_create.dependsOn` 描述（`TASK_CHAIN_TOOL_DESC`）与 `waiting_dep` 回执（`TASK_CHAIN_WAITING_NOTE`）逐字引用同一批句子。五条：① B 的输入是 A 的产物就在派 A 的同一回合建 `dependsOn`（不要等 A 完成再建、不要轮询）；② `dependsOn` 不是阻塞等待——晋升发生在 `queue.pump()` 的 `promoteDependents`，不占协调者回合、不是 `wait_agent`；③ 前置失败/取消/丢失/不存在 → 下游 `failed`（循环传播）；④ 就绪只认 `done`，前置 `delivered` 会挡住下游；⑤ 同一 worktree 检出必须串行。**只改提示词与工具描述**：`deps.js`/`queue.js`/状态机/权限一行未动。
+- **任务链规则进 L1（0.28.0）**：`renderTaskChainPolicy()`（`src/prompt-layers.js`，拼在推进循环之后、worktree/写域之前）把既有机制写成协调者每回合都读得到的判断口径，句子唯一真源是 `src/copy.js` 的 `TASK_CHAIN_LINES`，`task_create.dependsOn` 描述（`TASK_CHAIN_TOOL_DESC`）与 `waiting_dep` 回执（`TASK_CHAIN_WAITING_NOTE`）逐字引用同一批句子。六条：① B 的输入是 A 的产物就在派 A 的同一回合建 `dependsOn`（不要等 A 完成再建、不要轮询）；② `dependsOn` 不是阻塞等待——晋升发生在 `queue.pump()` 的 `promoteDependents`，不占协调者回合、不是 `wait_agent`；③ 前置失败/取消/丢失/不存在 → 下游 `failed`（循环传播）；④ 就绪只认 `done`，前置 `delivered` 会挡住下游；⑤ 同一 worktree 检出必须串行。**0.28.0 只改提示词与工具描述**：`deps.js`/`queue.js`/状态机/权限一行未动。⑥ 之后新增的**链式自动放行**（`task_create.chain:'auto'`，句子 `TASK_CHAIN_LINES.chainAuto`）：带标记的任务交付（落 `delivered`）时若台账里仍有 `waiting_dep` 的下游在等，插件在交付的**同一同步段**复用 `closeDelivered` 收成 `done`（`accepted_by`/`close_reason` 都是 `chain`、`accepted_kind='delivery'`），下游仍由 `promoteDependents` 晋升；没有下游或没带标记 → 照旧停在「已交付待确认」等确认；自动放行后 `done` 不能追问/续跑（判据与边界见「两段式终态」的进入段与出口列表）。
 - **并行策略进 L1（t-c8adaeb1）**：`renderParallelPolicy()`（`src/prompt-layers.js`，拼在任务链之后、worktree/写域之前）把「什么时候并行、什么时候串行」写成协调者每回合都读得到的判断口径，句子唯一真源是 `src/copy.js` 的 `PARALLEL_LINES`。三条同时满足才并行（① 互不依赖：B 的输入不是 A 的产物；② 无需复用同一子会话上下文；③ 同写域会撞车）→ **优先 `worktree:true` 隔离并行**，不排 `dependsOn` 链；只有「有依赖」或「要复用同一子会话上下文/同一检出」才串行；只读与计划任务同目录直接并行；同一 worktree 检出永远只能一个任务在写。代价（合并由用户决定、检出要先装依赖、并发 commit 争 `.git` 锁）与例外写在同段，并与 worktree / 写域 / 任务链三段互相引用、不出现「默认先串行」。**只改提示词**：派发、队列、写域判定一行未动。
 - `group` 只用于展示/过滤；`priority` 只影响队列顺序。
 - **同写域并发防护**（`src/write-guard.js`，默认拒绝）：`task_create` 在「去重 / 容量 / worktree 决定」之后、`createTask` 之前的**同一个同步段**里判定——新任务 target 与活跃未隔离任务的 target 相同或互相包含，或两者 `writeScopes` 重叠 → 按 `config.sameDirGuard` 处理（`require` 拒绝 / `warn` 只警告 / `off` 关闭）。不参与判定：`readOnly`、`requested/created/reused` 隔离任务、`dependsOn` 祖先、终态任务。例外是 `degraded`（不是 git 仓库而降级）：仍在原工作树里写，必须继续占目录。**`delivered`（已交付待确认）不占目录**：交付那一刻就释放该会话的可写根，同目录可以新派；要接着改用追问，追问回 `running` 前由 `decideFollowupGuard` 复判 target/写域（工具与面板同口径，被拒返回 `MESSAGE_WRITE_CONFLICT`、记 `task.followup.rejected`）。唯一显式放行是 `allowConcurrent:true`（记 `task.create.concurrent-write`）。拒绝对应 `task.create.rejected`（`reason: same-dir | write-scope | checkout-busy`）。
@@ -96,27 +96,28 @@
 
 `done` 是不可逆终态，但「子会话说做完了」不等于「用户验收过」。状态机在 `running` 与 `done` 之间加了 `delivered`（已交付待确认）：
 
-- **进入**：`task_report done`，或结算 `completed` 且没上报过 progress（`SETTLE_MAP`）。
+- **进入**：`task_report done`，或结算 `completed` 且没上报过 progress（`SETTLE_MAP`）。**例外（链式自动放行，`task_create.chain:'auto'`）**：交付时台账里若仍有 `waiting_dep` 的下游依赖它，交付钩子（`src/delivered.js` 的 `chainAutoGate` + `autoCloseChainDelivered`）在**同一同步段**立刻复用 `closeDelivered`（`reason`/`by` 都是 `chain`）收成 `done`——`accepted_by='chain'`、`accepted_kind='delivery'`、`close_reason='chain'`；没有下游 / 不带标记则停在 `delivered` 等确认。
 - **出口 1 · 确认**：`task_message({action:'close'})`（或面板「确认交付」）→ `done`，`close_reason=coordinator`；超过 `deliveredTimeoutMinutes`（默认 60）由 sweeper 自动收成 `done`，`close_reason=timeout`。
 - **出口 2 · 追问**：`task_message` 投递成功 → `running`，复用同一个子会话（**可写根不释放**），完成后再次交付。
 - **出口 3 · 停止/丢失**：`stop` → `cancelled`；追问时子会话不可达 → `orphaned`。
 - 归属：`delivered` 是活跃状态（`listTasks(active)`、面板门控、`inboxCount` 都算），但不是终态；状态集合与转移表只有一份（`src/status-facts.js`，见下「状态事实源」）。
 - 依赖就绪仍只认 `done`；goal 不收口（`delivered` 期间保持 active + disarmed，只有 `done` 才 `complete`）；对账不查 `delivered` 的 liveness（成果已落库，超时 sweeper 兜底）。
-- 审计：`tasks.delivered_at` 记录本次交付时间（追问后再交付会重写），`close_reason` 记关闭原因，`messages` 里 `kind='close'` 写「协调者确认 / 超时自动完成」。
-- 三条关闭路径（工具 / 面板 / 超时）共用 `src/delivered.js` 的 `closeDelivered`，副作用顺序固定：迁移 + 审计消息 → 释放可写根 → goal 收口 → 按档位清检出 → 唤醒队列。
-- 通知去重：进入 `delivered` 发一条（带 `close`/追问指令），确认/超时**不再发**通知，只写审计消息。
+- 审计：`tasks.delivered_at` 记录本次交付时间（追问后再交付会重写），`close_reason` 记关闭原因，`messages` 里 `kind='close'` 写「协调者确认 / 超时自动完成 / 链式自动放行」。
+- 四条关闭路径（工具 / 面板 / 超时 / 链式自动放行）共用 `src/delivered.js` 的 `closeDelivered`，副作用顺序固定：迁移 + 审计消息 → 释放可写根 → goal 收口 → 按档位清检出 → 唤醒队列。
+- 通知去重：进入 `delivered` 发一条（带 `close`/追问指令），确认/超时**不再发**通知，只写审计消息；**链式自动放行**例外——交付那一刻就收成 `done`，发的是 `done` 通知（不再渲染「已交付待确认」、不给 close 指引），正文追加「链式自动放行」一句。
 
 ## 交接契约 v1（D2：`acceptedBy` / `acceptedAt` + JSONL）
 
 「交付 → 确认 / 追问 → 完成」是插件独有的一段语义（官方宿主没有），v1 把它从内部状态机提升为**可被外部消费的只读契约**：稳定字段 + 版本号 + JSONL 审计事件。**v1 只做数据契约与事件，不做进程内订阅 API**（回调/事件总线留 v2）。
 
-三条确认路径各自带 `by`，落库与事件只在 `closeDelivered` 一处写：
+四条确认路径各自带 `by`，落库与事件只在 `closeDelivered` 一处写：
 
 | 入口 | `acceptedBy` | `close_reason` |
 |---|---|---|
 | `task_message({action:'close'})`（`src/tools.js`） | `coordinator` | `coordinator` |
 | 面板「确认交付」（`src/panel-actions.js`） | `panel` | `coordinator` |
 | 超时 sweeper（`src/delivered.js`） | `timeout` | `timeout` |
+| 链式自动放行（交付钩子，`src/delivered.js`） | `chain` | `chain` |
 
 ### 契约字段
 
@@ -130,11 +131,11 @@
 | `title` | string | 任务标题（外部工具直接可读，不必回查台账） |
 | `deliveredAt` | number \| null | 交付时间（毫秒时间戳；追问后再交付会重写，超时从新时间起算） |
 | `acceptedAt` | number \| null | 确认时间（毫秒）；未确认是 null |
-| `acceptedBy` | `coordinator` \| `panel` \| `timeout` \| null | 谁确认的；未确认是 null |
+| `acceptedBy` | `coordinator` \| `panel` \| `timeout` \| `chain` \| null | 谁确认的；未确认是 null |
 | `rounds` | object | `{ turns, followups }`：派发/续派次数与追问次数 |
 | `evidence` | object | `{ acceptance, artifacts }`：A1 的验收记录原样（没跑过 null）与已登记产物 |
 | `status` | string | 当前状态（`delivered` / `done` / …） |
-| `closeReason` | `coordinator` \| `timeout` \| null | 关闭原因（台账原文） |
+| `closeReason` | `coordinator` \| `timeout` \| `chain` \| null | 关闭原因（台账原文） |
 
 **没有交接 = `null`**：从没交付过的任务（pending / running / failed / 存量 done）没有 `handoff`（不是空壳对象）；「交付了但没确认」是 `acceptedAt: null` + `acceptedBy: null`，两者必须能区分。
 
@@ -147,7 +148,7 @@
 | 事件 | 何时写 | 幂等 |
 |---|---|---|
 | `task.handoff.delivered` | 任务进入 `delivered`（`transition` 观察者；`task_report done` 与结算 `completed` 两条路都覆盖） | 每次交付一条（追问后再交付是新的一次交付） |
-| `task.handoff.confirmed` | `closeDelivered` 落库成功后（三条确认路径共用） | 只发一次：重复确认走 `already` 分支提前返回 |
+| `task.handoff.confirmed` | `closeDelivered` 落库成功后（四条确认路径共用，含链式自动放行） | 只发一次：重复确认走 `already` 分支提前返回 |
 
 一行一个 JSON 对象：`{"at":"ISO","event":"…","taskId":"t-…","sessionId":"c-…","detail":{"contract":1,"handoff":{…完整契约对象…}}}`。消费方式：按行 `JSON.parse`、按 `event` 过滤；文件只追加不改写，重复投递由读方按 `(event, taskId, deliveredAt)` 去重（`jq` 示例见仓库内 `docs/api-notes.md`，该文件不随包发布）。
 
@@ -158,7 +159,6 @@
 - **超时也是确认**：超时走同一条 `closeDelivered`，`acceptedBy: 'timeout'`、`close_reason: 'timeout'`，事件照发——「没人确认」与「超时自动完成」必须能区分。
 - **存量行**：`accepted_by` / `accepted_at` 旧库启动时 ALTER 补列，存量行 NULL；v1 之前已 `done` 的存量任务直接没有 `handoff`，面板与 `task_status` 按「没有交接记录」显示，不猜。
 - **失败是旁路**：事件写入失败只 warn 一次，不影响迁移/确认（JSONL 是审计旁路，不是交付的前置条件）。
-- **不做订阅 API**：v1 的消费方式是「读文件」；进程内可订阅 API 留 v2。
 
 ## 机器可判定验收（A1：`task_create.checks`）
 
@@ -191,7 +191,7 @@
 | 只读快照 | `snapshot.teamBoard = { enabled, rows, degraded }`；`rows[] = { id, revision, subject, status, statusLabel, owner, blockedBy, writeScopes, ready }`（**不含 description**：官方允许 16 KiB 正文，每帧下发会把快照撑大）。`enabled:false` 时**不调用** `listTasks` |
 | 面板可见性 | `enabled !== true`（服务缺失/形状变了/Team 未开启）→ **整区不渲染、不显示提示条**；`enabled:true` 且 `degraded` 有值（Team 开着但这次 `listTasks` 失败）→ 只读提示一条，不显示表格 |
 | 关联 | `task_create.teamTaskId`（可选）：只读校验存在并记 `tasks.team_task_id` / `team_task_revision`（CAS 基线）。不 claim、不改官方任务；重派复制这两列 |
-| 反写 | **人/协调者确认**（`closeDelivered` 成功且 `acceptedBy ≠ timeout`）→ `updateTask({ action:'complete', expectedRevision })`；只对**显式关联**的任务、只由协调者（Team Lead）发起。超时自动完成**不反写**，只记 `team.board.skipped`（`reason: timeout`） |
+| 反写 | **人/协调者确认**（`closeDelivered` 成功且 `acceptedBy` 是 `coordinator` / `panel`，见 `shouldReverseConfirm`）→ `updateTask({ action:'complete', expectedRevision })`；只对**显式关联**的任务、只由协调者（Team Lead）发起。超时自动完成与**链式自动放行**都**不反写**（都不是人的确认），只记 `team.board.skipped`（`reason: timeout` / `chain`） |
 | CAS | `expectedRevision` = 创建时读到的 revision；`TEAM_TASK_STALE_REVISION` 只**重读一次**再试**一次**，仍冲突就停手记 `team.board.stale`，不重试轰炸 |
 | 降级 | 服务缺失/形状变了/`isEnabled` 抛错 → `degraded.code=TEAM_BOARD_UNAVAILABLE`（面板整区隐藏）；Team 未开启 → `enabled:false, degraded:null`（同样隐藏）；反写失败/冲突**只 warn + 日志**，本地 `done` 已落库、不回滚 |
 | 事件 | `team.board.confirmed`（成功）、`team.board.stale`（冲突放弃）、`team.board.confirm-failed`（官方拒绝/异常）、`team.board.skipped`（未关联/服务缺失/未开启） |

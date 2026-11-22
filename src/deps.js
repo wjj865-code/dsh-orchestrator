@@ -113,6 +113,22 @@ export function promoteDependents(db, { enqueue = () => {}, log = () => {} } = {
   return { promoted, failed }
 }
 
+/**
+ * 还在 `waiting_dep`、且依赖里包含这个任务的下游（只读，纯函数性质：不写库、不改状态）。
+ *
+ * 谁用：`chain:'auto'` 的交付钩子（`src/delivered.js` 的 chainAutoGate）——「有没有下游在等」
+ * 是自动放行的唯一判据；这里只按台账现读，不猜「将来会不会有人建下游」。
+ * @returns {string[]} 下游任务的台账 id
+ */
+export function listWaitingDependents(db, taskId) {
+  const id = String(taskId ?? '')
+  if (id === '') return []
+  return listTasks(db)
+    .filter(task => task.status === 'waiting_dep'
+      && Array.isArray(task.depends_on) && task.depends_on.includes(id))
+    .map(task => task.id)
+}
+
 /** 前置任务摘要块：task_detail 现读时用（创建时依赖可能还没完成，所以按当前台账渲染）。 */
 export function upstreamBrief(db, dependsOn) {
   const ids = Array.isArray(dependsOn) ? dependsOn : []

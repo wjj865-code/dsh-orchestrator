@@ -34,7 +34,7 @@ import { createLogger } from './src/log.js'
 import { createHandoffLog, emitHandoffDelivered, setHandoffSink } from './src/handoff.js'
 // P2-4（D6）：官方 Team 板只读快照 + 确认交付时的 CAS 反写（服务缺失/未开启一律降级）。
 import {
-  confirmOnBoard, linkBoardTask, readTeamBoard, setTeamBoardSink, teamLinkView,
+  confirmOnBoard, linkBoardTask, readTeamBoard, setTeamBoardSink, shouldReverseConfirm, teamLinkView,
 } from './src/team-board.js'
 import { loadPreferences, migrateLegacyPreferences, renderPreferenceBlock } from './src/preferences.js'
 import { PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy, renderDecisionPolicy, renderParallelPolicy, renderTaskChainPolicy, renderWorkerPolicy } from './src/prompt-layers.js'
@@ -341,7 +341,7 @@ export async function apply(ctx, rawConfig = {}) {
       try { emitHandoffDelivered(getTask(db, taskId)) } catch { /* 事件失败是旁路，不影响迁移 */ }
     }
   })
-  // 确认侧（三条路径共用 closeDelivered）走同一个进程级 sink：交付事件也从这里出，
+  // 确认侧（四条路径共用 closeDelivered，含链式自动放行）走同一个进程级 sink：交付事件也从这里出，
   // 少一处「忘接就不发事件」的可能（与上面观察者是同一套做法）。
   const disposeHandoffSink = setHandoffSink(handoffLog)
   // P9：宿主侧 git 能力（只在 worktree 任务上被调用；普通任务零 git 调用）。
@@ -400,19 +400,22 @@ export async function apply(ctx, rawConfig = {}) {
     link: (agent, teamTaskId) => linkBoardTask({ agentTeams: host.agentTeams(), agent, teamTaskId }),
     linkView: task => teamLinkView({ agentTeams: host.agentTeams(), agent: resolveCoordinator(), task }),
   }
-  // 确认反写的进程级 sink：工具 / 面板 / 超时三条路径共用 `closeDelivered`，这里接一次就全覆盖。
+  // 确认反写的进程级 sink：工具 / 面板 / 超时 / 链式自动放行四条路径共用 `closeDelivered`，这里接一次就全覆盖。
   // 失败只 warn + 记日志，绝不回滚本地 done（`closeDelivered` 早已把状态落库）。
-  // **超时自动完成不反写**：`acceptedBy='timeout'` 不是人的确认，官方板上不该被「没人看过的超时」改状态；
-  // 只记一条 `team.board.skipped`（reason: timeout）留痕，别的什么也不做。
+  // **不是人的确认就不反写**：`acceptedBy='timeout'`（超时自动完成）与 `acceptedBy='chain'`
+  // （`task_create.chain:'auto'` 的链式自动放行）都只记一条 `team.board.skipped` 留痕，不动官方板。
   const disposeTeamBoardSink = setTeamBoardSink((task, context) => {
-    if (context?.acceptedBy === 'timeout') {
+    if (!shouldReverseConfirm(context?.acceptedBy)) {
+      const reason = context?.acceptedBy === 'chain' ? 'chain' : 'timeout'
       if (typeof task.team_task_id === 'string' && task.team_task_id !== '') {
         logger.log('team.board.skipped', {
           taskId: task.id,
           detail: {
-            code: 'TEAM_BOARD_TIMEOUT',
-            reason: 'timeout',
-            message: '超时自动完成不是人的确认，不反写官方 Team 板',
+            code: reason === 'chain' ? 'TEAM_BOARD_CHAIN' : 'TEAM_BOARD_TIMEOUT',
+            reason,
+            message: reason === 'chain'
+              ? '链式自动放行不是人的确认，不反写官方 Team 板'
+              : '超时自动完成不是人的确认，不反写官方 Team 板',
             teamTaskId: task.team_task_id,
           },
         })

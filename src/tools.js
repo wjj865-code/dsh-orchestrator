@@ -38,7 +38,10 @@ import { DEFAULT_LINES, MAX_LINES, readWorkspaceFile, renderWorkspaceRead } from
 import { registeredArtifacts } from './artifact-location.js'
 import { preferenceSavedHint, projectPreferenceSavedHint, upsertPreference } from './preferences.js'
 import { artifactLines } from './notify.js'
-import { CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered, closeReasonLabel } from './delivered.js'
+import {
+  CHAIN_AUTO, CHAIN_AUTO_FIELD, CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, autoCloseChainDelivered, closeDelivered,
+  closeReasonLabel,
+} from './delivered.js'
 // P2-3 交接契约 v1：`task_status` 的「交接」段与面板/JSONL 同源（src/handoff.js 是唯一字段真源）。
 import { handoffOfTask, handoffStatusLines } from './handoff.js'
 // P2-4（D6）：官方 Team 板只读关联（校验/展示在这里，反写在 closeDelivered 的 sink 里）。
@@ -52,7 +55,8 @@ import { approvePlan, approvalNote, isPlanTask, planApproveGate, planListMarker,
 import { MAX_PLAN_CHARS, planSavedNote, writePlanDocument } from './plan-doc.js'
 // P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
 import {
-  ACCESS_FULL, CHANGE_REVIEW_FIELDS, DELIVERY_LINES, PLAN_MESSAGE_NOTES, PLAN_SAVE_TOOL_DESC, TASK_CHAIN_TOOL_DESC,
+  ACCESS_FULL, CHANGE_REVIEW_FIELDS, CHAIN_AUTO_CREATE_NOTE, CHAIN_AUTO_NOTICE, CHAIN_AUTO_RECEIPT_NOTE,
+  CHAIN_AUTO_TOOL_DESC, DELIVERY_LINES, PLAN_MESSAGE_NOTES, PLAN_SAVE_TOOL_DESC, TASK_CHAIN_TOOL_DESC,
   TASK_CHAIN_WAITING_NOTE, deliveredReceiptNote, planCreateReceipt,
 } from './copy.js'
 import {
@@ -1133,6 +1137,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         description: 'per-task 访问级别：只接受 "full"（子会话沙箱 danger-full-access：构建/发版类任务要写仓库外或跑不受沙箱限制的 bash 时用）；不传=沿用当前会话策略、完全不动沙箱（默认）；与 readOnly/planFirst 互斥',
       },
       dependsOn: strList(TASK_CHAIN_TOOL_DESC),
+      chain: {
+        type: 'string',
+        enum: [CHAIN_AUTO],
+        description: CHAIN_AUTO_TOOL_DESC,
+      },
       group: str('可选分组名，如“登录改造”；面板按组汇总进度'),
       goalRounds: {
         type: 'number',
@@ -1195,7 +1204,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return '计划模式（planFirst）不接受 goalRounds：计划任务每轮结束都要停下来等批准，自动续轮会绕过批准闸门。'
           + '先 planFirst 探索、批准后用 task_message 续派；或直接派执行任务并配 goalRounds。'
       }
-      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, readOnly, planFirst, access: fullAccess ? 'full' : null, goalRounds, callId } })
+      // 链式自动放行（用户 2026-11-23 拍板的名字 chain:'auto'）：只认显式 'auto'，
+      // 其余值明确拒绝、不静默降级成「不自动放行」（用户以为放开了、实际还卡在确认，最难排）。
+      const rawChain = args.chain
+      const chainText = typeof rawChain === 'string' ? rawChain.trim() : String(rawChain ?? '').trim()
+      const chainAuto = chainText === CHAIN_AUTO
+      if (chainText !== '' && !chainAuto) {
+        log('task.create.rejected', { agentId, detail: { reason: 'chain-invalid', value: rawChain ?? null, callId } })
+        return `chain 只接受 "${CHAIN_AUTO}"（链式自动放行：交付时若仍有下游在等就自动确认完成）；`
+          + `不传就完全不自动放行。收到的是 ${JSON.stringify(rawChain)}。`
+      }
+      log('task.create.requested', { agentId, detail: { title: args.title, goal: args.goal, readOnly, planFirst, access: fullAccess ? 'full' : null, goalRounds, chain: chainAuto ? CHAIN_AUTO : null, callId } })
       const errors = validateBrief(args)
       if (errors.length > 0) {
         log('task.create.rejected', { agentId, detail: { reason: 'validation', message: errors.join('；'), callId } })
@@ -1442,6 +1461,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         checks: checks.length > 0 ? specOf(checks) : undefined,
         // dependsOn 归一成台账 id（入参可以是 tk- 引用；brief 里存的是可执行的 id 口径）。
         ...(depends.ids.length === 0 ? {} : { dependsOn: depends.ids }),
+        // 链式自动放行标记只进 brief 快照（不加 DB 列、不做迁移）：读侧一律 task.brief.chain。
+        ...(chainAuto ? { [CHAIN_AUTO_FIELD]: CHAIN_AUTO } : {}),
         target: effectiveTarget,
         ...(readOnly ? { readOnly: true } : {}),
         ...(planFirst ? { planFirst: true } : {}),
@@ -1535,6 +1556,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           worktreeSource: worktreeRecord?.source ?? null,
           checks: checks.length,
           goalRounds,
+          // 链式自动放行：只在显式传了才多这个字段（没传与旧日志逐字一致）。
+          chain: chainAuto ? CHAIN_AUTO : null,
           // P2-4：关联了官方板任务才多这个字段（没关联与旧日志逐字一致）。
           ...(teamTask === null ? {} : { teamTaskId: teamTask.id, teamTaskRevision: teamTask.revision }),
         },
@@ -1562,6 +1585,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const goalRoundsNote = goalRounds > 0
         ? `续跑：goalRounds=${goalRounds}（平台 goal 保持 armed，由宿主 goal 轮次驱动；进度看 task_status 的「目标轮次」）。`
         : ''
+      // 链式自动放行：建链那一刻就说清「这条链不会再卡在确认上（有下游时）」。
+      const chainNote = chainAuto ? CHAIN_AUTO_CREATE_NOTE : ''
       // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
       if (current.live === false) {
         const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
@@ -1578,7 +1603,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           hint: worktreeHint,
         })
         // 回执补一句「自动晋升、不占回合」：否则协调者看到「等待前置」就会自己盯着等，机制白搭。
-        const notes = [dependencyNote, TASK_CHAIN_WAITING_NOTE, checksNote, goalRoundsNote, teamTaskNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
+        const notes = [dependencyNote, TASK_CHAIN_WAITING_NOTE, chainNote, checksNote, goalRoundsNote, teamTaskNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
         log('task.dep.waiting', { taskId: task.id, detail: { dependsOn: depends.ids, callId } })
         return `任务「${taskLabelWithRef(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
       }
@@ -1595,7 +1620,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         error: resultTask?.status === 'failed' ? resultTask.error : undefined,
         hint: worktreeHint,
       })
-      const notes = [invalidHint(), inferredNote, planNote, checksNote, goalRoundsNote, teamTaskNote, accessNote, ...worktreeLines, conflictNote, dependencyNote]
+      const notes = [invalidHint(), inferredNote, planNote, chainNote, checksNote, goalRoundsNote, teamTaskNote, accessNote, ...worktreeLines, conflictNote, dependencyNote]
         .filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       if (resultTask?.status === 'running') {
@@ -2213,9 +2238,30 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           }
         } catch { /* 记忆沉淀失败不能影响回报 */ }
       }
+      // 链式自动放行（chain:'auto'）：交付时仍有 waiting_dep 下游 → 复用 closeDelivered 收成 done。
+      // 放在通知之前：通知要是「已完成」口径，不能让协调者去 confirm 一个已经 done 的任务。
+      // 下游晋升由 closeDelivered 的 pump（queue.pump 开头就是 promoteDependents）负责，不在这里另调。
+      let chainAuto = { closed: false }
+      if (deliveredNow) {
+        try {
+          chainAuto = autoCloseChainDelivered({
+            db,
+            taskId: next.id,
+            releaseSession: releaseTaskSession,
+            completeGoal: closed => { void goalBridge?.complete?.(closed.id, closed.session_id) },
+            cleanupWorktree,
+            pump: () => queue?.pump(),
+            logger,
+          })
+          if (chainAuto.closed && chainAuto.task !== undefined) next = chainAuto.task
+        } catch (error) {
+          log('task.report.chain-auto-failed', { taskId: next.id, detail: { error: error?.message ?? String(error) } })
+        }
+      }
       const displayName = labelFor(next)
-      // 交付回报用 delivered 通知（带「确认/追问」动作指令），重复回报不再发第二条。
-      const notifyStatus = args.status === 'done' ? 'delivered' : args.status
+      // 交付回报用 delivered 通知（带「确认/追问」动作指令）；链式自动放行的发「已完成」，
+      // 不给 close 指引（任务已是 done，再让协调者去 close 只会撞幂等提示）。
+      const notifyStatus = args.status === 'done' ? (chainAuto.closed ? 'done' : 'delivered') : args.status
       if (deliveredNow || args.status !== 'done') {
         notifier.push({
           taskId: next.id,
@@ -2226,7 +2272,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           readOnly: next.read_only === true,
           access: next.access === 'full' ? 'full' : null,
           status: notifyStatus,
-          summary: summaryFacing,
+          summary: chainAuto.closed ? `${summaryFacing}\n${CHAIN_AUTO_NOTICE}` : summaryFacing,
           question: args.status === 'blocked' || args.status === 'needs_auth' ? question : null,
           options: args.status === 'blocked' || args.status === 'needs_auth' ? options : [],
           artifacts,
@@ -2256,7 +2302,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         sessionId: task.session_id,
         agentId: exec?.agent?.id,
         // 台账/日志保留原始摘要（审计真源）；用户面用 summaryFacing（已清洗引用）。
-        detail: { status: args.status, summary: args.summary ?? '', delivered: deliveredNow, access: next.access ?? null, answeredFollowup, callId: exec?.callId },
+        detail: { status: args.status, summary: args.summary ?? '', delivered: deliveredNow, chainAuto: chainAuto.closed, access: next.access ?? null, answeredFollowup, callId: exec?.callId },
       })
       // 交付/终态都让出一个并发位，唤醒队列补位。可写根在交付那一刻就释放（同目录可新派），
       // goal 仍留到 done（确认/超时）再收口；追问投递成功时由 dispatch.send 幂等重建写根。
@@ -2266,7 +2312,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return `已记录任务「${labelFor(next)}」的重复 done 回报（当前${labelOf(next.status)}，未重复迁移）。${hint === '' ? '' : `\n${hint}`}`
       }
       const deliveredNote = deliveredNow
-        ? `${deliveredReceiptNote}${acceptanceNotice === '' ? '' : `\n${acceptanceNotice}`}`
+        ? `${chainAuto.closed ? CHAIN_AUTO_RECEIPT_NOTE : deliveredReceiptNote}${acceptanceNotice === '' ? '' : `\n${acceptanceNotice}`}`
         : ''
       return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${deliveredNote}${hint === '' ? '' : `\n${hint}`}`
     }),

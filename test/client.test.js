@@ -1505,6 +1505,8 @@ test('P2-5 交接：卡片写清谁确认；抽屉交接区块给交付/确认/�
   const none = renderDrawer(null)
   assert.match(none, /还没交付，没有交接记录/)
   assert.match(source, /const ACCEPTED_BY_LABEL/)
+  // 链式自动放行（chain:'auto'）的确认人标签：面板详情抽屉与快照标签必须同口径。
+  assert.match(source, /chain: '链式自动放行'/)
 })
 
 // F4 回归（0.13.0 冒烟发现）：面板「隔离」小标未接线 —— views.js 从 createViews 的参数里

@@ -265,14 +265,27 @@ export function teamLinkStatusLine(task) {
   return `官方 Team 任务：${id}（创建时 revision ${revision ?? '未知'}；确认交付时按 CAS 反写完成，冲突只提示）`
 }
 
+/**
+ * 哪些确认人**不**反写官方板（用户 2026-11-23 拍板）：
+ *   - `timeout`（超时自动完成）；
+ *   - `chain`（链式自动放行：`task_create.chain:'auto'` 交付时仍有下游在等 → 插件代确认）。
+ * 两者都不是「人的确认」，官方板上不该被这类自动动作改状态；只记一条 `team.board.skipped` 留痕。
+ * 这是纯函数：index.js 的 sink 与测试都调它，避免在装配层再写一份 `if`。
+ */
+const CONFIRM_SKIP_BY = Object.freeze(['timeout', 'chain'])
+
+export function shouldReverseConfirm(acceptedBy) {
+  return !CONFIRM_SKIP_BY.includes(typeof acceptedBy === 'string' ? acceptedBy : '')
+}
+
 // 进程级 sink：与 `ledger.setTransitionObserver` / `handoff.setHandoffSink` 同一套做法——
 // `closeDelivered` 有三个调用方（工具 / 面板 / 超时），在这里接一次就全覆盖，不会漏掉超时那条。
 // 没接（测试 / 未装配）时是静默 no-op：反写是旁路，绝不能反过来影响交付。
 let sink = null
 
 /** 接上反写上报器（index.js 启动时调一次）。返回解绑函数（测试/卸载用）。
- *  sink 签名 `(task, context)`：`context.acceptedBy` = coordinator / panel / timeout——
- *  超时自动完成不是「人的确认」，由 sink 决定不反写（见 index.js 的 team.board.skipped）。 */
+ *  sink 签名 `(task, context)`：`context.acceptedBy` = coordinator / panel / timeout / chain——
+ *  不是「人的确认」的那两种（超时 / 链式自动放行）由 sink 按 `shouldReverseConfirm` 跳过、只记 skipped。 */
 export function setTeamBoardSink(next) {
   const normalized = typeof next === 'function' ? next : null
   const previous = sink

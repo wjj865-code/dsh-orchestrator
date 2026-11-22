@@ -3,12 +3,14 @@
 // done 仍是不可逆终态；delivered 是唯一允许「追问复用原会话」的收尾态。
 //
 // 为什么单独一个模块：确认有两条触发路径（工具层 / 面板）和一条兜底（超时 sweeper），
-// 三条必须做**同一件事**（迁移 + 交接确认 + 审计消息 + 释放可写根 + goal 收口 + 检出清理 + 队列补位），
-// 否则会出现「工具确认了但检出没清理 / 下游不推进」的分叉。
-// P2-3 交接契约 v1：三条路径各自传 `by`（coordinator / panel / timeout），
+// 加上链式自动放行（`chain:'auto'` 的交付钩子）共四条，必须做**同一件事**（迁移 + 交接确认 + 审计消息 +
+// 释放可写根 + goal 收口 + 检出清理 + 队列补位），否则会出现「工具确认了但检出没清理 / 下游不推进」的分叉。
+// P2-3 交接契约 v1：四条路径各自传 `by`（coordinator / panel / timeout / chain），
 // 落 `tasks.accepted_by` / `accepted_at` 并发一条 `task.handoff.confirmed` JSONL（见 src/handoff.js）。
 import { addMessage, getTask, listTasks, setTaskAccepted, transition } from './ledger.js'
 import { statusLabel } from './state.js'
+// 链式自动放行（chain:'auto'）：交付钩子要知道「有没有 waiting_dep 下游在等」——判据只读台账。
+import { listWaitingDependents } from './deps.js'
 // P2-3 交接契约 v1：确认人/确认时间在这里落库，`task.handoff.confirmed` 也只在这里上报一次
 // （幂等关闭走已 done 的 early return，不会再写第二条事件）。
 import { acceptedByOf, emitHandoffConfirmed } from './handoff.js'
@@ -20,10 +22,16 @@ import { emitTeamBoardConfirm } from './team-board.js'
 export const DELIVERED_TIMEOUT_MINUTES = 60
 /** 超时巡检间隔：一分钟一次足够（判据是分钟级），timer 不阻止进程退出。 */
 export const DELIVERED_SWEEP_INTERVAL_MS = 60_000
-/** 关闭原因取值：协调者确认 / 超时自动完成（写 tasks.close_reason，供审计与面板展示）。 */
-export const CLOSE_REASONS = Object.freeze({ coordinator: 'coordinator', timeout: 'timeout' })
+/** 关闭原因取值：协调者确认 / 超时自动完成 / 链式自动放行（写 tasks.close_reason，供审计与面板展示）。 */
+export const CLOSE_REASONS = Object.freeze({
+  coordinator: 'coordinator',
+  timeout: 'timeout',
+  // 链式自动放行（`task_create.chain:'auto'`）：交付时仍有 waiting_dep 下游 → 自动确认完成。
+  // 与 coordinator 区分是刻意的：台账不能写「协调者确认」而实际没人确认。
+  chain: 'chain',
+})
 
-const REASON_LABEL = { coordinator: '协调者确认', timeout: '超时自动完成' }
+const REASON_LABEL = { coordinator: '协调者确认', timeout: '超时自动完成', chain: '链式自动放行' }
 
 export const closeReasonLabel = reason =>
   REASON_LABEL[reason] ?? (typeof reason === 'string' && reason !== '' ? reason : '未知')
@@ -46,7 +54,7 @@ export function findExpiredDelivered({ db, now = Date.now(), timeoutMinutes = DE
  * 按档位清检出 / 唤醒队列。任何一步抛错都不能回滚已经落库的 done。
  *
  * @param {object} options
- * @param {'coordinator'|'panel'|'timeout'} [options.by] 谁确认的（交接契约 `acceptedBy`，默认按 reason 推断）
+ * @param {'coordinator'|'panel'|'timeout'|'chain'} [options.by] 谁确认的（交接契约 `acceptedBy`，默认按 reason 推断）
  * @returns {{ok:true, task:object, already:boolean} | {ok:false, reason:'not-found'|'not-delivered', task?:object}}
  */
 export function closeDelivered({
@@ -108,6 +116,88 @@ export function closeDelivered({
   // 放在最后：本地状态已经落库，反写再怎么样都只是「官方板上多一次提醒」。
   try { emitTeamBoardConfirm(next, { acceptedBy }) } catch { /* 反写是旁路，绝不能影响已落库的 done */ }
   return { ok: true, task: next, already: false }
+}
+
+/**
+ * 链式自动放行（用户 2026-11-23 拍板，参数名固定 `chain: 'auto'`）。
+ *
+ * 语义只有一条：**带标记的任务交付（落 delivered）时，若台账里还有 `waiting_dep` 的下游依赖它，
+ * 就立刻复用 `closeDelivered` 收成 done**。没有下游 / 不带标记 → 一个字节都不变（仍等确认）。
+ *
+ * 为什么做成独立函数而不是给 `closeDelivered` 加分支：`closeDelivered` 是「确认」侧的唯一入口
+ * （工具 / 面板 / 超时 / 链式自动放行四条路径），加分支等于让确认动作自己判断要不要确认；这里把判据放在**交付侧**，
+ * 只在落 delivered 的两处（settlement 的 completed 分支、task_report 的 done 分支）调用。
+ */
+export const CHAIN_AUTO = 'auto'
+/** 标记落在 `brief` 快照的键名（不加 DB 列：`brief_json` 里存 `chain: 'auto'`）。 */
+export const CHAIN_AUTO_FIELD = 'chain'
+
+/**
+ * 自动放行门控（纯读，不写库）。
+ *
+ * @param {object} task 台账任务行（`getTask` 的产物）
+ * @returns {{ok:boolean, reason?:'no-chain'|'not-delivered'|'no-waiting-dependent', waiting:string[]}}
+ */
+export function chainAutoGate(db, task) {
+  if (task?.brief?.[CHAIN_AUTO_FIELD] !== CHAIN_AUTO) return { ok: false, reason: 'no-chain', waiting: [] }
+  if (task.status !== 'delivered') return { ok: false, reason: 'not-delivered', waiting: [] }
+  const waiting = listWaitingDependents(db, task.id)
+  if (waiting.length === 0) return { ok: false, reason: 'no-waiting-dependent', waiting }
+  return { ok: true, waiting }
+}
+
+/**
+ * 带 `chain:'auto'` 的交付是否要立刻放行；要就复用 `closeDelivered` 收成 done。
+ *
+ * 调用方（settlement / task_report）在**交付落库之后、发通知之前**调用；幂等由 `closeDelivered` 保证：
+ * 已经 done → `already:true`（`closed:false`），并发/重复事件不会二次写 `accepted_*`、不会二次晋升。
+ * 下游晋升不在这里另调 `promoteDependents`——`closeDelivered` 的 `pump()` 就是 `queue.pump()`，
+ * 它开头就做晋升并入队（同一套唯一路径）。
+ *
+ * @returns {{closed:boolean, gate:{ok:boolean, reason?:string, waiting:string[]}, outcome?:object, task?:object}}
+ */
+export function autoCloseChainDelivered({
+  db,
+  task,
+  taskId,
+  releaseSession = () => {},
+  completeGoal = () => {},
+  cleanupWorktree = () => {},
+  pump = () => {},
+  logger,
+} = {}) {
+  const log = (event, fields) => {
+    try { logger?.log?.(event, fields) } catch { /* 日志失败不影响已落库的交付 */ }
+  }
+  const current = task ?? getTask(db, String(taskId ?? ''))
+  const gate = chainAutoGate(db, current)
+  if (gate.ok !== true) return { closed: false, gate, task: current }
+  let outcome
+  try {
+    outcome = closeDelivered({
+      db,
+      taskId: current.id,
+      reason: CLOSE_REASONS.chain,
+      by: 'chain',
+      releaseSession,
+      completeGoal,
+      cleanupWorktree,
+      pump,
+      logger,
+    })
+  } catch (error) {
+    // 自动放行失败不能回滚已落库的 delivered：任务照旧停在「已交付待确认」，等确认/超时兜底。
+    log('task.chain.auto-close-failed', { taskId: current.id, detail: { error: error?.message ?? String(error) } })
+    return { closed: false, gate, task: current }
+  }
+  const closed = outcome.ok === true && outcome.already !== true
+  if (closed) {
+    log('task.chain.auto-close', {
+      taskId: current.id,
+      detail: { waiting: gate.waiting.length, acceptedBy: 'chain', closeReason: CLOSE_REASONS.chain },
+    })
+  }
+  return { closed, gate, outcome, task: outcome.task ?? current }
 }
 
 /**

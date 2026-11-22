@@ -161,7 +161,7 @@
 | 追问必达 / progress 送达 | `report_expected_at` 置位与清标记、`answeredFollowup` 跳过水位与窗口、同任务水位尾沿补投、投递失败不占水位、每条 progress 都有 `notifications` 行；水位测试用 `DSH_ORCH_PROGRESS_MS` 旁路（只调水位，不改语义） | `test/notify.test.js`、`test/tools.test.js`、`test/ledger.test.js`、`test/resume.test.js`、`test/integration.test.js`（端到端：追问 → 先报 progress → 主会话立刻收到） |
 | 记忆优化 P0（0.25.1） | `history` 首行【检索范围】、`project` 多键（≤2）/`all`/未知名警告、质量门槛（多词 ≥2 命中或 score ≥2、停用词）、分层配额 2+1、日志层单独成块 ≤2 且排在事实层后、`task-log` 单项目 200 且事实层不淘汰、`done` 的 projectKey 取 `brief.target → repo_root → target_dir`、`docs/ARCHITECTURE.md` 默认 1200/`include` 4000 字、旧全局偏好迁移取更正版且不双写 | `test/memory.test.js`、`test/tools.test.js`、`test/preferences.test.js`；CHANGELOG `0.25.1` 同批 |
 | P2-1 可执行验收 | `task_create.checks`（1–5 条、argv、超时/跳过）、交付前执行且失败阻断、`readOnly` 拒绝配检查、台账 `acceptance_json` ALTER 幂等 | `test/acceptance.test.js`、`test/tools.test.js`、`test/ledger.test.js` |
-| P2-3 交接契约 v1 | 三条确认路径的 `acceptedBy`、事件各一次、幂等关闭、存量行 NULL、字段表与代码同源 | `test/handoff.test.js`、`test/host-route.test.js`、`scripts/check-docs.mjs` |
+| P2-3 交接契约 v1 | 三条确认路径的 `acceptedBy` + 链式自动放行（`chain`）、事件各一次、幂等关闭、存量行 NULL、字段表与代码同源 | `test/handoff.test.js`、`test/chain-auto.test.js`、`test/host-route.test.js`、`scripts/check-docs.mjs` |
 | P2-4 官方 Team 板 | 只读快照透传 `revision`、`enabled:false` 不读板、CAS 冲突只重读一次、超时自动完成不反写 | `test/team-board.test.js`、`test/index.test.js` |
 | P2-5 面板 S9′ | esbuild minify + ≤95 KiB 闸门、官方板只读分区、交接区块、验收小标 | `test/client-build.test.js`、`test/client.test.js` |
 | P2-6 文档收口 | 文档 ≤1,800 行（预算常量与失败提示同改）、README 首屏重写 + 结构断言、P2 变更入档 | `scripts/check-docs.mjs`、本文件 §3.4 |

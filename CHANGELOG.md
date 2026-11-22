@@ -1,5 +1,11 @@
 # Changelog
 
+## 未发布——链式自动放行（`task_create({ chain: 'auto' })`）
+
+**一句话**：给任务链加一个**显式约定标记** `chain: 'auto'`（只进 `brief` 快照，**不加 DB 列、不做迁移**）：带标记的任务交付（落「已交付待确认」）时，若台账里仍有 `waiting_dep` 的下游依赖它，交付钩子在**同一同步段**复用既有 `closeDelivered` 收成 `done`（`accepted_by='chain'`、`accepted_kind='delivery'`、`close_reason='chain'`），下游仍由 `queue.pump()` 开头的 `promoteDependents` 自动晋升。没有下游 = 保持「已交付待确认」（不猜将来会不会建下游）；**不带标记的链一个字节都不变**（仍等确认/超时）。自动放行的确认人不是人，官方 Team 板**不反写**（与超时同口径，只记 `team.board.skipped{reason:'chain'}`）；通知与子会话回执改「已完成」口径；`done` 不能追问/续跑（要改只能 `retry`）。状态机零改动（`delivered → done` 是既有边，只多一个触发条件），没有新配置键、工具面仍 11 个，P0-4 的计划批准路径一行未动。
+- 验证：`test/chain-auto.test.js`（14 条：参数/落点无新列、门控四态、task_report 与结算两条交付路径、无下游/无标记默认不变、幂等与 sweeper 互斥、只读/计划/Team 板边界）、`test/delivered.test.js`（`by=chain` 落库与审计）、`test/handoff.test.js`（第四种 `acceptedBy` 与事件）、`test/resume.test.js`（`close_reason=chain` 等同确认过）、`test/team-board.test.js`（不反写）、`test/contract-snapshot.test.js`（schema 加 `chain`）、`test/client.test.js`（面板标签）、`test/task-chain-policy.test.js` / `test/prompt-layers.test.js`（L1 段落与文案单源）；`node scripts/check-docs.mjs` **1800 / 1800**（行内改写 + 1 增 1 删，预算未抬）。
+- 收尾：已 `pnpm run build` 重建 `dist/client.js` 并随源码一并提交（一个本地 commit，未 push / 未打 tag / 未 bump）；全量 `pnpm test` 1397 tests / 1392 pass / 0 fail / 5 skipped，`check:docs` 1800/1800。
+
 ## 未发布——P0-4：计划批准改为显式动作（`task_message({ action: 'approve' })`）
 
 **一句话**：计划批准不再是「任何 `task_message` 投递成功 = 批准」的软门禁——普通 `message` 在计划任务上只记讨论（`planning`）或把它转「修订中」（`waiting_user`/`revising`），沙箱始终只读；批准只能显式 `task_message({ action: 'approve' })`，前置为「收到过 blocked 报告（`plan_state='waiting_user'`）+ 子会话停在等你确认 + 计划文档已落盘」，成功切回可写并落审批审计（复用 `accepted_by`/`accepted_at`，新增 `accepted_kind='plan'`；交付确认仍记 `delivery`），**不投递消息**——协调者随后 `task_message` 续派实现。`plan_state` 从四值扩成六值（`none`/`planning`/`waiting_user`/`revising`/`approved`/`rejected`），未批准进终态（含 `delivered`）统一收口 `rejected`；升级时旧库把「`planning` + 等确认」的行幂等回填成 `waiting_user`。面板**不加**批准入口（`plan-approve` 仍是 `UNKNOWN_ENDPOINT` 反例清单），面板 `message` 与工具同口径只是不批准、不改 `plan_state`；无新配置开关、工具面仍 11 个、两段式交付语义未动。

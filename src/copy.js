@@ -262,6 +262,13 @@ export const TASK_CHAIN_LINES = Object.freeze({
     + '（失败沿链循环传播）；要接着做用 `task_message({ action: "retry" })` 重派，不要原地等一条已经死掉的链',
   deliveredNotDone: '前置「已交付待确认」（delivered）不算 done：依赖就绪只认 done——前置停在等你确认时下游一直 waiting_dep；'
     + '确实要推进就先 `task_message({ action: "close" })` 收成 done（或等超时自动完成），别重复派下游、也别把 delivered 当失败',
+  // 用户 2026-11-23 拍板：参数名就是 `chain: "auto"`（不用 closePredecessorOnDelivered）。
+  // 语义：只对「交付那一刻仍有 waiting_dep 下游」生效；无下游/不带标记的链行为一个字节都不变。
+  // 与执行层一致：`src/delivered.js` 的 chainAutoGate + autoCloseChainDelivered（复用 closeDelivered），
+  // 下游晋升仍由 `queue.pump()` 开头的 `promoteDependents` 负责，本段不新增执行语义。
+  chainAuto: '链式自动放行（`chain: "auto"`，派上游时显式加）：带标记的任务交付时**仍有 waiting_dep 下游在等**就自动确认完成'
+    + '（`accepted_by` / `close_reason` 都是 `chain`），下游随即由队列晋升；没有下游时照旧停在「已交付待确认」，'
+    + '不带标记的链行为不变。自动放行后**没有追问窗口**（`done` 不能追问/续跑），要改只能 `retry` 新任务',
   worktreeSerial: '同一 worktree 检出必须用 dependsOn 串行：两个任务同时写一个检出会互相覆盖——后一个带 dependsOn 排队，'
     + '或者各建一个检出（worktree:true）**并行**（互不依赖、无需复用上下文时首选，见下「并行策略」段）；'
     + 'worktreeMode:"continue" 复用检出同样只能串行',
@@ -282,6 +289,29 @@ export const TASK_CHAIN_TOOL_DESC = '前置任务编号数组（任务链；依�
 
 /** waiting_dep 创建回执的补充一句（协调者看到时不要以为要自己等）。 */
 export const TASK_CHAIN_WAITING_NOTE = `依赖完成由插件队列自动晋升（不占回合，不用轮询）：${TASK_CHAIN_LINES.notBlocking}`
+
+/**
+ * 链式自动放行（`task_create.chain`）的四句文案：工具描述 / 创建回执 / 交付回执 / 通知。
+ *
+ * 为什么单独一组而不是塞进 TASK_CHAIN_LINES：那组句子有「L1 → 工具描述逐字同源」的探针
+ * （`test/task-chain-policy.test.js` 断言 dependsOn 描述 == TASK_CHAIN_TOOL_DESC），
+ * 而 `chain` 是**另一个参数**的描述，混进去会让 dependsOn 的描述多讲一个它不管的开关。
+ * L1 只讲判断口径（TASK_CHAIN_LINES.chainAuto），回执/通知/工具描述各自引用这组常量，句子仍只定义一次。
+ */
+export const CHAIN_AUTO_TOOL_DESC = '链式自动放行：只接受 "auto"。带该标记的任务交付（落「已交付待确认」）时，'
+  + '若仍有 waiting_dep 的下游在等，插件直接按确认逻辑收成 done（accepted_by=chain、accepted_kind=delivery、close_reason=chain），'
+  + '下游自动晋升；没有下游时保持「已交付待确认」，不传则完全不自动放行。自动放行后不能追问/续跑（要改只能重新派任务）'
+
+/** task_create 回执的补充行：让协调者在建链那一刻就知道这条链不会再卡在确认上。 */
+export const CHAIN_AUTO_CREATE_NOTE = '链式自动放行：本任务交付时若仍有下游在等，插件会自动确认完成（不必再等 close）；没有下游时仍停在「已交付待确认」。'
+
+/** task_report done 的回执（替代 deliveredReceiptNote）：子会话拿到的是「已自动放行」而不是「等确认」。 */
+export const CHAIN_AUTO_RECEIPT_NOTE = '交付即自动放行（chain:"auto"）：交付时仍有下游在等，本任务已自动确认完成并唤醒下游；'
+  + 'done 不能追问/续跑，要改请重派。'
+
+/** 通知正文追加句（结算与 task_report 两条交付路径共用）：协调者看到的是「已完成」，不再被要求去 close。 */
+export const CHAIN_AUTO_NOTICE = '链式自动放行（chain:"auto"）：交付时仍有下游在等，已自动确认完成并唤醒下游；'
+  + 'done 不能追问/续跑，要改请 retry 新任务'
 
 /**
  * 并行策略的原子句：协调者 L1 的「什么时候并行、什么时候串行」判断口径。

@@ -4,8 +4,9 @@
 // v1 边界（计划 §9 待拍板 4 已批准，别再偷偷长大）：
 //   1) 只做「字段 + JSONL 事件」，**不做**进程内订阅 API（回调/事件总线留 v2，取决于宿主事件契约）；
 //   2) 字段名与事件名一旦发布就是契约：改语义必须升 `HANDOFF_CONTRACT_VERSION`，不许原地改；
-//   3) 三条确认路径（`task_message({action:'close'})` / 面板「确认交付」/ 超时 sweeper）共用
-//      `closeDelivered`：`accepted_by` / `accepted_at` 与 `task.handoff.confirmed` 只在那一处写；
+//   3) 四条确认路径（`task_message({action:'close'})` / 面板「确认交付」/ 超时 sweeper /
+//      链式自动放行的交付钩子）共用 `closeDelivered`：`accepted_by` / `accepted_at` 与
+//      `task.handoff.confirmed` 只在那一处写；
 //   4) 事件落 `$DSH_HOME/state/orchestrator/handoff/handoff-YYYY-MM-DD.jsonl`（按天分文件、超 5MB 轮转、
 //      保留 30 天），不写仓库；台账 messages 是给面板读的，JSONL 是给 IM/CI/工作流读的。
 //
@@ -32,17 +33,21 @@ export const HANDOFF_FIELDS = Object.freeze([
   'closeReason',
 ])
 
-/** `acceptedBy` 的取值域：协调者确认 / 面板确认 / 超时自动完成。 */
+/** `acceptedBy` 的取值域：协调者确认 / 面板确认 / 超时自动完成 / 链式自动放行。 */
 export const ACCEPTED_BY = Object.freeze({
   coordinator: 'coordinator',
   panel: 'panel',
   timeout: 'timeout',
+  // 链式自动放行（`task_create.chain:'auto'`）：交付时仍有 waiting_dep 下游 → 插件代确认。
+  // **不是人的确认**：官方 Team 板不反写（见 src/team-board.js 的 shouldReverseConfirm）。
+  chain: 'chain',
 })
 
 const ACCEPTED_BY_LABEL = Object.freeze({
   coordinator: '协调者确认',
   panel: '面板确认',
   timeout: '超时自动完成',
+  chain: '链式自动放行',
 })
 
 /** 事件名（v1 只有这两个；各发一次，幂等关闭不重复发）。 */
@@ -61,10 +66,12 @@ export const HANDOFF_LOG_MAX_BYTES = 5 * 1024 * 1024
 const text = value => typeof value === 'string' ? value : ''
 const isoText = ms => Number.isFinite(ms) ? new Date(ms).toISOString() : '未知时间'
 
-/** 确认方式归一：显式 `by` 优先，其次按关闭原因推断（超时 / 其余算协调者）。 */
+/** 确认方式归一：显式 `by` 优先，其次按关闭原因推断（超时 / 链式自动放行 / 其余算协调者）。 */
 export function acceptedByOf(by, reason) {
   if (typeof by === 'string' && Object.hasOwn(ACCEPTED_BY, by)) return ACCEPTED_BY[by]
-  return reason === 'timeout' ? ACCEPTED_BY.timeout : ACCEPTED_BY.coordinator
+  if (reason === 'timeout') return ACCEPTED_BY.timeout
+  if (reason === 'chain') return ACCEPTED_BY.chain
+  return ACCEPTED_BY.coordinator
 }
 
 export const acceptedByLabel = acceptedBy =>
@@ -145,7 +152,7 @@ export function handoffStatusLines(handoff) {
 
 /**
  * JSONL 上报器。`delivered(task)` 在任务进入 delivered 时调（index.js 的迁移观察者），
- * `confirmed(task)` 在 `closeDelivered` 落库成功后调（三条确认路径共用）。
+ * `confirmed(task)` 在 `closeDelivered` 落库成功后调（四条确认路径共用，含链式自动放行）。
  * 两个方法都返回写出的契约对象（没交接可写时返回 null），失败只 warn、不抛。
  *
  * 写出的行形状（与运行日志同一套 writer，字段固定）：

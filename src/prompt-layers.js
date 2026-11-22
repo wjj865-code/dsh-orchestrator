@@ -117,6 +117,7 @@ export function renderTaskChainPolicy() {
 - ${TASK_CHAIN_LINES.notBlocking}。
 - ${TASK_CHAIN_LINES.upstreamFailed}。
 - ${TASK_CHAIN_LINES.deliveredNotDone}。
+- ${TASK_CHAIN_LINES.chainAuto}。
 - ${TASK_CHAIN_LINES.worktreeSerial}。
 - ${TASK_CHAIN_LINES.compat}。`
 }
@@ -191,7 +192,7 @@ export const PROMPT_LAYERS = Object.freeze([
       '交互三闸门（T0–T3 判级、开工前确认、执行期只报堵塞项、追加调整先评估；renderInteractionPolicy）',
       '推进循环（收到回报/用户消息后必须落到推进/提问/问新任务三类动作之一，不许只汇报；renderAdvanceLoopPolicy，措辞源 copy.js 的 ADVANCE_LOOP_LINES）',
       '拍板流程（待拍板项一项一问、不用代号、依赖分批、计划批准四选一后再总批准核对、决策汇总；renderDecisionPolicy，措辞源 copy.js 的 DECISION_FLOW_LINES）',
-      '任务链（dependsOn 的判据/建链时机/不阻塞/失败传播/交付不算 done/同检出串行五条规则；renderTaskChainPolicy，措辞源 copy.js 的 TASK_CHAIN_LINES）',
+      '任务链（dependsOn 的判据/建链时机/不阻塞/失败传播/交付不算 done/同检出串行五条规则 + chain:"auto" 链式自动放行；renderTaskChainPolicy，措辞源 copy.js 的 TASK_CHAIN_LINES）',
       '并行策略（互不依赖 + 无需复用上下文 + 同写域撞车 → 优先 worktree 隔离并行；有依赖或复用同一子会话上下文才串行；代价与只读/计划例外；renderParallelPolicy，措辞源 copy.js 的 PARALLEL_LINES）',
       '堵塞项四类与「不算堵塞项」清单（措辞源 copy.js 的 BLOCKER_RULE）',
       '用户偏好（第 4 段，src/preferences.js）',

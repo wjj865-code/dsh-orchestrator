@@ -76,6 +76,27 @@ test('closeDelivered：delivered → done，写审计消息并依次释放/收�
   db.close()
 })
 
+test('closeDelivered：链式自动放行（by=chain）落 close_reason=chain、accepted_by=chain、accepted_kind=delivery', async () => {
+  const db = await openLedger(tempDir())
+  const task = await deliveredTask(db)
+  const outcome = closeDelivered({ db, taskId: task.id, reason: CLOSE_REASONS.chain, by: 'chain' })
+  assert.equal(outcome.ok, true)
+  const closed = getTask(db, task.id)
+  assert.equal(closed.status, 'done')
+  assert.equal(closed.close_reason, 'chain')
+  assert.equal(closed.accepted_by, 'chain')
+  assert.equal(closed.accepted_kind, 'delivery')
+  assert.equal(closeReasonLabel(closed.close_reason), '链式自动放行')
+  const closeRow = recentMessages(db, task.id, 1)[0]
+  assert.match(closeRow.rendered, /链式自动放行：已完成/)
+  assert.deepEqual(closeRow.meta, { closeReason: 'chain', status: 'done', acceptedBy: 'chain' })
+  // 幂等：再确认一次走 already，不重写 accepted_at。
+  const again = closeDelivered({ db, taskId: task.id, reason: CLOSE_REASONS.chain, by: 'chain' })
+  assert.equal(again.already, true)
+  assert.equal(getTask(db, task.id).accepted_at, closed.accepted_at)
+  db.close()
+})
+
 test('closeDelivered：幂等与门控（done 重复确认、其它状态拒绝）', async () => {
   const db = await openLedger(tempDir())
   const task = await deliveredTask(db)

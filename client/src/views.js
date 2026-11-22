@@ -22,7 +22,7 @@ const toneOf = (table, value, fallback = 'muted') => (
 const BOARD_TONE = { completed: 'good', in_progress: 'info', pending: 'muted', deleted: 'muted' }
 // 交接「确认方式」文案：与 src/handoff.js 的 acceptedByLabel 同源（客户端不能 import 服务端模块，
 // 改一处要改两处）；快照里的 handoff 自带 acceptedByLabel，详情里的只有 acceptedBy。
-const ACCEPTED_BY_LABEL = { coordinator: '协调者确认', panel: '面板确认', timeout: '超时自动完成' }
+const ACCEPTED_BY_LABEL = { coordinator: '协调者确认', panel: '面板确认', timeout: '超时自动完成', chain: '链式自动放行' }
 // 主区「官方 Team（只读）」折叠区的状态键（与抽屉区块共用 collapsedSections）。
 const BOARD_SECTION = 'board'
 

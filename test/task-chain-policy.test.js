@@ -13,7 +13,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { createTask, getTask, openLedger } from '../src/ledger.js'
 import { dependencyState, promoteDependents } from '../src/deps.js'
 import {
-  TASK_CHAIN_LINES, TASK_CHAIN_TOOL_DESC, TASK_CHAIN_WAITING_NOTE,
+  CHAIN_AUTO_TOOL_DESC, TASK_CHAIN_LINES, TASK_CHAIN_TOOL_DESC, TASK_CHAIN_WAITING_NOTE,
 } from '../src/copy.js'
 import { layerViolations, renderTaskChainPolicy } from '../src/prompt-layers.js'
 import { renderCoordinatorPolicy } from '../index.js'
@@ -155,6 +155,21 @@ test('与既有口径兼容：不轮询 / 能直接回答就不派任务 / 推�
   for (const pattern of [/先等前置任务完成再派/, /等 A 结束后再建 B/, /为等前置可以 sleep/]) {
     assert.doesNotMatch(text, pattern, `policy 出现人工等待口径：${pattern}`)
   }
+})
+
+test('chain:"auto" 归同一个任务链段：句子单源、dependsOn 描述不被撑大、无下游不放行写清楚', () => {
+  const block = chainSection()
+  assert.ok(block.includes(TASK_CHAIN_LINES.chainAuto), '任务链段要有 chain:"auto" 这一条')
+  assert.ok(policy().includes(TASK_CHAIN_LINES.chainAuto), 'L1 policy 要有 chain:"auto" 这一条')
+  assert.match(block, /链式自动放行/)
+  assert.match(block, /没有追问窗口/)
+  assert.match(block, /没有下游时照旧停在/)
+  const { parameters } = createTools({ db: {}, config: loadConfig({}) }).find(tool => tool.name === 'task_create')
+  // dependsOn 的描述不多讲一个它不管的开关；chain 自己一句，且同样写清「没有下游不放行」。
+  assert.equal(parameters.properties.dependsOn.description, TASK_CHAIN_TOOL_DESC)
+  assert.equal(parameters.properties.chain.description, CHAIN_AUTO_TOOL_DESC)
+  assert.match(parameters.properties.chain.description, /没有下游时保持/)
+  assert.match(parameters.properties.chain.description, /不能追问\/续跑/)
 })
 
 test('文案单源：任务链的规则句只在 src/copy.js 定义一次', () => {

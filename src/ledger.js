@@ -138,7 +138,7 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('close_reason')) db.exec('ALTER TABLE tasks ADD COLUMN close_reason TEXT')
     // P2-1 A1 机器可判定验收：spec + 每次交付前的结果 JSON（旧库/存量行 NULL = 没跑过验收）。
     if (!taskColumns.includes('acceptance_json')) db.exec('ALTER TABLE tasks ADD COLUMN acceptance_json TEXT')
-    // P2-3 交接契约 v1：谁确认（coordinator / panel / timeout）、何时确认（毫秒）。
+    // P2-3 交接契约 v1：谁确认（coordinator / panel / timeout / chain）、何时确认（毫秒）。
     // 旧库/存量行都是 NULL：读出来是「没确认记录」，面板与 task_status 按「未确认」显示，存量行一律不动。
     if (!taskColumns.includes('accepted_by')) db.exec('ALTER TABLE tasks ADD COLUMN accepted_by TEXT')
     if (!taskColumns.includes('accepted_at')) db.exec('ALTER TABLE tasks ADD COLUMN accepted_at INTEGER')
@@ -275,7 +275,7 @@ const taskOf = row => row === undefined ? undefined : ({
   close_reason: typeof row.close_reason === 'string' && row.close_reason !== '' ? row.close_reason : null,
   // P2-1：最近一次交付前验收的结果（spec + 每条 check 的退出码/耗时/输出尾部）；没跑过是 null。
   acceptance: parseAcceptance(row.acceptance_json),
-  // P2-3 交接契约：确认人（coordinator / panel / timeout）与确认时间；未确认（含存量行）都是 null。
+  // P2-3 交接契约：确认人（coordinator / panel / timeout / chain）与确认时间；未确认（含存量行）都是 null。
   accepted_by: typeof row.accepted_by === 'string' && row.accepted_by !== '' ? row.accepted_by : null,
   accepted_at: Number.isFinite(row.accepted_at) ? row.accepted_at : null,
   // P0-4：确认种类 —— 'delivery'（交付确认）或 'plan'（计划批准）；旧行/坏值按 null（没记录）。验证
@@ -561,7 +561,7 @@ export function setTaskAcceptance(db, id, record) {
 }
 
 /**
- * 记录交接确认（P2-3 交接契约 v1）：谁确认的（coordinator / panel / timeout）与确认时间。
+ * 记录交接确认（P2-3 交接契约 v1）：谁确认的（coordinator / panel / timeout / chain）与确认时间。
  * 只写列 + 时间戳，不改状态机——状态迁移由 `closeDelivered` 调 `transition` 完成。
  * 幂等由调用方保证（`closeDelivered` 的 `already` 分支直接返回，不重复写）。
  */

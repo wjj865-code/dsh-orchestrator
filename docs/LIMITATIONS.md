@@ -149,7 +149,7 @@
 
 - **状态能力表只有一份**（`src/status-facts.js` 的 `STATUS_CAPS`）：新增状态只改这张表，其余引用自动跟上。**死边已删**：`running→done`、`orphaned→pending` 从未有调用点（要「直接完成」走 `running→delivered→done`）；v0.24 反过来给 `resume` 重开了 `failed→running` / `orphaned→running` / `done→running`（`done` 只认 `close_reason='timeout'`）。
 - **`failed` 不是流程终态但已收尾**：`terminal:false`（能重派）、`releases:true`（释放资源）；对失败任务「停止」是幂等成功（`already:true`），不会被改成「已取消」。
-- **续跑（`resume`）的边界**：只续 `failed` / `orphaned` / 超时自动完成的 `done`；`cancelled`（用户主动停）与确认过的 `done` 不续。只读/计划任务续跑后沙箱仍按原样（`readOnly` 就还是只读）；历史消息 > 60 条只**建议** `retry`（冷恢复要重放历史，可能比新派贵），不拦截；子会话不可达时报错回退、**不静默新建任务**。
+- **续跑（`resume`）的边界**：只续 `failed` / `orphaned` / 超时自动完成的 `done`；`cancelled`（用户主动停）与确认过的 `done` 不续（**链式自动放行的 `done` 等同「确认过的 `done`」**：不能追问/续跑，要改只能 `retry` 新任务）。只读/计划任务续跑后沙箱仍按原样（`readOnly` 就还是只读）；历史消息 > 60 条只**建议** `retry`（冷恢复要重放历史，可能比新派贵），不拦截；子会话不可达时报错回退、**不静默新建任务**。
 - **worktree 状态转移会校验**（`WORKTREE_TRANSITIONS`）：非法转移抛错而不是静默写入。
 - **提示词五层各有独占职责**（`src/prompt-layers.js` 的 `PROMPT_LAYERS`）；`layerViolations` 是机器可读归层探针，测试用它防「删掉的重叠又抄回来」。
 - **偏好不是权限通道**：只是 `settings.orchestrator_preferences` 里的提示词文本，不进 config、不改 dispatch、不碰 `sandboxPolicy`；内置种子里不放「放宽安全边界」的条目。超限（默认 12 条 / 1200 字）按 priority 降序保留并写明「另有 N 条未展示」，被截掉的**不会生效**也不报错。

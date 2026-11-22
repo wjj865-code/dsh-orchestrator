@@ -8,6 +8,10 @@
 // B1：结算同时把子会话最后一条 assistant 消息落进台账（短内联 / 长写 reports 文件），
 //     主会话用 task_status 就能读到全文，不必再打开子会话历史；delivered/done 上只补消息、不改状态。
 import { addMessage, findTaskBySession, getTask, getSetting, setTaskLastMessage, transition } from './ledger.js'
+// 链式自动放行（chain:'auto'）：交付时仍有 waiting_dep 下游 → 复用确认入口收成 done（见 src/delivered.js）。
+import { autoCloseChainDelivered } from './delivered.js'
+// 自动放行的通知追加句（与 task_report 那条交付路径共用同一句）。
+import { CHAIN_AUTO_NOTICE } from './copy.js'
 // P0-1：配了可执行验收的任务，自然结束也要有「本轮通过」的证据才能落 delivered（见 acceptanceGapOf）。
 import { acceptanceGapOf } from './acceptance.js'
 import { workspaceIndexSavedKey } from './workspace-index.js'
@@ -254,7 +258,29 @@ export function createSettlementReporter({
     } catch (failure) {
       log('task.settle.before-notify-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
     }
-    notify(final, settledMap.status, summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`))
+    // 链式自动放行（chain:'auto'）：交付时仍有 waiting_dep 下游 → 同一同步段里复用 closeDelivered 收成 done。
+    // 放在通知之前：通知要是「已完成」口径，不能让协调者去 confirm 一个已经 done 的任务。
+    // 下游晋升不在这里另调 promoteDependents——closeDelivered 的 pump 就是 queue.pump（开头就晋升）。
+    let chainAuto = { closed: false }
+    if (settledMap.status === 'delivered') {
+      try {
+        chainAuto = autoCloseChainDelivered({
+          db,
+          taskId: final.id,
+          releaseSession,
+          // index 的 onTerminal 已含 goal 收口 + 按档位清理检出；closeDelivered 不再单独收一次 cleanupWorktree。
+          completeGoal: closed => onTerminal(closed, 'done'),
+          pump,
+          logger,
+        })
+        if (chainAuto.closed && chainAuto.task !== undefined) final = chainAuto.task
+      } catch (failure) {
+        log('task.settle.chain-auto-failed', { taskId: next.id, detail: { error: failure?.message ?? String(failure) } })
+      }
+    }
+    const notifyStatus = chainAuto.closed ? 'done' : settledMap.status
+    const notifyBody = summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`)
+    notify(final, notifyStatus, chainAuto.closed ? `${notifyBody}\n${CHAIN_AUTO_NOTICE}` : notifyBody)
     // 交付（delivered）也要释放可写根：交付即放手，同目录才能新建任务；追问投递成功时由
     // dispatch.send 幂等重建。goal 仍只留到真终态再收口（见 docs/ARCHITECTURE.md「两段式终态」）。
     if (RELEASING_STATUSES.has(settledMap.status) || settledMap.status === 'delivered') {
@@ -271,6 +297,7 @@ export function createSettlementReporter({
       sessionId: task.session_id ?? sessionId ?? null,
       detail: {
         from, to: settledMap.status, stopReason: settledMap.stopReason, source,
+        chainAuto: chainAuto.closed,
         lastMessage: lastMessageRecord === null
           ? null
           : { stored: lastMessageRecord.stored, bytes: lastMessageRecord.bytes, chars: lastMessageRecord.chars },
@@ -281,6 +308,8 @@ export function createSettlementReporter({
       taskId: task.id,
       from,
       to: settledMap.status,
+      // 交付后又被链式自动放行收成 done：返回值要能看出来（台账状态已是 done，通知也是 done）。
+      chainAuto: chainAuto.closed,
       reason: settledMap.reason,
       stopReason: settledMap.stopReason,
       summary,

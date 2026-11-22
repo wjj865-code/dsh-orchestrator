@@ -9,7 +9,7 @@ import { closeDelivered, CLOSE_REASONS } from '../src/delivered.js'
 import { createTask, getTask, openLedger, transition } from '../src/ledger.js'
 import {
   TEAM_BOARD_DISABLED, TEAM_BOARD_STALE, TEAM_BOARD_UNAVAILABLE, boardRowOf, confirmOnBoard,
-  emitTeamBoardConfirm, linkBoardTask, readTeamBoard, setTeamBoardSink, teamLinkStatusLine, teamLinkView,
+  emitTeamBoardConfirm, linkBoardTask, readTeamBoard, setTeamBoardSink, shouldReverseConfirm, teamLinkStatusLine, teamLinkView,
 } from '../src/team-board.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
@@ -316,6 +316,20 @@ test('确认交付触发反写：closeDelivered 成功 → sink 收到任务与 
     assert.deepEqual(timeoutSeen, ['timeout'])
   } finally {
     timeoutDispose()
+  }
+
+  // 链式自动放行（chain:'auto'）也不是人的确认：sink 会拿到 acceptedBy='chain'，由 shouldReverseConfirm 决定不反写。
+  const chainTask = createTask(db, { brief: sampleBrief({ title: '链式' }), coordinatorSession: 's-1' })
+  transition(db, chainTask.id, 'running', { sessionId: 'c-c', target: 'c-c' })
+  transition(db, chainTask.id, 'delivered')
+  const chainSeen = []
+  const chainDispose = setTeamBoardSink((closed, context) => { chainSeen.push(context?.acceptedBy ?? null) })
+  try {
+    assert.equal(closeDelivered({ db, taskId: chainTask.id, reason: CLOSE_REASONS.chain, by: 'chain' }).ok, true)
+    assert.deepEqual(chainSeen, ['chain'])
+    assert.equal(shouldReverseConfirm(chainSeen[0]), false, '链式自动放行不反写官方板')
+  } finally {
+    chainDispose()
   }
 
   // sink 同步抛错 / 异步拒绝都只是旁路：本地 done 必须已经落库。

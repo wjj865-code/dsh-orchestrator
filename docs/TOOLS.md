@@ -10,7 +10,7 @@
 
 | 工具 | 作用 |
 |---|---|
-| `task_create` | 建任务并派发。`dependsOn` / `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent` / `checks`（交付前机器验收）/ `goalRounds`（续跑预算，默认 0 不续跑）/ `teamTaskId`（关联官方 Team 板，确认时按 CAS 反写 `complete`） |
+| `task_create` | 建任务并派发。`dependsOn` / `chain`（`'auto'`：交付时还有下游在等就自动确认完成，没有下游仍返回「已交付待确认」）/ `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent` / `checks`（交付前机器验收）/ `goalRounds`（续跑预算，默认 0 不续跑）/ `teamTaskId`（关联官方 Team 板，确认时按 CAS 反写 `complete`） |
 | `task_list` | 活跃/历史任务（`active` / `group` 过滤）；`view:'inbox'` 是收件箱：待决、待确认、失败/丢失、长时间没动静 |
 | `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条检查的退出码/耗时）、交接、目标状态与轮次（`x/y`）、官方 Team 关联、最近消息；`include:'full'` 从宿主会话日志冷读最新回复全文（读不到给摘要 + 原因） |
 | `task_message` | 子任务动作统一入口：`action:'message'`（默认，续派/追问，复用原会话；计划任务上只记讨论或转修订，**不批准**）/ `'approve'` 显式批准计划（前置：已交回 blocked 报告 + 计划文档已落盘 + 子会话停在等你确认；成功切回可写 + 落审批审计，之后再用 message 续派）/ `'resume'` 续跑失败·丢失（或超时完成）任务的原会话 / `'stop'` 停止 / `'retry'` 重派 failed·orphaned（新任务新会话）/ `'close'` 把「已交付待确认」确认成 `done` |
