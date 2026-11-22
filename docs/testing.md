@@ -23,6 +23,7 @@
 - **干净副本**：复核在 worktree / 干净 clone 上做，只认自己跑出来的输出，不采信开发自测数字；记录「命令 + 关键输出 + 未过项」。
 - **先 `pnpm install`**：`node_modules/` 不入库，新检出目录直接 `pnpm test` 会 `vite: not found`。
 - **沙箱**：`vite build` 要写 `dist/` 并 spawn 子进程，DSH 默认沙箱里可能被拒；用 `access:'full'` 的子任务跑构建，或交给 CI/终端。
+- **两个面**：**开发与安装 = Desktop**（桌面 GUI + 本地 `link:` 装插件，见 [CONTRIBUTING](CONTRIBUTING.md)）；**真机验收 = Web 测试 profile**（隔离 `DSH_HOME` + 临时 profile + 无头浏览器/HTTP 断言，见 §7.0）。能自动化的一律走 web profile，只有确实自动化不了的才请用户手工验（§7.4）。
 - **不碰真实数据**：涉及台账/日志的用例一律走临时 `DSH_HOME`（`test/helpers.js`），真机冒烟也用临时 home。
 
 ## 2. 门禁（每个提交都要过）
@@ -116,6 +117,7 @@
 [ ] CHANGELOG 顶部本次版本段写清「为什么改 / 改了什么 / 边界」
 [ ] pnpm test + check:client + check:version + check:docs + npm pack --dry-run
 [ ] 真机矩阵（§7）勾一遍，未验项写明原因与谁验
+[ ] 自动化冒烟/回归在 Web 测试 profile 上跑（§7.0），证据按 §7.3 口径；桌面只补手工冒烟
 [ ] 文档总行数仍在预算内（check-docs 若超，先删重复而不是抬预算）
 ```
 
@@ -167,9 +169,39 @@
 | 任务链规则（0.28.0） | L1 五条规则（判据与建链时机 / 不阻塞 / 失败传播 / delivered≠done / 同检出串行）逐字来自 `src/copy.js`；`task_create.dependsOn` 描述与 `waiting_dep` 回执同源；L2/L3 探针；机制用 `dependencyState`/`promoteDependents` 复核 | `test/task-chain-policy.test.js`、`test/prompt-layers.test.js`；CHANGELOG `0.28.0` |
 | 协调者去 grep + W1 任务执行者 policy（t-4f7ce108） | 协调者预设移除 `tool-fs-search` 整行（该包无按工具开关、`deny` 遮不到预设自有行）→ 只留 `read`；W1 由 `renderWorkerPolicy` 渲染、`index.js` 第二条 `systemPrompt.context`（order 131）按 `tasks.session_id` 注入，静态提示（详情/上报/交付/装依赖/context）只在此出现一次；brief 收到 2–3 行、persona 只剩身份 | `test/config.test.js`、`test/index.test.js`、`test/prompt-layers.test.js`、`test/brief.test.js`、`test/copy-consistency.test.js`、`test/worktree.test.js` |
 
-## 7. 真机复核清单（装 profile + 彻底重启后逐条勾）
+## 7. 真机复核（开发/安装面 = Desktop；自动化验收面 = Web 测试 profile）
+
+**主次**：交付前的自动化冒烟与回归**一律**在 Web 测试 profile 上跑——隔离 `DSH_HOME` + 临时 profile + 无头浏览器/HTTP 断言，不碰 Desktop、不影响用户正在用的桌面实例，可复跑、可取证。Desktop 是**开发与安装面**，只承担「用户真实入口」的手工冒烟（§7.1、§7.2）与自动化确实覆盖不了的项（§7.4）；**测试结论优先引用 web 测试 profile 的证据**。
+
+**为什么外部自动化不盯桌面 GUI**：桌面窗口的 `?token=` 由宿主在启动时注入窗口，调用方没有受支持的取法（只有 `dsh web` 会把带 token 的 URL 打到 stdout）；对着用户真实桌面实例做自动化还会写真实台账、用真实账号凭据，违反 §1「不碰真实数据」。
 
 结果栏：`[ ]` 未验 / `[x]` 通过 / `[!]` 不通过（记现象）。宿主端口用实际 DSH Web 端口。
+
+### 7.0 起一个 Web 测试 profile（自动化冒烟/回归的固定入口）
+
+每次验收从零起：隔离 `DSH_HOME`（真实 `~/.dsh` 零读写）+ 临时 profile（不动 `desktop`）+ 空闲端口。
+
+```powershell
+$env:DSH_HOME = "$env:TEMP\orch-verify-$(Get-Random)"                     # 隔离 home
+dsh --profile verify --from-default-profile web --dump-config | Out-Null   # 临时 profile（web 模板）
+pnpm pack --pack-destination "$env:TEMP"                                   # 发版前：验「用户装到的东西」
+dsh plugin --profile verify add "$env:TEMP\wjj865-code-dsh-orchestrator-<version>.tgz"
+# 改代码时用 link：dsh plugin --profile verify add "link:<仓库路径>"
+dsh --profile verify web --no-open --port <空闲端口> --host 127.0.0.1
+# 打印：dsh web: http://127.0.0.1:<端口>/?token=<token>   ← 自动化就吃这一行
+```
+
+- 模型：真验收用账号凭据；不想烧额度就把 `DEEPSEEK_BASE_URL` 指向本地 Messages 兼容 stub（`reports/main-permission-badge-verify/harness/mock-llm.mjs`）+ 假 key，不读用户凭据。
+- 浏览器：系统 Chrome `--headless=new` + 独立 `--user-data-dir` + 原生 CDP（`reports/*/harness/cdp.mjs`，零第三方依赖）；只验接口就直接对 `/api/orchestrator` 发 HTTP。
+- 端口挑空闲的（`--port 0` 也行），别占用户正在用的实例；收工停服务、关 Chrome、删临时 home。
+
+**典型步骤（按需挑，证据口径见 §7.3）**
+
+1. HTTP 面：`POST /api/orchestrator` 取 `snapshot` → 结构与筛选档正确；无 cookie 401、跨站 Origin 403；调接口前后 `tasks.sqlite` 行数不变。
+2. UI 面：无头 Chrome 打开带 token 的 URL → 侧栏「主会话」/ 会话头「任务」可点、`data-page` 五页切换、抽屉与 dock 实渲染、console 零 error（§7.1 逐条挑）。
+3. 任务流面：派任务 → `task_report` → 「已交付待确认」→ `close` 收 `done`；只读任务写文件被拒；worktree 建出 `orch/<taskId>`（§7.2）。
+4. 插件页：`[data-orchestrator-config]` 存在，配置卡片组数/行数与代码一致。
+5. 隔离审计：临时 home 之外零新增；真实 `~/.dsh` 与用户 profile 未被写；收工清理（§1「不碰真实数据」）。
 
 ### 7.1 入口与面板
 
@@ -210,3 +242,30 @@
 - 面板打开期间 network 每 2s 一次 `snapshot`，关闭面板后无请求（失败退避 30s）。
 - 调接口前后 `tasks.sqlite` 的 `tasks/messages/notifications/settings` 行数不变（只读端点）。
 - 真机判定结论进 `logs/`（`main.rotation.decided`、`task.*`、`workspace.read.rejected` 等），复核对日志而不是靠界面猜。
+
+交报告时按这张表给证据（自动化证据优先）：
+
+| 证据 | 要求 |
+| --- | --- |
+| 结论表 | 「验证点 / PASS·FAIL / 证据文件名」一条一行；FAIL 写现象与判据，不写「偶发」 |
+| 截图 | 关键状态各一张（面板、抽屉、徽标、配置卡），放 `reports/<主题>/screenshots/` |
+| console / network | 浏览器 console 零 error（warn 逐条说明来源）；network 的 `snapshot` 节奏与面板开关一致 |
+| 服务端日志 | 临时 home 的 `state/orchestrator/logs/*.jsonl` 关键事件（`task.*`、`main.session.permission-pinned`、`host.capabilities`）；启动瞬间能力数 ≠ 最终能力面（见 compat.md §3） |
+| 隔离证明 | 临时 `DSH_HOME`、profile 名、端口、被测包版本（读**安装副本**的 `package.json`，不是仓库里的） |
+
+### 7.4 人工验收：确实自动化不了的项
+
+以下三类允许把本地插件 link 进用户环境（`desktop` 或指定 profile），由用户手动操作并回报现象——动手前先确认没有更便宜的 web 自动化路径：
+
+- **GUI 交互细节**：真实鼠标/键盘手感、滚动与动画、拖拽排序、剪贴板、焦点与输入法、宿主主题切换下的观感；
+- **桌面特有行为**：桌面窗口的菜单/快捷键、托盘与单实例、Electron 与 Web 的差异分支、装完「彻底退出再启动」的生效路径；
+- **真实安装态**：在用户自己的 `desktop` profile 里装正式包或 `link:` 之后的表现、真实账号凭据下的模型行为。
+
+请用户验时按这四项写清（缺一项就不算可执行的人工验证）：
+
+1. **为什么必须人工**：哪条自动化断言覆盖不了，写到具体项，不写「不好测」；
+2. **影响哪个 profile**：改 `desktop` 还是某个测试 profile、装 tarball 还是 `link:`、要不要重启宿主；
+3. **怎么回滚**：先给回滚动作（`dsh plugin --profile <p> remove <包名>`、把 profile `package.json` 的 link 改回版本号、或恢复备份的 profile 目录），再让人动手；
+4. **要回报什么**：操作步骤 + 截图（哪一屏）+ 日志片段（`$DSH_HOME/state/orchestrator/logs/*.jsonl` 或宿主日志）+ 结论（通过 / 现象 / 能否复现）。
+
+结论进报告时标「用户手动验证」，与 web 测试 profile 的自动化证据**分列**；同一项两种证据都有时，优先引用 web profile 的。
