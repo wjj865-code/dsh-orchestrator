@@ -1,22 +1,43 @@
 # Changelog
 
-## 未发布——链式自动放行（`task_create({ chain: 'auto' })`）
+## 0.33.0（2026-11-23）—— 三条 P0 护栏 / 子会话工具失败监听 / W1 权限失败必报 / P0-4 显式批准 / chain:auto
 
-**一句话**：给任务链加一个**显式约定标记** `chain: 'auto'`（只进 `brief` 快照，**不加 DB 列、不做迁移**）：带标记的任务交付（落「已交付待确认」）时，若台账里仍有 `waiting_dep` 的下游依赖它，交付钩子在**同一同步段**复用既有 `closeDelivered` 收成 `done`（`accepted_by='chain'`、`accepted_kind='delivery'`、`close_reason='chain'`），下游仍由 `queue.pump()` 开头的 `promoteDependents` 自动晋升。没有下游 = 保持「已交付待确认」（不猜将来会不会建下游）；**不带标记的链一个字节都不变**（仍等确认/超时）。自动放行的确认人不是人，官方 Team 板**不反写**（与超时同口径，只记 `team.board.skipped{reason:'chain'}`）；通知与子会话回执改「已完成」口径；`done` 不能追问/续跑（要改只能 `retry`）。状态机零改动（`delivered → done` 是既有边，只多一个触发条件），没有新配置键、工具面仍 11 个，P0-4 的计划批准路径一行未动。
-- 验证：`test/chain-auto.test.js`（14 条：参数/落点无新列、门控四态、task_report 与结算两条交付路径、无下游/无标记默认不变、幂等与 sweeper 互斥、只读/计划/Team 板边界）、`test/delivered.test.js`（`by=chain` 落库与审计）、`test/handoff.test.js`（第四种 `acceptedBy` 与事件）、`test/resume.test.js`（`close_reason=chain` 等同确认过）、`test/team-board.test.js`（不反写）、`test/contract-snapshot.test.js`（schema 加 `chain`）、`test/client.test.js`（面板标签）、`test/task-chain-policy.test.js` / `test/prompt-layers.test.js`（L1 段落与文案单源）；`node scripts/check-docs.mjs` **1800 / 1800**（行内改写 + 1 增 1 删，预算未抬）。
-- 收尾：已 `pnpm run build` 重建 `dist/client.js` 并随源码一并提交（一个本地 commit，未 push / 未打 tag / 未 bump）；全量 `pnpm test` 1397 tests / 1392 pass / 0 fail / 5 skipped，`check:docs` 1800/1800。
+**一句话**：这一版把三条「护栏被绕过」的 P0 一并修掉（`delivered` 交付即释放写根、结算落 `delivered` 前必须有本轮验收证据、`worktreeMode:'continue'` 复用检出先判占用），并集中发布三件编排面改动：① 子会话被权限/沙箱拒绝不再从编排面消失（新增 `tools/result` 观察者 + 10 分钟去重告警，W1 per-turn policy 同步加一句「权限/环境失败必须写进回报」）；② 计划批准改成唯一显式动作 `task_message({ action: 'approve' })`（P0-4），普通 `message` 不再批准；③ 任务链新增显式约定标记 `chain: 'auto'`，有 `waiting_dep` 下游时交付即收成 `done`。**不新增配置键、工具面仍 11 个、状态机零改动**（`delivered → done` 是既有边，只多一个触发条件；台账 schema 只多 `accepted_kind` 的枚举值与 brief 里的 `chain` 字段，**无新列、无迁移**）。
 
-## 未发布——P0-4：计划批准改为显式动作（`task_message({ action: 'approve' })`）
-
-**一句话**：计划批准不再是「任何 `task_message` 投递成功 = 批准」的软门禁——普通 `message` 在计划任务上只记讨论（`planning`）或把它转「修订中」（`waiting_user`/`revising`），沙箱始终只读；批准只能显式 `task_message({ action: 'approve' })`，前置为「收到过 blocked 报告（`plan_state='waiting_user'`）+ 子会话停在等你确认 + 计划文档已落盘」，成功切回可写并落审批审计（复用 `accepted_by`/`accepted_at`，新增 `accepted_kind='plan'`；交付确认仍记 `delivery`），**不投递消息**——协调者随后 `task_message` 续派实现。`plan_state` 从四值扩成六值（`none`/`planning`/`waiting_user`/`revising`/`approved`/`rejected`），未批准进终态（含 `delivered`）统一收口 `rejected`；升级时旧库把「`planning` + 等确认」的行幂等回填成 `waiting_user`。面板**不加**批准入口（`plan-approve` 仍是 `UNKNOWN_ENDPOINT` 反例清单），面板 `message` 与工具同口径只是不批准、不改 `plan_state`；无新配置开关、工具面仍 11 个、两段式交付语义未动。
-- 验证：`test/plan-mode.test.js`（message 不批准 / approve 前置四种拒绝 / 审批审计 / 幂等 / 四态收口 / 旧库回填）、`test/contract-snapshot.test.js`（enum 加 `approve`、任务行加 `accepted_kind`）、`test/interaction-policy.test.js`（L1「批准是显式动作」）、`test/status-property.test.js`（未批准三态都只读）。
-- 本轮未跑 `pnpm run build` / 未提交：`dist/client.js` 的重建、`check:client-size` 与 commit 留给后续全权限任务。
-
-## 未发布——三条 P0：交付即释放写根 / 结算验收闸门 / 复用检出占用
+**P0 修复（三条）：交付即释放写根 / 结算验收闸门 / 复用检出占用**
 
 **一句话**：修三条「护栏被绕过」的 P0——① `delivered` 交付即释放写根、退出同写域判定，追问回 `running` 前复判写域（被占用返回 `MESSAGE_WRITE_CONFLICT`，面板与工具同口径）；② 配了 `checks` 的任务自然结束（`completed`）不再绕过验收：结算落 `delivered` 前必须有本轮通过证据（`acceptance.ok` 且 `attempts` 匹配），否则落 `failed` 并写明原因；③ `worktreeMode:'continue'` 复用检出前按 `worktree_path` 判活跃占用，冲突拒绝并给「`dependsOn` 串行 / `worktreeMode:'new'` 新建」两条路。
 - 不新增配置开关；两段式交付、状态机与台账 schema 不动；`retry` / `resume` 的写域复判仍不在本批（见 `docs/LIMITATIONS.md`）。
 - 验证：`test/write-guard.test.js` / `test/settlement.test.js` / `test/worktree.test.js` 的集成用例（真实台账 + 队列，仅 dispatcher 打桩）。
+
+**子会话工具失败监听（`tools/result` 观察者 + 10 分钟去重告警）**
+
+**一句话**：子会话被权限/沙箱拒绝时，协调者原本只拿得到 `task_report` 的 summary，这条事实在编排面上会消失：新增 `src/child-tool-failure.js` 订阅宿主 `tools/result`（只观察、不改结果），按「结构化 `error.info.code` → `sandbox.denied` → `pwsh`/`bash` stderr 文本」三通道判定，**不要求退出码非零**；`denied` 类走 notifier 并按 `(taskId, tool, code)` **10 分钟去重**告警，env 类（命令找不到、依赖缺失、沙箱/runner 起不来）只写日志。
+- 归属与打断：`workerTaskOf(exec.agent.id)` 认出任务，协调者自身调用与非任务会话直接丢弃，只有任务还在 followup 状态集合才打断协调者。告警文案 `toolFailureNotice`（`src/copy.js`，NOTIFY 层唯一措辞）：一行事实（工具 + code + 沙箱模式）→ 一行归属（任务名 + `tk-` 引用 + 脱敏后的证据首行）→ 一行动作（判断缺 `sandbox_permissions` / 该给 `access:'full'` / 改派或回落，别让它重试同一条命令）。
+- 边界：外部子会话与文本误判写进 `docs/LIMITATIONS.md`；`docs/ARCHITECTURE.md` 补一节、`docs/testing.md` 补验收路径。
+- 验证：`test/child-tool-failure.test.js`（三通道判定 / 去重窗口 / 归属丢弃 / 状态集合门控）、`test/index.test.js`（观察者接线，协调者自身调用不告警）。
+
+**W1 新增一句：权限/环境失败必须写进回报**
+
+**一句话**：W1 per-turn policy 由固定五句变六句，新增 `WORKER_PERMISSION_HINT`——遇到权限/沙箱/审批拒绝或环境失败（命令找不到、依赖缺失、沙箱/runner 起不来）不要只当普通报错：能自己用窄一级的 `sandbox_permissions` + `justification` 重试一次就重试一次；仍不行就在 `task_report` 的 summary 里写明「哪条命令、什么 code/提示、试过什么」，交付 `done` 时同样必须写。
+- 句子只在 `src/copy.js` 定义一次，`src/prompt-layers.js` 只负责分层归属与渲染顺序；L2 文案层禁止重复该口径（`layerViolations` 兜住）。
+- 验证：`test/prompt-layers.test.js`（六句逐字同源 + L2 探针）。
+
+**P0-4：计划批准改为显式动作（`task_message({ action: 'approve' })`）**
+
+**一句话**：计划批准不再是「任何 `task_message` 投递成功 = 批准」的软门禁——普通 `message` 在计划任务上只记讨论（`planning`）或把它转「修订中」（`waiting_user`/`revising`），沙箱始终只读；批准只能显式 `task_message({ action: 'approve' })`，前置为「收到过 blocked 报告（`plan_state='waiting_user'`）+ 子会话停在等你确认 + 计划文档已落盘」，成功切回可写并落审批审计（复用 `accepted_by`/`accepted_at`，新增 `accepted_kind='plan'`；交付确认仍记 `delivery`），**不投递消息**——协调者随后 `task_message` 续派实现。`plan_state` 从四值扩成六值（`none`/`planning`/`waiting_user`/`revising`/`approved`/`rejected`），未批准进终态（含 `delivered`）统一收口 `rejected`；升级时旧库把「`planning` + 等确认」的行幂等回填成 `waiting_user`。面板**不加**批准入口（`plan-approve` 仍是 `UNKNOWN_ENDPOINT` 反例清单），面板 `message` 与工具同口径只是不批准、不改 `plan_state`；无新配置开关、工具面仍 11 个、两段式交付语义未动。
+- 验证：`test/plan-mode.test.js`（message 不批准 / approve 前置四种拒绝 / 审批审计 / 幂等 / 四态收口 / 旧库回填）、`test/contract-snapshot.test.js`（enum 加 `approve`、任务行加 `accepted_kind`）、`test/interaction-policy.test.js`（L1「批准是显式动作」）、`test/status-property.test.js`（未批准三态都只读）。
+- 该片未跑 `pnpm run build` / 未提交：`dist/client.js` 的重建、`check:client-size` 与 commit 由后续全权限任务完成（0.33.0 发布提交已包含）。
+
+**链式自动放行（`task_create({ chain: 'auto' })`）**
+
+**一句话**：给任务链加一个**显式约定标记** `chain: 'auto'`（只进 `brief` 快照，**不加 DB 列、不做迁移**）：带标记的任务交付（落「已交付待确认」）时，若台账里仍有 `waiting_dep` 的下游依赖它，交付钩子在**同一同步段**复用既有 `closeDelivered` 收成 `done`（`accepted_by='chain'`、`accepted_kind='delivery'`、`close_reason='chain'`），下游仍由 `queue.pump()` 开头的 `promoteDependents` 自动晋升。没有下游 = 保持「已交付待确认」（不猜将来会不会建下游）；**不带标记的链一个字节都不变**（仍等确认/超时）。自动放行的确认人不是人，官方 Team 板**不反写**（与超时同口径，只记 `team.board.skipped{reason:'chain'}`）；通知与子会话回执改「已完成」口径；`done` 不能追问/续跑（要改只能 `retry`）。状态机零改动（`delivered → done` 是既有边，只多一个触发条件），没有新配置键、工具面仍 11 个，P0-4 的计划批准路径一行未动。
+- 验证：`test/chain-auto.test.js`（14 条：参数/落点无新列、门控四态、task_report 与结算两条交付路径、无下游/无标记默认不变、幂等与 sweeper 互斥、只读/计划/Team 板边界）、`test/delivered.test.js`（`by=chain` 落库与审计）、`test/handoff.test.js`（第四种 `acceptedBy` 与事件）、`test/resume.test.js`（`close_reason=chain` 等同确认过）、`test/team-board.test.js`（不反写）、`test/contract-snapshot.test.js`（schema 加 `chain`）、`test/client.test.js`（面板标签）、`test/task-chain-policy.test.js` / `test/prompt-layers.test.js`（L1 段落与文案单源）；`node scripts/check-docs.mjs` **1800 / 1800**（行内改写 + 1 增 1 删，预算未抬）。
+- 收尾：已 `pnpm run build` 重建 `dist/client.js` 并随源码一并提交（该片提交时未 push / 未打 tag / 未 bump，随 0.33.0 一并发布）；该轮全量 `pnpm test` 1397 tests / 1392 pass / 0 fail / 5 skipped，`check:docs` 1800/1800。
+
+**验证**：`pnpm test` **1,397 项（1,392 pass / 0 fail / 5 skip）**；`dist/client.js` 163,629 B / 163,840 B（余 211 B）；`check:docs` 1,800 / 1,800 行；`check:version` 0.33.0 三处一致（README 全部点位 / CHANGELOG 首条 / `package.json.files`）。
+
+**升级注意**：装新版后**彻底退出 DSH 再启动**（刷新页面不换版本）。`chain: 'auto'` 是可选标记，不写的链行为与 0.32.1 完全一致；计划批准从「任何 `task_message` = 批准」改成显式 `action:'approve'`，旧习惯的「投递即批准」会失效（普通 `message` 只记讨论或转「修订中」）；旧库升级时「`planning` + 等确认」的行幂等回填成 `waiting_user`，无需手工迁移。
 
 ## 0.32.1（2026-11-22）——兼容声明（下限 rc.2）/ 任务 ID 出口网关 / 拍板流程 / 界面与文档收口
 
