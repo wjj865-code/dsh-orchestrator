@@ -132,6 +132,9 @@ test('completed → delivered：写 settle 消息、清空 error、发通知、�
   assert.equal(f.pushed[0].status, 'delivered')
   assert.equal(f.pushed[0].system, true)
   assert.match(f.pushed[0].summary, /改完了/)
+  // 发版验证 §6.1：delivered 通知必须带任务引用（tk-xxxxxx），否则「交付确认」渲染成 task_id: ''。
+  assert.match(f.pushed[0].ref, /^tk-[0-9a-z]{6}$/, '结算路径的 delivered 通知要带任务引用（tk-），不能是空串')
+  assert.equal(f.pushed[0].ref, task.ref, '通知里的引用与台账行上的引用一致')
   // D5：通知 payload 永远带 artifacts 字段（空也是 []），渲染层据此决定要不要写产物区块。
   assert.deepEqual(f.pushed[0].artifacts, [])
   // delivered 还要复用同一子会话追问：可写根不释放；队列照常补位。

@@ -1,0 +1,197 @@
+{
+  "startedAt": "2026-11-22T05:36:48.061Z",
+  "url": "http://127.0.0.1:54477/?token=8P3SQKoau17xPDei8tLkazjEXqjcvPJQcWu0U1GOekc",
+  "flows": [
+    {
+      "key": "LEAK_A",
+      "title": "说明文件编写（泄漏抽查 A）",
+      "prompt": "LEAK_A 帮我派一个普通任务：在 target 写一个说明文件，完成后追问一句再收掉。",
+      "steps": [
+        {
+          "name": "final-reply-visible",
+          "ok": true
+        }
+      ],
+      "task": {
+        "id": "t-e709f3f1",
+        "status": "done",
+        "readOnly": false,
+        "ref": "tk-vua57k",
+        "question": null,
+        "messages": [
+          {
+            "seq": 1,
+            "kind": "brief",
+            "rendered": "【任务引用】tk-vua57k 【任务详情】先调 task_detail 读完整详情（task_id 就是上面的任务引用）。"
+          },
+          {
+            "seq": 2,
+            "kind": "report",
+            "rendered": "[done] 说明文件已写入 target（note-a.md）。"
+          },
+          {
+            "seq": 3,
+            "kind": "followup",
+            "rendered": "请补一句你写入了什么，然后再次交付。"
+          },
+          {
+            "seq": 4,
+            "kind": "report",
+            "rendered": "[progress] 追问答复：说明文件是一段普通说明文字，正在补充。"
+          },
+          {
+            "seq": 5,
+            "kind": "report",
+            "rendered": "[done] 追问答复：已补充说明并再次交付。"
+          },
+          {
+            "seq": 6,
+            "kind": "close",
+            "rendered": "[确认] 协调者确认：已完成"
+          }
+        ]
+      },
+      "taskDone": true,
+      "pageText": "新会话\nCtrl\n+\nAlt\n+\nN\n插件\n主会话\n自动化任务\n能力包\n更多\n工作区\n指挥舱\n主会话\n刚刚\n默认工作区\n更多\n任务\n主会话\n协调者\n1 个子智能体\n对话\n轨迹\n收到执行请求\n13:36\n已完成\n已完成，用时 1秒\n\nREADY-COORDINATOR\n\n用量 27 tok\n13:36\nLEAK_A 帮我派一个普通任务：在 target 写一个说明文件，完成后追问一句再收掉。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发：说明文件编写（泄漏抽查 A）（tk-vua57k），等它交付后我追问一句再收尾。\n\n用量 84 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。\n\n用量 78 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。\n\n用量 48 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已收尾：说明文件编写（泄漏抽查 A）（tk-vua57k）已完成。\n\n说明文件编写（泄漏抽查 A）\n用量 73 tok\n13:37\n发消息或创建任务, / 调用指令, @ 文件或对话\n仅可查看\nDeepSeek-V4.1-Flash\nHigh\n5 轮 8 步·28750 tok/s\n310 tok·缓存命中 0%\n0%"
+    },
+    {
+      "key": "LEAK_B",
+      "title": "只读核对（泄漏抽查 B）",
+      "prompt": "LEAK_B 派一个只读任务：读 target 里的说明文件并回报。",
+      "steps": [
+        {
+          "name": "final-reply-visible",
+          "ok": true
+        }
+      ],
+      "task": {
+        "id": "t-e00984c4",
+        "status": "done",
+        "readOnly": true,
+        "ref": "tk-hpw8aj",
+        "question": null,
+        "messages": [
+          {
+            "seq": 1,
+            "kind": "brief",
+            "rendered": "【任务引用】tk-hpw8aj 【任务详情】先调 task_detail 读完整详情（task_id 就是上面的任务引用）。"
+          },
+          {
+            "seq": 2,
+            "kind": "report",
+            "rendered": "[done] 只读任务：已读取说明文件，未写任何文件。"
+          },
+          {
+            "seq": 3,
+            "kind": "close",
+            "rendered": "[确认] 协调者确认：已完成"
+          }
+        ]
+      },
+      "taskDone": true,
+      "pageText": "新会话\nCtrl\n+\nAlt\n+\nN\n插件\n主会话\n自动化任务\n能力包\n更多\n工作区\n指挥舱\n主会话\n刚刚\n默认工作区\n更多\n任务\n主会话\n协调者\n2 个子智能体\n对话\n轨迹\n收到执行请求\n13:36\n已完成\n已完成，用时 1秒\n\nREADY-COORDINATOR\n\n用量 27 tok\n13:36\nLEAK_A 帮我派一个普通任务：在 target 写一个说明文件，完成后追问一句再收掉。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发：说明文件编写（泄漏抽查 A）（tk-vua57k），等它交付后我追问一句再收尾。\n\n用量 84 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。\n\n用量 78 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。\n\n用量 48 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已收尾：说明文件编写（泄漏抽查 A）（tk-vua57k）已完成。\n\n用量 73 tok\n13:37\nLEAK_B 派一个只读任务：读 target 里的说明文件并回报。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发只读任务：只读核对（泄漏抽查 B）（tk-hpw8aj），它不会写文件。\n\n用量 79 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已确认收尾：只读核对（泄漏抽查 B）（tk-hpw8aj）。\n\n只读核对（泄漏抽查 B）\n说明文件编写（泄漏抽查 A）\n用量 70 tok\n13:37\n发消息或创建任务, / 调用指令, @ 文件或对话\n仅可查看\nDeepSeek-V4.1-Flash\nHigh\n7 轮 12 步·33900 tok/s\n459 tok·缓存命中 0%\n0%"
+    },
+    {
+      "key": "LEAK_C",
+      "title": "方案选择（泄漏抽查 C）",
+      "prompt": "LEAK_C 派一个任务，让它报 blocked 等我拍板；我选方案A，然后收掉。",
+      "steps": [
+        {
+          "name": "final-reply-visible",
+          "ok": true
+        }
+      ],
+      "task": {
+        "id": "t-2133033e",
+        "status": "done",
+        "readOnly": false,
+        "ref": "tk-4b5duv",
+        "question": null,
+        "messages": [
+          {
+            "seq": 1,
+            "kind": "brief",
+            "rendered": "【任务引用】tk-4b5duv 【任务详情】先调 task_detail 读完整详情（task_id 就是上面的任务引用）。"
+          },
+          {
+            "seq": 2,
+            "kind": "report",
+            "rendered": "[blocked] 需要拍板：选择实现方案。"
+          },
+          {
+            "seq": 3,
+            "kind": "followup",
+            "rendered": "按方案A继续。"
+          },
+          {
+            "seq": 4,
+            "kind": "report",
+            "rendered": "[done] 按方案A继续：已完成。"
+          },
+          {
+            "seq": 5,
+            "kind": "close",
+            "rendered": "[确认] 协调者确认：已完成"
+          }
+        ]
+      },
+      "taskDone": true,
+      "pageText": "新会话\nCtrl\n+\nAlt\n+\nN\n插件\n主会话\n自动化任务\n能力包\n更多\n工作区\n指挥舱\n主会话\n刚刚\n默认工作区\n更多\n任务\n主会话\n协调者\n3 个子智能体\n对话\n轨迹\n收到执行请求\n13:36\n已完成\n已完成，用时 1秒\n\nREADY-COORDINATOR\n\n用量 27 tok\n13:36\nLEAK_A 帮我派一个普通任务：在 target 写一个说明文件，完成后追问一句再收掉。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发：说明文件编写（泄漏抽查 A）（tk-vua57k），等它交付后我追问一句再收尾。\n\n用量 84 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。\n\n用量 78 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。\n\n用量 48 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已收尾：说明文件编写（泄漏抽查 A）（tk-vua57k）已完成。\n\n用量 73 tok\n13:37\nLEAK_B 派一个只读任务：读 target 里的说明文件并回报。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发只读任务：只读核对（泄漏抽查 B）（tk-hpw8aj），它不会写文件。\n\n用量 79 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已确认收尾：只读核对（泄漏抽查 B）（tk-hpw8aj）。\n\n用量 70 tok\n13:37\nLEAK_C 派一个任务，让它报 blocked 等我拍板；我选方案A，然后收掉。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发：方案选择（泄漏抽查 C）（tk-4b5duv），等它报阻塞。\n\n用量 74 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已拍板方案A：方案选择（泄漏抽查 C）（tk-4b5duv）。\n\n用量 71 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已收尾：方案选择（泄漏抽查 C）（tk-4b5duv）。\n\n方案选择（泄漏抽查 C）\n只读核对（泄漏抽查 B）\n+1\n用量 68 tok\n13:37\n发消息或创建任务, / 调用指令, @ 文件或对话\n仅可查看\nDeepSeek-V4.1-Flash\nHigh\n10 轮 18 步·32800 tok/s\n672 tok·缓存命中 0%\n0%"
+    },
+    {
+      "key": "LEAK_D",
+      "title": "分阶段推进（泄漏抽查 D）",
+      "prompt": "LEAK_D 派一个任务，让它连续报两次进度再交付。",
+      "steps": [
+        {
+          "name": "final-reply-visible",
+          "ok": true
+        }
+      ],
+      "task": {
+        "id": "t-d9e8b4d3",
+        "status": "done",
+        "readOnly": false,
+        "ref": "tk-r9ps6t",
+        "question": null,
+        "messages": [
+          {
+            "seq": 1,
+            "kind": "brief",
+            "rendered": "【任务引用】tk-r9ps6t 【任务详情】先调 task_detail 读完整详情（task_id 就是上面的任务引用）。"
+          },
+          {
+            "seq": 2,
+            "kind": "report",
+            "rendered": "[progress] 进度 1/2：环境已就绪。"
+          },
+          {
+            "seq": 3,
+            "kind": "report",
+            "rendered": "[progress] 进度 2/2：正在收尾。"
+          },
+          {
+            "seq": 4,
+            "kind": "report",
+            "rendered": "[done] 两次进度后交付：已完成。"
+          },
+          {
+            "seq": 5,
+            "kind": "close",
+            "rendered": "[确认] 协调者确认：已完成"
+          }
+        ]
+      },
+      "taskDone": true,
+      "pageText": "新会话\nCtrl\n+\nAlt\n+\nN\n插件\n主会话\n自动化任务\n能力包\n更多\n工作区\n指挥舱\n主会话\n刚刚\n默认工作区\n更多\n任务\n主会话\n协调者\n4 个子智能体\n对话\n轨迹\n收到执行请求\n13:36\n已完成\n已完成，用时 1秒\n\nREADY-COORDINATOR\n\n用量 27 tok\n13:36\nLEAK_A 帮我派一个普通任务：在 target 写一个说明文件，完成后追问一句再收掉。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发：说明文件编写（泄漏抽查 A）（tk-vua57k），等它交付后我追问一句再收尾。\n\n用量 84 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。\n\n用量 78 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。\n\n用量 48 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已收尾：说明文件编写（泄漏抽查 A）（tk-vua57k）已完成。\n\n用量 73 tok\n13:37\nLEAK_B 派一个只读任务：读 target 里的说明文件并回报。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发只读任务：只读核对（泄漏抽查 B）（tk-hpw8aj），它不会写文件。\n\n用量 79 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已确认收尾：只读核对（泄漏抽查 B）（tk-hpw8aj）。\n\n用量 70 tok\n13:37\nLEAK_C 派一个任务，让它报 blocked 等我拍板；我选方案A，然后收掉。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发：方案选择（泄漏抽查 C）（tk-4b5duv），等它报阻塞。\n\n用量 74 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已拍板方案A：方案选择（泄漏抽查 C）（tk-4b5duv）。\n\n用量 71 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已收尾：方案选择（泄漏抽查 C）（tk-4b5duv）。\n\n用量 68 tok\n13:37\nLEAK_D 派一个任务，让它连续报两次进度再交付。\n13:37\n已完成\n已完成，用时 1秒\n\n已派发：分阶段推进（泄漏抽查 D）（tk-r9ps6t），进度我会盯着。\n\n用量 76 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已派发：分阶段推进（泄漏抽查 D）（tk-r9ps6t），进度我会盯着。\n\n用量 46 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已派发：分阶段推进（泄漏抽查 D）（tk-r9ps6t），进度我会盯着。\n\n用量 46 tok\n13:37\n收到任务消息\n13:37\n已完成\n已完成，用时 1秒\n\n已收尾：分阶段推进（泄漏抽查 D）（tk-r9ps6t）。\n\n分阶段推进（泄漏抽查 D）\n方案选择（泄漏抽查 C）\n+2\n用量 69 tok\n13:37\n发消息或创建任务, / 调用指令, @ 文件或对话\n仅可查看\nDeepSeek-V4.1-Flash\nHigh\n14 轮 24 步·37167 tok/s\n909 tok·缓存命中 0%\n0%"
+    }
+  ],
+  "panelOpen": {
+    "ok": true,
+    "tag": "BUTTON",
+    "text": "任务",
+    "aria": "打开任务面板"
+  },
+  "panelText": "新会话\nCtrl\n+\nAlt\n+\nN\n插件\n主会话\n自动化任务\n能力包\n更多\n工作区\n指挥舱\n主会话\n刚刚\n默认工作区\n更多\n任务\n主会话在线\n刷新\n打开主会话\n总览\n任务组\n排期\n自动化\n复盘\n0\n进行中\n0\n待你决定\n4\n已完成\n0\n失败\n今日排期\n打开排期\n今天还没有排期。到「排期」把任务拖到日历上，或点任务卡里的「排期」选日期。\n自动化\n打开\n还没有到点自动派单。到「自动化」建一条：到点由协调者按话术 task_list 核对后 task_create。\n全部\n4\n进行中\n0\n待你决定\n0\n已完成\n4\n失败\n0\n已取消/丢失\n0\n产物\n0\n分阶段推进（泄漏抽查 D）\n已完成\n刚刚\nC:\\Users\\72489\\AppData\\Local\\Temp\\orch-leak-verify\\targets\\…\n目标·已完成\n协调者确认\n详情\n打开子会话\n删除\n方案选择（泄漏抽查 C）\n已完成\n刚刚\nC:\\Users\\72489\\AppData\\Local\\Temp\\orch-leak-verify\\targets\\…\n目标·已完成\n协调者确认\n详情\n打开子会话\n删除\n只读核对（泄漏抽查 B）\n已完成\n刚刚\nC:\\Users\\72489\\AppData\\Local\\Temp\\orch-leak-verify\\targets\\…\n目标·已完成\n只读\n协调者确认\n详情\n打开子会话\n删除\n说明文件编写（泄漏抽查 A）\n已完成\n刚刚\nC:\\Users\\72489\\AppData\\Local\\Temp\\orch-leak-verify\\targets\\…\n目标·已完成\n协调者确认\n详情\n打开子会话\n删除",
+  "finishedAt": "2026-11-22T05:37:40.889Z"
+}

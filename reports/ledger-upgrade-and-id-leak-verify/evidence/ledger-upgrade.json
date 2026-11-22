@@ -1,0 +1,620 @@
+{
+  "generatedAt": "2026-11-22T05:28:11.531Z",
+  "source": {
+    "path": "C:\\Users\\72489\\.dsh\\state\\orchestrator\\tasks.sqlite",
+    "hashesBefore": {
+      "main": "5af915da83f012b730b46ab0a81dca61676b34699e09c8efb2a773b65997e619",
+      "wal": "26f1ac1f592c6a679afb3d3df6812df5a5662ba75258a7b3f4c090385f4967a6",
+      "shm": "5501e9047e2adc186fb5e37b24d98f80ece4a7d8b0c3090a17d7ad073fccae4c"
+    },
+    "hashesAfter": {
+      "main": "5af915da83f012b730b46ab0a81dca61676b34699e09c8efb2a773b65997e619",
+      "wal": "26f1ac1f592c6a679afb3d3df6812df5a5662ba75258a7b3f4c090385f4967a6",
+      "shm": "5501e9047e2adc186fb5e37b24d98f80ece4a7d8b0c3090a17d7ad073fccae4c"
+    },
+    "statBefore": {
+      "size": 4247552,
+      "mtimeMs": 1795324232515.478
+    },
+    "statAfter": {
+      "size": 4247552,
+      "mtimeMs": 1795324232515.478
+    },
+    "snapshot": {
+      "method": "vacuum-into"
+    },
+    "liveCounts": {
+      "tasks": 376,
+      "messages": 1102,
+      "notifications": 421,
+      "memories": 483,
+      "settings": 12,
+      "automations": 1,
+      "groups": 50,
+      "task_refs": {
+        "error": "no such table: task_refs"
+      }
+    },
+    "liveMaxSeq": 17,
+    "liveMaxTask": "t-d31c42e2"
+  },
+  "upgradeDir": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-ledger-upgrade-N4eCyV",
+  "before": {
+    "counts": {
+      "tasks": 376,
+      "messages": 1102,
+      "notifications": 421,
+      "memories": 483,
+      "settings": 12,
+      "automations": 1,
+      "groups": 50,
+      "task_refs": {
+        "error": "no such table: task_refs"
+      }
+    },
+    "tables": [
+      "automations",
+      "groups_v1",
+      "memories",
+      "messages",
+      "notifications",
+      "settings",
+      "tasks"
+    ],
+    "planPathColumn": false
+  },
+  "after": {
+    "counts": {
+      "tasks": 376,
+      "messages": 1102,
+      "notifications": 421,
+      "memories": 483,
+      "settings": 12,
+      "automations": 1,
+      "groups": 50,
+      "task_refs": 376
+    },
+    "tables": [
+      "automations",
+      "groups_v1",
+      "memories",
+      "messages",
+      "notifications",
+      "settings",
+      "task_refs",
+      "tasks"
+    ],
+    "planPathColumn": true,
+    "integrity": "ok"
+  },
+  "refs": {
+    "total": 376,
+    "retired": 0,
+    "dupTokens": 0,
+    "dupTaskIds": 0,
+    "tasksWithoutRef": 0,
+    "refsWithoutTask": 0
+  },
+  "legacySamples": [
+    {
+      "id": "t-d31c42e2",
+      "status": "running",
+      "resolvesById": true,
+      "resolvesByRef": true,
+      "ref": "tk-g868xw",
+      "taskRowHasRef": true,
+      "refShapeOk": true
+    },
+    {
+      "id": "t-65a23997",
+      "status": "done",
+      "resolvesById": true,
+      "resolvesByRef": true,
+      "ref": "tk-2atdh8",
+      "taskRowHasRef": true,
+      "refShapeOk": true
+    },
+    {
+      "id": "t-5c20566f",
+      "status": "delivered",
+      "resolvesById": true,
+      "resolvesByRef": true,
+      "ref": "tk-hs872m",
+      "taskRowHasRef": true,
+      "refShapeOk": true
+    },
+    {
+      "id": "t-3b55b5cc",
+      "status": "failed",
+      "resolvesById": true,
+      "resolvesByRef": true,
+      "ref": "tk-g653pd",
+      "taskRowHasRef": true,
+      "refShapeOk": true
+    },
+    {
+      "id": "t-4ae4e9b6",
+      "status": "cancelled",
+      "resolvesById": true,
+      "resolvesByRef": true,
+      "ref": "tk-ajuysx",
+      "taskRowHasRef": true,
+      "refShapeOk": true
+    },
+    {
+      "id": "t-4d735fca",
+      "status": "delivered",
+      "resolvesById": true,
+      "resolvesByRef": true,
+      "ref": "tk-r4cd5u",
+      "taskRowHasRef": true,
+      "refShapeOk": true
+    },
+    {
+      "id": "t-c8ef2ab1",
+      "status": "delivered",
+      "resolvesById": true,
+      "resolvesByRef": true,
+      "ref": "tk-28pv3n",
+      "taskRowHasRef": true,
+      "refShapeOk": true
+    },
+    {
+      "id": "t-83222651",
+      "status": "delivered",
+      "resolvesById": true,
+      "resolvesByRef": true,
+      "ref": "tk-u5w3ey",
+      "taskRowHasRef": true,
+      "refShapeOk": true
+    }
+  ],
+  "idempotency": {
+    "first": {
+      "tasks": 376,
+      "messages": 1102,
+      "notifications": 421,
+      "memories": 483,
+      "settings": 12,
+      "automations": 1,
+      "groups": 50,
+      "task_refs": 376
+    },
+    "second": {
+      "tasks": 376,
+      "messages": 1102,
+      "notifications": 421,
+      "memories": 483,
+      "settings": 12,
+      "automations": 1,
+      "groups": 50,
+      "task_refs": 376
+    },
+    "identicalRefs": true
+  },
+  "tombstone": {
+    "victimId": "t-65a23997",
+    "victimRef": "tk-2atdh8",
+    "taskGone": true,
+    "refOfDeleted": null,
+    "resolveByRef": {
+      "ok": false,
+      "reason": "retired",
+      "message": "这个引用已失效（任务可能已被删除）。用 task_list 看现有任务的名称与引用。"
+    },
+    "resolveById": {
+      "ok": false,
+      "reason": "not-found",
+      "message": "找不到这个任务引用。用 task_list 看任务的名称与引用（形如 tk-7f3a2c）；要按台账内部编号查就去台账/日志里取，别从记忆里拼。"
+    },
+    "row": {
+      "retired_at": 1795325291511
+    }
+  },
+  "results": [
+    {
+      "name": "源台账存在",
+      "ok": true,
+      "detail": "C:\\Users\\72489\\.dsh\\state\\orchestrator\\tasks.sqlite"
+    },
+    {
+      "name": "源库（只读）当下计数已取得",
+      "ok": true,
+      "detail": {
+        "tasks": 376,
+        "messages": 1102,
+        "notifications": 421,
+        "memories": 483,
+        "settings": 12,
+        "automations": 1,
+        "groups": 50,
+        "task_refs": {
+          "error": "no such table: task_refs"
+        }
+      }
+    },
+    {
+      "name": "快照方式",
+      "ok": true,
+      "detail": {
+        "method": "vacuum-into"
+      }
+    },
+    {
+      "name": "副本已生成",
+      "ok": true,
+      "detail": {
+        "path": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-ledger-upgrade-N4eCyV\\tasks.sqlite",
+        "size": 4075520
+      }
+    },
+    {
+      "name": "取快照后源库 sha256 未变",
+      "ok": true,
+      "detail": {
+        "before": {
+          "main": "5af915da83f012b730b46ab0a81dca61676b34699e09c8efb2a773b65997e619",
+          "wal": "26f1ac1f592c6a679afb3d3df6812df5a5662ba75258a7b3f4c090385f4967a6",
+          "shm": "5501e9047e2adc186fb5e37b24d98f80ece4a7d8b0c3090a17d7ad073fccae4c"
+        },
+        "after": {
+          "main": "5af915da83f012b730b46ab0a81dca61676b34699e09c8efb2a773b65997e619",
+          "wal": "26f1ac1f592c6a679afb3d3df6812df5a5662ba75258a7b3f4c090385f4967a6",
+          "shm": "5501e9047e2adc186fb5e37b24d98f80ece4a7d8b0c3090a17d7ad073fccae4c"
+        }
+      }
+    },
+    {
+      "name": "升级前副本：无 task_refs 表",
+      "ok": true,
+      "detail": [
+        "automations",
+        "groups_v1",
+        "memories",
+        "messages",
+        "notifications",
+        "settings",
+        "tasks"
+      ]
+    },
+    {
+      "name": "升级前副本：tasks 无 plan_path 列",
+      "ok": true
+    },
+    {
+      "name": "升级前副本：任务/消息数",
+      "ok": true,
+      "detail": {
+        "tasks": 376,
+        "messages": 1102
+      }
+    },
+    {
+      "name": "副本与源库（只读）计数一致（WAL 已并入，非旧状态）",
+      "ok": true,
+      "detail": {
+        "source": {
+          "tasks": 376,
+          "messages": 1102,
+          "notifications": 421,
+          "memories": 483,
+          "settings": 12,
+          "automations": 1,
+          "groups": 50,
+          "task_refs": {
+            "error": "no such table: task_refs"
+          }
+        },
+        "copy": {
+          "tasks": 376,
+          "messages": 1102,
+          "notifications": 421,
+          "memories": 483,
+          "settings": 12,
+          "automations": 1,
+          "groups": 50,
+          "task_refs": {
+            "error": "no such table: task_refs"
+          }
+        },
+        "sourceMaxSeq": 17,
+        "sourceMaxTask": "t-d31c42e2"
+      }
+    },
+    {
+      "name": "task_refs 表已自动建出",
+      "ok": true
+    },
+    {
+      "name": "tasks.plan_path 列已补齐",
+      "ok": true
+    },
+    {
+      "name": "任务数不变",
+      "ok": true,
+      "detail": {
+        "before": 376,
+        "after": 376
+      }
+    },
+    {
+      "name": "消息数不变",
+      "ok": true,
+      "detail": {
+        "before": 1102,
+        "after": 1102
+      }
+    },
+    {
+      "name": "通知/设置/记忆/组数不变",
+      "ok": true,
+      "detail": {
+        "before": {
+          "tasks": 376,
+          "messages": 1102,
+          "notifications": 421,
+          "memories": 483,
+          "settings": 12,
+          "automations": 1,
+          "groups": 50,
+          "task_refs": {
+            "error": "no such table: task_refs"
+          }
+        },
+        "after": {
+          "tasks": 376,
+          "messages": 1102,
+          "notifications": 421,
+          "memories": 483,
+          "settings": 12,
+          "automations": 1,
+          "groups": 50,
+          "task_refs": 376
+        }
+      }
+    },
+    {
+      "name": "PRAGMA integrity_check = ok",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "name": "每条任务都有引用",
+      "ok": true,
+      "detail": {
+        "missing": [],
+        "missingCount": 0
+      }
+    },
+    {
+      "name": "引用都指向存在的任务（无孤儿）",
+      "ok": true,
+      "detail": {
+        "orphans": [],
+        "count": 0
+      }
+    },
+    {
+      "name": "token 形状全部合法（tk- + 6 位）",
+      "ok": true,
+      "detail": {
+        "bad": []
+      }
+    },
+    {
+      "name": "token 无重复（主键 + 唯一 task_id）",
+      "ok": true,
+      "detail": {
+        "dupTokens": 0,
+        "dupTaskIds": 0
+      }
+    },
+    {
+      "name": "回填只补缺的（引用数 = 任务数）",
+      "ok": true,
+      "detail": {
+        "refs": 376,
+        "tasks": 376
+      }
+    },
+    {
+      "name": "副本上无墓碑（旧库从未有过 token）",
+      "ok": true,
+      "detail": {
+        "retired": 0
+      }
+    },
+    {
+      "name": "历史任务 t-xxxx 可解析且带 tk- 引用",
+      "ok": true,
+      "detail": [
+        {
+          "id": "t-d31c42e2",
+          "status": "running",
+          "resolvesById": true,
+          "resolvesByRef": true,
+          "ref": "tk-g868xw",
+          "taskRowHasRef": true,
+          "refShapeOk": true
+        },
+        {
+          "id": "t-65a23997",
+          "status": "done",
+          "resolvesById": true,
+          "resolvesByRef": true,
+          "ref": "tk-2atdh8",
+          "taskRowHasRef": true,
+          "refShapeOk": true
+        },
+        {
+          "id": "t-5c20566f",
+          "status": "delivered",
+          "resolvesById": true,
+          "resolvesByRef": true,
+          "ref": "tk-hs872m",
+          "taskRowHasRef": true,
+          "refShapeOk": true
+        },
+        {
+          "id": "t-3b55b5cc",
+          "status": "failed",
+          "resolvesById": true,
+          "resolvesByRef": true,
+          "ref": "tk-g653pd",
+          "taskRowHasRef": true,
+          "refShapeOk": true
+        },
+        {
+          "id": "t-4ae4e9b6",
+          "status": "cancelled",
+          "resolvesById": true,
+          "resolvesByRef": true,
+          "ref": "tk-ajuysx",
+          "taskRowHasRef": true,
+          "refShapeOk": true
+        },
+        {
+          "id": "t-4d735fca",
+          "status": "delivered",
+          "resolvesById": true,
+          "resolvesByRef": true,
+          "ref": "tk-r4cd5u",
+          "taskRowHasRef": true,
+          "refShapeOk": true
+        },
+        {
+          "id": "t-c8ef2ab1",
+          "status": "delivered",
+          "resolvesById": true,
+          "resolvesByRef": true,
+          "ref": "tk-28pv3n",
+          "taskRowHasRef": true,
+          "refShapeOk": true
+        },
+        {
+          "id": "t-83222651",
+          "status": "delivered",
+          "resolvesById": true,
+          "resolvesByRef": true,
+          "ref": "tk-u5w3ey",
+          "taskRowHasRef": true,
+          "refShapeOk": true
+        }
+      ]
+    },
+    {
+      "name": "t-xxxx 参数形态仍被接受",
+      "ok": true,
+      "detail": {
+        "ids": [
+          "t-d31c42e2",
+          "t-65a23997",
+          "t-5c20566f",
+          "t-3b55b5cc",
+          "t-4ae4e9b6",
+          "t-4d735fca",
+          "t-c8ef2ab1",
+          "t-83222651"
+        ]
+      }
+    },
+    {
+      "name": "二次打开：任务/消息/引用数不变",
+      "ok": true,
+      "detail": {
+        "first": {
+          "tasks": 376,
+          "messages": 1102,
+          "notifications": 421,
+          "memories": 483,
+          "settings": 12,
+          "automations": 1,
+          "groups": 50,
+          "task_refs": 376
+        },
+        "second": {
+          "tasks": 376,
+          "messages": 1102,
+          "notifications": 421,
+          "memories": 483,
+          "settings": 12,
+          "automations": 1,
+          "groups": 50,
+          "task_refs": 376
+        }
+      }
+    },
+    {
+      "name": "二次打开：token/task_id/created_at 完全一致（无重复生成）",
+      "ok": true,
+      "detail": {
+        "first": 376,
+        "second": 376
+      }
+    },
+    {
+      "name": "二次打开：integrity_check = ok",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "name": "删除任务后引用置墓碑（不再可解析）",
+      "ok": true,
+      "detail": {
+        "victimId": "t-65a23997",
+        "victimRef": "tk-2atdh8",
+        "taskGone": true,
+        "refOfDeleted": null,
+        "resolveByRef": {
+          "ok": false,
+          "reason": "retired",
+          "message": "这个引用已失效（任务可能已被删除）。用 task_list 看现有任务的名称与引用。"
+        },
+        "resolveById": {
+          "ok": false,
+          "reason": "not-found",
+          "message": "找不到这个任务引用。用 task_list 看任务的名称与引用（形如 tk-7f3a2c）；要按台账内部编号查就去台账/日志里取，别从记忆里拼。"
+        },
+        "row": {
+          "retired_at": 1795325291511
+        }
+      }
+    },
+    {
+      "name": "墓碑行重开台账后不被补回、任务不复活",
+      "ok": true,
+      "detail": {
+        "refAfterReopen": {
+          "token": "tk-2atdh8",
+          "retired_at": 1795325291511
+        }
+      }
+    },
+    {
+      "name": "原库 sha256 前后一致（只读不动）",
+      "ok": true,
+      "detail": {
+        "before": {
+          "main": "5af915da83f012b730b46ab0a81dca61676b34699e09c8efb2a773b65997e619",
+          "wal": "26f1ac1f592c6a679afb3d3df6812df5a5662ba75258a7b3f4c090385f4967a6",
+          "shm": "5501e9047e2adc186fb5e37b24d98f80ece4a7d8b0c3090a17d7ad073fccae4c"
+        },
+        "after": {
+          "main": "5af915da83f012b730b46ab0a81dca61676b34699e09c8efb2a773b65997e619",
+          "wal": "26f1ac1f592c6a679afb3d3df6812df5a5662ba75258a7b3f4c090385f4967a6",
+          "shm": "5501e9047e2adc186fb5e37b24d98f80ece4a7d8b0c3090a17d7ad073fccae4c"
+        },
+        "beforeStat": {
+          "size": 4247552,
+          "mtimeMs": 1795324232515.478
+        },
+        "afterStat": {
+          "size": 4247552,
+          "mtimeMs": 1795324232515.478
+        }
+      }
+    }
+  ],
+  "pass": 29,
+  "fail": 0
+}

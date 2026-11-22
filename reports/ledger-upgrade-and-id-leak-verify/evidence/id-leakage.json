@@ -1,0 +1,759 @@
+{
+  "generatedAt": "2026-11-22T05:39:38.791Z",
+  "environment": {
+    "artifacts": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-leak-verify\\artifacts",
+    "home": "C:\\Users\\72489\\AppData\\Local\\Temp\\orch-leak-verify\\home",
+    "url": "http://127.0.0.1:54477/?token=8P3SQKoau17xPDei8tLkazjEXqjcvPJQcWu0U1GOekc"
+  },
+  "flows": [
+    {
+      "key": "LEAK_A",
+      "title": "说明文件编写（泄漏抽查 A）",
+      "finalReplyVisible": true,
+      "task": {
+        "id": "t-e709f3f1",
+        "status": "done",
+        "ref": "tk-vua57k",
+        "messages": 6,
+        "question": null
+      },
+      "taskDone": true,
+      "pageTextRealIds": [],
+      "pageTextAnyIds": []
+    },
+    {
+      "key": "LEAK_B",
+      "title": "只读核对（泄漏抽查 B）",
+      "finalReplyVisible": true,
+      "task": {
+        "id": "t-e00984c4",
+        "status": "done",
+        "ref": "tk-hpw8aj",
+        "messages": 3,
+        "question": null
+      },
+      "taskDone": true,
+      "pageTextRealIds": [],
+      "pageTextAnyIds": []
+    },
+    {
+      "key": "LEAK_C",
+      "title": "方案选择（泄漏抽查 C）",
+      "finalReplyVisible": true,
+      "task": {
+        "id": "t-2133033e",
+        "status": "done",
+        "ref": "tk-4b5duv",
+        "messages": 5,
+        "question": null
+      },
+      "taskDone": true,
+      "pageTextRealIds": [],
+      "pageTextAnyIds": []
+    },
+    {
+      "key": "LEAK_D",
+      "title": "分阶段推进（泄漏抽查 D）",
+      "finalReplyVisible": true,
+      "task": {
+        "id": "t-d9e8b4d3",
+        "status": "done",
+        "ref": "tk-r9ps6t",
+        "messages": 5,
+        "question": null
+      },
+      "taskDone": true,
+      "pageTextRealIds": [],
+      "pageTextAnyIds": []
+    }
+  ],
+  "ledger": {
+    "tasks": [
+      {
+        "id": "t-e709f3f1",
+        "title": "说明文件编写（泄漏抽查 A）",
+        "status": "done",
+        "ref": "tk-vua57k"
+      },
+      {
+        "id": "t-e00984c4",
+        "title": "只读核对（泄漏抽查 B）",
+        "status": "done",
+        "ref": "tk-hpw8aj"
+      },
+      {
+        "id": "t-2133033e",
+        "title": "方案选择（泄漏抽查 C）",
+        "status": "done",
+        "ref": "tk-4b5duv"
+      },
+      {
+        "id": "t-d9e8b4d3",
+        "title": "分阶段推进（泄漏抽查 D）",
+        "status": "done",
+        "ref": "tk-r9ps6t"
+      }
+    ],
+    "messages": 19,
+    "notifications": 9,
+    "taskRefsPresent": true
+  },
+  "leakage": {
+    "visible": {
+      "units": 47,
+      "realHits": 0,
+      "realHitUnits": 0,
+      "templateHits": 0,
+      "templateHitUnits": 0,
+      "samples": [],
+      "templateSamples": []
+    },
+    "reference": {
+      "units": 163,
+      "realHits": 0,
+      "realHitUnits": 0,
+      "templateHits": 1,
+      "templateHitUnits": 1,
+      "samples": [],
+      "templateSamples": [
+        {
+          "unit": "session.user.system-reminder",
+          "task": null,
+          "cls": "system-reminder",
+          "ids": [
+            "t-xxxx"
+          ],
+          "snippet": "<system-reminder>\nThe following information describes your current session:\n\nCurrent working directory: \"C:\\\\Users\\\\72489\\\\AppData\\\\Local\\\\Temp\\\\orch-leak-verify\\\\home\\\\state\\\\orchestrator\\\\workspace\".\n\nCurrent DSH file policy: read-only. Any available operation enforced by the DSH file sandbox cann"
+        }
+      ]
+    },
+    "detail": {
+      "coordinatorReplies": {
+        "units": 11,
+        "realHits": 0,
+        "realHitUnits": 0,
+        "templateHits": 0,
+        "templateHitUnits": 0,
+        "samples": [],
+        "templateSamples": []
+      },
+      "notifications": {
+        "units": 9,
+        "realHits": 0,
+        "realHitUnits": 0,
+        "templateHits": 0,
+        "templateHitUnits": 0,
+        "samples": [],
+        "templateSamples": []
+      },
+      "ledgerRendered": {
+        "units": 19,
+        "realHits": 0,
+        "realHitUnits": 0,
+        "templateHits": 0,
+        "templateHitUnits": 0,
+        "samples": [],
+        "templateSamples": []
+      },
+      "ledgerTaskFields": {
+        "units": 8,
+        "realHits": 0,
+        "realHitUnits": 0,
+        "templateHits": 0,
+        "templateHitUnits": 0,
+        "samples": [],
+        "templateSamples": []
+      },
+      "typedPrompts": {
+        "units": 4,
+        "realHits": 0,
+        "realHitUnits": 0,
+        "templateHits": 0,
+        "templateHitUnits": 0,
+        "samples": [],
+        "templateSamples": []
+      },
+      "systemInstructionTexts": {
+        "units": 9,
+        "realHits": 0,
+        "realHitUnits": 0,
+        "templateHits": 1,
+        "templateHitUnits": 1,
+        "samples": [],
+        "templateSamples": [
+          {
+            "unit": "session.user.system-reminder",
+            "task": null,
+            "cls": "system-reminder",
+            "ids": [
+              "t-xxxx"
+            ],
+            "snippet": "<system-reminder>\nThe following information describes your current session:\n\nCurrent working directory: \"C:\\\\Users\\\\72489\\\\AppData\\\\Local\\\\Temp\\\\orch-leak-verify\\\\home\\\\state\\\\orchestrator\\\\workspace\".\n\nCurrent DSH file policy: read-only. Any available operation enforced by the DSH file sandbox cann"
+          }
+        ]
+      },
+      "browserText": {
+        "units": 103,
+        "realHits": 0,
+        "realHitUnits": 0,
+        "templateHits": 0,
+        "templateHitUnits": 0,
+        "samples": [],
+        "templateSamples": []
+      }
+    }
+  },
+  "contextScan": {
+    "realIdOccurrences": 0,
+    "samples": [],
+    "templateOccurrences": 24,
+    "templateIds": [
+      "t-xxxx"
+    ],
+    "templateSamples": [
+      {
+        "kind": "coordinator",
+        "ids": [
+          "t-xxxx"
+        ],
+        "snippet": "<system-reminder>\nThe following information describes your current session:\n\nCurrent working directory: \"C:\\\\Users\\\\72489\\\\AppData\\\\Local\\\\Temp\\\\orch-leak-verify\\\\home\\\\state\\\\orchestrator\\\\workspace\""
+      },
+      {
+        "kind": "coordinator",
+        "ids": [
+          "t-xxxx"
+        ],
+        "snippet": "<system-reminder>\nThe following information describes your current session:\n\nCurrent working directory: \"C:\\\\Users\\\\72489\\\\AppData\\\\Local\\\\Temp\\\\orch-leak-verify\\\\home\\\\state\\\\orchestrator\\\\workspace\""
+      },
+      {
+        "kind": "coordinator",
+        "ids": [
+          "t-xxxx"
+        ],
+        "snippet": "<system-reminder>\nThe following information describes your current session:\n\nCurrent working directory: \"C:\\\\Users\\\\72489\\\\AppData\\\\Local\\\\Temp\\\\orch-leak-verify\\\\home\\\\state\\\\orchestrator\\\\workspace\""
+      }
+    ]
+  },
+  "taskIdArgForms": {
+    "tk-": 84
+  },
+  "deliveredHints": {
+    "total": 63,
+    "unique": 5,
+    "samples": [
+      {
+        "hasTaskRef": true,
+        "line": "交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-vua57k' })；一直不确认则超时自动完成。"
+      },
+      {
+        "hasTaskRef": true,
+        "line": "交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-vua57k' })；一直不确认则超时自动完成。"
+      },
+      {
+        "hasTaskRef": true,
+        "line": "交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-hpw8aj' })；一直不确认则超时自动完成。"
+      },
+      {
+        "hasTaskRef": true,
+        "line": "交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-4b5duv' })；一直不确认则超时自动完成。"
+      },
+      {
+        "hasTaskRef": true,
+        "line": "交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-r9ps6t' })；一直不确认则超时自动完成。"
+      }
+    ],
+    "withoutRef": 0
+  },
+  "replies": [
+    {
+      "at": "2026-11-22T05:36:55.410Z",
+      "text": "READY-COORDINATOR"
+    },
+    {
+      "at": "2026-11-22T05:37:01.492Z",
+      "text": "已派发：说明文件编写（泄漏抽查 A）（tk-vua57k），等它交付后我追问一句再收尾。"
+    },
+    {
+      "at": "2026-11-22T05:37:02.070Z",
+      "text": "追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。"
+    },
+    {
+      "at": "2026-11-22T05:37:03.160Z",
+      "text": "已收尾：说明文件编写（泄漏抽查 A）（tk-vua57k）已完成。"
+    },
+    {
+      "at": "2026-11-22T05:37:08.517Z",
+      "text": "已派发只读任务：只读核对（泄漏抽查 B）（tk-hpw8aj），它不会写文件。"
+    },
+    {
+      "at": "2026-11-22T05:37:08.965Z",
+      "text": "已确认收尾：只读核对（泄漏抽查 B）（tk-hpw8aj）。"
+    },
+    {
+      "at": "2026-11-22T05:37:14.357Z",
+      "text": "已派发：方案选择（泄漏抽查 C）（tk-4b5duv），等它报阻塞。"
+    },
+    {
+      "at": "2026-11-22T05:37:14.783Z",
+      "text": "已拍板方案A：方案选择（泄漏抽查 C）（tk-4b5duv）。"
+    },
+    {
+      "at": "2026-11-22T05:37:15.499Z",
+      "text": "已收尾：方案选择（泄漏抽查 C）（tk-4b5duv）。"
+    },
+    {
+      "at": "2026-11-22T05:37:20.909Z",
+      "text": "已派发：分阶段推进（泄漏抽查 D）（tk-r9ps6t），进度我会盯着。"
+    },
+    {
+      "at": "2026-11-22T05:37:33.527Z",
+      "text": "已收尾：分阶段推进（泄漏抽查 D）（tk-r9ps6t）。"
+    }
+  ],
+  "notifications": [
+    {
+      "text": "任务「说明文件编写（泄漏抽查 A）」已交付待确认：说明文件已写入 target（note-a.md）。\n  交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-vua57k' })；一直不确认则超时自动完成。\n  下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进（口径见协调者「推进循环（报告之后必须推进，不许只汇报）」）。"
+    },
+    {
+      "text": "任务「说明文件编写（泄漏抽查 A）」有新进展（回答你的追问）：追问答复：说明文件是一段普通说明文字，正在补充。\n  progress 只是进度信号、不是终态：任务还在跑，要结论就 task_message 追问同一子会话（复用已有上下文），别为此重派任务"
+    },
+    {
+      "text": "任务「说明文件编写（泄漏抽查 A）」已交付待确认：追问答复：已补充说明并再次交付。\n  交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-vua57k' })；一直不确认则超时自动完成。\n  下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进（口径见协调者「推进循环（报告之后必须推进，不许只汇报）」）。"
+    },
+    {
+      "text": "任务「只读核对（泄漏抽查 B）（只读）」已交付待确认：只读任务：已读取说明文件，未写任何文件。\n  交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-hpw8aj' })；一直不确认则超时自动完成。\n  下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进（口径见协调者「推进循环（报告之后必须推进，不许只汇报）」）。"
+    },
+    {
+      "text": "任务「方案选择（泄漏抽查 C）」需要你：需要拍板：选择实现方案。\n  问题：两个方案选哪个？\n  选项：方案A / 方案B\n  下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进（口径见协调者「推进循环（报告之后必须推进，不许只汇报）」）。"
+    },
+    {
+      "text": "任务「方案选择（泄漏抽查 C）」已交付待确认：按方案A继续：已完成。\n  交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-4b5duv' })；一直不确认则超时自动完成。\n  下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进（口径见协调者「推进循环（报告之后必须推进，不许只汇报）」）。"
+    },
+    {
+      "text": "任务「分阶段推进（泄漏抽查 D）」有新进展：进度 1/2：环境已就绪。\n  progress 只是进度信号、不是终态：任务还在跑，要结论就 task_message 追问同一子会话（复用已有上下文），别为此重派任务"
+    },
+    {
+      "text": "任务「分阶段推进（泄漏抽查 D）」有新进展：进度 2/2：正在收尾。\n  progress 只是进度信号、不是终态：任务还在跑，要结论就 task_message 追问同一子会话（复用已有上下文），别为此重派任务"
+    },
+    {
+      "text": "任务「分阶段推进（泄漏抽查 D）」已交付待确认：两次进度后交付：已完成。\n  交付确认：默认保持待确认（别急着关闭）：要改 task_message 追问原会话（复用同一个子会话，不新建任务）；用户明确说确认完成时再 task_message({ action: \"close\", task_id: 'tk-r9ps6t' })；一直不确认则超时自动完成。\n  下一步：推进 / 提问 / 宣布完成前先问新任务——只输出汇报文字不算推进（口径见协调者「推进循环（报告之后必须推进，不许只汇报）」）。"
+    }
+  ],
+  "decisions": [
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "READY-COORDINATOR"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_create",
+        "status": null,
+        "taskId": null,
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已派发：说明文件编写（泄漏抽查 A）（tk-vua57k），等它交付后我追问一句再收尾。"
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_detail",
+        "status": null,
+        "taskId": "tk-vua57k",
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "write",
+        "status": null,
+        "taskId": null,
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_report",
+        "status": "done",
+        "taskId": "tk-vua57k",
+        "summary": "说明文件已写入 target（note-a.md）。",
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": null,
+        "text": "DONE-A"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_message",
+        "status": null,
+        "taskId": "tk-vua57k",
+        "summary": null,
+        "action": "message",
+        "message": "请补一句你写入了什么，然后再次交付。"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。"
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_report",
+        "status": "progress",
+        "taskId": "tk-vua57k",
+        "summary": "追问答复：说明文件是一段普通说明文字，正在补充。",
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "追问已发出：说明文件编写（泄漏抽查 A）（tk-vua57k），等它再交付。"
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_report",
+        "status": "done",
+        "taskId": "tk-vua57k",
+        "summary": "追问答复：已补充说明并再次交付。",
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": null,
+        "text": "DONE-A"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_message",
+        "status": null,
+        "taskId": "tk-vua57k",
+        "summary": null,
+        "action": "close",
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已收尾：说明文件编写（泄漏抽查 A）（tk-vua57k）已完成。"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_create",
+        "status": null,
+        "taskId": null,
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已派发只读任务：只读核对（泄漏抽查 B）（tk-hpw8aj），它不会写文件。"
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_detail",
+        "status": null,
+        "taskId": "tk-hpw8aj",
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "read",
+        "status": null,
+        "taskId": null,
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_report",
+        "status": "done",
+        "taskId": "tk-hpw8aj",
+        "summary": "只读任务：已读取说明文件，未写任何文件。",
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": null,
+        "text": "DONE-B"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_message",
+        "status": null,
+        "taskId": "tk-hpw8aj",
+        "summary": null,
+        "action": "close",
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已确认收尾：只读核对（泄漏抽查 B）（tk-hpw8aj）。"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_create",
+        "status": null,
+        "taskId": null,
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已派发：方案选择（泄漏抽查 C）（tk-4b5duv），等它报阻塞。"
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_detail",
+        "status": null,
+        "taskId": "tk-4b5duv",
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_report",
+        "status": "blocked",
+        "taskId": "tk-4b5duv",
+        "summary": "需要拍板：选择实现方案。",
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": null,
+        "text": "WAITING-C"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_message",
+        "status": null,
+        "taskId": "tk-4b5duv",
+        "summary": null,
+        "action": "message",
+        "message": "按方案A继续。"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已拍板方案A：方案选择（泄漏抽查 C）（tk-4b5duv）。"
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_report",
+        "status": "done",
+        "taskId": "tk-4b5duv",
+        "summary": "按方案A继续：已完成。",
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": null,
+        "text": "WAITING-C"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_message",
+        "status": null,
+        "taskId": "tk-4b5duv",
+        "summary": null,
+        "action": "close",
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已收尾：方案选择（泄漏抽查 C）（tk-4b5duv）。"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_create",
+        "status": null,
+        "taskId": null,
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已派发：分阶段推进（泄漏抽查 D）（tk-r9ps6t），进度我会盯着。"
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_detail",
+        "status": null,
+        "taskId": "tk-r9ps6t",
+        "summary": null,
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_report",
+        "status": "progress",
+        "taskId": "tk-r9ps6t",
+        "summary": "进度 1/2：环境已就绪。",
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已派发：分阶段推进（泄漏抽查 D）（tk-r9ps6t），进度我会盯着。"
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_report",
+        "status": "progress",
+        "taskId": "tk-r9ps6t",
+        "summary": "进度 2/2：正在收尾。",
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已派发：分阶段推进（泄漏抽查 D）（tk-r9ps6t），进度我会盯着。"
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": "task_report",
+        "status": "done",
+        "taskId": "tk-r9ps6t",
+        "summary": "两次进度后交付：已完成。",
+        "action": null,
+        "message": null
+      }
+    },
+    {
+      "kind": "worker",
+      "decision": {
+        "name": null,
+        "text": "DONE-D"
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": "task_message",
+        "status": null,
+        "taskId": "tk-r9ps6t",
+        "summary": null,
+        "action": "close",
+        "message": null
+      }
+    },
+    {
+      "kind": "coordinator",
+      "decision": {
+        "name": null,
+        "text": "已收尾：分阶段推进（泄漏抽查 D）（tk-r9ps6t）。"
+      }
+    }
+  ]
+}

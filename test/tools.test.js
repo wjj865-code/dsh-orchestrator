@@ -6,6 +6,9 @@ import { openLedger, createTask, getTask, listTasks, recentMessages, transition,
 import { loadPreferences } from '../src/preferences.js'
 import { GLOBAL_PROJECT, searchMemories, projectKeyOf } from '../src/memory.js'
 import { createTools } from '../src/tools.js'
+import { createSettlementReporter } from '../src/settlement.js'
+import { createNotifier } from '../src/notify.js'
+import { DELIVERED_HINT } from '../src/copy.js'
 import { createQueue } from '../src/queue.js'
 import { captureLastMessage } from '../src/last-message.js'
 import { resolveMessageBody } from '../src/message-body.js'
@@ -844,6 +847,46 @@ test('task_report：done→待确认/blocked/needs_auth 迁移并通知，sender
     assert.equal(notifier.pushed[0].signal, signal)
     db.close()
   }
+})
+
+// 发版验证 §6.1：子会话自然结束（不自调 task_report）时由 src/settlement.js 合成 delivered 通知，
+// 这条路径曾漏带 ref，交付确认提示渲染成 `task_id: ''`。两条路径必须同口径：都带 tk- 引用且渲染一致。
+test('交付通知两条路径一致：task_report 与结算都带任务引用（tk-），close 示例不是空串', async () => {
+  const { db, notifier, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '甲' }))
+  const selfReported = listTasks(db)[0]
+  await call(tools, 'task_report', { task_id: selfReported.id, status: 'done', summary: '自报完成' }, { agent: { id: selfReported.session_id } })
+  const reportedItem = notifier.pushed.find(item => item.status === 'delivered')
+  assert.equal(getTask(db, selfReported.id).status, 'delivered')
+
+  await call(tools, 'task_create', sampleBrief({ title: '乙' }))
+  const naturallyEnded = listTasks(db).find(task => task.title === '乙')
+  const pushed = []
+  const reporter = createSettlementReporter({ db, notifier: { push: item => pushed.push(item) } })
+  const outcome = reporter.report({ taskId: naturallyEnded.id, stopReason: 'completed', output: [{ type: 'text', text: '自然结束' }] })
+  assert.equal(outcome.to, 'delivered')
+  assert.equal(pushed.length, 1)
+  const settledItem = pushed[0]
+
+  for (const [path, item, row] of [['task_report', reportedItem, selfReported], ['settlement', settledItem, naturallyEnded]]) {
+    assert.equal(item.ref, row.ref, `${path} 的 delivered 通知要带台账行上的引用`)
+    assert.match(item.ref, /^tk-[0-9a-z]{6}$/, `${path} 的 delivered 通知引用必须是 tk-xxxxxx`)
+  }
+
+  // 渲染层同口径：两条路径都给出可用的 close 示例，不退化成空串或未替换的占位符。
+  const sent = []
+  const renderer = createNotifier({ send: async text => sent.push(text), mergeWindowMs: 2 })
+  renderer.push(reportedItem)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  renderer.push(settledItem)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(sent.length, 2)
+  for (const [index, item] of [reportedItem, settledItem].entries()) {
+    assert.ok(sent[index].includes(DELIVERED_HINT.replace('<任务引用>', item.ref)), `交付确认应带 tk- 引用：${sent[index]}`)
+    assert.doesNotMatch(sent[index], /task_id: ''/)
+    assert.doesNotMatch(sent[index], /task_id: '<任务引用>'/)
+  }
+  db.close()
 })
 
 test('task_report：非本任务子会话回报被拒绝，不落库、不通知', async () => {

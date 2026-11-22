@@ -81,6 +81,11 @@ export function createSettlementReporter({
     try {
       notifier.push({
         taskId: task.id,
+        // 版本 B / 交付确认：delivered 通知的 `task_message({action:'close', task_id: …})` 要填**引用**
+        // （tk-xxxxxx），与 src/tools.js 的 task_report 路径同口径。缺了 ref 渲染层会替换成空串，
+        // 协调者只能自己回想回执里的引用——子会话自然结束（不自调 task_report）是最常见的收场路径，
+        // 这条路径漏了就等于多半交付确认都拿到 `task_id: ''`（发版验证 reports/ledger-upgrade-and-id-leak-verify §6.1）。
+        ref: task.ref,
         title: task.title,
         displayName: typeof labelFor === 'function' ? labelFor(task) : task.title,
         readOnly: task.read_only === true,
