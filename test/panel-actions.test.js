@@ -118,7 +118,7 @@ test('stop 中断子会话并标 cancelled', async () => {
   db.close()
 })
 
-test('retry 的 brief 与 task_create 同口径：任务编号 + task_detail 指引（面板重派）', async () => {
+test('retry 的 brief 与 task_create 同口径：任务引用 + task_detail 指引（面板重派）', async () => {
   const env = setup()
   const { db, actions } = await env.init()
   const old = createTask(db, {
@@ -143,10 +143,14 @@ test('retry 的 brief 与 task_create 同口径：任务编号 + task_detail 指
     {},
   )
   const lines = resolved.text.split('\n')
-  // t-4f7ce108：面板重派与 task_create 同口径——只剩新任务编号 + 详情指针（静态提示归 W1，不再内联目标）。
+  // t-4f7ce108：面板重派与 task_create 同口径——只剩新任务**引用** + 详情指针（静态提示归 W1，不再内联目标）。
+  // 版本 B：这里写 tk-，不写台账编号（子会话手里没有 id，就不会把它抄进给用户的回复）。
   assert.equal(resolved.source, 'derived')
   assert.equal(lines.length, 2)
-  assert.equal(lines[0], `【任务编号】${result.taskId}`)
+  const retried = getTask(db, result.taskId)
+  assert.match(lines[0], /^【任务引用】tk-[0-9a-z]{6}$/)
+  assert.equal(lines[0], `【任务引用】${retried.ref}`)
+  assert.doesNotMatch(resolved.text, /\bt-[0-9a-z]{8}\b/)
   assert.match(lines[1], /^【任务详情】.*task_detail/)
   assert.equal(resolved.text.includes('把目标写得很长把目标写得很长'), false)
   assert.equal(resolved.text.includes('【目标】'), false)

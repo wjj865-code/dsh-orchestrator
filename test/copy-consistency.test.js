@@ -38,8 +38,8 @@ const assertNoConflicts = (name, text) => {
 }
 
 test('brief 只引向 task_detail，不越权定义交付/关闭口径', () => {
-  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
-  assert.match(brief, /【任务编号】t-1a2b3c4d/)
+  const brief = renderBrief({ taskRef: 'tk-1a2b3c', access: 'full' })
+  assert.match(brief, /【任务引用】tk-1a2b3c/)
   assert.match(brief, /task_detail/)
   // 交付语义一律在 task_detail / 协调者 policy 里讲，brief 不该出现这些词。
   assert.doesNotMatch(brief, /task_close|delivered|已交付待确认|终态/)
@@ -110,7 +110,7 @@ test('协调者 policy：交互三闸门与 W1 同源，T1 不免确认、追加
   assert.ok(policy.includes(BLOCKER_RULE))
   assert.ok(policy.includes(CHANGE_REVIEW_FIELDS))
   assert.ok(renderWorkerPolicy().includes(BLOCKER_RULE), 'W1 的执行期上报与 L1 的堵塞项不同源')
-  assert.equal(renderBrief({ taskId: 't-1a2b3c4d' }).includes(BLOCKER_RULE), false, 'brief 不再内联堵塞项口径（归 W1）')
+  assert.equal(renderBrief({ taskRef: 'tk-1a2b3c' }).includes(BLOCKER_RULE), false, 'brief 不再内联堵塞项口径（归 W1）')
   // 判级不是免确认：T1 不提问，但不可逆最低 T2、必须拍板（正向断言保留，别被反向断言挤掉）。
   assert.match(policy, /T1 不是「不问就干」/)
   assert.match(policy, /不可逆仍必须拍板/)
@@ -371,7 +371,7 @@ test('交付文案只有一处真源：W1 / 通知 / 分层常量引用同一批
 })
 
 test('完整访问文案只有一处真源：brief 行 / 详情标签 / 详情纪律 / 创建回执同源', () => {
-  const brief = renderBrief({ taskId: 't-1', access: 'full' })
+  const brief = renderBrief({ taskRef: 'tk-test1', access: 'full' })
   assert.ok(brief.includes(ACCESS_FULL.briefLine), 'brief 的访问级别行不是 copy.js 那一份')
   const detail = renderTaskDetail({
     id: 't-1', status: 'running', access: 'full', brief: { title: 'x', goal: 'g', acceptance: ['a'], target: 'C:/work' },

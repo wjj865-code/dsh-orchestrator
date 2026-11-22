@@ -64,7 +64,7 @@
 
 | 参数 | 作用 |
 |---|---|
-| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**，流程顺序固定：①子会话只读探索 → ②`plan_save` 把计划落盘到 `reports/plans/<taskId>.md`（计划阶段唯一写入口；只有 `content`，插件原样落盘、不解析/不改写）→ ③`blocked` 只上报摘要 + **绝对路径** + question 里逐条列出的待拍板清单 → ④协调者**先**把摘要与绝对路径回给用户并 `present` 计划文档，**再**用 `ask_user_question` 请拍板（四选一「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」）；选「逐项确认」按清单**一项一问**、答完先给决策汇总再做总批准核对（「均按推荐」必须用户明确点选）→ ⑤**计划批准必须由用户拍板、协调者不得自行批准**，只有用户明确批准才 `task_message` 续派并切回可写。与 `readOnly` 互斥 |
+| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**，流程顺序固定：①子会话只读探索 → ②`plan_save` 把计划落盘到 `reports/plans/<任务名>.md`（计划阶段唯一写入口；只有 `content`，插件原样落盘、不解析/不改写；文件名=任务名，安全化与同名 `-2` 见 `src/plan-doc.js`）→ ③`blocked` 只上报摘要 + **绝对路径** + question 里逐条列出的待拍板清单 → ④协调者**先**把摘要与绝对路径回给用户并 `present` 计划文档，**再**用 `ask_user_question` 请拍板（四选一「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」）；选「逐项确认」按清单**一项一问**、答完先给决策汇总再做总批准核对（「均按推荐」必须用户明确点选）→ ⑤**计划批准必须由用户拍板、协调者不得自行批准**，只有用户明确批准才 `task_message` 续派并切回可写。与 `readOnly` 互斥 |
 | `readOnly` | 只读任务：只认显式 `true`，续派也**不会**转可写 |
 | `access: 'full'` | 这一条任务跑在 `danger-full-access`：沙箱不限制写入、`bash`/`pwsh` 解封。只接受 `'full'`，不继承、不改部署默认；与 `readOnly`/`planFirst` 互斥 |
 | `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup` | 在 `<repo>/.agents/worktrees/<taskId>` 独立检出里干活，产物在分支上、**合并由用户决定**；多活跃分支且没给基线时先返回候选让用户选 |
@@ -391,12 +391,12 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 派发给子会话的 brief 只回答「你是哪个任务、去哪读详情」，创建详情全部留在台账、由子会话用 `task_detail` 现取；静态提示改由 W1 每回合注入：
 
-- **形态**：`renderBrief({ taskId, access })` 输出两行（完整访问多一行【访问级别】）——`【任务编号】t-xxxxxxxx` + `【任务详情】先调 task_detail 读完整详情（task_id 就是上面的任务编号）。`。目标、验收、约束、背景、用户原话、工作目录/权限、经验/前置/产物都不内联；`worktree_state` 不进 brief（装依赖提示归 W1，按同一台账字段条件渲染）。
+- **形态**：`renderBrief({ taskRef, access })` 输出两行（完整访问多一行【访问级别】）——`【任务引用】tk-xxxxxx` + `【任务详情】先调 task_detail 读完整详情（task_id 就是上面的任务引用）。`（版本 B：brief 只写**引用**，不写台账内部编号）。目标、验收、约束、背景、用户原话、工作目录/权限、经验/前置/产物都不内联；`worktree_state` 不进 brief（装依赖提示归 W1，按同一台账字段条件渲染）。
 - **静态提示归 W1（per-turn policy）**：`WORKER_DETAIL_HINT`（先读 `task_detail` 的字段清单与「不要凭 brief 猜任务内容」）、`BLOCKED_HINT`（执行中要拍板 → `blocked` 上报「问题 + 选项」，协调者问用户后续派）、`CONFIRM_HINT`（`task_report` 四状态；交付把 summary 写成「结论 + 改了什么/改了哪些文件/怎么验证的」；子会话**不能**调 `ask_user_question`——平台对 `origin === 'subagent'` 抛 `DELEGATED_CALLER`；`done` 会清空 `question`/`options`；交付后协调者**不会为「任务能否关闭」提问**，任务保持「已交付待确认」、等 `deliveredTimeoutMinutes` 超时自动完成，用户要改再 `task_message` 追问）、`WORKTREE_INSTALL_HINT`（隔离任务：可以装依赖，**只安装不升级**）、`WORKER_CONTEXT_HINT`（主动读上下文）、`WORKER_MEMORY_HINT`（收尾沉淀项目经验：只写自己任务 `target_dir` 的 `note`/`lesson`/`decision`，不写 `preference`/全局/日志）。句子真源都在 `src/copy.js`，渲染在 `renderWorkerPolicy`，注入在 `index.js` 的第二条 `systemPrompt.context`。
 - **task_detail（只读）**：`src/task-detail.js` 渲染编号/标题/状态 → 目标全文 → 工作目录 + 可写/只读提示 → `【验收标准】`/`【可执行检查】`/`【约束】`/`【背景资料】`/`【用户原话】` → 编排（非默认才出现）→ `【前置任务】`（按**当前**台账现读）→ `【经验文件】<路径>（N 条）` → `【已有产物】`。实现只读台账：不写消息、不改状态/时间戳；交付/完成口径不在这里重复（归 W1）。
 - **越权拒绝**：只允许任务自己的子会话；主会话或别的子会话调用返回「读取被拒绝…主会话查任务用 task_status」，并记 `task.detail.rejected`。
 - **挂载链**：和其它 `task_*` 一样由 `index.js` 注册成 host plane 全局工具；协调者预设的 `preset-tools` 把 `task_detail` 列进 `deny`（0.26.0 起它与 `task_report` / `plan_save` 一起按「角色专属」遮在预设层），主会话看不到/调不到。
-- **重派同口径**：`retry` 用 `renderBrief({ taskId: 新任务编号 })` 重渲染，`task.brief` 快照整体复制；队列兜底也用 `renderBrief`，不再拼「【任务】标题 + 目标」。
+- **重派同口径**：`retry` 用 `renderBrief({ taskRef: 新任务引用 })` 重渲染，`task.brief` 快照整体复制；队列兜底也用 `renderBrief`，不再拼「【任务】标题 + 目标」。
 
 ## 子会话读上下文（只读 `context`）
 
@@ -480,14 +480,26 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 `planFirst:true` 的任务 = **只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**；不开 `planFirst` 的任务行为一字不改。
 
 - **进入**：`queue.pump` 从台账透传 `plan_first` 给 `dispatcher.spawn`；派发时复用 `ensureReadOnly`（压首回合窗口），再用**子 agent 作用域**的 `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 缺失只 warn（降级为只有只读沙箱）。批准前**不注册** target 可写根。
-- **计划落盘（`plan_save`）**：计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：`src/plan-doc.js` 只做纯函数——`planDocPath()` 算出 `<主会话工作区>/reports/plans/<taskId>.md`（没有 `path` 入参；编号白名单 + `relative()` 包含性校验把 `..`/绝对路径/盘符拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头，`writePlanDocument()` 只做一次 mkdir + 覆盖写。写完登记为任务产物。子会话拿到结果后只上报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**。拍板流程（版本 A）**只改提示词/文案**：`plan_save` 仍只有 `task_id` / `content`，正文原样落盘；插件不解析正文、不渲染 `## 待拍板` 段、不做文档 lint、不存待拍板元数据。待拍板问题由模型自己生成并经 `ask_user_question` 逐项提问。
+- **计划落盘（`plan_save`）**：计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：`src/plan-doc.js` 只做纯函数——`planFileName()` 由任务名生成安全文件名（NFC/控制符/非法字符/保留名/stem ≤ 60/路径 ≤ 240/同名 `-2`），`planDocPath()` 算出 `<主会话工作区>/reports/plans/<taskId>.md`（没有 `path` 入参；编号白名单 + `relative()` 包含性校验把 `..`/绝对路径/盘符拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头，`writePlanDocument()` 只做一次 mkdir + 覆盖写。写完登记为任务产物。子会话拿到结果后只上报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**。拍板流程（版本 A）**只改提示词/文案**：`plan_save` 仍只有 `task_id` / `content`，正文原样落盘；插件不解析正文、不渲染 `## 待拍板` 段、不做文档 lint、不存待拍板元数据。待拍板问题由模型自己生成并经 `ask_user_question` 逐项提问。
 - **交付顺序（0.25.0）**：先回复计划摘要 + 计划文档**绝对路径**并 `present` 该文档 → 再 `ask_user_question`（四选一 **逐项确认 / 均按推荐 / 先看计划文档 / 放弃**；「均按推荐」必须用户明确点选）→ 用户选「先看计划文档」只展示正文/路径、不推进不催 → 选「逐项确认」按清单一项一问、答完先贴决策汇总（`renderDecisionSummary`）再做总批准核对 → 只有明确「批准」才续派实现。
 - **出口**：`plan_save` 落盘 → `task_report blocked` 上报摘要 + 路径 → 用户决定 → `task_message` 续派，**不用** `exit_plan_mode`（子会话没有直接人类）。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`（插件根的 guard 是全局的，会误伤协调者）。
 - **批准闸门（人工，协调者不得自行批准）**：**计划批准必须由用户拍板**——计划任务 `blocked` 后，协调者必须把摘要 + 计划文档路径转交用户，并用 `ask_user_question` 请用户明确批准（四选一「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」；逐项确认要先逐项问完并给决策汇总，最后才总批准核对）；**协调者不得自行批准**——不得自己判断计划没问题就直接 `task_message` 续派实现，也不得把用户沉默、含糊回应当成批准。只有用户消息里明确批准才可续派（续派成功才走下面的「退出（批准）」）；用户答「调整」则把修改点原样转回同一个子会话，让它先出修订版计划（消息里写明「只修订计划、不要开始实现」）并再 `blocked` 一次，重新请用户拍板；用户没回答就保持「计划中」，协调者不续派、不代批（开工前的判级与追加调整的分档见「交互三闸门」；本段只讲计划这一条硬闸门）。
 - **调整路径的已知口径**：`task_message` 在计划中任务上本身即「批准」（投递成功 → 沙箱 `workspace-write` + `plan_state='approved'`），所以「调整」那一轮已经切回可写；约束只能落在消息措辞上（只修订计划），修订版再次 `blocked` 后仍必须由用户重新拍板——不能拿第一次的批准当实现对修订版的授权。
 - **退出（批准）**：投递成功、任务回到 `running` 后 `sandbox/mode = workspace-write` + `planMode.set(agent,false)` + 台账 `plan_state='approved'`，同时补登记 target 可写根；投递失败不碰 plan 状态。
 - **停止/终态**：释放 guard；还在 `planning` 就结束的收口成 `rejected`，已 `approved` 的保留。
-- **台账视图**：`plan_first` + `plan_state`（`none`/`planning`/`approved`/`rejected`）；面板「计划中」小标与抽屉「计划」行；非计划任务不下发任何计划字样。`planFirst` 与 `readOnly` 创建期互斥。
+- **台账视图**：`plan_first` + `plan_state`（`none`/`planning`/`approved`/`rejected`）+ `plan_path`（版本 B：已落盘的计划文档绝对路径，幂等覆写的依据）；面板「计划中」小标与抽屉「计划」行；非计划任务不下发任何计划字样。`planFirst` 与 `readOnly` 互斥。
+
+## 任务引用（tk-）：ID 出口网关（版本 B）
+
+目标：用户面与工具面不再出现台账内部编号（`t-xxxx`）。做法是**三层分治**，只有第 ② 层是硬的：
+
+1. **不喂**（结构性）：参考值统一是**任务引用**——`task_refs` 表（`token` 主键、`task_id` 唯一、`retired_at` 墓碑），`token = tk-` + 6 位（字母表去掉 `0/1/l/o/i`）。生成时机：`createTask` 与任务行**同事务**（`SAVEPOINT`）、打开台账时幂等回填（`LEFT JOIN … IS NULL`）、`getTask` 命中无 token 时懒补。删除任务置墓碑、**永不复用**。读任务行一律 `LEFT JOIN task_refs` 带出 `ref`，所以面板/回执/详情不必各自查表。brief、`task_list`、`task_status`、`task_detail`、通知、`resume` 提示、对账/看门狗摘要、面板与抽屉都只写「任务名 + 引用」。
+2. **写入前清洗**（`src/user-facing.js`）：标题、`task_report` 的 summary/question/options/产物 label、`plan_save` 正文在**落库/落盘前**把台账里**真实存在**的编号换成引用（命中记 `task.ref.sanitized`）。只认台账已知编号——不做泛化脱敏，真实文件路径（例如历史 `reports/plans/t-xxxx.md`）一个字都不改。
+3. **宿主改写（未做，版本 C）**：`llm/stream` + `tools/post-execute` 能改回复正文与工具结果，但那要 patch 宿主行为；先按本版上线实测泄漏率再定。
+
+接口不变：参数仍叫 `task_id`、仍接受台账编号；`resolveTaskInput`（`src/task-ref.js`）是**五个 `task_*` + `plan_save` 的唯一解析入口**——先按 `t-xxxx` 查台账，未命中再按 `tk-` 查引用，空值/未知值/已失效都给可读文案（不出现表名/SQL/内部列/裸编号），不支持 session id 别名、不做空参绑定。`task_create.dependsOn` 同样接受两种值并归一成台账 id 落库。
+
+白名单（**不清洗**，审计真源）：`tasks.id`、`messages`/`notifications` 的 `task_id` 列、`logs`、`handoff/*.jsonl`、官方 Team 板 id、`worktree` 路径与分支名（`orch/<taskId>`）。计划文档文件名同理不迁移：历史 `t-xxxx.md` 保持原样。
 
 ## worktree 隔离（P9）
 

@@ -8,6 +8,8 @@ import { statusesWith } from './status-facts.js'
 // 从叶子模块取（worktree-facts 不 import 任何东西）：避免 ledger → worktree-request → worktree → ledger 的环。
 import { nextWorktreeState } from './worktree-facts.js'
 import { migrateLegacyTaskDone } from './memory.js'
+// 版本 B《ID 出口网关》：引用 token 的生成/回填/墓碑（本模块只单向依赖它，它不 import 本模块）。
+import { backfillTaskRefs, ensureTaskRef, retireTaskRef } from './task-ref.js'
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -20,7 +22,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   report_expected_at INTEGER,
   goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0,
   goal_rounds INTEGER NOT NULL DEFAULT 0,
-  plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT,
+  plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT, plan_path TEXT,
   access TEXT,
   worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
   worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT,
@@ -66,7 +68,13 @@ CREATE TABLE IF NOT EXISTS automations (
   last_fired_at INTEGER, last_result TEXT,
   deleted_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_automations_ref ON automations(kind, ref_id);`
+CREATE INDEX IF NOT EXISTS idx_automations_ref ON automations(kind, ref_id);
+-- 版本 B《ID 出口网关》：任务引用 token（tk-xxxxxx）。**独立映射表**，不动 tasks.id 主键。
+-- token 是主键（撞号由主键挡）、task_id 唯一（一条任务只一个引用）、retired_at 是墓碑：
+-- 任务删除时置位、永不复用——旧引用必须失效，绝不能指向后来新建的任务。
+CREATE TABLE IF NOT EXISTS task_refs (
+  token TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, retired_at INTEGER
+);`
 
 export async function openLedger(stateDir) {
   const dbPath = join(stateDir, 'tasks.sqlite')
@@ -110,6 +118,9 @@ export async function openLedger(stateDir) {
     // P8 计划模式：旧库补两列；历史行 plan_first=0 → taskOf 归一成 false / plan_state='none'。
     if (!taskColumns.includes('plan_first')) db.exec('ALTER TABLE tasks ADD COLUMN plan_first INTEGER NOT NULL DEFAULT 0')
     if (!taskColumns.includes('plan_state')) db.exec('ALTER TABLE tasks ADD COLUMN plan_state TEXT')
+    // 版本 B：计划文档落盘路径（文件名=任务名，见 src/plan-doc.js）。NULL = 还没落过计划；
+    // 存整条绝对路径是为了「同一任务二次 plan_save 覆写原文件、不生成 -2」（幂等）。
+    if (!taskColumns.includes('plan_path')) db.exec('ALTER TABLE tasks ADD COLUMN plan_path TEXT')
     // per-task 访问级别：NULL = 沿用会话策略（默认，老库/老行都是这条），'full' = 子会话 danger-full-access。
     if (!taskColumns.includes('access')) db.exec('ALTER TABLE tasks ADD COLUMN access TEXT')
     // P9 worktree 隔离：七列（哪份检出 / 哪个分支 / 源仓库 / 基线 / 请求档位 / 谁决定的 / 当前状态）。
@@ -146,6 +157,9 @@ export async function openLedger(stateDir) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_planned ON tasks(planned_at)')
     // 组 backfill：存量 group_id 落一行元数据（name 默认等于 id），幂等、只补缺的。
     backfillGroups(db)
+    // 引用回填（版本 B）：存量任务逐条补 tk-（幂等、只补缺的；已删除任务的墓碑行不会被补）。
+    // 打开台账就做，保证「面板/回执/详情读到的任务行永远有 ref」，读取方不必各自兜底。
+    backfillTaskRefs(db)
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
     return db
@@ -265,7 +279,15 @@ const taskOf = row => row === undefined ? undefined : ({
   last_stop_reason: typeof row.last_stop_reason === 'string' && row.last_stop_reason !== '' ? row.last_stop_reason : null,
   // 工作台 v1（P11）L1：计划日（毫秒）。旧行/旧库 NULL = 未排期；0/负数当未排期。
   planned_at: Number.isFinite(row.planned_at) && row.planned_at > 0 ? row.planned_at : null,
+  // 版本 B《ID 出口网关》：**出口层唯一可读引用**（tk-xxxxxx）。由读取 SQL LEFT JOIN task_refs 带来；
+  // 旧库/未回填时是 null，读取方用 `taskRefOf` 或标签函数的兜底分支处理（不回退显示裸编号）。
+  ref: typeof row.ref === 'string' && row.ref !== '' ? row.ref : null,
+  // 版本 B：计划文档落盘路径（文件名=任务名）。NULL = 还没落过计划（幂等覆写靠它）。
+  plan_path: typeof row.plan_path === 'string' && row.plan_path !== '' ? row.plan_path : null,
 })
+
+// 读任务行一律带引用：`ref` 是出口层唯一的可读引用，读取方不需要各查一次 task_refs。
+const TASK_SELECT = 'SELECT t.*, r.token AS ref FROM tasks t LEFT JOIN task_refs r ON r.task_id = t.id'
 
 export function createTask(db, {
   brief,
@@ -299,38 +321,60 @@ export function createTask(db, {
   const team = teamTask !== null && typeof teamTask === 'object' && typeof teamTask.id === 'string' && teamTask.id !== ''
     ? { id: teamTask.id, revision: Number.isSafeInteger(teamTask.revision) && teamTask.revision >= 0 ? teamTask.revision : null }
     : null
-  db.prepare(`INSERT INTO tasks
-    (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of,
-     depends_json, group_id, write_scopes_json, priority, plan_first, plan_state, access,
-     worktree_path, worktree_branch, repo_root, worktree_base, worktree_mode, worktree_source, worktree_state,
-     goal_rounds, team_task_id, team_task_revision, created_at, updated_at, last_event_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(
-      id, String(brief.title), String(brief.goal), JSON.stringify(brief), status,
-      String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null,
-      JSON.stringify(Array.isArray(dependsOn) ? dependsOn : []), groupId ?? null,
-      JSON.stringify(Array.isArray(writeScopes) ? writeScopes : []),
-      Number.isFinite(priority) ? Math.trunc(priority) : 0,
-      plan ? 1 : 0, initialPlanState, access === 'full' ? 'full' : null,
-      wt.path ?? null, wt.branch ?? null, wt.repoRoot ?? null, wt.base ?? null,
-      wt.mode ?? null, wt.source ?? null, wt.state ?? null,
-      Number.isFinite(goalRounds) && goalRounds > 0 ? Math.trunc(goalRounds) : 0,
-      team?.id ?? null, team?.revision ?? null,
-      now, now, now,
-    )
+  // 版本 B：任务行与它的引用 token 同一个事务落库（「新建任务即有 tk-」，不留无引用的窗口）。
+  // SAVEPOINT 而不是 BEGIN：createTask 可能被将来的批量迁移包在外层事务里，嵌套 BEGIN 会直接抛。
+  db.exec('SAVEPOINT create_task')
+  try {
+    db.prepare(`INSERT INTO tasks
+      (id, title, goal, brief_json, status, coordinator_session, target_dir, read_only, retry_of,
+       depends_json, group_id, write_scopes_json, priority, plan_first, plan_state, access,
+       worktree_path, worktree_branch, repo_root, worktree_base, worktree_mode, worktree_source, worktree_state,
+       goal_rounds, team_task_id, team_task_revision, created_at, updated_at, last_event_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        id, String(brief.title), String(brief.goal), JSON.stringify(brief), status,
+        String(coordinatorSession ?? ''), targetDir ?? null, readOnly === true ? 1 : 0, retryOf ?? null,
+        JSON.stringify(Array.isArray(dependsOn) ? dependsOn : []), groupId ?? null,
+        JSON.stringify(Array.isArray(writeScopes) ? writeScopes : []),
+        Number.isFinite(priority) ? Math.trunc(priority) : 0,
+        plan ? 1 : 0, initialPlanState, access === 'full' ? 'full' : null,
+        wt.path ?? null, wt.branch ?? null, wt.repoRoot ?? null, wt.base ?? null,
+        wt.mode ?? null, wt.source ?? null, wt.state ?? null,
+        Number.isFinite(goalRounds) && goalRounds > 0 ? Math.trunc(goalRounds) : 0,
+        team?.id ?? null, team?.revision ?? null,
+        now, now, now,
+      )
+    ensureTaskRef(db, id, { now })
+    db.exec('RELEASE create_task')
+  } catch (error) {
+    try { db.exec('ROLLBACK TO create_task') } catch { /* 回滚失败保留原始错误 */ }
+    try { db.exec('RELEASE create_task') } catch { /* 同上 */ }
+    throw error
+  }
   return getTask(db, id)
 }
 
+/**
+ * 读一条任务：行上带 `ref`（tk-xxxxxx）。命中但**没有引用**时懒补（旧库/迁移遗漏/并发创建失败）。
+ *
+ * 懒补是读路径里唯一的写：`ensureTaskRef` 只在缺行时插入，已有引用零写。
+ */
 export function getTask(db, id) {
-  return taskOf(db.prepare('SELECT * FROM tasks WHERE id = ?').get(id))
+  const task = taskOf(db.prepare(`${TASK_SELECT} WHERE t.id = ?`).get(id))
+  if (task === undefined || task.ref !== null) return task
+  // 懒补失败只降级（返回无 ref 的行）——读路径不该因为「补一个引用」而整条失败，
+  // 调用方的标签函数还有 4 位短后缀兜底，下一次读取会再试。
+  let ref = null
+  try { ref = ensureTaskRef(db, task.id) } catch { ref = null }
+  return ref === null ? task : { ...task, ref }
 }
 
 /** 按子会话反查任务（回合结束后的自动产物收集用）；同一会话只可能属于一条任务。 */
 export function findTaskBySession(db, sessionId, { status } = {}) {
   if (sessionId === null || sessionId === undefined || sessionId === '') return undefined
   const row = status === undefined
-    ? db.prepare('SELECT * FROM tasks WHERE session_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1').get(String(sessionId))
-    : db.prepare('SELECT * FROM tasks WHERE session_id = ? AND status = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1').get(String(sessionId), status)
+    ? db.prepare(`${TASK_SELECT} WHERE t.session_id = ? ORDER BY t.updated_at DESC, t.rowid DESC LIMIT 1`).get(String(sessionId))
+    : db.prepare(`${TASK_SELECT} WHERE t.session_id = ? AND t.status = ? ORDER BY t.updated_at DESC, t.rowid DESC LIMIT 1`).get(String(sessionId), status)
   return taskOf(row)
 }
 
@@ -340,16 +384,16 @@ const ACTIVE_SQL = ACTIVE_STATUSES.map(status => `'${status}'`).join(',')
 
 export function listTasks(db, { active = false } = {}) {
   const sql = active
-    ? `SELECT * FROM tasks WHERE status IN (${ACTIVE_SQL}) ORDER BY created_at DESC, rowid DESC`
-    : 'SELECT * FROM tasks ORDER BY created_at DESC, rowid DESC'
+    ? `${TASK_SELECT} WHERE t.status IN (${ACTIVE_SQL}) ORDER BY t.created_at DESC, t.rowid DESC`
+    : `${TASK_SELECT} ORDER BY t.created_at DESC, t.rowid DESC`
   return db.prepare(sql).all().map(taskOf)
 }
 
 /** 终态历史：按创建时间倒序取最多 limit 条（面板快照用，避免把活跃任务挤掉）。 */
 export function listHistoryTasks(db, limit = 200) {
-  return db.prepare(`SELECT * FROM tasks
-    WHERE status NOT IN (${ACTIVE_SQL})
-    ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+  return db.prepare(`${TASK_SELECT}
+    WHERE t.status NOT IN (${ACTIVE_SQL})
+    ORDER BY t.created_at DESC, t.rowid DESC LIMIT ?`)
     .all(Math.max(0, Math.floor(limit))).map(taskOf)
 }
 
@@ -366,9 +410,9 @@ export function clearQueued(db, id) {
 
 /** 待派发队列：pending 且还没有子会话，按优先级降序、创建顺序升序。 */
 export function listPendingQueue(db) {
-  return db.prepare(`SELECT * FROM tasks
-    WHERE status = 'pending' AND session_id IS NULL
-    ORDER BY priority DESC, created_at ASC, rowid ASC`)
+  return db.prepare(`${TASK_SELECT}
+    WHERE t.status = 'pending' AND t.session_id IS NULL
+    ORDER BY t.priority DESC, t.created_at ASC, t.rowid ASC`)
     .all().map(taskOf)
 }
 
@@ -557,6 +601,17 @@ export function setPlanState(db, id, planState) {
   const now = Date.now()
   db.prepare('UPDATE tasks SET plan_state = ?, updated_at = ? WHERE id = ?')
     .run(String(planState), now, id)
+  return getTask(db, id)
+}
+
+/**
+ * 版本 B：记下计划文档的落盘路径（文件名=任务名，见 src/plan-doc.js）。
+ *
+ * 这是「同一任务二次 plan_save 覆写原文件、不生成 -2」的幂等依据；改名不迁移（旧文件保留）。
+ */
+export function setTaskPlanPath(db, id, planPath) {
+  db.prepare('UPDATE tasks SET plan_path = ?, updated_at = ? WHERE id = ?')
+    .run(String(planPath), Date.now(), id)
   return getTask(db, id)
 }
 
@@ -761,6 +816,9 @@ export function deleteTask(db, id) {
   if (task === undefined) return undefined
   const messages = Number(db.prepare('DELETE FROM messages WHERE task_id = ?').run(id).changes)
   const notifications = Number(db.prepare('DELETE FROM notifications WHERE task_id = ?').run(id).changes)
+  // 版本 B：引用置墓碑（retired_at）——**行保留**，token 永不复用，旧引用解析报「引用已失效」。
+  // 计划文档文件同样不删（用户可能还要看），只是 `plan_path` 随行删除。
+  retireTaskRef(db, id)
   db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
   return { task, deleted: { messages, notifications } }
 }

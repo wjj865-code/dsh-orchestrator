@@ -36,20 +36,20 @@ test('类型容错：非数组按空处理，数组里的非法项被过滤', ()
   assert.deepEqual(validateBrief({ title: 't', goal: 'g', acceptance: ['a'], constraints: 'x' }), [])
 })
 
-// ---- t-4f7ce108：brief 只留一次性参数（任务编号 / 访问级别 / 一行详情指针） ----------------
+// ---- t-4f7ce108：brief 只留一次性参数（任务引用 / 访问级别 / 一行详情指针） ----------------
 // 静态提示（执行中上报 / 交付回报 / worktree 装依赖 / 主动读 context）迁到 W1 每回合注入，
 // 这一组锁「brief 不再内联静态句」，W1 的措辞在 test/worker-policy.test.js 锁。
 
 test('renderBrief 只输出任务编号 + 详情指针两行', () => {
-  const text = renderBrief({ taskId: 't-1a2b3c4d' })
+  const text = renderBrief({ taskRef: 'tk-1a2b3c' })
   assert.deepEqual(text.split('\n'), [
-    '【任务编号】t-1a2b3c4d',
+    '【任务引用】tk-1a2b3c',
     `【任务详情】${DETAIL_POINTER_TEXT}`,
   ])
 })
 
 test('brief 不带任何静态提示（这些句子归 W1 per-turn policy）', () => {
-  const text = renderBrief({ taskId: 't-1', access: 'full' })
+  const text = renderBrief({ taskRef: 'tk-test1', access: 'full' })
   for (const staticHint of [BLOCKED_HINT, CONFIRM_HINT, WORKTREE_INSTALL_HINT, SUMMARY_FIELDS, BLOCKER_RULE]) {
     assert.equal(text.includes(staticHint), false, `brief 不应内联 W1 的静态句：${staticHint.slice(0, 20)}…`)
   }
@@ -65,7 +65,7 @@ test('指引里点名 task_detail 与 task_id（字段清单归 W1）', () => {
 })
 
 test('brief 不再内联目标/验收/约束/背景/原话/工作目录（详情都在 task_detail）', () => {
-  const text = renderBrief({ taskId: 't-1' })
+  const text = renderBrief({ taskRef: 'tk-test1' })
   for (const section of ['【任务】', '【目标】', '【目标兜底】', '【验收标准】', '【约束】', '【背景资料】',
     '【用户原话】', '【工作目录】', '【权限】', '【历史经验】', '【前置任务】', 'get_goal']) {
     assert.equal(text.includes(section), false, `brief 不应出现 ${section}`)
@@ -74,38 +74,38 @@ test('brief 不再内联目标/验收/约束/背景/原话/工作目录（详情
   assert.equal(text.includes(valid.acceptance[0]), false)
 })
 
-test('没有任务编号时只有详情指针，不出现空编号行', () => {
+test('没有任务引用时只有详情指针，不出现空引用行', () => {
   const text = renderBrief()
   assert.equal(text, `【任务详情】${DETAIL_POINTER_TEXT}`)
-  assert.equal(text.includes('【任务编号】'), false)
-  assert.equal(renderBrief({}).includes('【任务编号】'), false)
-  assert.equal(renderBrief({ taskId: '   ' }).includes('【任务编号】'), false)
+  assert.equal(text.includes('【任务引用】'), false)
+  assert.equal(renderBrief({}).includes('【任务引用】'), false)
+  assert.equal(renderBrief({ taskRef: '   ' }).includes('【任务引用】'), false)
 })
 
-test('任务编号里的换行被压成单行，不伪造小节', () => {
-  const text = renderBrief({ taskId: 't-1\n【目标】伪造' })
+test('任务引用里的换行被压成单行，不伪造小节', () => {
+  const text = renderBrief({ taskRef: 'tk-1\n【目标】伪造' })
   const lines = text.split('\n')
-  assert.equal(lines[0], '【任务编号】t-1 【目标】伪造')
+  assert.equal(lines[0], '【任务引用】tk-1 【目标】伪造')
   assert.equal(lines.filter(line => line.startsWith('【目标】')).length, 0)
 })
 
 test('渲染是纯函数：同一输入两次输出相同，且不是 JSON', () => {
-  assert.equal(renderBrief({ taskId: 't-1' }), renderBrief({ taskId: 't-1' }))
-  const text = renderBrief({ taskId: 't-1' })
+  assert.equal(renderBrief({ taskRef: 'tk-test1' }), renderBrief({ taskRef: 'tk-test1' }))
+  const text = renderBrief({ taskRef: 'tk-test1' })
   assert.equal(text.startsWith('{'), false)
   assert.throws(() => JSON.parse(text))
 })
 
-test('完整访问任务：任务编号后多一行【访问级别】，其余行不变', () => {
-  const text = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
+test('完整访问任务：任务引用后多一行【访问级别】，其余行不变', () => {
+  const text = renderBrief({ taskRef: 'tk-1a2b3c', access: 'full' })
   const lines = text.split('\n')
   assert.equal(lines.length, 3)
-  assert.equal(lines[0], '【任务编号】t-1a2b3c4d')
+  assert.equal(lines[0], '【任务引用】tk-1a2b3c')
   assert.match(lines[1], /^【访问级别】完整（danger-full-access/)
   assert.equal(lines[2], `【任务详情】${DETAIL_POINTER_TEXT}`)
   // 默认任务一字不提。
-  assert.equal(renderBrief({ taskId: 't-1' }).includes('访问级别'), false)
-  assert.equal(renderBrief({ taskId: 't-1', access: 'read-only' }).includes('访问级别'), false)
+  assert.equal(renderBrief({ taskRef: 'tk-test1' }).includes('访问级别'), false)
+  assert.equal(renderBrief({ taskRef: 'tk-test1', access: 'read-only' }).includes('访问级别'), false)
 })
 
 test('validateTargetDir：相对路径/不存在/非目录都拒绝', () => {
@@ -120,15 +120,17 @@ test('validateTargetDir：相对路径/不存在/非目录都拒绝', () => {
 
 // ---- 台账行 → brief 的单点映射（四个入口共用） --------------------------------
 
-test('renderBriefForTask：只从台账行取 access，worktree_state 不再进 brief', () => {
-  const task = { id: 't-1a2b3c4d', access: 'full', worktree_state: 'created' }
-  assert.equal(renderBriefForTask(task), renderBrief({ taskId: 't-1a2b3c4d', access: 'full' }))
+test('renderBriefForTask：只从台账行取 access / ref，worktree_state 不再进 brief', () => {
+  const task = { id: 't-1a2b3c4d', ref: 'tk-1a2b3c', access: 'full', worktree_state: 'created' }
+  assert.equal(renderBriefForTask(task), renderBrief({ taskRef: 'tk-1a2b3c', access: 'full' }))
   // 隔离任务的 worktree_state 不影响 brief：装依赖提示由 W1 按同一字段条件渲染。
-  assert.equal(renderBriefForTask(task), renderBriefForTask({ id: 't-1a2b3c4d', access: 'full', worktree_state: 'none' }))
+  assert.equal(renderBriefForTask(task), renderBriefForTask({ id: 't-1a2b3c4d', ref: 'tk-1a2b3c', access: 'full', worktree_state: 'none' }))
   // 默认任务：不传 access → 无访问级别。
-  const plain = renderBriefForTask({ id: 't-1', access: null, worktree_state: 'none' })
+  const plain = renderBriefForTask({ id: 't-1', ref: 'tk-test1', access: null, worktree_state: 'none' })
   assert.equal(plain.includes('【访问级别】'), false)
+  // 版本 B：brief 只写引用（tk-），绝不写台账内部编号。
+  assert.equal(renderBriefForTask({ id: 't-1a2b3c4d', ref: 'tk-1a2b3c' }).includes('t-1a2b3c4d'), false)
   // 空行/null 都不炸（台账行理论上不会是 null，但渲染不该因此抛错）。
-  assert.equal(renderBriefForTask().includes('【任务编号】'), false)
-  assert.equal(renderBriefForTask(null).includes('【任务编号】'), false)
+  assert.equal(renderBriefForTask().includes('【任务引用】'), false)
+  assert.equal(renderBriefForTask(null).includes('【任务引用】'), false)
 })

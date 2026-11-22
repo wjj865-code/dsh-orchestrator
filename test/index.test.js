@@ -223,7 +223,7 @@ test('task_detail 走全局注册：主会话越权被拒，任务自己的子�
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   assert.ok(byName.task_detail, 'task_detail 应注册在 host plane（子会话继承全局工具）')
   const created = await byName.task_create.execute({ title: '详情', goal: '完整目标', acceptance: ['a'] }, { agent: coordinator })
-  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const taskId = created.match(/（(tk-[0-9a-z]{6})）/)[1]
   const denied = await byName.task_detail.execute({ task_id: taskId }, { agent: coordinator })
   assert.match(denied, /读取被拒绝/)
   assert.match(denied, /主会话查任务用 task_status/)
@@ -241,23 +241,25 @@ test('P2-3 交接事件：交付写 task.handoff.delivered、确认写 task.hand
   await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   const created = await byName.task_create.execute({ title: '交接', goal: '目标', acceptance: ['a'] }, { agent: coordinator })
-  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  // 版本 B：回执给的是**引用**（tk-），台账/handoff 事件里仍是裸编号（审计白名单，见 §8）。
+  const ref = created.match(/（(tk-[0-9a-z]{6})）/)[1]
   const readEvents = () => {
     const dir = join(home, 'state', 'orchestrator', 'handoff')
     const files = readdirSync(dir).filter(name => name.endsWith('.jsonl'))
     return files.flatMap(name => readFileSync(join(dir, name), 'utf8').split('\n').filter(line => line !== '').map(line => JSON.parse(line)))
   }
 
-  const receipt = await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '结论：完成' }, { agent: { id: 'm-1' } })
+  const receipt = await byName.task_report.execute({ task_id: ref, status: 'done', summary: '结论：完成' }, { agent: { id: 'm-1' } })
   assert.match(receipt, /待确认/)
   const delivered = readEvents()
   assert.deepEqual(delivered.map(line => line.event), ['task.handoff.delivered'])
-  assert.equal(delivered[0].taskId, taskId)
+  const taskId = delivered[0].taskId
+  assert.match(taskId, /^t-[0-9a-f]{8}$/, 'handoff 事件保留台账编号（审计用）')
   assert.equal(delivered[0].detail.contract, 1)
   assert.equal(delivered[0].detail.handoff.acceptedBy, null)
   assert.equal(delivered[0].detail.handoff.status, 'delivered')
 
-  const closed = await byName.task_message.execute({ task_id: taskId, action: 'close' }, { agent: coordinator })
+  const closed = await byName.task_message.execute({ task_id: ref, action: 'close' }, { agent: coordinator })
   assert.match(closed, /已确认完成/)
   const events = readEvents()
   assert.deepEqual(events.map(line => line.event), ['task.handoff.delivered', 'task.handoff.confirmed'])
@@ -265,7 +267,7 @@ test('P2-3 交接事件：交付写 task.handoff.delivered、确认写 task.hand
   assert.equal(events[1].detail.handoff.status, 'done')
   assert.ok(Number.isFinite(events[1].detail.handoff.acceptedAt))
   // 重复确认不再写第二条事件（幂等）。
-  await byName.task_message.execute({ task_id: taskId, action: 'close' }, { agent: coordinator })
+  await byName.task_message.execute({ task_id: ref, action: 'close' }, { agent: coordinator })
   assert.equal(readEvents().length, 2)
 }))
 
@@ -381,7 +383,7 @@ test('压力提醒：有运行中任务时 open-main 不弹卡（deferred），�
   await apply(boot.ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(boot.registered.map(tool => [tool.name, tool]))
   const created = await byName.task_create.execute({ title: '在跑', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
-  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const taskId = created.match(/（(tk-[0-9a-z]{6})）/)[1]
   const open = () => postRoute(boot.routes[0].fetch, { endpoint: 'open-main' })
 
   await open()
@@ -655,7 +657,7 @@ test('首次打开启动欢迎模型轮次，正常task_create只读索引回报
   assert.match(main.injected[0].content[0].text, /介绍后立即调用 task_create/)
   const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
   const created = await byName.task_create.execute({ title: '工作区与仓库索引', goal: '索引', readOnly: true, worktree: false, acceptance: ['完整JSON'] }, { agent: main })
-  const id = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const id = created.match(/（(tk-[0-9a-z]{6})）/)[1]
   const detail = await byName.task_detail.execute({ task_id: id }, { agent: { id: 'm-1' } })
   assert.match(detail, /项目别名/)
   assert.match(detail, /workspace-index.mjs/)
@@ -793,7 +795,7 @@ test('任务子会话拿到 worker policy；协调者/无关会话/孙会话拿�
   // 派发前：子会话 id 还没进台账（fakeCtx 的 spawn 返回 m-1）→ 不注入。
   assert.equal(worker.text({ agent: { id: 'm-1' } }), '')
   const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
-  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const taskId = created.match(/（(tk-[0-9a-z]{6})）/)[1]
   // 派发被接受时 index.js 记下 id 映射：首回合即可注入（不必等台账 session_id 回写）。
   const policy = worker.text({ agent: { id: 'm-1' } })
   assert.match(policy, /## 回报与确认/)
@@ -810,7 +812,8 @@ test('任务子会话拿到 worker policy；协调者/无关会话/孙会话拿�
   // 台账真值兜底：即使没有派发映射，tasks.session_id 命中也能注入。
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))
-  db.prepare('UPDATE tasks SET session_id = ?, worktree_state = ? WHERE id = ?').run('m-2', 'created', taskId)
+  db.prepare('UPDATE tasks SET session_id = ?, worktree_state = ? WHERE id = (SELECT task_id FROM task_refs WHERE token = ?)')
+    .run('m-2', 'created', taskId)
   db.close()
   const isolated = worker.text({ agent: { id: 'm-2' } })
   assert.match(isolated, /pnpm install/, '隔离任务（台账 worktree_state=created）应给装依赖授权')
@@ -853,7 +856,7 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
   assert.match(created, /已派发/)
   const signal = new AbortController().signal
   await byName.task_report.execute(
-    { task_id: created.match(/（(t-[0-9a-f]+)）/)[1], status: 'done', summary: '完成' },
+    { task_id: created.match(/（(tk-[0-9a-z]{6})）/)[1], status: 'done', summary: '完成' },
     { agent: teammate, signal },
   )
   await wait(30)
@@ -890,7 +893,7 @@ test('回报缺少 sender：不投递，通知行记 skipped', withHome(async ho
   await apply(ctx, { coordinatorSession: 's-1' })
   const create = registered.find(tool => tool.name === 'task_create')
   const created = await create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: { id: 's-1' } })
-  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const taskId = created.match(/（(tk-[0-9a-z]{6})）/)[1]
   const report = registered.find(tool => tool.name === 'task_report')
   await report.execute({ task_id: taskId, status: 'done', summary: '完成' })
   await wait(30)
@@ -915,7 +918,7 @@ test('卸载时窗口内的 done 通知不丢行', withHome(async home => {
     await apply(ctx, { coordinatorSession: 's-1' })
     const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
     const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
-    const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+    const taskId = created.match(/（(tk-[0-9a-z]{6})）/)[1]
     await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: teammate })
     assert.equal(coordinator.injected.length, 0)
     await disposers[0]()
@@ -940,7 +943,7 @@ test('注入失败记 failed + reason，不是 skipped', withHome(async home => 
   await apply(ctx, { coordinatorSession: 's-1' })
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   const created = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
-  const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+  const taskId = created.match(/（(tk-[0-9a-z]{6})）/)[1]
   await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: teammate })
   await wait(30)
   const { DatabaseSync } = await import('node:sqlite')

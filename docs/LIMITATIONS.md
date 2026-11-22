@@ -28,7 +28,7 @@
 
 ## 子会话与检查（A1）
 
-- **brief 只有编号和指引，详情要自己取（T1）**：brief 只有 `【任务编号】` + 三条回报指引；子会话第一个动作应当是 `task_detail`。若它跳过，只能靠 `get_goal` 与自身上下文；前提是工具表里有 `task_detail`——换成自带 allow 名单的 `workerPreset` 时要把它列进 allow。
+- **brief 只有引用和指引，详情要自己取（T1）**：brief 只有 `【任务引用】`（`tk-`）+ 三条回报指引；子会话第一个动作应当是 `task_detail`。若它跳过，只能靠 `get_goal` 与自身上下文；前提是工具表里有 `task_detail`——换成自带 allow 名单的 `workerPreset` 时要把它列进 allow。
 - **子会话不能直接问用户**：`userQuestions.ask` 的 `assertLiveRoot` 对 `origin === 'subagent'` 抛 `DELEGATED_CALLER`。要拍板只能交回协调者：`blocked`/`needs_auth` 带 `question` + `options`；`done` **不支持** `question`/`options`（`clearTaskQuestion` 会把它们清空），要点必须写进 `summary`。
 - **`blocked` 上报不等于授权**：它只是把决策点交回协调者；子会话不能因为「报过 blocked」就自行推进，也不能拿它绕过推送前双审查或人工确认门禁。
 - **检查跑在宿主进程，不是沙箱**：`checks` 按宿主权限执行（命令只来自协调者的 `task_create`，子会话无法注入）。cwd 固定为任务 target / 检出目录，**不继承主会话目录**；没有 `target` 或 `readOnly` 的任务不接受 `checks`。环境差异（命令不存在、CI 专用命令）用 `skipIfMissing`，不是绕过闸门。

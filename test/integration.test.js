@@ -72,13 +72,13 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
       acceptance: ['空窗口输出明确说明', 'npm test 全绿'],
       user_verbatim: '返回 {"a":1} 不是数组',
     }, { agent: coordinator })
-    const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+    const taskId = created.match(/（(tk-[0-9a-z]{6})）/)[1]
     assert.equal(spawned.length, 1)
     assert.equal(spawned[0].team, undefined)
     assert.equal(spawned[0].provider, 'spawn')
     assert.equal(spawned[0].delivery, 'caller')
     assert.equal(spawned[0].parent, coordinator)
-    assert.match(spawned[0].prompt[0].text, new RegExp(`【任务编号】${taskId}`))
+    assert.match(spawned[0].prompt[0].text, new RegExp(`【任务引用】${taskId}`))
     assert.match(spawned[0].prompt[0].text, /task_detail/)
     assert.equal(spawned[0].prompt[0].text.includes('空窗口时报表给出明确说明'), false)
     assert.throws(() => JSON.parse(spawned[0].prompt[0].text))
@@ -101,7 +101,7 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
 
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-    const delivered = db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(taskId)
+    const delivered = db.prepare('SELECT status, title FROM tasks WHERE id = (SELECT task_id FROM task_refs WHERE token = ?)').get(taskId)
     db.close()
     // 两段式终态：回报 done = 交付待确认；协调者确认后才 done。
     assert.equal(delivered.status, 'delivered')
@@ -112,7 +112,7 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
     const closed = await byName.task_message.execute({ action: 'close', task_id: taskId }, { agent: coordinator })
     assert.match(closed, /已确认完成/)
     const confirmed = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
-    const stored = confirmed.prepare('SELECT status, title, close_reason FROM tasks WHERE id = ?').get(taskId)
+    const stored = confirmed.prepare('SELECT status, title, close_reason FROM tasks WHERE id = (SELECT task_id FROM task_refs WHERE token = ?)').get(taskId)
     confirmed.close()
     assert.equal(stored.status, 'done')
     assert.equal(stored.close_reason, 'coordinator')
@@ -175,7 +175,7 @@ test('追问后子会话先报 progress：主会话立刻收到；后续 progres
     await apply(ctx, { coordinatorSession: 's-1' })
     const byName = Object.fromEntries(tools.map(tool => [tool.name, tool]))
     const created = await byName.task_create.execute({ title: '长任务', goal: '长跑需求', acceptance: ['做完'] }, { agent: coordinator })
-    const taskId = created.match(/（(t-[0-9a-f]+)）/)[1]
+    const taskId = created.match(/（(tk-[0-9a-z]{6})）/)[1]
     // 追问：投递成功即「在等回报」。
     await byName.task_message.execute({ task_id: taskId, message: '先给部分结论，再继续跑' }, { agent: coordinator })
     assert.equal(sent.length, 1)

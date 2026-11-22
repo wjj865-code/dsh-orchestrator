@@ -187,8 +187,10 @@ test('S2 汇总通知：一次只发一条，列出本轮全部孤儿任务', as
   assert.deepEqual(calls[0].items.map(item => item.taskId).sort(), [first.id, second.id].sort())
   assert.ok(calls[0].items.every(item => item.status === 'orphaned' && item.system === true))
   assert.match(calls[0].text, /启动对账：2 个任务/)
-  assert.match(calls[0].text, /- 甲（t-/)
-  assert.match(calls[0].text, /- 乙（t-/)
+  // 版本 B：汇总只写名称 + 引用（tk-），不写裸编号。
+  assert.match(calls[0].text, /- 甲（tk-/)
+  assert.match(calls[0].text, /- 乙（tk-/)
+  assert.doesNotMatch(calls[0].text, /\bt-[0-9a-z]{8}\b/)
   assert.match(calls[0].text, /action: 'retry'/)
   assert.equal(reconciler.pendingCount(), 0)
   db.close()
@@ -235,12 +237,14 @@ test('S2 汇总被跳过时保留待发，协调者加载后补发一次、不�
 
 test('S2 汇总文案：超过上限折叠为「另有 N 个」，空列表返回 null', () => {
   assert.equal(reconcileSummary([]), null)
-  const tasks = Array.from({ length: 12 }, (_, index) => ({ id: `t-${index}`, title: `任务${index}` }))
+  const tasks = Array.from({ length: 12 }, (_, index) => ({ id: `t-${index}`, ref: `tk-00000${index % 10}`, title: `任务${index}` }))
   const text = reconcileSummary(tasks, { max: 5, labelFor: task => task.title })
   assert.match(text, /启动对账：12 个任务/)
-  assert.match(text, /- 任务0（t-0）/)
+  assert.match(text, /- 任务0（tk-000000）/)
   assert.match(text, /另有 7 个任务未列出/)
-  assert.doesNotMatch(text, /- 任务5（t-5）/)
+  assert.doesNotMatch(text, /- 任务5（tk-/)
+  // 零裸编号：摘要里不出现 t-0 / t-5 这类台账编号（引用才是出口值）。
+  assert.doesNotMatch(text, /\bt-\d+\b/)
   assert.equal(reconcileSummary(undefined), null)
 })
 

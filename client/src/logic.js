@@ -6,14 +6,20 @@
 import {
   CHIP_ACTIVE_STATUSES, CHIP_MAX, CHIP_RECENT_MS, CHIP_STATE_OF, CHIP_STATE_VIEW, STATUS_LABEL,
 } from './constants.js'
-// 面板对外只用显示名：重名才附短 id 后缀（与工具层同口径，取 t-xxx 后 4 位）。
+// 面板对外只用显示名：重名才附**任务引用**后缀（tk-xxxxxx，与工具层同口径）。
+// 版本 B《ID 出口网关》：界面上不出现 t-xxxx 这类内部编号；拿不到引用时退回 4 位短后缀
+// （不构成 t-xxxx 形态），仍能区分同名任务。
 export const shortId = id => String(id || '').replace(/^t-/, '').slice(0, 4)
+export const refSuffixOf = task => {
+  const ref = String((task && task.ref) || '').trim()
+  return ref !== '' ? ref : shortId(task && task.id)
+}
 export const displayNameOf = (task, all) => {
   const title = String((task && task.title) || '').trim()
-  if (title === '') return task && task.id ? `任务 ${task.id}` : '任务'
+  if (title === '') return '任务'
   const duplicate = all.some(other => other !== task && other.id !== task.id
     && String((other && other.title) || '').trim() === title)
-  return duplicate ? `${title}（${shortId(task.id)}）` : title
+  return duplicate ? `${title}（${refSuffixOf(task)}）` : title
 }
 export const textOf = value => typeof value === 'string' ? value.trim() : ''
 export const listOf = value => (Array.isArray(value) ? value.map(item => textOf(item)).filter(Boolean) : [])

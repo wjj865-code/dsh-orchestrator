@@ -9,10 +9,12 @@ const define = ({ http = 400, panel, tool }) => Object.freeze({ http, panel, too
 
 export const ACTION_ERRORS = Object.freeze({
   // 台账 / 任务
+  // 版本 B《ID 出口网关》：错误文案**不回声入参**——面板 toast 与工具回执都是用户面出口，
+  // 把入参里的 `t-xxxx` 拼回来等于自己泄漏（回显编号是 0.19.x 的老行为，这次一并去掉）。
   TASK_NOT_FOUND: define({
     http: 404,
-    panel: ({ taskId }) => `没有任务 ${taskId ?? ''}`,
-    tool: ({ taskId, hint = '' }) => `没有任务 ${taskId ?? ''}。${hint}`,
+    panel: () => '找不到这个任务（可能已被删除或面板数据过期），刷新面板再试。',
+    tool: ({ hint = '' }) => `找不到这个任务引用。${hint}`,
   }),
   STOP_TASK_ENDED: define({
     http: 409,

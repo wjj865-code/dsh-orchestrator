@@ -259,9 +259,10 @@ const kindLabel = result => (result?.via === 'registered' ? '已登记产物' : 
 const ownerSuffix = result => {
   const owner = result?.artifact
   if (owner === null || owner === undefined) return ''
-  const taskId = typeof owner.taskId === 'string' ? owner.taskId.trim() : ''
-  if (taskId === '') return ''
-  return `｜任务 ${taskId} 登记${owner.viaDir === undefined ? '' : '（目录产物）'}`
+  const dir = owner.viaDir === undefined ? '' : '（目录产物）'
+  // 版本 B：归属只写**任务引用**（tk-）；拿不到引用时宁可不写归属，也不回退显示裸编号。
+  const ref = typeof owner.ref === 'string' ? owner.ref.trim() : ''
+  return ref === '' ? dir : `｜任务 ${ref} 登记${dir}`
 }
 
 /** 工具结果文案：头行给路径/体积/行范围，正文原样给，截断与越界都说清怎么继续。 */

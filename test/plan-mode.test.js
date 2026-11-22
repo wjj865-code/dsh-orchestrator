@@ -54,12 +54,12 @@ test('P8 exit_plan_mode 拒绝文案指向 task_report blocked（不是 exit_pla
   assert.match(PLAN_FIRST_DETAIL, /不要调用 exit_plan_mode/)
   // 计划交付流程：先落盘（plan_save → reports/plans/<taskId>.md），再只报 3–8 行摘要 + 绝对路径 + 待拍板清单。
   assert.match(PLAN_FIRST_DETAIL, /plan_save/)
-  assert.match(PLAN_FIRST_DETAIL, /reports\/plans\/<taskId>\.md/)
+  assert.match(PLAN_FIRST_DETAIL, /reports\/plans\/<任务名>\.md/)
   assert.match(PLAN_FIRST_DETAIL, /3–8 行摘要/)
   assert.match(PLAN_FIRST_DETAIL, /待拍板问题清单/)
   assert.match(PLAN_FIRST_DETAIL, /唯一.*写入口/)
   assert.match(EXIT_PLAN_MODE_DENIAL, /plan_save/)
-  assert.match(EXIT_PLAN_MODE_DENIAL, /reports\/plans\/<taskId>\.md/)
+  assert.match(EXIT_PLAN_MODE_DENIAL, /reports\/plans\/<任务名>\.md/)
 })
 
 // —— 二、台账：两列 + 旧库补列 + 终态收口 ——

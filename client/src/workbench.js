@@ -329,7 +329,7 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
                   <div className="orch-wb-docktitle">{task.title}</div>
                   <div className="orch-card-meta">
                     {statusBadge(task.status)}
-                    <span className="orch-msg-at">{`编号 ${task.id}`}</span>
+                    <span className="orch-msg-at">{`引用 ${task.ref || '—'}`}</span>
                   </div>
                   {task.question
                     ? (

@@ -239,6 +239,7 @@ export function calendarWindow({ tasks = [], automations = [], from, to } = {}) 
     if (!Number.isFinite(task.planned_at) || task.planned_at < from || task.planned_at > to) continue
     bucket(dayKeyOf(task.planned_at)).tasks.push({
       id: task.id,
+      ref: task.ref ?? null,
       title: task.title,
       status: task.status,
       groupId: task.group_id ?? null,
@@ -542,6 +543,7 @@ export function createWorkbench({ db, schedule, mainSessionId, log = () => {}, n
         group: rollup,
         tasks: tasks.slice(0, WORKBENCH_LIMITS.groupTasks).map(task => ({
           id: task.id,
+          ref: task.ref ?? null,
           title: task.title,
           status: task.status,
           statusLabel: statusLabel(task.status),

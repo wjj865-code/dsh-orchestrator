@@ -11,11 +11,11 @@ test('建表、WAL 与幂等打开', async () => {
   const dir = tempDir()
   const db = await openLedger(dir)
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(row => row.name)
-  assert.deepEqual(tables, ['automations', 'groups_v1', 'memories', 'messages', 'notifications', 'settings', 'tasks'])
+  assert.deepEqual(tables, ['automations', 'groups_v1', 'memories', 'messages', 'notifications', 'settings', 'task_refs', 'tasks'])
   assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'wal')
   db.close()
   const again = await openLedger(dir)
-  assert.equal(again.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table'").get().n, 7)
+  assert.equal(again.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table'").get().n, 8)
   again.close()
 })
 

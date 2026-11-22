@@ -245,8 +245,10 @@ const progressHint = batch => (batch.some(isProgress) ? `\n  ${PROGRESS_NOTICE_H
 // 也会忘了 task_message 追问能复用原会话（用户随后只能新派任务）。
 // 默认口径是「保持待确认、别急着关」（0.14.x 起）：关闭要用户明确确认，或等超时。
 // 文案本体在 src/copy.js（DELIVERED_HINT），本文件只负责把它贴进通知。
+// 交付确认的动作指令：`task_id` 换成**任务的引用**（tk-xxxxxx），不把裸编号喂给协调者
+// （否则它会原样抄进给用户的回复——版本 B《ID 出口网关》的根因）。
 const deliveredBlock = item => item?.status === 'delivered'
-  ? `\n  交付确认：${DELIVERED_HINT.replace('<任务编号>', String(item.taskId ?? ''))}`
+  ? `\n  交付确认：${DELIVERED_HINT.replace('<任务引用>', String(item.ref ?? ''))}`
   : ''
 const deliveredBatchHint = batch => (batch.some(item => item.status === 'delivered')
   ? `\n  ${DELIVERED_HINT}`

@@ -225,10 +225,11 @@ test('属性：10,000 组随机任务字段渲染稳定、口径唯一（计划/
 })
 
 test('属性：计划路径文案在每处拼装里都是同一个字符串', () => {
-  for (const taskId of ['t-1a2b3c4d', 't-deadbeef', undefined]) {
-    const text = planDocPathText(taskId)
+  // 版本 B：文件名 = 任务名（占位符是 <任务名>），不再按任务编号拼。
+  for (const name of ['落盘计划', '任务 甲', undefined]) {
+    const text = planDocPathText(name)
     assert.equal(text.startsWith('主会话工作区的 reports/plans/'), true)
-    assert.equal(text.endsWith(taskId === undefined ? '<taskId>.md' : `${taskId}.md`), true)
+    assert.equal(text.endsWith(name === undefined ? '<任务名>.md' : `${name}.md`), true)
   }
   // task_detail 的计划说明与「落盘路径」用的是同一个路径口径。
   assert.ok(PLAN_FIRST_DETAIL.includes(planDocPathText()), '计划说明里的路径与 planDocPathText() 不同源')

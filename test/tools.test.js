@@ -149,8 +149,8 @@ test('task_create：正常创建、子会话 spawn、台账 running，prompt 是
   // 派发是异步队列，用的是插件自有 signal，不能复用这次工具调用的 signal（回合结束会被 abort）。
   assert.ok(spawn[3] instanceof AbortSignal)
   assert.equal(spawn[3].aborted, false)
-  // T1：提示词只有任务编号 + task_detail 指引，目标/验收/原话都不再内联。
-  assert.match(spawn[2], new RegExp(`【任务编号】${task.id}`))
+  // T1：提示词只有任务引用 + task_detail 指引，目标/验收/原话都不再内联。
+  assert.match(spawn[2], new RegExp(`【任务引用】${task.ref}`))
   assert.match(spawn[2], /task_detail/)
   assert.equal(spawn[2].includes('目标A'), false)
   // 指引里会提到「用户原话」这个字段名，但不会带正文（引用块才是内联正文）。
@@ -253,7 +253,7 @@ test('task_create：同 title+goal 的活跃任务视为重复，返回已有任
   const { db, dispatcher, tools } = await setup()
   await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '同一个活' }))
   const text = await call(tools, 'task_create', sampleBrief({ title: '甲', goal: '同一个活' }))
-  assert.match(text, /已存在任务「.*（t-[0-9a-f]+）/)
+  assert.match(text, /已存在任务「.*（tk-[0-9a-z]{6}）/)
   assert.match(text, /未重复创建/)
   assert.equal(listTasks(db).length, 1)
   assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 1)
@@ -351,11 +351,12 @@ test('task_list：31 分钟无动静带 stale 标记，29 分钟不带', async (
 test('task_status：详情、最近 3 条、不存在提示', async () => {
   const { db, tools } = await setup()
   const missing = await call(tools, 'task_status', { task_id: 't-nope' })
-  assert.match(missing, /没有任务 t-nope/)
+  assert.match(missing, /找不到这个任务引用/)
+  assert.doesNotMatch(missing, /t-nope/)
   await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   const task = listTasks(db)[0]
   const text = await call(tools, 'task_status', { task_id: task.id })
-  assert.match(text, /任务「.*（t-[0-9a-f]+）/)
+  assert.match(text, /任务「.*（tk-[0-9a-z]{6}）/)
   assert.match(text, /进行中/)
   assert.match(text, /最近消息/)
   assert.match(text, /\[brief\]/)
@@ -535,29 +536,35 @@ test('task_message：正常写 followup 并投递，attempts +1', async () => {
   db.close()
 })
 
-test('对外文案：task_create/list/status 带 id，续派/停止/回报回执零 id；重名通知带短后缀', async () => {
+test('对外文案：create/list/status 带**任务引用**（tk-），全链路零裸编号；重名后缀也是 tk-', async () => {
   const { db, dispatcher, notifier, tools } = await setup()
   const created = await call(tools, 'task_create', sampleBrief({ title: '同名', goal: '第一个' }))
-  const idA = created.match(/（(t-[0-9a-f]+)）/)[1]
-  // 创建回执保留 id（模型要马上续派/停止）
-  assert.match(created, /任务「同名（t-[0-9a-f]+）」已派发/)
-  // 同名不同 goal：允许再建，通知显示名要带短后缀
+  const refA = created.match(/（(tk-[0-9a-z]{6})）/)[1]
+  // 创建回执给的是引用（模型要拿它继续续派/停止），不是台账编号。
+  assert.match(created, /任务「同名（tk-[0-9a-z]{6}）」已派发/)
+  assert.doesNotMatch(created, /t-[0-9a-f]{8}/, '创建回执不裸露编号')
+  const idA = listTasks(db).find(task => task.ref === refA).id
+  // 同名不同 goal：允许再建，通知显示名要带引用后缀
   await call(tools, 'task_create', sampleBrief({ title: '同名', goal: '第二个' }))
   assert.equal(dispatcher.calls.filter(call => call[0] === 'spawn').length, 2)
   const list = await call(tools, 'task_list', {})
-  assert.match(list, /同名（t-[0-9a-f]+）/)
-  const status = await call(tools, 'task_status', { task_id: idA })
-  assert.match(status, /任务「同名（t-[0-9a-f]+）」/)
-  const sent = await call(tools, 'task_message', { task_id: idA, message: '继续' })
+  assert.match(list, /同名（tk-[0-9a-z]{6}）/)
+  assert.doesNotMatch(list, /t-[0-9a-f]{8}/, 'task_list 不裸露编号')
+  const status = await call(tools, 'task_status', { task_id: refA })
+  assert.match(status, /任务「同名（tk-[0-9a-z]{6}）」/)
+  assert.doesNotMatch(status, /t-[0-9a-f]{8}/, 'task_status 不裸露编号')
+  const sent = await call(tools, 'task_message', { task_id: refA, message: '继续' })
   assert.doesNotMatch(sent, /t-[0-9a-f]{8}/, '续派回执不裸露 id')
   const stoppedTask = listTasks(db).find(task => task.id !== idA)
-  const stopped = await call(tools, 'task_message', { action: 'stop', task_id: stoppedTask.id })
+  const stopped = await call(tools, 'task_message', { action: 'stop', task_id: stoppedTask.ref })
   assert.doesNotMatch(stopped, /t-[0-9a-f]{8}/, '停止回执不裸露 id')
-  // 回报通知：displayName 由 tools 用全量任务算好，带短后缀
-  const report = await call(tools, 'task_report', { task_id: idA, status: 'done', summary: '完成' }, { agent: { id: (listTasks(db).find(task => task.id === idA)).session_id } })
+  // 回报通知：displayName 由 tools 用全量任务算好，带引用后缀
+  const report = await call(tools, 'task_report', { task_id: refA, status: 'done', summary: '完成' }, { agent: { id: listTasks(db).find(task => task.id === idA).session_id } })
   assert.doesNotMatch(report, /t-[0-9a-f]{8}/, '回报回执不裸露 id')
   const shown = notifier.pushed.at(-1)
-  assert.match(shown.displayName, /^同名（[0-9a-f]{4}）$/)
+  assert.match(shown.displayName, /^同名（tk-[0-9a-z]{6}）$/)
+  // 交付通知的动作指令里，`task_id` 也是引用（协调者照抄就能用）。
+  assert.equal(shown.ref, refA)
   db.close()
 })
 
@@ -624,7 +631,7 @@ test('task_message：续派把 target_dir 传给 sendReliable（续派前补注�
 test('task_message：无子会话与不存在 id 给可读提示', async () => {
   const { db, dispatcher, tools } = await setup()
   const missing = await call(tools, 'task_message', { task_id: 't-nope', message: 'x' })
-  assert.match(missing, /没有任务/)
+  assert.match(missing, /找不到这个任务引用/)
   const created = await call(tools, 'task_create', sampleBrief({ title: '甲' }))
   assert.match(created, /已派发/)
   const task = listTasks(db)[0]
@@ -870,7 +877,8 @@ test('task_report：非法 status 不写消息不改状态', async () => {
 test('task_report：不存在 id 提示且不写消息', async () => {
   const { db, tools } = await setup()
   const text = await call(tools, 'task_report', { task_id: 't-nope', status: 'progress', summary: 'x' })
-  assert.match(text, /没有任务 t-nope/)
+  assert.match(text, /找不到这个任务引用/)
+  assert.doesNotMatch(text, /t-nope/)
   assert.equal(db.prepare('SELECT count(*) AS n FROM messages').get().n, 0)
   db.close()
 })
@@ -986,7 +994,7 @@ test('task_create 校验 target 并落 target_dir；brief 是纯指引，工作�
   assert.equal(row.target_dir, target)
   const task = listTasks(db).find(item => item.title === '带目录')
   const brief = db.prepare("SELECT rendered FROM messages WHERE kind = 'brief' ORDER BY rowid DESC LIMIT 1").get()
-  assert.match(brief.rendered, new RegExp(`【任务编号】${task.id}`))
+  assert.match(brief.rendered, new RegExp(`【任务引用】${task.ref}`))
   assert.equal(brief.rendered.includes('【工作目录】'), false)
   const detail = await call(tools, 'task_detail', { task_id: task.id }, { agent: { id: task.session_id } })
   assert.match(detail, /工作目录：/)
@@ -1348,7 +1356,7 @@ test('T1 brief 纯指引：目标与经验都不进提示词，详情在 task_de
   // t-4f7ce108：提示词只剩编号 + 详情指针两行；静态提示（上报/交付/装依赖）归 W1 每回合注入。
   const promptLines = prompt.split('\n')
   assert.equal(promptLines.length, 2)
-  assert.equal(promptLines[0], `【任务编号】${task.id}`)
+  assert.equal(promptLines[0], `【任务引用】${task.ref}`)
   assert.match(prompt, /task_detail/)
   assert.match(promptLines[1], /^【任务详情】/)
   assert.equal(prompt.includes('【worktree 依赖】'), false)
@@ -1404,7 +1412,7 @@ test('T1 不相关经验：task_create 不为无关任务建经验指针，详�
   db.close()
 })
 
-test('T1 重派：task_message action:retry 重渲染的 brief 与 task_create 同口径（任务编号 + 指引）', async () => {
+test('T1 重派：task_message action:retry 重渲染的 brief 与 task_create 同口径（任务引用 + 指引）', async () => {
   const { db, dispatcher, tools } = await setup()
   const created = createTask(db, { brief: { ...sampleBrief({ title: '重派目标' }), goal: longGoal }, coordinatorSession: 's-1' })
   transition(db, created.id, 'failed', { error: '子会话创建失败' })
@@ -1419,7 +1427,7 @@ test('T1 重派：task_message action:retry 重渲染的 brief 与 task_create �
   assert.equal(row.rendered.includes(longGoal), false)
   const resolved = await resolveMessageBody(retried, row, {})
   assert.equal(resolved.source, 'derived')
-  assert.equal(resolved.text.split('\n')[0], `【任务编号】${retried.id}`)
+  assert.equal(resolved.text.split('\n')[0], `【任务引用】${retried.ref}`)
   assert.match(resolved.text, /task_detail/)
   assert.equal(resolved.text.includes(longGoal), false)
   assert.equal(dispatcher.calls.some(callRow => callRow[0] === 'spawn'), true)
@@ -1690,8 +1698,8 @@ test('优先级：高优先级任务先派发', async () => {
   const prompts = dispatcher.calls.filter(callRow => callRow[0] === 'spawn').map(callRow => callRow[2])
   assert.ok(prompts.length >= 2)
   const highTask = listTasks(db).find(task => task.title === '高优先级')
-  // brief 是纯指引：用【任务编号】确认派发的是高优先级那条，而不是靠标题。
-  assert.match(prompts.at(-1), new RegExp(`【任务编号】${highTask.id}`))
+  // brief 是纯指引：用【任务引用】确认派发的是高优先级那条，而不是靠标题。
+  assert.match(prompts.at(-1), new RegExp(`【任务引用】${highTask.ref}`))
 })
 
 // 行为变更（0.16）：写域重叠默认按 sameDirGuard=require 拒绝，不再只是 advisory。
@@ -1712,7 +1720,7 @@ test('写域冲突在 sameDirGuard=off 时退回 advisory 提示；同组任务�
 test('依赖校验：不存在或已失败的前置任务不能作为依赖', async () => {
   const { db, tools } = await setup()
   const missing = await call(tools, 'task_create', { ...sampleBrief({ title: '缺前置' }), dependsOn: ['t-nope'] })
-  assert.match(missing, /前置任务不存在/)
+  assert.match(missing, /前置任务引用无效/)
   const failed = createTask(db, { brief: sampleBrief({ title: '失败前置' }), coordinatorSession: 's-1' })
   transition(db, failed.id, 'failed', { error: 'boom' })
   const rejected = await call(tools, 'task_create', { ...sampleBrief({ title: '依赖失败前置' }), dependsOn: [failed.id] })

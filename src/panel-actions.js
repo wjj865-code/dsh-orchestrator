@@ -144,6 +144,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       ok: true,
       task: {
         id: task.id,
+        // 版本 B：抽屉「引用」一栏显示 tk-；`id` 仍是动作键（不渲染）。
+        ref: task.ref ?? null,
         title: task.title,
         goal: task.goal,
         status: task.status,

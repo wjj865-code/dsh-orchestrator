@@ -27,7 +27,7 @@
 // │ W1 │ `ctx.systemPrompt`      │ 每回合重渲染    │ 任务子会话的**回报与确认**：先读详情、执行中   │
 // │    │ `.context().text`       │ （仅任务子会话）│ 上报、交付口径、主动读 context、装依赖授权     │
 // │    │ （index.js）            │                │ （renderWorkerPolicy，句子源 copy.js）        │
-// │ L2 │ 派发消息（brief.js）     │ 每次派发/续派    │ 只留**一次性参数**：任务编号、访问级别、       │
+// │ L2 │ 派发消息（brief.js）     │ 每次派发/续派    │ 只留**一次性参数**：任务引用、访问级别、       │
 // │    │ ＋ worker 预设 persona   │ 出生即带（静态）  │ 一行详情指针；persona 只留身份                │
 // │ L3 │ 子会话按需调用           │ 按需（可能不调）  │ 任务的**创建详情**：目标/验收/约束/背景/原话/  │
 // │    │ （task-detail.js）      │                │ 工作目录与权限/前置/经验/产物                  │
@@ -188,7 +188,7 @@ export const PROMPT_LAYERS = Object.freeze([
       '协调者的决策口径（action:close / 交付确认 / 推进循环 / 任务链 / 三闸门，属 L1）',
       '任务目标/验收/约束/背景/经验正文（属 L3）',
       'present、read_workspace 等协调者工具（属 L1）',
-      '一次性派发参数（任务编号、访问级别，属 L2）',
+      '一次性派发参数（任务引用 tk-、访问级别，属 L2）',
       '全局偏好与跨项目记忆的写入（只协调者；W1 只讲「写自己任务的项目记忆」）',
     ]),
   }),
@@ -198,7 +198,7 @@ export const PROMPT_LAYERS = Object.freeze([
     carrier: '派发消息（src/brief.js，每次派发/续派）＋ worker 预设 persona（cordis.patch.yml，出生即带的身份前缀）',
     audience: 'worker',
     owns: Object.freeze([
-      '任务编号（task_detail 的参数）',
+      '任务引用（tk-xxxxxx，task_detail 的参数；不写台账内部编号）',
       '访问级别（仅 access:full）',
       '「先调 task_detail 读详情」的一行指针（字段清单归 W1）',
       'worker persona：只说身份（你是任务执行者，在目标目录里把活干完并用 task_report 回报）',

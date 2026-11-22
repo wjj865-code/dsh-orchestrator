@@ -6,7 +6,10 @@ import { validateBrief, renderBriefForTask, validateTargetDir } from './brief.js
 import { inferWorkspaceTarget } from './workspace-match.js'
 import { INDEX_TITLE, registeredWorkspaces, loadWorkspaceIndex, saveWorkspaceIndex, workspaceIndexText } from './workspace-index.js'
 import { fileURLToPath } from 'node:url'
-import { taskLabel, taskLabelWithId } from './task-label.js'
+import { taskLabel, taskLabelWithRef } from './task-label.js'
+// 版本 B《ID 出口网关》：统一解析入口（先 t-xxxx 再 tk-）+ 写入前出口清洗。
+import { TASK_REF_UNKNOWN, resolveTaskInput, taskRefOf } from './task-ref.js'
+import { createUserFacingSanitizer } from './user-facing.js'
 import { canTransition, statusLabel } from './state.js'
 import { statusesWith } from './status-facts.js'
 import { dependencyState, promoteDependents, upstreamBrief, validateDepends } from './deps.js'
@@ -20,7 +23,7 @@ import {
   addMessage, createTask, findTaskBySession, getTask, listTasks, recentMessages, setMessageDelivery,
   setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
-  countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected,
+  countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected, setTaskPlanPath,
 } from './ledger.js'
 import {
   acceptanceFailureText, acceptancePassText, acceptanceStatusLines,
@@ -46,7 +49,7 @@ import { followupGate, stopIsIdempotent } from './panel-gates.js'
 // v0.24 resume：续跑的判定/阈值/投递文案单一来源（面板第二批与提示词都从这里取）。
 import { RESUME_HISTORY_THRESHOLD, resumeGate, resumePrompt } from './resume.js'
 import { approvePlan, approvalNote, isPlanTask, planListMarker, planStateOf, planStatusLine } from './plan-mode.js'
-import { MAX_PLAN_CHARS, isSafePlanTaskId, planSavedNote, writePlanDocument } from './plan-doc.js'
+import { MAX_PLAN_CHARS, planSavedNote, writePlanDocument } from './plan-doc.js'
 // P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
 import {
   ACCESS_FULL, CHANGE_REVIEW_FIELDS, DELIVERY_LINES, PLAN_SAVE_TOOL_DESC, TASK_CHAIN_TOOL_DESC, TASK_CHAIN_WAITING_NOTE,
@@ -125,7 +128,7 @@ function taskLine(db, task, { staleMinutes = 30 } = {}) {
     ? `${labelOf(task.status)}·只读`
     : `${labelOf(task.status)}${task.access === 'full' ? '·完整访问' : ''}`
   const parts = [
-    `- ${taskLabelWithId(task)}`,
+    `- ${taskLabelWithRef(task)}`,
     `${stateLabel}${planMarker}`,
     `子会话 ${task.target ?? '-'}`,
     `目标：${short(task.goal)}`,
@@ -159,6 +162,20 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   }
   // 对外显示名：重名短后缀要全量任务，统一用台账现查；通知的 displayName 也在这里算好。
   const labelFor = task => taskLabel(task, { all: listTasks(db) })
+  // 版本 B《ID 出口网关》：**五个 task_* 工具的唯一解析入口**（先 t-xxxx，未命中再 tk-xxxxxx）。
+  // 空值/未知值/已失效都给可读文案（不含表名/SQL/内部列名/裸编号），不做 session id 别名、不做空参绑定。
+  const findTaskInput = raw => {
+    const resolved = resolveTaskInput(db, raw)
+    if (resolved.ok !== true) return { ok: false, message: resolved.message }
+    const task = getTask(db, resolved.taskId)
+    return task === undefined ? { ok: false, message: TASK_REF_UNKNOWN } : { ok: true, task }
+  }
+  // 出口清洗（第 ② 层，硬）：标题/摘要/问题/选项/计划正文**写入前**把台账已知编号换成 tk-。
+  // 只认台账里存在的编号（不做泛化正则），命中记日志便于排查「模型从哪儿抄到的 id」。
+  const sanitizeFacing = createUserFacingSanitizer({
+    refOf: taskId => taskRefOf(db, taskId),
+    onHit: (taskId, ref) => log('task.ref.sanitized', { taskId, detail: { ref } }),
+  })
   const status = typeof coordinatorStatus === 'function'
     ? coordinatorStatus
     : () => ({ id: config?.coordinatorSession, live: true })
@@ -244,7 +261,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     return conflicts
   }
   const conflictsText = conflicts => conflicts.length === 0 ? ''
-    : `写域与活跃任务冲突：${conflicts.map(({ task, scope }) => `${taskLabelWithId(task)}（${scope}）`).join('、')}；建议拆分或串行。`
+    : `写域与活跃任务冲突：${conflicts.map(({ task, scope }) => `${taskLabelWithRef(task)}（${scope}）`).join('、')}；建议拆分或串行。`
 
 
   const baseDirOf = task => {
@@ -460,7 +477,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       .filter(task => projectKeyOf(task.target_dir) === projectKey)
       .slice(0, 5)
     if (recent.length > 0) {
-      lines.push(`【最近任务】\n${recent.map(task => `- ${taskLabelWithId(task)}｜${labelOf(task.status)}｜${short(task.goal, 60)}`).join('\n')}`)
+      lines.push(`【最近任务】\n${recent.map(task => `- ${taskLabelWithRef(task)}｜${labelOf(task.status)}｜${short(task.goal, 60)}`).join('\n')}`)
     }
     const memoryBlock = buildMemoryBlock(db, { projectKey, query, limit: 3 })
     if (memoryBlock !== '') lines.push(memoryBlock)
@@ -525,8 +542,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const denied = requireMain(exec)
     if (denied !== undefined) return denied
     if (unbound()) return UNBOUND_HINT
-    const task = getTask(db, args.task_id ?? '')
-    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+    const found = findTaskInput(args.task_id)
+    if (found.ok !== true) return found.message
+    const task = found.task
     // 与面板「追加」按钮同源（src/panel-gates.js）：终态/等前置/待派发/失败/无会话各自给可执行提示。
     const gate = followupGate(task)
     if (gate.ok !== true) {
@@ -613,8 +631,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const denied = requireMain(exec)
     if (denied !== undefined) return denied
     if (unbound()) return UNBOUND_HINT
-    const task = getTask(db, args.task_id ?? '')
-    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+    const found = findTaskInput(args.task_id)
+    if (found.ok !== true) return found.message
+    const task = found.task
     // 「已收尾」判据与面板 stop 同源（stopIsIdempotent = releases 能力）：done/failed/cancelled/orphaned
     // 都不该再迁一次。0.19.x 这里用的是不含 failed 的「流程终态」，于是对失败任务执行停止会把它
     // 改成「已取消」，抹掉失败信息（审计 §2.3.2 第 3 条）。
@@ -654,8 +673,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const denied = requireMain(exec)
     if (denied !== undefined) return denied
     if (unbound()) return UNBOUND_HINT
-    const task = getTask(db, args.task_id ?? '')
-    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id, hint: '用 task_list 查编号。' })
+    const found = findTaskInput(args.task_id)
+    if (found.ok !== true) return found.message
+    const task = found.task
     if (!RETRYABLE_STATUS.has(task.status)) {
       return toolFailure('RETRY_NOT_ALLOWED', { label: labelFor(task), statusLabel: labelOf(task.status) })
     }
@@ -663,7 +683,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       .find(item => item.title.trim() === task.title.trim() && item.goal.trim() === task.goal.trim())
     if (duplicate !== undefined) {
       return toolFailure('RETRY_DUPLICATE_ACTIVE', {
-        label: taskLabelWithId(duplicate),
+        label: taskLabelWithRef(duplicate),
         statusLabel: labelOf(duplicate.status),
       })
     }
@@ -713,7 +733,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       throw new Error(message)
     }
     if (retried.status === 'waiting_dep') {
-      return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，等待前置任务完成后派发。`
+      return `任务「${labelFor(task)}」已重派为「${taskLabelWithRef(retried)}」，等待前置任务完成后派发。`
     }
     const outcome = await queue.enqueueAndPump(retried.id)
     const resultTask = outcome.task
@@ -721,10 +741,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const hint = invalidHint()
     const notes = hint === '' ? '' : `\n${hint}`
     if (resultTask?.status === 'running') {
-      return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，子会话 ${resultTask.target}。${notes}`
+      return `任务「${labelFor(task)}」已重派为「${taskLabelWithRef(retried)}」，子会话 ${resultTask.target}。${notes}`
     }
     const ahead = Math.max(outcome.position - 1, 0)
-    return `任务「${labelFor(task)}」已重派为「${taskLabelWithId(retried)}」，前面还有 ${ahead} 个任务在排队。${notes}`
+    return `任务「${labelFor(task)}」已重派为「${taskLabelWithRef(retried)}」，前面还有 ${ahead} 个任务在排队。${notes}`
   }
 
   // 续跑（v0.24，原会话冷恢复）：resume = 同 task_id + 同一子会话（失败/额度中断/重启孤儿的默认出口）；
@@ -734,8 +754,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const denied = requireMain(exec)
     if (denied !== undefined) return denied
     if (unbound()) return UNBOUND_HINT
-    const task = getTask(db, args.task_id ?? '')
-    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id, hint: '用 task_list 查编号。' })
+    const found = findTaskInput(args.task_id)
+    if (found.ok !== true) return found.message
+    const task = found.task
     const history = countTaskMessages(db, task.id)
     const gate = resumeGate(task, { history })
     if (gate.ok !== true) {
@@ -791,8 +812,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const denied = requireMain(exec)
     if (denied !== undefined) return denied
     if (unbound()) return UNBOUND_HINT
-    const task = getTask(db, args.task_id ?? '')
-    if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+    const found = findTaskInput(args.task_id)
+    if (found.ok !== true) return found.message
+    const task = found.task
     const outcome = closeDelivered({
       db,
       taskId: task.id,
@@ -808,7 +830,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     })
     if (outcome.ok !== true) {
       const latest = outcome.task ?? task
-      if (outcome.reason === 'not-found') return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id })
+      if (outcome.reason === 'not-found') return TASK_REF_UNKNOWN
       if (TERMINAL_STATUS.has(latest.status)) {
         return toolFailure('CLOSE_TASK_ENDED', { label: labelFor(latest), statusLabel: labelOf(latest.status) })
       }
@@ -847,7 +869,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const lineOf = task => {
       const question = task.question ? `｜问题：${short(task.question, 80)}` : ''
       const options = task.options?.length > 0 ? `｜选项：${task.options.join(' / ')}` : ''
-      return `- ${taskLabelWithId(task)}｜${labelOf(task.status)}${question}${options}`
+      return `- ${taskLabelWithRef(task)}｜${labelOf(task.status)}${question}${options}`
     }
     if (waiting.length > 0) blocks.push(`【待你决定】${waiting.length}\n${waiting.map(lineOf).join('\n')}`)
     if (confirm.length > 0) {
@@ -954,7 +976,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       blocks.push(`【任务日志】最多 ${MAX_HISTORY_LOG_ROWS} 条（日志层，只归档）\n${logs.map(row => `- [${memoryKindLabel(row.kind)}] ${row.text}`).join('\n')}`)
     }
     if (tasks.length > 0) {
-      blocks.push(`【历史任务】\n${tasks.map(({ task }) => `- ${taskLabelWithId(task)}｜${labelOf(task.status)}｜${short(task.goal, 80)}${task.artifacts?.length > 0 ? `｜产物 ${task.artifacts.length}` : ''}`).join('\n')}`)
+      blocks.push(`【历史任务】\n${tasks.map(({ task }) => `- ${taskLabelWithRef(task)}｜${labelOf(task.status)}｜${short(task.goal, 80)}${task.artifacts?.length > 0 ? `｜产物 ${task.artifacts.length}` : ''}`).join('\n')}`)
     }
     if (sessions.length > 0) {
       blocks.push(`【历史会话】\n${sessions.map(item => `- ${item.id}${item.snippet === '' ? '' : `：${item.snippet}`}`).join('\n')}`)
@@ -1166,7 +1188,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       const current = status()
       // 去重、队列容量、创建必须在同一个同步段里，中间不能再 await，否则并发调用会一起通过检查。
-      const title = String(args.title).trim()
+      // 版本 B：标题是回执/面板/计划文件名/通知的公共出口——写入前把台账已知编号换成 tk-（硬清洗）。
+      const title = sanitizeFacing(String(args.title).trim())
       const goal = String(args.goal).trim()
       const depends = validateDepends(db, args.dependsOn)
       if (depends.ok === false) {
@@ -1185,7 +1208,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           agentId,
           detail: { reason: 'duplicate', existingTaskId: duplicate.id, existingStatus: duplicate.status, callId },
         })
-        return `已存在任务「${taskLabelWithId(duplicate)}」（${labelOf(duplicate.status)}），未重复创建。`
+        return `已存在任务「${taskLabelWithRef(duplicate)}」（${labelOf(duplicate.status)}），未重复创建。`
       }
       const maxQueue = config?.maxQueue ?? 50
       const queuedCount = queue?.pendingCount?.() ?? 0
@@ -1299,8 +1322,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       // JSON.stringify 会丢掉 undefined，无 target 时 brief 与旧版一致；只读/计划/完整访问/经验/验收才写入标记。
       const brief = {
         ...args,
+        // 清洗后的标题：brief_json 是 task_detail 的原文来源，不能让裸编号从这里回流出用户面。
+        title,
         // 存规范化后的 spec（command 仍是 argv 数组 + 毫秒超时），不存原始入参：快照要稳定可重放。
         checks: checks.length > 0 ? specOf(checks) : undefined,
+        // dependsOn 归一成台账 id（入参可以是 tk- 引用；brief 里存的是可执行的 id 口径）。
+        ...(depends.ids.length === 0 ? {} : { dependsOn: depends.ids }),
         target: effectiveTarget,
         ...(readOnly ? { readOnly: true } : {}),
         ...(planFirst ? { planFirst: true } : {}),
@@ -1408,7 +1435,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         : (guard.mode === 'off' ? conflictsText(writeScopeConflicts(writeScopes)) : '')
       const depNames = depends.ids.map(id => {
         const dep = getTask(db, id)
-        return dep === undefined ? id : `「${dep.title}」（${labelOf(dep.status)}）`
+        // 用户面零裸编号：找不到的前置不写 id（写「已不存在」），找到的写名称 + 引用。
+        return dep === undefined ? '已不存在的任务' : `「${taskLabelWithRef(dep)}」（${labelOf(dep.status)}）`
       }).join('、')
       const dependencyNote = depends.ids.length === 0 ? '' : `前置任务：${depNames}`
       // 完整访问在返回里明说：用户/协调者要能一眼看出这次子会话不在沙箱里跑。
@@ -1438,12 +1466,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         // 回执补一句「自动晋升、不占回合」：否则协调者看到「等待前置」就会自己盯着等，机制白搭。
         const notes = [dependencyNote, TASK_CHAIN_WAITING_NOTE, checksNote, goalRoundsNote, teamTaskNote, accessNote, conflictNote, ...pendingWorktree].filter(Boolean).join('\n')
         log('task.dep.waiting', { taskId: task.id, detail: { dependsOn: depends.ids, callId } })
-        return `任务「${taskLabelWithId(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
+        return `任务「${taskLabelWithRef(task)}」已创建，等待前置任务完成。${notes === '' ? '' : `\n${notes}`}`
       }
       const outcome = await queue.enqueueAndPump(task.id)
       const resultTask = outcome.task
       const inferredNote = inferred === undefined ? '' : `（目标目录按工作区推断：${inferred.path}）`
-      const planNote = planFirst ? planCreateReceipt(task.id) : ''
+      const planNote = planFirst ? planCreateReceipt(title) : ''
       // 派发后以台账实际状态为准（created / reused / degraded / failed），不要凭创建期的计划糊弄用户。
       const worktreeLines = worktreeNoteLines({
         state: resultTask?.worktree_state ?? worktreeRecord?.state ?? 'none',
@@ -1457,10 +1485,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         .filter(Boolean).join('\n')
       if (resultTask?.status === 'failed') throw new Error(resultTask.error ?? toolFailure('RETRY_FAILED', {}))
       if (resultTask?.status === 'running') {
-        return `任务「${taskLabelWithId(task)}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
+        return `任务「${taskLabelWithRef(task)}」已派发，子会话 ${resultTask.target}。${notes === '' ? '' : `\n${notes}`}`
       }
       const ahead = Math.max(outcome.position - 1, 0)
-      return `任务「${taskLabelWithId(task)}」已创建，前面还有 ${ahead} 个任务在排队，轮到时自动派发。${notes === '' ? '' : `\n${notes}`}`
+      return `任务「${taskLabelWithRef(task)}」已创建，前面还有 ${ahead} 个任务在排队，轮到时自动派发。${notes === '' ? '' : `\n${notes}`}`
     }),
 
     // P1-B：task_inbox 并入 task_list 的 view:'inbox'（输出逐字等价，入口从 2 个减到 1 个）。
@@ -1501,14 +1529,15 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
-      const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId: args.task_id, hint: '用 task_list 查编号。' })
+      const found = findTaskInput(args.task_id)
+      if (found.ok !== true) return found.message
+      const task = found.task
       const messages = recentMessages(db, task.id, 3)
       const recent = messages.map(row => `- [${row.kind}] ${short(row.rendered, 80)}`).join('\n')
       const planLine = planStatusLine(task)
       const worktreeLine = worktreeStatusLine(task)
       const lines = [
-        `任务「${taskLabelWithId(task)}」`,
+        `任务「${taskLabelWithRef(task)}」`,
         `状态：${labelOf(task.status)}`,
         ...(task.read_only ? ['权限：只读（读正常，写文件/写 shell 被拒绝）'] : []),
         ...(task.access === 'full' ? [`访问级别：${ACCESS_FULL.label}`] : []),
@@ -1522,7 +1551,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         ...(task.status === 'waiting_dep'
           ? [`等待前置：${task.depends_on.map(id => {
             const dep = getTask(db, id)
-            return dep === undefined ? id : `${id}（${labelOf(dep.status)}）`
+            // 版本 B：前置列表写「名称（tk-）」，不写裸编号（找不到的写「已不存在」）。
+            return dep === undefined ? '已不存在的任务' : taskLabelWithRef(dep)
           }).join('、')}`]
           : []),
         ...(task.status === 'pending'
@@ -1573,7 +1603,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (task.depends_on.length > 0 && task.status !== 'waiting_dep') {
         lines.push(`前置任务：${task.depends_on.map(id => {
           const dep = getTask(db, id)
-          return dep === undefined ? id : `「${dep.title}」（${labelOf(dep.status)}）`
+          return dep === undefined ? '已不存在的任务' : taskLabelWithRef(dep)
         }).join('、')}`)
       }
       if (task.write_scopes.length > 0) lines.push(`写域：${task.write_scopes.join('、')}`)
@@ -1581,7 +1611,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         lines.push(`问题：${task.question}`)
         if (task.options.length > 0) lines.push(`选项：${task.options.join(' / ')}`)
       }
-      if (task.retry_of) lines.push(`重派自：${task.retry_of}`)
+      // 版本 B：重派来源写**被重派那条任务的引用**（行结构不变，只换值形态）。
+      if (task.retry_of) {
+        const source = getTask(db, task.retry_of)
+        lines.push(`重派自：${source === undefined ? '已不存在的任务' : taskLabelWithRef(source)}`)
+      }
       if (task.error !== null && task.error !== undefined) lines.push(`原因：${task.error}`)
       // P6/T6.2：产物区块（错过通知时的兜底回流路径）。与通知同一口径（artifactLines 共用）：
       // 只列 present 能接住的普通文件，目录 / 符号链接 / 已不存在只计数不进清单；带交付指令。
@@ -1606,18 +1640,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     wrap('task_detail', '子会话读任务创建详情（只读）：目标全文、验收标准、约束、背景资料、用户原话、工作目录与权限、前置任务、经验文件、已有产物。只对该任务自己的子会话开放，越权调用会被拒绝。', objectSchema({
       task_id: str('任务编号（brief 的【任务编号】里给过，如 t-1a2b3c4d）'),
     }), async (args, exec) => {
-      const taskId = String(args.task_id ?? '').trim()
-      if (taskId === '') return '缺少 task_id：brief 的【任务编号】就是它（如 t-1a2b3c4d）。'
-      const task = getTask(db, taskId)
-      if (task === undefined) return toolFailure('TASK_NOT_FOUND', { taskId, hint: '确认 brief 的【任务编号】是否抄错。' })
+      const found = findTaskInput(args.task_id)
+      if (found.ok !== true) return found.message
+      const task = found.task
       const agent = exec?.agent
       const caller = agent?.id ?? agent?.session?.id
       const callerId = caller === null || caller === undefined ? undefined : String(caller)
       const ownerId = task.session_id === null || task.session_id === undefined ? undefined : String(task.session_id)
       // 越权拒绝：主会话要详情用 task_status；别的子会话读不到不是自己的任务。
       if (ownerId === undefined || callerId === undefined || callerId !== ownerId) {
-        log('task.detail.rejected', { taskId, agentId: agent?.id, detail: { caller: callerId ?? null, owner: ownerId ?? null } })
-        return `读取被拒绝：task_detail 只对任务自己的子会话开放（任务「${taskLabelWithId(task)}」属于子会话 ${task.target ?? ownerId ?? '（尚未派发）'}，当前调用方 ${callerId ?? '（未知）'}）。主会话查任务用 task_status。`
+        log('task.detail.rejected', { taskId: task.id, agentId: agent?.id, detail: { caller: callerId ?? null, owner: ownerId ?? null } })
+        return `读取被拒绝：task_detail 只对任务自己的子会话开放（任务「${taskLabelWithRef(task)}」属于子会话 ${task.target ?? ownerId ?? '（尚未派发）'}，当前调用方 ${callerId ?? '（未知）'}）。主会话查任务用 task_status。`
       }
       return renderTaskDetail(task, {
         // 前置任务/摘要按当前台账现读：依赖可能在创建之后才完成。
@@ -1665,7 +1698,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     // target 目录内，而 target 通常不在工作区里；把台账 artifacts 当第二判据，读取面仍然只有
     // 「工作区 + 已登记集合」，不必为看一眼产物新派任务，也不把整个 target 仓库暴露出来。
     wrap('read_workspace', '读产物正文：主会话工作区内的文件/目录，或任务回报过 artifacts 的已登记产物（子会话产物通常写在 target 目录内，不在工作区里）。越界、未登记、符号链接逃逸、路径穿越一律拒绝；大文件按行窗口截断并给续读 offset。', objectSchema({
-      path: str('主会话工作区内的相对路径（如 reports/t-1a2b3c4d.md、diag/）、工作区内的绝对路径，或已登记产物的绝对路径'),
+      path: str('主会话工作区内的相对路径（如 reports/plans/计划.md、diag/）、工作区内的绝对路径，或已登记产物的绝对路径'),
       offset: { type: 'number', description: '起始行号（1 起），默认 1' },
       limit: { type: 'number', description: `最多返回多少行，默认 ${DEFAULT_LINES}，上限 ${MAX_LINES}` },
     }), async (args, exec) => {
@@ -1788,7 +1821,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         : undefined
       if (taskProjectKey === undefined) {
         return rejectWorkerMemory(exec, 'worker-no-target',
-          `拒绝：任务「${taskLabelWithId(workerTask)}」没有 target 目录，写不了项目记忆（项目键必须来自任务的 target_dir）。${WORKER_MEMORY_FALLBACK}`)
+          `拒绝：任务「${taskLabelWithRef(workerTask)}」没有 target 目录，写不了项目记忆（项目键必须来自任务的 target_dir）。${WORKER_MEMORY_FALLBACK}`)
       }
       if (args.kind === 'preference') {
         return rejectWorkerMemory(exec, 'worker-preference-denied',
@@ -1854,8 +1887,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         },
       },
     }), async (args, exec) => {
-      const task = getTask(db, args.task_id ?? '')
-      if (task === undefined) return `没有任务 ${args.task_id ?? ''}，确认 task_id 是否抄错。`
+      const found = findTaskInput(args.task_id)
+      if (found.ok !== true) return found.message
+      const task = found.task
       if (!REPORT_STATUS.includes(args.status)) return `status 只能是 ${REPORT_STATUS.join(' / ')}。`
       const reporter = exec?.agent
       const reporterId = reporter?.id ?? reporter?.session?.id
@@ -1948,9 +1982,17 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           artifactsOmitted += auto.omitted + Math.max(0, unique - artifacts.length)
         }
       }
-      const question = typeof args.question === 'string' ? args.question.trim().slice(0, 500) : ''
+      // 版本 B 出口清洗（第 ② 层）：summary / question / options / 产物 label 是**用户会读到的文本**
+      // （通知正文、blocked 的 question、抽屉里的产物清单），写入前把台账已知编号换成 tk-。
+      // 产物 **path 不清洗**：那是真实文件路径（历史计划文件本来就叫 t-xxxx.md），改了就读不到。
+      artifacts = artifacts.map(item => (typeof item?.label === 'string' && item.label !== ''
+        ? { ...item, label: sanitizeFacing(item.label) }
+        : item))
+      const summaryFacing = sanitizeFacing(String(args.summary ?? ''))
+      const question = typeof args.question === 'string' ? sanitizeFacing(args.question.trim()).slice(0, 500) : ''
       const options = Array.isArray(args.options)
-        ? args.options.filter(item => typeof item === 'string' && item.trim() !== '').map(item => item.trim().slice(0, 120)).slice(0, 10)
+        ? args.options.filter(item => typeof item === 'string' && item.trim() !== '')
+          .map(item => sanitizeFacing(item.trim()).slice(0, 120)).slice(0, 10)
         : []
       if (artifacts.length > 0) {
         setTaskArtifacts(db, task.id, artifacts)
@@ -1965,7 +2007,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           },
         })
       }
-      const reportRow = compactMessage('report', renderReportText(args.status, args.summary ?? ''))
+      const reportRow = compactMessage('report', renderReportText(args.status, summaryFacing))
       addMessage(db, task.id, { kind: 'report', rendered: reportRow.rendered, meta: reportRow.meta })
       if (acceptanceNotice !== '') addMessage(db, task.id, { kind: 'acceptance', rendered: acceptanceNotice })
       // 追问必达（t-99d4a98c）：台账里「在等回报」的标记 = 这份回报就是协调者追问/续跑后等的答案。
@@ -2019,7 +2061,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           // （<repo>/.agents/worktrees/t-xxx），拿它当 project_key 会写出 8 个分裂键、项目键检索不到。
           // 归一顺序：用户给的原始 target（brief.target）→ 源仓库根（repo_root）→ 最后才退回 target_dir。
           const projectKey = projectKeyOf(next.brief?.target ?? next.repo_root ?? next.target_dir)
-          const summary = String(args.summary ?? '')
+          const summary = summaryFacing
           addMemory(db, {
             projectKey,
             kind: TASK_LOG_KIND,
@@ -2046,10 +2088,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           taskId: next.id,
           title: next.title,
           displayName,
+          // 交付通知的 `task_message({action:'close', task_id: …})` 要填引用（不填裸编号）。
+          ref: next.ref,
           readOnly: next.read_only === true,
           access: next.access === 'full' ? 'full' : null,
           status: notifyStatus,
-          summary: args.summary ?? '',
+          summary: summaryFacing,
           question: args.status === 'blocked' || args.status === 'needs_auth' ? question : null,
           options: args.status === 'blocked' || args.status === 'needs_auth' ? options : [],
           artifacts,
@@ -2078,6 +2122,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         taskId: next.id,
         sessionId: task.session_id,
         agentId: exec?.agent?.id,
+        // 台账/日志保留原始摘要（审计真源）；用户面用 summaryFacing（已清洗引用）。
         detail: { status: args.status, summary: args.summary ?? '', delivered: deliveredNow, access: next.access ?? null, answeredFollowup, callId: exec?.callId },
       })
       // 交付/终态都让出一个并发位，唤醒队列补位。可写根与 goal 要留到 done（确认/超时）再收：
@@ -2094,21 +2139,18 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }),
 
     // 计划落盘（P8 计划交付）：计划阶段是只读沙箱，这是子会话**唯一**被允许的写入口。
-    // 路径不开放参数：只认任务编号，由插件拼成「主会话工作区/reports/plans/<taskId>.md」，
-    // 编号形状白名单 + relative() 包含性校验两道闸拒绝逃逸（见 src/plan-doc.js）。
+    // 路径不开放参数：任务引用/编号 → 任务 → 文件名=**任务名**（安全化/去重/长度见 src/plan-doc.js），
+    // 目录固定「主会话工作区/reports/plans/」，文件名白名单 + relative() 包含性校验拒绝逃逸。
     // 拍板流程 vA（用户最终拍板）：工具层**不改**——只有 content，原样落盘；待拍板清单由模型自己
     // 生成并经 ask_user_question 逐项提问，插件不解析正文、不校验格式、不存元数据。
     wrap('plan_save', PLAN_SAVE_TOOL_DESC, objectSchema({
       task_id: str('任务编号，创建时给过'),
       content: str('计划正文（Markdown）：目标、步骤、要改的文件、验证方式、风险与待拍板问题'),
     }), async (args, exec) => {
-      const taskId = typeof args.task_id === 'string' ? args.task_id.trim() : ''
-      // 先校验编号形状：路径由编号拼出，形状不合法连查台账都不必，直接拒绝。
-      if (!isSafePlanTaskId(taskId)) {
-        return `计划未落盘：任务编号不合法（只允许 t-<小写字母/数字> 形式）：${taskId === '' ? '(空)' : taskId}。`
-      }
-      const task = getTask(db, taskId)
-      if (task === undefined) return `没有任务 ${taskId}，确认 task_id 是否抄错。`
+      // 版本 B：与其余 task_* 同一个解析入口（t-xxxx 或 tk-），路径不再由入参拼（防逃逸也从根上去掉了）。
+      const found = findTaskInput(args.task_id)
+      if (found.ok !== true) return `计划未落盘：${found.message}`
+      const task = found.task
       if (!isPlanTask(task)) {
         return `计划未落盘：只有计划模式（planFirst）的任务需要落盘计划；任务「${labelFor(task)}」是普通任务，直接写到自己的工作目录即可。`
       }
@@ -2119,17 +2161,21 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         && String(reporterId) !== String(task.session_id)) {
         return `计划被拒绝：任务「${labelFor(task)}」属于子会话 ${task.target ?? task.session_id}，当前调用方不是它。`
       }
-      const content = typeof args.content === 'string' ? args.content.trim() : ''
-      if (content === '') return '计划正文不能为空：把目标、步骤、要改的文件、验证方式写进 content。'
+      const raw = typeof args.content === 'string' ? args.content.trim() : ''
+      if (raw === '') return '计划正文不能为空：把目标、步骤、要改的文件、验证方式写进 content。'
+      // 出口清洗：正文会原样进 reports/plans/ 下的文档（用户直接打开的文件），写入前把台账已知编号换成 tk-。
+      const content = sanitizeFacing(raw)
       if (content.length > MAX_PLAN_CHARS) {
         return `计划正文太长（${content.length} 字，上限 ${MAX_PLAN_CHARS} 字）：请精简（步骤级即可）或拆成更小的计划。`
       }
       const mainDir = defaultDir()
       if (mainDir === undefined) return '计划未落盘：找不到主会话工作区（主会话尚未打开），请让协调者先从面板「打开主会话」。'
-      const written = await writePlanDocument({ mainDir, task, content, savedAt: Date.now() })
+      const written = await writePlanDocument({ db, mainDir, task, content, savedAt: Date.now() })
       if (written.ok !== true) return `计划未落盘：${written.error}${written.path === undefined ? '' : `（目标路径 ${written.path}）`}`
       // 登记产物：通知、task_status、面板抽屉都从台账产物里读，不需要另开一套视图。
       setTaskArtifacts(db, task.id, [{ path: written.path, label: `计划文档（${written.chars} 字）`, exists: true }])
+      // 记下落盘路径 = 幂等依据（同一任务二次 plan_save 覆写原文件，不再生成 -2）。
+      setTaskPlanPath(db, task.id, written.path)
       log('task.plan.saved', {
         taskId: task.id,
         sessionId: task.session_id,

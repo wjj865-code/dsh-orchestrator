@@ -118,6 +118,9 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
         const card = taskCard(task)
         return {
           id: task.id,
+          // 版本 B《ID 出口网关》：面板/抽屉显示的是**任务引用**（tk-）；`id` 只作为动作键
+          // （stop/message/close/delete 仍按台账 id 调），客户端不得把 id 渲染到界面上。
+          ref: task.ref ?? null,
           title: task.title,
           status: task.status,
           label: card.label,

@@ -71,9 +71,11 @@ export function idleSummary(entries, { max = WATCHDOG_SUMMARY_MAX, labelFor, idl
   const shown = list.slice(0, limit)
   const nameOf = task => {
     if (typeof labelFor === 'function') return labelFor(task)
-    return String(task.title ?? '').trim() !== '' ? String(task.title).trim() : `任务 ${task.id}`
+    return String(task.title ?? '').trim() !== '' ? String(task.title).trim() : '任务'
   }
-  const lines = shown.map(entry => `- ${nameOf(entry.task)}（${entry.task.id}，已 ${minutesOf(entry.idleMs)} 分钟无动静）`)
+  // 版本 B 出口清洗：只写名称 + 引用，不写裸编号（编号只在台账/日志里出现）。
+  const refOf = task => (typeof task.ref === 'string' && task.ref !== '' ? `（${task.ref}）` : '')
+  const lines = shown.map(entry => `- ${nameOf(entry.task)}${refOf(entry.task)}（已 ${minutesOf(entry.idleMs)} 分钟无动静）`)
   const hidden = list.length - shown.length
   const tail = hidden > 0 ? [`- 另有 ${hidden} 个任务未列出`] : []
   const minutes = positiveMinutes(idleMinutes, DEFAULT_WATCHDOG_IDLE_MINUTES)

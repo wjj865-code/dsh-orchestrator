@@ -47,8 +47,8 @@ test('load 后按创建顺序派发 pending', async () => {
   assert.equal(getTask(db, second.id).status, 'running')
   assert.deepEqual(dispatcher.calls.map(call => call.label), ['甲', '乙'])
   assert.equal(dispatcher.calls[0].name, 'slug-甲')
-  // 没有 brief 消息（直接建台账）时用 renderBrief 兜底：任务编号 + task_detail 指引。
-  assert.match(dispatcher.calls[0].prompt, new RegExp(`【任务编号】${first.id}`))
+  // 没有 brief 消息（直接建台账）时用 renderBrief 兜底：任务引用 + task_detail 指引。
+  assert.match(dispatcher.calls[0].prompt, new RegExp(`【任务引用】${first.ref}`))
   assert.match(dispatcher.calls[0].prompt, /task_detail/)
   assert.equal(dispatcher.calls[0].prompt.includes('【任务】'), false)
   db.close()

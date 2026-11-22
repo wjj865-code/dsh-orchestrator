@@ -68,7 +68,7 @@ export function deliverableOf(path) {
  * 台账 → 已登记产物索引。
  *
  * @param {Array<object>} tasks 台账任务行（用它们的 `artifacts`）
- * @returns {{files: Set<string>, dirs: string[], owners: Map<string, {taskId: string, label: string}>, missing: Set<string>}}
+ * @returns {{files: Set<string>, dirs: string[], owners: Map<string, {taskId: string, ref: string, label: string}>, missing: Set<string>}}
  *   `files`：已登记产物的真实路径（文件与目录都在内）；
  *   `dirs`：已登记目录的真实路径，用来放开子树；
  *   `owners`：真实路径 → 登记它的任务（拒绝文案与渲染头用，方便说清「这是哪条任务的产物」）；
@@ -97,7 +97,8 @@ export function registeredArtifacts(tasks = []) {
       if (real === undefined) continue
       if (!files.has(real)) {
         files.add(real)
-        owners.set(real, { taskId: String(task?.id ?? ''), label: text(item?.label) })
+        // 版本 B：带上任务引用（tk-），渲染头只显示引用，不显示裸编号（`taskId` 保留给内部匹配/日志用）。
+        owners.set(real, { taskId: String(task?.id ?? ''), ref: text(task?.ref), label: text(item?.label) })
       }
       if (stats.isDirectory() && !dirs.includes(real)) dirs.push(real)
     }
@@ -119,7 +120,7 @@ export const isRegisteredPath = (realPath, registered) => {
  *
  * @param {string} realPath 已 `realpathSync` 的路径
  * @param {{files: Set<string>, dirs: string[], owners: Map}} registered `registeredArtifacts` 的产物
- * @returns {{taskId: string, label: string, viaDir?: string} | undefined} 命中返回登记信息
+ * @returns {{taskId: string, ref: string, label: string, viaDir?: string} | undefined} 命中返回登记信息
  */
 export function registeredMatch(realPath, registered) {
   const raw = text(realPath)
@@ -129,10 +130,10 @@ export function registeredMatch(realPath, registered) {
   // 输入按真实路径归一：调用方可能给词法路径（`/var/…`），登记表里是真实路径（`/private/var/…`）。
   // 真实路径解析失败（已删除）时退回词法路径——它在登记表里本来就不该命中。
   const absolute = realPathOf(raw) ?? resolve(raw)
-  if (files.has(absolute)) return registered.owners.get(absolute) ?? { taskId: '', label: '' }
+  if (files.has(absolute)) return registered.owners.get(absolute) ?? { taskId: '', ref: '', label: '' }
   for (const dir of Array.isArray(registered.dirs) ? registered.dirs : []) {
     if (isInside(dir, absolute)) {
-      const owner = registered.owners.get(dir) ?? { taskId: '', label: '' }
+      const owner = registered.owners.get(dir) ?? { taskId: '', ref: '', label: '' }
       return { ...owner, viaDir: dir }
     }
   }

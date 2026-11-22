@@ -1,7 +1,10 @@
 // 任务依赖：只允许依赖已存在的任务；创建时把未就绪的任务放进 waiting_dep，
 // 依赖完成后再晋升为 pending 入队；依赖失败/丢失则向下游传播失败。
 import { getTask, listTasks, recentMessages, transition } from './ledger.js'
-import { taskLabelWithId } from './task-label.js'
+import { taskLabelWithRef } from './task-label.js'
+// 版本 B《ID 出口网关》：依赖既可以写台账编号，也可以写引用（tk-）——回执/brief 里给的是 tk-，
+// 协调者照着抄进 dependsOn 必须能用，否则任务链直接断掉。两种值都归一成台账 id 再落库。
+import { resolveTaskInput } from './task-ref.js'
 import { statusLabel } from './state.js'
 // P1-C 文案单源：「已交付待确认」这个状态名只在 src/copy.js 定义。
 import { DELIVERY_LINES } from './copy.js'
@@ -17,24 +20,28 @@ const short = (value, max = 100) => {
 
 /**
  * 校验 dependsOn：去重、最多 20 条、必须存在，且不能依赖已经失败/取消/丢失的任务。
+ *
+ * 每一项可以是台账编号，也可以是任务引用（tk-xxxxxx）；**归一成台账 id 再返回**（落库统一口径）。
  * @returns {{ok: true, ids: string[]} | {ok: false, error: string}}
  */
 export function validateDepends(db, values) {
   if (values === undefined || values === null) return { ok: true, ids: [] }
-  if (!Array.isArray(values)) return { ok: false, error: 'dependsOn 必须是任务编号数组' }
+  if (!Array.isArray(values)) return { ok: false, error: 'dependsOn 必须是任务引用数组（tk-xxxxxx，也接受台账编号）' }
   const ids = []
   for (const value of values) {
-    if (typeof value !== 'string') return { ok: false, error: 'dependsOn 里每一项都必须是任务编号字符串' }
-    const id = value.trim()
-    if (id === '' || ids.includes(id)) continue
-    ids.push(id)
+    if (typeof value !== 'string') return { ok: false, error: 'dependsOn 里每一项都必须是任务引用字符串（tk-xxxxxx）' }
+    const raw = value.trim()
+    if (raw === '') continue
+    const resolved = resolveTaskInput(db, raw)
+    if (resolved.ok !== true) return { ok: false, error: '前置任务引用无效：找不到这个任务，用 task_list 看任务的名称与引用' }
+    if (!ids.includes(resolved.taskId)) ids.push(resolved.taskId)
   }
   if (ids.length > MAX_DEPENDS) return { ok: false, error: `dependsOn 最多 ${MAX_DEPENDS} 个任务` }
   for (const id of ids) {
     const task = getTask(db, id)
-    if (task === undefined) return { ok: false, error: `前置任务不存在：${id}` }
+    if (task === undefined) return { ok: false, error: '前置任务引用无效：找不到这个任务，用 task_list 看任务的名称与引用' }
     if (FAILED_DEP.has(task.status)) {
-      return { ok: false, error: `前置任务「${taskLabelWithId(task)}」当前是${labelOf(task.status)}，不能作为依赖；先 task_message({ action: 'retry' }) 或新建一个可用的前置任务` }
+      return { ok: false, error: `前置任务「${taskLabelWithRef(task)}」当前是${labelOf(task.status)}，不能作为依赖；先 task_message({ action: 'retry' }) 或新建一个可用的前置任务` }
     }
   }
   return { ok: true, ids }
@@ -77,15 +84,16 @@ export function promoteDependents(db, { enqueue = () => {}, log = () => {} } = {
     for (const task of waiting) {
       const state = dependencyState(db, task)
       if (state.missing.length > 0) {
-        const reason = `前置任务不存在：${state.missing.map(item => item.id).join('、')}`
+        // 用户面零裸编号：缺前置时**不**把 id 写进原因（它还会出现在 task_status 的「原因」行）。
+        const reason = `前置任务已不存在（可能被删除）：${state.missing.length} 个`
         transition(db, task.id, 'failed', { error: reason })
         failed.push(task.id)
         changed = true
-        log('task.dep.failed', { taskId: task.id, detail: { reason } })
+        log('task.dep.failed', { taskId: task.id, detail: { reason, missing: state.missing.map(item => item.id) } })
         continue
       }
       if (state.failed.length > 0) {
-        const names = state.failed.map(dep => `「${taskLabelWithId(dep)}」（${labelOf(dep.status)}）`).join('、')
+        const names = state.failed.map(dep => `「${taskLabelWithRef(dep)}」（${labelOf(dep.status)}）`).join('、')
         const reason = `前置任务未完成：${names}`
         transition(db, task.id, 'failed', { error: reason })
         failed.push(task.id)

@@ -1001,7 +1001,7 @@ export function createViews({
           ><span className="orch-status-dot" />{mainState}</span>
         </div>
         <div className="orch-topbar-actions">
-          <label className="orch-search" title="按标题 / 编号 / 目录搜索">
+          <label className="orch-search" title="按标题 / 引用 / 目录搜索">
             <Icon name="search" size={13} />
             <input
               type="search"
@@ -1537,11 +1537,12 @@ export function createViews({
 
     const detailBody = () => {
       const task = detail.task || {}
-      // 1) 概览：编号/状态/目录/分组/优先级/写域/时间。
+      // 1) 概览：引用/状态/目录/分组/优先级/写域/时间。
       const overviewBody = (
         <div className="orch-kv">
           <KvRows rows={[
-            ['编号', task.id],
+            // 版本 B：抽屉概览显示**任务引用**（tk-xxxxxx），不显示台账内部编号。
+            ['引用', task.ref || '（未生成）'],
             ['状态', labelOf(STATUS_LABEL, task.status)],
             // delivered 两段式：交付时间与关闭原因（协调者确认 / 超时自动完成）。
             ...(task.deliveredAt ? [['交付', `${timeLabel(task.deliveredAt)}（待确认：确认交付收成已完成；追问由协调者 task_message 续派原会话）`]] : []),
@@ -1880,7 +1881,8 @@ export function createViews({
             ><Icon name="close" /></button>
           </div>
           <div className="orch-drawer-sub">
-            {detailTask === null ? null : <span>{`编号 ${detailTask.id}`}</span>}
+            {/* 版本 B：抽屉副标题显示任务引用（tk-），不显示台账内部编号。 */}
+            {detailTask === null ? null : <span>{`引用 ${detailTask.ref || '—'}`}</span>}
             {detailTask === null ? null : <span>{`更新 ${timeLabel(detailTask.updatedAt)}`}</span>}
             {detailTask !== null && detailTask.readOnly === true ? <span>{'只读任务'}</span> : null}
             {detailTask !== null && detailTask.planFirst === true

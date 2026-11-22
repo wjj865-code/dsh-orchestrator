@@ -20,7 +20,7 @@
 //
 // 本模块只做纯计算与文案，不读库、不跑 git，便于单测（台账遍历在 tools.js）。
 import { resolve, sep } from 'node:path'
-import { taskLabelWithId } from './task-label.js'
+import { taskLabelWithRef } from './task-label.js'
 import { worktreeStatesWithout } from './worktree-facts.js'
 import { statusLabel } from './state.js'
 // P1-C 文案单源：待确认≠终态、追问复用原会话的口径与通知/详情同源（src/copy.js）。
@@ -169,7 +169,7 @@ export function scopeConflicts(tasks, { scopes = [], excludeId, skipTaskIds = []
  */
 const conflictLine = ({ task, target }) => {
   const degraded = task?.worktree_state === 'degraded' ? '｜隔离已降级：目标不是 git 仓库，仍在原工作树写' : ''
-  return `- 「${taskLabelWithId(task)}」（${statusLabel(task.status)}）：${trim(target) || '目标目录未记录'}${degraded}`
+  return `- 「${taskLabelWithRef(task)}」（${statusLabel(task.status)}）：${trim(target) || '目标目录未记录'}${degraded}`
 }
 
 /** 同 target 拒绝文案：说清「为什么被拒 + 三条出路」，并照顾 delivered（待确认）场景。 */
@@ -196,7 +196,7 @@ export function scopeRejection({ scopes = [], conflicts = [] } = {}) {
   return [
     `未创建任务：写域 ${scopes.map(scope => `「${scope}」`).join('、')} 与活跃任务重叠，且双方都没有 worktree 隔离。`,
     '冲突任务与重叠路径：',
-    ...conflicts.map(({ task, scope, other }) => `- 「${taskLabelWithId(task)}」（${statusLabel(task.status)}）：重叠 ${other}（本次 ${scope}）`),
+    ...conflicts.map(({ task, scope, other }) => `- 「${taskLabelWithRef(task)}」（${statusLabel(task.status)}）：重叠 ${other}（本次 ${scope}）`),
     '三种做法（任选其一）：',
     '1. 先 task_message({ action: \'close\' }) 关闭旧任务，再重派；',
     '2. 传 worktree:true 隔离，或用 dependsOn 把两个任务串起来（串行写入）；',
@@ -216,7 +216,7 @@ export function concurrentRiskNote({ target, targetConflicts: same = [], scopeCo
   }
   if (scopes.length > 0) {
     lines.push(`${head}：写域 ${scopes.map(scope => `「${scope}」`).join('、')} 与活跃任务重叠——两个子会话可能同时改同一批文件。`)
-    lines.push(...scopes.map(({ task, scope, other }) => `- 「${taskLabelWithId(task)}」（${statusLabel(task.status)}）：重叠 ${other}（本次 ${scope}）`))
+    lines.push(...scopes.map(({ task, scope, other }) => `- 「${taskLabelWithRef(task)}」（${statusLabel(task.status)}）：重叠 ${other}（本次 ${scope}）`))
   }
   return lines.join('\n')
 }

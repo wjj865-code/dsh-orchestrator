@@ -96,8 +96,10 @@ export function reconcileSummary(tasks, { max = RECONCILE_SUMMARY_MAX, labelFor 
   const shown = list.slice(0, limit)
   const nameOf = task => typeof labelFor === 'function'
     ? labelFor(task)
-    : (String(task.title ?? '').trim() !== '' ? String(task.title).trim() : `任务 ${task.id}`)
-  const lines = shown.map(task => `- ${nameOf(task)}（${task.id}）`)
+    : (String(task.title ?? '').trim() !== '' ? String(task.title).trim() : '任务')
+  // 版本 B 出口清洗：汇总里只写名称 + 引用（tk-），不写裸编号。
+  const refOf = task => (typeof task.ref === 'string' && task.ref !== '' ? `（${task.ref}）` : '')
+  const lines = shown.map(task => `- ${nameOf(task)}${refOf(task)}`)
   const hidden = list.length - shown.length
   const tail = hidden > 0 ? [`- 另有 ${hidden} 个任务未列出`] : []
   return [

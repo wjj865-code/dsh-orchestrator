@@ -19,15 +19,19 @@ test('错误码表：code 非空、HTTP 状态合法、至少有一个通道文�
 })
 
 test('面板失败结果统一是 { ok:false, code, error }', () => {
+  // 版本 B：错误文案不回声入参（面板 toast 也是用户面出口，回显 t-xxxx 等于自己泄漏）。
   const result = panelFailure('TASK_NOT_FOUND', { taskId: 't-x' })
-  assert.deepEqual(result, { ok: false, code: 'TASK_NOT_FOUND', error: '没有任务 t-x' })
+  assert.deepEqual(result, { ok: false, code: 'TASK_NOT_FOUND', error: '找不到这个任务（可能已被删除或面板数据过期），刷新面板再试。' })
+  assert.doesNotMatch(result.error, /t-x/)
   const retry = panelFailure('RETRY_NOT_ALLOWED', { label: '甲', statusLabel: '进行中' })
   assert.equal(retry.code, 'RETRY_NOT_ALLOWED')
   assert.match(retry.error, /只有失败或会话丢失/)
 })
 
 test('工具层文案复用同一张表，保持字符串契约', () => {
-  assert.equal(toolFailure('TASK_NOT_FOUND', { taskId: 't-x', hint: '用 task_list 查编号。' }), '没有任务 t-x。用 task_list 查编号。')
+  const missing = toolFailure('TASK_NOT_FOUND', { taskId: 't-x', hint: '用 task_list 看任务的名称与引用。' })
+  assert.equal(missing, '找不到这个任务引用。用 task_list 看任务的名称与引用。')
+  assert.doesNotMatch(missing, /t-x/)
   assert.match(toolFailure('MESSAGE_WAITING_DEP', { label: '甲', depends: 't-1' }), /等待前置任务（t-1）/)
   assert.equal(toolFailure('RETRY_FAILED', { reason: 'spawn boom' }), 'spawn boom')
 })

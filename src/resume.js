@@ -36,8 +36,10 @@ export function resumeGate(task, { history = 0 } = {}) {
  * 不复述任务详情（详情在 task_detail，原文在会话历史里）。
  */
 export function resumePrompt(task, { history = 0, message = '' } = {}) {
+  // 版本 B：续跑文案里写**任务引用**（tk-），不写台账内部编号（模型会把它抄进给用户的回复）。
+  const ref = typeof task?.ref === 'string' && task.ref !== '' ? `（${task.ref}）` : ''
   const lines = [
-    `【续跑】任务「${task?.title ?? ''}」（${task?.id ?? ''}）。上一轮以「${statusLabel(task?.status)}」收尾，`
+    `【续跑】任务「${task?.title ?? ''}」${ref}。上一轮以「${statusLabel(task?.status)}」收尾，`
       + '这个子会话已冷恢复，接着这条任务继续——**不要重做已经完成的部分**。',
     task?.last_stop_reason == null ? null : `- 上次结束原因：${task.last_stop_reason}`,
     '- 先核对现状再动手：产物/改动还在不在（git status、目标文件）、上次做到哪一步（必要时调 task_detail）。',

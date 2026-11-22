@@ -166,7 +166,7 @@ test('W1 拥有执行中上报 / 交付回报 / 装依赖 / 主动读 context / 
 })
 
 test('W1 与 brief / persona / task_detail 的句子不重复（同一句只在一层）', () => {
-  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
+  const brief = renderBrief({ taskRef: 'tk-1a2b3c', access: 'full' })
   const detail = sampleDetail()
   const policy = renderWorkerPolicy({ worktreeState: 'created' })
   for (const line of Object.values(WORKER_POLICY_LINES)) {
@@ -197,9 +197,9 @@ test('L4 onboarding 瘦身：不再复述 L1 的 6 条能力边界（审计 §2.
 })
 
 test('L2 brief 只指路：不定义交付/关闭口径，不讲协调者工具，也不内联静态提示', () => {
-  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
+  const brief = renderBrief({ taskRef: 'tk-1a2b3c', access: 'full' })
   assert.deepEqual(layerViolations('L2', brief), [])
-  assert.match(brief, /【任务编号】t-1a2b3c4d/)
+  assert.match(brief, /【任务引用】tk-1a2b3c/)
   assert.match(brief, /task_detail/)
   // 协调者口径与 W1 静态口径一律不出现。
   assert.doesNotMatch(brief, /task_close|present|read_workspace|已交付待确认/)
@@ -209,7 +209,7 @@ test('L2 brief 只指路：不定义交付/关闭口径，不讲协调者工具�
 test('L2 只报送商品：堵塞项口径的渲染归 W1，brief 不复述 L1 的分级与评估', () => {
   const w1 = PROMPT_LAYERS.find(layer => layer.id === 'W1')
   assert.ok(w1.owns.some(item => item.includes('BLOCKER_RULE')), 'W1 owns 应写明堵塞项口径引用 BLOCKER_RULE')
-  const brief = renderBrief({ taskId: 't-1a2b3c4d', access: 'full' })
+  const brief = renderBrief({ taskRef: 'tk-1a2b3c', access: 'full' })
   assert.deepEqual(layerViolations('L2', brief), [])
   // 探针：把分级/评估抄进 brief 或 task_detail 就红（这是 L1 的判断，不是子会话的规则）。
   for (const leaked of ['T0 / T1 判级：简单任务不提问', 'R0 / R1 先评估再确认', '见「三闸门」的分级表']) {
@@ -219,8 +219,8 @@ test('L2 只报送商品：堵塞项口径的渲染归 W1，brief 不复述 L1 �
 })
 
 test('L2 行数：2 行基准，full 加一行；worktree 状态不再进 brief', () => {
-  const plain = renderBrief({ taskId: 't-1' }).split('\n')
-  const full = renderBrief({ taskId: 't-1', access: 'full' }).split('\n')
+  const plain = renderBrief({ taskRef: 'tk-test1' }).split('\n')
+  const full = renderBrief({ taskRef: 'tk-test1', access: 'full' }).split('\n')
   assert.equal(plain.length, 2)
   assert.equal(full.length, 3)
   assert.match(full[1], /^【访问级别】/)
@@ -271,7 +271,7 @@ test('矛盾 3 已修：文档的 brief 行数描述与实现一致（2–3 行�
   const doc = readFileSync(new URL('../docs/testing.md', import.meta.url), 'utf8')
   assert.match(doc, /2–3 行/)
   // 实现侧核对：不 full 就是 2 行。
-  assert.equal(renderBrief({ taskId: 't-1' }).split('\n').length, 2)
+  assert.equal(renderBrief({ taskRef: 'tk-test1' }).split('\n').length, 2)
 })
 
 test('跨层共享口径只有一个来源：present 上限、交付不是结束', () => {

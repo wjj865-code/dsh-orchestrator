@@ -40,7 +40,7 @@ function locationFixture() {
   return { workspace, target, secretDir }
 }
 
-const taskRow = (id, artifacts) => ({ id, artifacts })
+const taskRow = (id, artifacts, ref = undefined) => ({ id, artifacts, ...(ref === undefined ? {} : { ref }) })
 
 /**
  * 「体积类拒绝」的唯一判据：ok:false 且原因是文件过大。
@@ -52,7 +52,7 @@ const isOversizeRejection = read => read?.ok === false && /文件过大/.test(re
 
 test('已登记产物可读：target 目录下（工作区外）的文件按真实路径放行', () => {
   const { workspace, target } = locationFixture()
-  const registered = registeredArtifacts([taskRow('t-1', [{ path: join(target, 'reports', 'preference-mechanism-plan.md') }])])
+  const registered = registeredArtifacts([taskRow('t-1', [{ path: join(target, 'reports', 'preference-mechanism-plan.md') }], 'tk-000001')])
   const read = readWorkspaceFile({ root: workspace, path: join(target, 'reports', 'preference-mechanism-plan.md'), registered })
   assert.equal(read.ok, true)
   assert.equal(read.via, 'registered')
@@ -60,7 +60,9 @@ test('已登记产物可读：target 目录下（工作区外）的文件按真�
   assert.match(read.text, /偏好机制方案/)
   // 头行说清「凭什么可读」，别让人以为它突然在工作区里了。
   assert.match(renderWorkspaceRead(read), /【已登记产物文件】/)
-  assert.match(renderWorkspaceRead(read), /任务 t-1 登记/)
+  // 版本 B：归属只写任务引用（tk-），不写裸编号。
+  assert.match(renderWorkspaceRead(read), /任务 tk-000001 登记/)
+  assert.doesNotMatch(renderWorkspaceRead(read), /\bt-1\b/)
 })
 
 test('未登记的同一目录文件仍被拒：登记表不放宽目录', () => {
@@ -158,8 +160,8 @@ test('已登记但已缺失的产物：报「不存在」，不报越界（避�
 test('registeredMatch / isRegisteredArtifact：文件命中自己、目录命中子树、其余不命中', () => {
   const { target } = locationFixture()
   const file = join(target, 'reports', 'preference-mechanism-plan.md')
-  const registered = registeredArtifacts([taskRow('t-9', [{ path: file, label: '方案' }])])
-  assert.deepEqual(registeredMatch(file, registered), { taskId: 't-9', label: '方案' })
+  const registered = registeredArtifacts([taskRow('t-9', [{ path: file, label: '方案' }], 'tk-000009')])
+  assert.deepEqual(registeredMatch(file, registered), { taskId: 't-9', ref: 'tk-000009', label: '方案' })
   assert.equal(isRegisteredArtifact(join(target, 'reports', 'unregistered.md'), registered), false)
   assert.equal(isRegisteredArtifact(file, undefined), false)
   assert.equal(registeredMatch('', registered), undefined)

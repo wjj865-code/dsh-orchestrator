@@ -26,10 +26,12 @@ test('状态到级别映射', () => {
 test('交付通知：写「已交付待确认」并带 action:close / task_message 动作指令', async () => {
   const delivered = []
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 5 })
-  notifier.push({ taskId: 't-close', title: '交付任务', status: 'delivered', summary: '改完了' })
+  notifier.push({ taskId: 't-close', ref: 'tk-close1', title: '交付任务', status: 'delivered', summary: '改完了' })
   await wait(20)
   assert.match(delivered[0], /任务「交付任务」已交付待确认：改完了/)
-  assert.match(delivered[0], /task_message\(\{ action: "close", task_id: 't-close' \}\)/)
+  // 版本 B：动作指令里的 task_id 是**引用**（tk-），通知正文不出现裸编号。
+  assert.match(delivered[0], /task_message\(\{ action: "close", task_id: 'tk-close1' \}\)/)
+  assert.doesNotMatch(delivered[0], /t-close/)
   assert.match(delivered[0], /task_message 追问原会话/)
   assert.match(delivered[0], /超时自动完成/)
   // 多条合并：动作指令只在整条消息末尾写一次（这里只断言不重复刷）。

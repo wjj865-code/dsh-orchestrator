@@ -80,10 +80,16 @@ export function renderDecisionSummary(items = []) {
   return ['决策汇总：', ...rows].join('\n')
 }
 
-/** 计划文档路径文案：不给 `taskId` 时写占位符 `<taskId>`（提示词/文档里就是占位口径）。 */
-export const planDocPathText = taskId => {
-  const id = typeof taskId === 'string' && taskId.trim() !== '' ? taskId.trim() : '<taskId>'
-  return `${PLAN_SAVE_DIR}${id}.md`
+/**
+ * 计划文档路径文案：**文件名 = 任务名**（版本 B，用户拍板）。
+ *
+ * 不给 `name` 时写占位符 `<任务名>`（提示词/文档里就是占位口径）；给任务名时原样拼
+ * （真实文件名还要过安全化流水线，见 `src/plan-doc.js` 的 `planFileName`——文案只说「在哪、
+ * 叫什么」，不重复实现清洗规则）。
+ */
+export const planDocPathText = name => {
+  const value = typeof name === 'string' && name.trim() !== '' ? name.trim() : '<任务名>'
+  return `${PLAN_SAVE_DIR}${value}.md`
 }
 
 /** danger-full-access 的一句话事实（下面四处文案都从这里拼，别再各写一遍）。 */
@@ -157,8 +163,8 @@ export const PLAN_STATUS_LINES = Object.freeze({
   none: '计划：无进行中的计划',
 })
 
-/** `task_create` 回执里的计划模式提示（给协调者看的动作指令）。 */
-export const planCreateReceipt = taskId => `计划模式：子会话只读探索，探索完先 plan_save 把计划写入${planDocPathText(taskId)}（自动登记为产物），`
+/** `task_create` 回执里的计划模式提示（给协调者看的动作指令；路径按**任务名**说）。 */
+export const planCreateReceipt = title => `计划模式：子会话只读探索，探索完先 plan_save 把计划写入${planDocPathText(title)}（文件名=任务名，自动登记为产物），`
   + `再用 ${PLAN_PHASE_LINES.reportCall} 只上报 ${PLAN_PHASE_LINES.reportSummaryShort} + ${PLAN_PHASE_LINES.reportQuestion}；`
   + '你转交用户，批准后用 task_message 续派（插件自动切回可写）。'
 
@@ -267,7 +273,7 @@ export const DELIVERY_LINES = Object.freeze({
   notFinal: '不是终态',
   followupRule: 'task_message 追问原会话（复用同一个子会话，不新建任务）',
   closeCall: 'task_message({ action: "close" })',
-  closeCallWithTaskId: 'task_message({ action: "close", task_id: \'<任务编号>\' })',
+  closeCallWithTaskId: 'task_message({ action: "close", task_id: \'<任务引用>\' })',
   timeoutWord: '超时',
   timeout: '超时自动完成',
 })
@@ -276,7 +282,7 @@ export const DELIVERY_LINES = Object.freeze({
 export const DELIVERY_NOT_FINAL = `done ${DELIVERY_LINES.notFinal}：`
   + `任务落在「${DELIVERY_LINES.state}」（${DELIVERY_LINES.statusCode}），等你或用户确认，或${DELIVERY_LINES.timeout}`
 
-/** 交付通知的动作指令（协调者收到 delivered 通知时看；`<任务编号>` 由调用方替换）。 */
+/** 交付通知的动作指令（协调者收到 delivered 通知时看；`<任务引用>` 由调用方替换成 tk-）。 */
 export const DELIVERED_HINT = `默认保持待确认（别急着关闭）：要改 ${DELIVERY_LINES.followupRule}；`
   + `用户明确说确认完成时再 ${DELIVERY_LINES.closeCallWithTaskId}；一直不确认则${DELIVERY_LINES.timeout}。`
 
@@ -312,7 +318,7 @@ export const BLOCKER_RULE = '已确认的验收/范围/方案不可达、需要�
 export const SUMMARY_FIELDS = '改了什么、改了哪些文件、怎么验证的'
 
 /** 开工先读详情（W1 唯一措辞）：brief 只留一行指针，字段清单在这里讲一次。 */
-export const WORKER_DETAIL_HINT = '开工前先调 task_detail（参数 task_id 就是任务编号）：'
+export const WORKER_DETAIL_HINT = '开工前先调 task_detail（参数 task_id 就是任务引用 tk-xxxxxx）：'
   + '目标全文、验收标准、约束、背景资料、用户原话、工作目录与权限、前置任务、经验文件、已有产物都以台账为准；'
   + 'brief 只是指针，不要凭它猜任务内容。'
 

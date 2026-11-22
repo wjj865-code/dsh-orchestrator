@@ -149,7 +149,7 @@ test('读侧：旧行（自带正文）原样可读，新行按 digest 从宿主
   const briefRow = rows.find(row => row.kind === 'brief')
   const briefResolved = await resolveMessageBody(fresh, briefRow, bodySource)
   assert.equal(briefResolved.source, 'derived')
-  assert.match(briefResolved.text, /^【任务编号】/)
+  assert.match(briefResolved.text, /^【任务引用】/)
   assert.match(briefResolved.text, /task_detail/)
 
   // 旧行（P1 之前的行）：没有 meta.body 标记 → 原样返回 stored rendered，不查宿主、不降级。

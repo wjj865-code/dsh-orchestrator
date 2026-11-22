@@ -25,7 +25,7 @@
 |---|---|
 | `task_report` | `progress` / `done` / `blocked` / `needs_auth`，可带 `question` / `options` / `artifacts`；`done` 落「已交付待确认」，配了 `checks` 的先跑验收、失败拒绝交付；`progress` 会作为进度信号送达（合并 + 同任务水位，追问后的第一条必达） |
 | `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收标准、可执行检查、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物 |
-| `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<taskId>.md` 并登记为产物（计划阶段唯一写入口） |
+| `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<任务名>.md`（文件名=任务名，同名 `-2`）并登记为产物（计划阶段唯一写入口） |
 
 ### 角色差异（预设层遮挡）
 
@@ -36,7 +36,7 @@
 
 ### 派发时的 brief（只留一次性参数）
 
-派发给子会话的 **brief 只留一次性参数**（2–3 行，`access:'full'` 多一行）：任务编号 + 一行「先调 `task_detail`」指针。目标、验收、经验、前置、产物都不内联进提示词，由子会话用 `task_detail` 现读。执行中怎么上报、交付怎么回报、隔离任务装依赖、主动读 `context` 这些静态提示由 **W1「任务执行者 policy」每回合注入**（分层见 [ARCHITECTURE](ARCHITECTURE.md) 的「提示词分层」一节）。
+派发给子会话的 **brief 只留一次性参数**（2–3 行，`access:'full'` 多一行）：任务引用（`tk-xxxxxx`）+ 一行「先调 `task_detail`」指针。目标、验收、经验、前置、产物都不内联进提示词，由子会话用 `task_detail` 现读。执行中怎么上报、交付怎么回报、隔离任务装依赖、主动读 `context` 这些静态提示由 **W1「任务执行者 policy」每回合注入**（分层见 [ARCHITECTURE](ARCHITECTURE.md) 的「提示词分层」一节）。
 
 ### 只读工具与技能
 
