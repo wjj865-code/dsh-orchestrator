@@ -56,12 +56,10 @@ node scripts/verify-access-full.mjs          # 离线核对 access:'full' 整条
 node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 docs/probes/ 逐条重跑）
 ```
 
-- **没有 pnpm？** `corepack enable pnpm`（多数 Node 发行版自带 corepack，会按 `packageManager` 取对版本），
-  或 `npm i -g pnpm@11`。CI 的 `pnpm/action-setup@v4` 也读 `package.json` 的 `packageManager`，
+- **没有 pnpm？** `corepack enable pnpm`（按 `packageManager` 取版本）或 `npm i -g pnpm@11`；CI 的 `pnpm/action-setup@v4` 也读同一字段，
   本地 / CI / 文档只有这一个版本真源。
-- **worktree 或新克隆里第一步先 `pnpm install`**：`node_modules/` 不入库，git worktree 检出的目录是空的，
-  不装就直接 `pnpm test` 会 `vite: not found`，或读到别处留下的旧产物。pnpm 的全局 store 跨目录共享，
-  同一个 store 已经被暖过时，第二个 worktree 装依赖通常 1–2 秒。
+- **worktree 或新克隆里第一步先 `pnpm install`**：`node_modules/` 不入库，不装就直接 `pnpm test` 会 `vite: not found`，
+  或读到别处留下的旧产物；pnpm 全局 store 跨目录共享，暖过的 store 下第二个 worktree 装依赖通常 1–2 秒。
 - 改面板/详情 = 改 `client/src/**` 再 `pnpm run build`；`dist/` 的改动要一起提交。
 - **沙箱里跑不了完整构建**：`vite build` 要写 `dist/` 并 spawn 子进程，在 DSH 子会话的默认沙箱里可能被拒。
   用 `access:'full'` 的子任务跑构建，或交给 CI / 本地终端。
@@ -89,6 +87,9 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
 ## 发版
 
 版本号**唯一真源是 `package.json`**，并遵循 SemVer；`CHANGELOG.md` 每个版本写清「为什么改 / 改了什么 / 边界」。
+
+- **别在本机 `npm publish`**：本机 `~/.npmrc` 的 npm token 已失效（`npm whoami` 返回 `E401 Unauthorized`），
+  本地发布必失败；直接 push `v*` tag 交给 `release.yml`（secret `NPM_TOKEN` + provenance），发版后按第 5、6 步用 `npm view` 与 npmmirror 两边都核实。
 
 1. 更新 `CHANGELOG.md`（新版本一节）与 `package.json` 的 `version`。
 2. 发版前清仓库：任务产物（`reports/`、`workspace/`、`.agents/`）不进提交；只提交代码/测试/文档/版本文件。
@@ -118,8 +119,7 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
    ```
 
    本地 `npm view` 有缓存，怀疑时加 `--prefer-online`；`mirror:check` 每次发真请求。
-6. 发布后核对：`npm view @wjj865-code/dsh-orchestrator dist-tags` 的 `latest` 是新版本，
-   `dist.attestations` 有 provenance，`gitHead` 与发版提交一致。
+6. 发布后核对：`npm view @wjj865-code/dsh-orchestrator dist-tags` 的 `latest` 是新版本、`dist.attestations` 有 provenance、`gitHead` 与发版提交一致。
 
 ## 改动边界（容易踩的）
 
