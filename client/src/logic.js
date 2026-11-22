@@ -389,12 +389,52 @@ export const groupBoard = (tasks, columns) => {
 export const groupTasksOf = (tasks, groupId) => (Array.isArray(tasks) ? tasks : [])
   .filter(task => (task.groupId ?? null) === (groupId ?? null))
 
-/** 待排 tray：活跃且还没排期的任务（终态不排期——排了也永远不会跑）。 */
-export const trayTasks = (tasks, now = Date.now()) => (Array.isArray(tasks) ? tasks : [])
-  .filter(task => task.canPlan !== false && !Number.isFinite(task.plannedAt)
-    && ['waiting_dep', 'pending', 'running', 'waiting_user', 'waiting_auth', 'delivered'].includes(task.status))
-  .sort((left, right) => (Number(right.lastEventAt) || 0) - (Number(left.lastEventAt) || 0))
-  .slice(0, 20)
+/**
+ * 排期页右栏的**派生分组**（不是任务状态）：状态机一个都不改，只是把「还需要人排一下的」
+ * 与「正在跑的 / 等你确认的」分开显示，免得进行中、待确认的任务被误读成「还没排期」。
+ *
+ * - 待排期：`waiting_dep` / `pending` 且还没有计划日；
+ * - 进行中：`running` / `waiting_user` / `waiting_auth`；
+ * - 待确认：`delivered`；
+ * - 已排期（有 `plannedAt`）只出现在月历与「下一条」，不落上面三组；
+ * - 终态（done/failed/cancelled/orphaned/missing）哪组都不进（排了也永远不会跑）。
+ */
+export const SCHEDULE_GROUPS = Object.freeze([
+  { key: 'tray', label: '待排期', empty: '没有待排期的任务。', hint: '把卡片拖到日历某天即排期；拖回这里或点「清除」取消。' },
+  { key: 'active', label: '进行中', empty: '没有进行中的任务。', hint: null },
+  { key: 'confirm', label: '待确认', empty: '没有待确认的任务。', hint: null },
+])
+
+/** 每组最多渲染几条（沿用旧待排 tray 的 20），防止长期不清理把右栏拖成长列表。 */
+export const SCHEDULE_GROUP_LIMIT = 20
+
+/** 状态 → 派生分组（`null` = 不属于右栏任何一组）。 */
+const SCHEDULE_BUCKET_BY_STATUS = Object.freeze({
+  waiting_dep: 'tray',
+  pending: 'tray',
+  running: 'active',
+  waiting_user: 'active',
+  waiting_auth: 'active',
+  delivered: 'confirm',
+})
+
+/** 单条任务的派生分组：`tray` / `active` / `confirm` / `scheduled`；终态与未知状态是 `null`。 */
+export const scheduleBucketOf = task => {
+  if (task === null || typeof task !== 'object') return null
+  if (Number.isFinite(task.plannedAt)) return 'scheduled'
+  return SCHEDULE_BUCKET_BY_STATUS[task.status] ?? null
+}
+
+/** 右栏三组（待排期 / 进行中 / 待确认）的分组结果：组内最近事件↓，`count` 是命中总数。 */
+export const scheduleGroups = tasks => {
+  const rows = Array.isArray(tasks) ? tasks : []
+  return SCHEDULE_GROUPS.map(group => {
+    const matched = rows
+      .filter(task => scheduleBucketOf(task) === group.key)
+      .sort((left, right) => (Number(right.lastEventAt) || 0) - (Number(left.lastEventAt) || 0))
+    return { ...group, tasks: matched.slice(0, SCHEDULE_GROUP_LIMIT), count: matched.length }
+  })
+}
 
 /** 今日排期（总览的「今天」列与日历今天高亮共用）。 */
 export const plannedOnDay = (tasks, dateKey) => (Array.isArray(tasks) ? tasks : [])

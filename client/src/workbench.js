@@ -14,7 +14,7 @@ import {
   REVIEW_DAYS,
 } from './constants.js'
 import {
-  groupBoard, groupTasksOf, trayTasks, plannedOnDay, nextPlannedTask, planStampOnDay, planWhenLabel,
+  groupBoard, groupTasksOf, scheduleGroups, plannedOnDay, nextPlannedTask, planStampOnDay, planWhenLabel,
   clockOf, dateKeyOf, startOfMonth, monthGrid, automationStateLabel, displayNameOf,
 } from './logic.js'
 
@@ -501,13 +501,16 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
     )
   }
 
+  // 排期页右栏是**派生分组**（待排期 / 进行中 / 待确认），不属于状态机：「待排期」只吃
+  // waiting_dep/pending 且没有计划日的任务；有计划日的只在月历与「下一条」出现。
+  // 拖拽语义不变：任一组的卡片都能拖到日历某天排期，拖回「待排期」或点「清除」取消（落点不按状态过滤）。
   const SchedulePage = ({ state, tasks, anchor, onAnchor, onPlan, onClearPlan, onOpenDetail, onReload }) => {
     const [dragOver, setDragOver] = useState(null)
     const grid = monthGrid(anchor, Date.now())
     const taskById = new Map(tasks.map(task => [task.id, task]))
     const byDay = new Map()
     for (const day of (state.data?.days ?? [])) byDay.set(day.date, day)
-    const tray = trayTasks(tasks, Date.now())
+    const groups = scheduleGroups(tasks)
     const next = nextPlannedTask(tasks, Date.now())
     const monthDays = [...byDay.keys()].filter(key => key.startsWith(`${grid.year}-${pad(grid.month + 1)}`))
     const monthTaskCount = monthDays.reduce((sum, key) => sum + (byDay.get(key)?.tasks.length ?? 0), 0)
@@ -595,39 +598,46 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
                     </button>
                   )}
             </section>
-            <section
-              className="orch-wb-card orch-wb-tray"
-              onDragOver={event => event.preventDefault()}
-              onDrop={event => {
-                event.preventDefault()
-                const id = event.dataTransfer.getData(DND_TYPE)
-                if (id !== '') onClearPlan(id)
-              }}
-              aria-label="待排期"
-            >
-              <header className="orch-wb-cardhead">
-                <span className="orch-wb-cardtitle">{'待排期'}</span>
-                <span className="orch-muted">{`${tray.length} 条`}</span>
-              </header>
-              {tray.length === 0
-                ? <div className="orch-muted">{'没有待排期的任务。'}</div>
-                : (
-                    <div className="orch-wb-traylist">
-                      {tray.map(task => (
-                        <div
-                          key={task.id}
-                          className="orch-wb-traycard"
-                          draggable
-                          onDragStart={event => { event.dataTransfer.setData(DND_TYPE, task.id); event.dataTransfer.effectAllowed = 'move' }}
-                        >
-                          <button type="button" className="orch-wb-ttitle" onClick={() => onOpenDetail(task.id)}>{task.title}</button>
-                          <div className="orch-wb-tmeta">{statusBadge(task.status)}{task.groupId ? <Chip>{task.groupId}</Chip> : <Chip tone="muted">{'未分组'}</Chip>}</div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-              <div className="orch-muted">{'把卡片拖到日历某天即排期；拖回这里或点「清除」取消。'}</div>
-            </section>
+            {groups.map(group => (
+              <section
+                key={group.key}
+                className={group.key === 'tray' ? 'orch-wb-card orch-wb-tray' : 'orch-wb-card'}
+                aria-label={group.label}
+                {...(group.key === 'tray'
+                  ? {
+                      onDragOver: event => event.preventDefault(),
+                      onDrop: event => {
+                        event.preventDefault()
+                        const id = event.dataTransfer.getData(DND_TYPE)
+                        if (id !== '') onClearPlan(id)
+                      },
+                    }
+                  : {})}
+              >
+                <header className="orch-wb-cardhead">
+                  <span className="orch-wb-cardtitle">{group.label}</span>
+                  <span className="orch-muted">{group.count > group.tasks.length ? `${group.tasks.length} / ${group.count} 条` : `${group.count} 条`}</span>
+                </header>
+                {group.tasks.length === 0
+                  ? <div className="orch-muted">{group.empty}</div>
+                  : (
+                      <div className="orch-wb-traylist">
+                        {group.tasks.map(task => (
+                          <div
+                            key={task.id}
+                            className="orch-wb-traycard"
+                            draggable
+                            onDragStart={event => { event.dataTransfer.setData(DND_TYPE, task.id); event.dataTransfer.effectAllowed = 'move' }}
+                          >
+                            <button type="button" className="orch-wb-ttitle" onClick={() => onOpenDetail(task.id)}>{task.title}</button>
+                            <div className="orch-wb-tmeta">{statusBadge(task.status)}{task.groupId ? <Chip>{task.groupId}</Chip> : <Chip tone="muted">{'未分组'}</Chip>}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                {group.hint === null ? null : <div className="orch-muted">{group.hint}</div>}
+              </section>
+            ))}
           </aside>
         </div>
       </div>
