@@ -43,13 +43,16 @@
 //   3. 它是不是「收到通知后马上要做的动作」？——是 → 通知 hint；否则别写进通知。
 import { ISOLATED_WORKTREE_STATES } from './write-guard.js'
 // P1-C 文案单源：跨层共享的「交付不是结束」与通知/详情/工具回执同源（src/copy.js）。
-import { ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, DELIVERY_NOT_FINAL, TASK_CHAIN_LINES } from './copy.js'
+import { ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, DELIVERY_NOT_FINAL, PARALLEL_LINES, TASK_CHAIN_LINES } from './copy.js'
 // W1（任务子会话 per-turn policy）的句子只在 copy.js 定义一次，本模块只负责分层归属与渲染顺序。
 import {
   BLOCKED_HINT, CONFIRM_HINT, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT, WORKER_POLICY_HEADING, WORKER_POLICY_LINES,
 } from './copy.js'
 
-export { DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, TASK_CHAIN_LINES, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT }
+export {
+  DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, PARALLEL_LINES, TASK_CHAIN_LINES, WORKER_CONTEXT_HINT,
+  WORKER_MEMORY_HINT,
+}
 
 /**
  * L1「拍板流程」段落（唯一渲染入口）：五条规则 + 计划批准四选一 + 决策汇总的句子全部来自
@@ -118,6 +121,28 @@ export function renderTaskChainPolicy() {
 }
 
 /**
+ * L1「并行策略」段落（唯一渲染入口）：句子全部来自 `src/copy.js` 的 `PARALLEL_LINES`。
+ *
+ * 为什么单独成段：worktree / 写域 / 任务链三段各自都对，但缺一句「没依赖就别排队」——
+ * 写域段只说被拒后怎么办、任务链段只说有依赖怎么建链，合起来读就变成「默认串行、冲突才隔离」。
+ * 本段把它写成一条判断顺序（先判依赖与上下文复用，再判写域是否撞车），**不新增执行层语义**。
+ *
+ * 与相邻段的分工（不互相推翻）：
+ * - 「任务链」回答「有依赖时怎么建链」；本段回答「没依赖时**不要**建链，直接隔离并行」；
+ * - 「worktree 隔离」回答怎么建检出；本段回答什么时候该建、什么时候必须串行。
+ */
+export function renderParallelPolicy() {
+  return `## ${PARALLEL_LINES.heading}
+
+- ${PARALLEL_LINES.criteria}。
+- ${PARALLEL_LINES.prefer}。
+- ${PARALLEL_LINES.serial}。
+- ${PARALLEL_LINES.cost}。
+- ${PARALLEL_LINES.exceptions}。
+- ${PARALLEL_LINES.align}。`
+}
+
+/**
  * W1「回报与确认」段落（任务子会话 per-turn policy 的唯一渲染入口）。
  *
  * 为什么从 brief/persona 迁过来：brief 与 persona 只在**出生那一刻**到达子会话，续派或多轮之后
@@ -165,6 +190,7 @@ export const PROMPT_LAYERS = Object.freeze([
       '推进循环（收到回报/用户消息后必须落到推进/提问/问新任务三类动作之一，不许只汇报；renderAdvanceLoopPolicy，措辞源 copy.js 的 ADVANCE_LOOP_LINES）',
       '拍板流程（待拍板项一项一问、不用代号、依赖分批、计划批准四选一后再总批准核对、决策汇总；renderDecisionPolicy，措辞源 copy.js 的 DECISION_FLOW_LINES）',
       '任务链（dependsOn 的判据/建链时机/不阻塞/失败传播/交付不算 done/同检出串行五条规则；renderTaskChainPolicy，措辞源 copy.js 的 TASK_CHAIN_LINES）',
+      '并行策略（互不依赖 + 无需复用上下文 + 同写域撞车 → 优先 worktree 隔离并行；有依赖或复用同一子会话上下文才串行；代价与只读/计划例外；renderParallelPolicy，措辞源 copy.js 的 PARALLEL_LINES）',
       '堵塞项四类与「不算堵塞项」清单（措辞源 copy.js 的 BLOCKER_RULE）',
       '用户偏好（第 4 段，src/preferences.js）',
       '能力诊断（schedule 服务缺失时的降级说明）',

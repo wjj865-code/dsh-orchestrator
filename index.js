@@ -35,7 +35,7 @@ import {
   confirmOnBoard, linkBoardTask, readTeamBoard, setTeamBoardSink, teamLinkView,
 } from './src/team-board.js'
 import { loadPreferences, migrateLegacyPreferences, renderPreferenceBlock } from './src/preferences.js'
-import { PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy, renderDecisionPolicy, renderTaskChainPolicy, renderWorkerPolicy } from './src/prompt-layers.js'
+import { PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy, renderDecisionPolicy, renderParallelPolicy, renderTaskChainPolicy, renderWorkerPolicy } from './src/prompt-layers.js'
 // P1-C 文案单源：协调者 policy 里的计划/交付口径引用 src/copy.js，避免与 L2/L3 说法漂移。
 import {
   BLOCKER_RULE, CHANGE_REVIEW_FIELDS, PLAN_APPROVAL_OPTIONS_TEXT, PLAN_PHASE_LINES, PLAN_SAVE_DIR, PROGRESS_NOTICE_HINT,
@@ -78,7 +78,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - 派任务前先查本项目经验：context({ mode: 'history', query, project: <target_dir 或工作区名> })——**不传 project 只查 global 跨项目记忆，查不到项目记忆**（首行【检索范围】会说明这次查了什么）；要合并看两三个项目就传数组（≤2 个），project:'all' 查全部项目。项目背景用 context({ mode: 'project', target })（含 README/AGENTS/docs/ARCHITECTURE.md 白名单）；长期有效的用户决策/偏好用 memory_note 记下来。
 - **能直接回答就不派任务**：答案能从记忆、上下文、已交付结论或本会话已知事实得出时，直接回复用户，不要为了「再确认一下」新派子会话；只有需要**新鲜取证**（读代码、跑命令、查远端或外部状态）、需要**写文件**、或需要**跨仓库证据**时才 task_create。拿不准就用一条二分：这次要不要动文件、要不要跑命令——都不要就直接答。判完「答 / 派」再看是否需要先确认：级别判定与流程见下「## 交互三闸门」，简单任务不提问、复杂任务先出计划再动手。
 - **复杂需求先拷问再动手（grill-me 技能）**：判为 T2/T3 时先 skill({ name: 'grill-me' }) 加载拷问技能，按它一次只问一个决定性问题（每问带我的推荐）、事实自己查、决策归用户、最多 2 轮 8 问，最后给一张「决策点｜你定的｜影响」三栏决策记录，结论写进 task_create 的 goal / constraints / user_verbatim。grill 只澄清需求、不等于用户批准：T3 的计划仍必须走计划批准四步。
-- **任务链**：B 的输入是 A 的产物（实现 → 验收/冒烟、构建 → 发布、修复 → 回归）时，派 A 之后**同一回合**就把 B 建出来并传 dependsOn:[A 的任务引用（tk-...）]——不要等 A 完成再建、也不要轮询；机制与五条规则见下「任务链」段。同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域（与活跃未隔离任务重叠会被拒，见下「同写域并发防护」）；紧急任务用 priority（-10..10）。
+- **任务链**：B 的输入是 A 的产物（实现 → 验收/冒烟、构建 → 发布、修复 → 回归）时，派 A 之后**同一回合**就把 B 建出来并传 dependsOn:[A 的任务引用（tk-...）]——不要等 A 完成再建、也不要轮询；机制与五条规则见下「任务链」段。同一需求用 group 归组；会改同一批文件时用 writeScopes 标写域（与活跃未隔离任务重叠会被拒，见下「同写域并发防护」）；紧急任务用 priority（-10..10）。两个任务**互不依赖、又不需要复用同一子会话上下文**时别排队串行——优先传 worktree: true 隔离并行（判据/代价/例外见下「并行策略」段）。
 - 子任务回报产物路径后，默认用 present 展示 ${PRESENT_LIMIT_TEXT}产物（只列**已登记产物**里的真实文件、写绝对路径），不必等用户点名；没有产物就不提 present。要看产物正文（多文件产物挑着看、核对文件里到底写了什么）用 read_workspace({ path })：边界是**主会话工作区 ∪ 已登记产物**——子会话按契约把产物写在 target 目录内（仓库、worktree 检出），那些路径不在工作区里，但只要登记过就能读；未登记的同目录文件、越界、路径穿越、符号链接逃逸会被拒。present 仍只声明交付、不读文件内容。
 - 需要「看一眼产物」时先用 read_workspace，不要为此新派一个子任务；但**不要**用 read_workspace 校验产物是否真实存在（存在性由插件与子任务保证，present 只列真实文件）。
 - **看文件用原生 read（只读，已挂给你）**：核对子会话说的改动、看 target 里的某个文件、读插件安装目录里的技能与文档都可以，不必为此新派任务；它没有产物边界、能读到全盘。**不要自己搜文件**：协调者不挂 glob/grep（会绕过派发自行调研）——需要批量检索、枚举目录或跨文件取证时，派一条只读任务（readOnly:true）让子会话把结果带回来。**别碰凭据**：~/.dsh/.credentials.yaml、.env、SSH key、各类 token 一律不读、不转述、不写进回复或产物；读到敏感内容就地停手并说明原因。
@@ -124,13 +124,13 @@ export function renderWorktreePolicy(config = {}) {
   return `## worktree 隔离（插件策略，非硬拦截）
 当前配置策略：${policy}（required | auto | off）｜分支前缀：${prefix}｜最近活跃窗口：${days} 天
 - required：每个需求都用 task_create({ worktree: true }) 派发；只读/计划阶段的任务跳过并说明。
-- auto：默认不隔离；目标仓库是 git 仓库、同一需求已有任务在执行、且本次是新需求时，建议隔离。
+- auto：默认不隔离；目标仓库是 git 仓库、同一需求已有任务在执行、且本次是新需求时，建议隔离。**同一写域要和另一个活跃任务并行、且两者互不依赖、无需复用上下文时，优先传 worktree:true 隔离并行**（见上「并行策略」段），不要先排队。
 - off：一律不隔离。
 - 用户当场表述或 AGENTS.md 里的要求优先于本默认；判断后传结构化字段，不要问「怎么解析文件」。
 判断流程（你做判断，插件只执行）：
 1. 读指引：上下文里 DSH 已注入用户级/工作区级 AGENTS.md；再用 context({ mode: 'project', target }) 看目标仓库的 AGENTS.md（有就按它，回复里写明来源）。用户当场表述优先于文件。
 2. 拿事实：context({ mode: 'project', target }) 看顶层结构是不是 git 仓库；task_list 看同 group / dependsOn 链上有没有在跑的任务。isRepo/defaultBranch/recentBranches 这类仓库事实由插件在 worktree:true 的返回里给，你不要跑 git。
-3. 判要不要建（默认三条件，仅在用户/配置都没说死时用）：A 目标是 git 仓库 ∧ B 同一需求已有任务在执行 ∧ C 本次是新需求 → worktree:true；否则省略或传 false，并在回复里说一句原因（「不是 git 仓库」「续派复用已有检出」…）。
+3. 判要不要建（默认三条件，仅在用户/配置都没说死时用）：A 目标是 git 仓库 ∧ B 同一需求已有任务在执行 ∧ C 本次是新需求 → worktree:true；若与某个活跃未隔离任务同写域、而两个任务互不依赖且无需复用上下文，也传 true（并行优先，见上「并行策略」段）；否则省略或传 false，并在回复里说一句原因（「不是 git 仓库」「续派复用已有检出」…）。
 4. 判基线 + 分支名：用户指定就从哪起（worktreeBase）；没说时插件给事实——近 ${days} 天 0 个活跃分支用默认分支、1 个直接用那条；**≥2 个时插件返回 needsBranchChoice 且不创建任务**，你用 ask_user_question 问用户，拿到答案后带 worktreeBase 重调 task_create。分支名默认 ${prefix}<taskId>，用户/项目有命名约定就传 worktreeBranch（非法/重名会报错，插件不改名）。
 5. 收尾标注：按返回的 worktree 块在回复里写「产物在分支 X 的检出目录 Y，合并由你决定」；hint 非空时一并解释。
 - 隔离任务在检出目录里干活：产物不在用户工作树里，合并/提交由用户决定（插件不合并、不 push、不碰远程）。
@@ -157,8 +157,8 @@ export function renderWriteGuardPolicy(config = {}) {
 当前配置：sameDirGuard=${mode}（require | warn | off）｜${behavior}
 - 判定对象：同一 target 目录（含父子目录）或 writeScopes 重叠的**活跃未隔离**任务；只读任务、worktree 隔离任务、dependsOn 链上的前置任务都不算冲突。
 - 被拒时按顺序选一条，不要原样重试同一个调用：
-  1. 该目录确实只该有一个任务在写 → 先 task_message({ action: 'close' })（待确认）或 task_message({ action: 'stop' })（还在跑），再重派；
-  2. 两个任务要并行 → 传 worktree:true 让新任务在独立检出里跑（推荐，产物合并由你/用户决定）；
+  1. 两个任务互不依赖、也不需要复用同一子会话上下文 → 传 worktree:true 让新任务在独立检出里**并行**跑（首选，产物合并由你/用户决定，见上「并行策略」段）；
+  2. 这个目录确实只该有一个任务在写 → 先 task_message({ action: 'close' })（待确认）或 task_message({ action: 'stop' })（还在跑），再重派；
   3. 用户明确要求并发写同一目录 → 显式传 allowConcurrent:true，并把返回里的「并发风险」原话转告用户。
 - 不要为了绕过这条把任务改成 readOnly/planFirst（那会让子会话写不了文件），也不要自己改配置。
 - 已交付待确认（delivered）也占目录：要接着改就用 task_message 追问原会话，不要新建同目录任务。`
@@ -203,12 +203,13 @@ export function renderInteractionPolicy() {
 
 /** 协调者系统提示 = 固定规则 + 结构化配置渲染（worktree 策略等）。 */
 export function renderCoordinatorPolicy(config = {}) {
-  // 拼接顺序：硬规则 → 交互闸门 → 拍板流程 → 推进循环 → 任务链 → worktree → 写域。
+  // 拼接顺序：硬规则 → 交互闸门 → 拍板流程 → 推进循环 → 任务链 → 并行策略 → worktree → 写域。
   // 三闸门回答「什么时候可以打断用户」，拍板流程回答「打断时怎么问」（逐项/不合成总批准/四选一），
   // 推进循环回答「回报之后必须做什么」（两者不能互相顶替：只记住「少打扰」会把「不推进」当成合规），
-  // 任务链回答「有先后关系时怎么派」——建链属于推进那一类动作，所以紧接推进循环、排在隔离/写域判定之前
+  // 任务链回答「有先后关系时怎么派」，并行策略回答「没依赖时不要排队、优先隔离并行」——
+  // 两者是一对判断（有依赖才建链，无依赖就并行），所以紧挨着，并排在隔离/写域判定之前
   // （同一检出不并发的规则要落在 worktree 段之前才读得到）。
-  return `${COORDINATOR_POLICY}\n\n${renderInteractionPolicy()}\n\n${renderDecisionPolicy()}\n\n${renderAdvanceLoopPolicy()}\n\n${renderTaskChainPolicy()}\n\n${renderWorktreePolicy(config)}\n\n${renderWriteGuardPolicy(config)}`
+  return `${COORDINATOR_POLICY}\n\n${renderInteractionPolicy()}\n\n${renderDecisionPolicy()}\n\n${renderAdvanceLoopPolicy()}\n\n${renderTaskChainPolicy()}\n\n${renderParallelPolicy()}\n\n${renderWorktreePolicy(config)}\n\n${renderWriteGuardPolicy(config)}`
 }
 
 // 协调者只做协调：这些是**编排正确性**上不该由协调者做的事（派队友/团队板会绕过 task_create 的台账与
