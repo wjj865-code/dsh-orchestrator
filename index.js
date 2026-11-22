@@ -155,13 +155,13 @@ export function renderWriteGuardPolicy(config = {}) {
       : '已关闭：不判目标目录/写域（writeScopes 退回一行 advisory 提示）。')
   return `## 同写域并发防护
 当前配置：sameDirGuard=${mode}（require | warn | off）｜${behavior}
-- 判定对象：同一 target 目录（含父子目录）或 writeScopes 重叠的**活跃未隔离**任务；只读任务、worktree 隔离任务、dependsOn 链上的前置任务都不算冲突。
+- 判定对象：同一 target 目录（含父子目录）或 writeScopes 重叠的**活跃未隔离**任务；只读任务、worktree 隔离任务、dependsOn 链上的前置任务、以及**已交付待确认（delivered，写根已释放）**都不算冲突。
 - 被拒时按顺序选一条，不要原样重试同一个调用：
   1. 两个任务互不依赖、也不需要复用同一子会话上下文 → 传 worktree:true 让新任务在独立检出里**并行**跑（首选，产物合并由你/用户决定，见上「并行策略」段）；
   2. 这个目录确实只该有一个任务在写 → 先 task_message({ action: 'close' })（待确认）或 task_message({ action: 'stop' })（还在跑），再重派；
   3. 用户明确要求并发写同一目录 → 显式传 allowConcurrent:true，并把返回里的「并发风险」原话转告用户。
 - 不要为了绕过这条把任务改成 readOnly/planFirst（那会让子会话写不了文件），也不要自己改配置。
-- 已交付待确认（delivered）也占目录：要接着改就用 task_message 追问原会话，不要新建同目录任务。`
+- 已交付待确认（delivered）**不占目录**：交付那一刻就释放写根，同目录可以正常新派。要继续改就追问原会话——追问回 running 前会复判写域，被占用时按上面两条出路处理（等占用任务确认/关闭，或 worktree:true 新派；追问没有 allowConcurrent 这条放行口）。`
 }
 
 /**

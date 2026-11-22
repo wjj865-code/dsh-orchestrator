@@ -60,7 +60,7 @@ import {
   notifyWorktreeOf, parseWorktreeRequest, worktreeListMarker, worktreeNoteLines, worktreeStatusLine,
 } from './worktree-request.js'
 import { checkoutPathFor, createWorktreeService, retryWorktreeOf } from './worktree.js'
-import { ISOLATED_WORKTREE_STATES, decideWriteGuard } from './write-guard.js'
+import { ISOLATED_WORKTREE_STATES, decideFollowupGuard, decideWriteGuard } from './write-guard.js'
 // 0.32.0 能力包工厂：工具定义在 src/pack/tool.js（参数校验 + 文案），闸门/回滚在 src/pack/service.js。
 import { createCapabilityPackTool } from './pack/tool.js'
 
@@ -495,8 +495,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     if (typeof dispatcher.sendReliable === 'function') return dispatcher.sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access)
     return dispatcher.send(target, message, signal, targetDir, taskId, readOnly, objective, access)
   }
-  // 任务进入终态才释放可写根；waiting_user/waiting_auth/delivered 保留（续派/追问还要用）。
-  // 参数可以是任务行，也可以直接是子会话 id（closeDelivered 回调给的是 id）。
+  // 「已交付待确认」交付那一刻就释放可写根（同目录才能新建任务）；追问/续派投递成功后由
+  // dispatch.send 幂等重建，真终态再兜一次释放。参数可以是任务行，也可以直接是子会话 id。
   const releaseTaskSession = task => {
     const id = typeof task === 'string' ? task : (task?.session_id ?? task?.target)
     if (id === null || id === undefined || id === '') return
@@ -562,6 +562,38 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       return toolFailure('MESSAGE_NO_SESSION', { label: labelFor(task) })
     }
+    // P0-3：交付时已释放写根，追问会让原会话重新开工——投递前按 target / 写域复判（与面板「追加」同源）。
+    // 被占用就不投递、不改状态、不写 followup 行：否则等于静默放行两个子会话写同一份工作树。
+    const followupGuard = decideFollowupGuard({
+      tasks: listTasks(db, { active: true }),
+      task,
+      mode: config?.sameDirGuard,
+    })
+    if (followupGuard.action === 'reject') {
+      log('task.followup.rejected', {
+        taskId: task.id,
+        sessionId: task.session_id,
+        detail: {
+          mode: followupGuard.mode,
+          targetDir: task.target_dir ?? null,
+          conflicts: [...followupGuard.targetConflicts, ...followupGuard.scopeConflicts, ...followupGuard.checkoutConflicts].map(({ task: item }) => item.id),
+          callId: exec?.callId,
+        },
+      })
+      return toolFailure('MESSAGE_WRITE_CONFLICT', { label: labelFor(task), reason: followupGuard.text })
+    }
+    if (followupGuard.note !== '') {
+      log('task.followup.concurrent-write', {
+        taskId: task.id,
+        sessionId: task.session_id,
+        detail: {
+          mode: followupGuard.mode,
+          targetDir: task.target_dir ?? null,
+          conflicts: [...followupGuard.targetConflicts, ...followupGuard.scopeConflicts, ...followupGuard.checkoutConflicts].map(({ task: item }) => item.id),
+          callId: exec?.callId,
+        },
+      })
+    }
     const message = args.message ?? ''
     // 与面板 message 同口径：先 pending，投递成功 delivered，失败 failed（详情抽屉显示三态）。
     // P1：正文不再进台账（真源是子会话在宿主的 user/message），这里只留 digest + 摘要。
@@ -622,8 +654,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const deliveredNote = wasDelivered
       ? `\n该任务此前是「${DELIVERY_LINES.state}」，已回到进行中并在同一子会话继续；`
         + `完成后会再次落「${DELIVERY_LINES.state}」，等你/用户确认或${DELIVERY_LINES.timeout}。`
+        + (task.read_only === true ? '' : '\n交付时已释放目标目录的写权限，本次追问投递成功后已幂等重建写根。')
       : ''
-    return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}`
+    const riskNote = followupGuard.note === '' ? '' : `\n${followupGuard.note}`
+    return `已把消息追加给任务「${labelFor(task)}」（子会话 ${task.target}）。${planNote}${deliveredNote}${readOnlyNote}${riskNote}`
   }
 
   // 停止（原 task_stop 的实现，行为不变）。
@@ -2023,6 +2057,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           // blocked/needs_auth 之后子任务直接交付：先回到 running，再走合法迁移到 delivered。
           if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
           next = transition(db, task.id, 'delivered')
+          // P0-3：交付即释放写根（同目录才能新派）；追问投递成功时由 dispatch.send 幂等重建。
+          // 验收失败在更早的分支已经 return（状态保持 running），不会走到这里。
+          releaseTaskSession(next)
         } else {
           next = touchTask(db, task.id)
         }
@@ -2125,8 +2162,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         // 台账/日志保留原始摘要（审计真源）；用户面用 summaryFacing（已清洗引用）。
         detail: { status: args.status, summary: args.summary ?? '', delivered: deliveredNow, access: next.access ?? null, answeredFollowup, callId: exec?.callId },
       })
-      // 交付/终态都让出一个并发位，唤醒队列补位。可写根与 goal 要留到 done（确认/超时）再收：
-      // delivered 还要复用同一个子会话追问。
+      // 交付/终态都让出一个并发位，唤醒队列补位。可写根在交付那一刻就释放（同目录可新派），
+      // goal 仍留到 done（确认/超时）再收口；追问投递成功时由 dispatch.send 幂等重建写根。
       if (deliveredNow || next.status === 'failed' || next.status === 'cancelled') queue.pump()
       const hint = invalidHint()
       if (args.status === 'done' && !deliveredNow) {

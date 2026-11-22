@@ -86,6 +86,12 @@ export const ACTION_ERRORS = Object.freeze({
     panel: ({ reason }) => `续派失败：${reason}`,
     tool: ({ label, reason }) => `续派失败：任务「${label}」已转为「等你确认」（已重试 3 次）。原因：${reason}`,
   }),
+  // P0-3：交付过的任务写根已释放，追问会让原会话重新开工；目录/写域正被别人占着就拒绝（工具/面板同源）。
+  MESSAGE_WRITE_CONFLICT: define({
+    http: 409,
+    panel: ({ label, reason }) => `未把消息追给任务「${label}」：${reason}`,
+    tool: ({ label, reason }) => `未把消息追给任务「${label}」：${reason}`,
+  }),
   MESSAGE_UNREACHABLE: define({
     http: 502,
     tool: ({ label, reason }) => `续派失败：任务「${label}」的子会话已不可达，已标「会话丢失」，可重建。原因：${reason}`,

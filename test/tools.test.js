@@ -725,18 +725,19 @@ test('task_stop：cancelled + interrupt；已结束不再 interrupt', async () =
   db.close()
 })
 
-test('可写根生命周期：done（确认后）与 cancelled 释放；delivered / blocked 保留以便续派', async () => {
-  // done：交付回报先落 delivered（不释放），task_message action:close 确认后才释放。
+test('可写根生命周期：delivered 交付即释放；cancelled 释放；blocked 保留以便续派', async () => {
+  // done：交付回报落 delivered 时就释放写根（同目录才能新派）；确认（close）再兜一次释放（幂等）。
   const done = await setup()
   await call(done.tools, 'task_create', sampleBrief({ title: '甲' }))
   const doneTask = listTasks(done.db)[0]
   await call(done.tools, 'task_report', { task_id: doneTask.id, status: 'done', summary: '完成' }, { agent: { id: doneTask.session_id } })
   assert.equal(getTask(done.db, doneTask.id).status, 'delivered')
-  assert.deepEqual(done.dispatcher.grantReleases, [])
+  assert.deepEqual(done.dispatcher.grantReleases, [doneTask.session_id], '交付即释放写根')
   const closed = await call(done.tools, 'task_message', { action: 'close', task_id: doneTask.id })
   assert.match(closed, /已确认完成/)
   assert.equal(getTask(done.db, doneTask.id).status, 'done')
-  assert.deepEqual(done.dispatcher.grantReleases, [doneTask.session_id])
+  // close 再释放一次是幂等的（dispatch.releaseWritableRoot 自己按会话去重）。
+  assert.deepEqual(done.dispatcher.grantReleases, [doneTask.session_id, doneTask.session_id])
   done.db.close()
 
   // blocked → waiting_user：不释放（续派还要写 target）
@@ -754,6 +755,21 @@ test('可写根生命周期：done（确认后）与 cancelled 释放；delivere
   await call(stopped.tools, 'task_message', { action: 'stop', task_id: stoppedTask.id })
   assert.deepEqual(stopped.dispatcher.grantReleases, [stoppedTask.session_id])
   stopped.db.close()
+})
+
+test('delivered 追问：投递带 target_dir（dispatch 幂等重建写根），状态回 running', async () => {
+  const { db, dispatcher, tools } = await setup()
+  const target = tempDir()
+  await call(tools, 'task_create', sampleBrief({ title: '追问重建', target }))
+  const task = listTasks(db)[0]
+  await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id } })
+  assert.equal(getTask(db, task.id).status, 'delivered')
+  const text = await call(tools, 'task_message', { task_id: task.id, message: '再补一版' })
+  assert.match(text, /重建写根/)
+  const sent = dispatcher.calls.find(item => item[0] === 'sendReliable')
+  assert.equal(sent[4], target, '追问投递必须带 target_dir，dispatch.send 据此补注册可写根')
+  assert.equal(getTask(db, task.id).status, 'running')
+  db.close()
 })
 
 test('waiting_user 续派：target_dir 透传、可写根不释放（第二轮仍能写）', async () => {

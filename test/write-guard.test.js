@@ -11,8 +11,10 @@ import { openLedger, createTask, getTask, listTasks, transition } from '../src/l
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import {
-  DEFAULT_SAME_DIR_GUARD, ISOLATED_WORKTREE_STATES, SAME_DIR_GUARD_MODES, decideWriteGuard, guardModeOf, isolatedTask, normalizePath, pathsOverlap,
-  sameDirRejection, scopeRejection, scopesOverlap, serializedIdsOf, taskTargetDir, occupiesTarget,
+  DEFAULT_SAME_DIR_GUARD, ISOLATED_WORKTREE_STATES, SAME_DIR_GUARD_MODES, checkoutConflicts, checkoutRejection,
+  decideFollowupGuard, decideWriteGuard, deliveredTask, downstreamSerializedIds, guardModeOf, isolatedTask,
+  normalizePath, occupiesCheckout, occupiesTarget, occupiesTargetOnFollowup, pathsOverlap, sameDirRejection,
+  scopeRejection, scopesOverlap, serializedIdsOf, taskTargetDir,
 } from '../src/write-guard.js'
 import { loadConfig } from '../src/config.js'
 import { renderCoordinatorPolicy } from '../index.js'
@@ -49,6 +51,16 @@ test('占用判定：只读任务与隔离任务不占写域；计划任务照�
   assert.equal(occupiesTarget({ read_only: false, worktree_state: 'created' }), false)
   assert.equal(occupiesTarget({ read_only: false, worktree_state: 'reused' }), false)
   assert.equal(occupiesTarget({ read_only: false, plan_first: true, worktree_state: 'none' }), true)
+})
+
+test('占用判定：已交付待确认不占目录（写根已释放），但追问视角仍算潜在写者', () => {
+  assert.equal(deliveredTask({ status: 'delivered' }), true)
+  assert.equal(deliveredTask({ status: 'running' }), false)
+  assert.equal(occupiesTarget({ status: 'delivered', read_only: false, worktree_state: 'none' }), false)
+  assert.equal(occupiesTarget({ status: 'running', read_only: false, worktree_state: 'none' }), true)
+  // 追问会让原会话重新拿到写根，所以判追问冲突时它必须算一方（否则两条 delivered 会一起开工）。
+  assert.equal(occupiesTargetOnFollowup({ status: 'delivered', read_only: false, worktree_state: 'none' }), true)
+  assert.equal(occupiesTargetOnFollowup({ status: 'delivered', read_only: true, worktree_state: 'none' }), false)
 })
 
 // 回归（P1）：requested 是「派发时建检出」的待建状态，target_dir 还没换算成检出目录，
@@ -92,6 +104,104 @@ test('dependsOn 祖先集合：含间接前置，不存在的 id 也记账但不
   ]
   const ids = serializedIdsOf(tasks, ['t-b', 't-missing'])
   assert.deepEqual([...ids].sort(), ['t-a', 't-b', 't-missing'])
+})
+
+test('检出占用（P0-2）：有路径且活跃才算占用；cleaned/终态/无路径都不算', () => {
+  const checkout = '/repo/.agents/worktrees/t-1'
+  assert.equal(occupiesCheckout({ status: 'running', worktree_state: 'created', worktree_path: checkout }), true)
+  // pending / waiting_dep / delivered 都会在之后写这份检出，同样算占用（追问会让 delivered 重新拿到写根）。
+  for (const status of ['pending', 'waiting_dep', 'waiting_user', 'waiting_auth', 'delivered']) {
+    assert.equal(occupiesCheckout({ status, worktree_state: 'reused', worktree_path: checkout }), true, status)
+  }
+  for (const status of ['done', 'failed', 'cancelled', 'orphaned']) {
+    assert.equal(occupiesCheckout({ status, worktree_state: 'created', worktree_path: checkout }), false, status)
+  }
+  assert.equal(occupiesCheckout({ status: 'running', worktree_state: 'none', worktree_path: null }), false)
+  // cleaned 只在终态发生（目录已删 + 状态已释放），没有路径可写。
+  assert.equal(occupiesCheckout({ status: 'done', worktree_state: 'cleaned', worktree_path: checkout }), false)
+
+  const tasks = [
+    { id: 't-a', title: '占着', status: 'running', worktree_state: 'created', worktree_path: checkout },
+    { id: 't-b', title: '串行前置', status: 'delivered', worktree_state: 'created', worktree_path: checkout },
+    { id: 't-c', title: '别的检出', status: 'running', worktree_state: 'created', worktree_path: '/repo/.agents/worktrees/t-2' },
+    { id: 't-d', title: '已完成', status: 'done', worktree_state: 'created', worktree_path: checkout },
+  ]
+  const hits = checkoutConflicts(tasks, { path: checkout })
+  assert.deepEqual(hits.map(item => item.task.id), ['t-a', 't-b'])
+  // dependsOn 串行前置不算冲突（新任务会等它 done 才派发）。
+  assert.deepEqual(
+    checkoutConflicts(tasks, { path: checkout, serializedIds: new Set(['t-b']) }).map(item => item.task.id),
+    ['t-a'],
+  )
+  const text = checkoutRejection({ path: checkout, conflicts: [{ task: tasks[0], path: checkout }] })
+  assert.match(text, /worktreeMode:"continue"/)
+  assert.match(text, /dependsOn/)
+  assert.match(text, /worktreeMode:"new"/)
+})
+
+test('下游串行集合：间接下游也算（它们只在本任务 done 后才派发，追问不会与它们并发）', () => {
+  const tasks = [
+    { id: 't-a', depends_on: [] },
+    { id: 't-b', depends_on: ['t-a'] },
+    { id: 't-c', depends_on: ['t-b'] },
+    { id: 't-x', depends_on: [] },
+  ]
+  assert.deepEqual([...downstreamSerializedIds(tasks, 't-a')].sort(), ['t-b', 't-c'])
+  assert.deepEqual([...downstreamSerializedIds(tasks, 't-x')], [])
+  assert.deepEqual([...downstreamSerializedIds(tasks, 't-missing')], [])
+})
+
+test('追问复判：delivered 交付后写根已释放，同目录被别人占着就拒绝（并给两条可执行出路）', () => {
+  const delivered = { id: 't-a', title: '已交付', status: 'delivered', target_dir: '/repo', write_scopes: [] }
+  const runner = { id: 't-b', title: '在跑', status: 'running', target_dir: '/repo', write_scopes: [] }
+
+  // 没人占 → 放行。
+  const alone = decideFollowupGuard({ tasks: [delivered], task: delivered })
+  assert.equal(alone.action, 'pass')
+  assert.equal(alone.text, '')
+
+  // running 占着同目录 → 拒绝，文案必须能直接照着做。
+  const blocked = decideFollowupGuard({ tasks: [delivered, runner], task: delivered })
+  assert.equal(blocked.action, 'reject')
+  assert.match(blocked.text, /正在跑|在跑/)
+  assert.match(blocked.text, /close/)
+  assert.match(blocked.text, /stop/)
+  assert.match(blocked.text, /worktree:true/)
+  assert.doesNotMatch(blocked.text, /allowConcurrent/)
+
+  // 两条 delivered 同目录：先追问的那条也会被另一条挡住（它随时能被追问重新拿到写根）。
+  const peer = { id: 't-c', title: '同样待确认', status: 'delivered', target_dir: '/repo', write_scopes: [] }
+  assert.equal(decideFollowupGuard({ tasks: [delivered, peer], task: delivered }).action, 'reject')
+
+  // 下游 dependsOn 任务不算（只在本任务 done 后才派发）。
+  const downstream = { id: 't-d', title: '下游', status: 'running', target_dir: '/repo', depends_on: ['t-a'] }
+  assert.equal(decideFollowupGuard({ tasks: [delivered, downstream], task: delivered }).action, 'pass')
+
+  // 只读任务不判；off 不判；warn 放行但带风险行。
+  const ro = { id: 't-r', title: '只读', status: 'delivered', target_dir: '/repo', read_only: true }
+  assert.equal(decideFollowupGuard({ tasks: [ro, runner], task: ro }).action, 'pass')
+  assert.equal(decideFollowupGuard({ tasks: [delivered, runner], task: delivered, mode: 'off' }).action, 'pass')
+  const warn = decideFollowupGuard({ tasks: [delivered, runner], task: delivered, mode: 'warn' })
+  assert.equal(warn.action, 'pass')
+  assert.match(warn.note, /并发风险/)
+
+  // 不是 delivered 的状态不走这条复判（running 本来就占着写域，判定在 task_create 那侧）。
+  const running = { ...runner, id: 't-b', target_dir: '/repo' }
+  assert.equal(decideFollowupGuard({ tasks: [running, delivered, { ...delivered, id: 't-e' }], task: running }).action, 'pass')
+
+  // 隔离任务：写域是检出目录，另一条任务占着同一份检出也必须拒绝。
+  const isolatedDelivered = {
+    id: 't-i', title: '待确认隔离', status: 'delivered', target_dir: '/repo/.agents/worktrees/t-i',
+    worktree_state: 'created', worktree_path: '/repo/.agents/worktrees/t-i', write_scopes: [],
+  }
+  const otherInSameCheckout = {
+    id: 't-j', title: '同检出在跑', status: 'running', target_dir: '/repo/.agents/worktrees/t-i',
+    worktree_state: 'reused', worktree_path: '/repo/.agents/worktrees/t-i', write_scopes: [],
+  }
+  const isolatedGuard = decideFollowupGuard({ tasks: [isolatedDelivered, otherInSameCheckout], task: isolatedDelivered })
+  assert.equal(isolatedGuard.action, 'reject')
+  assert.match(isolatedGuard.text, /同一个检出/)
+  assert.equal(isolatedGuard.checkoutConflicts.length, 1)
 })
 
 test('判定：require 档冲突即拒绝；allowConcurrent 放行并带风险标注', () => {
@@ -173,8 +283,10 @@ function fakeDispatcher() {
       counter += 1
       return { id: `c-${counter}`, name: input.name, sessionId: `c-${counter}`, target: `c-${counter}` }
     },
-    async sendReliable(target, message) {
-      this.calls.push(['sendReliable', target, message])
+    async sendReliable(...args) {
+      // 记全部参数：追问后写根重建要看第 5 个参数（target_dir），只记前两个就断言不了。
+      const [target, message] = args
+      this.calls.push(['sendReliable', target, message, ...args.slice(2)])
       return { messageId: 'm-1' }
     },
     async stop(target) { this.calls.push(['stop', target]) },
@@ -275,18 +387,40 @@ test('已完成任务不占目录：done 之后同 target 可再派', async () =
   db.close()
 })
 
-test('delivered（待确认）算活跃：拒绝文案额外提示 task_message 追问而不是新建', async () => {
-  const { db, call } = await setup()
+test('delivered 交付即释放：同目录可新派；追问被占用时拒绝，腾出后再追问成功并重建写根', async () => {
+  const { db, dispatcher, call } = await setup()
   const target = tempDir()
   await call('task_create', { ...sampleBrief({ title: '待确认任务', goal: 'g1' }), target })
-  const task = listTasks(db, { active: true })[0]
-  await call('task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id } })
-  assert.equal(getTask(db, task.id).status, 'delivered')
+  const first = listTasks(db, { active: true })[0]
+  await call('task_report', { task_id: first.id, status: 'done', summary: '完成' }, { agent: { id: first.session_id } })
+  assert.equal(getTask(db, first.id).status, 'delivered')
+  // 交付即释放写根（不再占目录）。
+  assert.ok(dispatcher.calls.some(item => item[0] === 'release' && item[1] === first.session_id))
 
-  const blocked = await call('task_create', { ...sampleBrief({ title: '同目录新任务', goal: 'g2' }), target })
-  assert.match(blocked, /未创建任务/)
-  assert.match(blocked, /待确认/)
-  assert.match(blocked, /task_message/)
+  // 交付后同目录可以正常创建新任务（旧行为：被 sameDirGuard 硬拒）。
+  const created = await call('task_create', { ...sampleBrief({ title: '同目录新任务', goal: 'g2' }), target })
+  assert.match(created, /已派发/)
+  const second = listTasks(db, { active: true }).find(task => task.title === '同目录新任务')
+  assert.equal(getTask(db, second.id).status, 'running')
+
+  // 新任务正占着目录 → 追问被拒：不投递、不改状态、不写 followup 行。
+  const sendsBefore = dispatcher.calls.filter(item => item[0] === 'sendReliable').length
+  const rejected = await call('task_message', { task_id: first.id, message: '再补一份说明' })
+  assert.match(rejected, /未把消息追给任务/)
+  assert.match(rejected, /worktree:true/)
+  assert.equal(getTask(db, first.id).status, 'delivered', '被拒的追问不能改状态')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ? AND kind = ?').get(first.id, 'followup').n, 0)
+  assert.equal(dispatcher.calls.filter(item => item[0] === 'sendReliable').length, sendsBefore, '被拒的追问不能投递')
+
+  // 关掉占用任务 → 追问成功、回 running，且 sendReliable 带上 target_dir（dispatch 会据此重建写根）。
+  await call('task_message', { action: 'stop', task_id: second.id })
+  const ok = await call('task_message', { task_id: first.id, message: '再补一份说明' })
+  assert.match(ok, /已把消息追加给任务/)
+  assert.match(ok, /重建写根/)
+  assert.equal(getTask(db, first.id).status, 'running')
+  const sent = dispatcher.calls.filter(item => item[0] === 'sendReliable').at(-1)
+  assert.equal(sent[4], target, '追问投递要带 target_dir，dispatch 据此幂等重建可写根')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ? AND kind = ?').get(first.id, 'followup').n, 1)
   db.close()
 })
 

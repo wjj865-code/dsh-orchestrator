@@ -107,7 +107,7 @@ test('outputSummary：只取 text 块、压空白、截断', () => {
   assert.equal(outputSummary([{ type: 'text', text: 'x'.repeat(400) }]).length, 241)
 })
 
-test('completed → delivered：写 settle 消息、清空 error、发通知、保留可写根并唤醒队列', async () => {
+test('completed → delivered：写 settle 消息、清空 error、发通知、交付即释放写根并唤醒队列', async () => {
   const f = await setup()
   const outcome = f.reporter.report({
     taskId: f.task.id,
@@ -137,8 +137,9 @@ test('completed → delivered：写 settle 消息、清空 error、发通知、�
   assert.equal(f.pushed[0].ref, task.ref, '通知里的引用与台账行上的引用一致')
   // D5：通知 payload 永远带 artifacts 字段（空也是 []），渲染层据此决定要不要写产物区块。
   assert.deepEqual(f.pushed[0].artifacts, [])
-  // delivered 还要复用同一子会话追问：可写根不释放；队列照常补位。
-  assert.deepEqual(f.released, [])
+  // 交付即释放写根（同目录才能新派）；会话与 goal 仍保留给追问/确认（两段式语义不变）。
+  assert.deepEqual(f.released, ['child-1'])
+  assert.deepEqual(f.terminals, [], 'delivered 不是真终态，不收口 goal')
   assert.equal(f.pumped(), 1)
   assert.ok(f.logs.some(([event]) => event === 'task.settle'))
   f.db.close()

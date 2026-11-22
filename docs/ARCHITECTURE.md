@@ -59,7 +59,7 @@
 - **任务链规则进 L1（0.28.0）**：`renderTaskChainPolicy()`（`src/prompt-layers.js`，拼在推进循环之后、worktree/写域之前）把既有机制写成协调者每回合都读得到的判断口径，句子唯一真源是 `src/copy.js` 的 `TASK_CHAIN_LINES`，`task_create.dependsOn` 描述（`TASK_CHAIN_TOOL_DESC`）与 `waiting_dep` 回执（`TASK_CHAIN_WAITING_NOTE`）逐字引用同一批句子。五条：① B 的输入是 A 的产物就在派 A 的同一回合建 `dependsOn`（不要等 A 完成再建、不要轮询）；② `dependsOn` 不是阻塞等待——晋升发生在 `queue.pump()` 的 `promoteDependents`，不占协调者回合、不是 `wait_agent`；③ 前置失败/取消/丢失/不存在 → 下游 `failed`（循环传播）；④ 就绪只认 `done`，前置 `delivered` 会挡住下游；⑤ 同一 worktree 检出必须串行。**只改提示词与工具描述**：`deps.js`/`queue.js`/状态机/权限一行未动。
 - **并行策略进 L1（t-c8adaeb1）**：`renderParallelPolicy()`（`src/prompt-layers.js`，拼在任务链之后、worktree/写域之前）把「什么时候并行、什么时候串行」写成协调者每回合都读得到的判断口径，句子唯一真源是 `src/copy.js` 的 `PARALLEL_LINES`。三条同时满足才并行（① 互不依赖：B 的输入不是 A 的产物；② 无需复用同一子会话上下文；③ 同写域会撞车）→ **优先 `worktree:true` 隔离并行**，不排 `dependsOn` 链；只有「有依赖」或「要复用同一子会话上下文/同一检出」才串行；只读与计划任务同目录直接并行；同一 worktree 检出永远只能一个任务在写。代价（合并由用户决定、检出要先装依赖、并发 commit 争 `.git` 锁）与例外写在同段，并与 worktree / 写域 / 任务链三段互相引用、不出现「默认先串行」。**只改提示词**：派发、队列、写域判定一行未动。
 - `group` 只用于展示/过滤；`priority` 只影响队列顺序。
-- **同写域并发防护**（`src/write-guard.js`，默认拒绝）：`task_create` 在「去重 / 容量 / worktree 决定」之后、`createTask` 之前的**同一个同步段**里判定——新任务 target 与活跃未隔离任务的 target 相同或互相包含，或两者 `writeScopes` 重叠 → 按 `config.sameDirGuard` 处理（`require` 拒绝 / `warn` 只警告 / `off` 关闭）。不参与判定：`readOnly`、`requested/created/reused` 隔离任务、`dependsOn` 祖先、终态任务。例外是 `degraded`（不是 git 仓库而降级）：仍在原工作树里写，必须继续占目录。`delivered` 算活跃；唯一显式放行是 `allowConcurrent:true`（记 `task.create.concurrent-write`）。拒绝对应 `task.create.rejected`（`reason: same-dir | write-scope`）。
+- **同写域并发防护**（`src/write-guard.js`，默认拒绝）：`task_create` 在「去重 / 容量 / worktree 决定」之后、`createTask` 之前的**同一个同步段**里判定——新任务 target 与活跃未隔离任务的 target 相同或互相包含，或两者 `writeScopes` 重叠 → 按 `config.sameDirGuard` 处理（`require` 拒绝 / `warn` 只警告 / `off` 关闭）。不参与判定：`readOnly`、`requested/created/reused` 隔离任务、`dependsOn` 祖先、终态任务。例外是 `degraded`（不是 git 仓库而降级）：仍在原工作树里写，必须继续占目录。**`delivered`（已交付待确认）不占目录**：交付那一刻就释放该会话的可写根，同目录可以新派；要接着改用追问，追问回 `running` 前由 `decideFollowupGuard` 复判 target/写域（工具与面板同口径，被拒返回 `MESSAGE_WRITE_CONFLICT`、记 `task.followup.rejected`）。唯一显式放行是 `allowConcurrent:true`（记 `task.create.concurrent-write`）。拒绝对应 `task.create.rejected`（`reason: same-dir | write-scope | checkout-busy`）。
 
 ## 派单选项一览（`task_create`）
 
@@ -328,9 +328,9 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 （映射 `SETTLE_MAP`：`completed` 且没上报过 progress → `delivered`；`completed` 但上报过 progress → `orphaned`；`aborted` → `cancelled`；`error`/`max-tokens`/`refusal` → `failed`；缺失/未知 → `orphaned`。）
 
 - 只改 `running` 的状态：`waiting_user` / `waiting_auth` 与已有终态都不改，重复结算天然幂等。
-- **例外：`delivered` / `done` 上要补写最后一条消息**（`task_report done` 先把任务推到 `delivered`，本回合结束时到达的结算已不在 `running`）：落消息、不改状态、不发通知、不写 settle 行、不释放。
-- 只有真终态（`done`/`cancelled`/`failed`/`orphaned`）才释放可写根、收敛 goal、写 `settle` 消息；`delivered` 保留会话给追问用。
-- 每次结算写一条 `settle` 消息 + `tasks.error` 死因 + 一条 `system` 通知，并唤醒队列补位。取证与时序见 `docs/probes/stop-reason-probe.md`。
+- **例外：`delivered` / `done` 上要补写最后一条消息**（`task_report done` 先把任务推到 `delivered`，本回合结束时到达的结算已不在 `running`）：落消息、不改状态、不发通知、不写 settle 行、不重复释放。
+- `delivered` 与真终态都释放可写根（交付即放手，同目录才能新派）；但 **goal 收口仍只认真终态**，会话也保留给追问——追问投递成功时由 `dispatch.send` 幂等重建写根（两段式语义不变）。
+- 每次结算写一条 `settle` 消息 + `tasks.error` 死因 + 一条 `system` 通知，并唤醒队列补位；配了 `checks` 的任务多一道验收闸门（`completed` 落 `delivered` 前要求本轮通过证据，见上「可执行验收」）。取证与时序见 `docs/probes/stop-reason-probe.md`。
 
 ### 最新返回消息（B1）
 

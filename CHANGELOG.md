@@ -1,5 +1,11 @@
 # Changelog
 
+## 未发布——三条 P0：交付即释放写根 / 结算验收闸门 / 复用检出占用
+
+**一句话**：修三条「护栏被绕过」的 P0——① `delivered` 交付即释放写根、退出同写域判定，追问回 `running` 前复判写域（被占用返回 `MESSAGE_WRITE_CONFLICT`，面板与工具同口径）；② 配了 `checks` 的任务自然结束（`completed`）不再绕过验收：结算落 `delivered` 前必须有本轮通过证据（`acceptance.ok` 且 `attempts` 匹配），否则落 `failed` 并写明原因；③ `worktreeMode:'continue'` 复用检出前按 `worktree_path` 判活跃占用，冲突拒绝并给「`dependsOn` 串行 / `worktreeMode:'new'` 新建」两条路。
+- 不新增配置开关；两段式交付、状态机与台账 schema 不动；`retry` / `resume` 的写域复判仍不在本批（见 `docs/LIMITATIONS.md`）。
+- 验证：`test/write-guard.test.js` / `test/settlement.test.js` / `test/worktree.test.js` 的集成用例（真实台账 + 队列，仅 dispatcher 打桩）。
+
 ## 0.32.1（2026-11-22）——兼容声明（下限 rc.2）/ 任务 ID 出口网关 / 拍板流程 / 界面与文档收口
 
 **一句话**：这一版把「宿主兼容声明」接进正式闸门（`engines.dsh = ">=0.2.2-rc.2 <0.3.0-0"`，区间外拒装 / 启动禁用），并集中发布三件事：任务引用改成 `tk-xxxxxx`（用户面不再出现台账内部编号 `t-xxxx`）、计划批准改成「逐项确认 → 总批准」、界面入口按角色显示 + 自动化改为会话内创建 + 排期页按状态派生分组。**不改派发语义**（计划批准、两段式交付、依赖链、写域、权限模型都不动），全局工具仍是 11 个、配置键仍是 25 个。

@@ -878,6 +878,33 @@ test('close：delivered → done（写关闭原因、释放可写根、唤醒队
   db.close()
 })
 
+test('delivered 追问与工具层同口径：同目录被占着就拒绝（409），不投递、不改状态、不写 followup 行', async () => {
+  const env = setup()
+  const { db, actions, calls } = await env.init()
+  const target = tempDir()
+  const first = createTask(db, { brief: sampleBrief({ title: '待确认' }), coordinatorSession: 's-1', targetDir: target })
+  transition(db, first.id, 'running', { sessionId: 'c-a', target: 'c-a' })
+  transition(db, first.id, 'delivered')
+  // 交付即释放写根后，同目录可以新建任务；它现在占着这个目录。
+  const busy = runningTask(db, '占着目录', { targetDir: target })
+  const rejected = await actions.message(first.id, '再改一版')
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.code, 'MESSAGE_WRITE_CONFLICT')
+  assert.match(rejected.error, /未把消息追给任务/)
+  assert.match(rejected.error, /worktree:true/)
+  assert.equal(getTask(db, first.id).status, 'delivered', '被拒的追问不能改状态')
+  assert.equal(calls.send.length, 0, '被拒的追问不能投递')
+  assert.equal(db.prepare("SELECT count(*) AS n FROM messages WHERE task_id = ? AND kind = 'followup'").get(first.id).n, 0)
+
+  // 占用任务结束后同一句追问可以投递，并回到 running。
+  await actions.stop(busy.id)
+  const ok = await actions.message(first.id, '再改一版')
+  assert.equal(ok.ok, true)
+  assert.equal(calls.send.length, 1)
+  assert.equal(getTask(db, first.id).status, 'running')
+  db.close()
+})
+
 test('delivered 追问失败：保持 delivered 只记原因，不降级', async () => {
   const env = setup({
     makeDispatcher: () => ({

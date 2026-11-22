@@ -43,7 +43,8 @@ export function mapSettle(stopReason, { progressCount = 0 } = {}) {
 const MAX_SUMMARY = 240
 
 /** 结算里「要释放资源的状态」：`releases` 能力（done/failed/cancelled/orphaned）。
- *  delivered 保留会话与 goal，等确认/追问——它 active 但不 releases，别用「终态」这个词混过去。 */
+ *  delivered 也释放可写根（交付即放手，同目录才能新派），但它保留会话与 goal、仍可追问——
+ *  别用「终态」这个词混过去：释放写根 ≠ 收口 goal，后者仍只认真终态。 */
 const RELEASING_STATUSES = new Set(statusesWith('releases'))
 
 /** 从 ContentBlock[] 取可读摘要（平台 SubagentResult.output / lastAssistantMessage 都是这个形状）。 */
@@ -241,13 +242,15 @@ export function createSettlementReporter({
       log('task.settle.before-notify-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
     }
     notify(final, mapped.status, summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`))
-    // 只有真终态才释放可写根 + 收口 goal：delivered 还要留着会话给追问用（写操作不能半途被收回），
-    // goal 也留到 done 再 complete（见 docs/ARCHITECTURE.md「两段式终态」）。
-    if (RELEASING_STATUSES.has(mapped.status)) {
+    // 交付（delivered）也要释放可写根：交付即放手，同目录才能新建任务；追问投递成功时由
+    // dispatch.send 幂等重建。goal 仍只留到真终态再收口（见 docs/ARCHITECTURE.md「两段式终态」）。
+    if (RELEASING_STATUSES.has(mapped.status) || mapped.status === 'delivered') {
       try { releaseSession(task.session_id ?? task.target) } catch { /* 释放失败不影响已落库的终态 */ }
-      // G1：终态收敛平台 goal（done → complete；cancelled/failed/orphaned → clear）。
-      // 回调内部吞错，不能因为 goal 服务缺席/失败回滚已完成的状态迁移。
-      try { onTerminal(next, mapped.status) } catch { /* goal 收口失败不影响结算 */ }
+      if (RELEASING_STATUSES.has(mapped.status)) {
+        // G1：终态收敛平台 goal（done → complete；cancelled/failed/orphaned → clear）。
+        // 回调内部吞错，不能因为 goal 服务缺席/失败回滚已完成的状态迁移。
+        try { onTerminal(next, mapped.status) } catch { /* goal 收口失败不影响结算 */ }
+      }
     }
     try { pump() } catch { /* 队列补位失败不影响结算 */ }
     log('task.settle', {

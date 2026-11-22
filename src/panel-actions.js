@@ -12,6 +12,8 @@ import { dependencyState, validateDepends } from './deps.js'
 import { taskLabel } from './task-label.js'
 import { statusLabel } from './state.js'
 import { panelFailure } from './action-errors.js'
+// P0-3：面板「追加」与 task_message 同口径复判写域（不判就会绕过工具层的并发防护）。
+import { decideFollowupGuard } from './write-guard.js'
 import { objectiveForMessage } from './goal.js'
 import { approvePlan, approvalNote, isPlanTask, planStateOf } from './plan-mode.js'
 import { retryWorktreeOf } from './worktree.js'
@@ -443,6 +445,34 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         return { ok: true, taskId: task.id, already: true, duplicate: true }
       }
     }
+    // P0-3：与工具层 task_message 同口径——交付过的任务写根已释放，追问前复判写域；
+    // 被占用就不投递、不改状态、不写 followup 行（否则面板会绕过并发判定）。
+    const guard = decideFollowupGuard({
+      tasks: listTasks(db, { active: true }),
+      task,
+      mode: config?.sameDirGuard,
+    })
+    if (guard.action === 'reject') {
+      log('ui.message.rejected', {
+        taskId: task.id,
+        detail: {
+          mode: guard.mode,
+          targetDir: task.target_dir ?? null,
+          conflicts: [...guard.targetConflicts, ...guard.scopeConflicts, ...guard.checkoutConflicts].map(({ task: item }) => item.id),
+        },
+      })
+      return panelFailure('MESSAGE_WRITE_CONFLICT', { label: taskLabel(task), reason: guard.text })
+    }
+    if (guard.note !== '') {
+      log('ui.message.concurrent-write', {
+        taskId: task.id,
+        detail: {
+          mode: guard.mode,
+          targetDir: task.target_dir ?? null,
+          conflicts: [...guard.targetConflicts, ...guard.scopeConflicts, ...guard.checkoutConflicts].map(({ task: item }) => item.id),
+        },
+      })
+    }
     // followup 先落 pending（待发），投递成功改 delivered，失败改 failed 再补一行 delivery_failed。
     // 详情抽屉据此显示「待发/已投递/投递失败」，不必猜。
     // P1：正文不进台账（真源 = 子会话在宿主的 user/message），只留 digest + 摘要。
@@ -488,7 +518,12 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       plan = { approved: approved?.ok === true, note: approvalNote(approved) }
     }
     log('ui.message', { taskId: task.id })
-    return { ok: true, taskId: task.id, ...(plan === undefined ? {} : { plan }) }
+    return {
+      ok: true,
+      taskId: task.id,
+      ...(plan === undefined ? {} : { plan }),
+      ...(guard.note === '' ? {} : { warning: guard.note }),
+    }
   }
 
   // 确认交付（delivered → done）：与工具 task_message action:close 共用 closeDelivered，二次确认在 client。

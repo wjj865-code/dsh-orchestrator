@@ -33,6 +33,11 @@ test('工具层文案复用同一张表，保持字符串契约', () => {
   assert.equal(missing, '找不到这个任务引用。用 task_list 看任务的名称与引用。')
   assert.doesNotMatch(missing, /t-x/)
   assert.match(toolFailure('MESSAGE_WAITING_DEP', { label: '甲', depends: 't-1' }), /等待前置任务（t-1）/)
+  assert.match(
+    toolFailure('MESSAGE_WRITE_CONFLICT', { label: '甲', reason: '目标目录被「乙」（进行中）占着' }),
+    /^未把消息追给任务「甲」：目标目录被「乙」（进行中）占着$/,
+    'P0-3：追问被拒与面板同帧，必须点名任务与原因',
+  )
   assert.equal(toolFailure('RETRY_FAILED', { reason: 'spawn boom' }), 'spawn boom')
 })
 
@@ -46,6 +51,7 @@ test('panelHttpStatus：成功 200，已知 code 用映射，旧格式 400', () 
   assert.equal(panelHttpStatus({ ok: false, code: 'TASK_NOT_FOUND' }), 404)
   assert.equal(panelHttpStatus({ ok: false, code: 'RETRY_NOT_ALLOWED' }), 409)
   assert.equal(panelHttpStatus({ ok: false, code: 'MESSAGE_DELIVERY_FAILED' }), 502)
+  assert.equal(panelHttpStatus({ ok: false, code: 'MESSAGE_WRITE_CONFLICT' }), 409)
   assert.equal(panelHttpStatus({ ok: false, code: 'STOP_FAILED' }), 500)
   assert.equal(panelHttpStatus({ ok: false, error: '旧格式' }), 400)
 })
