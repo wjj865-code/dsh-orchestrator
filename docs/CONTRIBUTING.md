@@ -67,9 +67,13 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
   用 `access:'full'` 的子任务跑构建，或交给 CI / 本地终端。
 - 装依赖报 `ERR_PNPM_IGNORED_BUILDS` 时：有包想跑构建脚本而没被审过。在 `pnpm-workspace.yaml` 的
   `allowBuilds` 里显式写 `true`（`esbuild` 已经写好）或 `false` 再重装；不要用 `dangerouslyAllowAllBuilds` 一把放开。
-- 本地 link 安装（开发用）：profile 的 `package.json` 加
-  `"@wjj865-code/dsh-orchestrator": "link:C:/Users/72489/Documents/dsh-orchestrator"`，
-  并把包名加入 `dsh.profile.bundles`，重启 profile。
+- **本地开发 = 装到 Desktop（主开发/安装面）**：官方入口
+  `dsh plugin --profile desktop add "link:C:/Users/72489/Documents/dsh-orchestrator"`；或手改 profile 的 `package.json` 加
+  `"@wjj865-code/dsh-orchestrator": "link:<仓库路径>"` 并加入 `dsh.profile.bundles`，重启 profile。
+  改完 `pnpm run build` 要**彻底退出 DSH 再启动**（刷新页面不会换服务端代码）。
+- **验收不在 desktop 里做**：自动化冒烟/回归另起 Web 测试 profile（隔离 `DSH_HOME` + 临时 profile + 无头浏览器/HTTP 断言），
+  搭法与典型步骤见 [testing.md §7.0](testing.md#70-起一个-web-测试-profile自动化冒烟回归的固定入口)。
+  **别拿桌面 GUI 做外部自动化**：桌面窗口的 `?token=` 由宿主注入、调用方没有受支持的取法，且会写真实台账、用真实凭据。
 
 ## 测试与门禁
 
@@ -77,6 +81,10 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
 
 - 新增/修改行为先补一条会红的用例；涉及台账的用例走临时 `DSH_HOME`（`test/helpers.js`）。
 - 全量门槛：`pnpm test` 全绿 + `pnpm run check:client` + `check:client-size` + `check:version` + `check:docs`（`prepublishOnly` 同口径）。
+- **主次**：能自动化的一律 Web 测试 profile（[testing.md §7.0](testing.md#70-起一个-web-测试-profile自动化冒烟回归的固定入口)），
+  Desktop 只做用户真实入口的手工冒烟（§7.1–§7.2）；测试结论优先引用 web profile 的自动化证据。
+- **确需人工**：只限 GUI 交互细节、桌面特有行为、真实安装态这类自动化覆盖不了的项——先说明影响哪个 profile 与回滚方式，
+  再按 [testing.md §7.4](testing.md#74-人工验收确实自动化不了的项) 请用户回报「步骤 + 截图 + 日志 + 结论」。
 
 ## 发版
 
