@@ -36,7 +36,8 @@
     "CHANGELOG.md"
   ],
   "engines": {
-    "node": ">=22.15"
+    "node": ">=22.15",
+    "dsh": ">=0.2.2-rc.3 <0.3.0-0"
   },
   "packageManager": "pnpm@11.22.0",
   "publishConfig": {

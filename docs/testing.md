@@ -65,6 +65,7 @@
 - `test/status-facts.test.js` 锁能力位：`STATUS_CAPS` 是唯一状态能力表；`test/status-property.test.js` 用固定种子
   跑 10k 步随机迁移，断言无非法边、终态闭包、`delivered` 可追问不可轮换（<2s，确定性可复现）。
 - `test/tool-migrations.test.js`：旧工具名 → 新调用的映射表是唯一真源，README「工具迁移映射」必须与它逐条一致。
+- **兼容声明（0.32.x）**：`test/engines-compat.test.js` 锁 `package.json:engines.dsh` 与 `HOST_BASELINE` 逐字一致、区间语义矩阵（rc.3–rc.5 放行；`0.2.1`、`0.2.2-rc.2`、`0.3.0-rc.1`、`0.3.0-rc.2`、`0.3.0` 拒绝——上界必须是 `<0.3.0-0`，写 `<0.3.0` 会被 `0.3.0-rc.1 < 0.3.0` 钻过去）、README / docs/compat.md 同口径，以及「不许再写区间外只 warn」。改区间 = 声明 + 常量 + 文档三处同改，少一处就红。
 - 交互三闸门（0.26.0）：判级表 / 堵塞项四类 / 评估三行只许在 L1——`test/interaction-policy.test.js` 锁结构与同源（`BLOCKER_RULE` / `CHANGE_REVIEW_FIELDS` 都在 `src/copy.js`），`layerViolations` 的 L2/L3 探针挡住子会话把分级与评估抄回去。
 - grill-me 技能（0.26.0）：`test/skill-grill-me.test.js` 锁两件事——`skills/grill-me/SKILL.md` 的 frontmatter（name=kebab / description / whenToUse）与协议要点（前沿提问、每问带推荐、事实自己查、2 轮 8 问、三栏决策记录、T2/T3 衔接、grill≠批准），以及注册模块「读包内文件 → 预设作用域 `ctx.skills.register`」、frontmatter 坏格式给可读报错、文件缺失/注册失败只 warn 不阻断预设挂载；`test/config.test.js` 锁协调者预设挂 `skill-grill-me` + `tool-skill` 而 worker 不挂。
 
@@ -87,7 +88,7 @@
 
 ### 3.5 用例规模
 
-- 66 个 `test/*.test.js`、约 1.9 万行、1,112 条 `test()`（1,107 pass / 5 skip，`pnpm test` 会打印总数）。
+- 81 个 `test/*.test.js`、约 2.3 万行、1,259 条 `test()`（1,254 pass / 5 skip，`pnpm test` 会打印总数）。
 - 大文件：`client.test.js`（U2 客户端）、`index.test.js`（装配）、`tools.test.js`（工具面）、`main-session.test.js`（open-main / adopt / 代建协调者会话）。
 
 ## 4. 已知 flaky / 环境限制
@@ -181,6 +182,7 @@
 | 7 | 无 cookie / 跨站 Origin 调 `/api/orchestrator` | 401 / 403 |
 | 8 | 停宿主后看面板 | 5s 内「台账暂不可用」，恢复后刷新或等 30s 自动恢复 |
 | 9 | 官方 Team 开启时打开面板 | 出现「官方 Team（只读）」折叠分区；行内**没有**按钮；关掉 Team 或宿主没装 Agent Teams 时整区不渲染（不显示提示条） |
+| 10 | 在区间外宿主（如 `0.3.0`）装本包 | 插件页**拒装**（`incompatible-version`，列出未满足的 `engines.dsh`）；若已装，启动 stderr 有 `disabling profile plugin …`、该行不加载；按 `docs/compat.md` §1.1 给 `compatibility.json` 精确豁免后能加载 |
 
 ### 7.2 任务流
 

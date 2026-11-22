@@ -17,11 +17,21 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-/** 声明的宿主兼容基线（含预发布）：README 首屏定位行与 docs/compat.md 同口径。 */
+/**
+ * 声明的宿主兼容基线（含预发布）：README 首屏定位行与 docs/compat.md 同口径。
+ *
+ * 单一真源：本常量是**运行时判读**（诊断行/日志），`package.json` 的 `engines.dsh` 是**宿主硬闸门**
+ * 读的那份声明；两者逐字一致由 `test/engines-compat.test.js` 锁死（漂移即红），别只改一边。
+ *
+ * 宿主侧的判定口径（rc.5 app-boot 的 `plugin-compatibility`）是
+ * `semver.satisfies(hostVersion, range, { includePrerelease: true })`：预发布参与比较，所以上界写作
+ * `0.3.0-0`（semver 的「小于 0.3.0 的任何预发布」惯用写法）——它把 `0.3.0-rc.1` 这类预览一起拒掉；
+ * 写成 `0.3.0` 反而会被 `0.3.0-rc.1 < 0.3.0` 放进来。
+ */
 export const HOST_BASELINE = Object.freeze({
   min: '0.2.2-rc.3',
-  upperExclusive: '0.3.0',
-  range: '>=0.2.2-rc.3 <0.3.0',
+  upperExclusive: '0.3.0-0',
+  range: '>=0.2.2-rc.3 <0.3.0-0',
 })
 
 /** 客户端注册过的宿主槽位（client/src/client.js:226/247/252/267）。缺槽位时面板入口隐藏。 */

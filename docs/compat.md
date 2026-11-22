@@ -1,18 +1,36 @@
 # 宿主兼容性与能力探测（compat）
 
-> 适用：`@wjj865-code/dsh-orchestrator` 0.21.x（本文件随包发布）。
-> 口径：插件只对下面声明的区间负责；区间外**照常加载**（不阻塞、不关功能），但先跑 §3 冒烟再报 bug。
+> 适用：`@wjj865-code/dsh-orchestrator` 0.32.x（本文件随包发布）。
+> 口径：区间外**不是**「只 warn、插件照跑」——宿主按本包 `package.json` 的 `engines.dsh` 做硬闸门：**装的时候拒装、启动的时候禁用**；想在区间外跑只能给 profile 的 `compatibility.json` 精确豁免（§1.1）。
 
 ## 1. 声明基线
 
 | 项 | 值 | 真源 |
 |---|---|---|
-| 兼容区间 | `>=0.2.2-rc.3 <0.3.0` | `src/host-capabilities.js` 的 `HOST_BASELINE`（唯一真源） |
+| 兼容区间 | `>=0.2.2-rc.3 <0.3.0-0` | `package.json` 的 `engines.dsh`（宿主闸门读这份）；`src/host-capabilities.js` 的 `HOST_BASELINE`（运行时判读）；`test/engines-compat.test.js` 锁死两者逐字一致 |
 | 人类可读 | `0.2.2-rc.3` – `rc.5` | `README.md` 首屏定位行 |
 | 最低验证版本 | `0.2.2-rc.3`（CI 断言基线声明 + 真机冒烟，§2 / §3） | 本文件 |
-| 越界行为 | 启动时 warn **一次**（带实际版本与区间），不拦加载、不关任何功能 | `index.js` 启动自检 |
+| 边界语义 | `semver.satisfies(宿主版本, 区间, { includePrerelease: true })` | 宿主 `app-boot` 的 `plugin-compatibility`（rc.5 安装包内核实） |
+| 越界行为 | **硬闸门**：拒装 / 启动禁用该 profile 行（不是只 warn）；越界跑要给精确豁免 | §1.1 |
 
-版本状态四态：`inside` / `below` / `above` / `unknown`。`unknown`（私有构建、`argv` 里没有 asar、安装清单不可读）**不告警**——探测不到不等于不兼容，只在日志与面板诊断行显示 `unknown`。
+版本状态四态：`inside` / `below` / `above` / `unknown` 只用于**诊断**（日志与面板诊断行）。`unknown`（私有构建、`argv` 里没有 asar、安装清单不可读）**不告警**——探测不到不等于不兼容。
+
+### 1.1 越界到底发生什么（硬闸门，不是 warn）
+
+`engines.dsh` 一旦声明就**单独裁决**（`peerDependencies` 里的 `@deepseek-ai/dsh-*` 不再参与）；空区间、非法区间、`workspace:` 都算不满足。
+
+| 时机 | 宿主行为 | 用户出路 |
+|---|---|---|
+| 安装（插件页「添加插件」/ `dsh plugin add`，包名或本地路径） | 在 pnpm 运行前读清单判定；不满足 → 整个操作被拒（错误码 `incompatible-version`，列出未满足的 `engines.dsh`），不下载、不跑构建脚本 | 换匹配的插件版本，或换宿主版本 |
+| 启动（profile 组合） | `app-boot` 在装载前禁用该行，stderr 打 `disabling profile plugin "<id>": Plugin <name>@<ver> is incompatible with dsh <runtime>…`；插件不加载（`--dump-config` 里那行仍在） | 同上 |
+| 真想越界跑 | 在**当前 profile** 的 `compatibility.json`（与 `package.json`、`cordis.patch.yml` 并列）按 `包名@版本` → `[精确宿主版本]` 精确豁免：`dsh plugin allow-version <包名@版本> --dsh-version <宿主版本> --accept-risk`；查看用 `dsh plugin version-exemptions`、撤销用 `revoke-version`（面板里是 `list_version_exemptions` / `set_version_exemption`）。插件升级或宿主升级都**不继承**豁免 | 风险自担，先跑 §3 冒烟 |
+
+两个容易踩的语义：
+
+- **预发布算进区间，上界特意写成 `-0`**：宿主 `includePrerelease` 让预发布参与比较，写 `<0.3.0` 会把 `0.3.0-rc.1` 也算基线内；本包上界是 `<0.3.0-0`（semver 的「小于 0.3.0 的任何预发布」写法），于是 `0.2.2-rc.3`–`rc.5` 放行，`0.3.0-rc.1` / `0.3.0-rc.2` / `0.3.0` 一律拒绝。
+- **启动自检 warn 的适用范围**：`index.js` 的越界 warn 还在，但越界时宿主通常已经把插件禁用了；这条 warn 基本只在「给了精确豁免」「本地 link / 非 profile 加载」时看得到——看到它意味着「宿主版本不在声明区间，但插件还是跑起来了」。
+
+已发布过的旧版本（≤ `0.32.0`）没有 `engines.dsh` 字段，宿主对它们不做预检；声明从带上该字段的版本起生效。
 
 ## 2. 已核实版本
 
@@ -20,7 +38,7 @@
 |---|---|---|
 | `0.2.2-rc.3` | 本机 desktop 真机实测（P0-1 及之前）+ `docs/probes/*` 契约探针 | 基线内。`agentTeams` 成员 API 已移除 → P0-1 删掉 team 后端 |
 | `0.2.2-rc.4` | 未单独实测 | 同 minor；**按基线内声明，不代表已逐项验证** |
-| `0.2.2-rc.5` | P0-2b 静态复核本机 desktop 安装包（asar 内 338 个 `@deepseek-ai/*` 全为 `0.2.2-rc.5`）；P2-4 复核 `dsh-agent-team` 的任务板契约 | 10 类耦合点的服务仍在（`settings` / `token-meter` / `session-query-sqlite` / 工作区 registry / `plan-mode` / `goal` / `agentTeams` 任务板 / `subagent` 系）；`app-boot` 新增 `engines.dsh` 插件兼容预检（本包尚未声明该字段，见 §5） |
+| `0.2.2-rc.5` | P0-2b 静态复核本机 desktop 安装包（asar 内 338 个 `@deepseek-ai/*` 全为 `0.2.2-rc.5`）；P2-4 复核 `dsh-agent-team` 的任务板契约 | 10 类耦合点的服务仍在（`settings` / `token-meter` / `session-query-sqlite` / 工作区 registry / `plan-mode` / `goal` / `agentTeams` 任务板 / `subagent` 系）；`app-boot` 按插件 `engines.dsh` 做装载前兼容预检（本包已声明，§1.1） |
 
 ## 3. rc.3 冒烟 3 条（本地可跑）
 
@@ -28,7 +46,7 @@
 
 ```bash
 pnpm test && pnpm run check:client && pnpm run check-version
-node --test test/host-capabilities.test.js      # 10 类访问器 + 版本基线 + 文档同口径
+node --test test/host-capabilities.test.js test/engines-compat.test.js   # 10 类访问器 + 版本基线 + 兼容声明/文档同口径
 ```
 
 再确认本次加载的宿主版本与 10 类能力（插件每次加载写一行 `host.capabilities`）：
@@ -79,5 +97,5 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 
 1. **消费点迁移（6 类）**：`dispatch.js` 仍裸取 `ctx.get('agentPresets')` / `ctx.get('planMode')`；客户端槽位名与 `TurnLocation` 语义仍在 `client/src` 里硬编码（`client.js:226/247/252/267`、`logic.js:233-247`）。迁移完加静态断言：业务模块出现裸 `ctx.get(` 即测试失败。
 2. **面板诊断行**：把 `report()` 渲染成「宿主能力 10/10，缺失 X」一行（复用 `index.js` 里 `checkScheduleCapability` 的降级文案模式）。
-3. **`engines.dsh` 声明**：rc.5 的 `app-boot` 会按 `engines.dsh`（否则 `peerDependencies` 里的 `@deepseek-ai/dsh-*`）做加载前兼容预检；本包尚未声明。加之前要确认 rc.3 是否会因此拒载。
+3. **`engines.dsh` 一致性门禁**：声明已接入（§1，`test/engines-compat.test.js` 锁 `engines.dsh` == `HOST_BASELINE` == README/docs 口径逐字一致），`release.yml` 发布前本来就会跑 `pnpm test`，所以**不需要**再补一条发布门禁；缺的只是 CI 红点指向（漂移现在显示成「某个测试失败」，没有独立 `check:engines` 步骤）。区间含 rc.3 不会把自己拒在门外：rc.3 的 `app-boot` 上没有这段预检（rc.5 安装包里已核实；rc.4 未单独核实）。
 4. **CI 宿主矩阵**：当前 CI 跑单测 + 构建 + 版本断言（不装宿主），rc.3 冒烟是真机手工；把 §3 变成 CI 作业（装 `@deepseek-ai/dsh-base@0.2.2-rc.3` 跑契约探针）留待后续。

@@ -3,7 +3,7 @@
 > **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目录里把活干完，进度与结论落进持久台账，界面里有任务台。
 
 - npm：`@wjj865-code/dsh-orchestrator`（当前 `0.32.0`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
-- Node `>= 22.15`｜DSH 兼容基线 **`0.2.2-rc.3` – `rc.5`**（CI 与真机实测在 `rc.3`；主要在 **DeepSeek Harness Desktop** 上开发与使用，Web 同构）
+- Node `>= 22.15`｜DSH 兼容基线 **`0.2.2-rc.3` – `rc.5`**：`package.json` 的 `engines.dsh` 声明 `>=0.2.2-rc.3 <0.3.0-0`（`0.3.0` 连预览一起拒），区间外宿主**拒装 / 启动时禁用**（要越界跑只能给 profile 的 `compatibility.json` 精确豁免，见 [docs/compat.md](docs/compat.md#11-越界到底发生什么硬闸门不是-warn)）；主要在 **DeepSeek Harness Desktop** 上开发与使用，Web 同构
 - 安装：插件页「添加插件」→ 粘贴 `@wjj865-code/dsh-orchestrator@0.32.0` → **彻底退出 DSH 再启动**
 
 **三分钟看懂**：装插件 → 打开「主会话」→ 用自然语言说需求 → 协调者拆成子任务派给子会话 → 子会话回报「已交付待确认」→ 你看面板与产物，确认或追问。
@@ -140,6 +140,7 @@ task_create({
 | 插件页 / `npm i @latest` 装到旧版 | registry 镜像还没同步（几十分钟到几小时）：过一会儿重装，或显式装 `@wjj865-code/dsh-orchestrator@0.32.0`。 |
 | 权限徽标显示「Read Only / 仅可查看」 | 正常：协调者就是只读总指挥（没有写与命令工具）。子任务仍是 `workspace-write`；要切走可以 `/permission`，下次打开主会话会被拉回。 |
 | 插件加载失败 / 工具表没有 `task_*` | 看插件页报错与 `logs/`；确认是不是主会话之外发起的（`task_*` 只对协调者开放）；仍失败就彻底重启再试。 |
+| 插件装不上 / 启动后完全不加载 | 宿主版本不在 `engines.dsh`（`>=0.2.2-rc.3 <0.3.0-0`）区间：宿主会在 pnpm 之前**拒装**、或在启动时打 `disabling profile plugin …` 并禁用该行。换匹配的插件/宿主版本；确实要越界跑就按 [docs/compat.md §1.1](docs/compat.md#11-越界到底发生什么硬闸门不是-warn) 给 `compatibility.json` 精确豁免（`dsh plugin allow-version`）。 |
 | 会话头没有「任务」入口 | 它只在主会话显示：确认当前会话是从侧栏「主会话」打开的。 |
 | 子任务报完 done 后一直「待确认」 | 正常：默认保持待确认。要收尾用 `task_message({ action: 'close' })`，或等 `deliveredTimeoutMinutes` 超时。 |
 | 任务停在「会话丢失 / 失败」 | 先用 `task_status` 看原因；接着做用 `task_message({ action: 'resume' })`（同一子会话冷恢复），会话确实不可达才 `retry`。 |

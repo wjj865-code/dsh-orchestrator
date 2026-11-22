@@ -262,11 +262,13 @@ export async function apply(ctx, rawConfig = {}) {
   } catch (error) {
     warnings(`dsh-orchestrator: 旧偏好迁移失败（不影响加载，下次启动重试）：${error?.message ?? error}`)
   }
-  // 宿主自检（只诊断、不拦加载）：版本落在声明基线外时 warn 一次；能力快照等装配完成后再记。
-  // 为什么只 warn：插件历史上靠「服务缺失静默不生效」吃过亏（真实宿主不渲染），宁可多一行可读诊断。
+  // 宿主自检（只诊断）：版本落在声明基线外时 warn 一次。真正拦人的是宿主：`package.json` 的
+  // `engines.dsh` 会让宿主在**装载前**禁用本插件（装的时候拒装、启动的时候行被禁用），所以这条 warn
+  // 基本只在「profile 的 compatibility.json 给了精确豁免」「本地 link / 非 profile 加载」时看得见。
+  // 保留它的理由：那种场景下要能一眼看到实际版本与区间，而不是静默跑在未知形状上。
   const hostVersion = host.version()
   if (hostVersion.status === 'below' || hostVersion.status === 'above') {
-    warnings(`dsh-orchestrator: 宿主版本 ${hostVersion.version} ${hostVersion.status === 'below' ? '低于' : '高于'}声明的兼容基线 ${hostVersion.baseline}：插件照常加载，但接口形状可能已变；升级/降级宿主后先跑 docs/compat.md 的冒烟 3 条`)
+    warnings(`dsh-orchestrator: 宿主版本 ${hostVersion.version} ${hostVersion.status === 'below' ? '低于' : '高于'}声明的兼容基线 ${hostVersion.baseline}：本行说明插件是在豁免 / 非 profile 加载下跑起来的，接口形状可能已变；升级/降级宿主后先跑 docs/compat.md 的冒烟 3 条`)
   }
 
   // ── 能力包（0.32.0，P2）────────────────────────────────────────

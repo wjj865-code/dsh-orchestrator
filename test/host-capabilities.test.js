@@ -128,14 +128,14 @@ test('版本解析与比较：预发布优先级、数字标识符、非法值',
 })
 
 test('基线判定：rc.3–rc.5 为基线内，低于/高于/未知各有明确结果', () => {
-  assert.equal(HOST_BASELINE.range, '>=0.2.2-rc.3 <0.3.0')
+  assert.equal(HOST_BASELINE.range, '>=0.2.2-rc.3 <0.3.0-0')
   assert.equal(versionStatus('0.2.2-rc.3'), 'inside')
   assert.equal(versionStatus('0.2.2-rc.4'), 'inside')
   assert.equal(versionStatus('0.2.2-rc.5'), 'inside')
   assert.equal(versionStatus('0.2.2-rc.2'), 'below')
   assert.equal(versionStatus('0.2.1'), 'below')
   assert.equal(versionStatus('0.3.0'), 'above')
-  assert.equal(versionStatus('0.3.0-rc.1'), 'inside', '0.3.0-rc.1 低于上限 0.3.0，仍算基线内')
+  assert.equal(versionStatus('0.3.0-rc.1'), 'above', '上界写 <0.3.0-0，0.3.0 的预览也算越界（同宿主闸门）')
   assert.equal(versionStatus('not-a-version'), 'unknown')
   assert.equal(versionStatus(undefined), 'unknown')
 })
