@@ -14,7 +14,7 @@
 | `pnpm run check:client` | `node --check dist/client.js`（构建产物语法） | exit 0 |
 | `pnpm run check:client-size` | `dist/client.js` 字节数 ≤ **148 KiB**（`scripts/check-client-size.mjs`） | exit 0 |
 | `pnpm run check:version` | `package.json` / README / CHANGELOG 三处版本口径 | exit 0 |
-| `pnpm run check:docs` | 文档行数预算（**1,800**）+ README 首屏结构 + 配置表/工具表/文档链接 + 内链可达 | exit 0（详见 §3.4） |
+| `pnpm run check:docs` | 文档行数预算（**1,800**）+ README 首屏结构 + 参考表（`docs/CONFIG.md` / `docs/TOOLS.md`）与代码同源 + 文档链接与内链可达 | exit 0（详见 §3.4） |
 | `npm pack --dry-run` | 包内容与 `package.json.files` | 含 `README`/`CHANGELOG`/`docs/testing.md`，不含被删文档与调试预设 |
 | `node --test test/<file>.test.js` | 单文件复跑（先跑 `pnpm run build`，客户端用例读 `dist/client.js`） | 同上 |
 | `node docs/probes/<probe>.mjs` | 宿主契约探针（升级 DSH 后按 `docs/probes/` 逐条重跑） | 探针自报 PASS/FAIL |
@@ -36,8 +36,8 @@
 | G5 | 工具 schema 契约 | 逐个工具体检 | `parameters.type === 'object'`、根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 中文可读；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面 |
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
-| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 22 键；全局工具 10 个（协调者可见 7 + 子会话 3）；协调者另有预设自有的只读 `read` 与 `skill`（不计入 10）；**协调者预设不得出现 `tool-fs-search`**（`glob`/`grep` 已移除，`test/config.test.js` 直接断言无该行/无该包名）；deny/keep 名单与工具表一致 |
-| G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、配置表/工具表同源、内链可达） |
+| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 25 键；全局工具 11 个（协调者可见 8 + 子会话 3）；协调者另有预设自有的只读 `read` 与 `skill`（不计入 11）；**协调者预设不得出现 `tool-fs-search`**（`glob`/`grep` 已移除，`test/config.test.js` 直接断言无该行/无该包名）；deny/keep 名单与工具表一致 |
+| G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、参考表同源、内链可达） |
 | G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **148 KiB**；148 KiB 之下按子预算表（脚本头部，合计 = 148）逐块核算，某一页超了先删重复渲染/收敛样式，再谈抬预算。**为什么从 95 调到 148**：工作台 v1 要新增总览/任务组/组工作台/排期/自动化五页与常驻只读 dock，平台只 serve 一个 `client.js`（无代码分割），全功能实测 143–146 KiB；先定 128 KiB 实测不够（差 12–16 KiB），用户拍板保留全功能 → 148 KiB（留 2–5 KiB 余量）。中间不设 148 之外的档位，超了就回头砍重复渲染 |
 
 ## 3. 断言口径（测试怎么写）
@@ -71,7 +71,7 @@
 ### 3.3 文档一致性（`test/copy-consistency.test.js` 静态部分）
 
 - 任何「N 个工具」的说法都必须是 11（全局工具；0.32.0 加入 `capability_pack`），修旧数会红。
-- 维护者内容放 `docs/`，README 只留用户内容与链接；README 必须链到 CONTRIBUTING / ARCHITECTURE / LIMITATIONS / testing / CHANGELOG。
+- 维护者内容放 `docs/`，README 只留用户内容与链接；README 必须链到 CONTRIBUTING / ARCHITECTURE / LIMITATIONS / CONFIG / TOOLS / testing / CHANGELOG。
 
 ### 3.4 `scripts/check-docs.mjs` 校验什么
 
@@ -79,8 +79,8 @@
    超了直接打印「多几行、最大的是哪几篇」，并列出各文件行数。P2-6 从 2,250 降到 1,800：预算不是目标，是天花板。
 2. **README 首屏结构**：前 60 行必须有一句话定位、兼容基线（含 `rc.5`）、带版本号的安装命令、demo 入口；
    README 不许再出现已删除的 `keepAlive*` 配置键（迁移只在 CHANGELOG / LIMITATIONS 里讲）。
-3. **README 配置表 == 代码**：表格里反引号键集合必须与 `loadConfig({})` 的键集合完全一致（缺一行/多一行都红）。
-4. **README 工具表 == 代码**：`## 工具清单` 两张表的工具名集合必须与 `createTools()` 逐名一致。
+3. **配置参考表 == 代码**：`docs/CONFIG.md` 的 `## 配置` 表里反引号键集合必须与 `loadConfig({})` 的键集合完全一致（缺一行/多一行都红）；README 的「常用项」表只能列真键，且必须链到 `docs/CONFIG.md`。
+4. **工具参考表 == 代码**：`docs/TOOLS.md` 的 `## 工具清单` 两张表工具名集合必须与 `createTools()` 逐名一致；README 必须链到 `docs/TOOLS.md`。
 5. **包内文档**：`package.json.files` 里的 `docs/*.md` 必须真实存在（防止发出去 404）。
 6. **相对链接可达**：README 与 `docs/*.md` 里的 `.md` 相对链接（含锚点）必须指向存在的文件/标题。
 7. **交接契约字段同源**：`docs/ARCHITECTURE.md` 的「契约字段」表必须与 `src/handoff.js` 的 `HANDOFF_FIELDS` 逐字一致，事件名逐个出现。
@@ -108,9 +108,9 @@
 [ ] 台账/日志只写 $DSH_HOME/state/orchestrator（临时 DSH_HOME 跑一遍）
 [ ] 能力缺失路径：不崩、可读降级文案、不假装成功
 [ ] 文案：进 src/copy.js / prompt-layers 对应层，跑 copy-consistency + prompt-layers
-[ ] 工具面变化 → cordis.patch.yml allow、README 工具表、tool-migrations 映射、check-docs
-[ ] 配置面变化 → loadConfig 键数、README 配置表、check-docs
-[ ] 文档：README（用户可见）/ ARCHITECTURE（机制）/ LIMITATIONS（边界）/ 本文件（复核）
+[ ] 工具面变化 → cordis.patch.yml allow、docs/TOOLS.md 工具表、tool-migrations 映射、check-docs
+[ ] 配置面变化 → loadConfig 键数、docs/CONFIG.md 配置表、README 常用项、check-docs
+[ ] 文档：README（用户可见）/ ARCHITECTURE（机制）/ LIMITATIONS（边界）/ CONFIG·TOOLS（参考表）/ 本文件（复核）
 [ ] CHANGELOG 顶部本次版本段写清「为什么改 / 改了什么 / 边界」
 [ ] pnpm test + check:client + check:version + check:docs + npm pack --dry-run
 [ ] 真机矩阵（§7）勾一遍，未验项写明原因与谁验

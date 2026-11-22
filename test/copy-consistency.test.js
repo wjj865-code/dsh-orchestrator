@@ -227,7 +227,9 @@ test('README 与预设同口径：默认保持待确认、工具数 11、升级�
 })
 
 test('原生自动化 policy 与文档锁住真实工具、授权及会话边界', () => {
-  const texts = [renderCoordinatorPolicy({}), ...['README.md', 'docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md']
+  // README 只留用户旅程，工具契约的正文在 docs/TOOLS.md「原生自动化工具」与 ARCHITECTURE/LIMITATIONS；
+  // 这里仍要求「policy + 三份文档」都写全，不能靠把细节从 README 删掉来让它变绿。
+  const texts = [renderCoordinatorPolicy({}), ...['docs/TOOLS.md', 'docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md']
     .map(file => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))]
   for (const text of texts) {
     for (const name of ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']) assert.ok(text.includes(name))
@@ -265,8 +267,12 @@ test('README 只服务使用者：维护者内容放 docs/，仅留链接', () =
   assert.doesNotMatch(readme, /^##\s*(版本与发布|架构与安全|开发)\s*$/m)
   assert.doesNotMatch(readme, /release\.yml|npm publish|npm version patch/)
   assert.doesNotMatch(readme, /npm test\s+#|npm run build\s+#/)
+  // 技术细节（状态机 / 工具清单 / 配置全表）留在 docs/，README 不再自带整表。
+  for (const heading of ['## 工具清单', '## 核心概念', '### 提示词分层']) {
+    assert.ok(!readme.includes(heading), `README 又长回了技术章节 ${heading}：细节放 docs/，README 只留链接`)
+  }
   // 指向文档的链接要在。
-  for (const doc of ['docs/CONTRIBUTING.md', 'docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md', 'docs/testing.md', 'CHANGELOG.md']) {
+  for (const doc of ['docs/CONTRIBUTING.md', 'docs/ARCHITECTURE.md', 'docs/LIMITATIONS.md', 'docs/CONFIG.md', 'docs/TOOLS.md', 'docs/testing.md', 'CHANGELOG.md']) {
     assert.ok(readme.includes(doc), `README 缺少文档链接：${doc}`)
   }
 })

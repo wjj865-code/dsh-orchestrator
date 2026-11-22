@@ -47,7 +47,7 @@ pnpm test                # pretest = build + check:client-size + check:docs，�
 pnpm run build           # client/src/** --vite--> dist/client.js（+ .map，默认 esbuild minify）
 pnpm run check:client    # node --check dist/client.js
 pnpm run check:client-size  # dist/client.js ≤ 148 KiB 闸门
-pnpm run check:docs      # 文档行数预算（1,800）+ README 配置表/工具表 + 内链
+pnpm run check:docs      # 文档行数预算（1,800）+ docs/CONFIG.md 配置表与 docs/TOOLS.md 工具表同源 + README 入口 + 内链
 pnpm run check:version   # package.json / README / CHANGELOG 版本口径
 node tools/debug-preset/cli.mjs            # 把随包「创造模式」组合复制成可安装的 orch-debug 预设
 node tools/debug-preset/cli.mjs --check    # 升级 DSH 后查预设漂移

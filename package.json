@@ -1,7 +1,7 @@
 {
   "name": "@wjj865-code/dsh-orchestrator",
   "version": "0.32.0",
-  "description": "Coordinator + task sessions for DeepSeek Harness: durable task ledger, cross-project memory, dependency orchestration, inbox/digest, snapshots, and a browser task panel.",
+  "description": "给 DeepSeek Harness 加一位协调者：主会话拆活派子会话，进度与结论落进持久台账，带任务台、能力包、跨项目记忆与自动化。",
   "type": "module",
   "license": "MIT",
   "main": "index.js",
@@ -24,6 +24,8 @@
     "scripts/",
     "cordis.patch.yml",
     "locale/*.json",
+    "docs/CONFIG.md",
+    "docs/TOOLS.md",
     "docs/testing.md",
     "docs/ARCHITECTURE.md",
     "docs/compat.md",

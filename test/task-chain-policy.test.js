@@ -178,7 +178,7 @@ test('文档同口径：README 依赖节与协作节奏、ARCHITECTURE 依赖节
     assert.match(text, /串行/, `${name} 没写同一检出串行`)
   }
   // 协作节奏一节也要提一句（用户看的是「什么时候派、派完要不要等」）。
-  const rhythm = readme.slice(readme.indexOf('### 6. 协作节奏'))
+  const rhythm = readme.slice(readme.indexOf('### 协作节奏'))
   assert.match(rhythm.slice(0, rhythm.indexOf('\n## ')), /任务链/)
   assert.match(arch, /renderTaskChainPolicy/)
 })

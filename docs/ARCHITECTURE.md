@@ -25,7 +25,7 @@
 - `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，四个工具（`schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`）由**预设自有行**注册，**不写进 keep/deny 名单**——own 工具不受 `restrict` 影响；`preset-tools.js` 的两个预设都用**遮挡式**：协调者点名 `deny`「编排正确性」项与三个角色专属工具、`keep` 声明 7 个任务工具与 `capability_pack`「出生即可用」，worker 只点名遮 `capability_pack`、`keep: [context, task_detail, task_report, memory_note]`（子会话可写项目记忆；都写 `preset.keep` / `preset.deny` 审计；见 [子会话读上下文](#子会话读上下文只读-context)）。这四个 schedule 工具不进入 `createTools`，插件全局工具数为 11。
 - **工具面（P1-B：15 → 10；0.32.0 加入 `capability_pack` = 11；0.26.0 起协调者另挂只读工具，t-4f7ce108 收窄到只有 `read`）**：`createTools` 返回 11 个（协调者可见 8；子会话 4 = 3 个专属 + 共用的只读 `context`）。这 11 个之外，协调者预设还挂了宿主原生 `read`（只读；`tool-fs` 只开 `read`，**不再挂 `tool-fs-search`**——`glob`/`grep` 已移除）与 `skill`（技能加载器）+ `present` + `schedule_*`，它们是**预设自有工具**，不计入全局工具数，也不受 `deny` 影响。旧入口并进三个工具：`task_message` 的 `action`、`task_list` 的 `view`、新工具 `context` 的 `mode`。旧名**不注册**、不在 keep 名单，`index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）。
 - 缺能力诊断只针对唯一主会话：检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule`，缺失去重 warn + policy 提示；不改运行回合工具表，也不模拟自动化。
-- 只支持 `target:this_session`：Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new`/`new_once` 创建普通 root 会话，不是委托 worker、也不是第二协调者；**非唯一主** id 被 `requireMain` 拒绝。**默认 worker 不新增**挂载；`access:full` 不增加工具、不解除 `subagent_session`。沿用 Host-wide 管理、用户**明确授权**、RRULE 与 `expectedUpdatedAt` 冲突保护；用法见 [README 原生自动化](../README.md#主会话原生自动化)，边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。
+- 只支持 `target:this_session`：Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new`/`new_once` 创建普通 root 会话，不是委托 worker、也不是第二协调者；**非唯一主** id 被 `requireMain` 拒绝。**默认 worker 不新增**挂载；`access:full` 不增加工具、不解除 `subagent_session`。沿用 Host-wide 管理、用户**明确授权**、RRULE 与 `expectedUpdatedAt` 冲突保护；用法见 [TOOLS 原生自动化工具](TOOLS.md#原生自动化工具)，边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。
 
 ### 入口可见性（U1）
 
@@ -59,6 +59,20 @@
 - **任务链规则进 L1（0.28.0）**：`renderTaskChainPolicy()`（`src/prompt-layers.js`，拼在推进循环之后、worktree/写域之前）把既有机制写成协调者每回合都读得到的判断口径，句子唯一真源是 `src/copy.js` 的 `TASK_CHAIN_LINES`，`task_create.dependsOn` 描述（`TASK_CHAIN_TOOL_DESC`）与 `waiting_dep` 回执（`TASK_CHAIN_WAITING_NOTE`）逐字引用同一批句子。五条：① B 的输入是 A 的产物就在派 A 的同一回合建 `dependsOn`（不要等 A 完成再建、不要轮询）；② `dependsOn` 不是阻塞等待——晋升发生在 `queue.pump()` 的 `promoteDependents`，不占协调者回合、不是 `wait_agent`；③ 前置失败/取消/丢失/不存在 → 下游 `failed`（循环传播）；④ 就绪只认 `done`，前置 `delivered` 会挡住下游；⑤ 同一 worktree 检出必须串行。**只改提示词与工具描述**：`deps.js`/`queue.js`/状态机/权限一行未动。
 - `group` 只用于展示/过滤；`priority` 只影响队列顺序。
 - **同写域并发防护**（`src/write-guard.js`，默认拒绝）：`task_create` 在「去重 / 容量 / worktree 决定」之后、`createTask` 之前的**同一个同步段**里判定——新任务 target 与活跃未隔离任务的 target 相同或互相包含，或两者 `writeScopes` 重叠 → 按 `config.sameDirGuard` 处理（`require` 拒绝 / `warn` 只警告 / `off` 关闭）。不参与判定：`readOnly`、`requested/created/reused` 隔离任务、`dependsOn` 祖先、终态任务。例外是 `degraded`（不是 git 仓库而降级）：仍在原工作树里写，必须继续占目录。`delivered` 算活跃；唯一显式放行是 `allowConcurrent:true`（记 `task.create.concurrent-write`）。拒绝对应 `task.create.rejected`（`reason: same-dir | write-scope`）。
+
+## 派单选项一览（`task_create`）
+
+| 参数 | 作用 |
+|---|---|
+| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**，四步顺序固定：①子会话只读探索 → ②`plan_save` 把计划落盘到 `reports/plans/<taskId>.md`（计划阶段唯一写入口）→ ③`blocked` 只上报摘要 + **绝对路径** + 待拍板清单 → ④协调者**先**把摘要与绝对路径回给用户并 `present` 计划文档，**再**用 `ask_user_question` 请拍板（选项至少「批准执行 / 先看计划文档 / 调整计划」）；**计划批准必须由用户拍板、协调者不得自行批准**，只有用户明确批准才 `task_message` 续派并切回可写。与 `readOnly` 互斥 |
+| `readOnly` | 只读任务：只认显式 `true`，续派也**不会**转可写 |
+| `access: 'full'` | 这一条任务跑在 `danger-full-access`：沙箱不限制写入、`bash`/`pwsh` 解封。只接受 `'full'`，不继承、不改部署默认；与 `readOnly`/`planFirst` 互斥 |
+| `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup` | 在 `<repo>/.agents/worktrees/<taskId>` 独立检出里干活，产物在分支上、**合并由用户决定**；多活跃分支且没给基线时先返回候选让用户选 |
+| `goalRounds` | 1–50；`>0` 时交宿主 `dsh-goal-round-driver` 续跑，默认 0 = 不续跑（见「子会话目标（G1）与续跑」） |
+| `teamTaskId` | 关联官方 Team 板任务；**人/协调者确认交付**时按 CAS 反写官方任务 `complete`（超时自动完成不反写） |
+| `allowConcurrent` | 显式放行同写域并发（返回里标注风险并记日志） |
+
+worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖，可以执行安装命令（`pnpm install` / `npm install` / `uv sync`），**只安装不升级**。计划任务的批准顺序与失败分支见「计划阶段（P8）」。
 
 ## 回报、通知、收件箱、日报
 
@@ -189,6 +203,26 @@
 **为什么失败只 warn**：交付是本地状态机的事实，官方板只是并行看板；为了一个看板写失败把已确认的任务回滚成 `delivered`，会让「用户已经确认过」这件事消失。
 
 **为什么超时自动完成不反写**：超时是「没人确认」的兜底，不是人的判断。让它去改官方板，等于系统替别人把共享看板上的任务标完成；所以只记一条 `team.board.skipped`，`updateTask` 一次都不调。
+
+## 任务状态机
+
+| 状态 | 含义 | 谁推进 |
+|---|---|---|
+| `waiting_dep` | 等前置完成，不派发、不占并发位 | 前置 `done` 后自动 → `pending` |
+| `pending` | 排队等并发槽位 | 队列自动派发 → `running` |
+| `running` | 子会话在跑 | 子会话回报 / 结算 |
+| `waiting_user` | 子会话 `blocked`，等人决定 | `task_message` 续派 → `running` |
+| `waiting_auth` | 子会话 `needs_auth`，等授权 | 同上 |
+| **`delivered`** | **已交付待确认**：成果已落库，等确认或追问 | `close` → `done`；`task_message` → `running`；超时 → `done` |
+| `done` | 已完成（**不可逆终态**，不提供 reopen；`close` 确认的不可续跑） | — |
+| `failed` | 失败（可 `resume` 续跑原会话 / `retry` 新派） | `resume` → `running` |
+| `cancelled` | 被 `stop` 停掉（尊重意图，不续跑） | — |
+| `orphaned` | 会话丢了（上报过 progress 的回合异常结束；重启后常见） | `resume` 续跑 / `retry` 新派 |
+
+- 依赖就绪**只认 `done`**：`delivered` 会短暂挡住下游，确认或超时后自动晋升。
+- **能复用会话的三条收尾态各有出口**：`delivered` 用 `task_message` 追问；`failed`/`orphaned` 用 `resume` 冷恢复同一个子会话（上下文还在）；只有超时自动完成的 `done` 允许 `resume`——确认过的 `done` 要改只能新派。
+- **`resume` vs `retry`**：`resume` = 同一任务同一子会话接着跑（失败/额度中断/重启中断的默认出口）；`retry` = 新任务编号 + 新子会话（上下文跑偏、换检出/权限、会话真的不可达时用）。会话不可达时 `resume` **报错回退**、不静默新建；历史消息 > 60 条只**建议** `retry`，不拦截。
+- 状态集合与转移表只有一份（`src/status-facts.js`），面板、工具、结算、对账都从它派生。
 
 ## 状态事实源（`src/status-facts.js`）
 
@@ -497,6 +531,16 @@
 
 工作台 v1 的只读投影与窄写口同挂这一条路由：只读 `groups` / `group` / `calendar` / `automations` / `stats`（复盘页的窗口统计——交付数、确认数、平均「创建→交付」时长、失败归因（`tasks.error` 首行）、产物类型（按路径扩展名，不读文件内容）、组维度排行与消息条数；窗口 ≤62 天、缺省 7 天，只读台账既有时间戳）；写 `group-save` / `group-archive` / `plan-set` / `automation-save|toggle|delete`（`clientRequestId` 幂等 + 危险动作 `confirm:true` + 审计）。**刻意没有** `task-create` / `plan-approve` / `close-all` / `task-message` / `patch-task`。
 
+工作台（任务台）六页与边界：
+
+- **总览**：4 张指标卡（点击即切筛选）、今日排期、下一条自动化、待你决定提示、任务卡列表 / 产物库。
+- **任务组**：按 `task_create({ group })` 聚合，组卡显示进度、待确认/在跑/失败计数、产物数、下次排期与自动化小标；没有 group 的任务单列「未分组」（不落库、不可改名）。组名可改，**组键（`tasks.group_id`）不可变**——worktree 检出复用与 `task_list({ group })` 都按它判定。
+- **组工作台**：状态列板（等前置/待派发、在跑、待确认、待你决定、完成、失败·取消）+ 右侧 dock + 详情抽屉 + 产物格。列板只做筛选，**不支持拖拽改状态**。
+- **排期**：月历（周一起始）拖任务到某天即排期，拖回「待排期」取消；另有任务卡里的「排期」按钮（不依赖拖拽）。**两层互不推导**：L1 计划日（`tasks.planned_at`，纯展示）与 L2 自动化触发（`automations` 表镜像 + 宿主 `ctx.schedule` 真身）——排一天不会自动派任务，建自动化也不会改计划日。
+- **自动化**：到点由宿主 `schedule` 投递一条话术给唯一主会话，协调者按话术 `task_list` 核对后再 `task_create`；新建/暂停/恢复/删除都要二次确认 + 授权勾选，落审计日志。宿主没有自动化服务时整页只读降级。
+- **复盘**：三张数字卡（交付数、确认数、平均「创建→交付」时长）+ 失败归因横向条（`tasks.error` 首行，最多 5 类）+ 产物类型分布（按扩展名，最多 8 类，**不读文件内容**）+ 组维度排行（最多 10 个组）+ 窗口内 `messages` 条数；只读台账既有时间戳，不新增埋点、不新增写口。
+- **右侧 dock 是只读镜像**：摘要、最近消息、阻塞问题、`打开子会话` 与 `到主会话说` 两个跳转；没有输入框、没有发送按钮、没有「批准计划」——**不代发消息、不代批计划**。刻意不做：新任务直写台账（只生成派单草稿）、批量确认交付。
+
 ## 面板与详情（UI U2）
 
 面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件。四件事值得记在架构里：
@@ -536,7 +580,7 @@
 
 插件页只展示一段简介与文档链接；这里只留运维需要口径：
 
-- **常用工具**（10 个，详见 README「工具清单」）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace`（另有预设自有的只读 `read`、`skill`、`present`、`schedule_*`，不计入这 10 个）；子会话 `task_report` / `task_detail` / `plan_save` / 共用的只读 `context` 与**只能写自己任务目录项目记忆**的 `memory_note`。
+- **常用工具**（11 个，完整清单与角色差异见 [TOOLS](TOOLS.md#工具清单)）：协调者 `task_create` / `task_list` / `task_status` / `task_message` / `context` / `memory_note` / `read_workspace` / `capability_pack`（另有预设自有的只读 `read`、`skill`、`present`、`schedule_*`，不计入这 11 个）；子会话 `task_report` / `task_detail` / `plan_save` / 共用的只读 `context` 与**只能写自己任务目录项目记忆**的 `memory_note`。
 - **面板动作与错误码同源**：面板 stop / retry / message / delete 与 `task_message({action})` 共用 `src/action-errors.js` 的 code 与门控；面板失败返回 `{ok:false, code, error}`，`host-route` 按 code 映射 HTTP 状态（400 参数 / 404 不存在 / 409 状态冲突 / 502 投递失败 / 500 内部）。
 - `stop`：已结束再 stop 返回 `{ok:true, already:true}`；收子会话失败不阻断取消（`warnings[].code=STOP_DISPATCH_FAILED`）。
 - `retry`：只允许 failed/orphaned；已有活跃重派直接返回那条任务；同 title+goal 的其他活跃任务返回 `RETRY_DUPLICATE_ACTIVE`。
@@ -547,7 +591,7 @@
 
 ### 插件页配置卡片
 
-插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**22 个字段**，与 `loadConfig({})` 的实际键集合一一对应
+插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**25 个字段**，与 `loadConfig({})` 的实际键集合一一对应
 （已删键不出现在表单上——P2-2 删的 7 个 `keepAlive*` 与阈值键、0.25.0 删的轮换 8 键——只由 `src/config.js` 的 `DEPRECATED_KEYS` 给弃用警告），等价于手改 profile 的 `cordis.patch.yml`。DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供
 `configForms`（值 + 写操作）与 slot，**不生成表单**（0.2.2-rc.3 的 `autoGenerate` 字段全 asar 无 client 消费方）。
 

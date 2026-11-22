@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-/** 声明的宿主兼容基线（含预发布）：README:7 与 docs/compat.md 同口径。 */
+/** 声明的宿主兼容基线（含预发布）：README 首屏定位行与 docs/compat.md 同口径。 */
 export const HOST_BASELINE = Object.freeze({
   min: '0.2.2-rc.3',
   upperExclusive: '0.3.0',

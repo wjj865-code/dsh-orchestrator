@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS groups_v1 (
 CREATE INDEX IF NOT EXISTS idx_groups_archived ON groups_v1(archived);
 -- 工作台 v1：原生自动化的**镜像 + 授权审计**（真身在宿主 ctx.schedule）。
 -- 本表只回答「这条自动化是谁在什么时候授权建的、绑在哪个组、最近一次投递如何」；
--- 触发/暂停/删除一律以宿主 schedule 服务为准（README「主会话原生自动化」）。
+-- 触发/暂停/删除一律以宿主 schedule 服务为准（docs/TOOLS.md「原生自动化工具」）。
 CREATE TABLE IF NOT EXISTS automations (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL, ref_id TEXT, title TEXT NOT NULL, prompt TEXT NOT NULL,
   timing_json TEXT NOT NULL, schedule_id TEXT, target_session TEXT,

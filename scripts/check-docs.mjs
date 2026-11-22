@@ -1,11 +1,12 @@
-// 文档预算与一致性断言（P1-D，P2-6 收紧预算并加首屏结构）。
+// 文档预算与一致性断言（P1-D，P2-6 收紧预算并加首屏结构；0.32.x 参考表下沉 docs/）。
 //
 // 为什么需要它：P1 把文档砍掉一半以后，「再加一篇 / 再抄一张表」没有任何阻力，
-// 半年后又会回到 3,000 行；README 的配置表与工具表也一直靠人工同步（已经漂移过：
-// 漏了 3 个 preferences* 键）。这里把四件事变成 CI 断言：
+// 半年后又会回到 3,000 行；参考表也曾一直靠人工同步（已经漂移过：漏了 3 个 preferences* 键）。
+// 这里把四件事变成 CI 断言：
 //   1. README + 顶层 docs/*.md 总行数 ≤ DOC_LINE_BUDGET（超了直接说改哪篇）；
 //   2. README 首屏（前 60 行）必须能「3 分钟看懂 + 跑通」，并清掉已删除的配置键；
-//   3. README 配置表键集合 == loadConfig({}) 键集合；README 工具表 == createTools() 名单；
+//   3. 参考表（docs/CONFIG.md 的配置表、docs/TOOLS.md 的工具表）与代码逐项一致；
+//      README 只列常用项，但列出的键必须是真键，且必须链到这两份参考；
 //   4. package.json.files 里的 docs 都存在，文档内相对链接（含锚点）都可达。
 //
 // 口径：预算只算 README.md + docs/ 顶层 *.md。docs/superpowers/（历史计划/规格）与
@@ -73,15 +74,15 @@ export function subsectionOf(markdown, title) {
   return lines.slice(start + 1, end).join('\n')
 }
 
-/** README 配置表里的键（表格第一列的反引号标识符）。 */
-export function readmeConfigKeys(readme) {
-  const section = sectionOf(readme, '配置')
+/** 配置表里的键（表格第一列的反引号标识符）：配置参考文档与 README 的「常用项」都按这条解析。 */
+export function configKeysOf(markdown) {
+  const section = sectionOf(markdown, '配置')
   return [...section.matchAll(/^\|\s*`([A-Za-z][A-Za-z0-9]*)`\s*\|/gm)].map(match => match[1])
 }
 
-/** README 工具清单里的工具名（只看「协调者 / 子任务」两张表；后面的迁移映射表是旧名，不算工具面）。 */
-export function readmeToolNames(readme) {
-  const section = sectionOf(readme, '工具清单').split('\n### ')[0]
+/** 工具清单里的工具名（只看「协调者 / 子任务」两张表；后面的迁移映射表是旧名，不算工具面）。 */
+export function toolNamesOf(markdown) {
+  const section = sectionOf(markdown, '工具清单').split('\n### ')[0]
   return [...section.matchAll(/^\|\s*`([a-z][a-z0-9_]*)`\s*\|/gm)].map(match => match[1])
 }
 
@@ -162,27 +163,38 @@ export function collectProblems(root = ROOT) {
     }
   }
 
-  // —— 2. README 配置表 / 工具表与代码一致 ——
+  // —— 2. 参考表（docs/CONFIG.md、docs/TOOLS.md）与代码一致；README 只列常用项 ——
+  // README 是用户上手指南：完整配置表与工具清单在 docs/ 里维护，这里断言「参考表 == 代码」，
+  // 再断言 README 列的常用项都是真键、且两份参考都有链接（否则用户找不到完整版）。
   const readme = read('README.md')
-  const tableKeys = readmeConfigKeys(readme)
+  const configDoc = read('docs/CONFIG.md')
+  const toolsDoc = read('docs/TOOLS.md')
+  const tableKeys = configKeysOf(configDoc)
   const configKeys = codeConfigKeys()
   const missingConfig = configKeys.filter(key => !tableKeys.includes(key))
   const extraConfig = tableKeys.filter(key => !configKeys.includes(key))
   if (missingConfig.length > 0) {
-    problems.push(`README 配置表缺少 ${missingConfig.length} 个键：${missingConfig.join('、')}（loadConfig({}) 有 ${configKeys.length} 个）`)
+    problems.push(`docs/CONFIG.md 配置表缺少 ${missingConfig.length} 个键：${missingConfig.join('、')}（loadConfig({}) 有 ${configKeys.length} 个）`)
   }
   if (extraConfig.length > 0) {
-    problems.push(`README 配置表多出 ${extraConfig.length} 个不存在的键：${extraConfig.join('、')}（要么删行，要么加进 src/config.js）`)
+    problems.push(`docs/CONFIG.md 配置表多出 ${extraConfig.length} 个不存在的键：${extraConfig.join('、')}（要么删行，要么加进 src/config.js）`)
   }
   const dupConfig = tableKeys.filter((key, index) => tableKeys.indexOf(key) !== index)
-  if (dupConfig.length > 0) problems.push(`README 配置表重复行：${[...new Set(dupConfig)].join('、')}`)
+  if (dupConfig.length > 0) problems.push(`docs/CONFIG.md 配置表重复行：${[...new Set(dupConfig)].join('、')}`)
 
-  const tableTools = readmeToolNames(readme)
+  const readmeKeys = configKeysOf(readme)
+  if (readmeKeys.length === 0) problems.push('README 的「配置」一节没有常用项表：至少列出用户最常改的几项并链接 docs/CONFIG.md')
+  const phantomKeys = readmeKeys.filter(key => !configKeys.includes(key))
+  if (phantomKeys.length > 0) problems.push(`README 常用配置表出现不存在的键：${phantomKeys.join('、')}（完整表在 docs/CONFIG.md，这里只能列真键）`)
+  if (!/\[[^\]]*\]\(docs\/CONFIG\.md/.test(readme)) problems.push('README 缺少 docs/CONFIG.md 链接：完整配置表下沉后必须给入口')
+
+  const tableTools = toolNamesOf(toolsDoc)
   const toolNames = codeToolNames()
   const missingTools = toolNames.filter(name => !tableTools.includes(name))
   const extraTools = tableTools.filter(name => !toolNames.includes(name))
-  if (missingTools.length > 0) problems.push(`README 工具表缺少：${missingTools.join('、')}（createTools() 有 ${toolNames.length} 个）`)
-  if (extraTools.length > 0) problems.push(`README 工具表多出：${extraTools.join('、')}（代码里没有这些工具）`)
+  if (missingTools.length > 0) problems.push(`docs/TOOLS.md 工具表缺少：${missingTools.join('、')}（createTools() 有 ${toolNames.length} 个）`)
+  if (extraTools.length > 0) problems.push(`docs/TOOLS.md 工具表多出：${extraTools.join('、')}（代码里没有这些工具）`)
+  if (!/\[[^\]]*\]\(docs\/TOOLS\.md/.test(readme)) problems.push('README 缺少 docs/TOOLS.md 链接：工具清单下沉后必须给入口')
 
   // README 不教已删除的配置键：`keepAlive*` 四键 P2-2 起失效，迁移只在 CHANGELOG / LIMITATIONS 里讲。
   // 反例是「排障表里顺手写一句旧键名」——用户照着改也改不回来，只会以为还能用。
@@ -250,7 +262,7 @@ function main() {
     process.exitCode = 1
     return
   }
-  console.log(`文档检查通过：总行数 ${total} / 预算 ${DOC_LINE_BUDGET}；配置表 ${codeConfigKeys().length} 键、工具表 ${codeToolNames().length} 个、包内文档与内链均可达。`)
+  console.log(`文档检查通过：总行数 ${total} / 预算 ${DOC_LINE_BUDGET}；配置参考 ${codeConfigKeys().length} 键、工具参考 ${codeToolNames().length} 个、README 常用项与入口齐全、包内文档与内链均可达。`)
 }
 
 if (typeof process.argv[1] === 'string' && process.argv[1].endsWith('check-docs.mjs')) main()

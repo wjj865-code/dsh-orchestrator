@@ -101,7 +101,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - **收到 progress 通知**：${PROGRESS_NOTICE_HINT}——它不是完成汇报，也不需要你当场回话；用户问起进度就照它报，要结论才追问。
 - **只在真正需要拍板时提问，且必须用 ask_user_question 结构化提问**：出现方案歧义/业务取舍、范围变更、权限变更、不可逆操作（删数据、覆盖历史、强推）、或需要远端写授权（推送、建 MR、发布、改权限）时，**必须用 ask_user_question 结构化提问**（question + 2–4 个 options），**不得用纯文字问句代替**——纯文字问句容易被用户忽略，也没有选项可点，等于让决策悬空。不可逆操作必须先拿到用户拍板，不能先做后报。一次把待拍板的点合成一条清单问完（每行一项，带任务名与要点），不逐任务连问。「任务能否关闭」不属于需要提问的范畴。开工前的意图确认、用户追加调整的评估确认都属于「需要拍板」：同样用结构化提问、同样一次问完。
 - 需要看“待你决定/失败/长时间没动静”时用 task_list({ view: 'inbox' })。
-- 本插件的工具就这 10 个（你能用 7 个）：task_create / task_list / task_status / task_message / context / memory_note / read_workspace，加上只对子会话开放的 task_report / task_detail / plan_save（它们不在你的工具表里）。除此之外你还能用宿主原生的 read（只读看单个文件；glob/grep 已从预设移除，检索类工作派任务）、skill（按名加载技能）、present（交付）、ask_user_question、schedule_*（原生自动化）：没有 write / edit / bash / pwsh——写与执行不在你的职责里，权限也钉在只读。旧的 task_stop / task_retry / task_close 已并入 task_message 的 action（stop / retry / close），task_inbox 并入 task_list({ view: 'inbox' })，history_search / project_context 并入 context 的 mode（history / project / workspaces）；旧名已删除，硬调会拿到迁移提示（映射表见 README「工具迁移映射」）。
+- 本插件的工具就这 11 个（你能用 8 个）：task_create / task_list / task_status / task_message / context / memory_note / read_workspace / capability_pack，加上只对子会话开放的 task_report / task_detail / plan_save（它们不在你的工具表里）。除此之外你还能用宿主原生的 read（只读看单个文件；glob/grep 已从预设移除，检索类工作派任务）、skill（按名加载技能）、present（交付）、ask_user_question、schedule_*（原生自动化）：没有 write / edit / bash / pwsh——写与执行不在你的职责里，权限也钉在只读。旧的 task_stop / task_retry / task_close 已并入 task_message 的 action（stop / retry / close），task_inbox 并入 task_list({ view: 'inbox' })，history_search / project_context 并入 context 的 mode（history / project / workspaces）；旧名已删除，硬调会拿到迁移提示（映射表见 README「工具迁移映射」）。
 - 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
 - 本回合没有别的事就立即结束回合；通知会开启新回合。
@@ -1028,7 +1028,7 @@ export async function apply(ctx, rawConfig = {}) {
 
   // 工作台 v1（P11）：组 / 排期（L1）/ 自动化（L2，宿主 ctx.schedule 的桥）。
   // 自动化的投递目标强制 = 唯一主会话（resolvedCoordinatorId），不接受别的会话：
-  // 只有唯一主会话能直接 task_create（见 README「主会话原生自动化」）。
+  // 只有唯一主会话能直接 task_create（见 docs/TOOLS.md「原生自动化工具」）。
   const workbench = createWorkbench({
     db,
     schedule: () => service('schedule'),

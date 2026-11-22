@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Task orchestration",
-    "description": "Coordinator and task sessions with cross-project memory, dependency orchestration, inbox, digest, and a task panel.",
+    "description": "A coordinator plus task sessions: delegate work to sub-sessions and keep progress, results, and cross-project memory in a durable ledger, with a task workbench, capability packs, and automation.",
     "detail": "README.md"
   }
 }

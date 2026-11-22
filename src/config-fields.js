@@ -11,8 +11,8 @@
 // 回落默认（那是运行时的最后一道防线，行为零变化）；本文件描述的是「字段的规格」，供
 // schema 与 UI 使用。两边由 test/config-fields.test.js 双向比对守住。
 //
-// 0.25.0（B'）：字段表投影的是 `loadConfig({})` **实际产出的 22 个键**（上一版 29 个：
-// 轮换 8 键随功能删除，新增 1 个 `contextPressureThreshold`）。已删的键（`keepAlive*` 四个续跑键 +
+// 0.25.0（B'）：字段表投影的是 `loadConfig({})` **实际产出的键**（0.25.0 起 22 个，0.32.0 加入能力包
+// 三键后 25 个；上一版 29 个：轮换 8 键随功能删除，新增 1 个 `contextPressureThreshold`）。已删的键（`keepAlive*` 四个续跑键 +
 // `mergeWindowMs` / `stallRounds` / `preferencesMaxItems` 三个常量化的阈值键 + 8 个轮换键）
 // **不得**再出现在这里——它们只留在 `src/config.js` 的 DEPRECATED_KEYS 里给弃用警告，
 // 表单上多一行「已删除的键」= 用户改完写回去仍是无效配置。
