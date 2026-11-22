@@ -7,6 +7,9 @@
  * P2-5（S9′）：渲染收敛——标签兜底、确认条、圆点行、键值对四处重复片段各抽一次；
  * 新增「官方 Team（只读）」分区与「交接」区块（数据只读下发，前端不算结论）。
  */
+// 打开「刚创建出来的会话」的等待/重试（与开包会话同一条路；宿主 retain 只认已进会话目录的 id）。
+import { openSessionWhenReady } from './open-session.js'
+
 // 标签单源：表里没有就退化原始值，空值兜底成 fallback。替掉各处 `X_LABEL[v] || v || '未知'`。
 const labelOf = (table, value, fallback = '未知') => (
   value === null || value === undefined || value === '' ? fallback : (table[value] ?? value)
@@ -36,7 +39,7 @@ export function createViews({
   // 工作台 v1（P11）：页面组件 + 数据源 + 纯逻辑。
   createWorkbench, WORKBENCH_PAGES, WORKBENCH_STORAGE_KEY, WORKBENCH_POLL_MS,
   workbenchApi, startOfMonth, plannedOnDay, planStampOnDay, groupTasksOf, nextPlannedTask, automationStateLabel,
-  monthGrid, dateKeyOf,
+  monthGrid, dateKeyOf, AUTOMATION_CREATE_PROMPT,
 }) {
   // 工作台页面组件（只吃 props，自己不发请求；数据与节流在下面的 TasksPanel 里统一管）。
   const Wb = createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banner, SkeletonList, STATUS_LABEL })
@@ -279,7 +282,7 @@ export function createViews({
     )
   }
 
-  const TasksPanel = ({ openSession, openArtifactPreview, focus, notice }) => {
+  const TasksPanel = ({ openSession, openArtifactPreview, focus, notice, prefillDraft, openSchedules }) => {
     // ---- 数据与状态（A3/A4/B1/G1 全部保留）----
     const [snapshot, setSnapshot] = React.useState(null)
     // 快照（轮询/刷新）和动作（打开主会话/打开会话）分开记，避免把动作错误显示成「台账暂不可用」。
@@ -535,14 +538,37 @@ export function createViews({
         setActionNotice(plannedAt === null ? '已清除排期' : '已排期（只改计划日，不改任务状态）')
       },
     )
-    const createAutomation = payload => runWorkbench(
-      () => workbenchApi.saveAutomation(payload),
-      async () => {
-        await loadAutomations()
-        await loadGroups()
-        setActionNotice('自动化已保存并启用（到期由协调者按话术核对后派单）')
-      },
-    )
+    // 自动化创建（0.33.0）：对齐 DSH 官方「在会话中创建」——面板不再自己建任务。
+    // 流程：open-main（已存在且 live 就复用）→ 打开唯一主会话 → 把提示词写进该会话的输入框
+    // （conversation.input.requestDraftInitialization，官方会话创建用的同一入口）→ 用户补一句后发送，
+    // 由主会话里的协调者调官方 schedule_create 创建，默认绑定主会话。
+    // prefillDraft 由 client.js 注入（返回是否写入成功）；注入缺失时只打开会话并如实提示。
+    const createAutomationEntry = async () => {
+      if (wbBusy) return
+      setWbBusy(true)
+      try {
+        const body = await openMainOnce()
+        const sessionId = body?.sessionId
+        if (typeof sessionId !== 'string' || sessionId === '') throw new Error('宿主没返回主会话编号')
+        // 刚建出来的主会话可能还没进客户端会话目录 → 宿主 retain 会同步抛 unknown session。
+        // 与开包会话同一条等待/重试（open-session.js），不在这里另写一套。
+        const opened = await openSessionWhenReady(openSession, sessionId)
+        if (opened.ok !== true) throw new Error(opened.reason === '' ? '宿主不接受这个会话' : opened.reason)
+        setActionError(null)
+        let prefilled = false
+        try {
+          prefilled = typeof prefillDraft === 'function' ? prefillDraft(sessionId, AUTOMATION_CREATE_PROMPT) === true : false
+        } catch { prefilled = false }
+        setActionNotice(prefilled
+          ? '已打开主会话并预填提示词：补一句「做什么、什么时候」后发送，协调者会用官方 schedule_create 创建（默认绑定本会话）'
+          : '主会话已打开。提示词没能自动预填，请直接说明要创建什么自动化（到期只投本会话）')
+      } catch (failure) {
+        setActionNotice(null)
+        setActionError(`打开主会话失败：${String((failure && failure.message) || failure)}`)
+      } finally {
+        setWbBusy(false)
+      }
+    }
     const switchAutomation = (id, active) => runWorkbench(
       () => workbenchApi.toggleAutomation(id, active),
       async () => {
@@ -1962,10 +1988,10 @@ export function createViews({
       <div className="orch-wb" data-page="automations">
         <Wb.AutomationsPage
           state={automationState}
-          groups={workbenchGroups}
           busy={wbBusy}
           onReload={() => { void loadAutomations() }}
-          onSave={createAutomation}
+          onCreate={createAutomationEntry}
+          onOpenSchedules={openSchedules}
           onToggle={switchAutomation}
           onDelete={removeAutomation}
         />

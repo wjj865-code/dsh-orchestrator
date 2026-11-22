@@ -10,7 +10,7 @@
  * 组件都是工厂里定义的闭包（与 views.js 同一套 React 注入，源码不 import react）。
  */
 import {
-  BOARD_COLUMNS, WEEKDAY_LABELS, AUTOMATION_KINDS, AUTOMATION_WEEKDAYS, DEFAULT_PLAN_HOUR, TONE_COLOR,
+  BOARD_COLUMNS, WEEKDAY_LABELS, DEFAULT_PLAN_HOUR, TONE_COLOR,
   REVIEW_DAYS,
 } from './constants.js'
 import {
@@ -634,175 +634,86 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
     )
   }
 
-  const AutomationForm = ({ groups, onSave, busy }) => {
-    const [kind, setKind] = useState('group')
-    const [refId, setRefId] = useState('')
-    const [timingKind, setTimingKind] = useState('daily')
-    const [time, setTime] = useState('09:00')
-    const [weekdays, setWeekdays] = useState([1])
-    const [expression, setExpression] = useState('0 9 * * 1-5')
-    const [rrule, setRrule] = useState('FREQ=DAILY;BYHOUR=9')
-    const [title, setTitle] = useState('')
-    const [what, setWhat] = useState('')
-    const [authorized, setAuthorized] = useState(false)
-    const submit = event => {
-      event.preventDefault()
-      if (!authorized) return
-      const timing = timingKind === 'daily' ? { kind: 'daily', time }
-        : timingKind === 'weekly' ? { kind: 'weekly', time, weekdays }
-          : timingKind === 'cron' ? { kind: 'cron', expression }
-            : { kind: 'rrule', rrule }
-      onSave({ kind, refId: kind === 'global' ? undefined : refId, timing, title, what, confirm: true })
-    }
-    return (
-      <form className="orch-wb-card orch-wb-form" onSubmit={submit}>
-        <header className="orch-wb-cardhead"><span className="orch-wb-cardtitle"><Icon name="bolt" size={13} />{'新建自动化'}</span></header>
-        <label className="orch-wb-field">
-          <span>{'绑定对象'}</span>
-          <span className="orch-wb-inline">
-            <select className="orch-input" value={kind} onChange={event => setKind(event.target.value)} aria-label="自动化绑定对象">
-              <option value="group">{'一个任务组'}</option>
-              <option value="global">{'全部任务（收件箱巡检）'}</option>
-            </select>
-            {kind === 'group'
-              ? (
-                  <select className="orch-input" value={refId} onChange={event => setRefId(event.target.value)} aria-label="选择组">
-                    <option value="">{'选择组…'}</option>
-                    {groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
-                  </select>
-                )
-              : null}
-          </span>
-        </label>
-        <label className="orch-wb-field">
-          <span>{'触发方式'}</span>
-          <span className="orch-wb-inline">
-            <select className="orch-input" value={timingKind} onChange={event => setTimingKind(event.target.value)} aria-label="触发方式">
-              {AUTOMATION_KINDS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-            {timingKind === 'daily' || timingKind === 'weekly'
-              ? <input type="time" className="orch-input" value={time} onChange={event => setTime(event.target.value)} aria-label="触发时刻" />
-              : null}
-            {timingKind === 'cron'
-              ? <input className="orch-input" value={expression} onChange={event => setExpression(event.target.value)} aria-label="cron 表达式" placeholder="0 9 * * 1-5" />
-              : null}
-            {timingKind === 'rrule'
-              ? <input className="orch-input" value={rrule} onChange={event => setRrule(event.target.value)} aria-label="rrule" placeholder="FREQ=DAILY" />
-              : null}
-          </span>
-        </label>
-        {timingKind === 'weekly'
-          ? (
-              <div className="orch-wb-field">
-                <span>{'星期'}</span>
-                <span className="orch-wb-inline">
-                  {AUTOMATION_WEEKDAYS.map((label, index) => {
-                    const day = index + 1
-                    const on = weekdays.includes(day)
-                    return (
-                      <button
-                        key={label} type="button" className="orch-wb-daychip" data-on={on ? 'true' : 'false'}
-                        aria-pressed={on}
-                        onClick={() => setWeekdays(on ? weekdays.filter(item => item !== day) : [...weekdays, day].sort((a, b) => a - b))}
-                      >{label}</button>
-                    )
-                  })}
-                </span>
-              </div>
-            )
-          : null}
-        <label className="orch-wb-field">
-          <span>{'标题（可选）'}</span>
-          <input className="orch-input" value={title} maxLength={120} onChange={event => setTitle(event.target.value)} placeholder="默认用绑定对象生成" />
-        </label>
-        <label className="orch-wb-field">
-          <span>{'到点做什么（可选）'}</span>
-          <textarea className="orch-input" rows={2} value={what} onChange={event => setWhat(event.target.value)} placeholder="例如：把上周没写完的初稿推进到待确认" />
-        </label>
-        <label className="orch-wb-check">
-          <input type="checkbox" checked={authorized} onChange={event => setAuthorized(event.target.checked)} />
-          <span>{'我授权在到期时由协调者用这条话术核对并派单（只投递到唯一主会话，不新建会话）'}</span>
-        </label>
-        <div className="orch-wb-formfoot">
-          <span className="orch-muted">{'投递成功 ≠ 任务完成；平台崩溃可能重复投递，不承诺 exactly-once。'}</span>
-          <button type="submit" className="orch-btn orch-btn--primary" disabled={busy || !authorized || (kind === 'group' && refId === '')}>{'保存并启用'}</button>
-        </div>
-      </form>
-    )
-  }
-
-  const AutomationsPage = ({ state, groups, onReload, onSave, onToggle, onDelete, busy }) => {
+  // 自动化（0.33.0）：创建入口收敛为**一个按钮**，对齐 DSH 官方「在会话中创建」。
+  // 面板不再自己调 schedule 接口建任务：点按钮 → 打开唯一主会话 + 预填提示词 → 由协调者在该会话里
+  // 用官方 schedule_create 创建（默认绑定主会话）。右侧自定义表单（绑定对象/触发方式/星期/标题/
+  // 到点做什么/授权勾选）整块删除：现在只有「全部任务（收件箱巡检）」一种范围语义，写在提示词里。
+  // 列表仍只读本插件的镜像表（宿主任务请去官方「自动化任务」页看，入口在卡头）。
+  const AutomationsPage = ({ state, busy, onReload, onCreate, onOpenSchedules, onToggle, onDelete }) => {
     if (state.data === null) {
       return <SkeletonList rows={3} />
     }
     const data = state.data
     const rows = data.rows || []
+    const creatable = data.available === true && typeof onCreate === 'function'
     return (
       <div className="orch-wb-page orch-wb-automations">
         {data.available !== true
           ? <Banner tone="notice" icon="alert">{'当前宿主没有可用的自动化服务（@deepseek-ai/dsh-tool-schedule）：本页只读，已记录的自动化不会触发。装好并彻底重启 DSH 后再来。'}</Banner>
-          : (data.canCreate === false
-              ? <Banner tone="notice" icon="alert">{'还没有主会话：自动化只能投递到唯一主会话。先「打开主会话」再建。'}</Banner>
-              : null)}
+          : null}
         {state.error !== null
           ? <Banner tone="error" icon="alert" action={<button type="button" className="orch-btn orch-btn--sm" onClick={onReload}>{'重试'}</button>}>{`自动化读取失败：${state.error}`}</Banner>
           : null}
-        <div className="orch-wb-cols">
-          <div className="orch-wb-main">
-            <section className="orch-wb-card">
-              <header className="orch-wb-cardhead">
-                <span className="orch-wb-cardtitle">{'已配置'}</span>
-                <span className="orch-muted">{`${rows.length} 条`}</span>
-                <span className="orch-wb-grow" />
-                <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={onReload}>{'刷新'}</button>
-              </header>
-              {rows.length === 0
-                ? <EmptyState icon="bolt" title="还没有自动化" hint="到点由协调者按话术 task_list 核对后 task_create——不是定时器直接建任务。" />
-                : (
-                    <ul className="orch-wb-autolist">
-                      {rows.map(row => (
-                        <li key={row.id} className="orch-wb-autorow">
-                          <div className="orch-wb-automain">
-                            <div className="orch-wb-autotitle">
-                              {row.title}
-                              <Badge tone={row.active ? 'info' : 'muted'}>{row.active ? '启用' : '已暂停'}</Badge>
-                              {row.hostMissing ? <Badge tone="bad">{'宿主侧已不存在'}</Badge> : null}
-                            </div>
-                            <div className="orch-wb-autometa">
-                              <span>{row.kind === 'group' ? `组 ${row.refId ?? ''}` : row.kind === 'task' ? `任务 ${row.refId ?? ''}` : '全部任务'}</span>
-                              <span>{row.timingText}</span>
-                              <span>{automationStateLabel(row)}</span>
-                              {row.lastDeliveryAt ? <span>{`最近投递 ${planWhenLabel(row.lastDeliveryAt)}`}</span> : null}
-                            </div>
-                            <details className="orch-wb-details">
-                              <summary>{'看到期话术'}</summary>
-                              <pre className="orch-pre">{row.prompt}</pre>
-                            </details>
-                          </div>
-                          <div className="orch-wb-autoactions">
-                            <button
-                              type="button" className="orch-btn orch-btn--sm"
-                              disabled={data.available !== true || busy}
-                              onClick={() => onToggle(row.id, !row.active)}
-                            >{row.active ? '暂停' : '恢复'}</button>
-                            <button
-                              type="button" className="orch-btn orch-btn--sm"
-                              disabled={data.available !== true || busy}
-                              onClick={() => onDelete(row.id)}
-                            >{'删除'}</button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-            </section>
-          </div>
-          <div className="orch-wb-rail">
-            {data.available === true && data.canCreate === true
-              ? <AutomationForm groups={groups} onSave={onSave} busy={busy} />
+        <section className="orch-wb-card">
+          <header className="orch-wb-cardhead">
+            <span className="orch-wb-cardtitle">{'已配置'}</span>
+            <span className="orch-muted">{`${rows.length} 条`}</span>
+            <span className="orch-wb-grow" />
+            {typeof onOpenSchedules === 'function'
+              ? <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={onOpenSchedules} title="官方「自动化任务」页：会话里创建的自动化都在这里（可手动创建、暂停、删除）">{'官方自动化任务页'}</button>
               : null}
-          </div>
-        </div>
+            <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={onReload}>{'刷新'}</button>
+            <button
+              type="button" className="orch-btn orch-btn--primary orch-btn--sm"
+              data-orch-create-automation=""
+              disabled={!creatable || busy}
+              onClick={onCreate}
+              title="打开主会话并预填提示词：由协调者用官方 schedule_create 创建，默认绑定主会话"
+            >
+              <Icon name="plus" size={12} />
+              {'创建自动化'}
+            </button>
+          </header>
+          {rows.length === 0
+            ? <EmptyState icon="bolt" title="还没有自动化" hint="点右上「创建自动化」：打开主会话写好要做什么、什么时候，协调者用官方 schedule_create 建（到期只投本会话、先核对再派单）。" />
+            : (
+                <ul className="orch-wb-autolist">
+                  {rows.map(row => (
+                    <li key={row.id} className="orch-wb-autorow">
+                      <div className="orch-wb-automain">
+                        <div className="orch-wb-autotitle">
+                          {row.title}
+                          <Badge tone={row.active ? 'info' : 'muted'}>{row.active ? '启用' : '已暂停'}</Badge>
+                          {row.hostMissing ? <Badge tone="bad">{'宿主侧已不存在'}</Badge> : null}
+                        </div>
+                        <div className="orch-wb-autometa">
+                          <span>{row.kind === 'group' ? `组 ${row.refId ?? ''}` : row.kind === 'task' ? `任务 ${row.refId ?? ''}` : '全部任务'}</span>
+                          <span>{row.timingText}</span>
+                          <span>{automationStateLabel(row)}</span>
+                          {row.lastDeliveryAt ? <span>{`最近投递 ${planWhenLabel(row.lastDeliveryAt)}`}</span> : null}
+                        </div>
+                        <details className="orch-wb-details">
+                          <summary>{'看到期话术'}</summary>
+                          <pre className="orch-pre">{row.prompt}</pre>
+                        </details>
+                      </div>
+                      <div className="orch-wb-autoactions">
+                        <button
+                          type="button" className="orch-btn orch-btn--sm"
+                          disabled={data.available !== true || busy}
+                          onClick={() => onToggle(row.id, !row.active)}
+                        >{row.active ? '暂停' : '恢复'}</button>
+                        <button
+                          type="button" className="orch-btn orch-btn--sm"
+                          disabled={data.available !== true || busy}
+                          onClick={() => onDelete(row.id)}
+                        >{'删除'}</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+        </section>
       </div>
     )
   }

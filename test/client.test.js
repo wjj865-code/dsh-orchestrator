@@ -241,6 +241,101 @@ test('头部按钮的 inject 回调调用 selectPanel，面板调用 openSession
   assert.deepEqual(opened, ['c-1'])
 })
 
+// 0.33.0：自动化创建对齐官方「在会话中创建」——面板不再自己建任务，只负责
+// 「打开唯一主会话 + 把提示词写进它的输入框」，创建交给主会话里的官方 schedule_create。
+test('自动化创建：注入的 prefillDraft 调 conversation.input.requestDraftInitialization（whenDraftExists=append）', () => {
+  const calls = []
+  const binding = { sessionId: 's-main' }
+  const { loaded, ctx, registrations, selected } = load({
+    services: {
+      sessions: { binding: id => (id === 's-main' ? binding : undefined) },
+      conversation: {
+        input: {
+          requestDraftInitialization: (target, options) => { calls.push({ target, options }); return 'applied' },
+        },
+      },
+    },
+  })
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const props = panel.spec.inject()
+  assert.equal(typeof props.prefillDraft, 'function')
+  assert.equal(props.prefillDraft('s-main', '请创建一个自动化任务'), true)
+  // 注意：选项对象在 vm 沙箱里创建，跨 realm 的原型不同，逐字段比而不是 deepEqual。
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].target, binding, 'binding 取 sessions.binding(sessionId) 的同一个对象')
+  assert.equal(calls[0].options.prompt, '请创建一个自动化任务')
+  assert.equal(calls[0].options.whenDraftExists, 'append', '与官方会话创建一致：append，不吞用户已打的字')
+  // 参数不全（空会话 id / 空提示词）→ false，不碰宿主。
+  assert.equal(props.prefillDraft('', 'x'), false)
+  assert.equal(props.prefillDraft('s-main', ''), false)
+  // 官方「自动化任务」页入口：main 面板 key 'schedules'（走 layout.selectPanel，不自己造页面）。
+  assert.equal(typeof props.openSchedules, 'function')
+  props.openSchedules()
+  assert.deepEqual(selected, ['schedules'])
+  // 宿主没有 sessions / conversation 服务（老宿主）→ 如实返回 false（调用方只打开会话并提示）。
+  const fallback = load()
+  fallback.loaded.apply(fallback.ctx)
+  const bare = fallback.registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator').spec.inject()
+  assert.equal(bare.prefillDraft('s-main', 'x'), false)
+})
+
+// 0.33.0：自动化页结构——只剩一个「创建自动化」按钮（无表单、无绑定对象选择），
+// 无主会话时按钮仍可点（内部 open-main 会建），宿主没有 schedule 服务时按钮禁用。
+test('自动化页结构：单个「创建自动化」按钮 + 官方页入口，没有自定义表单', () => {
+  const { loaded } = load()
+  const h = (type, props, ...children) => ({ type, props, children })
+  const Stub = props => ({ type: 'stub', props: props ?? {}, children: [] })
+  const Wb = loaded.__test.createWorkbench({
+    React: { useState: value => [value, () => {}] }, h,
+    Icon: Stub, Badge: Stub, Chip: Stub, EmptyState: Stub, Banner: Stub, SkeletonList: Stub, STATUS_LABEL: {},
+  })
+  const render = (data, handlers = {}) => Wb.AutomationsPage({
+    state: { data, error: null },
+    busy: false,
+    onReload: () => {},
+    onCreate: () => {},
+    onOpenSchedules: () => {},
+    onToggle: () => {},
+    onDelete: () => {},
+    ...handlers,
+  })
+  const nodes = []
+  const walk = node => {
+    if (node === null || node === undefined) return
+    if (Array.isArray(node)) { for (const child of node) walk(child); return }
+    if (typeof node !== 'object') return
+    if (typeof node.type === 'function') { walk(node.type(node.props ?? {})); return }
+    nodes.push(node)
+    walk(node.children)
+  }
+  const page = render({ available: true, canCreate: false, rows: [] })
+  walk(page)
+  const create = nodes.find(node => node.props && node.props['data-orch-create-automation'] !== undefined)
+  assert.ok(create, '自动化页要有「创建自动化」按钮')
+  assert.equal(create.type, 'button')
+  assert.equal(create.props.disabled, false, '没有主会话也可点：内部 open-main 会建一个')
+  assert.match(create.props.className, /orch-btn--primary/)
+  assert.equal(flattenText(create), '创建自动化')
+  assert.ok(nodes.some(node => node.type === 'button' && flattenText(node) === '官方自动化任务页'), '卡头要有官方页入口')
+  assert.equal(nodes.some(node => node.type === 'form'), false, '不再有自定义创建表单')
+  // 「任务组」选择器整块消失：不再有绑定对象下拉。
+  assert.equal(nodes.some(node => node.props && node.props['aria-label'] === '自动化绑定对象'), false)
+  // 宿主没有 schedule 服务：按钮禁用（创建必然失败，不假装能建）。
+  const disabledNodes = []
+  const collect = node => {
+    if (node === null || node === undefined) return
+    if (Array.isArray(node)) { for (const child of node) collect(child); return }
+    if (typeof node !== 'object') return
+    if (typeof node.type === 'function') { collect(node.type(node.props ?? {})); return }
+    disabledNodes.push(node)
+    collect(node.children)
+  }
+  collect(render({ available: false, rows: [] }))
+  const disabled = disabledNodes.find(node => node.props && node.props['data-orch-create-automation'] !== undefined)
+  assert.equal(disabled.props.disabled, true, '宿主没有自动化服务时按钮禁用')
+})
+
 test('面板提供「打开主会话」并调用 open-main', () => {
   assert.match(source, /打开主会话/)
   assert.match(source, /open-main/)

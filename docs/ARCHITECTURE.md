@@ -529,7 +529,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 面板 2s 轮询，连续失败退避 30s；`canDelete` 由服务端判定并随 snapshot/detail 下发。
 
-工作台 v1 的只读投影与窄写口同挂这一条路由：只读 `groups` / `group` / `calendar` / `automations` / `stats`（复盘页的窗口统计——交付数、确认数、平均「创建→交付」时长、失败归因（`tasks.error` 首行）、产物类型（按路径扩展名，不读文件内容）、组维度排行与消息条数；窗口 ≤62 天、缺省 7 天，只读台账既有时间戳）；写 `group-save` / `group-archive` / `plan-set` / `automation-save|toggle|delete`（`clientRequestId` 幂等 + 危险动作 `confirm:true` + 审计）。**刻意没有** `task-create` / `plan-approve` / `close-all` / `task-message` / `patch-task`。
+工作台 v1 的只读投影与窄写口同挂这一条路由：只读 `groups` / `group` / `calendar` / `automations` / `stats`（复盘页的窗口统计——交付数、确认数、平均「创建→交付」时长、失败归因（`tasks.error` 首行）、产物类型（按路径扩展名，不读文件内容）、组维度排行与消息条数；窗口 ≤62 天、缺省 7 天，只读台账既有时间戳）；写 `group-save` / `group-archive` / `plan-set` / `automation-save|toggle|delete`（`clientRequestId` 幂等 + 危险动作 `confirm:true` + 审计）。**0.33.0 起 `automation-save` 的创建分支面板不再调用**（创建改走主会话里的官方 `schedule_create`），端点保留给兼容/脚本，`toggle|delete` 仍由面板使用。**刻意没有** `task-create` / `plan-approve` / `close-all` / `task-message` / `patch-task`。
 
 工作台（任务台）六页与边界：
 
@@ -537,7 +537,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 - **任务组**：按 `task_create({ group })` 聚合，组卡显示进度、待确认/在跑/失败计数、产物数、下次排期与自动化小标；没有 group 的任务单列「未分组」（不落库、不可改名）。组名可改，**组键（`tasks.group_id`）不可变**——worktree 检出复用与 `task_list({ group })` 都按它判定。
 - **组工作台**：状态列板（等前置/待派发、在跑、待确认、待你决定、完成、失败·取消）+ 右侧 dock + 详情抽屉 + 产物格。列板只做筛选，**不支持拖拽改状态**。
 - **排期**：月历（周一起始）拖任务到某天即排期，拖回「待排期」取消；另有任务卡里的「排期」按钮（不依赖拖拽）。**两层互不推导**：L1 计划日（`tasks.planned_at`，纯展示）与 L2 自动化触发（`automations` 表镜像 + 宿主 `ctx.schedule` 真身）——排一天不会自动派任务，建自动化也不会改计划日。
-- **自动化**：到点由宿主 `schedule` 投递一条话术给唯一主会话，协调者按话术 `task_list` 核对后再 `task_create`；新建/暂停/恢复/删除都要二次确认 + 授权勾选，落审计日志。宿主没有自动化服务时整页只读降级。
+- **自动化**（0.33.0 对齐官方「会话创建」）：到点由宿主 `schedule` 投递一条话术给唯一主会话，协调者按话术 `task_list` 核对后再 `task_create`。创建入口只有**一个按钮**（卡头「创建自动化」，官方 primary/small 样式）：点击 → `open-main` → `uiWorkspace.openSession(主会话)` → `conversation.input.requestDraftInitialization(binding,{prompt,whenDraftExists:'append'})` 把提示词写进主会话输入框，由主会话里的模型调官方 `schedule_create` 创建（默认绑定主会话）。**面板不再自己建自动化**，也不再按组绑定（范围只有「全部任务」一种语义，写在提示词里）；列表只读本插件 `automations` 镜像表，卡头另有「官方自动化任务页」（`layout.selectPanel('schedules')`）看全部宿主任务。暂停/恢复/删除仍走 `automation-toggle|delete`（二次确认 + 审计）。宿主没有自动化服务时整页只读降级。
 - **复盘**：三张数字卡（交付数、确认数、平均「创建→交付」时长）+ 失败归因横向条（`tasks.error` 首行，最多 5 类）+ 产物类型分布（按扩展名，最多 8 类，**不读文件内容**）+ 组维度排行（最多 10 个组）+ 窗口内 `messages` 条数；只读台账既有时间戳，不新增埋点、不新增写口。
 - **右侧 dock 是只读镜像**：摘要、最近消息、阻塞问题、`打开子会话` 与 `到主会话说` 两个跳转；没有输入框、没有发送按钮、没有「批准计划」——**不代发消息、不代批计划**。刻意不做：新任务直写台账（只生成派单草稿）、批量确认交付。
 
@@ -546,7 +546,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 面板是 `ctx.slots.register({ name:'main', key:'orchestrator' })` 的整块组件。四件事值得记在架构里：
 
 - **构建链与产物路径**：客户端源码在 `client/src/**`（ESM），由 `vite.client.config.mjs` 构建成 `dist/client.js`（iife classic script + `.map`），**产物入库**。平台按 `exports["./client"]` 把该文件原样 serve 成 `/plugins/<id>/client.js`，路由只服务这一个 JS（+ 同名 `.map`），`.css` 一律 404 → 样式必须 `?inline` 回 JS（构建期内联成 `STYLE_TEXT`，`ensureStyles()` 按 id 去重注入）。改 UI = 改 `client/src/` + `pnpm run build`。
-- **体积闸门（P2-5 → 工作台 v1）**：默认开 esbuild minify（`sourcemap: true` 保留；`CLIENT_MINIFY=0 pnpm run build` 出可读产物），产物 ≤ **148 KiB**（工作台 v1 由 95 KiB 抬上来：先定 128 KiB、全功能实测不够，故定 148；子预算表在 `scripts/check-client-size.mjs` 头部，合计 = 148）由 `scripts/check-client-size.mjs` 断言，挂在 `pretest` 与 `prepublishOnly`。源码分模块：`index.js`（只注册 factory）→ `client.js`（装配 + `apply` + `__test`）→ `views.js`（面板/抽屉/启动器/工作台壳）→ `workbench.js`（总览/任务组/组工作台/排期/自动化/复盘六页 + dock）→ `ui.js`（展示件）、`styles.css`、`logic.js`（纯函数）、`api.js`（宿主 HTTP 契约）、`gate.js`（入口闸门）、`constants.js`（文案/常量）。
+- **体积闸门（P2-5 → 工作台 v1 → 0.32.0 能力包）**：默认开 esbuild minify（`sourcemap: true` 保留；`CLIENT_MINIFY=0 pnpm run build` 出可读产物），产物 ≤ **160 KiB**（工作台 v1 由 95 KiB 抬到 148 KiB；0.32.0 能力包面板没有代码分割，只能加进同一产物 → 用户拍板抬到 160 KiB；0.33.0 自动化创建入口与删表单是净减，不抬预算。子预算表在 `scripts/check-client-size.mjs` 头部，合计 = 160）由 `scripts/check-client-size.mjs` 断言，挂在 `pretest` 与 `prepublishOnly`。源码分模块：`index.js`（只注册 factory）→ `client.js`（装配 + `apply` + `__test`）→ `views.js`（面板/抽屉/启动器/工作台壳）→ `workbench.js`（总览/任务组/组工作台/排期/自动化/复盘六页 + dock）→ `ui.js`（展示件）、`styles.css`、`logic.js`（纯函数）、`api.js`（宿主 HTTP 契约）、`gate.js`（入口闸门）、`constants.js`（文案/常量）。
 - **三段式与抽屉**：顶部命令栏（标题/主会话状态/搜索/刷新/打开主会话 + 4 张指标卡）、中部（筛选轨 + 任务卡列表 / 产物库）、右侧详情抽屉（概览、最新回复、Brief、验收、交接、目标状态、消息、依赖、产物）。抽屉常驻挂载、`data-open` 驱动 `transform` 过渡；每区块可折叠（`aria-expanded` + `0fr↔1fr`）都有空态。列表侧纯逻辑提到组件外（`countTasks` / `matchesFilter` / `matchesQuery` / `groupArtifacts`），单测直接断言行为。
 - **按钮可见性与动作门控同源**：`src/panel-gates.js` 是唯一判定（`followupGate` / `deleteGate`），服务端面板动作与 `task_message` 都先过它，`snapshot`/`detail` 把 `canFollowup` / `canDelete` 下发，客户端只读这两个布尔值渲染按钮。删除 = 终态且没有活跃下游依赖，只清台账行（任务 + messages + notifications），不删产物文件与 memories。
 - **P2 的只读视图**：官方 Team 板分区（折叠、行内无按钮、`enabled !== true` 整区不渲染且不显示提示条；`enabled:true` 但这次读不到时只给一条降级提示）、抽屉「交接」区块（契约版本/交付与确认时间/谁确认/轮次/验收结论/官方板关联）、任务卡「验收 2/2」小标（来自 `snapshot.tasks[].acceptance`）。

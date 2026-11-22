@@ -131,9 +131,12 @@ test('dock 是只读的：源码里不出现输入框 / 发送按钮 / 提交动
 
 test('工作台只有三个写动作族 + 组/排期；客户端不提供派发、计划批准、追加消息（反例清单）', () => {
   const api = source('api.js')
-  for (const endpoint of ['groups', 'group', 'calendar', 'automations', 'group-save', 'group-archive', 'plan-set', 'automation-save', 'automation-toggle', 'automation-delete']) {
+  for (const endpoint of ['groups', 'group', 'calendar', 'automations', 'group-save', 'group-archive', 'plan-set', 'automation-toggle', 'automation-delete']) {
     assert.ok(api.includes(`'${endpoint}'`), `缺少端点 ${endpoint}`)
   }
+  // 0.33.0：客户端不再有 `automation-save`——创建改走主会话里的官方 schedule_create
+  // （面板只写草稿，不建任务）。服务端端点保留给兼容/脚本，但面板不动它。
+  assert.equal(api.includes("'automation-save'"), false, '客户端不该再直连 automation-save')
   for (const forbidden of ['task-create', 'plan-approve', 'close-all', 'patch-task']) {
     assert.equal(api.includes(`'${forbidden}'`), false, `客户端不该有 ${forbidden} 端点`)
   }
@@ -177,4 +180,41 @@ test('面板没有第二个 main 槽位：工作台挂在同一个面板内部�
   assert.deepEqual(mainRegistrations, ['PANEL_ID', 'LAUNCHER_ID', 'CAPABILITY_PACKS_PANEL_ID'], 'main 槽位：任务面板 + 启动器 + 能力包')
   // 页面状态持久化用 sessionStorage（产物预览会卸载面板，回来要复原）。
   assert.match(source('views.js'), /WORKBENCH_STORAGE_KEY/)
+})
+
+// 0.33.0：自动化创建对齐官方「会话创建」。
+// 用户反馈的两个问题在这里钉死：
+//   ① 自定义表单里「任务组」实际不可选（groups 数据源只在任务组页加载）→ 整块表单删除，只剩「全部任务」语义；
+//   ② 「保存并启用」直接建任务 → 改为「创建自动化」按钮：打开主会话 + 预填提示词，由官方 schedule_create 建。
+test('自动化创建入口（0.33.0）：面板只剩一个按钮，提示词写死本会话/全部任务/先核对三条决策', () => {
+  const wb = source('workbench.js')
+  const views = source('views.js')
+  const constants = source('constants.js')
+  // 自定义表单与「保存并启用」整块删除，不再有绑定对象/触发方式选择器。
+  assert.equal(wb.includes('保存并启用'), false, '不再有「保存并启用」按钮')
+  assert.equal(wb.includes('AutomationForm'), false, '不再有自定义创建表单')
+  assert.equal(wb.includes('自动化绑定对象'), false, '不再有「任务组/全部任务」绑定对象选择器')
+  assert.equal(constants.includes('AUTOMATION_KINDS'), false, '触发方式常量随表单删除')
+  // 只剩一个创建按钮（官方 primary/small 样式 + plus 图标）+ 官方页入口。
+  assert.match(wb, /data-orch-create-automation/)
+  assert.match(wb, /orch-btn--primary/)
+  assert.match(wb, /'创建自动化'/)
+  assert.match(wb, /官方自动化任务页/)
+  // 创建动作 = open-main → 打开主会话 → 预填（不再调 workbenchApi 的写端点）。
+  assert.match(views, /const createAutomationEntry = async/)
+  assert.match(views, /await openMainOnce\(\)/)
+  assert.match(views, /openSessionWhenReady\(openSession, sessionId\)/, '刚建的主会话要等它进会话目录（retain 竞态）')
+  assert.match(views, /prefillDraft\(sessionId, AUTOMATION_CREATE_PROMPT\)/)
+  assert.equal(views.includes('workbenchApi.saveAutomation'), false, '面板不再调 saveAutomation')
+  // 提示词三条既有决策：只投本会话 / 范围全部任务 / 先 task_list 核对再 task_create。
+  assert.match(constants, /export const AUTOMATION_CREATE_PROMPT/)
+  assert.match(constants, /target 用本会话，不要新建会话/)
+  assert.match(constants, /全部任务（收件箱巡检）/)
+  assert.match(constants, /先 task_list 核对再决定是否 task_create/)
+  // 预填走官方草稿入口（client.js 注入），不是伪造 DOM / 不改 sessionStorage。
+  const client = source('client.js')
+  assert.match(client, /requestDraftInitialization/)
+  assert.match(client, /whenDraftExists: 'append'/)
+  assert.match(client, /prefillDraft: prefillMainDraft/)
+  assert.match(client, /openSchedules: \(\) =>/)
 })

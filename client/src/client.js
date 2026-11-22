@@ -12,7 +12,7 @@ import {
   STATUS_LABEL, STATUS_TONE, MESSAGE_KIND_LABEL, DELIVERY_LABEL, DELIVERY_TONE,
   GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL,
   WORKTREE_STATE_LABEL, WORKTREE_SOURCE_LABEL,
-  WORKBENCH_PAGES, WORKBENCH_STORAGE_KEY, WORKBENCH_POLL_MS,
+  WORKBENCH_PAGES, WORKBENCH_STORAGE_KEY, WORKBENCH_POLL_MS, AUTOMATION_CREATE_PROMPT,
 } from './constants.js'
 import {
   countTasks, matchesFilter, matchesQuery, groupArtifacts, artifactDate, artifactProject,
@@ -25,7 +25,7 @@ import {
 import {
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce, adoptCoordinator,
   readGroups, readGroup, readCalendar, readAutomations, readStats,
-  saveGroup, archiveGroup, setPlan, saveAutomation, toggleAutomation, deleteAutomation,
+  saveGroup, archiveGroup, setPlan, toggleAutomation, deleteAutomation,
   readMainNav, ackMainNav,
 } from './api.js'
 import { createMainNavPoller, createNavNotice } from './nav.js'
@@ -110,7 +110,7 @@ export const createClient = (req) => {
     WORKBENCH_POLL_MS,
     workbenchApi: {
       readGroups, readGroup, readCalendar, readAutomations, readStats,
-      saveGroup, archiveGroup, setPlan, saveAutomation, toggleAutomation, deleteAutomation,
+      saveGroup, archiveGroup, setPlan, toggleAutomation, deleteAutomation,
     },
     startOfMonth,
     plannedOnDay,
@@ -120,6 +120,7 @@ export const createClient = (req) => {
     automationStateLabel,
     monthGrid,
     dateKeyOf,
+    AUTOMATION_CREATE_PROMPT,
   })
 
   function apply(ctx) {
@@ -181,6 +182,20 @@ export const createClient = (req) => {
       const body = await response.json()
       if (body === null || typeof body !== 'object' || body.ok !== true) throw new Error('bad-response')
       return body.isMain === true
+    }
+    // 把提示词写进**已有会话**的输入框（0.33.0，自动化面板「创建自动化」用）：
+    // 官方「在会话中创建」走 uiWorkspace.startSession + 同一份草稿初始化；我们不需要新会话，
+    // 所以先 openSession(主会话) 让宿主保留它，再取 binding 调 conversation.input 的公开入口。
+    // 返回是否真的写进去了（'applied'）；宿主形状变化 / 正在提交 → false，由调用方如实提示。
+    const prefillMainDraft = (sessionId, text) => {
+      if (typeof sessionId !== 'string' || sessionId === '' || typeof text !== 'string' || text === '') return false
+      try {
+        const binding = serviceOf('sessions')?.binding?.(sessionId)
+        const input = serviceOf('conversation')?.input
+        if (binding === undefined || binding === null || input === undefined || input === null) return false
+        if (typeof input.requestDraftInitialization !== 'function') return false
+        return input.requestDraftInitialization(binding, { prompt: text, whenDraftExists: 'append' }) === 'applied'
+      } catch { return false }
     }
     // 自排程定时器（仓库口径：不用 setInterval，便于卸载时立刻停）。
     const schedule = typeof setTimeout === 'function'
@@ -303,6 +318,9 @@ export const createClient = (req) => {
         focus: focusRequest,
         // t-a79e12d8：主会话跳转失败的可读提示（面板顶部 banner；已挂载即时推送，未挂载挂载时取走）。
         notice: navNotice,
+        // 0.33.0 自动化创建：写进主会话输入框 + 跳官方「自动化任务」页（main 面板 key 'schedules'）。
+        prefillDraft: prefillMainDraft,
+        openSchedules: () => { try { ctx.layout.selectPanel('schedules') } catch { /* 官方页不可达时静默：按钮仍渲染，点了没反应好过整页报错 */ } },
       }),
     }, TasksPanel))
 

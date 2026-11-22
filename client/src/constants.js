@@ -131,6 +131,11 @@ export const BOARD_COLUMNS = [
 export const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 // 排期默认时刻（照消费级工作台的习惯：没排过就落在晚上 8 点，可再改）。
 export const DEFAULT_PLAN_HOUR = 20
-// 自动化页面板上的「触发方式」选项（与 src/workbench.js 的 normalizeTiming 白名单一致）。
-export const AUTOMATION_KINDS = [['daily', '每天'], ['weekly', '每周'], ['cron', '自定义 cron'], ['rrule', 'rrule 直通']]
-export const AUTOMATION_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
+// 自动化页「创建自动化」按钮写进主会话输入框的提示词（0.33.0，对齐官方「在会话中创建」）。
+// 官方原文只有一句 `请根据需求创建一个自动化任务。`（ui-schedule 的 host.createPrompt）；
+// 这里把本插件三条既有产品决策写死在提示词里，避免模型跑偏：
+//   1) 只投唯一主会话（target 用本会话，不新建会话）——到点唤醒只走主会话；
+//   2) 范围默认全部任务（收件箱巡检），面板不再有「按组建」；
+//   3) 到期先 task_list 核对再 task_create——不是定时器直接建任务。
+export const AUTOMATION_CREATE_PROMPT = '请创建一个自动化任务：到期把话术投递到本会话（target 用本会话，不要新建会话），'
+  + '届时由协调者先 task_list 核对再决定是否 task_create。范围是全部任务（收件箱巡检），具体要做什么、什么时候由我补充。'

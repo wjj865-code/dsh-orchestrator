@@ -176,8 +176,6 @@ export const archiveGroup = (id, archived) => workbenchAction('group-archive', {
 
 export const setPlan = (taskId, plannedAt) => workbenchAction('plan-set', { taskId, plannedAt })
 
-export const saveAutomation = payload => workbenchAction('automation-save', { ...payload, confirm: true })
-
 export const toggleAutomation = (id, active) => workbenchAction('automation-toggle', { id, active, confirm: true })
 
 export const deleteAutomation = id => workbenchAction('automation-delete', { id, confirm: true })
