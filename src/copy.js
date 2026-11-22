@@ -15,6 +15,71 @@
 /** 计划文档目录（展示用；真实路径由 `src/plan-doc.js` 的 `PLAN_SUBDIR` 拼，两者必须一致）。 */
 export const PLAN_SAVE_DIR = '主会话工作区的 reports/plans/'
 
+// ── 拍板流程（版本 A，2026-11-22 用户最终拍板：**只改提示词/文案**） ─────────────────
+//
+// 背景：计划阶段的批准原先只有一个「批准执行」，多个待拍板项被一把批掉；子会话还把清单压进
+// 500 字的 `question` 里，天然逼成「一段话总批准」。用户最终口径：**不做工具层改造**——
+// `plan_save` 不加参数、不解析正文、不渲染段、不存待拍板元数据；计划文档仍只是模型写的
+// `content` 原样落盘。待拍板清单由模型自己生成，经 `ask_user_question` 逐项提问（平台工具本身
+// 已是结构化的）。本段只把「怎么问」的句子收成单源：L1（`src/prompt-layers.js` 的
+// `renderDecisionPolicy`）、`plan_save` 工具描述、blocked 通知（`src/notify.js`）只引用，不各写一份。
+
+/** 计划批准的四选一（顺序固定；「均按推荐」必须用户明确点选，协调者不得默认）。 */
+export const PLAN_APPROVAL_OPTIONS = Object.freeze(['逐项确认', '均按推荐', '先看计划文档', '放弃'])
+
+/** 四选一的展示串（L1 / 文档 / 测试共用，避免各写一遍把顺序改掉）。 */
+export const PLAN_APPROVAL_OPTIONS_TEXT = PLAN_APPROVAL_OPTIONS.join(' / ')
+
+/**
+ * L1「拍板流程」段的原子句：五条规则 + 计划批准 + 汇总口径。
+ *
+ * 与用户原话一一对应（《拍板流程优化》版本 A，最终收缩版）：
+ *   1. 一项一问；2. 不用代号；3. 依赖分批、独立项可同批连续问（每问独立 options）；
+ *   4. 计划审批先逐项确认 / 均按推荐，最后才总批准核对；5. 落地可测（文案 + 汇总函数）。
+ */
+export const DECISION_FLOW_LINES = Object.freeze({
+  heading: '拍板流程（逐项确认，再总批准）',
+  oneByOne: '**一项一问**：一个待拍板项一次提问——`ask_user_question` 的 `questions` 里一项一条、每问独立 options；'
+    + '**不得**把多项塞进一个选项组，也**不得**只问一个「总体确认」让用户一把批',
+  noCodes: '**用问题原文**：直接写待拍板问句本身，不出现 D1/D2、A/B/C 这类代号（代号增加理解成本，用户还得回头对表）；'
+    + '需要指代某一项时就用问句原文',
+  dependenceBatch: '**依赖分批**：有依赖的按依赖顺序分批问（前一项的答案决定后一项问什么）；彼此独立的可以在同一批里连续问多个——'
+    + '仍是每项一问，不是合成一个总体确认',
+  planApproval: `**计划审批先逐项**：计划 blocked 后先把摘要 + 计划文档绝对路径交给用户并 present，再用 ask_user_question 问「${PLAN_APPROVAL_OPTIONS_TEXT}」；`
+    + '选「逐项确认」就按 blocked 的 question 里列出的待拍板项顺序逐项问完、先给决策汇总，**最后**才做一次总批准核对（只问「就按这些执行？」，不混入新问题）；'
+    + '「均按推荐」必须用户明确点选——协调者不得默认、不得替用户选',
+  summary: '**决策汇总**：每项按提问顺序写「问句原文 → 选择」贴给用户（`renderDecisionSummary`），总批准只核对这份汇总',
+  document: '**文档只由模型写**：`plan_save` 的 `content` 原样落盘（工具不加参数、不注入/不改写任何段、不解析正文）；'
+    + '用户确认后由模型自己把决策写进新正文，再调一次 `plan_save` 覆盖即可',
+  soft: '**软门禁**：逐项提问是提示词约束，不是执行层拦截；工具层不做格式校验，也不存待拍板元数据',
+})
+
+/**
+ * blocked 通知的待拍板提示（`src/notify.js` 在 question 里数到「待拍板：」清单时贴一句）。
+ *
+ * N 由通知层从 `question` 的条目行数粗算（不是文档解析、不是校验）：子会话按 W1 的指引
+ * 把待拍板项逐条列在 blocked 的 question 里，协调者收到通知就知道要逐项问、不能一把批。
+ */
+export const PENDING_DECISION_NOTICE = count => `待拍板 ${count} 项，逐项提问，不要合并成一个总批准（每项一问、用问题原文）`
+
+/**
+ * 决策汇总（回答后、总批准前贴给用户）：输入 `[{ question, chosen }]`，输出按提问顺序的
+ * `问句原文 → 选择`。顺序与提问顺序一致，不做排序/去重——它要能逐条对上刚才的问法。
+ *
+ * @param {Array<{question?: string, chosen?: string}>} items
+ * @returns {string}
+ */
+export function renderDecisionSummary(items = []) {
+  const rows = (Array.isArray(items) ? items : []).map(item => {
+    const question = typeof item?.question === 'string' ? item.question.trim() : ''
+    const chosen = typeof item?.chosen === 'string' ? item.chosen.trim() : ''
+    if (question === '') return ''
+    return chosen === '' ? question : `${question} → ${chosen}`
+  }).filter(row => row !== '')
+  if (rows.length === 0) return '决策汇总：（无待拍板项）'
+  return ['决策汇总：', ...rows].join('\n')
+}
+
 /** 计划文档路径文案：不给 `taskId` 时写占位符 `<taskId>`（提示词/文档里就是占位口径）。 */
 export const planDocPathText = taskId => {
   const id = typeof taskId === 'string' && taskId.trim() !== '' ? taskId.trim() : '<taskId>'
@@ -63,7 +128,7 @@ export const PLAN_PHASE_LINES = Object.freeze({
   reportCallFull: `task_report({ status: "blocked", summary: "<${REPORT_SUMMARY_SHORT}>", question: "<${REPORT_QUESTION}>" })`,
   noExitPlanMode: `不要调用 exit_plan_mode：${NO_DIRECT_HUMAN}（调用会被插件拒绝）。`,
   resume: '用户批准后协调者会 task_message 续派，插件把沙箱切回可写，再按计划执行。',
-  options: '- options 可给「批准执行 / 调整计划」。',
+  options: `- options 可给「${PLAN_APPROVAL_OPTIONS_TEXT}」（批准要逐项确认或均按推荐，再总批准核对）。`,
 })
 
 /** L3（`task_detail`）里的计划阶段说明：多行，由原子句拼出。 */
@@ -97,7 +162,7 @@ export const planCreateReceipt = taskId => `计划模式：子会话只读探索
   + `再用 ${PLAN_PHASE_LINES.reportCall} 只上报 ${PLAN_PHASE_LINES.reportSummaryShort} + ${PLAN_PHASE_LINES.reportQuestion}；`
   + '你转交用户，批准后用 task_message 续派（插件自动切回可写）。'
 
-/** `plan_save` 工具描述（模型侧唯一的入口说明）。 */
+/** `plan_save` 工具描述（模型侧唯一的入口说明；只有 content，不加参数、不做格式校验）。 */
 export const PLAN_SAVE_TOOL_DESC = `计划模式专用：把计划正文写入${planDocPathText()}并登记为任务产物。${PLAN_PHASE_LINES.saveEntry}`
 
 /** 计划落盘成功后的下一步（`plan_saved_note`：只报摘要，不搬正文）。 */
@@ -121,7 +186,8 @@ export const ADVANCE_LOOP_LINES = Object.freeze({
   rule: '收到任何任务回报（progress / done / delivered / blocked / needs_auth）或用户消息后，必须落到下面三类动作之一；'
     + '**禁止只输出汇报文字（「X 完成了」/「进展如下」）——那不算响应**：',
   advance: '推进：按已批准的计划 task_message 续派/追问同一个子会话（复用上下文），或任务已授权时 task_create 继续做',
-  ask: '提问：ask_user_question（结构化、2–4 个选项、每项带你的建议；多个待决合成一条清单一次问完）',
+  ask: '提问：ask_user_question（结构化、2–4 个选项、每项带你的建议）；**待拍板项一项一问**'
+    + '（每问独立 options、不合成一个总体确认，见下「拍板流程」段），其余待决可合成一条清单一次问完',
   askNewTask: '问新任务：仅当「没有活跃任务、也没有待确认任务」时，用 ask_user_question 问「还有新任务吗」；用户明确说没有之后才可以静默',
   approvedPlan: '已批准的计划任务（plan_state=approved）：用户批准后立即 task_message 续派实现，不要只回一句确认；'
     + '计划需要调整或遇到卡点就 ask_user_question 请用户拍板，不自己改范围',
@@ -259,6 +325,7 @@ export const WORKER_DETAIL_HINT = '开工前先调 task_detail（参数 task_id 
  */
 export const BLOCKED_HINT = `执行中只把**堵塞项**交给用户拍板：${BLOCKER_RULE}；`
   + '用 task_report 的 blocked 上报「问题 + 选项建议」，由协调者用 ask_user_question 向用户确认后经 task_message 续派再继续；'
+  + 'blocked 的 question 里有多条待拍板项时，以「待拍板：」开头逐条列（一条一行、以「- 」开头、用问句原文、不编号）——通知据此点数，协调者据此逐项提问；'
   + '不要自行假设用户意图、不要阻塞等待、也不要等不到回复就跳过。blocked 只是上报，不等于已获授权。'
   + '协调者转来的方向调整以追加消息为准：先按新方向评估影响面，超出原验收标准或范围就先 blocked 要新范围，不要自行扩大范围。'
 

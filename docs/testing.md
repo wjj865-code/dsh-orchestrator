@@ -67,6 +67,7 @@
 - `test/tool-migrations.test.js`：旧工具名 → 新调用的映射表是唯一真源，README「工具迁移映射」必须与它逐条一致。
 - **兼容声明（0.32.x）**：`test/engines-compat.test.js` 锁 `package.json:engines.dsh` 与 `HOST_BASELINE` 逐字一致、区间语义矩阵（rc.3–rc.5 放行；`0.2.1`、`0.2.2-rc.2`、`0.3.0-rc.1`、`0.3.0-rc.2`、`0.3.0` 拒绝——上界必须是 `<0.3.0-0`，写 `<0.3.0` 会被 `0.3.0-rc.1 < 0.3.0` 钻过去）、README / docs/compat.md 同口径，以及「不许再写区间外只 warn」。改区间 = 声明 + 常量 + 文档三处同改，少一处就红。
 - 交互三闸门（0.26.0）：判级表 / 堵塞项四类 / 评估三行只许在 L1——`test/interaction-policy.test.js` 锁结构与同源（`BLOCKER_RULE` / `CHANGE_REVIEW_FIELDS` 都在 `src/copy.js`），`layerViolations` 的 L2/L3 探针挡住子会话把分级与评估抄回去。
+- 拍板流程（版本 A，0.32.x 同版，**只改提示词/文案**）：`test/interaction-policy.test.js` 锁 L1 五条规则与批准四选一（旧「批准执行 / 先看计划文档 / 调整计划」组合必须消失、均按推荐必须用户点选）；`test/decision-flow.test.js` 锁决策汇总顺序（3 项样例）、blocked 通知「待拍板 N 项」措辞、`plan_save` **参数面未变**（仍只有 `task_id` / `content`，无结构化参数/文档 lint）、回执「子会话」保留会话 id。
 - grill-me 技能（0.26.0）：`test/skill-grill-me.test.js` 锁两件事——`skills/grill-me/SKILL.md` 的 frontmatter（name=kebab / description / whenToUse）与协议要点（前沿提问、每问带推荐、事实自己查、2 轮 8 问、三栏决策记录、T2/T3 衔接、grill≠批准），以及注册模块「读包内文件 → 预设作用域 `ctx.skills.register`」、frontmatter 坏格式给可读报错、文件缺失/注册失败只 warn 不阻断预设挂载；`test/config.test.js` 锁协调者预设挂 `skill-grill-me` + `tool-skill` 而 worker 不挂。
 
 ### 3.3 文档一致性（`test/copy-consistency.test.js` 静态部分）
@@ -88,7 +89,7 @@
 
 ### 3.5 用例规模
 
-- 81 个 `test/*.test.js`、约 2.3 万行、1,259 条 `test()`（1,254 pass / 5 skip，`pnpm test` 会打印总数）。
+- 83 个 `test/*.test.js`、约 2.3 万行、1,288 条 `test()`（1,283 pass / 5 skip，`pnpm test` 会打印总数）。
 - 大文件：`client.test.js`（U2 客户端）、`index.test.js`（装配）、`tools.test.js`（工具面）、`main-session.test.js`（open-main / adopt / 代建协调者会话）。
 
 ## 4. 已知 flaky / 环境限制
@@ -142,6 +143,7 @@
 | 协调者读产物 | 工作区包含性 + 已登记产物并集、符号链接/`../` 拒绝、行窗口截断、审计日志 | CHANGELOG `0.15.0` |
 | 回复底部 chip | R1–R4 关联规则、6 个视觉态、点击定位、单实例 feed 与退避、历史轮次不渲染 | `docs/probes/qa-taskchip-dom.mjs`；CHANGELOG `0.16.0` |
 | P8 计划模式 | 只读 + plan-mode 软引导、`plan_save` 唯一写入口、`exit_plan_mode` 拒绝、批准切可写 | CHANGELOG `0.17.0`；`test/plan-mode.test.js` |
+| 拍板流程 vA（0.32.x 同版） | **只改提示词/文案**：L1 五条规则、批准四选一、决策汇总顺序、blocked 通知「待拍板 N 项」、回执「子会话」保留会话 id；`plan_save` 参数面未变（无结构化参数/文档 lint） | `test/decision-flow.test.js`、`test/interaction-policy.test.js`；CHANGELOG `0.32.0` |
 | P9 worktree | 结构化声明、建树 7 类失败、多分支询问、清理三档、`.agents/` exclude | CHANGELOG `0.18.x`；`test/worktree*.test.js` |
 | T1 brief 纯指引 | brief 只给编号+指引，详情走 `task_detail`；经验只留指针；越权拒绝 | CHANGELOG `0.19.0`；`test/task-detail.test.js` |
 | 状态事实源 | `STATUS_CAPS` 单表、删三条死边、`failed` 非流程终态、worktree 转移校验 | CHANGELOG `0.19.2` |

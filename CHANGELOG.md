@@ -36,6 +36,8 @@
 
 **同版修复（t-8a81264c，2026-11-21）—— 开包会话 `sessions.retain: unknown session`**：`pack-open` 的结果走 HTTP、新会话的目录行走 WebSocket（`api-session/added`），宿主 `sessions.retain()` 只认已进客户端会话目录的 id，所以「建好就立刻切过去」会偶发未知会话。客户端改成短退避重试 4 次（≈1.2 秒，`client/src/open-session.js`），仍失败就给「已建好（session-xxx），但打不开：<原因>。请从左侧列表打开。」的可读降级（不重试创建、不吞错）。同时 `open` 先用 `workspaceRegistry.resolveByPath(cwd)` 找目标目录所属工作区、找到就传 `workspaceId`（宿主只在该分支 `attachSession`；只给 `cwd` 的会话会落「未分组」、UI 只显示「选择一个工作区开始」），找不到才退回 `cwd`，不自动建工作区。真机复现/验收：`reports/pack-open-fix.md`。
 
+**同版新增（t-1ab20748，2026-11-22，拍板流程优化 · 版本 A，只改提示词/文案）**：把「拍板」从「一次总批准」改成「逐项确认 → 总批准核对」。①L1 新增「拍板流程」段（一项一问、不合成总体确认、用问题原文不用代号、依赖分批且独立项可同批连续问、计划审批先逐项或均按推荐再总批准）；②计划批准改四选一「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」，「均按推荐」必须用户明确点选（协调者不得默认）；③blocked 通知带「待拍板 N 项，逐项提问，不要合并成一个总批准」（N 由通知层从 question 的「待拍板：」条目行数粗算，不是文档解析、不做校验）；④新增 `renderDecisionSummary`（`问句原文 → 选择`，按提问顺序）；⑤回执「子会话」字段保留会话 id（用户拍板，不改成「面板可打开」）。**明确不做工具层改造**：`plan_save` 仍是 `task_id` / `content` 两个参数，正文原样落盘——不解析正文、不渲染 `## 待拍板` 段、不校验文档格式、不存待拍板元数据（中途试过的 `pendingItems` 结构化参数、`parsePendingItems` 文档 lint、`plan_pending_json` 台账列在提交前全部撤掉，最终方案没有 schema 变化）。不改派发语义、不 bump 版本。测试：`test/decision-flow.test.js`（决策汇总顺序 / blocked 通知措辞 / plan_save 参数面未变 / 会话 id）+ `test/interaction-policy.test.js`（五条规则 + 四选一）；文档：README、`docs/ARCHITECTURE.md`、`docs/testing.md`。工作量重估：≈0.5 人日（原计划 §5.8 的 1.5 人日大部分花在模板/校验/测试上，最终口径只写文案，明显更低）。
+
 ## 0.31.0（2026-11-21）—— 台账正文去重（P1）+ 抽屉正文徽标 + 测试 skip 守卫（t-90651ad4 / 9f38721）
 
 **本版三件事**：① **P1 台账正文去重**（主体，`3cb364e`）：正文类消息只存借条、读时冷读宿主会话日志、读不到就降级、旧行零迁移；② **抽屉正文徽标**（`client/src/views.js`）：详情抽屉「最新回复」标出「正文来自子会话 / 正文不可读（摘要）」并给降级说明行；③ **测试 skip 守卫**（`9f38721`）：配置模块加载用例在管道 spawn 不可用（受限沙箱 EPERM）时 `skip`，不再把环境限制判成失败。

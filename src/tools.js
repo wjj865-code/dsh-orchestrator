@@ -1516,6 +1516,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         ...(worktreeLine === undefined ? [] : [worktreeLine]),
         ...(task.group_id ? [`分组：${task.group_id}`] : []),
         ...(task.priority !== 0 ? [`优先级：${task.priority}`] : []),
+        // 用户拍板（2026-11-22）：这一行**保留会话标识**（原计划 §12 讨论过改成「面板可打开」，
+        // 用户选择保留 id——排障时要从回执直接拿到会话）。行结构属输出契约，不要擅自换值形态。
         `子会话：${task.target ?? '-'}`,
         ...(task.status === 'waiting_dep'
           ? [`等待前置：${task.depends_on.map(id => {
@@ -2094,6 +2096,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     // 计划落盘（P8 计划交付）：计划阶段是只读沙箱，这是子会话**唯一**被允许的写入口。
     // 路径不开放参数：只认任务编号，由插件拼成「主会话工作区/reports/plans/<taskId>.md」，
     // 编号形状白名单 + relative() 包含性校验两道闸拒绝逃逸（见 src/plan-doc.js）。
+    // 拍板流程 vA（用户最终拍板）：工具层**不改**——只有 content，原样落盘；待拍板清单由模型自己
+    // 生成并经 ask_user_question 逐项提问，插件不解析正文、不校验格式、不存元数据。
     wrap('plan_save', PLAN_SAVE_TOOL_DESC, objectSchema({
       task_id: str('任务编号，创建时给过'),
       content: str('计划正文（Markdown）：目标、步骤、要改的文件、验证方式、风险与待拍板问题'),

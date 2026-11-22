@@ -43,13 +43,33 @@
 //   3. 它是不是「收到通知后马上要做的动作」？——是 → 通知 hint；否则别写进通知。
 import { ISOLATED_WORKTREE_STATES } from './write-guard.js'
 // P1-C 文案单源：跨层共享的「交付不是结束」与通知/详情/工具回执同源（src/copy.js）。
-import { ADVANCE_LOOP_LINES, DELIVERY_NOT_FINAL, TASK_CHAIN_LINES } from './copy.js'
+import { ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, DELIVERY_NOT_FINAL, TASK_CHAIN_LINES } from './copy.js'
 // W1（任务子会话 per-turn policy）的句子只在 copy.js 定义一次，本模块只负责分层归属与渲染顺序。
 import {
   BLOCKED_HINT, CONFIRM_HINT, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT, WORKER_POLICY_HEADING, WORKER_POLICY_LINES,
 } from './copy.js'
 
-export { DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES, TASK_CHAIN_LINES, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT }
+export { DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, TASK_CHAIN_LINES, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT }
+
+/**
+ * L1「拍板流程」段落（唯一渲染入口）：五条规则 + 计划批准四选一 + 决策汇总的句子全部来自
+ * `src/copy.js` 的 `DECISION_FLOW_LINES`，本模块只负责分层归属与渲染顺序，`index.js` 只把它
+ * 拼进协调者 policy 的固定位置（交互三闸门之后：先讲什么时候可以打断，再讲怎么问）。
+ *
+ * 为什么必须单独成段：原地把「批准执行」换成四个选项，模型仍会习惯性一次问完所有项——
+ * 一条一段的规则 + blocked 通知里的「待拍板 N 项」两处一起才拧得动这个习惯（版本 A 只改文案，工具层不改造）。
+ */
+export function renderDecisionPolicy() {
+  return `## ${DECISION_FLOW_LINES.heading}
+
+- ${DECISION_FLOW_LINES.oneByOne}。
+- ${DECISION_FLOW_LINES.noCodes}。
+- ${DECISION_FLOW_LINES.dependenceBatch}。
+- ${DECISION_FLOW_LINES.planApproval}。
+- ${DECISION_FLOW_LINES.summary}。
+- ${DECISION_FLOW_LINES.document}。
+- ${DECISION_FLOW_LINES.soft}。`
+}
 
 /**
  * L1「推进循环」段落（唯一渲染入口）：句子全部来自 `src/copy.js` 的 `ADVANCE_LOOP_LINES`，
@@ -143,6 +163,7 @@ export const PROMPT_LAYERS = Object.freeze([
       '同写域并发防护（renderWriteGuardPolicy）',
       '交互三闸门（T0–T3 判级、开工前确认、执行期只报堵塞项、追加调整先评估；renderInteractionPolicy）',
       '推进循环（收到回报/用户消息后必须落到推进/提问/问新任务三类动作之一，不许只汇报；renderAdvanceLoopPolicy，措辞源 copy.js 的 ADVANCE_LOOP_LINES）',
+      '拍板流程（待拍板项一项一问、不用代号、依赖分批、计划批准四选一后再总批准核对、决策汇总；renderDecisionPolicy，措辞源 copy.js 的 DECISION_FLOW_LINES）',
       '任务链（dependsOn 的判据/建链时机/不阻塞/失败传播/交付不算 done/同检出串行五条规则；renderTaskChainPolicy，措辞源 copy.js 的 TASK_CHAIN_LINES）',
       '堵塞项四类与「不算堵塞项」清单（措辞源 copy.js 的 BLOCKER_RULE）',
       '用户偏好（第 4 段，src/preferences.js）',

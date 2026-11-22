@@ -12,7 +12,7 @@
 // 不存在一律被拒；平台单次硬上限 8，本插件按「1-4 个最关键的、最多 4 个」收敛成产品上限。
 import { deliverableOf as artifactKindOf } from './artifact-location.js'
 // P1-C 文案单源：交付指令与 task_detail / 文档 / 协调者 policy 共用 src/copy.js 的句子。
-import { ADVANCE_NOTICE_HINT, DELIVERED_HINT, DELIVERY_LINES, PROGRESS_NOTICE_HINT } from './copy.js'
+import { ADVANCE_NOTICE_HINT, DELIVERED_HINT, DELIVERY_LINES, PENDING_DECISION_NOTICE, PROGRESS_NOTICE_HINT } from './copy.js'
 
 export { DELIVERED_HINT, ADVANCE_NOTICE_HINT }
 
@@ -178,6 +178,18 @@ const artifactBlock = (item, { hint = true } = {}) => {
 
 const hasDeliverable = item => deliverableOf(item).files.length > 0
 
+/**
+ * blocked 的 question 里点一下待拍板项数（子会话按 W1 的指引以「待拍板：」开头逐条列）。
+ *
+ * 这是通知文案的**粗算**，不是文档解析、也不是格式校验：没有「待拍板」标记就返回 0，
+ * 普通 blocked 不会被误标；有标记但没有 `- ` 条目也不硬凑数字。
+ */
+const pendingCountOf = question => {
+  const index = question.indexOf('待拍板')
+  if (index === -1) return 0
+  return (question.slice(index).match(/^\s*[-*+]\s+\S/gm) ?? []).length
+}
+
 const questionBlock = item => {
   const question = typeof item.question === 'string' && item.question.trim() !== '' ? item.question.trim() : ''
   const options = Array.isArray(item.options) ? item.options.filter(Boolean) : []
@@ -185,6 +197,9 @@ const questionBlock = item => {
   const parts = []
   if (question !== '') parts.push(`\n  问题：${question}`)
   if (options.length > 0) parts.push(`\n  选项：${options.join(' / ')}`)
+  // 拍板流程（版本 A，只改文案）：通知里盯住提问方式，避免协调者把多项合成一个总批准。
+  const pending = pendingCountOf(question)
+  if (pending > 0) parts.push(`\n  ${PENDING_DECISION_NOTICE(pending)}`)
   return parts.join('')
 }
 

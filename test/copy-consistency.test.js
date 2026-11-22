@@ -76,8 +76,9 @@ test('协调者 policy：不主动问「任务能否关闭」，交付后保持�
   assert.match(policy, /只在真正需要拍板时提问/)
   assert.match(policy, /不可逆操作/)
   assert.match(policy, /远端写授权/)
-  // 多个待拍板点合并成一条清单，不逐任务连问。
-  assert.match(policy, /合成一条清单问完/)
+  // 待拍板项逐项问（不合成总体确认）；其余待决才合并成一条清单。
+  assert.match(policy, /待拍板项\*\*.*按「一项一问」逐项提问/)
+  assert.match(policy, /同一批里连续问多个/)
   // 不再要求「收到交付通知的同一回合里就用 ask_user_question 问」。
   assert.doesNotMatch(policy, /待确认要主动问用户/)
   assert.doesNotMatch(policy, /同一回合里就用 ask_user_question 问/)
@@ -127,7 +128,9 @@ test('协调者 policy：计划批准必须用户拍板，禁止协调者自行�
   assert.match(policy, /计划批准必须由用户拍板/)
   assert.match(policy, /必须用 ask_user_question 结构化提问/)
   // 0.25.0：问用户之前要先回复摘要 + present 计划文档，且选项必须有「先看计划文档」这一项。
-  assert.match(policy, /批准执行 \/ 先看计划文档 \/ 调整计划/)
+  // 拍板流程（版本 A）：批准四选一，最后才总批准核对；旧的「批准执行」一把批已删除。
+  assert.match(policy, /逐项确认 \/ 均按推荐 \/ 先看计划文档 \/ 放弃/)
+  assert.doesNotMatch(policy, /批准执行 \/ 先看计划文档 \/ 调整计划/)
   assert.match(policy, /先交付/)
   assert.match(policy, /绝对路径/)
   assert.match(policy, /present 声明该计划文档/)
@@ -157,7 +160,8 @@ test('README / ARCHITECTURE 与预设同口径：计划批准是人工闸门', (
     assert.match(text, /计划批准必须由用户拍板/, `${file} 没写「计划批准必须由用户拍板」`)
     assert.match(text, /协调者不得自行批准/, `${file} 没写「协调者不得自行批准」`)
     assert.match(text, /ask_user_question/, `${file} 没写用 ask_user_question 请用户批准`)
-    assert.match(text, /批准执行/, `${file} 没写清「批准执行」分支`)
+    assert.match(text, /逐项确认/, `${file} 没写清「逐项确认」分支`)
+    assert.match(text, /均按推荐/, `${file} 没写清「均按推荐」分支`)
   }
   // 计划模式的技术小节要把「调整也得重新拍板」讲明，避免把第一次批准当成修订版授权。
   assert.match(docs[1][1], /只修订计划、不要开始实现/)

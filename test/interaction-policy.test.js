@@ -8,7 +8,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { renderCoordinatorPolicy, renderInteractionPolicy } from '../index.js'
 import { renderBrief } from '../src/brief.js'
-import { BLOCKER_RULE, CHANGE_REVIEW_FIELDS } from '../src/copy.js'
+import { BLOCKER_RULE, CHANGE_REVIEW_FIELDS, PLAN_APPROVAL_OPTIONS_TEXT } from '../src/copy.js'
 import { renderWorkerPolicy } from '../src/prompt-layers.js'
 import { createTools } from '../src/tools.js'
 import { loadConfig } from '../src/config.js'
@@ -127,4 +127,59 @@ test('与既有三原则互引不冲突：能直接回答就不派任务 / 少�
   for (const pattern of [/不问用户[^\n]{0,12}执行/, /无需(?:询问|确认)[^\n]{0,12}(?:执行|发布|推送)/, /自行决定[^\n]{0,8}不可逆/]) {
     assert.doesNotMatch(text, pattern, `policy 出现「不问用户直接干」的授权口径：${pattern}`)
   }
+})
+
+// 拍板流程优化（版本 A，2026-11-22 用户拍板）：五条规则 + 计划批准四选一 + 先逐项再总批准。
+// 这一组锁的是「协调者怎么问」：老口径「一次合成清单一把批 / options 至少三项含批准执行」必须消失，
+// 否则模型会立刻回到「一段话总批准」。
+test('拍板流程：五条规则都在 L1（一项一问 / 不合成总批准 / 不用代号 / 依赖分批 / 先逐项再总批准）', () => {
+  const text = policy()
+  const section = text.indexOf('## 拍板流程（逐项确认，再总批准）')
+  assert.ok(section > 0, 'L1 缺少拍板流程段')
+  // 位置：三闸门之后（先讲何时打断，再讲怎么问），推进循环 / worktree / 写域之前。
+  assert.ok(section > text.indexOf('## 交互三闸门'), '拍板流程应在交互三闸门之后')
+  assert.ok(section < text.indexOf('## 推进循环'), '拍板流程应在推进循环之前')
+  assert.ok(section < text.indexOf('## worktree 隔离'), '拍板流程应在 worktree 段之前')
+  // 规则 1：一项一问，不得合成一个总体确认。
+  assert.match(text, /\*\*一项一问\*\*/)
+  assert.match(text, /不得\*\*把多项塞进一个选项组，也\*\*不得\*\*只问一个「总体确认」/)
+  assert.match(text, /每问独立 options/)
+  // 规则 2：用问题原文，不用代号。
+  assert.match(text, /\*\*用问题原文\*\*/)
+  assert.match(text, /不出现 D1\/D2、A\/B\/C 这类代号/)
+  // 规则 3：依赖分批，独立项可同批连续问（仍是每项一问）。
+  assert.match(text, /\*\*依赖分批\*\*/)
+  assert.match(text, /按依赖顺序分批/)
+  assert.match(text, /同一批里连续问多个/)
+  // 规则 4：计划审批先逐项确认（或均按推荐），最后才总批准核对。
+  assert.match(text, /\*\*计划审批先逐项\*\*/)
+  assert.match(text, /最后\*\*才做一次总批准核对/)
+  assert.match(text, /不混入新问题/)
+  assert.match(text, /「均按推荐」必须用户明确点选——协调者不得默认、不得替用户选/)
+  // 规则 5：落地可测——只改文案（工具层不改造），文档只由模型写。
+  assert.match(text, /\*\*文档只由模型写\*\*/)
+  assert.match(text, /\*\*软门禁\*\*/)
+  assert.match(text, /工具层不做格式校验/)
+  assert.match(text, /不注入\/不改写任何段/)
+  // 决策汇总函数名（回答后、总批准前贴给用户的那一步）。
+  assert.match(text, /renderDecisionSummary/)
+})
+
+test('计划批准四选一：逐项确认 / 均按推荐 / 先看计划文档 / 放弃（旧「批准执行」组合不再出现）', () => {
+  const text = policy()
+  assert.equal(PLAN_APPROVAL_OPTIONS_TEXT, '逐项确认 / 均按推荐 / 先看计划文档 / 放弃')
+  assert.ok(text.includes(PLAN_APPROVAL_OPTIONS_TEXT), 'L1 的计划批准选项必须逐字用四选一')
+  // 四步变五步：先交付 → 问批准方式（四选一）→ 逐项确认 → 均按推荐 → 其它分支。
+  assert.match(text, /严格按这五步（顺序不能换）/)
+  assert.match(text, /options 固定四项/)
+  assert.match(text, /先交付/)
+  assert.match(text, /先看计划文档/)
+  // 「均按推荐」是用户明示，不是协调者默认。
+  assert.match(text, /用户明确点选「均按推荐」/)
+  assert.match(text, /先把待拍板清单与各自推荐复核一遍贴给用户/)
+  // 旧口径清干净：一把批的「批准执行」组合与「至少三项」都已删除。
+  assert.doesNotMatch(text, /批准执行 \/ 先看计划文档 \/ 调整计划/)
+  assert.doesNotMatch(text, /options \*\*至少三项\*\*/)
+  // 批准仍只认用户消息里的话（人工闸门不变）。
+  assert.match(text, /批准只认用户消息里的话，协调者不得推断/)
 })
