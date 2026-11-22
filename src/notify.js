@@ -250,9 +250,34 @@ const progressHint = batch => (batch.some(isProgress) ? `\n  ${PROGRESS_NOTICE_H
 const deliveredBlock = item => item?.status === 'delivered'
   ? `\n  交付确认：${DELIVERED_HINT.replace('<任务引用>', String(item.ref ?? ''))}`
   : ''
-const deliveredBatchHint = batch => (batch.some(item => item.status === 'delivered')
-  ? `\n  ${DELIVERED_HINT}`
-  : '')
+
+/** 批量交付确认最多列几个引用：文案要短（客户端/文档预算紧），其余交给 task_list。 */
+const DELIVERED_BATCH_REF_MAX = 4
+
+/**
+ * 多条 delivered 合并成一条时的交付确认。
+ *
+ * 原先直接贴 `DELIVERED_HINT`，于是模板占位符 `<任务引用>` 原样漏到用户面前
+ * （`task_id: '<任务引用>'` 比空串更糟：看着像参数，实际照抄会被拒）。这里把占位符所在的
+ * close 示例整段换成「逐条 close + 真实引用清单」：引用多时只列前几个、其余指向 task_list；
+ * 一条引用都拿不到时退回 task_list 指引——任何情况下都不输出未替换的占位符。
+ */
+const deliveredBatchHint = batch => {
+  const delivered = batch.filter(item => item?.status === 'delivered')
+  if (delivered.length === 0) return ''
+  const refs = []
+  for (const item of delivered) {
+    const ref = typeof item.ref === 'string' ? item.ref.trim() : ''
+    if (ref !== '' && !refs.includes(ref)) refs.push(ref)
+  }
+  const shown = refs.slice(0, DELIVERED_BATCH_REF_MAX)
+  const rest = delivered.length - shown.length
+  const targets = shown.length === 0
+    ? `${DELIVERY_LINES.closeCall}，task_id 填该任务的引用（用 task_list 查）`
+    : `${DELIVERY_LINES.closeCall}，task_id 逐条填对应引用（${shown.join('、')}`
+      + `${rest > 0 ? `，其余 ${rest} 条用 task_list 查` : ''}）`
+  return `\n  交付确认：${DELIVERED_HINT.replace(DELIVERY_LINES.closeCallWithTaskId, targets)}`
+}
 
 // 推进循环（用户反馈「报告后只汇报、不推进」）：done/delivered/blocked/needs_auth 的通知末尾
 // 各贴一次动作指令，避免只讲状态、不讲下一步。progress 有自己的追问指令（PROGRESS_NOTICE_HINT），

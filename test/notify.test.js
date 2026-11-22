@@ -40,6 +40,57 @@ test('交付通知：写「已交付待确认」并带 action:close / task_messa
   await wait(20)
   assert.match(delivered[1], /2 个任务已交付待确认/)
   assert.equal(delivered[1].match(/action: "close"/g).length, 1)
+  // 批量路径同样不能漏占位符（这里是没给 ref 的条目 → 必须落到 task_list 指引）。
+  assert.doesNotMatch(delivered[1], /<任务引用>/)
+  assert.doesNotMatch(delivered[1], /task_id: ''/)
+})
+
+// 多条 delivered 合并成一条时，close 示例里的 `<任务引用>` 曾被原样贴出去（占位符漏到用户面前）。
+test('多条 delivered 合并：交付确认列真实 tk- 引用，不出现未替换占位符', async () => {
+  const sent = []
+  const notifier = createNotifier({ send: async text => sent.push(text), mergeWindowMs: 5 })
+  notifier.push({ taskId: 't-a', ref: 'tk-aaaaaa', title: 'A', status: 'delivered', summary: '一' })
+  notifier.push({ taskId: 't-b', ref: 'tk-bbbbbb', title: 'B', status: 'delivered', summary: '二' })
+  await wait(20)
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /2 个任务已交付待确认/)
+  assert.ok(sent[0].includes('tk-aaaaaa、tk-bbbbbb'), `批量交付确认要列出真实引用：${sent[0]}`)
+  assert.match(sent[0], /task_message\(\{ action: "close" \}\)/)
+  assert.match(sent[0], /task_message 追问原会话/)
+  assert.equal(sent[0].match(/action: "close"/g).length, 1)
+  assert.doesNotMatch(sent[0], /<任务引用>/)
+  assert.doesNotMatch(sent[0], /task_id: ''/)
+  assert.doesNotMatch(sent[0], /task_id: '/)
+})
+
+test('批量交付引用过多时截断：只列前几个，其余指向 task_list', async () => {
+  const sent = []
+  const notifier = createNotifier({ send: async text => sent.push(text), mergeWindowMs: 5 })
+  const refs = ['tk-aa0001', 'tk-aa0002', 'tk-aa0003', 'tk-aa0004', 'tk-aa0005', 'tk-aa0006']
+  refs.forEach((ref, index) => notifier.push({
+    taskId: `t-${index}`, ref, title: `任务${index}`, status: 'delivered', summary: '好了',
+  }))
+  await wait(20)
+  assert.equal(sent.length, 1)
+  assert.ok(sent[0].includes('tk-aa0001、tk-aa0002、tk-aa0003、tk-aa0004'), `前 4 个引用要列出：${sent[0]}`)
+  assert.equal(sent[0].includes('tk-aa0005'), false)
+  assert.equal(sent[0].includes('tk-aa0006'), false)
+  assert.match(sent[0], /其余 2 条用 task_list 查/)
+  assert.doesNotMatch(sent[0], /<任务引用>/)
+  assert.doesNotMatch(sent[0], /task_id: ''/)
+})
+
+test('批量交付但拿不到引用：退回 task_list 指引，不输出空 task_id', async () => {
+  const sent = []
+  const notifier = createNotifier({ send: async text => sent.push(text), mergeWindowMs: 5 })
+  notifier.push({ taskId: 't-a', title: 'A', status: 'delivered', summary: '一' })
+  notifier.push({ taskId: 't-b', ref: '  ', title: 'B', status: 'delivered', summary: '二' })
+  await wait(20)
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /task_message\(\{ action: "close" \}\)，task_id 填该任务的引用（用 task_list 查）/)
+  assert.doesNotMatch(sent[0], /<任务引用>/)
+  assert.doesNotMatch(sent[0], /task_id: ''/)
+  assert.doesNotMatch(sent[0], /task_id: '/)
 })
 
 test('推进循环：done / delivered / blocked / needs_auth 通知末尾都带动作指令，progress 不重复贴', async () => {
