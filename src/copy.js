@@ -380,6 +380,19 @@ export const CONFIRM_HINT = `完成后用 task_report 回报（progress / done /
   + '子会话直接调 ask_user_question 会被平台拒（DELEGATED_CALLER）：交付后协调者不会为「能不能关闭」来问你。'
 
 /**
+ * 权限 / 环境失败必须写进回报（W1 唯一措辞，2026-11-23 用户原话：「权限/环境失败必须写进回报」）。
+ *
+ * 为什么要单独一句：子会话的权限/沙箱拒绝在编排面上原本会消失——协调者只看得到 `task_report` 的
+ * summary，子会话若把它当普通报错跳过，主会话就永远不知道「这条命令其实被沙箱拒了」。
+ * 配套事实（不在句子里重复讲）：插件侧另有一条 `tools/result` 观察者（`src/child-tool-failure.js`）
+ * 会把 denied 类失败自己报给协调者；本句管的是**外部子会话**与「插件没识别出来」的那部分。
+ */
+export const WORKER_PERMISSION_HINT = '遇到权限/沙箱/审批拒绝或环境失败（命令找不到、依赖缺失、沙箱/runner 起不来）不要只当普通报错：'
+  + '能自己用窄一级的 sandbox_permissions + justification 重试一次就重试一次；'
+  + '仍不行就在 task_report 的 summary 里写明「哪条命令、什么 code/提示、试过什么」，交付 done 时同样必须写——'
+  + '协调者据此决定回喂正确姿势还是改派，别让失败只留在你的上下文里。'
+
+/**
  * worktree 检出依赖（W1 的条件句，只在任务的 `worktree_state` 属于真隔离时渲染）。
  *
  * 检出是全新目录，node_modules/虚拟环境这类依赖不在库里 → 子会话常因依赖缺失跑不了测试/构建。
@@ -416,11 +429,30 @@ export const WORKER_POLICY_HEADING = '回报与确认（任务子会话每回合
 export const WORKER_POLICY_LINES = Object.freeze({
   detail: WORKER_DETAIL_HINT,
   blocked: BLOCKED_HINT,
+  permission: WORKER_PERMISSION_HINT,
   report: CONFIRM_HINT,
   context: WORKER_CONTEXT_HINT,
   memory: WORKER_MEMORY_HINT,
   worktree: WORKTREE_INSTALL_HINT,
 })
+
+/**
+ * 子会话工具失败的告警文案（NOTIFY 层唯一措辞，2026-11-23 用户拍板：带 stderr 首行但脱敏家目录）。
+ *
+ * 结构与其它通知一致：一行事实（工具 + code + 沙箱模式）→ 一行归属（任务名 + `tk-` 引用 + 证据首行）→
+ * 一行动作（协调者现在能做什么）。只用引用，不写台账内部编号（ID 出口网关版本 B）。
+ * `head` 由 `src/child-tool-failure.js` 的 `failureHead` 截断并脱敏后再传进来，这里不再二次处理。
+ */
+export function toolFailureNotice({ label, ref, tool, code, mode, head } = {}) {
+  const name = typeof label === 'string' && label !== '' ? label : '任务'
+  const reference = typeof ref === 'string' && ref !== '' ? `（${ref}）` : ''
+  const modeText = typeof mode === 'string' && mode !== '' ? `（${mode}）` : ''
+  const headText = typeof head === 'string' && head !== '' ? `：${head}` : ''
+  return `子会话被权限/沙箱拒绝（疑似）：${tool ?? '工具'} → ${code ?? 'UNKNOWN'}${modeText}\n`
+    + `任务「${name}」${reference}${headText}\n`
+    + '处理：判断是缺 sandbox_permissions（同回合升级一次）、该给 access:\'full\'、还是改派/回落——'
+    + '不要只当普通报错，也不要让它重试同一条命令。'
+}
 
 /**
  * 追加调整的评估要素（L1 交互闸门与 `task_message` 描述共用）。

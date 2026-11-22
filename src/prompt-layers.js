@@ -46,7 +46,8 @@ import { ISOLATED_WORKTREE_STATES } from './write-guard.js'
 import { ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, DELIVERY_NOT_FINAL, PARALLEL_LINES, TASK_CHAIN_LINES } from './copy.js'
 // W1（任务子会话 per-turn policy）的句子只在 copy.js 定义一次，本模块只负责分层归属与渲染顺序。
 import {
-  BLOCKED_HINT, CONFIRM_HINT, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT, WORKER_POLICY_HEADING, WORKER_POLICY_LINES,
+  BLOCKED_HINT, CONFIRM_HINT, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT, WORKER_PERMISSION_HINT, WORKER_POLICY_HEADING,
+  WORKER_POLICY_LINES,
 } from './copy.js'
 
 export {
@@ -148,7 +149,7 @@ export function renderParallelPolicy() {
  * 为什么从 brief/persona 迁过来：brief 与 persona 只在**出生那一刻**到达子会话，续派或多轮之后
  * 容易被上下文挤掉；per-turn policy 每回合重渲染，口径不会丢。句子本体全部来自 `src/copy.js`
  * （`WORKER_POLICY_LINES`），本模块只决定哪一句在什么条件下出现：
- *   - 固定五句：先读详情 / 执行中上报 / 交付回报 / 主动读 context / 收尾沉淀项目经验；
+ *   - 固定六句：先读详情 / 执行中上报 / 权限·环境失败必须写进回报 / 交付回报 / 主动读 context / 收尾沉淀项目经验；
  *   - 条件一句：worktree 装依赖，仅当台账 `worktree_state` 属于真隔离（requested/created/reused）。
  *
  * @param {{ worktreeState?: string }} [task]  台账任务的 `worktree_state`（可空）
@@ -159,6 +160,7 @@ export function renderWorkerPolicy({ worktreeState } = {}) {
     '',
     `- ${WORKER_POLICY_LINES.detail}`,
     `- ${WORKER_POLICY_LINES.blocked}`,
+    `- ${WORKER_POLICY_LINES.permission}`,
     `- ${WORKER_POLICY_LINES.report}`,
     `- ${WORKER_POLICY_LINES.context}`,
     `- ${WORKER_POLICY_LINES.memory}`,
@@ -205,6 +207,7 @@ export const PROMPT_LAYERS = Object.freeze([
     owns: Object.freeze([
       '开工先调 task_detail 读详情（字段清单与「不要凭 brief 猜任务内容」；WORKER_DETAIL_HINT）',
       '执行中怎么上报（blocked + question/options；堵塞项口径引用 BLOCKER_RULE；BLOCKED_HINT）',
+      '权限/环境失败必须写进回报（执行期先按窄一级沙箱重试一次，仍失败就把命令 + code/提示 + 试过什么写进 summary；WORKER_PERMISSION_HINT）',
       '交付时怎么回报与完成动作（task_report 四状态 + summary + done 清空 question/options + 两段式终态；CONFIRM_HINT）',
       '隔离任务的装依赖授权（仅 worktree 真隔离任务；WORKTREE_INSTALL_HINT）',
       '需要历史经验/项目背景时主动调 context（WORKER_CONTEXT_HINT）',
@@ -278,6 +281,7 @@ export const PROMPT_LAYERS = Object.freeze([
     owns: Object.freeze([
       '这条通知要求协调者**现在**做什么（present 交付 / 保持待确认 / 追问 / 停止）',
       'done/delivered/blocked/needs_auth 通知尾部的动作指令（ADVANCE_NOTICE_HINT，与 L1 推进循环同源）',
+      '子会话工具失败告警的动作指令（回喂 sandbox_permissions / 给 access:full / 改派；toolFailureNotice，src/copy.js）',
       '产物清单与「不能交付」的原因计数',
     ]),
     forbids: Object.freeze(['解释能力边界或工具清单（属 L1）', '任务详情（属 L3）']),
@@ -366,6 +370,8 @@ export function layerViolations(layerId, text) {
       [/主动调\s*context/, 'W1 的上下文引导'],
       // 记忆沉淀的边界（只写自己任务的项目记忆、不写 preference/全局）是 W1 每回合注入的口径。
       [/有值得复用的项目经验时|不写 preference/, 'W1 的项目经验沉淀引导'],
+      // 权限/环境失败的自纠与回报（sandbox_permissions 升级只写一次在 W1）是子会话的执行期口径。
+      [/sandbox_permissions/, 'W1 的权限/环境失败回报口径'],
     ],
     // L3 不许重复 brief 的指路，也不许讲协调者口径或 W1 的静态回报口径。
     L3: [
