@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>sidebar nav alignment — before / after</title>
+<style>
+  html, body { margin: 0; background: #fff; font: 12px/1.5 'Segoe UI', 'Microsoft YaHei', sans-serif; color: #333; }
+  .wrap { display: flex; gap: 12px; padding: 10px; align-items: flex-start; }
+  figure { margin: 0; }
+  figcaption { padding: 4px 2px 6px; font-weight: 600; }
+  iframe { border: 1px solid #d8dbe2; border-radius: 10px; width: 296px; height: 300px; display: block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <figure>
+    <figcaption>BEFORE — 字符字形（13×16 行盒、墨迹低 0.5px、label 左移 3px）</figcaption>
+    <iframe src="harness.html?variant=before&chrome=1" scrolling="no"></iframe>
+  </figure>
+  <figure>
+    <figcaption>AFTER — size×size SVG（16×16、墨迹居中、label 与官方项同列）</figcaption>
+    <iframe src="harness.html?variant=after&chrome=1" scrolling="no"></iframe>
+  </figure>
+</div>
+</body>
+</html>

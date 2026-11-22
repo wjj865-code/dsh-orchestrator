@@ -351,7 +351,12 @@ export function createCapabilityPacksPanel({
     )
   }
 
-  const CapabilityPacksIcon = () => <span aria-hidden={true} className="orch-launcher-icon">{'\u25EB'}</span>
+  // 侧栏入口图标：与「主会话」入口同一规格（见 views.js 的 LauncherIcon 注释）——
+  // 宿主把这格当行的直接图标子元素，边长由 `size` 传入（展开 16 / 收起 18），
+  // 所以画成 size × size 的 SVG，而不是落成行盒基线上的字符 `◫`。
+  const CapabilityPacksIcon = ({ size = 16 }) => (
+    <Icon name="navPacks" size={size} className="orch-nav-glyph" />
+  )
 
   return { CapabilityPacksPanel, CapabilityPacksIcon }
 }

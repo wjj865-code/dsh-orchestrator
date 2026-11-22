@@ -705,6 +705,44 @@ test('任务入口对齐：按钮与图标块 flex 居中、字号/间距固定�
   assert.match(block('.orch-entry-label {'), /font-size: 12px/, '文字字号与 12px 图标同级')
 })
 
+// 侧栏入口对齐（t-9c9b1a09）：宿主把 `sidebar.panellist` 的注册项当成面板行的**直接图标子元素**
+// 塞进 `.panelGlyph`（inline-flex 居中、本身不带尺寸），并按行状态把边长当 `size` 传进来
+// （展开 16 / 收起 18）；官方项在这一格放的是 `size × size` 的内联 SVG。
+// 我们原来放的是裸字符 `◈` / `◫`：它落成一个行盒里的字形 —— 盒子 13×16（不是正方形）、
+// 墨迹中线比文字墨迹中线低 0.5px、收起态边长还是 16（官方 18），还把 label 左边界整体左移 3px
+// （实测数值见 reports/sidebar-nav-alignment/measurements.md）。这条用例钉住三件事：
+// 图标得是「按宿主 size 画的正方形 SVG」、不能再出现字符字形规则、产物里真的带上了新字形。
+test('侧栏入口图标：按宿主 size 画 size×size SVG（不再用行盒里的字符字形）', () => {
+  const views = readFileSync(new URL('../client/src/views.js', import.meta.url), 'utf8')
+  const packs = readFileSync(new URL('../client/src/capability-packs.js', import.meta.url), 'utf8')
+  const expectIcon = (file, text, name) => {
+    // 取 props.size 兜底 16，交给统一的 Icon（24 单位 viewBox，stroke/线宽与官方图标同款）。
+    assert.match(
+      text,
+      new RegExp(`\\(\\{ size = 16 \\}\\) => \\([\\s\\S]{0,160}name="${name}" size=\\{size\\}`),
+      `${file} 的侧栏图标必须按宿主给的正方形边长画（name="${name}" size={size}）`,
+    )
+    assert.doesNotMatch(text, /orch-launcher-icon/, `${file} 不应再用字符字形图标（.orch-launcher-icon 已删）`)
+  }
+  expectIcon('views.js', views, 'navMain')
+  expectIcon('capability-packs.js', packs, 'navPacks')
+  // 字形在 ui.js 的图标表里（两条路径都关于 12,12 对称 → 墨迹重心落在盒子中心）。
+  const ui = readFileSync(new URL('../client/src/ui.js', import.meta.url), 'utf8')
+  assert.match(ui, /\n    navMain: \[/, 'ui.js 缺 navMain 字形')
+  assert.match(ui, /\n    navPacks: \[/, 'ui.js 缺 navPacks 字形')
+  // 图标块样式：块级落位、不参与行盒基线、不被压扁；旧的字符字形规则必须删干净。
+  const { STYLE_TEXT } = load().loaded.__test
+  const glyph = cssBlock(STYLE_TEXT, '.orch-nav-glyph {')
+  assert.match(glyph, /display: block/, '图标要块级落位（不进基线）')
+  assert.match(glyph, /flex: 0 0 auto/, '图标不能被 flex 压扁')
+  assert.equal(STYLE_TEXT.includes('.orch-launcher-icon'), false, '字符字形规则必须删掉，否则以后又会用回字符')
+  // 产物：新字形与新 class 真的进了 dist/client.js（不是只改源码）。
+  for (const marker of ['navMain', 'navPacks', 'orch-nav-glyph']) {
+    assert.ok(artifact.includes(marker), `dist/client.js 缺 ${marker}（只改源码不算修好）`)
+  }
+  assert.equal(artifact.includes('orch-launcher-icon'), false, '产物里不应再有字符字形图标')
+})
+
 // 视觉统一：同排其他元素（协调者预设标签、子智能体计数）都是无描边、透明底的 chip，
 // 只有入口按钮带 1px 描边 + 白底 + hover 悬浮阴影时它会「凸」出来。这里把「不画外框」钉死，
 // 防止以后有人按面板按钮的习惯把描边/底色/阴影加回来。

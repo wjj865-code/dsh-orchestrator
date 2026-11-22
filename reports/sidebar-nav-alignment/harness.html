@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>sidebar alignment harness</title>
+<link rel="stylesheet" href="base.css" />
+<link rel="stylesheet" href="design-platform.css" />
+<link rel="stylesheet" href="sidebar.css" />
+<link rel="stylesheet" href="plugin.css" />
+<style>
+  html, body { margin: 0; }
+  body { font-family: var(--dsw-font-family); font-size: 14px; color: var(--dsw-alias-label-primary); background: #fff; }
+  #stage { display: flex; gap: 24px; padding: 16px; align-items: flex-start; }
+  .col { background: var(--dsw-specific-sidebar-fill); border-radius: 12px; }
+  .col .root { width: 260px; }
+  .col.rail .root { width: 56px; padding: 18px 10px 6px; }
+  .cap { font: 12px/1.4 'Segoe UI', 'Microsoft YaHei', sans-serif; padding: 6px 10px; color: #333; }
+  #out { white-space: pre; font: 11px/1.35 Consolas, monospace; padding: 12px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<pre id="out"></pre>
+<script>
+// ---------------------------------------------------------------------------
+// 宿主侧栏面板行的真实 DOM/CSS 复刻（CSS 直接从安装包 asar 里取出）：
+//   <div class="panelEntry panelEntryWide"><button class="panelRow">
+//     <span class="panelGlyph">{注册项按 size 画的图标}</span>
+//     <span class="panelTitle wide">{label}</span>
+//   </button></div>
+// 官方项在这一格放的是 size×size 的内联 SVG（16 展开 / 18 收起）；这里用同规格占位图。
+// ---------------------------------------------------------------------------
+const svg = (size, inner, viewBox = '0 0 16 16') => `<svg class="official-glyph" xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="${viewBox}" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">${inner}</svg>`
+const OFFICIAL_PLUGIN = inner16 => svg(inner16, '<circle cx="8" cy="8" r="6.2"/><circle cx="8" cy="8" r="2.1"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2"/>')
+const OFFICIAL_CLOCK = inner16 => svg(inner16, '<circle cx="8" cy="8" r="6.2"/><path d="M8 4.6V8l2.4 1.6"/>')
+
+// 我们两个入口的图标：走 ui.js 的 Icon（24 单位 viewBox、stroke 1.8、class 名 orch-icon + 自定义 class）。
+const NAV_PATHS = {
+  main: ['M12 3l9 9-9 9-9-9z', 'M12 8.4l3.6 3.6-3.6 3.6-3.6-3.6z'],
+  packs: ['M5 4h14v16H5z', 'M12 4v16'],
+}
+const navIcon = (kind, size, className) => `<svg class="orch-icon${className === undefined ? '' : ` ${className}`}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${NAV_PATHS[kind].map(d => `<path d="${d}"/>`).join('')}</svg>`
+
+// BEFORE：0.32.0 出厂标记——裸字符落在行盒基线上。
+const beforeIcon = (kind, size) => `<span aria-hidden="true" class="orch-launcher-icon" data-legacy="${size}">${kind === 'main' ? '\u25C8' : '\u25EB'}</span>`
+
+const rows = (variant, rail) => {
+  const size = rail ? 18 : 16
+  const glyph = (key) => {
+    if (key === 'plugins') return OFFICIAL_PLUGIN(size)
+    if (key === 'schedules') return OFFICIAL_CLOCK(size)
+    const kind = key === 'orchestrator-launcher' ? 'main' : 'packs'
+    return variant === 'before'
+      ? beforeIcon(kind, size)
+      : navIcon(kind, size, 'orch-nav-glyph')
+  }
+  const defs = [
+    ['plugins', '插件'],
+    ['orchestrator-launcher', '主会话'],
+    ['schedules', '自动化任务'],
+    ['capability-packs', '能力包'],
+  ]
+  return defs.map(([id, label]) => {
+    const title = rail ? '' : `<span class="panelTitle wide">${label}</span>`
+    return `<div class="panelEntry${rail ? '' : ' panelEntryWide'}"><button type="button" class="panelRow" aria-label="${label}" data-panel="${id}"><span class="panelGlyph" aria-hidden="true">${glyph(id)}</span>${title}</button></div>`
+  }).join('')
+}
+
+const params = new URLSearchParams(location.search)
+const variant = params.get('variant') ?? 'before'
+const rail = params.get('mode') === 'rail'
+// 截图用：只留侧栏，不显示量测块（量测块是给 --dump-dom 取值用的）。
+if (params.get('chrome') === '1') document.getElementById('out').style.display = 'none'
+
+const col = document.createElement('div')
+col.className = rail ? 'col rail' : 'col'
+col.dataset.variant = variant
+col.innerHTML = `<div class="cap">${variant.toUpperCase()} · ${rail ? 'rail 56px (size=18)' : 'expanded 260px (size=16)'}</div>`
+  + `<div class="root${rail ? ' collapsed' : ''}"><nav class="panelList" aria-label="panels">${rows(variant, rail)}</nav></div>`
+document.getElementById('stage').appendChild(col)
+
+// ---------------------------------------------------------------------------
+// 量测：盒子几何走 getBoundingClientRect；SVG 墨迹走 getBBox；文字墨迹用 canvas 的
+// actualBoundingBox + 一条隐形行盒的基线（不往被测元素里插探针，避免改到 flex 布局）。
+// ---------------------------------------------------------------------------
+const canvas = document.createElement('canvas')
+const ctx2d = canvas.getContext('2d')
+const round = v => Math.round(v * 100) / 100
+
+const lineBoxInk = (font, lineHeight, text) => {
+  const host = document.createElement('div')
+  host.style.cssText = 'position:absolute;left:-10000px;top:0;visibility:hidden;'
+  const line = document.createElement('div')
+  line.style.cssText = `margin:0;padding:0;font:${font};line-height:${lineHeight};white-space:pre;`
+  line.textContent = text
+  const probe = document.createElement('span')
+  probe.style.cssText = 'display:inline-block;width:0;height:0;overflow:hidden;'
+  line.appendChild(probe)
+  host.appendChild(line)
+  document.body.appendChild(host)
+  const lineTop = line.getBoundingClientRect().top
+  const baseline = probe.getBoundingClientRect().bottom - lineTop
+  const boxHeight = line.getBoundingClientRect().height
+  host.remove()
+  ctx2d.font = font
+  const m = ctx2d.measureText(text)
+  const top = baseline - m.actualBoundingBoxAscent
+  const bottom = baseline + m.actualBoundingBoxDescent
+  return { top, bottom, center: (top + bottom) / 2, baseline, boxHeight, ascent: m.actualBoundingBoxAscent, descent: m.actualBoundingBoxDescent }
+}
+
+const result = { viewport: { width: window.innerWidth, height: window.innerHeight }, dpr: window.devicePixelRatio, variant, mode: rail ? 'rail' : 'wide', rows: [] }
+
+for (const btn of document.querySelectorAll('.panelRow')) {
+  const glyphSlot = btn.querySelector('.panelGlyph')
+  const iconEl = glyphSlot.firstElementChild
+  const labelEl = btn.querySelector('.panelTitle')
+  const rowRect = btn.getBoundingClientRect()
+  const slotRect = glyphSlot.getBoundingClientRect()
+  const iconRect = iconEl.getBoundingClientRect()
+  const rowCs = getComputedStyle(btn)
+  const iconCs = getComputedStyle(iconEl)
+  const isSvg = iconEl.tagName.toLowerCase() === 'svg'
+  let iconInk
+  if (isSvg) {
+    const bbox = iconEl.getBBox()
+    const vb = iconEl.viewBox.baseVal
+    const sx = bbox.width === 0 ? 1 : iconRect.width / vb.width
+    const sy = bbox.height === 0 ? 1 : iconRect.height / vb.height
+    iconInk = {
+      top: (bbox.y - vb.y) * sy, bottom: (bbox.y + bbox.height - vb.y) * sy,
+      center: ((bbox.y - vb.y) * sy + (bbox.y + bbox.height - vb.y) * sy) / 2,
+    }
+    iconInk.top += iconRect.top
+    iconInk.bottom += iconRect.top
+    iconInk.center += iconRect.top
+    iconInk.source = 'svg getBBox'
+  } else {
+    const ink = lineBoxInk(iconCs.font, iconCs.lineHeight, iconEl.textContent)
+    iconInk = { top: ink.top + iconRect.top, bottom: ink.bottom + iconRect.top, center: ink.center + iconRect.top, source: 'canvas + line box' }
+  }
+  const entry = {
+    panel: btn.dataset.panel,
+    icon: {
+      tag: iconEl.tagName.toLowerCase(),
+      width: round(iconRect.width), height: round(iconRect.height),
+      boxCenter: round(iconRect.top + iconRect.height / 2),
+      display: iconCs.display, fontSize: iconCs.fontSize, lineHeight: iconCs.lineHeight,
+    },
+    row: {
+      height: round(rowRect.height), center: round(rowRect.top + rowRect.height / 2),
+      paddingTop: rowCs.paddingTop, paddingBottom: rowCs.paddingBottom,
+      minHeight: rowCs.minHeight, alignItems: rowCs.alignItems, gap: rowCs.gap, lineHeight: rowCs.lineHeight,
+    },
+    glyphSlot: { width: round(slotRect.width), height: round(slotRect.height), center: round(slotRect.top + slotRect.height / 2), display: getComputedStyle(glyphSlot).display },
+    iconInk: { top: round(iconInk.top), bottom: round(iconInk.bottom), center: round(iconInk.center), height: round(iconInk.bottom - iconInk.top), source: iconInk.source },
+    iconInkVsRowCenter: round(iconInk.center - (rowRect.top + rowRect.height / 2)),
+    iconInkVsSlotCenter: round(iconInk.center - (slotRect.top + slotRect.height / 2)),
+  }
+  if (labelEl !== null) {
+    const labelRect = labelEl.getBoundingClientRect()
+    const labelCs = getComputedStyle(labelEl)
+    const ink = lineBoxInk(labelCs.font, labelCs.lineHeight, labelEl.textContent)
+    entry.label = labelEl.textContent
+    entry.labelBox = { width: round(labelRect.width), height: round(labelRect.height), center: round(labelRect.top + labelRect.height / 2), left: round(labelRect.left) }
+    entry.labelInk = { top: round(ink.top + labelRect.top), bottom: round(ink.bottom + labelRect.top), center: round(ink.center + labelRect.top) }
+    entry.iconInkVsLabelInkCenter = round(iconInk.center - (ink.center + labelRect.top))
+  }
+  result.rows.push(entry)
+}
+
+document.getElementById('out').textContent = JSON.stringify(result, null, 1)
+</script>
+</body>
+</html>
