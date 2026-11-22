@@ -374,6 +374,12 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 结算/对账管「没人跑却挂着 running」，但**有人在跑、却长时间没进展**的回合仍要人来看。`src/watchdog.js` 每 `watchdogIntervalMinutes`（默认 5）巡检一次：只看 `running`；判定数据源三源取最新（`last_event_at` / `updated_at` / `messages.at`），最新活动早于 `watchdogIdleMinutes`（默认 15）即判空闲；**只告警**（一条 `stalled` 汇总通知，超过 10 条折叠），不改状态、不 kill、不重派；同一段空闲每任务只报一次（去重表在内存）；启动时放在 S2 之后，避免同一任务既报丢失又报卡住；`idleWatchdog:false` 可关。
 
+## 子会话工具失败监听（tools/result 观察者）
+
+- **为什么**：子会话被权限/沙箱拒绝时，协调者原本只拿得到 `task_report` 的 summary，这条事实在编排面上会消失。`src/child-tool-failure.js` 订阅宿主 `tools/result`（`index.js` 装配，只观察、不改结果、不拦子会话自我纠错），把 denied 类失败变成一条日志 + 一条去重通知。
+- **判定三通道（顺序固定）**：`result.error.info.code` 结构化优先 → pwsh/bash 的 `value.sandbox.denied` → `value.stderr` 文本兜底（`Permission denied` / `拒绝访问`）；**不要求退出码非零**（`git add` 撞 `.git/index.lock` 的拒绝退出码就是 0），`timedOut`/`aborted`/`stopped`/`signal` 一律不算失败；环境类（沙箱后端起不来、命令/依赖找不到）只写日志。
+- **归属与告警**：`workerTaskOf(exec.agent.id)` 归任务，协调者自身调用与包会话/普通 root 会话直接丢弃，只有任务还在 `followup` 状态集合（running / waiting_user / waiting_auth / delivered）才打断；`subagent.tool.failure` 日志每个命中都写（被窗口压住的重复另写 `…suppressed`），`denied` 走 notifier 并按 `(taskId, tool, code)` 10 分钟去重（文案带脱敏后的 stderr 首行），台账字段不做；外部子会话与文本误判是盲区，见 [LIMITATIONS](LIMITATIONS.md)。
+
 ## 子会话目标（G1）与续跑（P2-2）
 
 平台有完整的 `ctx.goals` 子系统（durable `goal/change` + 进程内 activation + `dsh-goal-round-driver`）。**插件是子任务 goal 的唯一写方**：只做 `create` / `edit` / `complete` / `clear`（外加只读 `get` 做镜像与降级），续跑完全委托宿主 driver——自建的 `agent/turn-stopping` 注入器（`src/keepalive.js`，246 行）已删除。
@@ -605,8 +611,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 ### 插件页配置卡片
 
 插件页（侧栏「插件」→ dsh-orchestrator 详情）的「配置」卡片：**25 个字段**，与 `loadConfig({})` 的实际键集合一一对应
-（已删键不出现在表单上——P2-2 删的 7 个 `keepAlive*` 与阈值键、0.25.0 删的轮换 8 键——只由 `src/config.js` 的 `DEPRECATED_KEYS` 给弃用警告），等价于手改 profile 的 `cordis.patch.yml`。DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供
-`configForms`（值 + 写操作）与 slot，**不生成表单**（0.2.2-rc.3 的 `autoGenerate` 字段全 asar 无 client 消费方）。
+（已删键不出现在表单上——P2-2 删的 7 个 `keepAlive*` 与阈值键、0.25.0 删的轮换 8 键——只由 `src/config.js` 的 `DEPRECATED_KEYS` 给弃用警告），等价于手改 profile 的 `cordis.patch.yml`。DSH 的插件配置 UI 是「插件自带组件」模型——宿主只提供 `configForms`（值 + 写操作）与 slot，**不生成表单**（0.2.2-rc.3 的 `autoGenerate` 字段全 asar 无 client 消费方）。
 
 **三件套**（字段规格只声明一次，三方共用，避免漂移）：
 
@@ -627,8 +632,7 @@ slot key = bundle **包名**（`CONFIG_SLOT_KEY`）；`configForms.get()` / `whi
 不静默覆盖；清空一个「已覆盖」字段发 `unset`（回落组合默认且不再算覆盖）。
 
 **保存语义（0.23.0 发版前冒烟订正）**：保存**只**写当前 profile 的 `cordis.patch.yml`——运行中的插件实例**不会**重新 apply，
-判定/计时器仍按启动时那份配置，**重载插件或重启 DSH 后生效**（台账在 SQLite，不受影响）。卡片回执/简介、README
-与 LIMITATIONS 都是这一口径；0.23.0 及以前回执写的「保存后热重载」与实际不符，别按它做用户承诺。
+判定/计时器仍按启动时那份配置，**重载插件或重启 DSH 后生效**（台账在 SQLite，不受影响）。卡片回执/简介、README 与 LIMITATIONS 都是这一口径；0.23.0 及以前回执写的「保存后热重载」与实际不符，别按它做用户承诺。
 
 **四个必须守住的 P0**（改动前先读 `src/config-schema.js` 文件头，`test/config-fields.test.js` 逐条反向验证过）：
 

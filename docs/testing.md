@@ -90,7 +90,7 @@
 
 ### 3.5 用例规模
 
-- 83 个 `test/*.test.js`、约 2.3 万行、1,288 条 `test()`（1,283 pass / 5 skip，`pnpm test` 会打印总数）。
+- 89 个 `test/*.test.js`、约 2.3 万行、1,329 条 `test()`（静态扫描统计；`pnpm test` 会打印通过/跳过总数）。
 - 大文件：`client.test.js`（U2 客户端）、`index.test.js`（装配）、`tools.test.js`（工具面）、`main-session.test.js`（open-main / adopt / 代建协调者会话）。
 
 ## 4. 已知 flaky / 环境限制
@@ -169,6 +169,7 @@
 | 任务链规则（0.28.0） | L1 五条规则（判据与建链时机 / 不阻塞 / 失败传播 / delivered≠done / 同检出串行）逐字来自 `src/copy.js`；`task_create.dependsOn` 描述与 `waiting_dep` 回执同源；L2/L3 探针；机制用 `dependencyState`/`promoteDependents` 复核 | `test/task-chain-policy.test.js`、`test/prompt-layers.test.js`；CHANGELOG `0.28.0` |
 | 并行策略（t-c8adaeb1） | L1 独立一段（互不依赖 + 无需复用上下文 + 同写域撞车 → 优先 `worktree:true` 并行；有依赖/复用上下文才串行；代价与只读/计划例外；同一检出必须串行）逐字来自 `src/copy.js` 的 `PARALLEL_LINES`；与 worktree/写域/任务链三段口径对齐（不再暗示默认先串行）；派发/队列/写域判定未动 | `test/parallel-policy.test.js`、`test/prompt-layers.test.js` |
 | 协调者去 grep + W1 任务执行者 policy（t-4f7ce108） | 协调者预设移除 `tool-fs-search` 整行（该包无按工具开关、`deny` 遮不到预设自有行）→ 只留 `read`；W1 由 `renderWorkerPolicy` 渲染、`index.js` 第二条 `systemPrompt.context`（order 131）按 `tasks.session_id` 注入，静态提示（详情/上报/交付/装依赖/context）只在此出现一次；brief 收到 2–3 行、persona 只剩身份 | `test/config.test.js`、`test/index.test.js`、`test/prompt-layers.test.js`、`test/brief.test.js`、`test/copy-consistency.test.js`、`test/worktree.test.js` |
+| 子会话工具失败监听（2026-11-23） | `tools/result` 观察者：判定三通道（结构化 code → `sandbox.denied` → stderr 文本，**不要求退出码非零**）、`workerTaskOf` 归属 + 协调者/非任务会话排除、10 分钟 `(taskId,tool,code)` 去重通知、env 类只写日志、家目录脱敏；真实样本 seq 816 / seq 824 做成夹具；W1 新增「权限/环境失败必须写进回报」 | `test/child-tool-failure.test.js`、`test/index.test.js`、`test/prompt-layers.test.js` |
 
 ## 7. 真机复核（开发/安装面 = Desktop；自动化验收面 = Web 测试 profile）
 

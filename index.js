@@ -24,6 +24,8 @@ import { createStartupReconciler } from './src/reconcile.js'
 import { createContextObserver, cleanupLegacyRotation, probeCompaction } from './src/main-context.js'
 import { createMainNav, planCoordinatorNav } from './src/main-nav.js'
 import { createIdleWatchdog } from './src/watchdog.js'
+// 2026-11-23：子会话工具失败监听（只观察 tools/result，不改结果、不拦子会话自我纠错）。
+import { createChildToolFailureWatcher } from './src/child-tool-failure.js'
 import { createGoalBridge } from './src/goal.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from './src/host-route.js'
 import { injectNotification } from './src/inject.js'
@@ -808,6 +810,22 @@ export async function apply(ctx, rawConfig = {}) {
     },
   })
 
+  // 2026-11-23：子会话工具失败监听（`tools/result` 观察者）。子会话的权限/沙箱拒绝原本在编排面上是
+  // 不可见的（协调者只拿得到 task_report 的 summary），这里把它变成一条日志 + 一条去重通知。
+  // 只观察、不改结果；判定顺序与误报边界见 src/child-tool-failure.js 文件头（**不要求 exitCode !== 0**）。
+  const toolFailure = createChildToolFailureWatcher({
+    logger,
+    notifier,
+    // 归属：派发被接受时的「子会话 id → 任务」映射 + 台账 session_id 兜底（index.js 上方的 workerTaskOf）。
+    taskOfAgent: workerTaskOf,
+    // 协调者自己的工具调用（例如只读 read 被沙箱拒）不进编排面：与 guard、W1 注入同一条判据。
+    coordinatorId: resolvedCoordinatorId,
+    labelFor: task => taskLabel(task, { all: listTasks(db) }),
+    onWarn: warnings,
+  })
+  const toolFailureDisposer = typeof ctx.on === 'function'
+    ? ctx.on('tools/result', (exec, result) => toolFailure.handle(exec, result))
+    : undefined
 
   queue = createQueue({ db, dispatcher, config, logger, notifier, worktree: worktreeService, cleanupWorktree })
 
@@ -1147,7 +1165,7 @@ export async function apply(ctx, rawConfig = {}) {
     try { disposeTeamBoardSink() } catch { /* 官方板反写 sink 解绑失败不阻断卸载 */ }
     queue.stop()
     try { stopSnapshots() } catch { /* 快照定时器清理失败不阻断卸载 */ }
-    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, workerPromptDisposer, guardDisposer, artifactDisposer, settleDisposer, routeDisposer].reverse()) {
+    for (const dispose of [...restrictionDisposers, ...toolDisposers, promptDisposer, workerPromptDisposer, guardDisposer, artifactDisposer, settleDisposer, toolFailureDisposer, routeDisposer].reverse()) {
       try { dispose?.() } catch { /* 卸载期单个失败不应阻断其余清理 */ }
     }
     // 卸载期间的收尾也不能变成未处理拒绝（宿主会判 fatal load failure）。

@@ -124,6 +124,7 @@
 - worker 不强制 chdir：`danger-full-access` 下模型给目标目录外的绝对路径仍可能写成功；硬约束只能调回 `workspace-write`。
 - 升级 DSH 后必须重跑 `docs/probes/*` 契约探针（平台入参形状变过 rc.1 → rc.3）。
 - **per-task 完整访问（`access:'full'`）**：等于本会话 `sandbox/mode = danger-full-access`，`fs`/`pwsh`/`bash` 全部解封——**写权限等于模型能改的一切**，没有额外护栏。首回合窗口同样存在。平台在派发时把父会话自己的沙箱覆盖按 `source:'delegation'` 种进子会话：父会话是 `danger-full-access` 时**所有**子任务默认完整访问（不是插件给的，`access` 只能往上设）。Windows 下只解除沙箱，**不解除平台审批/权限预设**，也不改 `chdir`。
+- **子会话工具失败监听的三条边界**：① 外部子会话（codex / claude code / ACP / DSH-SDK 独立进程）的工具事件不在本进程，插件收不到，只能靠子会话自报（W1 已要求权限/环境失败写进 summary）；② 判定靠 stderr 文本兜底，模型自己往 stderr 打「Permission denied」会被判 denied——通知写「疑似」，插件不改任务状态、不自动重派；③ 去重表只在内存，`(taskId, tool, code)` 的 10 分钟窗口不落库，插件重启后同一失败允许再报一次（窗口是固定常量，没有配置键）。
 
 ## 协调者读产物（`read_workspace`）
 

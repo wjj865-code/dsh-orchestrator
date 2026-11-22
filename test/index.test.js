@@ -83,7 +83,8 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
   const on = (event, handler) => {
     if (!handlerMap.has(event)) {
       handlerMap.set(event, [])
-      listeners.set(event, payload => { for (const item of handlerMap.get(event)) item(payload) })
+      // 变参：`tools/result` 这类事件一次给两个参数（exec, result），单参截断会让第二个参数丢掉。
+      listeners.set(event, (...args) => { for (const item of handlerMap.get(event)) item(...args) })
     }
     handlerMap.get(event).push(handler)
     return () => {}
@@ -1957,6 +1958,93 @@ test('0.25.0：启动把老 profile 残留的轮换 settings 键一次性清掉�
     assert.equal(read(key), undefined, `${key} 应被一次性清掉`)
   }
   assert.equal(created.length, 0, '启动不建会话（没有轮换动作了）')
+  db.close()
+  await f.disposers.at(-1)?.()
+}))
+
+// 2026-11-23：子会话工具失败监听（`tools/result` 观察者）。装配级只锁三件事：
+// 伪造一条真实样本形状的事件 → 日志 1 行 + 通知 1 条；同键重复被 10 分钟窗口压住（日志 2 行 + suppressed 1 行）；
+// 协调者自身调用与非任务会话完全不入账。
+test('子会话工具失败监听：伪造 tools/result → 日志/通知各一次，重复被去重、协调者与非任务会话被过滤', withHome(async home => {
+  const coordinator = makeAgent('s-1')
+  // 永不结算的 activation：任务全程留在 running（告警档要求任务还在跑或等人）。
+  let childId
+  const subagents = {
+    async startActivation(spec) {
+      childId = spec.childId
+      return { childId: spec.childId, messageId: 'msg-1', result: new Promise(() => {}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [{ id: childId ?? '', mode: 'continuable' }] },
+  }
+  const f = fakeCtx({ agents: [coordinator], subagents })
+  await apply(f.ctx, { coordinatorSession: 's-1' })
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  const created = await byName.task_create.execute({ title: '失败监听', goal: 'g', acceptance: ['a'] }, { agent: coordinator })
+  const taskRef = created.match(/（(tk-[0-9a-z]{6})）/)[1]
+  const emit = f.listeners.get('tools/result')
+  assert.ok(emit, '应订阅宿主 tools/result（否则子会话的工具失败在编排面上永远不可见）')
+
+  // 样本 B 形状（真机 seq 824）：isError=false、无沙箱标记、**退出码 0**，只有 stderr 认得出来。
+  const stderr = "git : fatal: Unable to create 'C:/Users/72489/Documents/dsh-orchestrator/.git/index.lock': Permission denied"
+  const result = {
+    isError: false,
+    content: [{ type: 'text', text: stderr }],
+    meta: { cwd: 'C:\\Users\\72489\\Documents\\dsh-orchestrator' },
+    value: {
+      kind: 'foreground', exitCode: 0, signal: null, timedOut: false, aborted: false, timeoutMs: 120000,
+      stdout: { text: '', truncated: false },
+      stderr: { text: stderr, truncated: false },
+    },
+  }
+  const exec = { name: 'pwsh', callId: 'c-1', arguments: {}, agent: { id: childId, session: { id: childId } } }
+
+  const logRows = () => {
+    const dir = join(home, 'state', 'orchestrator', 'logs')
+    if (!existsSync(dir)) return []
+    const rows = []
+    for (const file of readdirSync(dir).filter(name => name.endsWith('.jsonl'))) {
+      for (const line of readFileSync(join(dir, file), 'utf8').split('\n')) {
+        if (line.trim() === '') continue
+        try { rows.push(JSON.parse(line)) } catch { /* 半行不影响断言 */ }
+      }
+    }
+    return rows
+  }
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const failures = () => logRows().filter(row => row.event === 'subagent.tool.failure')
+  const noticeCount = () => db.prepare('SELECT count(*) AS n FROM notifications').get().n
+
+  emit(exec, result)
+  assert.equal(failures().length, 1, '每个 hit 都写一行 subagent.tool.failure')
+  const failure = failures()[0]
+  assert.equal(failure.sessionId, childId)
+  assert.equal(failure.detail.kind, 'denied')
+  assert.equal(failure.detail.code, 'COMMAND_PERMISSION_DENIED')
+  assert.equal(failure.detail.exitCode, 0)
+  assert.equal(noticeCount(), 1, 'denied 类要有一条通知')
+  assert.equal(coordinator.injected.length, 1)
+  const notice = coordinator.injected[0].content[0].text
+  assert.ok(notice.includes(taskRef), '通知要用任务引用（tk-）')
+  assert.match(notice, /COMMAND_PERMISSION_DENIED/)
+  assert.equal(/t-[0-9a-f]{8}/.test(notice), false, '通知不许出现台账内部编号')
+  assert.equal(notice.includes('72489'), false, '通知里的家目录已脱敏')
+
+  // 同键重复：日志照写、通知被 10 分钟窗口压住（留 suppressed 审计行）。
+  emit(exec, result)
+  assert.equal(failures().length, 2)
+  assert.equal(logRows().filter(row => row.event === 'subagent.tool.failure.suppressed').length, 1)
+  assert.equal(noticeCount(), 1, '同 (taskId, tool, code) 10 分钟内只通知一次')
+
+  // 协调者自身的调用、非任务会话（能力包/普通 root 会话）都不进编排面。
+  emit({ ...exec, agent: { id: 's-1' } }, result)
+  emit({ ...exec, agent: { id: 'pack-session' } }, result)
+  assert.equal(failures().length, 2)
+  assert.equal(noticeCount(), 1)
+  assert.equal(coordinator.injected.length, 1)
+
   db.close()
   await f.disposers.at(-1)?.()
 }))
