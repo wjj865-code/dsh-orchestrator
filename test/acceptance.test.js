@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   MAX_CHECKS, MAX_OUTPUT_BYTES, acceptanceCountText, acceptanceDetailBlock, acceptanceFailureText,
-  acceptancePassText, acceptanceStatusLines, checksOf, commandText, executionDirOf, normalizeChecks, runChecks,
+  acceptanceGapOf, acceptancePassText, acceptanceStatusLines, checksOf, commandText, executionDirOf, normalizeChecks, runChecks,
 } from '../src/acceptance.js'
 import { canSpawnWithPipes, PIPE_SPAWN_SKIP_REASON } from './helpers.js'
 
@@ -87,8 +87,51 @@ test('展示辅助：commandText 会引号包住含空白的参数；checksOf �
   assert.equal(executionDirOf({}), '')
 })
 
-test('runChecks：全通过；argv 原样传参、shell:false、cwd=任务目录', async () => {
-  const cwd = dir()
+test('acceptanceGapOf（P0-1）：没配放行；本轮通过放行；本轮失败/上一轮证据/坏配置一律 failed', () => {
+  const check = { name: 'c1', argv: ['node', '--test'], timeoutMs: 120_000, skipIfMissing: false }
+  // 没配检查（brief 里没有 checks、也没跑过验收）→ 放行，行为与旧版一致。
+  assert.equal(acceptanceGapOf({ attempts: 0, brief: { title: '无检查' } }), undefined)
+  assert.equal(acceptanceGapOf({ attempts: 0, brief: { checks: [] } }), undefined)
+
+  // 本轮通过：证据成立 → 放行（防御性分支：今天只有 task_report done 会写这条记录）。
+  const pass = {
+    attempts: 2,
+    brief: { checks: [{ name: 'c1', command: ['node', '--test'] }] },
+    acceptance: { ok: true, attempts: 2, total: 1, passed: 1, skipped: 0, failed: 0, results: [] },
+  }
+  assert.equal(acceptanceGapOf(pass), undefined)
+
+  // 本轮验收失败：不得交付，死因点名未通过项与两条出口。
+  const failed = {
+    ...pass,
+    acceptance: { ...pass.acceptance, ok: false, total: 2, passed: 1, failed: 1, results: [{ name: 'c2', ok: false }] },
+  }
+  const failedGap = acceptanceGapOf(failed)
+  assert.equal(failedGap.status, 'failed')
+  assert.match(failedGap.reason, /本轮验收未通过/)
+  assert.match(failedGap.reason, /c2/)
+  assert.match(failedGap.reason, /resume/)
+  assert.match(failedGap.reason, /retry/)
+
+  // 上一轮通过的记录（attempts 不同）+ 本轮没报 done → 证据失效，不得交付。
+  const stale = { ...pass, attempts: 3 }
+  const staleGap = acceptanceGapOf(stale)
+  assert.equal(staleGap.status, 'failed')
+  assert.match(staleGap.reason, /没有通过验收的记录/)
+  assert.match(staleGap.reason, /task_report/)
+  assert.match(staleGap.reason, /c1/, '没跑验收时要点名配置了哪些检查')
+
+  // 旧记录没有 attempts（升级前跑的）→ 当无证据（fail-closed）。
+  const legacy = { attempts: 0, brief: pass.brief, acceptance: { ok: true, total: 1, passed: 1, failed: 0 } }
+  assert.equal(acceptanceGapOf(legacy).status, 'failed')
+
+  // 配置坏了：不当「没配检查」，fail-closed。
+  const broken = acceptanceGapOf({ attempts: 0, brief: { checks: [{ command: 'pnpm test' }] } })
+  assert.equal(broken.status, 'failed')
+  assert.match(broken.reason, /验收配置不可解析/)
+})
+
+test('runChecks：全通过；argv 原样传参、shell:false、cwd=任务目录', async () => {  const cwd = dir()
   const calls = []
   const result = await runChecks({
     checks: [check('测试', ['node', '--test']), check('类型', ['pnpm', 'typecheck'])],

@@ -173,13 +173,13 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 | 通过 | 退出码 0（且未超时、无 spawn 错误）；`skipIfMissing:true` 时命令不存在（ENOENT）记「跳过」，不算失败 |
 | 超时 | 先 SIGTERM，5 秒后 SIGKILL；结果 `timedOut:true`、`exitCode:null` |
 | 输出 | stdout / stderr 各只留最后 4 KiB，超出标 `truncated`；失败回执给最后 10 行 |
-| 台账 | `tasks.acceptance_json`：`{ spec, ranAt, cwd, ok, total, passed, skipped, failed, results[] }`；旧库启动时 ALTER 补列，存量行 NULL = 没跑过 |
+| 台账 | `tasks.acceptance_json`：`{ spec, ranAt, cwd, ok, total, passed, skipped, failed, attempts, results[] }`（`attempts` 是跑这一轮验收时的 `tasks.attempts`，结算据此判断证据属于哪一轮）；旧库启动时 ALTER 补列，存量行 NULL = 没跑过 |
 | 消息 | 每次跑都写 `messages.kind='acceptance'`（通过写「验收通过」，失败写完整失败清单） |
 | 面板 | detail 端点下发完整证据，抽屉「验收」区块逐条显示；`task_status` 有验收段；snapshot 只下发摘要（计数/ranAt） |
 
 **安全边界**（不做假安全，如实声明）：命令只来自协调者的 `task_create`（写进 brief 快照），`task_report` 没有任何命令参数，子会话无法注入或覆盖；执行用 `spawn(argv[0], argv.slice(1), { shell:false })`，不经 sh 拼串；**Windows 唯一例外**：无扩展名命令先按 PATH × PATHEXT 解析到 `.com/.exe/.bat/.cmd` 入口（`pnpm`/`npm` 的真实入口是 `*.cmd` shim，同目录的无扩展名 bash shim 不认），`.cmd/.bat` 由 ComSpec `/d /s /c` 执行且命令行从 argv 逐项转义（参数含双引号/控制字符直接判失败：cmd 没有引号转义语法，拼下去就是注入面）。cwd 固定为 `worktree_path ?? target_dir`，**不继承主会话目录**（没有 target 的任务创建阶段就拒绝配 `checks`）；**`readOnly:true` 的任务拒绝配 `checks`**（宿主进程执行保证不了只读）；环境变量继承插件进程；检查跑在**插件宿主进程**里，不是子会话沙箱——隔离任务只是 cwd 在检出目录，权限仍来自宿主。
 
-**失败语义**：状态不迁移（保持 `running`）、不登记产物、不发交付通知；只落验收证据与 `kind='acceptance'` 消息，返回可读失败清单。子会话修完重报 `done`（会重跑），或报 `blocked`。确认交付与超时 sweeper **都不重跑**检查——确认是人的动作，不是再验一次。brief 里的 `checks` 无法解析时同样**拒绝交付**（fail-closed）。
+**失败语义**：状态不迁移（保持 `running`）、不登记产物、不发交付通知；只落验收证据与 `kind='acceptance'` 消息，返回可读失败清单。子会话修完重报 `done`（会重跑），或报 `blocked`。确认交付与超时 sweeper **都不重跑**检查——确认是人的动作，不是再验一次。brief 里的 `checks` 无法解析时同样**拒绝交付**（fail-closed）。**结算侧同样 fail-closed**：`completed` 自然结束要落 `delivered` 前必须查「本轮通过验收的证据」（`acceptanceGapOf`：`ok===true` 且 `attempts` 匹配），没有就落 `failed` 并写死因（`task.settle.acceptance-gap`）——否则「不报 done」或「验收失败后再结束回合」都能绕过验收。
 
 **为什么没有「只标记不阻断」**：验收的价值在于退出码，允许 `delivered + ok:false` 等于又回到自述。需要宽松时用 `skipIfMissing`（环境差异）或把检查写宽，而不是绕过闸门。
 

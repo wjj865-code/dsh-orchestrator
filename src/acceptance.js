@@ -132,6 +132,45 @@ export function checksOf(task) {
 }
 
 /**
+ * 结算前的验收闸门（P0-1）：`completed` 自然收尾要落「已交付待确认」时，必须有**本轮**通过验收的证据。
+ *
+ * 为什么需要它：验收只在 `task_report({ status: 'done' })` 里跑（`runAcceptance`）。子会话既不报 done、
+ * 或报了 done 但验收失败之后又结束回合，结算会把 `running` 直接推成 `delivered`——等于绕过验收。
+ *
+ * 「本轮」的判据：`tasks.acceptance.attempts` 与 `tasks.attempts` 相等。追问/续跑会让 `attempts + 1`，
+ * 上一轮通过的证据因此自动失效；旧记录没有 `attempts` 一律当「没有证据」（fail-closed，可 resume 补报）。
+ *
+ * @returns {undefined | {status: 'failed', reason: string}} undefined = 放行（没配检查，或本轮证据成立）
+ */
+export function acceptanceGapOf(task) {
+  const raw = task?.brief?.checks ?? task?.acceptance?.spec
+  if (raw === undefined || raw === null) return undefined
+  const normalized = normalizeChecks(raw)
+  if (normalized.ok !== true) {
+    return {
+      status: 'failed',
+      reason: `验收配置不可解析：${normalized.error}。本轮没有可执行的验收，拒绝交付（未落「已交付待确认」）；请协调者修正 checks 后用 task_message({ action: "retry" }) 重派`,
+    }
+  }
+  if (normalized.checks.length === 0) return undefined
+  const record = task?.acceptance
+  const attempts = Number.isFinite(task?.attempts) ? task.attempts : 0
+  const sameRound = record !== null && typeof record === 'object' && record.attempts === attempts
+  if (sameRound && record.ok === true) return undefined
+  if (sameRound) {
+    return {
+      status: 'failed',
+      reason: `本轮验收未通过（${acceptanceCountText(record)}）：交付被拒绝，未落「已交付待确认」；修完用 task_message({ action: "resume" }) 续跑补报 done（会重跑验收），或 task_message({ action: "retry" }) 重派`,
+    }
+  }
+  const names = normalized.checks.map(check => check.name).join('、')
+  return {
+    status: 'failed',
+    reason: `配了 ${normalized.checks.length} 条可执行验收检查（${names}），但本轮没有通过验收的记录：子会话没有 task_report({ status: "done" })，验收未执行，拒绝交付（未落「已交付待确认」）；用 task_message({ action: "resume" }) 让原会话补报 done（会重跑验收），或 task_message({ action: "retry" }) 重派`,
+  }
+}
+
+/**
  * 内部规范形状 → 台账/面板里的公开 spec（`command` 仍是 argv 数组，与 task_create 入参一致）。
  * 只在这里转换：入参形状、brief 快照、验收记录三处永远是同一种写法，不会一边 argv 一边 command。
  */

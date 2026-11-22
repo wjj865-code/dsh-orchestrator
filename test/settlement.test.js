@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { openLedger, createTask, getTask, transition, addMessage, recentMessages, recordProgress, setTaskArtifacts } from '../src/ledger.js'
+import { openLedger, createTask, getTask, transition, addMessage, recentMessages, recordProgress, setTaskArtifacts, setTaskAcceptance, incrementAttempts } from '../src/ledger.js'
 import { createSettlementReporter, mapSettle, outputSummary, PAUSED_REASON } from '../src/settlement.js'
 import { MAX_INLINE_BYTES, SUMMARY_CHARS, resolveLastMessage } from '../src/last-message.js'
 import { HOST_LOG_MISSING } from '../src/session-body.js'
@@ -154,6 +154,94 @@ test('真终态（cancelled/failed/orphaned）才释放可写根并收口 goal',
     assert.deepEqual(f.terminals, [expected], `${expected} 应收口 goal`)
     f.db.close()
   }
+})
+
+// —— P0-1：配了 checks 的任务，自然结束不得绕过验收 ——
+
+const acceptanceSetup = async ({ record, stopReason = 'completed' } = {}) => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, {
+    brief: sampleBrief({ title: '带检查', checks: [{ name: 'c1', command: ['node', '--test'] }] }),
+    coordinatorSession: 's-1',
+  })
+  transition(db, task.id, 'running', { sessionId: 'child-1' })
+  if (record !== undefined) {
+    setTaskAcceptance(db, task.id, {
+      spec: [{ name: 'c1', command: ['node', '--test'], timeoutMs: 120000, skipIfMissing: false }],
+      ranAt: Date.now(),
+      cwd: '/w',
+      total: 1,
+      passed: 1,
+      skipped: 0,
+      failed: 0,
+      results: [],
+      attempts: getTask(db, task.id).attempts,
+      ...record,
+    })
+  }
+  const released = []
+  const pushed = []
+  const reporter = createSettlementReporter({
+    db,
+    notifier: { push: item => pushed.push(item) },
+    releaseSession: id => released.push(id),
+  })
+  const outcome = reporter.report({ taskId: task.id, stopReason, output: [{ type: 'text', text: '做完了' }] })
+  return { db, task, outcome, released, pushed, reporter }
+}
+
+test('P0-1：配了 checks 但本轮没跑过验收（子会话没报 done）→ failed，不落 delivered', async () => {
+  const f = await acceptanceSetup()
+  assert.equal(f.outcome.to, 'failed')
+  const task = getTask(f.db, f.task.id)
+  assert.equal(task.status, 'failed')
+  assert.match(task.error, /没有通过验收的记录/)
+  assert.match(task.error, /task_report/)
+  assert.match(task.error, /resume/)
+  assert.match(task.error, /retry/)
+  assert.match(f.outcome.reason, /没有通过验收的记录/, '返回值里的 reason 要能直接读到为什么没交付')
+  assert.deepEqual(f.released, ['child-1'], 'failed 要释放写根')
+  assert.equal(f.pushed[0].status, 'failed')
+  const message = recentMessages(f.db, f.task.id, 1)[0]
+  assert.equal(message.kind, 'settle')
+  assert.match(message.rendered, /没有通过验收的记录/)
+  assert.ok(f.db.prepare("SELECT count(*) AS n FROM messages WHERE task_id = ? AND kind = 'settle'").get(f.task.id).n === 1)
+  f.db.close()
+})
+
+test('P0-1：本轮验收已失败后子会话再结束回合 → 仍 failed，死因写「本轮验收未通过」', async () => {
+  const f = await acceptanceSetup({ record: { ok: false, total: 1, passed: 0, failed: 1 } })
+  assert.equal(f.outcome.to, 'failed')
+  assert.match(getTask(f.db, f.task.id).error, /本轮验收未通过/)
+  assert.match(getTask(f.db, f.task.id).error, /验收：0\/1 通过/)
+  f.db.close()
+})
+
+test('P0-1：本轮有通过证据 → 照常 delivered（闸门放行，不误杀）', async () => {
+  const f = await acceptanceSetup({ record: { ok: true } })
+  assert.equal(f.outcome.to, 'delivered')
+  assert.equal(getTask(f.db, f.task.id).error, null)
+  assert.deepEqual(f.released, ['child-1'])
+  f.db.close()
+})
+
+test('P0-1：上一轮通过的证据不算本轮（attempts 变了）→ failed', async () => {
+  const f = await acceptanceSetup({ record: { ok: true } })
+  // 模拟「追问/续跑进入新一轮」：attempts +1，上一轮的验收记录随即失效。
+  incrementAttempts(f.db, f.task.id)
+  const reporter = createSettlementReporter({ db: f.db, notifier: { push() {} } })
+  // 上一轮已经 delivered，先把它拉回 running 模拟新一轮结束。
+  transition(f.db, f.task.id, 'running')
+  const outcome = reporter.report({ taskId: f.task.id, stopReason: 'completed' })
+  assert.equal(outcome.to, 'failed')
+  assert.match(getTask(f.db, f.task.id).error, /没有通过验收的记录/)
+  f.db.close()
+})
+
+test('P0-1 只对 completed 生效：配了 checks 的任务 aborted 仍按 cancelled（不改成 failed）', async () => {
+  const f = await acceptanceSetup({ stopReason: 'aborted' })
+  assert.equal(f.outcome.to, 'cancelled')
+  f.db.close()
 })
 
 test('D5：结算通知带台账里已有的产物（不用等收集）', async () => {

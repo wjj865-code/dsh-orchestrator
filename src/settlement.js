@@ -8,6 +8,8 @@
 // B1：结算同时把子会话最后一条 assistant 消息落进台账（短内联 / 长写 reports 文件），
 //     主会话用 task_status 就能读到全文，不必再打开子会话历史；delivered/done 上只补消息、不改状态。
 import { addMessage, findTaskBySession, getTask, getSetting, setTaskLastMessage, transition } from './ledger.js'
+// P0-1：配了可执行验收的任务，自然结束也要有「本轮通过」的证据才能落 delivered（见 acceptanceGapOf）。
+import { acceptanceGapOf } from './acceptance.js'
 import { workspaceIndexSavedKey } from './workspace-index.js'
 import { captureLastMessage, messageText, summarizeText } from './last-message.js'
 import { statusLabel } from './state.js'
@@ -194,40 +196,51 @@ export function createSettlementReporter({
     const mapped = indexIncomplete
       ? { status: 'failed', reason: '工作区索引未完整持久化（缺少有效 workspace_index 回报），可用 task_message({ action: "retry" }) 重试', stopReason }
       : mapSettle(stopReason, { progressCount: task.progress_count ?? 0 })
+    // P0-1：配了 checks 的任务，自然结束（completed）也必须先有**本轮**通过验收的证据，否则不落 delivered。
+    // 只对 completed 生效：aborted/error/max-tokens/refusal 与「只报过 progress 的 orphaned」一概不碰。
+    const gap = stopReason === 'completed' && mapped.status === 'delivered' ? acceptanceGapOf(task) : undefined
+    const settledMap = gap === undefined ? mapped : { ...mapped, ...gap }
+    if (gap !== undefined) {
+      log('task.settle.acceptance-gap', {
+        taskId: task.id,
+        sessionId: task.session_id ?? sessionId,
+        detail: { reason: gap.reason, attempts: task.attempts ?? 0, stopReason: stopReason ?? null, source },
+      })
+    }
     // 完整正文（不截断）先算出来：摘要给通知/死因与台账借条，正文本身留在宿主会话日志。
     const fullText = typeof lastMessage === 'string' && lastMessage !== '' ? messageText(lastMessage) : messageText(output)
     const summary = summarizeText(fullText)
     const extra = typeof error === 'string' && error !== '' ? error : ''
-    const detail = mapped.reason ?? ''
+    const detail = settledMap.reason ?? ''
     const errorText = [detail, summary, extra].filter(part => part !== '').join('：').slice(0, 500) || null
     let next
     try {
       // delivered 不是失败：清掉 error；只有真正异常收场才写死因。
-      const clearsError = mapped.status === 'delivered' || mapped.status === 'done'
+      const clearsError = settledMap.status === 'delivered' || settledMap.status === 'done'
       // v0.24：把 stopReason 落进 last_stop_reason —— failed/orphaned 之后 resume 的判定与文案都靠它，
       // 不必再翻 messages 去找 settle 行。
-      next = transition(db, task.id, mapped.status, {
+      next = transition(db, task.id, settledMap.status, {
         error: clearsError ? null : errorText,
-        lastStopReason: mapped.stopReason ?? null,
+        lastStopReason: settledMap.stopReason ?? null,
       })
     } catch (failure) {
       log('task.settle.transition-failed', {
         taskId: task.id,
         sessionId: task.session_id ?? sessionId,
-        detail: { from, to: mapped.status, error: failure?.message ?? String(failure), source },
+        detail: { from, to: settledMap.status, error: failure?.message ?? String(failure), source },
       })
       return { action: 'failed', reason: 'transition-failed', taskId: task.id, from }
     }
     // B1：把返回消息的**借条**落进台账（P1：正文留在宿主会话日志，台账只存 digest + 摘要）。
-    const captured = persistLastMessage(task, { text: fullText, stopReason: mapped.stopReason, source })
+    const captured = persistLastMessage(task, { text: fullText, stopReason: settledMap.stopReason, source })
     const lastMessageRecord = captured === null ? null : captured.record
     if (captured !== null) next = captured.task
     const note = detail !== '' ? detail : (summary !== '' ? summary : '子会话已结束')
     try {
       addMessage(db, task.id, {
         kind: 'settle',
-        rendered: `[结算] ${statusLabel(mapped.status)}：${note}`,
-        meta: { stopReason: mapped.stopReason, status: mapped.status, source },
+        rendered: `[结算] ${statusLabel(settledMap.status)}：${note}`,
+        meta: { stopReason: settledMap.stopReason, status: settledMap.status, source },
       })
     } catch (failure) {
       log('task.settle.message-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
@@ -236,20 +249,20 @@ export function createSettlementReporter({
     // 导致「结算自动 done」的通知里永远没有产物、也就没有 present 交付指令。
     let final = next
     try {
-      const refreshed = beforeNotify(next, mapped.status)
+      const refreshed = beforeNotify(next, settledMap.status)
       if (refreshed !== null && typeof refreshed === 'object') final = refreshed
     } catch (failure) {
       log('task.settle.before-notify-failed', { taskId: task.id, detail: { error: failure?.message ?? String(failure) } })
     }
-    notify(final, mapped.status, summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`))
+    notify(final, settledMap.status, summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`))
     // 交付（delivered）也要释放可写根：交付即放手，同目录才能新建任务；追问投递成功时由
     // dispatch.send 幂等重建。goal 仍只留到真终态再收口（见 docs/ARCHITECTURE.md「两段式终态」）。
-    if (RELEASING_STATUSES.has(mapped.status) || mapped.status === 'delivered') {
+    if (RELEASING_STATUSES.has(settledMap.status) || settledMap.status === 'delivered') {
       try { releaseSession(task.session_id ?? task.target) } catch { /* 释放失败不影响已落库的终态 */ }
-      if (RELEASING_STATUSES.has(mapped.status)) {
+      if (RELEASING_STATUSES.has(settledMap.status)) {
         // G1：终态收敛平台 goal（done → complete；cancelled/failed/orphaned → clear）。
         // 回调内部吞错，不能因为 goal 服务缺席/失败回滚已完成的状态迁移。
-        try { onTerminal(next, mapped.status) } catch { /* goal 收口失败不影响结算 */ }
+        try { onTerminal(next, settledMap.status) } catch { /* goal 收口失败不影响结算 */ }
       }
     }
     try { pump() } catch { /* 队列补位失败不影响结算 */ }
@@ -257,7 +270,7 @@ export function createSettlementReporter({
       taskId: task.id,
       sessionId: task.session_id ?? sessionId ?? null,
       detail: {
-        from, to: mapped.status, stopReason: mapped.stopReason, source,
+        from, to: settledMap.status, stopReason: settledMap.stopReason, source,
         lastMessage: lastMessageRecord === null
           ? null
           : { stored: lastMessageRecord.stored, bytes: lastMessageRecord.bytes, chars: lastMessageRecord.chars },
@@ -267,9 +280,9 @@ export function createSettlementReporter({
       action: 'updated',
       taskId: task.id,
       from,
-      to: mapped.status,
-      reason: mapped.reason,
-      stopReason: mapped.stopReason,
+      to: settledMap.status,
+      reason: settledMap.reason,
+      stopReason: settledMap.stopReason,
       summary,
       lastMessage: lastMessageRecord === null ? null : {
         stored: lastMessageRecord.stored,

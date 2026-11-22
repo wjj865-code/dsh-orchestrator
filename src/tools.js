@@ -1970,6 +1970,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           passed: result.passed,
           skipped: result.skipped,
           failed: result.failed,
+          // P0-1：本轮轮次标记。结算侧据此判断证据是否属于本轮（追问/续跑会让 attempts +1，
+          // 上一轮通过的记录因此自动失效，自然结束不被上一轮证据洗成交付）。
+          attempts: Number.isFinite(task.attempts) ? task.attempts : 0,
           results: result.results,
         })
         log('task.acceptance', {

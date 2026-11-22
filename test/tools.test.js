@@ -79,6 +79,8 @@ async function setup(options = {}) {
     stateDir: options.stateDir,
     // P2-4（D6）：官方 Team 板关联（不传 = 未装配，task_create.teamTaskId 会明确拒绝）。
     teamBoard: options.teamBoard,
+    // P0-1 用例注入验收执行器（避免依赖沙箱里的 spawn 能力）。
+    ...(options.runAcceptance === undefined ? {} : { runAcceptance: options.runAcceptance }),
   }).map(tool => [tool.name, tool]))
   return { db, dispatcher, queue, notifier, tools }
 }
@@ -1960,6 +1962,8 @@ test('task_create.checks：全部通过才交付，验收证据入台账、kind=
   const after = getTask(db, task.id)
   assert.equal(after.status, 'delivered')
   assert.equal(after.acceptance.ok, true)
+  // P0-1：验收证据带上本轮轮次（结算侧据此判断证据是否属于本轮）。
+  assert.equal(after.acceptance.attempts, after.attempts)
   assert.equal(after.acceptance.total, 1)
   assert.equal(after.acceptance.passed, 1)
   assert.equal(after.acceptance.results[0].name, '单测')
@@ -2071,6 +2075,43 @@ test('task_report：brief 里的 checks 坏了 → 拒绝交付（fail-closed）
   assert.equal(getTask(db, task.id).status, 'running')
   assert.equal(getTask(db, task.id).acceptance, null)
   assert.ok(recentMessages(db, task.id, 10).some(row => row.kind === 'acceptance'))
+  db.close()
+})
+
+test('P0-1 集成：验收失败后子会话结束回合，结算不落 delivered（落 failed 并写明原因）', async () => {
+  const failedRun = async () => ({
+    ranAt: Date.now(),
+    cwd: '/w',
+    ok: false,
+    total: 1,
+    passed: 0,
+    skipped: 0,
+    failed: 1,
+    results: [{
+      name: 'c1', command: 'node --test', argv: ['node', '--test'], ok: false, exitCode: 2, signal: null,
+      timedOut: false, skipped: false, missing: false, truncated: false, durationMs: 5, outputTail: 'boom', error: null,
+    }],
+  })
+  const { db, tools } = await setup({ runAcceptance: failedRun })
+  const target = tempDir()
+  await call(tools, 'task_create', sampleBrief({
+    title: '验收会失败', target, checks: [{ name: 'c1', command: ['node', '--test'] }],
+  }))
+  const task = listTasks(db).find(item => item.title === '验收会失败')
+  const rejected = await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id } })
+  assert.match(rejected, /验收未通过/)
+  const afterReport = getTask(db, task.id)
+  assert.equal(afterReport.status, 'running', '验收失败：task_report 不迁移状态')
+  assert.equal(afterReport.acceptance.attempts, afterReport.attempts, '证据要带本轮 attempts')
+
+  // 子会话随后结束回合（平台结算）：同一 db 上真实结算，绝不能再把它洗成「已交付待确认」。
+  const pushed = []
+  const reporter = createSettlementReporter({ db, notifier: { push: item => pushed.push(item) } })
+  const settled = reporter.report({ taskId: task.id, stopReason: 'completed', output: [{ type: 'text', text: '做完了' }] })
+  assert.equal(settled.to, 'failed')
+  assert.equal(getTask(db, task.id).status, 'failed')
+  assert.match(getTask(db, task.id).error, /本轮验收未通过/)
+  assert.equal(pushed.at(-1)?.status, 'failed')
   db.close()
 })
 

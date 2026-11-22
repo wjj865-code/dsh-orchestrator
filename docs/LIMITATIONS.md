@@ -33,7 +33,7 @@
 - **`blocked` 上报不等于授权**：它只是把决策点交回协调者；子会话不能因为「报过 blocked」就自行推进，也不能拿它绕过推送前双审查或人工确认门禁。
 - **检查跑在宿主进程，不是沙箱**：`checks` 按宿主权限执行（命令只来自协调者的 `task_create`，子会话无法注入）。cwd 固定为任务 target / 检出目录，**不继承主会话目录**；没有 `target` 或 `readOnly` 的任务不接受 `checks`。环境差异（命令不存在、CI 专用命令）用 `skipIfMissing`，不是绕过闸门。
 - **Windows 上 `pnpm`/`npm`/`npx`/`yarn` 是 `*.cmd` shim**：无扩展名命令先按 PATH × PATHEXT 找到真实 `.cmd`/`.exe` 入口（同名的无扩展名 bash shim 不认），`.cmd`/`.bat` 经 ComSpec `/d /s /c` 执行、命令行从 argv 逐项转义；解析不到时按「命令不存在」记账，错误里列出查找过的候选路径（不再只是干巴巴一句 ENOENT）。参数里带**双引号或控制字符**时直接判失败：cmd 没有引号转义语法，拼下去就是注入面——这类参数请改用 `.exe` 入口或去掉（`skipIfMissing` 不覆盖这种情况）。
-- **超时/失败语义**：超时先 SIGTERM、5 秒后 SIGKILL；失败即拒绝交付（状态不变），**确认交付与超时 sweeper 都不重跑**检查。
+- **超时/失败语义**：超时先 SIGTERM、5 秒后 SIGKILL；失败即拒绝交付（状态不变），**确认交付与超时 sweeper 都不重跑**检查。**配了 `checks` 的任务必须 `task_report({status:'done'})` 才算交付**：子会话自然结束（`completed`）时结算会先查「本轮通过验收的证据」（`acceptance.ok` 且 `attempts` 匹配），没有就落 `failed` 并写明「验收未执行/本轮未通过」，用 `resume` 续跑补报或 `retry` 重派；`aborted`/`error`/`refusal` 与只报过 `progress` 的 `orphaned` 不受影响。
 - **worktree 装依赖提示只是「允许装」**：`【worktree 依赖】` 只在隔离任务里出现，措辞限定「只安装不升级」；插件不代为执行、不保证锁文件不变。
 - **经验文件是快照，不是台账（T1）**：`lessons/<项目>-<hash>.md` 每次派发覆盖为本次命中事实层记忆；无历史版本、不参与快照。手删后 `task_detail` 指针显示「已丢失」（下次派发重建）；写文件失败时经验改为只出现在 `task_detail` 的内联块。
 - **`task_detail` 只读且只给自己**：按创建时 `brief_json` 返回目标/验收/检查/经验，前置与产物按**当前**台账现读；主会话或别的子会话调用被拒。
