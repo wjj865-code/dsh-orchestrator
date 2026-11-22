@@ -508,7 +508,7 @@ worktree 任务发到子会话的 brief 会多一行：检出目录没有依赖�
 
 - **声明只有结构化两处**：profile 配置 `worktreePolicy` / `worktreeBranchPrefix` / `worktreeRecentDays`，以及 `task_create.worktree*` 字段。插件**不读** `AGENTS.md`、**不解析**自然语言：「要不要隔离」由协调者判断。
 - **模块**：`src/worktree.js` = 宿主侧 git 能力（`probeRepo` / `create` / `remove` / `ensureExcluded` / 分支名校验 / `prepareTaskWorktree` / `cleanupTaskWorktree` / `retryWorktreeOf`）；`src/worktree-request.js` = 结构化请求校验 + 机械映射 + 展示文案（纯函数）。
-- **创建期**：先互斥校验（`readOnly`/`planFirst`）与复用查找（`worktreeMode:'continue'`）；真要建时才 `probeRepo`（普通任务零 git 调用）→ 非仓库 `degrade`；基线：显式 `worktreeBase` 要 `rev-parse --verify` 通过、缺省时 n=0 用默认分支 / n=1 用那条 / **n≥2 返回 `needsBranchChoice` 且不落库**。落库七列（`worktree_path` / `_branch` / `repo_root` / `_base` / `_mode` / `_source` / `_state`），`state='requested'`。
+- **创建期**：先互斥校验（`readOnly`/`planFirst`）与复用查找（`worktreeMode:'continue'`，按 `worktree_path` 判活跃占用——被占用就拒绝并给「dependsOn 串行 / `worktreeMode:'new'` 新建」两条路，`task.create.rejected` 记 `reason: checkout-busy`）；真要建时才 `probeRepo`（普通任务零 git 调用）→ 非仓库 `degrade`；基线：显式 `worktreeBase` 要 `rev-parse --verify` 通过、缺省时 n=0 用默认分支 / n=1 用那条 / **n≥2 返回 `needsBranchChoice` 且不落库**。落库七列（`worktree_path` / `_branch` / `repo_root` / `_base` / `_mode` / `_source` / `_state`），`state='requested'`。
 - **派发期**：`git worktree add -b <branch> <repo>/.agents/worktrees/<taskId> <base>`——**永远 -b 新分支**（直接检出已在主工作树检出的基线会被 git 拒绝）；`reused` 不调 git，只换算路径；`target_dir` 换成「检出目录 + 原 target 相对 repoRoot 的偏移」。建树失败标 `failed` 并写原因（不静默降级）。
 - **`.git/info/exclude`**：建树成功后把 `.agents/` 追加进去（幂等、不动 `.gitignore`；不可写只 warn）。
 - **清理三档**：`off`（默认，全留）/ `checkout-only`（只 `worktree remove`）/ `full`（连分支一起删，有未合并提交会提示）；在终态异步跑，失败只记日志。

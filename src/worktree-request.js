@@ -227,15 +227,29 @@ export function decideWorktreeFacts({ intent = {}, facts = {}, baseExists, recen
   return { action: 'create', source: intent.source, base, branch: intent.branch }
 }
 
-/** 候选检出（同 group / 同 dependsOn 链上已建好且还在的）→ 给 `worktreeMode:'continue'` 复用。 */
-export function findReusableCheckout({ tasks = [], groupId = null, dependsOn = [] } = {}) {
+/**
+ * 候选检出（同 group / 同 dependsOn 链上已建好且还在的），按「dependsOn 链 → 同 group」排序、去重。
+ * 只做「哪些检出可复用」；「有没有被活跃任务占着」由调用方用 write-guard 的 `occupiesCheckout` 过滤
+ * （同路径并发写的判定与 task_create/追问共用一组谓词，见 src/write-guard.js）。
+ */
+export function reusableCheckoutCandidates({ tasks = [], groupId = null, dependsOn = [] } = {}) {
   const deps = new Set(Array.isArray(dependsOn) ? dependsOn : [])
   // 可复用的检出必须是「目录真的还在」的两种状态（cleaned 的目录已删，复用会拿到空目录）。
   const usable = (Array.isArray(tasks) ? tasks : []).filter(task => task?.worktree_path
     && ['created', 'reused'].includes(task.worktree_state))
-  const sameGroup = groupId === null || groupId === undefined ? [] : usable.filter(task => task.group_id === groupId)
   const upstream = usable.filter(task => deps.has(task.id))
-  const pick = upstream[0] ?? sameGroup[0]
+  const sameGroup = groupId === null || groupId === undefined ? [] : usable.filter(task => task.group_id === groupId)
+  const seen = new Set()
+  return [...upstream, ...sameGroup].filter(task => {
+    if (seen.has(task.id)) return false
+    seen.add(task.id)
+    return true
+  })
+}
+
+/** 第一个可复用的检出（`worktreeMode:'continue'` 的兼容入口；占用过滤在 tools.js 做）。 */
+export function findReusableCheckout({ tasks = [], groupId = null, dependsOn = [] } = {}) {
+  const pick = reusableCheckoutCandidates({ tasks, groupId, dependsOn })[0]
   if (pick === undefined) return undefined
   return {
     taskId: pick.id,

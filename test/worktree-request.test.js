@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import {
   CLEANUP_HINT, DEGRADE_HINT, IMPLICIT_HINT, OFF_BUILD_HINT, REQUIRED_FALLBACK_HINT, REQUIRED_SKIP_HINT,
   WORKTREE_STATES, askBranchHint, branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent,
-  findReusableCheckout, isWorktreeTask, notifyWorktreeOf, parseWorktreeRequest, requestOfTask,
+  findReusableCheckout, isWorktreeTask, notifyWorktreeOf, parseWorktreeRequest, requestOfTask, reusableCheckoutCandidates,
   worktreeDetailLines, worktreeListMarker, worktreeNoteLines, worktreeNotifyLine, worktreeStatusLine,
 } from '../src/worktree-request.js'
 import { loadConfig } from '../src/config.js'
@@ -108,6 +108,22 @@ test('P9 复用检出查找：同 group 或 dependsOn 链上已建好的检出',
   assert.deepEqual(findReusableCheckout({ tasks, dependsOn: ['t-2'] })?.path, 'C:/w/t-2')
   // cleaned / none 的不能复用。
   assert.equal(findReusableCheckout({ tasks, groupId: 'g2' }), undefined)
+})
+
+test('P0-2 候选检出：dependsOn 链优先、同 group 次之、按 id 去重（拿全量候选去过滤占用）', () => {
+  const tasks = [
+    { id: 't-1', group_id: 'g1', worktree_path: 'C:/w/t-1', worktree_branch: 'orch/t-1', worktree_state: 'created' },
+    { id: 't-2', group_id: 'g1', worktree_path: 'C:/w/t-2', worktree_branch: 'orch/t-2', worktree_state: 'reused' },
+    { id: 't-3', group_id: 'g1', worktree_path: 'C:/w/t-3', worktree_branch: 'orch/t-3', worktree_state: 'cleaned' },
+  ]
+  // 既在 dependsOn 又在同 group：只出现一次，且排在前面。
+  assert.deepEqual(
+    reusableCheckoutCandidates({ tasks, groupId: 'g1', dependsOn: ['t-2'] }).map(task => task.id),
+    ['t-2', 't-1'],
+  )
+  assert.deepEqual(reusableCheckoutCandidates({ tasks, groupId: 'g9' }), [])
+  // 无 group / 无 dependsOn：没有候选（不会拿全台账任意检出乱复用）。
+  assert.deepEqual(reusableCheckoutCandidates({ tasks }), [])
 })
 
 // —— 三、物理事实分档（n=0 / 1 / ≥2 / 基线不存在 / 非仓库） ——

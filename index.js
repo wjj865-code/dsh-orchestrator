@@ -135,7 +135,7 @@ export function renderWorktreePolicy(config = {}) {
 5. 收尾标注：按返回的 worktree 块在回复里写「产物在分支 X 的检出目录 Y，合并由你决定」；hint 非空时一并解释。
 - 隔离任务在检出目录里干活：产物不在用户工作树里，合并/提交由用户决定（插件不合并、不 push、不碰远程）。
 - worktree 与 readOnly / planFirst 互斥（创建期拒绝）；计划批准后要隔离就重新派发一个带 worktree:true 的任务。
-- 同一需求续写用 worktreeMode:'continue' 复用已有检出；同一检出上不要并发两个任务（必须用 dependsOn 串行，见上「任务链」段）。
+- 同一需求续写用 worktreeMode:'continue' 复用已有检出；**同一检出不并发**：复用时插件会按检出路径查活跃占用，被占就拒绝并给两条路——把占用任务设为 dependsOn 前置串行，或改用 worktreeMode:'new' 新建检出（见上「任务链」段）。
 - worktreeCleanup 默认 off（检出+分支都保留）；要清理传 'checkout-only'（只删检出）或 'full'（连分支一起删）。`
 }
 

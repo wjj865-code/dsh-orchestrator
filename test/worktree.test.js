@@ -14,7 +14,7 @@ import {
 } from '../src/worktree.js'
 import { WORKTREE_INSTALL_HINT } from '../src/copy.js'
 import { renderWorkerPolicy } from '../src/prompt-layers.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 const NOW = 1_700_000_000_000
 const NOW_SECONDS = Math.floor(NOW / 1000)
@@ -629,13 +629,15 @@ test('P9 task_create：worktreeMode=continue 复用已有检出（不新建、cw
   const repoRoot = tempDir()
   const checkout = checkoutPathFor(repoRoot, 't-prev')
   const { db, dispatcher, tools, worktree } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot }) })
-  createTask(db, {
+  const prev = createTask(db, {
     brief: sampleBrief({ title: '前一单', target: repoRoot }),
     coordinatorSession: 's-1',
     targetDir: checkout,
     groupId: 'g-1',
     worktree: { state: 'created', source: 'task', repoRoot, path: checkout, branch: 'orch/t-prev', base: 'main', mode: 'new' },
   })
+  // 前置任务已交付完成（P0-2 起 pending/活跃任务的检出算「被占用」，复用它必须靠 dependsOn 串行或等它结束）。
+  markDone(db, prev.id)
   const text = await call(tools, 'task_create', sampleBrief({ title: '续写', goal: 'g', target: repoRoot, worktreeMode: 'continue', group: 'g-1' }), {})
   assert.match(text, /复用已有检出/)
   const continued = listTasks(db, { active: true }).find(task => task.title === '续写')
@@ -643,6 +645,79 @@ test('P9 task_create：worktreeMode=continue 复用已有检出（不新建、cw
   assert.equal(worktree.calls.create.length, 0)
   const spawn = dispatcher.calls.filter(item => item[0] === 'spawn').at(-1)
   assert.equal(spawn[1].cwd, checkout)
+  db.close()
+})
+
+test('P0-2 集成：continue 复用的检出被活跃任务占着 → 拒绝（不建任务），给 dependsOn / 新建检出两条路', async () => {
+  const repoRoot = tempDir()
+  const checkout = checkoutPathFor(repoRoot, 't-prev')
+  const { db, dispatcher, tools } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot }) })
+  const prev = createTask(db, {
+    brief: sampleBrief({ title: '前一单', target: repoRoot }),
+    coordinatorSession: 's-1',
+    targetDir: checkout,
+    groupId: 'g-1',
+    worktree: { state: 'created', source: 'task', repoRoot, path: checkout, branch: 'orch/t-prev', base: 'main', mode: 'new' },
+  })
+  transition(db, prev.id, 'running', { sessionId: 'c-prev', target: 'c-prev' })
+  const text = await call(tools, 'task_create', sampleBrief({ title: '续写', goal: 'g', target: repoRoot, worktreeMode: 'continue', group: 'g-1' }), {})
+  assert.match(text, /未创建任务/)
+  assert.match(text, /worktreeMode:"continue"/)
+  assert.match(text, /dependsOn/)
+  assert.match(text, /worktreeMode:"new"/)
+  assert.equal(listTasks(db).length, 1, '被拒时不能落库')
+  assert.equal(dispatcher.calls.filter(item => item[0] === 'spawn').length, 0, '被拒时一次派发都不能发生')
+  db.close()
+})
+
+test('P0-2：continue + dependsOn 串行复用不被误杀（前置 delivered 时新任务 waiting_dep，仍复用它）', async () => {
+  const repoRoot = tempDir()
+  const checkout = checkoutPathFor(repoRoot, 't-prev')
+  const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot }) })
+  const prev = createTask(db, {
+    brief: sampleBrief({ title: '前一单', target: repoRoot }),
+    coordinatorSession: 's-1',
+    targetDir: checkout,
+    worktree: { state: 'created', source: 'task', repoRoot, path: checkout, branch: 'orch/t-prev', base: 'main', mode: 'new' },
+  })
+  transition(db, prev.id, 'running', { sessionId: 'c-prev', target: 'c-prev' })
+  transition(db, prev.id, 'delivered')
+  const text = await call(tools, 'task_create', sampleBrief({
+    title: '串行续写', goal: 'g', target: repoRoot, worktreeMode: 'continue', dependsOn: [prev.id],
+  }), {})
+  assert.match(text, /等待前置/)
+  const created = listTasks(db).find(task => task.title === '串行续写')
+  assert.equal(created.status, 'waiting_dep')
+  assert.equal(created.worktree_state, 'reused')
+  assert.equal(created.worktree_path, checkout)
+  db.close()
+})
+
+test('P0-2：同 group 有多个检出时优先用空闲的那份（被占用的不误伤）', async () => {
+  const repoRoot = tempDir()
+  const busyCheckout = checkoutPathFor(repoRoot, 't-busy')
+  const freeCheckout = checkoutPathFor(repoRoot, 't-free')
+  const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot }) })
+  const busy = createTask(db, {
+    brief: sampleBrief({ title: '占着的', target: repoRoot }),
+    coordinatorSession: 's-1',
+    targetDir: busyCheckout,
+    groupId: 'g-1',
+    worktree: { state: 'created', source: 'task', repoRoot, path: busyCheckout, branch: 'orch/t-busy', base: 'main', mode: 'new' },
+  })
+  transition(db, busy.id, 'running', { sessionId: 'c-busy', target: 'c-busy' })
+  const free = createTask(db, {
+    brief: sampleBrief({ title: '已完成的', target: repoRoot }),
+    coordinatorSession: 's-1',
+    targetDir: freeCheckout,
+    groupId: 'g-1',
+    worktree: { state: 'created', source: 'task', repoRoot, path: freeCheckout, branch: 'orch/t-free', base: 'main', mode: 'new' },
+  })
+  markDone(db, free.id)
+  const text = await call(tools, 'task_create', sampleBrief({ title: '续写', goal: 'g', target: repoRoot, worktreeMode: 'continue', group: 'g-1' }), {})
+  assert.match(text, /复用已有检出/)
+  const created = listTasks(db).find(task => task.title === '续写')
+  assert.equal(created.worktree_path, freeCheckout, '应挑空闲的那份检出，而不是占着的那份')
   db.close()
 })
 

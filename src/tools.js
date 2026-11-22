@@ -56,11 +56,11 @@ import {
   deliveredReceiptNote, planCreateReceipt,
 } from './copy.js'
 import {
-  branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, findReusableCheckout,
+  branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, reusableCheckoutCandidates,
   notifyWorktreeOf, parseWorktreeRequest, worktreeListMarker, worktreeNoteLines, worktreeStatusLine,
 } from './worktree-request.js'
 import { checkoutPathFor, createWorktreeService, retryWorktreeOf } from './worktree.js'
-import { ISOLATED_WORKTREE_STATES, decideFollowupGuard, decideWriteGuard } from './write-guard.js'
+import { ISOLATED_WORKTREE_STATES, checkoutRejection, decideFollowupGuard, decideWriteGuard, occupiesCheckout, serializedIdsOf } from './write-guard.js'
 // 0.32.0 能力包工厂：工具定义在 src/pack/tool.js（参数校验 + 文案），闸门/回滚在 src/pack/service.js。
 import { createCapabilityPackTool } from './pack/tool.js'
 
@@ -1261,14 +1261,48 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return `${parsedWorktree.error}。`
       }
       const wtRequest = parsedWorktree.request
+      // P0-2：continue 复用同一份检出也会并发写（git 索引互相踩）。复用前按 worktree_path 判活跃占用：
+      // 被活跃任务占着的候选剔掉（dependsOn 祖先不算——新任务会等它们 done 才派发）；
+      // 候选全被占着就拒绝并给「dependsOn 串行 / worktreeMode:'new' 新建」两条路。
+      // 只读 / 计划阶段与 worktree 互斥（错误优先级由 decideWorktreeIntent 给），先跳过占用预判。
+      let existingCheckout
+      if (wtRequest.mode === 'continue' && readOnly !== true && planFirst !== true) {
+        const ledgerTasks = listTasks(db)
+        const serialized = serializedIdsOf(ledgerTasks, depends.ids)
+        const candidates = reusableCheckoutCandidates({ tasks: ledgerTasks, groupId, dependsOn: depends.ids })
+        const blocked = candidates.filter(task => occupiesCheckout(task) && !serialized.has(task.id))
+        const free = candidates.filter(task => !blocked.includes(task))
+        if (free.length === 0 && blocked.length > 0) {
+          log('task.create.rejected', {
+            agentId,
+            detail: {
+              reason: 'checkout-busy',
+              path: blocked[0].worktree_path ?? null,
+              conflicts: blocked.map(task => task.id),
+              callId,
+            },
+          })
+          return checkoutRejection({
+            path: blocked[0].worktree_path,
+            conflicts: blocked.map(task => ({ task, path: task.worktree_path })),
+          })
+        }
+        if (free.length > 0) {
+          existingCheckout = {
+            taskId: free[0].id,
+            path: free[0].worktree_path,
+            branch: free[0].worktree_branch ?? '',
+            // 源仓库根：复用任务的 target 偏移要靠它换算（检出目录里同一个子目录）。
+            repoRoot: free[0].repo_root ?? null,
+          }
+        }
+      }
       const wtIntent = decideWorktreeIntent({
         request: wtRequest,
         policy: config?.worktreePolicy ?? 'auto',
         readOnly,
         planFirst,
-        existingCheckout: wtRequest.mode === 'continue'
-          ? findReusableCheckout({ tasks: listTasks(db), groupId, dependsOn: depends.ids })
-          : undefined,
+        existingCheckout,
       })
       if (wtIntent.action === 'reject') {
         log('task.create.rejected', { agentId, detail: { reason: wtIntent.code, message: wtIntent.error, callId } })

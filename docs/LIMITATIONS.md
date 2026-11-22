@@ -180,7 +180,7 @@
 - **`needsBranchChoice` 多一次往返**：仓库近 N 天 ≥2 个活跃分支且没给 `worktreeBase` 时**不建任务**、只返回候选；任务不落库、不占并发位。
 - **检出目录占磁盘**：默认 `worktreeCleanup:'off'` 全保留，长期会堆积（`.agents/worktrees/<taskId>`）；推荐 `checkout-only`。
 - **宿主依赖 git**：没装 git/不在 PATH 时建树失败 → 任务 `failed`（`GIT_MISSING`），不自动降级。`.git/info/exclude` 不可写时只 warn，`.agents/` 可能出现在 `git status`。
-- **并发**：同一仓库多个任务各自独立检出、互不干扰；并发 `git commit` 会争 `.git` 锁。**同一检出上不要并发两个任务**——`worktreeMode:'continue'` 复用同一目录时必须 `dependsOn` 串行。
+- **并发**：同一仓库多个任务各自独立检出、互不干扰；并发 `git commit` 会争 `.git` 锁。**同一检出上不会并发**：`worktreeMode:'continue'` 复用前会按 `worktree_path` 查活跃占用（pending/waiting_dep/running/waiting_*/delivered 都算），被占就拒绝并给两条路——把占用任务设为 `dependsOn` 前置串行，或改 `worktreeMode:'new'` 新建检出。
 - **Windows 长路径**：检出用 `<repo>/.agents/worktrees/<taskId>` 固定短路径，分支名不进路径；仍建议真机先验一次。
 
 ## 通知与生命周期
