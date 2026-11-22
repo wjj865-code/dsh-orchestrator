@@ -378,7 +378,8 @@ test('详情抽屉四区块：brief/消息/依赖/产物、空态与投递状态
 })
 
 // U1：任务入口（会话头「任务」按钮）只在主会话显示；侧栏「◈ 主会话」跳转入口始终可见。
-test('任务入口闸门：默认隐藏；当前会话=主会话才显示；无会话/子会话/请求失败都隐藏', async () => {
+// 2026-11-22：闸门快照从布尔改成角色（'main' | 'adopt' | 'hidden'）——子智能体会话两个入口都不渲染。
+test('任务入口闸门：默认 hidden；主会话 main；普通根会话 adopt；子智能体/无会话/请求失败都 hidden', async () => {
   const { loaded } = load()
   const { createMainViewGate } = loaded.__test
   let sessionId
@@ -395,23 +396,34 @@ test('任务入口闸门：默认隐藏；当前会话=主会话才显示；无�
     },
     timer: () => () => {},
   })
-  assert.equal(gate.getSnapshot(), false, '未判定前默认隐藏')
+  assert.equal(gate.getSnapshot(), 'hidden', '未判定前默认 hidden')
   await gate.refresh()
-  assert.equal(gate.getSnapshot(), false, '没有当前会话时隐藏')
+  assert.equal(gate.getSnapshot(), 'hidden', '没有当前会话时 hidden')
   assert.deepEqual(calls, [], '没有会话 id 就不该请求宿主')
   sessionId = 'c-child'
   await gate.refresh()
-  assert.equal(gate.getSnapshot(), false, '其他会话（子会话）隐藏')
+  assert.equal(gate.getSnapshot(), 'adopt', '普通根会话给「设为协调者」')
   assert.deepEqual(calls, ['c-child'])
   sessionId = 's-main'
   await gate.refresh()
-  assert.equal(gate.getSnapshot(), true, '主会话显示')
+  assert.equal(gate.getSnapshot(), 'main', '主会话显示「任务」')
   mode = 'throw'
   await gate.refresh()
-  assert.equal(gate.getSnapshot(), false, '信号不可用（请求失败）→ 默认隐藏')
+  assert.equal(gate.getSnapshot(), 'hidden', '信号不可用（请求失败）→ 默认 hidden')
   mode = 'bad'
   await gate.refresh()
-  assert.equal(gate.getSnapshot(), false, '响应不是 ok:true → 默认隐藏')
+  assert.equal(gate.getSnapshot(), 'hidden', '响应不是 boolean → 默认 hidden')
+  // 子智能体会话：宿主回答「不是主会话」+ 客户端会话行 origin='subagent' → hidden（未渲染）。
+  mode = 'ok'
+  const subGate = createMainViewGate({
+    readSessionId: () => 'c-subagent',
+    subscribeSession: () => () => {},
+    fetchRole: async () => false,
+    isSubagent: id => id === 'c-subagent',
+    timer: () => () => {},
+  })
+  await subGate.refresh()
+  assert.equal(subGate.getSnapshot(), 'hidden', '子智能体会话两个入口都不渲染')
 })
 
 test('任务入口闸门：start 订阅会话变化 + 5 秒兜底轮询，失败后能重试恢复', async () => {
@@ -432,31 +444,44 @@ test('任务入口闸门：start 订阅会话变化 + 5 秒兜底轮询，失败
   })
   const stop = gate.start()
   await flush()
-  assert.equal(gate.getSnapshot(), false)
+  assert.equal(gate.getSnapshot(), 'adopt')
   assert.equal(timers.length, 1)
   assert.equal(timers[0].ms, 5000, '兜底轮询间隔 5 秒')
   // 会话切换到主会话：订阅立即重判，不等轮询。
   sessionId = 's-main'
   for (const listener of listeners) listener()
   await flush()
-  assert.equal(gate.getSnapshot(), true)
+  assert.equal(gate.getSnapshot(), 'main')
   // 信号失败 → 隐藏；恢复后轮询重试能重新显示。
   online = false
   await gate.refresh()
-  assert.equal(gate.getSnapshot(), false)
+  assert.equal(gate.getSnapshot(), 'hidden')
   online = true
   await gate.refresh()
-  assert.equal(gate.getSnapshot(), true)
+  assert.equal(gate.getSnapshot(), 'main')
   stop()
 })
 
-test('任务入口渲染：主会话显示「任务」入口（品牌块 + 图标 + 文字），切子会话/信号失败隐藏；侧栏「主会话」入口始终注册', async () => {
+test('任务入口渲染：主会话「任务」、普通根会话「设为协调者」、子智能体会话两个都不渲染；侧栏「主会话」入口始终注册', async () => {
   let currentId = 's-main'
   let offline = false
   const fetchCalls = []
   const { loaded, ctx, registrations, sessionListeners } = load({
     uiSession: true,
     currentSessionId: () => currentId,
+    services: {
+      sessions: {
+        list: {
+          getSnapshot: () => ({
+            byId: {
+              's-main': {},
+              'c-child': {},
+              'c-subagent': { origin: 'subagent' },
+            },
+          }),
+        },
+      },
+    },
     fetch: async (url, init) => {
       const body = JSON.parse(init.body)
       fetchCalls.push(body)
@@ -474,7 +499,7 @@ test('任务入口渲染：主会话显示「任务」入口（品牌块 + 图�
   assert.ok(header, '会话头槽位仍注册（隐藏只是组件返回 null）')
   const injected = header.spec.inject()
   assert.equal(typeof injected.hooks.mainView.getSnapshot, 'function')
-  assert.equal(injected.hooks.mainView.getSnapshot(), true)
+  assert.equal(injected.hooks.mainView.getSnapshot(), 'main')
   assert.deepEqual(
     fetchCalls.filter(body => body.endpoint === 'session-role'),
     [{ endpoint: 'session-role', sessionId: 's-main' }],
@@ -482,9 +507,10 @@ test('任务入口渲染：主会话显示「任务」入口（品牌块 + 图�
   )
   // t-a79e12d8：同一个 apply 还起了「主会话导航待办」轮询（服务端建完会话后客户端据此跳过去）。
   assert.ok(fetchCalls.some(body => body.endpoint === 'main-nav'), '客户端要轮询 main-nav 待办')
-  const render = value => header.component({
+  const render = (value, adopt) => header.component({
     openPanel: () => {},
     useMainView: selector => selector(value),
+    adopt,
   })
   const shown = render(injected.hooks.mainView.getSnapshot())
   assert.equal(shown.type, 'button')
@@ -503,12 +529,22 @@ test('任务入口渲染：主会话显示「任务」入口（品牌块 + 图�
   assert.doesNotMatch(flattenText(shown), /\u2630/, '不再用裸字符 ☰')
   // 图标取自 ui.js 的 ICON_PATHS.menu（三条横线）。
   assert.match(source, /menu: \['M4 7h16', 'M4 12h16', 'M4 17h16'\]/)
-  // 切到子会话：任务入口隐藏（组件返回 null），槽位本身不消失。
+  // 切到普通根会话：给「设为协调者」（adopt 能力由 inject 提供），不是任务入口。
   currentId = 'c-child'
   for (const listener of sessionListeners) listener()
   await flush()
-  assert.equal(injected.hooks.mainView.getSnapshot(), false)
-  assert.equal(render(injected.hooks.mainView.getSnapshot()), null)
+  assert.equal(injected.hooks.mainView.getSnapshot(), 'adopt')
+  assert.equal(render(injected.hooks.mainView.getSnapshot()), null, '没有 adopt 能力时不渲染')
+  const adopted = render(injected.hooks.mainView.getSnapshot(), async () => {})
+  assert.equal(typeof adopted.type, 'function', '普通根会话渲染「设为协调者」组件')
+  assert.equal(adopted.props.adopt !== undefined, true)
+  assert.equal(flattenText(adopted), '设为协调者')
+  // 切到子智能体会话：两个入口都不渲染（未渲染，不是 CSS 隐藏），即使给了 adopt 能力也一样。
+  currentId = 'c-subagent'
+  for (const listener of sessionListeners) listener()
+  await flush()
+  assert.equal(injected.hooks.mainView.getSnapshot(), 'hidden')
+  assert.equal(render(injected.hooks.mainView.getSnapshot(), async () => {}), null, '子智能体会话不渲染任何入口')
   assert.ok(registrations.some(row => row.spec.name === 'conversation.header.leading'))
   // 侧栏「◈ 主会话」跳转入口不受闸门影响：始终注册、id/order/label 不变。
   const launcher = registrations.find(row => row.spec.name === 'sidebar.panellist')
@@ -516,13 +552,14 @@ test('任务入口渲染：主会话显示「任务」入口（品牌块 + 图�
   assert.equal(launcher.spec.id, 'orchestrator-launcher')
   assert.equal(launcher.spec.order, 5)
   assert.equal(launcher.spec.label(), '主会话')
-  // 信号不可用（网络失败）→ 任务入口默认隐藏。
+  // 信号不可用（网络失败）→ 两个入口都不渲染。
   currentId = 's-main'
   offline = true
   await injected.hooks.mainView.refresh()
-  assert.equal(injected.hooks.mainView.getSnapshot(), false)
+  assert.equal(injected.hooks.mainView.getSnapshot(), 'hidden')
   assert.equal(render(injected.hooks.mainView.getSnapshot()), null)
 })
+
 
 // 实机回归（0.17.0 升级后）：桌面端升级插件包时，客户端插件会被热替换，页面不重载，
 // 上一代构建注入的 <style id="dsh-orchestrator-styles"> 还留在 head 里。旧实现按 id 去重直接
@@ -591,7 +628,7 @@ test('任务入口无外框：与同排协调者标签/子智能体计数一致�
   assert.doesNotMatch(entry, /background(-color)?\s*:/, '底色继承 .orch-btn 的 transparent，不重复声明')
 })
 
-test('任务入口闸门源码：session-role 端点 + uiSession/sessions 信号 + 默认隐藏', () => {
+test('任务入口闸门源码：session-role 端点 + uiSession/sessions 信号 + 角色快照 + 子智能体不渲染', () => {
   assert.match(source, /endpoint: 'session-role'/)
   assert.match(source, /adapter\?\.current\?\.getSnapshot/)
   assert.match(source, /retainedBy\?\.mainView/)
@@ -599,9 +636,15 @@ test('任务入口闸门源码：session-role 端点 + uiSession/sessions 信号
   assert.match(source, /hooks: \{ mainView \}/)
   assert.match(source, /useMainView/)
   // 0.25.0：非主会话不再「返回 null 什么都不给」，而是给「设为协调者」入口（adopt 当前会话）。
-  assert.match(source, /if \(visible !== true\) \{/)
+  assert.match(source, /role === 'adopt'/)
   assert.match(source, /设为协调者/)
   assert.match(source, /data-orch-adopt/)
+  // 2026-11-22：子智能体会话头两个入口都不渲染（origin === 'subagent' → hidden → return null）。
+  assert.match(source, /origin === 'subagent'/)
+  assert.match(source, /role !== 'main'\) return null/)
+  // 回归：chip 行也必须按角色判断（旧实现 `value === true` 在角色化后恒假 → 主会话永不渲染 chip）。
+  assert.match(source, /useMainView\(value => value === 'main'\)/)
+  assert.doesNotMatch(source, /useMainView\(value => value === true\)/)
 })
 
 // 面板首帧冒烟：client/src/views.js 里的 TasksPanel 是整个 UI 的主体，之前只有源码正则断言。
@@ -1597,7 +1640,7 @@ const renderChipRow = (options = {}) => {
   const tree = row.component({
     turn,
     sessionId: options.sessionId === undefined ? 's-main' : options.sessionId,
-    useMainView: options.useMainView === undefined ? selector => selector(true) : options.useMainView,
+    useMainView: options.useMainView === undefined ? selector => selector('main') : options.useMainView,
     useChat: options.useChat === undefined
       ? selector => selector(chatSnapshotOf(options.turnOrder === undefined ? [5, 6, 7] : options.turnOrder))
       : options.useChat,
@@ -1638,9 +1681,14 @@ test('chip 渲染与空状态：无关联/非主会话/非最新一轮都不渲�
   // 快照有任务但都不属于本会话 → 不渲染。
   const foreign = { ok: true, tasks: [chipTask('t-other', 'running', { coordinatorSession: 's-other' })] }
   assert.equal(renderChipRow({ chips: { getSnapshot: () => foreign, subscribe: () => () => {} } }).tree, null)
-  // 子会话（mainView 闸门 false）不渲染。
+  // 子智能体（闸门角色 'hidden'）不渲染。
   assert.equal(renderChipRow({
-    useMainView: selector => selector(false),
+    useMainView: selector => selector('hidden'),
+    chips: { getSnapshot: () => ({ tasks: [chipTask('t-1', 'running')] }), subscribe: () => () => {} },
+  }).tree, null)
+  // 普通根会话（含能力包会话，闸门角色 'adopt'）同样不渲染：chip 只属于主会话。
+  assert.equal(renderChipRow({
+    useMainView: selector => selector('adopt'),
     chips: { getSnapshot: () => ({ tasks: [chipTask('t-1', 'running')] }), subscribe: () => () => {} },
   }).tree, null)
   // 历史轮次（不是最新一轮）不渲染：chip 只说明「这一轮回复之后任务在干什么」。
@@ -1700,6 +1748,23 @@ test('chip 渲染与空状态：无关联/非主会话/非最新一轮都不渲�
   // 「+N」说明还有几个任务。
   assert.equal(flattenText(more), '+2')
   assert.equal(more.props['aria-label'], '还有 2 个关联任务')
+})
+
+// 2026-11-22（P1 回归）：闸门快照从布尔改成角色（'main' | 'adopt' | 'hidden'）后，chip 行仍按
+// `=== true` 判断 → 主会话恒假、chip 永不渲染。这条用例把三种角色钉死，防止再退回布尔比较。
+test('chip 角色门控：主会话 main 渲染；子智能体 hidden、能力包会话（普通根会话 adopt）都不渲染', () => {
+  const snapshot = { tasks: [chipTask('t-run', 'running', { title: '跑测试' })] }
+  const withRole = role => renderChipRow({
+    useMainView: selector => selector(role),
+    chips: { getSnapshot: () => snapshot, subscribe: () => () => {} },
+  })
+  const main = withRole('main')
+  assert.equal(main.tree.props['data-orch-chip-row'], 'true', '主会话必须渲染 chip 行')
+  assert.equal(collect(main.tree, node => node.type === 'button').length, 1, '关联任务出 chip')
+  // 能力包会话是普通根会话（宿主 origin 不是 subagent）→ 'adopt'：不是主会话，不显示 chip。
+  assert.equal(withRole('adopt').tree, null, '普通根会话（含能力包会话）不渲染 chip')
+  // 子智能体会话 → 'hidden'：两个入口不渲染，chip 同样不渲染。
+  assert.equal(withRole('hidden').tree, null, '子智能体会话不渲染 chip')
 })
 
 test('chip 交互（有子会话）：点击直接跳该子会话，不切面板、不吃 focus 请求', () => {
@@ -1849,7 +1914,7 @@ test('chip 订阅时序：只有「主会话 + 最新一轮」才订阅共享 fe
 
   // 子会话同样不订阅。
   const child = renderChipRow({
-    useMainView: selector => selector(false),
+    useMainView: selector => selector('hidden'),
     chips: { getSnapshot: () => snapshot, subscribe: () => { throw new Error('不该订阅') } },
   })
   for (const effect of child.hooks.effects) effect()

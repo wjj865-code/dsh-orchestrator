@@ -143,6 +143,16 @@ export const createClient = (req) => {
       } catch { /* 同上 */ }
       return undefined
     }
+    // 子智能体判定（2026-11-22）：客户端会话行透出宿主 header.origin（'subagent'）。
+    // 子会话头不该出现「任务 / 设为协调者」两个入口，所以闸门先问宿主“是不是主会话”，
+    // 回答 false 时再问这里：命中 subagent → hidden（不渲染），其余 → adopt（设为协调者）。
+    const isSubagentSession = sessionId => {
+      try {
+        const list = serviceOf('sessions')?.list?.getSnapshot?.()
+        const row = list !== undefined && list !== null && list.byId !== undefined ? list.byId[sessionId] : undefined
+        return row !== undefined && row !== null && row.origin === 'subagent'
+      } catch { return false }
+    }
     const subscribeSession = listener => {
       const disposers = []
       try {
@@ -193,6 +203,7 @@ export const createClient = (req) => {
       readSessionId,
       subscribeSession,
       fetchRole,
+      isSubagent: isSubagentSession,
       timer: schedule,
     })
     if (typeof ctx.effect === 'function') {
@@ -320,7 +331,8 @@ export const createClient = (req) => {
       name: 'sidebar.panellist', id: CAPABILITY_PACKS_PANEL_ID, order: 15, label: () => '能力包',
     }, CapabilityPacksIcon))
 
-    // 会话头「任务」入口：hooks.mainView 是任务入口闸门；false/未判定时组件改渲染「设为协调者」。
+    // 会话头「任务」入口：hooks.mainView 是任务入口闸门（角色 'main' | 'adopt' | 'hidden'）；
+    // 非 'main' 时组件按角色渲染「设为协调者」或不渲染（子智能体/token 判定不出来）。
     // 0.25.0：非主会话给「设为协调者」（adopt 当前会话；服务端只切指针，旧会话保留）。
     ctx.slots.inject('conversation.header.leading', () => ctx.slots.register({
       name: 'conversation.header.leading',

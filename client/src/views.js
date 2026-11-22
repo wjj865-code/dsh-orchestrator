@@ -82,11 +82,12 @@ export function createViews({
     </span>
   )
 
-  // 会话头入口（0.25.0）：
+  // 会话头入口（0.25.0，2026-11-22 收敛为三种角色）：
   //   - 主会话 → 「任务」按钮（打开任务面板）；
-  //   - 非主会话 → 「设为协调者」按钮（把**当前会话**设为协调者；只切指针，旧会话保留可回看）。
-  //     这是插件唯一的手动换协调者 UI（另一条路是压力提醒卡里的「新建协调者会话」）。
-  // 两个形态共用一个槽位（conversation.header.leading 是 single），按 mainView 闸门切换。
+  //   - 普通根会话（官方新建会话 / 能力包会话 / schedule 新建会话…）→ 「设为协调者」按钮
+  //     （把**当前会话**设为协调者；只切指针，旧会话保留可回看）；
+  //   - 子智能体会话（origin=subagent）→ **两个入口都不渲染**（闸门给 'hidden'，组件返回 null）。
+  // 三个形态共用一个槽位（conversation.header.leading 是 single），按 hooks.mainView 的角色切换。
   const AdoptButton = ({ adopt, readSessionId, refreshRole }) => {
     const [busy, setBusy] = React.useState(false)
     const [error, setError] = React.useState(null)
@@ -131,15 +132,18 @@ export function createViews({
   }
 
   // 会话头「任务」入口：仅主会话显示。useMainView 由下面 conversation.header.leading 的 inject
-  // 以 hooks.mainView 提供；hook 缺失或未判定（默认 false）时不再返回 null，而是给「设为协调者」。
+  // 以 hooks.mainView 提供，快照是角色（'main' | 'adopt' | 'hidden'）：
+  //   - 'main'   → 「任务」按钮；
+  //   - 'adopt'  → 有 adopt 能力才给「设为协调者」，没有就保持历史行为（不渲染）；
+  //   - 'hidden' → 一律不渲染（子智能体会话、判定不出来、信号失败）。这是「未渲染」，不是 CSS 隐藏。
   // 视觉按面板顶栏 .orch-brand 的语言：品牌色方块装内联 SVG 图标 + 半粗文字（不再用裸字符 ☰）。
   const HeaderButton = ({ openPanel, useMainView, adopt, readSessionId, refreshRole }) => {
-    const visible = typeof useMainView === 'function' ? useMainView(value => value === true) : false
-    if (visible !== true) {
-      // 非主会话：没有 adopt 能力时保持历史行为（不渲染）。
+    const role = typeof useMainView === 'function' ? useMainView(value => value) : 'hidden'
+    if (role === 'adopt') {
       if (typeof adopt !== 'function') return null
       return h(AdoptButton, { adopt, readSessionId, refreshRole })
     }
+    if (role !== 'main') return null
     // props 键序/键名与迁移前一致（快照按 props 序列化顺序比对）。
     return (
       <button
@@ -163,7 +167,10 @@ export function createViews({
   // 点击：有子会话 → 交给 injected.openTask 跳该子会话；没有 → 同一个 openTask 负责降级打开任务详情，
   // tooltip 与 cursor 都按 chipOpenTargetOf 的结果区分（不假装能跳会话）。
   const TaskChipRow = ({ turn, sessionId, useMainView, useChat, chips, openTask, openPanel }) => {
-    const isMain = typeof useMainView === 'function' ? useMainView(value => value === true) : false
+    // 闸门快照是角色（'main' | 'adopt' | 'hidden'），只有 'main' 才出 chip：普通根会话（含能力包会话）
+    // 是 'adopt'、子智能体是 'hidden'，两者都不该看到主会话的任务 chip。旧实现按布尔 `=== true` 判断，
+    // 角色化后会恒假（主会话也不出 chip），这里显式锁 'main' 并写了单测。
+    const isMain = typeof useMainView === 'function' ? useMainView(value => value === 'main') : false
     const latest = typeof useChat === 'function' ? useChat(snapshot => isLatestTurn(snapshot, turn)) : false
     const enabled = isMain === true && latest === true
     // 订阅只为「数据变了要重渲染」这一个信号；值本身不参与渲染（渲染直接读 getSnapshot）。
