@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.33.1（2026-11-23）—— 写域判定下沉到可写根授予 / approve 只记账 / 三条审计 P0（同 cwd、批准前注册、只读重放）
+
+**一句话**：0.33.0 发布后又按「护栏被绕过」审了一遍写域路径，把派发 / 续派 / 面板追加的写权限判定收到**一个入口**（新增 `src/write-gate.js`，`dispatch.grantWritableRoot` 成为唯一 `registerWritableRoot` 调用点），并补上审计出的三条 P0：① 已批准计划任务的 target 恰等于会话 cwd（或没 target 继承父 cwd）时，平台根捷径在 append `workspace-write` 之前就早退，任务标了 granted 却仍只读；② 未批准计划任务与只读任务的续派 / 面板「追加」会先注册可写根；③ 只读任务的 `messageId` / `attemptKey` 重放会顺手补授写权限。**不新增配置键、工具面仍 11 个、状态机与台账 schema 零改动**（`plan_state` 六值、`accepted_kind` 枚举都不动）。
+
+**写域判定下沉（写根授予 + 内存占用）**
+- 新增 `src/write-hold.js`：占位按 owner token（`tool:<callId>` / `panel:<requestId>`）**引用计数**，工具与面板互不覆盖；TTL 过期剔除 + 30s 心跳续期；只有路径重叠才合并视图（`C:\a\b` + `C:\a\c` 并列，不误拦 `C:\a\d`）；`tasksWithHolds` 按视图逐条合并台账行。
+- 新增 `src/write-gate.js`：动作层统一判定入口（`decideDispatchGrant` / `decideFollowupGuard` / `decideRegrantGuard` / `decideCreate`），登记表覆盖六个写权限动作，approve **不在登记表**（批准只记账）；`isolated` 只看 `worktree_path`，`dependsOn` 串行共享检出放行；`ensureWritableRoot` 加 phase（post-send no-session 诚实失败，不假装切了沙箱）。
+- 动作层不再直接 import 判定函数（静态断言 S3'）；`activeWriteHolds(` 只在 `write-gate` 里被调用（S4）；stop / close / 终态必带 token 释放（S6、S10'）。
+
+**approve 只记账、投递即记账（P0-4 补强）**
+- `plan-mode` 的 approve 改为 `recordApproval`：不投递、不碰沙箱、不调 dispatcher；已批准再批走 `retryPlanGrant`；续派前切沙箱改由 `needsPlanWriteSwitch` 判定。
+- `dispatch.send` 第 9 参带 `planApproved` / `messageId` / `attemptKey`，post-send 整段 try/catch；`sendReliable` 的「已投递」标记改由 `send` 在 `sendMessage` 成功那一刻回调 `onDelivered` 置位——旧实现「`await send` 之后才置位」，catch 里恒为 false，等于没有保护。
+
+**审计 3 个 P0（`afe78fa`）**
+- **同 cwd 可写**：`grantApprovedWrite` 把 append `workspace-write` 挪到「平台根 == target」捷径**之前**——平台根只意味着不用注册可写根，不等于沙箱已可写。
+- **批准前不注册可写根**：只读任务与未批准计划任务（`planning` / `waiting_user` / `revising` / `rejected` / `none`）的 followup / resume / 面板「追加」统一走 `dispatchReadOnly`，不再进 `ensureWritableRoot`。
+- **只读重放不授予**：`messageId` / `attemptKey` 命中的重放改走 `replayGrant`——只读与未批准计划任务一律不 append、不注册、不留 `planWrite` 幽灵行；已批准计划任务仍走 `retryPlanGrant`。
+- 面板与 hold：借条行（`addMessage`）先落、hold 后占，抛错不再泄漏 hold 与 30s 心跳；面板无 `sendReliable` 的回退带全参数（不丢 `targetDir` / `readOnly` / `attemptKey`）；`isWriteHeld` 过期剔除后返回 false（旧实现删空仍 return true，多误判一次）。
+- 文档：`docs/CONTRIBUTING.md` 记本机 npm token 失效（`npm whoami` → E401），发版只走 tag 触发 `release.yml`。
+- 验证：`test/write-gate.test.js`（S1–S12 静态断言 + 派发判定行为）、`test/write-hold.test.js`（引用计数 / TTL / 并列视图 / 台账行合并）、`test/dispatch.test.js`（三条审计 P0 各一个可复现用例 + `sendReliable` 已投递行为）、`test/plan-mode.test.js`（approve 只记账 + 前置四种拒绝）。
+
+**验证**：`pnpm test` **1,438 项（1,433 pass / 0 fail / 5 skip）**；`dist/client.js` 163,629 B / 163,840 B（余 211 B，客户端改动为零）；`check:docs` 1,800 / 1,800 行；`check:version` 0.33.1 三处一致（README 全部点位 / CHANGELOG 首条 / `package.json.files`）。
+
+**升级注意**：装新版后**彻底退出 DSH 再启动**（刷新页面不换版本）。0.33.0 已发布且不可覆盖，本版是它的补丁版：行为面只**收紧**写权限判定（同 cwd / 批准前 / 重放不再授予），工具面、配置键、状态机与台账 schema 与 0.33.0 一致。
+
 ## 0.33.0（2026-11-23）—— 三条 P0 护栏 / 子会话工具失败监听 / W1 权限失败必报 / P0-4 显式批准 / chain:auto
 
 **一句话**：这一版把三条「护栏被绕过」的 P0 一并修掉（`delivered` 交付即释放写根、结算落 `delivered` 前必须有本轮验收证据、`worktreeMode:'continue'` 复用检出先判占用），并集中发布三件编排面改动：① 子会话被权限/沙箱拒绝不再从编排面消失（新增 `tools/result` 观察者 + 10 分钟去重告警，W1 per-turn policy 同步加一句「权限/环境失败必须写进回报」）；② 计划批准改成唯一显式动作 `task_message({ action: 'approve' })`（P0-4），普通 `message` 不再批准；③ 任务链新增显式约定标记 `chain: 'auto'`，有 `waiting_dep` 下游时交付即收成 `done`。**不新增配置键、工具面仍 11 个、状态机零改动**（`delivered → done` 是既有边，只多一个触发条件；台账 schema 只多 `accepted_kind` 的枚举值与 brief 里的 `chain` 字段，**无新列、无迁移**）。
