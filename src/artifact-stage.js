@@ -1,6 +1,6 @@
 // 一个阶段一次保存：工作文件候选 != 用户显式交付文档；Git 不复制代码。
 import { constants, closeSync, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { runGit } from './worktree.js'
 import { collectWorkspaceArtifacts, changedEventsOf } from './artifact-collect.js'
@@ -14,7 +14,9 @@ export async function inspectGit(cwd, run = runGit) {
   const root = repo.stdout.trim()
   const head = await run(['rev-parse', 'HEAD'], { cwd })
   const branch = await run(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd })
-  const status = await run(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored'], { cwd })
+  // 不要 `--ignored`：manifest 只记人写的代码，`node_modules/`、`.pnpm/`、`dist/` 这类被 ignore 的
+  // 路径既不该进 `changes`，也不该把「只有 ignore 文件在工作」的仓库标成未归档。
+  const status = await run(['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd })
   return {
     mode: 'git', root, head: head.ok ? head.stdout.trim() : null,
     branch: branch.ok ? branch.stdout.trim() : null,
@@ -22,6 +24,71 @@ export async function inspectGit(cwd, run = runGit) {
     unarchived: !status.ok || !head.ok || status.stdout.length > 0,
     changes: status.ok ? status.stdout.split('\0').filter(Boolean) : [],
   }
+}
+
+// 一次问一批候选；批量上限只是防命令行过长，50 条远低于任何平台的 argv 上限。
+const LIST_BATCH = 50
+
+/**
+ * 批量问 git「这些路径里哪些是 Git 视野内的」——即 tracked 或「未跟踪且未被 ignore」。
+ *
+ * 为什么不用 `git status --ignored`：那会把整个 ignore 树都吐出来（正是本次要修的问题）。
+ * 为什么不用 `git check-ignore`：它要 `-z`（安全解析特殊字符）就必须 `--stdin`，而 `runGit`
+ * 没有 stdin 面；`ls-files --cached --others --exclude-standard` 一次就能给出精确 keep 集合，
+ * `-z` 直接可用，而且用 `:(literal)` 关掉 pathspec 的通配语义。
+ *
+ * @returns {Promise<{listed: Set<string>, verified: boolean}>} 值为 repo 根相对、`/` 分隔的路径
+ */
+async function keptPaths({ root, rels, run }) {
+  const listed = new Set()
+  let verified = true
+  for (let index = 0; index < rels.length; index += LIST_BATCH) {
+    const result = await run(['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--',
+      ...rels.slice(index, index + LIST_BATCH).map(rel => `:(literal)${rel}`)], { cwd: root })
+    if (!result.ok) {
+      // 核验不了就如实标出来（见 excludedGitCandidates）：不假装过滤过。
+      verified = false
+      continue
+    }
+    for (const path of String(result.stdout ?? '').split('\0')) if (path !== '') listed.add(path)
+  }
+  return { listed, verified }
+}
+
+/**
+ * Git 模式的候选过滤：`files[]` 只留 tracked 与「未跟踪且未被 ignore」的路径。
+ * `.git` 内、repo 外、被 ignore 的候选一律排除，原因（`inside-git-dir` / `outside-repo` /
+ * `ignored` / `missing-or-deleted`）随 `stage.excluded` 落盘——能看出为什么没进清单，
+ * 也不把噪声塞进 `files[]`。
+ *
+ * 非 Git / unknown 分支不调用这里，行为保持原样。
+ */
+async function excludedGitCandidates({ git, candidates, run }) {
+  const excluded = new Map()
+  if (git.root === '') return excluded
+  const repoRoot = resolve(git.root)
+  const relById = new Map()
+  for (const source of candidates.keys()) {
+    const absolute = resolve(source)
+    if (!isInside(repoRoot, absolute)) { excluded.set(absolute, 'outside-repo'); continue }
+    const rel = relative(repoRoot, absolute).split(sep).join('/')
+    if (rel === '.git' || rel.startsWith('.git/')) { excluded.set(absolute, 'inside-git-dir'); continue }
+    relById.set(absolute, rel)
+  }
+  if (relById.size === 0) return excluded
+  const { listed, verified } = await keptPaths({ root: repoRoot, rels: [...new Set(relById.values())], run })
+  if (!verified) {
+    git.ignoreProbe = 'failed'
+    return excluded
+  }
+  const list = [...listed]
+  for (const [absolute, rel] of relById) {
+    // 目录候选：git 列的是它下面的文件，前缀命中同样算「在 Git 视野里」。
+    if (listed.has(rel) || list.some(path => path.startsWith(`${rel}/`))) continue
+    // 不在 Git 视野里：文件还在就是被 ignore（tracked 不会走到这里），否则已经不在工作区。
+    excluded.set(absolute, existsSync(absolute) ? 'ignored' : 'missing-or-deleted')
+  }
+  return excluded
 }
 
 function copyOrdinaryFile(cwd, source, destination, storeRoot) {
@@ -102,8 +169,19 @@ export async function collectArtifactStage({
   const candidates = new Map()
   for (const a of auto.artifacts) candidates.set(resolve(a.path), 'host')
   for (const path of changedFiles) if (typeof path === 'string' && path.trim()) candidates.set(resolve(cwd, path), 'explicit')
-  for (const [source, origin] of candidates) {
-    if (isInside(root, source) || (task.artifact_dir && isInside(task.artifact_dir, source))) continue
+  // 产物库里的文件不是工作文件候选：先剔掉，再只为真正的工作文件问一次 ignore。
+  const workCandidates = [...candidates].filter(([source]) =>
+    !isInside(root, source) && !(task.artifact_dir && isInside(task.artifact_dir, source)))
+  const excluded = git.mode === 'git' && workCandidates.length > 0
+    ? await excludedGitCandidates({ git, candidates: new Map(workCandidates), run })
+    : new Map()
+  for (const [source, origin] of workCandidates) {
+    const reason = excluded.get(source)
+    if (reason !== undefined) {
+      stage.excluded ??= []
+      stage.excluded.push({ source, origin, reason })
+      continue
+    }
     const record = { source, origin, path: null, status: 'git-reference' }
     stage.files.push(record)
     if (git.mode === 'git') continue

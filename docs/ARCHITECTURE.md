@@ -444,7 +444,7 @@
 ## 产物
 
 - `task_report.artifacts: [{path,label?}]` 仍是显式交付项，相对路径按任务工作目录解析；工作目录或 staging 内的文件复制到 `artifact_store_dir/docs`，已有真源文档直接登记。输入最多 20 项，省略/拒绝/失败记入阶段清单；产物按 `path` 合并（最多 50 条），优先保留完整阶段清单，不以原文件存在冒充保存成功。
-- **统一阶段收集与交付**：`artifact-stage` 从宿主摘要与 `changedFiles` 取候选；非 Git 保存普通文件副本，Git 只记录工作文件引用与未归档状态。`checkpoint` 请求阶段快照；`done` 验收通过后持久记录待交付并收紧工作权限，回合结束保存最终阶段后才由既有结算器迁移、通知和释放占用。缺摘要/截断/保存失败标不完整，非 Git/unknown 不完整不自动 chain、不清理来源；当前 DSH worker 无自动摘要，需显式补报，仍不保证完整备份。
+- **统一阶段收集与交付**：`artifact-stage` 从宿主摘要与 `changedFiles` 取候选；非 Git 保存普通文件副本，Git 只记录工作文件引用与未归档状态（`git status` 不带 `--ignored`，`files[]` 只留 tracked 与未跟踪未忽略的路径；被 ignore / `.git` 内 / repo 外候选写进 `excluded` 并带原因）。`checkpoint` 请求阶段快照；`done` 验收通过后持久记录待交付并收紧工作权限，回合结束保存最终阶段后才由既有结算器迁移、通知和释放占用。缺摘要/截断/保存失败标不完整，非 Git/unknown 不完整不自动 chain、不清理来源；当前 DSH worker 无自动摘要，需显式补报，仍不保证完整备份。
 - 面板「产物」筛选打开产物库：按项目（目标目录末段）或日期分组、复制路径、文本预览（前 64 KiB）、打开子会话/详情。
 
 ### 协调者读产物（`read_workspace`）
