@@ -3,4 +3,3 @@ node_modules/
 *.sqlite-wal
 *.sqlite-shm
 coverage/
-.p*-test.log
