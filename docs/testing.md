@@ -18,7 +18,7 @@
 | `npm pack --dry-run` | 包内容与 `package.json.files` | 含 `README`/`CHANGELOG`/`docs/testing.md`，不含被删文档与调试预设 |
 | `node --test test/<file>.test.js` | 单文件复跑（先跑 `pnpm run build`，客户端用例读 `dist/client.js`） | 同上 |
 | `node docs/probes/<probe>.mjs` | 宿主契约探针（升级 DSH 后按 `docs/probes/` 逐条重跑） | 探针自报 PASS/FAIL |
-| `pnpm run mirror:check` | npm 镜像 latest 是否已是本版本 | 发版后核对 |
+| `pnpm run mirror:check` | npm 镜像是否已有本版本（版本端点 `/:name/:version`，带 `?t=` + `no-cache` 绕缓存） | 发版后核对 |
 
 - **干净副本**：复核在 worktree / 干净 clone 上做，只认自己跑出来的输出，不采信开发自测数字；记录「命令 + 关键输出 + 未过项」。
 - **先 `pnpm install`**：`node_modules/` 不入库，新检出目录直接 `pnpm test` 会 `vite: not found`。

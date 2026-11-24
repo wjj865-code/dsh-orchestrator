@@ -114,11 +114,11 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
    `release.yml` 会自动 `PUT /-/package/<name>/syncs` 并轮询；失败或手动发版时：
 
    ```powershell
-   pnpm run mirror:check  # 只看镜像 latest 是不是 package.json 的版本
+   pnpm run mirror:check  # 只看镜像有没有 package.json 的版本（打版本端点，判定「已同步」不吃 CDN 缓存）
    pnpm run mirror:sync   # 触发同步并轮询（--no-wait 只触发，--timeout 600 多等会儿）
    ```
 
-   本地 `npm view` 有缓存，怀疑时加 `--prefer-online`；`mirror:check` 每次发真请求。
+   本地 `npm view` 有缓存，怀疑时加 `--prefer-online`；`mirror:check` 每次发真请求（`/:name/:version` 版本端点 + `?t=` 时间戳与 `no-cache` 头，绕过 packument 的 CDN 缓存）。
 6. 发布后核对：`npm view @wjj865-code/dsh-orchestrator dist-tags` 的 `latest` 是新版本、`dist.attestations` 有 provenance、`gitHead` 与发版提交一致。
 
 ## 改动边界（容易踩的）

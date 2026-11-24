@@ -107,13 +107,24 @@ jobs:
           echo "触发镜像同步：${name}@${version}"
           curl -sS -X PUT "https://registry.npmmirror.com/-/package/${encoded}/syncs" -w '\nHTTP %{http_code}\n'
           # 轮询等镜像刷出来（最多约 3 分钟）：只用来把结果写进日志，超时只警告不失败。
-          for attempt in $(seq 1 18); do
-            latest="$(npm view "${name}" dist-tags.latest --registry=https://registry.npmmirror.com 2>/dev/null || true)"
-            if [ "${latest}" = "${version}" ]; then
+          # 判据用版本专用端点（/:name/:version，有 200 / 没有 404），不再用 npm view 读 packument：
+          # packument 走 CDN（public, max-age=300），刚同步完还会回旧内容，轮询会一直假阴性跑满预算。
+          # 每次请求再叠 ?t= 时间戳 + no-cache 头，绕过中间缓存，「已同步」能在 10 秒级被识别。
+          # 非 200 一律只记一行日志继续：404 = 还没同步；5xx / 429 / 连不上 = 镜像侧暂时不可用，
+          # 等它恢复（这是有意为之，不提前判失败），跑满预算仍没有才出 warning，且整步 continue-on-error。
+          deadline=$(( $(date +%s) + 180 ))
+          attempt=0
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            attempt=$((attempt + 1))
+            url="https://registry.npmmirror.com/${encoded}/${version}?t=$(date +%s)"
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 \
+              -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' -H 'Accept: application/json' \
+              "${url}" 2>/dev/null || true)"
+            if [ "${code}" = "200" ]; then
               echo "::notice::镜像已就绪：${name}@${version}"
               exit 0
             fi
-            echo "  第 ${attempt} 次轮询：镜像 latest = ${latest:-未就绪}"
+            echo "  第 ${attempt} 次轮询：版本端点 HTTP ${code:-000}（镜像还没有 ${version}）"
             sleep 10
           done
           echo "::warning::镜像尚未出现 ${name}@${version}，npmmirror 会继续后台同步；稍后用 pnpm run mirror:check 复查（或 node scripts/mirror-sync.mjs）"
