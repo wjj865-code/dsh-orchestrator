@@ -2506,16 +2506,23 @@ test('R3 引用查表：重名 / 改名过期 / 长名 / 查不到 / 已删除 �
   })
 
   // 普通命中：显示台账现名。
-  assert.deepEqual(pick(refDisplayOf('tk-aaaaaa', { tasks: [{ id: 't-1', ref: 'tk-aaaaaa', title: '修发版' }] })),
+  const normal = refDisplayOf('tk-aaaaaa', { tasks: [{ id: 't-1', ref: 'tk-aaaaaa', title: '修发版' }] })
+  assert.deepEqual(pick(normal),
     { ref: 'tk-aaaaaa', label: '修发版', found: true, deleted: false, duplicate: false, truncated: false, tone: 'info' })
+  // F6：不重名时正文只有名字，引用只在 tooltip 里 —— tooltip 必须恒带 `（tk-xxxxxx）`。
+  assert.equal(normal.tooltip, '修发版（tk-aaaaaa）｜点击面板任务卡片可查看详情')
 
   // F1 重名：两个任务同名 → chip 写「名称（tk-xxx）」，否则用户分不清。
   const dupes = [
     { id: 't-1', ref: 'tk-aaaaaa', title: '周报' },
     { id: 't-2', ref: 'tk-bbbbbb', title: '周报' },
   ]
-  assert.equal(refDisplayOf('tk-bbbbbb', { tasks: dupes }).label, '周报（tk-bbbbbb）')
-  assert.equal(refDisplayOf('tk-bbbbbb', { tasks: dupes }).duplicate, true)
+  const dup = refDisplayOf('tk-bbbbbb', { tasks: dupes })
+  assert.equal(dup.label, '周报（tk-bbbbbb）')
+  assert.equal(dup.duplicate, true)
+  // 重名时 tooltip 也不重复堆引用（只有一个引用后缀，仍能区分是哪一个）。
+  assert.equal(dup.tooltip, '周报（tk-bbbbbb）｜点击面板任务卡片可查看详情')
+  assert.equal((dup.tooltip.match(/tk-bbbbbb/g) ?? []).length, 1)
 
   // F2 改名过期：正文写的时候叫旧名，台账已改名 → 以**现名**为准（详情索引里的旧名不作数）。
   const renamed = refDisplayOf('tk-cccccc', {
@@ -2532,17 +2539,29 @@ test('R3 引用查表：重名 / 改名过期 / 长名 / 查不到 / 已删除 �
   assert.ok(Array.from(truncated.label).length <= REF_TEXT_MAX, `截断后长度 ${Array.from(truncated.label).length}`)
   assert.ok(truncated.label.endsWith('…'))
   assert.ok(truncated.tooltip.includes(long), 'tooltip 要给全名')
+  assert.match(truncated.tooltip, /（tk-dddddd）/, '截断不影响 tooltip 里的引用')
 
   // F4 查不到：原样显示引用，不猜名字、不隐藏。
-  assert.deepEqual(pick(refDisplayOf('tk-eeeeee', { tasks: [], refs: [] })),
+  const missing = refDisplayOf('tk-eeeeee', { tasks: [], refs: [] })
+  assert.deepEqual(pick(missing),
     { ref: 'tk-eeeeee', label: 'tk-eeeeee', found: false, deleted: false, duplicate: false, truncated: false, tone: 'muted' })
   assert.match(refDisplayOf('tk-eeeeee', {}).tooltip, /找不到这个任务引用/)
+  assert.match(missing.tooltip, /找不到这个任务引用（tk-eeeeee）/, '查不到也要带引用')
 
   // F5 已删除：详情索引标了墓碑（deleted）→ 原样显示 + 「引用已失效」。
   const gone = refDisplayOf('tk-ffffff', { tasks: [], refs: [{ ref: 'tk-ffffff', title: '', status: 'missing', deleted: true }] })
   assert.equal(gone.label, 'tk-ffffff')
   assert.equal(gone.deleted, true)
-  assert.match(gone.tooltip, /引用已失效（任务已删除）/)
+  assert.match(gone.tooltip, /引用已失效/)
+  assert.match(gone.tooltip, /引用已失效：任务已删除（tk-ffffff）/, '墓碑引用的 tooltip 也要带引用')
+
+  // F6 总断言：五种分支的 tooltip 一律含 `（tk-xxxxxx）`（悬停永远拿得到引用）。
+  for (const [display, ref] of [
+    [normal, 'tk-aaaaaa'], [dup, 'tk-bbbbbb'], [truncated, 'tk-dddddd'],
+    [missing, 'tk-eeeeee'], [gone, 'tk-ffffff'],
+  ]) {
+    assert.ok(String(display.tooltip).includes(`（${ref}）`), `${ref} 的 tooltip 缺引用：${display.tooltip}`)
+  }
 
   // 形态不对的入参返回 null（调用方原样显示，不查表）。
   assert.equal(refDisplayOf('t-1a2b3c4d', { tasks: [] }), null)
@@ -2559,8 +2578,12 @@ test('R3 引用查表：重名 / 改名过期 / 长名 / 查不到 / 已删除 �
 test('R3 抽屉覆盖：最新回复与消息正文里的 tk- 引用都渲染成任务名 chip', () => {
   const { hooks, panel, resetHooks } = panelOf()
   const task = (id, ref, title) => taskRow(id, 'done', { ref, title })
-  // 两个同名任务：chip 必须带引用后缀，否则分不清。
-  const snapshot = snapshotOf([task('t-a', 'tk-name01', '周报'), task('t-b', 'tk-name02', '周报')])
+  // 两个同名任务：chip 必须带引用后缀，否则分不清；外加一个不重名的任务（正文只该显示名字）。
+  const snapshot = snapshotOf([
+    task('t-a', 'tk-name01', '周报'),
+    task('t-b', 'tk-name02', '周报'),
+    task('t-c', 'tk-solo01', '单名任务'),
+  ])
   const detail = {
     ok: true,
     task: {
@@ -2573,7 +2596,7 @@ test('R3 抽屉覆盖：最新回复与消息正文里的 tk- 引用都渲染成
       artifactDir: '', artifactStoreDir: '', artifactStage: null, deliveryPending: false,
       lastMessage: {
         at: 1_700_000_000_000, stored: 'inline', stopReason: 'completed',
-        text: '已完成 tk-name01 的前置，等 tk-gone01 的结论',
+        text: '已完成 tk-name01 的前置，等 tk-gone01 的结论，顺手记下 tk-solo01',
       },
     },
     dependencies: [],
@@ -2588,7 +2611,8 @@ test('R3 抽屉覆盖：最新回复与消息正文里的 tk- 引用都渲染成
   hooks.slots[0] = snapshot
   hooks.slots[10] = detail
   hooks.slots[13] = detail.task.id
-  const text = textAll(panel.component({ openSession: () => {} }))
+  const tree = panel.component({ openSession: () => {} })
+  const text = textAll(tree)
 
   // 最新回复：引用 → 名字 chip（快照里两个同名任务 → 带引用后缀），每个引用只换显示、不吞原文。
   assert.match(text, /已完成 周报（tk-name01） 的前置/, '最新回复里的引用要显示成任务名')
@@ -2597,6 +2621,21 @@ test('R3 抽屉覆盖：最新回复与消息正文里的 tk- 引用都渲染成
   assert.match(text, /等 tk-gone01 的结论/)
   // 消息：同样渲染成名字 chip；查不到的引用原样显示。
   assert.match(text, /顺手看看 周报（tk-name02） 和 tk-zzz999/)
+  // 正文口径不变：不重名的引用只显示名字，不在正文里追加引用后缀（引用只进 tooltip）。
+  assert.match(text, /顺手记下 单名任务/)
+  assert.doesNotMatch(text, /单名任务（tk-solo01）/)
+  // 渲染级 DOM 断言（RefText 装配出的 chip）：tooltip 恒带 `（tk-xxxxxx）`，重名与否都一样。
+  const refChips = collect(tree, node => node.type === 'span'
+    && String(node.props?.className ?? '').split(/\s+/).includes('orch-chip')
+    && /点击面板任务卡片|找不到这个任务引用|引用已失效/.test(String(node.props?.title ?? '')))
+  const refChipTitles = refChips.map(node => String(node.props.title))
+  assert.equal(refChipTitles.length, 5, `五个引用各一个 chip：${JSON.stringify(refChipTitles)}`)
+  for (const title of refChipTitles) {
+    assert.match(title, /（tk-[0-9a-z]{6}）/, `chip tooltip 缺引用：${title}`)
+  }
+  for (const ref of ['tk-name01', 'tk-name02', 'tk-solo01', 'tk-gone01', 'tk-zzz999']) {
+    assert.ok(refChipTitles.some(title => title.includes(`（${ref}）`)), `${ref} 的 chip tooltip 缺引用：${JSON.stringify(refChipTitles)}`)
+  }
   // 源码层：两处正文都走 RefText（不是只改了一处）。
   assert.equal((source.match(/<RefText /g) ?? []).length, 2, '抽屉「最新回复」与「消息」两处都要覆盖')
 })

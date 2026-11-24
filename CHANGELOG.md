@@ -11,6 +11,7 @@
 - brief 补任务名（`src/brief.js`）：`【任务引用】tk-xxx` 之后多一行 `【任务名】名称`（可选，2–4 行仍守 L2 预算），子会话第一句就能用名字汇报。
 - L1 汇报口径补两句（`index.js`）：「**再次提到同一个任务只写名称**」「**不要只写 tk-xxxxxx**」，原来「只用任务名 + 任务引用」「不要出现 t-xxxx」两句照留。
 - 抽屉正文里的引用 → 名字 chip（`client/src/logic.js` + `views.js` + `feed.js`）：新增纯函数 `splitTaskRefs`（严格形态、两侧边界断言，`tk-abc1234`/`x-tk-abc123` 不当引用）、`refDisplayOf`/`refSegmentsOf` 与 `RefText` 组件，覆盖「最新回复」「消息」两处；五种兜底各有实现与用例——重名（名字+引用）、改名过期（以台账现名为准）、长名（chip 截断、tooltip 全名）、查不到（原样显示引用）、已删除（引用置墓碑 → 原样显示 + 「引用已失效」）。详情新增只读 `refs` 索引（消息里出现过的引用 → 现名/墓碑状态）；回复底部 chip 的 tooltip 与 feed 快照也补 `ref`。
+- chip tooltip 恒带引用（`client/src/logic.js` 的 `refDisplayOf`）：chip 正文口径不变（只有重名才带 `（tk-xxx）` 后缀），tooltip 一律 `名称（tk-xxx）｜点击面板任务卡片可查看详情`；查不到 / 已删除两支也写成 `找不到这个任务引用（tk-xxx）` / `引用已失效：任务已删除（tk-xxx）`。复验：真实 DSH Web 抽屉里重名与不重名两条任务的 `.orch-chip` 的 `title` 全部含引用，正文仍只显示名字。
 - 体积：`scripts/check-client-size.mjs`、`test/client-build.test.js:58`、`docs/testing.md` 的 G10 同步抬到 **164 KiB**（实测见下），`dist/client.js` 重建、`node --check` 通过。
 
 **协调者可加载技能判断派活（R0，用户追加）**

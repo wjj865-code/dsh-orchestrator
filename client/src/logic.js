@@ -143,12 +143,13 @@ export const fileAddressProblem = (sessionId, path) => {
 // 为什么在客户端做：模型回复（最新回复 / 消息）里常出现 `tk-7f3a2c` 这种引用，用户认不出是哪个任务。
 // 这里把正文按引用切段，查台账现名后渲染成 chip；查不到就**原样显示**（绝不隐藏用户的字）。
 //
-// 五种兜底（改这里必须同步 test/client.test.js 的 RefText 用例）：
+// 五种兜底 + tooltip 口径（改这里必须同步 test/client.test.js 的 RefText 用例）：
 //   F1 重名：两个任务同名 → chip 写「名称（tk-xxx）」，否则用户分不清是哪一个；
 //   F2 改名过期：正文是旧时间段写的，名字以**台账现名**为准（快照/详情每轮刷新，不用正文里的旧名）；
 //   F3 长名：chip 按码点截断（chipVisibleTitle），全名放 tooltip；
 //   F4 查不到：引用不在快照/引用索引里 → 原样显示 `tk-xxxxxx`（不猜、不隐藏）；
 //   F5 已删除：引用已置墓碑（详情 refs 里 deleted=true）→ 原样显示 + tooltip「引用已失效」。
+//   F6 tooltip：**恒带 `（tk-xxxxxx）`**（正文口径不变：重名才带引用后缀）——chip 悬停要能拿到引用。
 // ---------------------------------------------------------------------------
 
 /**
@@ -203,6 +204,7 @@ export const refDisplayOf = (ref, { tasks = [], refs = [] } = {}) => {
   const title = textOf(live?.title) || (deleted ? '' : textOf(index?.title))
   if (title === '') {
     // F4 / F5：查不到或已删除 —— 原样显示引用，只换 tooltip。
+    // F6：tooltip 一律以 `（tk-xxxxxx）` 结尾（与命中分支同形状），悬停时总能拿到引用。
     return {
       ref: value,
       label: value,
@@ -211,7 +213,9 @@ export const refDisplayOf = (ref, { tasks = [], refs = [] } = {}) => {
       duplicate: false,
       truncated: false,
       tone: 'muted',
-      tooltip: deleted ? `引用已失效（任务已删除）：${value}` : `找不到这个任务引用：${value}`,
+      tooltip: deleted
+        ? `引用已失效：任务已删除（${value}）`
+        : `找不到这个任务引用（${value}）`,
     }
   }
   // F1：同名任务用引用后缀区分（与 displayNameOf / taskLabel 同口径）。
@@ -220,6 +224,8 @@ export const refDisplayOf = (ref, { tasks = [], refs = [] } = {}) => {
   const full = duplicate ? `${title}（${value}）` : title
   // F3：chip 上截断，tooltip 里给全名。
   const label = chipVisibleTitle(full, REF_TEXT_MAX)
+  // F6：tooltip 恒带 `（tk-xxxxxx）` —— chip 正文只在「重名」时才有引用后缀，不重名时只有一个名字，
+  // 悬停看不到引用就没法对着台账/会话/通知里的 tk-xxxxxx 找任务。正文（label）口径不变，只补 tooltip。
   return {
     ref: value,
     label,
@@ -228,7 +234,7 @@ export const refDisplayOf = (ref, { tasks = [], refs = [] } = {}) => {
     duplicate,
     truncated: label !== full,
     tone: 'info',
-    tooltip: `${full}｜点击面板任务卡片可查看详情`,
+    tooltip: `${title}（${value}）｜点击面板任务卡片可查看详情`,
   }
 }
 
