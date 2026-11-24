@@ -2,12 +2,25 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { apply, inject, name, COORDINATOR_DENY } from '../index.js'
 import { resetDeprecatedKeyWarnings } from '../src/config.js'
 import { openLedger, listTasks } from '../src/ledger.js'
+import { waitUntil } from './helpers.js'
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+/**
+ * 打开台账读一行（用完即关）。
+ *
+ * 结算链路是异步的（要先 spawn `git` 收产物，Windows 上一次几十到上百毫秒），轮询期间每次都要看
+ * **最新**落库值，不能在打开时的连接上反复读同一条快照。
+ */
+async function readTaskRow(dbPath, sql, ...params) {
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(dbPath)
+  try { return db.prepare(sql).get(...params) } finally { db.close() }
+}
 
 // P2-2：完成通知的合并窗口成了固定常量（配置键 mergeWindowMs 已删）。单测用环境变量把它压到
 // 毫秒级——否则每个通知用例都要真等 5 秒；它只调窗口，不改「同批任务合并成一条」的语义。
@@ -1224,7 +1237,8 @@ test('S1：派发侧 settle completed 落「已交付待确认」，写结算消
   before.close()
 
   settle()
-  await wait(50)
+  // 结算链路要先 spawn git 收产物（Windows 上几十到上百毫秒）：轮询到状态离开 running，而不是固定等 50ms。
+  await waitUntil(async () => (await readTaskRow(dbPath, 'SELECT status FROM tasks')).status !== 'running', { label: '结算把任务推出 running' })
   const after = new DatabaseSync(dbPath)
   const row = after.prepare('SELECT id, status, error, last_message_json FROM tasks').get()
   // 两段式终态：自然结束先落 delivered，确认后才 done。
@@ -1287,7 +1301,9 @@ test('D5：结算自动 done 的通知在发送前补齐产物，注入文案带
   await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'], target }, { agent: s1 })
   childSession.id = childId
   settle()
-  await wait(50)
+  // D5 的顺序保证是「先补齐产物、再发通知」，通知是整条结算链路的最后一步：等它到协调者，
+  // 既等到了产物落库，也不把「机器 50ms 内跑完 git 收产物」当断言前提。
+  await waitUntil(() => s1.injected.length > 0, { label: '结算通知送达协调者' })
 
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
@@ -1299,15 +1315,15 @@ test('D5：结算自动 done 的通知在发送前补齐产物，注入文案带
   assert.match(artifacts[0].path, /manifest\.json$/)
   assert.equal(readFileSync(artifacts[1].path, 'utf8'), '# ok')
   // 协调者收到的通知里就是这份清单（不是空产物），并带 present 交付指令。
-  for (let n = 0; n < 100 && s1.injected.length === 0; n += 1) await wait(10)
   assert.equal(s1.injected.length, 1)
   const text = s1.injected[0].content[0].text
   assert.match(text, /产物：/)
-  assert.ok(text.includes('files/report.md'))
+  // 产物路径按平台分隔符渲染：断言前把 `\` 归一成 `/`（不放松——仍要求是快照里的 files/report.md）。
+  assert.ok(text.split(sep).join('/').includes('files/report.md'))
   assert.match(text, /交付：在你自己的回合里调用 present/)
   // 同一份清单也能从 task_status 取回（错过通知的兜底路径）。
   const status = await byName.task_status.execute({ task_id: row.id }, { agent: s1 })
-  assert.ok(status.includes('files/report.md'))
+  assert.ok(status.split(sep).join('/').includes('files/report.md'))
   await disposers.at(-1)?.()
 }))
 
@@ -1329,7 +1345,11 @@ test('S1：平台 subagent/end（续派/冷恢复）也能把 running 推到 can
   await byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   assert.ok(listeners.has('subagent/end'), '未订阅平台生命周期事件')
   listeners.get('subagent/end')({ id: childId, local: true, stopReason: 'aborted', lastAssistantMessage: [{ type: 'text', text: '被中断了' }] })
-  await wait(50)
+  // 生命周期结算同样要先 spawn git 收产物、再经 5ms 合并窗口发通知：两件都等落地，别赌 50ms。
+  await waitUntil(async () => {
+    const row = await readTaskRow(join(home, 'state', 'orchestrator', 'tasks.sqlite'), 'SELECT status, (SELECT count(*) FROM notifications) AS notices FROM tasks')
+    return row.status !== 'running' && row.notices > 0
+  }, { label: '生命周期结算落库并发出通知' })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   const row = db.prepare('SELECT id, status, error, last_message_json FROM tasks').get()
@@ -1369,7 +1389,8 @@ test('B1（P1）：超 64KB 的返回消息也只存借条，不再写 reports �
   await byName.task_create.execute({ title: '长回执', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   const big = `最后一行\n${'细'.repeat(25_000)}`
   listeners.get('subagent/end')({ id: childId, local: true, stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: big }] })
-  await wait(50)
+  // 等借条落库（结算要 spawn git 收产物），别赌 50ms。
+  await waitUntil(async () => (await readTaskRow(join(home, 'state', 'orchestrator', 'tasks.sqlite'), 'SELECT last_message_json FROM tasks')).last_message_json !== null, { label: '结算把返回消息借条落库' })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   const row = db.prepare('SELECT id, last_message_json FROM tasks').get()
@@ -1417,7 +1438,8 @@ test('B1（P1）：宿主会话日志可读时 include=full 给回全文（live 
   const byName = Object.fromEntries(registered.map(tool => [tool.name, tool]))
   await byName.task_create.execute({ title: '长回执 2', goal: 'g', acceptance: ['a'] }, { agent: s1 })
   listeners.get('subagent/end')({ id: childId, local: true, stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: big }] })
-  await wait(50)
+  // 同上：等借条落库再断言 include=full 的真实行为。
+  await waitUntil(async () => (await readTaskRow(join(home, 'state', 'orchestrator', 'tasks.sqlite'), 'SELECT last_message_json FROM tasks')).last_message_json !== null, { label: '结算把返回消息借条落库' })
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   const row = db.prepare('SELECT id FROM tasks').get()
@@ -1541,8 +1563,13 @@ test('S1 结算：只写一条 settle；重复 subagent/end 只补消息不重�
   const taskId = ledger.prepare('SELECT id FROM tasks').get().id
 
   f.listeners.get('subagent/end')({ id: spawned.id, local: true, stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '做完了' }] })
-  await wait(50)
   const { getTask } = await import('../src/ledger.js')
+  // 等结算落库（要 spawn git 收产物）**并且**通知落行（notifier 有 5ms 合并窗口）：两件都异步，
+  // 别赌 50ms。「只写一条 settle / 只发一条通知」的计数断言仍在下面单独写。
+  await waitUntil(async () => {
+    const row = await readTaskRow(join(home, 'state', 'orchestrator', 'tasks.sqlite'), 'SELECT status, (SELECT count(*) FROM notifications) AS notices FROM tasks')
+    return row.status !== 'running' && row.notices > 0
+  }, { label: '结算落库并发出通知' })
   assert.equal(getTask(ledger, taskId).status, 'delivered')
   // P1：台账里只有借条（摘要），正文留在子会话的宿主会话日志。
   assert.equal(getTask(ledger, taskId).last_message.stored, 'host')

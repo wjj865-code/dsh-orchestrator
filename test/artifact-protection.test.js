@@ -4,9 +4,9 @@ import { artifactProtection } from '../src/artifact-protection.js'
 import { createDispatcher } from '../src/dispatch.js'
 import { openLedger, createTask, getTask } from '../src/ledger.js'
 import { saveArtifactDocument } from '../src/artifact-store.js'
-import { readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, linkDirectory, DIRECTORY_LINK_SKIP_REASON } from './helpers.js'
 
 test('私有库覆盖检查包含默认写根、显式根、临时目录和目标；未知策略拒绝', () => {
   const policy = { mode: 'workspace-write', workspaceRoot: '/private/workspace' }
@@ -36,10 +36,13 @@ test('展示引用改写不影响保存真源，文档登记只引用私有版�
   db.close()
 })
 
-test('符号链接写根按真实路径核验，不借路径别名逃过保护检查', () => {
+test('符号链接写根按真实路径核验，不借路径别名逃过保护检查', t => {
   const base = tempDir()
   const alias = join(tempDir(), 'alias')
-  symlinkSync(base, alias)
+  // 目录链接即可覆盖这条不变量：真符号链接（Linux/CI、开了开发者模式的 Windows）优先，
+  // 没权限时退 Windows junction——两者 realpath 都解析到 base，判据完全一样。
+  const kind = linkDirectory(base, alias)
+  if (kind === undefined) return t.skip(DIRECTORY_LINK_SKIP_REASON)
   assert.equal(artifactProtection({
     store: join(base, 'artifact-store'),
     policy: { mode: 'workspace-write', workspaceRoot: alias }, temporaryRoots: [],

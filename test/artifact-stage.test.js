@@ -1,11 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync, symlinkSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { openLedger, createTask, getTask } from '../src/ledger.js'
 import { collectArtifactStage, inspectGit } from '../src/artifact-stage.js'
-import { tempDir, sampleBrief, canCreateFileSymlink, SYMLINK_SKIP_REASON } from './helpers.js'
+import { tempDir, sampleBrief, linkDirectory, canCreateDirectoryLink, DIRECTORY_LINK_SKIP_REASON } from './helpers.js'
 
 test('历史摘要不能替代本轮摘要，显式交付截断记录为不完整', async () => {
   const cwd = tempDir()
@@ -52,8 +52,9 @@ test('非 Git 快照保持相对路径、拒绝逃逸，源文件后续改变不
 })
 
 test('显式文件超过面板容量仍全部保存到清单，软链接和目录不递归复制', async t => {
-  // 整条用例靠真链接才能验「不递归复制」：无符号链接权限的环境（Windows 未开开发者模式）只跳过，不判失败。
-  if (!canCreateFileSymlink()) return t.skip(SYMLINK_SKIP_REASON)
+  // 整条用例靠真链接才能验「不递归复制」：这里只需要一条**目录**链接，用真符号链接或 Windows junction
+  // 都成立（junction 不需要特权）；两种链接都造不出来的环境才跳过，不判失败。
+  if (!canCreateDirectoryLink()) return t.skip(DIRECTORY_LINK_SKIP_REASON)
   const cwd = tempDir()
   const db = await openLedger(tempDir())
   const task = createTask(db, { brief: sampleBrief(), artifactRoot: tempDir(), targetDir: cwd })
@@ -61,7 +62,7 @@ test('显式文件超过面板容量仍全部保存到清单，软链接和目�
   for (const file of files) writeFileSync(join(cwd, file), file)
   const outside = tempDir()
   writeFileSync(join(outside, 'secret'), 'secret')
-  symlinkSync(outside, join(cwd, 'link'))
+  linkDirectory(outside, join(cwd, 'link'))
   mkdirSync(join(cwd, 'directory'))
   const stage = await collectArtifactStage({
     db, task, cwd, key: 'many', changedFiles: [...files, 'link/secret', 'directory'],
