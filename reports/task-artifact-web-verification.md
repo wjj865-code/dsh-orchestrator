@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-用户确认调整后：私有真源和主会话暂存/引用已分离，默认、额外、临时与目标写根覆盖私有库则拒绝普通任务派发、续派及再授予。原三个问题已收敛；仍保留 worker 摘要不可用、完整访问/外部进程不保证防覆盖的边界。用户已授权整理本地提交，未授权推送。
+用户确认调整后：私有真源和主会话暂存/引用已分离，默认、额外、临时与目标写根覆盖私有库则拒绝普通任务派发、续派及再授予。原三个问题已收敛；仍保留 worker 摘要不可用、完整访问/外部进程不保证防覆盖的边界。用户明确保留本报告并授权直接更新 main、打 v0.34.0 tag 发布，不创建 PR；授权不等于发布已完成。
 
 ## 私有真源边界最终验证
 
@@ -12,7 +12,7 @@
 - 最终 web profile 的 DSH_HOME 在本任务 worktree `.artifact-web-home`（非 temp 写根），不用真实 ~/.dsh。测试结束停止服务，profile 移到临时证据归档，避免混入代码。
 - 真机文件 sentinel：`FS_SANDBOX_DENIED`、protected=true；shell sentinel：exitCode=1、Operation not permitted、sandbox.denied=true、enforcement=full，内容仍为 original。
 - 证据 `/private/tmp/dsh-artifact-private-confirm/events.jsonl`、`browser.json`、`snapshot.json`、`04-tasks.png`、`05-detail.png`。文档预览/详情 HTTP 200，面板展示私有版本/清单。
-- 最终完整测试 1453 项：1450 通过、0 失败、3 个 Windows 专属跳过；日志 `/tmp/artifact-private-final-validated.log`。文档 1800/1800 行、客户端 163836/163840 字节，构建与版本检查通过；复审产物 `/tmp/dsh-artifact-private-review/`。远端专属规则不可用，不声明其通过。
+- 0.34.0 发版复跑完整测试 1453 项：1450 通过、0 失败、3 个 Windows 专属跳过；日志 `/tmp/artifact-v0.34.0-tests.log`。文档 1800/1800 行、客户端 163836/163840 字节，构建与版本检查通过；原复审 `/tmp/dsh-artifact-private-review/`，发版复核 `/tmp/dsh-artifact-release-review/`。联网重跑 preflight 成功：该仓库未配置自定义工作流，之前的 DNS 缺口已消除。
 
 ## 私有边界调整前的修复与回归（历史验证）
 

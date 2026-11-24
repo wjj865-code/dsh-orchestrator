@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.34.0（2026-11-24）—— 任务私有产物存储 / Git 与非 Git 阶段收集 / 收集后交付
+
+- 分离工作目录、冲突声明 `writeScopes` 与产物存储：主会话 `artifacts/<taskId>` 仅暂存/引用，宿主私有 `artifact-store/<taskId>` 保存稳定文档与快照；历史路径不搬移，删除任务保留文件。
+- 新增 worker 专用 `artifact_save`，计划保存复用版本化、调用重放幂等的宿主保存实现；只读任务也可保存文档，不因此授予工作区写权限。
+- `task_report` 新增 `checkpoint`、`changedFiles`：非 Git 保存已捕获普通文件，Git 记录引用与未归档状态，不自动复制代码；拒绝、缺失、摘要缺口、截断和失败写入清单。
+- `done` 验收通过后记录待交付并收紧工作权限；回合结束统一保存最终阶段后才结算、释放占用和放行下游。不完整非 Git/unknown 不自动 chain；未归档 Git 内容、不完整收集阻止不安全清理。
+- SQLite 增量新增产物目录、私有存储目录、待交付请求及阶段记录；工具数由 11 增至 12，无新增依赖或配置开关。面板与详情展示真源、收集结果及待交付信息。
+- 边界：当前 DSH worker 无自动工作摘要，需显式 `changedFiles`，仍保守标记覆盖缺口；不提供完整历史或全工作区备份。完整访问、外部进程及历史文件不保证防覆盖。
+- 验证：完整模块测试 1450 通过、0 失败、3 个 Windows 专属跳过；隔离 DSH Web profile 与无头 Chrome 验证私有存储文件/shell 防覆盖、只读文档保存、快照与预览。用户明确保留 [验证报告](reports/task-artifact-web-verification.md)，作为本次仓库产物保留例外，报告与探针不随 npm 包发布。
+- 升级后彻底退出 DSH 再启动；`done` 回执现在表示待交付请求，不代表已释放工作占用。
+
 ## 0.33.1（2026-11-23）—— 写域判定下沉到可写根授予 / approve 只记账 / 三条审计 P0（同 cwd、批准前注册、只读重放）
 
 **一句话**：0.33.0 发布后又按「护栏被绕过」审了一遍写域路径，把派发 / 续派 / 面板追加的写权限判定收到**一个入口**（新增 `src/write-gate.js`，`dispatch.grantWritableRoot` 成为唯一 `registerWritableRoot` 调用点），并补上审计出的三条 P0：① 已批准计划任务的 target 恰等于会话 cwd（或没 target 继承父 cwd）时，平台根捷径在 append `workspace-write` 之前就早退，任务标了 granted 却仍只读；② 未批准计划任务与只读任务的续派 / 面板「追加」会先注册可写根；③ 只读任务的 `messageId` / `attemptKey` 重放会顺手补授写权限。**不新增配置键、工具面仍 11 个、状态机与台账 schema 零改动**（`plan_state` 六值、`accepted_kind` 枚举都不动）。
