@@ -40,9 +40,21 @@
               applyPatch: false
           # A（0.26.0）：grill-me 技能。注册模块读包内 skills/grill-me/SKILL.md，注册进**本预设作用域**
           # （只对协调者可见；worker 预设不挂这个模块，子会话看不到）。tool-skill 提供模型面 skill({name})
-          # 与首个可用技能的目录 —— 两者都挂在本预设里，目录才会随会话注入。
+          # 与技能目录（目录随会话注入、只含 name+description，正文按需加载）—— 它和下面的
+          # skill-filesystem 都挂在本预设里，目录才会把「随包技能 + 本地技能」一起注入。
           - id: skill-grill-me
             name: '@wjj865-code/dsh-orchestrator/skill-grill-me'
+          # 0.35.0（P0，用户拍板「P0 协调者预设挂 skill-filesystem」）：**本地技能发现**。
+          # 宿主 base 补丁把 skill-filesystem / tool-skill 都 disabled 了（web-app 补丁注释：
+          # presets own local discovery），所以协调者预设不自己挂这一行，主会话技能目录里就只有
+          # 宿主内置技能 + 随包的 grill-me（本机实测 8 条），看不到 ~/.agents/skills。补上它 = 主会话
+          # 目录并入用户本地全局技能根（~/.agents/skills、~/.dsh/skills）与项目技能根
+          # （<project>/.agents/skills、<project>/.dsh/skills）—— 主会话需要看到这些本地技能，
+          # 才能判断「这项该不该派、带什么约束、要不要建议用户走某个技能」。
+          # 纯行、无 config：默认根就是全部（覆盖用户 + 项目），与 worker 预设同一形态、同一位置
+          # （紧贴 tool-skill 之前）。它只注册技能**来源**，不注册任何工具；不碰沙箱与审批。
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
             name: '@deepseek-ai/dsh-tool-skill'
           # 交付：协调者用 present 把子会话产物（reports 文件）声明给客户端。

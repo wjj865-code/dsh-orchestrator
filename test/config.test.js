@@ -305,21 +305,43 @@ test('协调者只读工具面：只开 read，不挂 tool-fs-search（glob/grep
   }
 })
 
-test('协调者挂 grill-me 技能：注册模块 + tool-skill 各一行，worker 看不到', () => {
+test('协调者挂 grill-me + 本地技能发现：skill-filesystem / skill-grill-me / tool-skill 各一行，worker 看不到 grill-me', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
   const worker = presetPlugins(source, 'dsh-orchestrator-worker')
   const register = coordinator.rows.filter(row => row.id === 'skill-grill-me')
   assert.equal(register.length, 1, '协调者预设应恰好一行 skill-grill-me')
   assert.match(register[0].lines.join('\n'), /name:\s*'@wjj865-code\/dsh-orchestrator\/skill-grill-me'/)
+  // 0.35.0（P0，用户拍板）：宿主把本地技能发现下放给预设（base 补丁里 skill-filesystem / tool-skill
+  // 都 disabled，web-app 补丁注释是「presets own local discovery」），所以协调者预设不自己挂这一行，
+  // 主会话目录里就只有宿主内置技能 + 随包的 grill-me —— 用户本地全局技能（~/.agents/skills、
+  // ~/.dsh/skills）进不了主会话目录，协调者也就判断不了「这项可以走 X 技能」。
+  const filesystem = coordinator.rows.filter(row => row.id === 'skill-filesystem')
+  assert.equal(filesystem.length, 1, '协调者预设应恰好一行 skill-filesystem（否则看不到用户本地全局技能）')
+  const filesystemText = filesystem[0].lines.join('\n')
+  assert.match(filesystemText, /name:\s*'@deepseek-ai\/dsh-skill-filesystem'/)
+  // 纯行：不写 customSkillDirs（写了就只扫那几个目录，用户/项目默认根会一起关掉），也不按平台禁用。
+  assert.doesNotMatch(filesystemText, /^\s+(config|disabled):/m, 'skill-filesystem 用默认根，不能带 config/disabled')
   const skillTool = coordinator.rows.filter(row => row.id === 'tool-skill')
   assert.equal(skillTool.length, 1, '协调者预设应恰好一行 tool-skill（模型面 skill 工具 + 技能目录）')
   assert.match(skillTool[0].lines.join('\n'), /name:\s*'@deepseek-ai\/dsh-tool-skill'/)
-  // 技能只对协调者可见：worker 预设不挂注册模块（工具行 skill-filesystem / tool-skill 它本来就有）。
+  // 位置与 worker 预设一致：技能来源（skill-filesystem）排在 tool-skill 之前（先有 provider，再注入目录）。
+  const ids = coordinator.rows.map(row => row.id)
+  assert.ok(ids.indexOf('skill-filesystem') < ids.indexOf('tool-skill'),
+    'skill-filesystem 应挂在 tool-skill 之前（与 worker 预设同序）')
+  const workerIds = worker.rows.map(row => row.id)
+  assert.ok(workerIds.indexOf('skill-filesystem') < workerIds.indexOf('tool-skill'), 'worker 预设两行同序（对照）')
+  // 技能只对协调者可见的部分：worker 预设不挂 grill-me 注册模块（它自己的 skill-filesystem / tool-skill 照旧）。
   assert.equal(worker.rows.some(row => row.id === 'skill-grill-me'), false, 'worker 预设不得挂 grill-me 注册模块')
-  assert.equal((source.match(/skill-grill-me/g) ?? []).length >= 1, true)
   assert.equal((source.match(/id: skill-grill-me/g) ?? []).length, 1, '整份补丁只挂一行 skill-grill-me')
+  // 两行 skill-filesystem：协调者 + worker 各一行（重复行会让 loader 报重复 id）。
+  assert.equal((source.match(/id: skill-filesystem/g) ?? []).length, 2, '整份补丁应有协调者、worker 两行 skill-filesystem')
+  // 只加技能**来源**、不加工具：协调者的写/执行工具面照旧是空的（技能发现不是工具面变更）。
+  for (const rowId of ['tool-bash', 'tool-pwsh', 'tool-fs-search', 'tool-web', 'tool-todo']) {
+    assert.equal(coordinator.rows.some(row => row.id === rowId), false, `技能发现不应给协调者带来 ${rowId}`)
+  }
 })
+
 
 test('原生自动化只挂协调者预设，四工具显式保留', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')

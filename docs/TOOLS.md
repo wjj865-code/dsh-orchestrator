@@ -42,7 +42,7 @@
 ### 只读工具与技能
 
 - **`read`**（协调者预设只挂 `tool-fs` 的 `read`）：核对子会话说的改动、看 target 里的某个文件、读插件安装目录里的技能与文档都可以，不必为此新派任务。`tool-fs` 只开 `read`（`write` / `edit` / `apply_patch` / `read_image` 全关），所以协调者工具表里**没有任何写工具**。**`glob`/`grep` 已移除**：主会话一有搜索能力就会自行检索、绕过派发（`tool-fs-search` 没有「只关 grep」的开关，`preset-tools` 的 `deny` 又遮不到预设自有行，只能整行移除）；**要批量检索/枚举目录就派一条只读任务**（`readOnly:true`），让子会话把结果带回来。`read` **没有产物边界、能读到全盘**——凭据类文件一律不读、不转述，风险见 [LIMITATIONS](LIMITATIONS.md#协调者读文件read)。
-- **`skill` + grill-me 技能**：插件随包发 `skills/grill-me/SKILL.md`，注册模块 `@wjj865-code/dsh-orchestrator/skill-grill-me` 在**协调者预设作用域**里调 `ctx.skills.register`，所以只有协调者看得到。技能内容是多轮**前沿提问**的澄清协议：一次只问一个决定性问题、每问带推荐、事实自己查、决策归用户、最多 **2 轮 8 问**、最后给一张「决策点｜你定的｜影响」三栏决策记录。**grill ≠ 批准**：澄清完仍要按闸门确认，计划批准只能由用户拍板。
+- **`skill` + grill-me 技能**：插件随包发 `skills/grill-me/SKILL.md`，注册模块 `@wjj865-code/dsh-orchestrator/skill-grill-me` 在**协调者预设作用域**里调 `ctx.skills.register`，所以只有协调者看得到。技能内容是多轮**前沿提问**的澄清协议：一次只问一个决定性问题、每问带推荐、事实自己查、决策归用户、最多 **2 轮 8 问**、最后给一张「决策点｜你定的｜影响」三栏决策记录。**grill ≠ 批准**：澄清完仍要按闸门确认，计划批准只能由用户拍板。目录里除了随包的 `grill-me`，还有**用户本地全局技能**与项目技能根——0.35.0 起协调者预设补挂 `skill-filesystem`（宿主把本地技能发现下放给预设），否则主会话只看得见宿主内置技能（详见 [ARCHITECTURE](ARCHITECTURE.md#协调者只读工具与-grill-me-技能0260t-48e8ce06)）。
 - **不挂 `working_directory`**：这个宿主全局工具会把**协调者会话的 cwd** 改掉，而 cwd 是指挥锚（`task_create` 不给 `target` 时子会话继承它、工作区/写域判定与记忆项目键推断都以它为准），会话内切目录会让锚点静默漂移。协调者看文件用 `read` 的绝对路径，不需要切目录。
 - `present` 与 `schedule_*` 是协调者预设自带的宿主原生工具，不计入上面 11 个。
 

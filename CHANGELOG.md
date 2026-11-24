@@ -1,8 +1,8 @@
 # Changelog
 
-## 未发布（2026-11-24）—— 任务引用人类友好展示（名字+chip）/ 协调者可加载技能判断派活 / 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径 / worktree 分支名改约定式命名
+## 未发布（2026-11-24）—— 任务引用人类友好展示（名字+chip）/ 协调者可加载技能判断派活 / 协调者预设挂本地技能发现（技能面 8→35）/ 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径 / worktree 分支名改约定式命名
 
-**一句话**：这一批不含发版动作（**不 bump 版本**）：用户面不再出现 `t-xxxx`/光秃秃的 `tk-xxxxxx`——任务一律「名字 + 引用」，抽屉正文里的引用渲染成名字 chip；协调者仍不干活，但被明确允许按需加载技能来判断「怎么派活」（只读不执行）；此外写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径、worktree 分支名改由协调者按约定式 `<type>/<slug>` 传入（必填，不再默认 `orch/<taskId>`）。
+**一句话**：这一批不含发版动作（**不 bump 版本**）：用户面不再出现 `t-xxxx`/光秃秃的 `tk-xxxxxx`——任务一律「名字 + 引用」，抽屉正文里的引用渲染成名字 chip；协调者仍不干活，但被明确允许按需加载技能来判断「怎么派活」（只读不执行），并且协调者预设补挂了 `skill-filesystem`——主会话技能目录从此纳入**用户本地全局技能**（本机 8→35 条，需新开会话生效）；此外写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径、worktree 分支名改由协调者按约定式 `<type>/<slug>` 传入（必填，不再默认 `orch/<taskId>`）。
 
 **任务引用人类友好展示（R1–R3，用户拍板：抬 164 KiB / task_detail 合成一行 / 通知标题带引用 / brief 补名字 / 面板两处都做）**
 - `task_detail` 首行合成 `任务：名称（tk-xxxxxx）`（`src/task-detail.js`）：子会话第一次就同时拿到「怎么称呼」与「怎么调工具」，原来单列的「任务引用：」行删掉，`t-xxxx` 仍然一个字都不出现。
@@ -17,6 +17,14 @@
 - L1 新增一条通用许可（`index.js`）：协调者可以 `skill({ name })` 读技能说明来判断「该不该派、带什么约束、要不要建议用户走某个技能」——一次 1–2 个、只在摘要不足/匹配不确定时加载、能直接回答的不加载；**只读不执行**（加载技能 ≠ 按步骤干活，仍不写文件、不跑命令），读到的信息写进 `task_create` 的 goal/constraints 或汇报里点一句「这项可以走 X 技能」。技能目录（名称+摘要）由宿主注入上下文，协调者预设自 0.26.0 就挂着只读 `read` 与 `tool-skill`（`cordis.patch.yml:36/44-47`），此前 L1 只有 grill-me 一条触发语，没有通用许可。
 - 没新增任何工具、没动 `MAIN_PERMISSION_PRESET` 的沙箱与审批；`src/prompt-layers.js` 的 L1 `owns` 登记这条职责。
 - 文档：`docs/ARCHITECTURE.md`「协调者只读工具与 grill-me 技能」节补一句「可加载技能只为判断派活（只读不执行）」、`README.md` 的「只读总指挥」一句同步；**文档总行数仍 1799/1800**（同段内合并，不加行）。
+
+**协调者预设补挂 `skill-filesystem`：主会话技能目录纳入用户本地全局技能（0.35.0 P0，用户拍板「P0 协调者预设挂 skill-filesystem，并合进 0.35.0」）**
+- 根因：本地技能发现被**下放给预设**——`dsh-base` 补丁有 `skill-filesystem` / `tool-skill` 两行，`dsh-web-app` 补丁把它们都 `disabled` 了（源码注释：presets own local discovery，每个 agent 读自己 scope chain 合并出来的目录）。协调者预设此前只挂 `skill-grill-me` + `tool-skill`，于是主会话目录 = 宿主内置 7 条（office 系列、official-plugins、personalized-pages、diagnose-windows-sandbox-acl）+ 随包 `grill-me`（会话日志实测 8 条），`~/.agents/skills` 一条都进不来。
+- 改动只有一行：协调者预设补 `- id: skill-filesystem / name: '@deepseek-ai/dsh-skill-filesystem'`（**纯行、无 config**，位置与 worker 预设一致、排在 `tool-skill` 之前；不写 `customSkillDirs`——写了就只扫那几个目录，用户/项目默认根会被一起关掉）。目录从此并入用户本地全局技能根（`~/.agents/skills`、`~/.dsh/skills`）与项目技能根（`<project>/.agents/skills`、`<project>/.dsh/skills`）。
+- 规模（本机 2026-11-24 实测口径）：**技能面 8 → 35 条**。`~/.agents/skills` 下 34 个技能目录里 7 条声明 `disable-model-invocation: true`（模型不可调用，不进目录），净增 27 条（8 + 27 = 35）；27 条 `name + description` 合计约 **+5.7k 字符（≈1.5–2k tokens）** 的会话前缀。这个数字随用户装机变化：技能目录增删一个就 ±1（当天晚些时候 `find-skills` 又装了一个，本机随即是 36；同时宿主自带技能不在这 27 条里，另由各自 provider 注入）。
+- 生效条件：**需要新开会话**（技能目录在会话第一回合注入；升级后先彻底退出并重启 DSH，再开主会话）。老会话看不到——这也是为什么它在旧会话里表现为「技能没自动加载」。
+- 边界：**不新增任何工具**（`skill-filesystem` 只注册技能来源 provider，不注册工具）、不改 `MAIN_PERMISSION_PRESET` 的沙箱与审批、不改 L1 提示词、`grill-me` 仍是唯一随包技能；worker 预设本来就挂这一行，形态不变。
+- 文档：`docs/ARCHITECTURE.md` 的 A 片补一句（技能目录来自预设的 `skill-filesystem`、含用户全局技能）、`README.md`「只读总指挥」与 `docs/TOOLS.md`「只读工具与技能」同步、`docs/testing.md` 的 grill-me 一条补锁新断言；**文档总行数仍 1799/1800**（同段内合并，不加行）。
 
 **写域判定修复（隔离任务写根 = 检出）**
 - 新增 `isolatedConflicts` 与单向包含 `pathWithin`（`src/write-guard.js`）：隔离任务（`requested`/`created`/`reused`）重新拿写根（resume / 追问 / retry / 派发）只判「同一份检出（含 `worktreeMode:'continue'` 复用）」与「别人写进我的检出」，**原 target 与 `writeScopes` 不参与**。
@@ -46,6 +54,7 @@
 - 不含发版动作：**不 bump `package.json` version、不 push、不打 tag、不 publish、不删分支**。
 - 验证：`test/write-guard.test.js`、`test/write-gate.test.js`、`test/write-hold.test.js`、`test/artifact-stage.test.js`、`test/mirror-sync.test.js`、`test/worktree.test.js`、`test/worktree-request.test.js`、`test/access-full.test.js`、`test/config*.test.js`、`test/client-config-form.test.js` 全绿；`node scripts/check-docs.mjs`（1799/1800、配置参考 24 键）与 `pnpm run check:version` 通过；客户端只少一行字段投影 → `dist/client.js` 重建、`check:client-size` 通过。
 - 本批（引用展示）追加验证：全量 `node --test --experimental-test-isolation=none "test/*.test.js"` **1475 项 / 0 fail / 5 skip**；`test/client.test.js`（`splitTaskRefs` 切段 + 五种兜底 + 抽屉两处渲染）、`test/client-build.test.js`（`__test` 出口与 164 KiB）、`test/task-detail.test.js`、`test/panel-actions.test.js`、`test/workbench.test.js`、`test/notify.test.js`、`test/brief.test.js`、`test/prompt-layers.test.js`（L1 技能许可）、`test/plan-save.test.js` 同步；`dist/client.js` 重建后 **165,597 B / 167,936 B（余 2,339 B）**、`node --check` 通过；`check:docs` 1799/1800、`check:version` 未 bump。
+- P0（协调者预设挂 `skill-filesystem`）验证：`test/config.test.js` 的「协调者挂 grill-me + 本地技能发现」一条改锁三行 + 顺序 + 「不是工具面变更」，配套 `test/prompt-layers.test.js`；`node --test --experimental-test-isolation=none test/config.test.js test/prompt-layers.test.js` **44/44 通过**，全量仍 **1475 项 / 0 fail / 5 skip**；`node scripts/check-docs.mjs` 仍 **1799/1800**、`check:version` 未 bump；本地 commit（不 push / 不打 tag）。技能面 8→35 的真机验证方式：重启 DSH 后**新开**一个协调者会话，会话日志里的 `<available_skills>` 目录条数即从 8 变为 35（`~/.dsh/sessions/<workspace>/<sessionId>/session.v4.jsonl.zstd`，解 zstd 帧后按 `skill-catalog` 取 `entries`）。
 
 ## 0.34.0（2026-11-24）—— 任务私有产物存储 / Git 与非 Git 阶段收集 / 收集后交付
 
