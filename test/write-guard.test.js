@@ -12,9 +12,9 @@ import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
 import {
   DEFAULT_SAME_DIR_GUARD, ISOLATED_WORKTREE_STATES, SAME_DIR_GUARD_MODES, checkoutConflicts, checkoutRejection,
-  decideFollowupGuard, decideWriteGuard, deliveredTask, downstreamSerializedIds, guardModeOf, isolatedTask,
-  normalizePath, occupiesCheckout, occupiesTarget, occupiesTargetOnFollowup, pathsOverlap, sameDirRejection,
-  scopeRejection, scopesOverlap, serializedIdsOf, taskTargetDir,
+  decideFollowupGuard, decideRegrantGuard, decideWriteGuard, deliveredTask, downstreamSerializedIds, guardModeOf,
+  isolatedTask, normalizePath, occupiesCheckout, occupiesTarget, occupiesTargetOnFollowup, pathWithin, pathsOverlap,
+  sameDirRejection, scopeRejection, scopesOverlap, serializedIdsOf, taskTargetDir,
 } from '../src/write-guard.js'
 import { loadConfig } from '../src/config.js'
 import { renderCoordinatorPolicy } from '../index.js'
@@ -34,6 +34,13 @@ test('路径归一与包含判定：相等/父子目录算重叠，兄弟目录�
   assert.equal(pathsOverlap('/a/bc', '/a/b'), false)
   assert.equal(pathsOverlap('', '/a/b'), false)
   assert.equal(pathsOverlap(undefined, '/a/b'), false)
+  // 单向包含（隔离任务只看「别人是否写进我的检出」，不看「我是否在别人目录里」）。
+  assert.equal(pathWithin('/a/b/c', '/a/b'), true)
+  assert.equal(pathWithin('/a/b', '/a/b'), true)
+  assert.equal(pathWithin('/a/b', '/a/b/c'), false, '方向必须单向：父目录不算在子目录里')
+  assert.equal(pathWithin('/a/bc', '/a/b'), false)
+  assert.equal(pathWithin('', '/a/b'), false)
+  assert.equal(pathsOverlap('/a/b', '/a/b/c'), pathWithin('/a/b', '/a/b/c') || pathWithin('/a/b/c', '/a/b'))
 })
 
 test('写域重叠：相等或父子目录；空值与不相关路径不算', () => {
@@ -202,6 +209,58 @@ test('追问复判：delivered 交付后写根已释放，同目录被别人占�
   assert.equal(isolatedGuard.action, 'reject')
   assert.match(isolatedGuard.text, /同一个检出/)
   assert.equal(isolatedGuard.checkoutConflicts.length, 1)
+})
+
+// 回归（v0.34.x）：隔离任务的「重新拿写根」（resume / 追问 / 派发）只看检出，不看原 target。
+// 事故形态：仓库根任务在跑，隔离任务的检出建在仓库根内（`<repo>/.agents/worktrees/<t>`），
+// 旧口径把「仓库根 ⊃ 检出目录」的父子包含当同写域 → 隔离任务的 resume/追问被仓库根任务挡住，
+// 只能等仓库根任务收尾（用户原话：「看起来续跑写域判定有问题」）。
+test('回归：隔离任务 resume/追问不被仓库根任务误拦；同一检出仍然拦', () => {
+  const root = '/repo'
+  const checkout = '/repo/.agents/worktrees/t-iso'
+  // 仓库根任务：target 就是仓库根，正在跑（占着仓库根）。
+  const rootTask = { id: 't-root', title: '仓库根任务', status: 'running', target_dir: root, write_scopes: [] }
+  // 隔离任务：派发后 target_dir 已换算成检出目录，写域就是这份检出。
+  const isolated = {
+    id: 't-iso', title: '隔离任务', status: 'failed', target_dir: checkout,
+    worktree_state: 'created', worktree_path: checkout, write_scopes: [],
+  }
+  const resumed = decideRegrantGuard({ tasks: [rootTask, isolated], task: isolated, kind: 'resume' })
+  assert.equal(resumed.action, 'pass', resumed.text)
+  assert.deepEqual(resumed.targetConflicts, [])
+  assert.deepEqual(resumed.checkoutConflicts, [])
+  // 追问（delivered → running）同口径：交付过的隔离任务也只在检出里写。
+  const deliveredIsolated = { ...isolated, status: 'delivered' }
+  const followed = decideFollowupGuard({ tasks: [rootTask, deliveredIsolated], task: deliveredIsolated })
+  assert.equal(followed.action, 'pass', followed.text)
+  // requested（待建检出）的 target_dir 还是仓库根，但任务注定在检出里跑，同样不被拦。
+  const requested = {
+    id: 't-req', title: '待建检出', status: 'failed', target_dir: root,
+    worktree_state: 'requested', worktree_path: '/repo/.agents/worktrees/t-req', write_scopes: [],
+  }
+  assert.equal(decideRegrantGuard({ tasks: [rootTask, requested], task: requested, kind: 'resume' }).action, 'pass')
+
+  // 同一份检出仍然拒绝（含 worktreeMode:'continue' 复用）：两个子会话写同一份检出会踩 git 索引。
+  const otherInSameCheckout = {
+    id: 't-reuse', title: '复用同检出', status: 'running', target_dir: checkout,
+    worktree_state: 'reused', worktree_path: checkout, write_scopes: [],
+  }
+  const sameCheckout = decideRegrantGuard({ tasks: [rootTask, otherInSameCheckout, isolated], task: isolated, kind: 'resume' })
+  assert.equal(sameCheckout.action, 'reject')
+  assert.match(sameCheckout.text, /同一个检出/)
+  assert.deepEqual(sameCheckout.checkoutConflicts.map(({ task }) => task.id), ['t-reuse'])
+  // 别人直接写进这份检出（target 落在检出内）是真冲突，不能一起放过。
+  const intoCheckout = { id: 't-in', title: '写进检出', status: 'running', target_dir: '/repo/.agents/worktrees/t-iso/pkg', write_scopes: [] }
+  const nested = decideRegrantGuard({ tasks: [intoCheckout, isolated], task: isolated, kind: 'resume' })
+  assert.equal(nested.action, 'reject')
+  assert.deepEqual(nested.targetConflicts.map(({ task }) => task.id), ['t-in'])
+
+  // 非隔离任务的口径不变：同目录 / 父子包含照样拒绝。
+  const plainFailed = { id: 't-plain', title: '普通失败', status: 'failed', target_dir: '/repo/pkg' }
+  const plainBlocked = decideRegrantGuard({ tasks: [rootTask, plainFailed], task: plainFailed, kind: 'resume' })
+  assert.equal(plainBlocked.action, 'reject')
+  assert.match(plainBlocked.text, /不能续跑/)
+  assert.deepEqual(plainBlocked.targetConflicts.map(({ task }) => task.id), ['t-root'])
 })
 
 test('判定：require 档冲突即拒绝；allowConcurrent 放行并带风险标注', () => {
@@ -666,6 +725,60 @@ test('重派（task_message action:retry）不受影响：失败任务腾出目�
   const retried = await call('task_message', { action: 'retry', task_id: task.id })
   assert.match(retried, /已重派/)
   assert.equal(listTasks(db, { active: true }).length, 1)
+  db.close()
+})
+
+// 回归（集成）：真实台账 + 真实工具层。仓库根任务在跑时，隔离任务的 resume / 追问必须能投递——
+// 修复前 `decideRegrantGuard` 用「互相包含」判 target，检出目录（在仓库根内）与仓库根任务被判同写域，
+// resume/追问一律返回 `RESUME_WRITE_CONFLICT` / `MESSAGE_WRITE_CONFLICT`，占用方是仓库根任务。
+test('回归（集成）：仓库根任务在跑时隔离任务 resume / 追问照样投递；普通任务同目录仍被拒', async () => {
+  const { db, dispatcher, call } = await setup()
+  const root = tempDir()
+  // 仓库根任务：target = 仓库根，已派发在跑。
+  await call('task_create', { ...sampleBrief({ title: '仓库根任务', goal: 'g1' }), target: root })
+  const rootTask = listTasks(db, { active: true }).find(task => task.title === '仓库根任务')
+  assert.equal(rootTask.status, 'running')
+  // 隔离任务：检出建在仓库根内（`<repo>/.agents/worktrees/<t>`），派发后 target_dir 已换算成检出目录。
+  const checkout = join(root, '.agents', 'worktrees', 't-iso')
+  const isolated = createTask(db, {
+    brief: sampleBrief({ title: '隔离任务', goal: 'g2' }),
+    coordinatorSession: 's-1',
+    targetDir: checkout,
+    worktree: { state: 'created', source: 'task', repoRoot: root, path: checkout, branch: 'orch/t-iso', base: 'main', mode: 'new' },
+  })
+  transition(db, isolated.id, 'running', { sessionId: 'c-iso', target: 'c-iso' })
+  transition(db, isolated.id, 'failed', { error: '额度中断' })
+
+  const sendsBefore = dispatcher.calls.filter(item => item[0] === 'sendReliable').length
+  const resumed = await call('task_message', { action: 'resume', task_id: isolated.id })
+  assert.doesNotMatch(resumed, /未续跑任务/)
+  assert.match(resumed, /已续跑任务/)
+  assert.equal(getTask(db, isolated.id).status, 'running')
+  assert.equal(dispatcher.calls.filter(item => item[0] === 'sendReliable').length, sendsBefore + 1)
+
+  // 追问（delivered → running）同口径：交付过的隔离任务重新开工也不碰仓库根。
+  const checkout2 = join(root, '.agents', 'worktrees', 't-iso2')
+  const delivered = createTask(db, {
+    brief: sampleBrief({ title: '已交付隔离任务', goal: 'g3' }),
+    coordinatorSession: 's-1',
+    targetDir: checkout2,
+    worktree: { state: 'created', source: 'task', repoRoot: root, path: checkout2, branch: 'orch/t-iso2', base: 'main', mode: 'new' },
+  })
+  transition(db, delivered.id, 'running', { sessionId: 'c-iso2', target: 'c-iso2' })
+  transition(db, delivered.id, 'delivered')
+  const followed = await call('task_message', { task_id: delivered.id, message: '再补一份说明' })
+  assert.doesNotMatch(followed, /未把消息追给任务/)
+  assert.match(followed, /已把消息追加给任务/)
+  assert.equal(getTask(db, delivered.id).status, 'running')
+
+  // 非隔离任务的行为不变：同样 target = 仓库根（父子包含也算），resume 仍被仓库根任务挡住。
+  const plain = createTask(db, { brief: sampleBrief({ title: '普通失败任务', goal: 'g4' }), coordinatorSession: 's-1', targetDir: join(root, 'pkg') })
+  transition(db, plain.id, 'running', { sessionId: 'c-plain', target: 'c-plain' })
+  transition(db, plain.id, 'failed', { error: 'boom' })
+  const denied = await call('task_message', { action: 'resume', task_id: plain.id })
+  assert.match(denied, /未续跑任务/)
+  assert.match(denied, /仓库根任务/)
+  assert.equal(getTask(db, plain.id).status, 'failed', '被拒的续跑不改状态')
   db.close()
 })
 

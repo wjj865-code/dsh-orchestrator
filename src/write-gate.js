@@ -9,8 +9,8 @@
 // 在这里登记，且对应函数体里必须命中判定调用；新增动作不登记 → 测试红。
 import { getTask, listTasks } from './ledger.js'
 import {
-  DEFAULT_SAME_DIR_GUARD, checkoutConflicts, checkoutRejection, decideFollowupGuard, decideRegrantGuard, decideWriteGuard,
-  downstreamSerializedIds, isolatedTask, serializedIdsOf,
+  DEFAULT_SAME_DIR_GUARD, isolatedConflicts, isolatedTask, checkoutRejection, decideFollowupGuard, decideRegrantGuard,
+  decideWriteGuard, downstreamSerializedIds, serializedIdsOf,
 } from './write-guard.js'
 import { activeWriteHolds, isWriteHeld } from './write-hold.js'
 import { WRITE_DOMAIN_DENIED } from './action-errors.js'
@@ -87,7 +87,8 @@ export function decideFollowup({ db, task, mode = DEFAULT_SAME_DIR_GUARD, holds 
  * 口径（与动作层同源同参数）：
  * - 任务不在台账（非编排会话）/ 只读 / 创建时显式 `allowConcurrent` → 放行（不重复拦）；
  * - **隔离任务**（requested/created/reused）：只看 `worktree_path`，不看 `directory`——它在检出里跑，
- *   原 target 不占；dependsOn 上游与下游都靠 `serializedIds` 排除（串行不并发），不会误拒；
+ *   原 target 不占；判定与动作层共用 `isolatedConflicts`（同一份检出 / 别人写进我的检出），
+ *   dependsOn 上游与下游都靠 `serializedIds` 排除（串行不并发），不会误拒；
  * - 其余走 `decideRegrant`（`fallbackTarget = directory`：无 target 任务按派发 cwd 归一），拒绝就返回
  *   `{ok:false, code, text}`，调用方**不授予**。
  *
@@ -108,14 +109,20 @@ export function decideDispatchGrant({ db, taskId, directory, mode = DEFAULT_SAME
       ...serializedIdsOf(tasks, Array.isArray(task.depends_on) ? task.depends_on : []),
       ...downstreamSerializedIds(tasks, task.id),
     ])
-    const checkouts = checkoutConflicts(tasks, {
-      path: task.worktree_path, excludeId: task.id, serializedIds, holds,
+    const { checkouts, targets } = isolatedConflicts(tasks, {
+      checkout: task.worktree_path, excludeId: task.id, serializedIds, holds,
     })
-    if (checkouts.length === 0) return { ok: true }
+    if (checkouts.length === 0 && targets.length === 0) return { ok: true }
     return {
       ok: false,
       code: WRITE_DOMAIN_DENIED,
-      text: checkoutRejection({ path: task.worktree_path, conflicts: checkouts }),
+      text: checkoutRejection({
+        path: task.worktree_path,
+        conflicts: [
+          ...checkouts,
+          ...targets.map(({ task: item, target }) => ({ task: item, path: target })),
+        ],
+      }),
     }
   }
   const verdict = decideRegrant({ db, task, kind: 'dispatch', mode, holds, fallbackTarget: directory })
