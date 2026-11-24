@@ -5,7 +5,7 @@
 ## 角色
 
 - **协调者**：唯一主会话，固定入口；只拆任务、派子会话、看回报、交付产物。能**只读**看**单个文件**（`read` 与 `read_workspace`；`glob`/`grep` 已移除，检索类工作派只读任务），但**不写文件、不执行命令**（预设不挂 `write`/`edit`/`bash`/`pwsh`，权限钉 `read-only`）。
-- **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；能力不受限，另有三个插件工具：`task_report`（回报）、`task_detail`（只读创建详情）与 `plan_save`（计划落盘）。
+- **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；另有四个专属插件工具：`task_report`（回报）、`task_detail`（只读创建详情）、`plan_save`（计划落盘）、`artifact_save`（阶段文档）。
 - **客户端**：侧栏「主会话」入口（始终可见）+ 会话头「任务」面板（仅主会话可见）；只读快照 + 面板动作。
 
 ## 主会话
@@ -21,9 +21,8 @@
 - 索引任务只扫 `workspaceRegistry.list()` 登记的目录：读 `repoRoot/branch/HEAD/origin/commonDir`，单项失败继续，不 fetch/pull、不写文件，remote 去凭证。`task_report.workspace_index` 仅接受本任务 `done` 的完整 JSON，按创建时名单校验覆盖，与 `settings.workspace_repo_index` 同事务写入，不覆盖 `memories`。
 
 ### 原生自动化工具面
-
-- `cordis.patch.yml` 只在 coordinator plugins 挂 `@deepseek-ai/dsh-tool-schedule`，四个工具（`schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`）由**预设自有行**注册，**不写进 keep/deny 名单**——own 工具不受 `restrict` 影响；`preset-tools.js` 的两个预设都用**遮挡式**：协调者点名 `deny`「编排正确性」项与三个角色专属工具、`keep` 声明 7 个任务工具与 `capability_pack`「出生即可用」，worker 只点名遮 `capability_pack`、`keep: [context, task_detail, task_report, memory_note]`（子会话可写项目记忆；都写 `preset.keep` / `preset.deny` 审计；见 [子会话读上下文](#子会话读上下文只读-context)）。这四个 schedule 工具不进入 `createTools`，插件全局工具数为 11。
-- **工具面（P1-B：15 → 10；0.32.0 加入 `capability_pack` = 11；0.26.0 起协调者另挂只读工具，t-4f7ce108 收窄到只有 `read`）**：`createTools` 返回 11 个（协调者可见 8；子会话 4 = 3 个专属 + 共用的只读 `context`）。这 11 个之外，协调者预设还挂了宿主原生 `read`（只读；`tool-fs` 只开 `read`，**不再挂 `tool-fs-search`**——`glob`/`grep` 已移除）与 `skill`（技能加载器）+ `present` + `schedule_*`，它们是**预设自有工具**，不计入全局工具数，也不受 `deny` 影响。旧入口并进三个工具：`task_message` 的 `action`、`task_list` 的 `view`、新工具 `context` 的 `mode`。旧名**不注册**、不在 keep 名单，`index.js` 的 `tools.guard` 用 `src/tool-migrations.js` 的映射表返回可读迁移提示（唯一真源，README/CHANGELOG 对齐）。
+- `cordis.patch.yml` 只在 coordinator plugins 挂原生 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`，预设自有工具不进入 `createTools`，也不受 `restrict` 的 deny/keep 影响。worker 不新增自动化挂载。
+- **工具面**：`createTools` 返回 12 个（协调者可见 8；worker 专属 4 个，另共用 `context`/受限 `memory_note`）。协调者另挂宿主只读 `read`、`skill`、`present`、`schedule_*`，不计入全局工具数；不挂 `tool-fs-search`。旧入口并入 `task_message.action`、`task_list.view`、`context.mode`；旧名不注册，迁移提示来自 `src/tool-migrations.js`。
 - 缺能力诊断只针对唯一主会话：检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule`，缺失去重 warn + policy 提示；不改运行回合工具表，也不模拟自动化。
 - 只支持 `target:this_session`：Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new`/`new_once` 创建普通 root 会话，不是委托 worker、也不是第二协调者；**非唯一主** id 被 `requireMain` 拒绝。**默认 worker 不新增**挂载；`access:full` 不增加工具、不解除 `subagent_session`。沿用 Host-wide 管理、用户**明确授权**、RRULE 与 `expectedUpdatedAt` 冲突保护；用法见 [TOOLS 原生自动化工具](TOOLS.md#原生自动化工具)，边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。
 
@@ -53,6 +52,7 @@
 
 ## 依赖 / 分组 / 写域 / 优先级
 
+**任务产物**：`artifact_dir` 是创建时主会话 `artifacts/<taskId>` 暂存/引用目录，`artifact_store_dir` 是宿主 `artifact-store/<taskId>` 私有真源，两者固定。文档/快照只登记真源；展示引用不驱动读取或迁移。`artifact-protection` 检查已解析默认/额外根、目标和 temp 的覆盖，派发/续派及再授予失败即拒绝；完整访问明确无保护。target/worktree 与 writeScopes 契约不变。统一阶段保存后结算，缺摘要/省略不完整，非 Git 不完整不自动 chain；历史路径不搬移。
 - `dependsOn` 最多 20 个，必须指向已存在且不是 `failed/cancelled/orphaned` 的任务；创建时不接受未来 id，因此不会成环。
 - 前置未完成 → `waiting_dep`；`queue.pump` 前先晋升：全部 `done` → `pending` 入队；任一失败/取消/丢失/不存在 → 下游 `failed`（写明原因）；晋升是循环的，失败沿依赖链传播。
 - 前置任务摘要与产物不在派发时预渲染：子会话用 `task_detail` 按**当前**台账现读。
@@ -162,7 +162,7 @@
 
 ## 机器可判定验收（A1：`task_create.checks`）
 
-`acceptance` 是给人读的标准，`checks` 是给机器执行的证据：**子会话报 `done` 时由插件先跑检查，全过才落 `delivered`，任一条失败即拒绝交付**。这让「任务做完了」不再只靠子会话自述。
+`acceptance` 是给人读的标准，`checks` 是给机器执行的证据：**子会话报 `done` 时由插件先跑检查，全过才记录待交付请求，回合结束保存最终阶段后落 `delivered`；任一条失败即拒绝交付**。这让「任务做完了」不再只靠子会话自述。
 
 | 项 | 规格 |
 |---|---|
@@ -443,13 +443,13 @@
 
 ## 产物
 
-- `task_report.artifacts: [{path,label?}]`，相对路径按 `target_dir`（无则主会话目录）解析；只 `stat` 存在性，非法条目静默丢弃，不阻断完成；同任务多次回报按 `path` 合并（最多 50 条）。
-- **done 自动收集**：`task_report done` 时若 Session 有 `workspace/changes` 事件，用 `workspaceChanges.summary()` 汇总所有回合的改动文件，按路径去重后与显式产物合并；当前回合的摘要要等 turn stopping，`index.js` 监听 `session/event` 在摘要服务登记后补收。
+- `task_report.artifacts: [{path,label?}]` 仍是显式交付项，相对路径按任务工作目录解析；工作目录或 staging 内的文件复制到 `artifact_store_dir/docs`，已有真源文档直接登记。输入最多 20 项，省略/拒绝/失败记入阶段清单；产物按 `path` 合并（最多 50 条），优先保留完整阶段清单，不以原文件存在冒充保存成功。
+- **统一阶段收集与交付**：`artifact-stage` 从宿主摘要与 `changedFiles` 取候选；非 Git 保存普通文件副本，Git 只记录工作文件引用与未归档状态。`checkpoint` 请求阶段快照；`done` 验收通过后持久记录待交付并收紧工作权限，回合结束保存最终阶段后才由既有结算器迁移、通知和释放占用。缺摘要/截断/保存失败标不完整，非 Git/unknown 不完整不自动 chain、不清理来源；当前 DSH worker 无自动摘要，需显式补报，仍不保证完整备份。
 - 面板「产物」筛选打开产物库：按项目（目标目录末段）或日期分组、复制路径、文本预览（前 64 KiB）、打开子会话/详情。
 
 ### 协调者读产物（`read_workspace`）
 
-子会话产物按契约落在 **target 目录**内，只有一部分落在主会话工作区（`$DSH_HOME/state/orchestrator/workspace`）。所以边界是**两个判据的并集**：工作区包含性 **OR** 已登记产物（台账 `tasks.artifacts_json`）。
+新产物登记宿主 `artifact_store_dir` 内的稳定副本，历史产物仍可位于 target 或主会话工作区；不批量迁移历史路径。读取边界仍是**两个判据的并集**：工作区包含性 **OR** 已登记产物（台账 `tasks.artifacts_json`），不因存在 `storage.json` 引用而开放整个私有库。
 
 - **为什么还要保留它（协调者的原生工具只有 `read`，`glob`/`grep` 已在 t-4f7ce108 移除）**：原生读没有路径白名单、看得到全盘的凭据（`dsh-fs-sandbox` 只给写操作加栅栏，`dsh-fs-local` 的 `cwd` 只是相对路径基准，`glob` 会 spawn ripgrep 全树枚举）。`read_workspace` 是**产物边界**的受控读：只认工作区 ∪ 已登记产物，越界/`../`/符号链接逃逸/未登记都拒并写 `workspace.read.rejected`。两者并存：`read` 用来核对改动与读技能，受控读用来读产物；1.0 前不退役。
 - **实现分层**：`src/read-workspace.js` 是纯函数 + 一次有界读（路径判定、行窗口切分、目录列条目、二进制识别、文案渲染）；`src/tools.js` 只做 `requireMain` 身份校验、调用、审计日志。
@@ -477,11 +477,10 @@
 `access:'full'`（只认显式 `'full'`）**复用只读的整条注入路径**，只是模式换成 `danger-full-access`：`ensureSandboxMode(childId, mode)` 在 `agent/created` 一到就 append（`source:'delegation'`），激活返回后再幂等补一次，续派/冷恢复再补；`taskOf` 只把 `tasks.access='full'` 当真。普通任务（不传 `readOnly`/`planFirst`/`access`）同样走这条入口，显式钉 `workspace-write`：宿主会把父会话的显式 `sandbox/mode` 覆盖按 `source:'delegation'` 种进每个子会话（`@deepseek-ai/dsh-subagent` 的 `appendDelegatedPolicyOverrides`），主会话钉成只读后不写回来，子任务就会跟着只读、写不了文件。都不碰默认配置、不碰父会话。视图：brief `【访问级别】完整`、`task_detail`「访问级别：完整」、`task_list`「·完整访问」、`task_status`「访问级别：完整」、通知标题「（完整访问）」、日志 `subagent.full-access` / `subagent.read-only` / `subagent.workspace-write`。
 
 ## 计划阶段（P8）
-
 `planFirst:true` 的任务 = **只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**；不开 `planFirst` 的任务行为一字不改。
 
 - **进入**：`queue.pump` 从台账透传 `plan_first` 给 `dispatcher.spawn`；派发时复用 `ensureReadOnly`（压首回合窗口），再用**子 agent 作用域**的 `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 缺失只 warn（降级为只有只读沙箱）。批准前**不注册** target 可写根。
-- **计划落盘（`plan_save`）**：计划文档由**插件在宿主进程**写（不受子会话沙箱限制）：`src/plan-doc.js` 只做纯函数——`planFileName()` 由任务名生成安全文件名（NFC/控制符/非法字符/保留名/stem ≤ 60/路径 ≤ 240/同名 `-2`），`planDocPath()` 算出 `<主会话工作区>/reports/plans/<taskId>.md`（没有 `path` 入参；编号白名单 + `relative()` 包含性校验把 `..`/绝对路径/盘符拒在 `mkdir`/`writeFile` 之前），`renderPlanDocument()` 加文档头，`writePlanDocument()` 只做一次 mkdir + 覆盖写。写完登记为任务产物。子会话拿到结果后只上报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**。拍板流程（版本 A）**只改提示词/文案**：`plan_save` 仍只有 `task_id` / `content`，正文原样落盘；插件不解析正文、不渲染 `## 待拍板` 段、不做文档 lint、不存待拍板元数据。待拍板问题由模型自己生成并经 `ask_user_question` 逐项提问。
+- **计划落盘（`plan_save`）**：复用 `artifact_save` 的 `artifact-store` 宿主受限保存实现，写入 `artifact_store_dir/docs/<安全任务名>-<版本>.md`；`artifact_dir` 仅暂存/引用，不是真源。调用重放幂等、旧版本不覆盖，保存后更新 `plan_path`，批准使用最新计划。参数仍只有 `task_id`/`content`，正文原样落盘，不解析待拍板元数据。子会话只回报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**，待拍板问题由模型生成并经 `ask_user_question` 逐项提问。
 - **交付顺序（0.25.0）**：先回复计划摘要 + 计划文档**绝对路径**并 `present` 该文档 → 再 `ask_user_question`（四选一 **逐项确认 / 均按推荐 / 先看计划文档 / 放弃**；「均按推荐」必须用户明确点选）→ 用户选「先看计划文档」只展示正文/路径、不推进不催 → 选「逐项确认」按清单一项一问、答完先贴决策汇总（`renderDecisionSummary`）再做总批准核对 → 只有明确「批准」才续派实现。
 - **出口**：`plan_save` 落盘 → `task_report blocked` 上报摘要 + 路径 → 用户决定 → 协调者 `task_message` 续派，**不用** `exit_plan_mode`（子会话没有直接人类）。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`（插件根的 guard 是全局的，会误伤协调者）。
 - **批准闸门（人工 + 显式动作）**：**计划批准必须由用户拍板，协调者不得自行批准**（不得把用户沉默/含糊回应当成批准），且批准动作只能是 `task_message({ action: 'approve' })`——插件校验通过才切可写并落审计。普通 `task_message` 在计划任务上**不会批准**：`planning` 只记讨论、`waiting_user`/`revising` 转「修订中」，沙箱始终只读；用户答「调整」就把修改点原样转回同一个子会话（写明「只修订计划、不要开始实现」）并再 `blocked` 一次重新拍板。

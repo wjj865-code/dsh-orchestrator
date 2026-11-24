@@ -69,6 +69,7 @@ function fakeExec(config = {}) {
     }
     if (args[0] === 'rev-parse' && args[1] === '--short') return ok('deadbee')
     if (args[0] === 'rev-list' && args[1] === '--count') return ok(String(settings.unmerged))
+    if (args[0] === 'merge-base') return settings.unmerged === 0 ? ok('') : bad('not merged', 1)
     if (args[0] === 'worktree' && args[1] === 'remove') return ok('')
     if (args[0] === 'worktree' && args[1] === 'prune') return ok('')
     if (args[0] === 'branch' && args[1] === '-D') return ok('Deleted')
@@ -204,14 +205,14 @@ test('P9 remove：checkout-only 保分支；full 有未合并提交要确认', a
 
   fake.calls.length = 0
   const full = await service.remove({ repoRoot: 'C:/repo', path: 'C:/repo/.agents/worktrees/t-1', branch: 'orch/t-1', mode: 'full', confirm: true })
-  assert.equal(full.ok, true)
-  assert.equal(full.branch, true)
-  assert.ok(fake.calls.some(call => call.line.startsWith('branch -D orch/t-1')))
+  assert.equal(full.ok, false)
+  assert.equal(full.code, 'UNARCHIVED')
+  assert.equal(fake.calls.some(call => call.line.startsWith('branch -D orch/t-1')), false)
 
   fake.calls.length = 0
   const unconfirmed = await service.remove({ repoRoot: 'C:/repo', path: 'C:/repo/.agents/worktrees/t-1', branch: 'orch/t-1', mode: 'full' })
-  assert.equal(unconfirmed.branch, false)
-  assert.match(unconfirmed.hint, /未合并/)
+  assert.equal(unconfirmed.ok, false)
+  assert.match(unconfirmed.message, /未合并/)
   assert.equal(fake.calls.some(call => call.line.startsWith('branch -D')), false)
 
   fake.calls.length = 0

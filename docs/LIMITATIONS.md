@@ -6,7 +6,7 @@
 ## 恢复与数据
 
 - 台账每天生成快照，但**不自动恢复**；损坏时手工用 `snapshots/tasks-YYYY-MM-DD.sqlite` 替换 `tasks.sqlite`。周期内重启不会重复覆盖。
-- 产物自动收集依赖平台 `workspace/changes` + `workspaceChanges`：Host 没挂这两个能力、会话在摘要登记前被释放、或改动发生在临时目录时收集为空；显式 `task_report.artifacts` 始终保留。当前回合的摘要要等 turn stopping 才追加，`task_report done` 当刻只能收到之前回合的摘要（当前回合由 `session/event` 监听在微任务里补收）。
+- 产物快照仅保存阶段/交付时已捕获内容，不提供编辑历史或删除前恢复。DSH 0.2.2-rc.5 的 `workspaceChanges` 跳过 worker，非 Git 工作文件需 `changedFiles`；缺摘要/截断/拒绝项标不完整。真源在宿主 `artifact-store`，主会话目录仅暂存与引用；覆盖私有库或无法核验写根时拒绝普通任务派发/续派。临时 DSH_HOME 通常落在宿主默认可写 temp 下，此类 profile 必须将 home 放在 temp 之外验证防覆盖。完整访问、外部进程及历史路径没有防覆盖保证。
 - 产物预览只读前 64 KiB 文本；二进制/目录只显示元信息。详情与产物页只能**复制路径**，不能直接打开本地文件（网页不允许脚本静默打开）；「打开子会话」打开的是产出它的任务会话，不是文件。
 - 消息投递状态（待发/已投递/失败）写在 `messages.meta_json`；A3 之前的旧行没该字段，只能按紧随的 `delivery_failed` 行推断，失败行落到 50 条消息窗口外的会显示成已投递。
 - **最新返回消息只留最后一次**：`tasks.last_message_json` 只存借条（`at`/`stopReason`/`bytes`/`chars`/`digest`/240 字摘要），正文按需从宿主会话日志冷读；后续回合/续派会覆盖，没有历史版本。
@@ -168,8 +168,8 @@
 - **plan mode 是软引导**：平台只注入一段系统提示，不拦工具、不写沙箱状态；真正挡住写入的是只读沙箱。模型仍可能反复尝试写，被拒错误会回灌给它。
 - **四态、审计与「没有官方审批端点」**：`plan_state` 走 `planning → waiting_user → revising → approved`，未批准进终态收口 `rejected`；审批审计复用 `accepted_by`/`accepted_at` + `accepted_kind`（`plan`），后续交付确认会把它覆盖成 `delivery`——完整审批历史以 `task.plan.approved` 日志为准（刻意不加 `plan_blocked_at` 列，「有 blocked 报告」由 `plan_state='waiting_user'` 表达）。`planMode` 是预设隔离域服务、宿主也没有对插件开放的计划审批端点，所以批准只能由插件自己的 `task_message({action:'approve'})` 承担，面板刻意没有批准入口。
 - **服务可见性**：`planMode` 挂在子会话预设作用域，插件必须走 `agent.ctx.get('planMode')`；没挂时静默降级为「只有只读沙箱」并 warn 一行，派发不受影响。`exit_plan_mode` 被拒（子会话没有直接人类），出口固定是「`plan_save` 落盘 + `task_report blocked`」。
-- **计划文档只有一版**：重复 `plan_save` **覆盖**同一份文件，没有版本对比、没有审批流 UI。计划路径绑主会话工作区：换主会话/工作区后新计划落新目录，旧文件留原处。
-- **`plan_save` 是插件的写，不是沙箱写**：由宿主进程按固定路径写，只能写这一个路径，不能当通用写入。
+- **文档版本**：`plan_save`/`artifact_save` 保存新版本，批准以最新计划路径为准；没有版本对比或审批流 UI。产物目录绑定创建时主会话工作区，后续不重定位；历史路径不搬移。
+- **文档保存是宿主受限工具，不是沙箱写例外**：校验任务归属、名称与固定产物根；只读任务不能用文件工具或 shell 绕过工作区只读。
 - **切回可写的范围**：`workspace-write` 的根 = 子会话 `header.cwd` + 插件登记的 target 可写根，子会话理论上也能写插件 state 目录。可接受但不理想。
 - **两处真相**：平台会话日志的 `plan/mode` 是运行期事实，台账 `plan_state` 是编排视图；重启/压缩后平台投影会恢复，台账靠续派/终态事件对齐，极端时序下可能短暂滞后。`planFirst` 与 `readOnly` 创建期互斥。
 
@@ -208,7 +208,6 @@
 - **包会话挂工作区**：`sessionController.create` 只给 `cwd` 时宿主不会 `attachSession`（只有 `workspaceId` 分支才挂），会话会落在「未分组」且 UI 只显示「选择一个工作区开始」。所以 open 先用 `workspaceRegistry.resolveByPath(cwd)` 找目标目录所属工作区，找到就传 `workspaceId`；目录不是已登记工作区（或服务缺失）才退回只给 `cwd`——插件**不自动建工作区**（那是主会话「指挥舱」的语义）。
 
 ## UI
-
 - 会话内卡片仍只提供数据（`taskCard`），不渲染 UI；可见入口是侧栏「主会话」和会话头「任务」面板。
 - **任务入口依赖宿主身份信号**：显示条件 = 当前会话 id 与台账 `main_session_id` 相等。id 取不到或 `session-role` 请求失败时按「不是主会话」处理，入口**默认隐藏**；会话切换立即重判，另有 5 秒兜底轮询——刚打开主会话 1 秒内可能短暂看不到入口。
 - 入口隐藏只是 UI 层：`main` 面板仍注册，`/api/orchestrator` 的动作端点也没有会话身份校验（owner-only 由平台 connection 负责）；真正的主会话权限仍由 `task_*` 工具的调用方校验兜底。
@@ -219,7 +218,6 @@
 - **配置卡片保存不热重载**：点「保存」只把值写进当前 profile 的 `cordis.patch.yml`，**运行中的插件不会 reload**——轮换判定、看门狗/陈旧计时器仍按启动时那份配置；改动不会自动生效：**重载插件或重启 DSH 后生效**（卡片回执与简介都写明这一点）。
 
 ## 面板动作幂等
-
 - message 的 `clientRequestId` 去重只在 host-route 进程内（LRU 200 条），插件重启后失效；跨重启的严格去重需要把 id 落台账（当前 messages 表没有该列）。
 - 没有 `clientRequestId` 的旧客户端按「同任务 3 秒内相同文本」去重；3 秒内故意发两条一模一样消息会被吞掉一条。
 - 面板 stop 对已结束任务按幂等成功（`already:true`）返回；工具层 `task_message({action:'stop'})` 返回「已结束，无需停止」文本。两者都是 no-op。

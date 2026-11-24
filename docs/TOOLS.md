@@ -4,7 +4,7 @@
 
 ## 工具清单
 
-插件**全局注册 11 个工具**：协调者能用其中 8 个，子会话 4 个（3 个专属 + 与协调者共用的只读 `context`）。
+插件**全局注册 12 个工具**：协调者 8 个；任务执行者可用 `context`、`memory_note` 及 4 个专属工具。工作写入范围 `writeScopes` 仍用于冲突防护，不是产物目录。
 
 协调者（8 个）：
 
@@ -25,11 +25,12 @@
 |---|---|
 | `task_report` | `progress` / `done` / `blocked` / `needs_auth`，可带 `question` / `options` / `artifacts`；`done` 落「已交付待确认」，配了 `checks` 的先跑验收、失败拒绝交付；`progress` 会作为进度信号送达（合并 + 同任务水位，追问后的第一条必达） |
 | `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收标准、可执行检查、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物 |
-| `plan_save` | 计划模式专用：把计划正文写进主会话工作区 `reports/plans/<任务名>.md`（文件名=任务名，同名 `-2`）并登记为产物（计划阶段唯一写入口） |
+| `plan_save` | 计划模式专用：计划正文写入任务产物目录 `docs/<任务名>-<版本>.md`，保留旧版本并更新最新计划路径 |
+| `artifact_save` | 执行者专用：`task_id/name/content` 保存自己的 Markdown 阶段文档；固定目录、版本化、调用重放幂等；只读任务也可保存文档但不能修改工作区 |
 
 ### 角色差异（预设层遮挡）
 
-11 个工具**全局注册**（`index.js` 的 `createTools(...).map(ctx.tools.register)`），角色差异全在**预设层**（两个预设都是**遮挡式**）：协调者预设遮「编排正确性」项（`wait_agent`、团队工具、`plugin_manager`、密钥/IM）与三个子会话专属工具，并用 `keep` 声明 7 个任务工具与 `capability_pack` 出生即可用；worker 预设只点名遮 `capability_pack`（能力包工厂只属于协调者），并用 `keep` 声明 `context` / `task_detail` / `task_report` / `memory_note` 出生即可用。
+12 个工具**全局注册**（`index.js` 的 `createTools(...).map(ctx.tools.register)`），角色差异在**预设层**：协调者遮「编排正确性」项与四个执行者专属工具；worker 保留产物保存工具。`task_report.checkpoint:true` 请求阶段快照，`changedFiles` 补充工作文件；done 在回合结束保存后交付。非 Git 文件只保存捕获范围，缺失、拒绝和截断进入清单；不完整阶段不自动 chain。
 
 - `context` 与 `memory_note` 子会话都能调：`context` **只读**、与协调者同一条实现（同参数输出逐字一致）；`memory_note` 在子会话里只能写自己任务目录的项目记忆。
 - `task_report` / `task_detail` / `plan_save` 只对任务自己的子会话开放。
@@ -47,7 +48,7 @@
 
 ### 原生自动化工具
 
-协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 11 个工具（契约核实于 DSH `0.2.2-rc.3`，升级宿主需复核）。
+协调者预设挂载宿主 `@deepseek-ai/dsh-tool-schedule`，不另造调度器、不计入插件全局 12 个工具（契约核实于 DSH `0.2.2-rc.3`，升级宿主需复核）。
 
 | 原生工具 | 用法 |
 |---|---|

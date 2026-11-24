@@ -1790,10 +1790,11 @@ export function createViews({
 
       // 7) 产物：路径/标签/存在性；路径可点开（会话右侧栏预览）也可一键复制。
       const artifacts = Array.isArray(task.artifacts) ? task.artifacts : []
-      const artifactBody = artifacts.length === 0
-        ? <div className="orch-muted">{'还没有产物。'}</div>
-        : (
+      const artifactBody = (
           <div className="orch-stack orch-stack--xs">
+            <div>{task.artifactStoreDir}</div>
+            {task.artifactStage ? <div>{`${task.artifactStage.mode} · ${task.artifactStage.complete ? '已保存' : '不完整'}${task.artifactStage.git?.unarchived ? ' · 未归档' : ''}`}</div> : null}
+            {artifacts.length === 0 ? <div className="orch-muted">{'还没有产物。'}</div> : null}
             {artifacts.map((item, index) => (
               <DotRow key={`${item.path}:${index}`} tone={item.exists === false ? 'bad' : 'good'}>
                 <button

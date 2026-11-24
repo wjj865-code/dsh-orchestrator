@@ -91,11 +91,14 @@ test('schema 快照：五个 task_* + plan_save 的入参结构冻结（仍是 t
       status: { type: 'string', enum: ['progress', 'done', 'blocked', 'needs_auth'] },
       summary: { type: 'string' },
       workspace_index: { type: 'string' },
+      checkpoint: { type: 'boolean' },
+      changedFiles: { type: 'array', items: 'string' },
       question: { type: 'string' },
       options: { type: 'array', items: 'string' },
       artifacts: { type: 'array', items: 'object' },
     },
     plan_save: { task_id: { type: 'string' }, content: { type: 'string' } },
+    artifact_save: { task_id: { type: 'string' }, name: { type: 'string' }, content: { type: 'string' } },
   }
   for (const [name, schema] of Object.entries(expected)) {
     assert.ok(tools[name], `工具应存在：${name}`)
@@ -121,9 +124,11 @@ test('回执行结构冻结：task_status 的行前缀与顺序不变（值可�
   assert.equal(lines[1], '状态：进行中')
   assert.match(lines[2], /^子会话：c-\d+$/)
   assert.equal(lines[3], '目标：目标')
-  assert.equal(lines[4], '打开方式：协调者会话的子代理目录（subagent catalog），按上面的子会话 id 打开；它不在普通会话列表里。')
-  assert.equal(lines[5], '最近消息：')
-  assert.match(lines[6], /^- \[brief\] /)
+  assert.match(lines[4], /^产物目录：/)
+  assert.match(lines[5], /^产物真源：/)
+  assert.equal(lines[6], '打开方式：协调者会话的子代理目录（subagent catalog），按上面的子会话 id 打开；它不在普通会话列表里。')
+  assert.equal(lines[7], '最近消息：')
+  assert.match(lines[8], /^- \[brief\] /)
   db.close()
 })
 

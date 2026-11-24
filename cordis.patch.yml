@@ -103,6 +103,7 @@
                 - task_report
                 - task_detail
                 - plan_save
+                - artifact_save
                 # 宿主全局工具（dsh-tool-working-directory）：会改协调者会话 cwd，见上面的说明。
                 - working_directory
               # 正向声明：这 7 个全局工具必须对协调者「出生即可用」；挂载后校验并写 preset.keep 审计。

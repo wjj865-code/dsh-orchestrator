@@ -3,9 +3,30 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getTask, transition } from '../src/ledger.js'
+import { createSettlementReporter } from '../src/settlement.js'
+import { createArtifactDelivery } from '../src/artifact-delivery.js'
 import { canTransition } from '../src/state.js'
 
 export const tempDir = () => mkdtempSync(join(tmpdir(), 'orchestrator-'))
+
+/** 既有场景显式模拟回合结束；artifact-delivery.test 验证结束前不交付。 */
+export function endReportedTurn(db, { taskId, notifier, dispatcher, queue, workspaceChanges, session, mainDir, goalBridge, sender } = {}) {
+  const task = getTask(db, taskId)
+  if (!task?.delivery_pending) return Promise.resolve()
+  const cwd = task.target_dir ?? task.brief?.inheritedTarget ?? mainDir ?? tempDir()
+  const delivery = createArtifactDelivery({
+    db,
+    settlement: createSettlementReporter({
+      db, notifier, releaseSession: id => dispatcher?.releaseWritableRoots?.(id),
+      senderOf: () => sender,
+      pump: () => queue?.pump(), onTerminal: t => goalBridge?.complete?.(t.id, t.session_id),
+    }),
+    sessionOf: () => session ?? { id: task.session_id, events: [{ type: 'workspace/changes', seq: 1 }] },
+    workspaceChanges: () => workspaceChanges ?? { summary: () => ({ cwd, files: [] }) },
+    mainDir: () => mainDir ?? cwd,
+  })
+  return delivery.report({ taskId, sessionId: task.session_id, stopReason: 'completed', source: 'test-turn-end' })
+}
 
 /** 符号链接用例不可用时给用户的跳过原因：必须说清「为什么没跑」，不许静默 pass。 */
 export const SYMLINK_SKIP_REASON = '需要符号链接权限（当前环境无法创建文件符号链接，如 Windows 未开开发者模式）：跳过这条符号链接用例，CI/有权限环境仍会真跑'

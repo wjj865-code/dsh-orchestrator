@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { openLedger, getTask, listTasks, transition } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
 import { createQueue } from '../src/queue.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, endReportedTurn } from './helpers.js'
 
 // 派发器桩：把 spawn 的 readOnly/access 原样记下来，用来断言「注入了什么」。
 function fakeDispatcher() {
@@ -47,9 +47,17 @@ async function setup() {
     queue,
     notifier,
     config,
+    defaultCwd: tempDir(),
     coordinatorStatus: () => ({ id: 's-1', live: true }),
     logger: { log: (event, fields) => events.push([event, fields]) },
   }).map(tool => [tool.name, tool]))
+  const report = tools.task_report.execute
+  tools.task_report.execute = async (args, exec) => {
+    const response = await report(args, exec)
+    const task = listTasks(db).find(t => t.id === args.task_id || t.ref === args.task_id)
+    if (task?.delivery_pending) await endReportedTurn(db, { taskId: task.id, notifier, dispatcher, queue })
+    return response
+  }
   return { db, dispatcher, notifier, tools, events }
 }
 

@@ -67,11 +67,11 @@ test('P2 预设行：customSkillDirs 是绝对路径，工具面禁编排能力'
   // 只允许宿主分隔符：混拼（Windows 上出现 / 或 POSIX 上出现 \）说明用了错误的 join。
   assert.equal(skillRow.config.customSkillDirs[0].includes(separator === '\\' ? '/' : '\\'), false)
   const presetTools = definition.plugins.find(row => row.id === 'preset-tools').config
-  for (const denied of ['task_create', 'task_report', 'plan_save', 'capability_pack']) {
+  for (const denied of ['task_create', 'task_report', 'plan_save', 'artifact_save', 'capability_pack']) {
     assert.ok(presetTools.deny.includes(denied), `必须 deny ${denied}`)
   }
   assert.deepEqual(presetTools.keep, ['context'])
-  assert.deepEqual(PACK_DENY_TOOLS.length, 8)
+  assert.deepEqual(PACK_DENY_TOOLS.length, 9)
   // Linux 侧：bash 开、pwsh 关。
   assert.equal(definition.plugins.find(row => row.id === 'tool-bash').disabled, false)
   assert.equal(definition.plugins.find(row => row.id === 'tool-pwsh').disabled, true)

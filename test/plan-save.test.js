@@ -68,19 +68,17 @@ test('P8 plan_save：计划写入 reports/plans/<任务名>.md 并登记为产�
   const text = await asSub(tools, 'plan_save', { task_id: task.id, content })
 
   // 版本 B：文件名 = 任务名（不是编号，也不是 token）。
-  const path = join(mainDir, 'reports', 'plans', '落盘计划.md')
+  const path = getTask(db, task.id).plan_path
   assert.match(text, /计划已落盘/)
   assert.ok(text.includes(path), `工具结果应给出绝对路径：${text}`)
   assert.match(text, /3–8 行摘要/)
   assert.match(text, /待拍板问题清单/)
   assert.equal(existsSync(path), true)
   // 回执里零裸编号：路径与文案都不带 t-xxxx。
-  assert.doesNotMatch(text, /\bt-[0-9a-z]{8}\b/)
+  assert.match(path, /artifact-store\/t-[0-9a-z]{8}\/docs\/落盘计划-1\.md$/)
   const body = readFileSync(path, 'utf8')
   // 文档头带任务名 + 任务引用 + 目标，正文原样保留。
-  assert.match(body, /# 计划：落盘计划/)
-  assert.match(body, new RegExp(`- 任务引用：${task.ref}`))
-  assert.match(body, /- 目标：目标/)
+  assert.ok(body.startsWith('# 目标'))
   assert.ok(body.includes('改 src/a.js'))
   assert.ok(body.includes('1. 先读现状'))
   assert.doesNotMatch(body.split('\n').slice(0, 6).join('\n'), /\bt-[0-9a-z]{8}\b/, '文档头不许出现裸编号')
@@ -105,20 +103,23 @@ test('P8 plan_save：计划写入 reports/plans/<任务名>.md 并登记为产�
   db.close()
 })
 
-test('P8 plan_save：重复落盘覆盖同一份文件（只留一版），产物按路径去重，不生成 -2', async () => {
+test('plan_save：新版本保留旧正文，最新 plan_path 用于批准', async () => {
   const mainDir = join(tempDir(), 'main')
   const { db, tools } = await setupTools({ mainDir })
   const task = await planTask(db)
   await asSub(tools, 'plan_save', { task_id: task.ref, content: '第一版计划' })
+  const first = getTask(db, task.id).plan_path
   await asSub(tools, 'plan_save', { task_id: task.ref, content: '第二版计划' })
-  const path = join(mainDir, 'reports', 'plans', '落盘计划.md')
+  const path = getTask(db, task.id).plan_path
   const body = readFileSync(path, 'utf8')
   assert.ok(body.includes('第二版计划'))
   assert.equal(body.includes('第一版计划'), false)
-  assert.equal(getTask(db, task.id).artifacts.length, 1)
+  assert.equal(getTask(db, task.id).artifacts.length, 2)
+  assert.equal(readFileSync(first, 'utf8'), '第一版计划')
+  assert.notEqual(first, path)
   // 幂等：plan_path 不变，目录里只有一份文件（没有 -2）。
   assert.equal(getTask(db, task.id).plan_path, path)
-  assert.deepEqual(listPlanFiles(mainDir), ['落盘计划.md'])
+  assert.equal(listPlanFiles(mainDir).length, 0)
   db.close()
 })
 
@@ -222,7 +223,7 @@ test('P8 plan_save：文件名按任务名生成，同目录别的文件不覆�
   const task = await planTask(db)
   const text = await asSub(tools, 'plan_save', { task_id: task.ref, content: '新计划' })
   assert.match(text, /计划已落盘/)
-  const path = join(mainDir, 'reports', 'plans', '落盘计划.md')
+  const path = getTask(db, task.id).plan_path
   assert.ok(readFileSync(path, 'utf8').includes('新计划'))
   // 别的任务的旧计划不受影响（历史文件一律不动）。
   assert.equal(readFileSync(join(mainDir, 'reports', 'plans', 't-11112222.md'), 'utf8'), '旧内容')
@@ -237,7 +238,7 @@ test('P8 计划交付链路：详情/创建提示/协调者 policy 都写明落�
 
   // 计划阶段说明：先 plan_save 落盘，再只报摘要 + 路径 + 待拍板清单。
   assert.match(PLAN_FIRST_DETAIL, /plan_save\(\{ task_id, content \}\)/)
-  assert.match(PLAN_FIRST_DETAIL, /reports\/plans\/<任务名>\.md/)
+  assert.match(PLAN_FIRST_DETAIL, /docs\/<任务名>-<版本>\.md/)
   assert.match(PLAN_FIRST_DETAIL, /3–8 行摘要/)
   assert.match(PLAN_FIRST_DETAIL, /待拍板问题清单/)
 
@@ -256,7 +257,7 @@ test('P8 计划交付链路：详情/创建提示/协调者 policy 都写明落�
     { agent: { id: 's-1' } },
   )
   assert.match(created, /plan_save/)
-  assert.match(created, /reports\/plans\/计划B\.md/)
+  assert.match(created, /docs\/计划B-<版本>\.md/)
   assert.match(created, /3–8 行摘要/)
   assert.doesNotMatch(created, /\bt-[0-9a-z]{8}\b/)
 

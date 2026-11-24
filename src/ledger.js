@@ -10,6 +10,9 @@ import { nextWorktreeState } from './worktree-facts.js'
 import { migrateLegacyTaskDone } from './memory.js'
 // 版本 B《ID 出口网关》：引用 token 的生成/回填/墓碑（本模块只单向依赖它，它不 import 本模块）。
 import { backfillTaskRefs, ensureTaskRef, retireTaskRef } from './task-ref.js'
+import { ensureArtifactDirectory } from './artifact-store.js'
+const artifactStoreRoots = new WeakMap()
+export const artifactStoreRootOf = db => artifactStoreRoots.get(db)
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -23,7 +26,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   goal_state_json TEXT, last_message_json TEXT, keep_alive_rounds INTEGER NOT NULL DEFAULT 0,
   goal_rounds INTEGER NOT NULL DEFAULT 0,
   plan_first INTEGER NOT NULL DEFAULT 0, plan_state TEXT, plan_path TEXT,
-  access TEXT,
+  access TEXT, artifact_dir TEXT, artifact_store_dir TEXT, delivery_pending_json TEXT, artifact_stage_json TEXT,
   worktree_path TEXT, worktree_branch TEXT, repo_root TEXT, worktree_base TEXT,
   worktree_mode TEXT, worktree_source TEXT, worktree_state TEXT,
   delivered_at INTEGER, close_reason TEXT, acceptance_json TEXT,
@@ -123,6 +126,9 @@ export async function openLedger(stateDir) {
     if (!taskColumns.includes('plan_path')) db.exec('ALTER TABLE tasks ADD COLUMN plan_path TEXT')
     // per-task 访问级别：NULL = 沿用会话策略（默认，老库/老行都是这条），'full' = 子会话 danger-full-access。
     if (!taskColumns.includes('access')) db.exec('ALTER TABLE tasks ADD COLUMN access TEXT')
+    for (const column of ['artifact_dir', 'artifact_store_dir', 'delivery_pending_json', 'artifact_stage_json']) {
+      if (!taskColumns.includes(column)) db.exec(`ALTER TABLE tasks ADD COLUMN ${column} TEXT`)
+    }
     // P9 worktree 隔离：七列（哪份检出 / 哪个分支 / 源仓库 / 基线 / 请求档位 / 谁决定的 / 当前状态）。
     // `worktree_source` 取 task/config/default（v2：不再有 agents-md 这类来源枚举）。
     if (!taskColumns.includes('worktree_path')) db.exec('ALTER TABLE tasks ADD COLUMN worktree_path TEXT')
@@ -169,6 +175,7 @@ export async function openLedger(stateDir) {
     db.exec("UPDATE tasks SET plan_state = 'waiting_user' WHERE plan_first = 1 AND plan_state = 'planning' AND status = 'waiting_user'")
     // M1 记忆分层：旧版 done 沉淀是 kind='task-done'，迁到日志层 task-log（迁移本身幂等）。
     migrateLegacyTaskDone(db)
+    artifactStoreRoots.set(db, join(stateDir, 'artifact-store'))
     return db
   } catch (error) {
     try { db?.close() } catch { /* 打不开的库不需要再抛关闭错误 */ }
@@ -256,6 +263,10 @@ const taskOf = row => row === undefined ? undefined : ({
   worktree_state: typeof row.worktree_state === 'string' && row.worktree_state !== '' ? row.worktree_state : 'none',
   brief: JSON.parse(row.brief_json),
   artifacts: parseArtifacts(row.artifacts_json),
+  artifact_dir: row.artifact_dir ?? null,
+  artifact_store_dir: row.artifact_store_dir ?? null,
+  delivery_pending: row.delivery_pending_json ? JSON.parse(row.delivery_pending_json) : null,
+  artifact_stage: row.artifact_stage_json ? JSON.parse(row.artifact_stage_json) : null,
   depends_on: parseStringArray(row.depends_json),
   write_scopes: parseStringArray(row.write_scopes_json),
   priority: Number.isFinite(row.priority) ? row.priority : 0,
@@ -302,6 +313,7 @@ export function createTask(db, {
   brief,
   coordinatorSession,
   targetDir,
+  artifactRoot,
   readOnly = false,
   planFirst = false,
   planState,
@@ -354,6 +366,7 @@ export function createTask(db, {
         now, now, now,
       )
     ensureTaskRef(db, id, { now })
+    if (artifactRoot) ensureArtifactDirectory(db, getTask(db, id), artifactRoot)
     db.exec('RELEASE create_task')
   } catch (error) {
     try { db.exec('ROLLBACK TO create_task') } catch { /* 回滚失败保留原始错误 */ }
@@ -538,6 +551,16 @@ export function setTaskArtifacts(db, id, artifacts) {
   const merged = mergeArtifacts(current, artifacts)
   db.prepare('UPDATE tasks SET artifacts_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
     .run(JSON.stringify(merged), now, now, id)
+  return getTask(db, id)
+}
+
+export function setTaskDeliveryPending(db, id, record) {
+  db.prepare('UPDATE tasks SET delivery_pending_json = ? WHERE id = ?').run(record ? JSON.stringify(record) : null, id)
+  return getTask(db, id)
+}
+
+export function setTaskArtifactStage(db, id, record) {
+  db.prepare('UPDATE tasks SET artifact_stage_json = ? WHERE id = ?').run(JSON.stringify(record), id)
   return getTask(db, id)
 }
 

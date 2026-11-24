@@ -14,6 +14,7 @@ import { sampleBrief, tempDir } from './helpers.js'
 
 const toolsOf = (db, dispatcher) => Object.fromEntries(createTools({
   db, dispatcher, queue: createQueue({ db, dispatcher: {}, config: {} }), notifier: { push() {} },
+  defaultCwd: tempDir(),
   config: {}, coordinatorStatus: () => ({ id: 's-1', live: true }), logger: { log() {} },
 }).map(tool => [tool.name, tool]))
 

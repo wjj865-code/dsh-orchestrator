@@ -5,7 +5,7 @@ import { createTools } from '../src/tools.js'
 import { createPanelActions } from '../src/panel-actions.js'
 import { createHostRoute } from '../src/host-route.js'
 import { objectiveForMessage } from '../src/goal.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, endReportedTurn } from './helpers.js'
 
 const request = body => new Request('http://localhost/api/orchestrator', {
   method: 'POST',
@@ -72,10 +72,12 @@ async function setup() {
   const queue = fakeQueue(db, dispatcher)
   const tools = Object.fromEntries(createTools({
     db, dispatcher, queue, notifier: { push() {} }, config: { staleMinutes: 30, maxQueue: 50 },
+    defaultCwd: tempDir(),
     coordinatorStatus: () => ({ id: 's-1', live: true }), goalBridge: bridge,
   }).map(tool => [tool.name, tool]))
   const panel = createPanelActions({
     db, dispatcher, queue, config: {}, coordinatorStatus: () => ({ id: 's-1', live: true }), goalBridge: bridge,
+    defaultCwd: tempDir(),
   })
   return { db, dispatcher, bridge, queue, tools, panel }
 }
@@ -102,6 +104,7 @@ test('G1 工具挂钩：task_report done 只落待确认（不收口 goal），t
   const { db, bridge, tools } = await setup()
   const task = runningTask(db)
   await tools.task_report.execute({ task_id: task.id, status: 'done', summary: '完成了' }, { agent: { id: 'c-1' } })
+  await endReportedTurn(db, { taskId: task.id })
   // 两段式终态：交付 ≠ 确认，goal 留到 done 再收口（追问还要 update 同一个 goal）。
   assert.deepEqual(bridge.calls, [])
   await tools.task_message.execute({ action: 'close', task_id: task.id }, { agent: { id: 's-1' } })

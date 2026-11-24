@@ -7,7 +7,8 @@
 // stopReason 取值域来自平台类型：completed / aborted / error / max-tokens / refusal。
 // B1：结算同时把子会话最后一条 assistant 消息落进台账（短内联 / 长写 reports 文件），
 //     主会话用 task_status 就能读到全文，不必再打开子会话历史；delivered/done 上只补消息、不改状态。
-import { addMessage, findTaskBySession, getTask, getSetting, setTaskLastMessage, transition } from './ledger.js'
+import { addMessage, findTaskBySession, getTask, getSetting, setTaskLastMessage, transition, setTaskDeliveryPending } from './ledger.js'
+import { addMemory, projectKeyOf, taskLogText, TASK_LOG_KIND, LESSON_KIND, distillLessons } from './memory.js'
 // 链式自动放行（chain:'auto'）：交付时仍有 waiting_dep 下游 → 复用确认入口收成 done（见 src/delivered.js）。
 import { autoCloseChainDelivered } from './delivered.js'
 // 自动放行的通知追加句（与 task_report 那条交付路径共用同一句）。
@@ -78,6 +79,7 @@ export function createSettlementReporter({
   // D5：通知发出前的产物补齐钩子（index.js 注入）。返回补齐后的任务行，通知用它渲染产物区块；
   // 返回 undefined/null 表示不改。钩子内部吞错，收集失败不能回滚已经落库的终态。
   beforeNotify = () => undefined,
+  senderOf = () => undefined,
 } = {}) {
   const log = (event, fields) => {
     try { logger?.log?.(event, fields) } catch { /* 日志失败不能打断结算 */ }
@@ -105,6 +107,7 @@ export function createSettlementReporter({
         // P9：隔离任务在通知里说明产物在哪个分支/检出目录（结算是最常见的收场路径）。
         worktree: notifyWorktreeOf(task),
         system: true,
+        sender: senderOf(task.session_id),
       })
     } catch (error) {
       log('task.settle.notify-failed', { taskId: task.id, detail: { error: error?.message ?? String(error) } })
@@ -195,11 +198,12 @@ export function createSettlementReporter({
       log('task.settle.ignored', { taskId: task.id, sessionId: task.session_id ?? sessionId, detail: { status: from, stopReason: stopReason ?? null, source } })
       return { action: 'skipped', reason: 'not-running', taskId: task.id, from }
     }
+    const pending = task.delivery_pending
     const indexIncomplete = stopReason === 'completed' && Array.isArray(task.brief?.workspaceIndexEntries)
       && getSetting(db, workspaceIndexSavedKey(task.id)) === undefined
     const mapped = indexIncomplete
       ? { status: 'failed', reason: '工作区索引未完整持久化（缺少有效 workspace_index 回报），可用 task_message({ action: "retry" }) 重试', stopReason }
-      : mapSettle(stopReason, { progressCount: task.progress_count ?? 0 })
+      : mapSettle(stopReason, { progressCount: pending ? 0 : (task.progress_count ?? 0) })
     // P0-1：配了 checks 的任务，自然结束（completed）也必须先有**本轮**通过验收的证据，否则不落 delivered。
     // 只对 completed 生效：aborted/error/max-tokens/refusal 与「只报过 progress 的 orphaned」一概不碰。
     const gap = stopReason === 'completed' && mapped.status === 'delivered' ? acceptanceGapOf(task) : undefined
@@ -213,7 +217,7 @@ export function createSettlementReporter({
     }
     // 完整正文（不截断）先算出来：摘要给通知/死因与台账借条，正文本身留在宿主会话日志。
     const fullText = typeof lastMessage === 'string' && lastMessage !== '' ? messageText(lastMessage) : messageText(output)
-    const summary = summarizeText(fullText)
+    const summary = pending?.summary ?? summarizeText(fullText)
     const extra = typeof error === 'string' && error !== '' ? error : ''
     const detail = settledMap.reason ?? ''
     const errorText = [detail, summary, extra].filter(part => part !== '').join('：').slice(0, 500) || null
@@ -227,6 +231,7 @@ export function createSettlementReporter({
         error: clearsError ? null : errorText,
         lastStopReason: settledMap.stopReason ?? null,
       })
+      if (pending) next = setTaskDeliveryPending(db, task.id, null)
     } catch (failure) {
       log('task.settle.transition-failed', {
         taskId: task.id,
@@ -264,6 +269,11 @@ export function createSettlementReporter({
     let chainAuto = { closed: false }
     if (settledMap.status === 'delivered') {
       try {
+        const projectKey = projectKeyOf(task.brief?.target ?? task.repo_root ?? task.target_dir)
+        addMemory(db, { projectKey, kind: TASK_LOG_KIND, text: taskLogText(task.title, summary), sourceTaskId: task.id, sourceSessionId: task.session_id })
+        for (const text of distillLessons(summary, { max: 2 })) addMemory(db, { projectKey, kind: LESSON_KIND, text, sourceTaskId: task.id, sourceSessionId: task.session_id })
+      } catch { /* 记忆失败不能影响交付 */ }
+      try {
         chainAuto = autoCloseChainDelivered({
           db,
           taskId: final.id,
@@ -279,7 +289,8 @@ export function createSettlementReporter({
       }
     }
     const notifyStatus = chainAuto.closed ? 'done' : settledMap.status
-    const notifyBody = summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`)
+    const incomplete = final.artifact_stage?.complete === false ? '\n产物收集不完整，请检查阶段清单；不能据此清理来源目录。' : ''
+    const notifyBody = (summary !== '' ? `${note}${detail === '' ? '' : `；${summary}`}` : (extra === '' ? note : `${note}；${extra}`)) + incomplete
     notify(final, notifyStatus, chainAuto.closed ? `${notifyBody}\n${CHAIN_AUTO_NOTICE}` : notifyBody)
     // 交付（delivered）也要释放可写根：交付即放手，同目录才能新建任务；追问投递成功时由
     // dispatch.send 幂等重建。goal 仍只留到真终态再收口（见 docs/ARCHITECTURE.md「两段式终态」）。

@@ -25,6 +25,7 @@ export const PACK_DENY_TOOLS = Object.freeze([
   'task_report',
   'task_detail',
   'plan_save',
+  'artifact_save',
   'capability_pack',
 ])
 

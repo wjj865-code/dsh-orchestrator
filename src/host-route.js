@@ -130,6 +130,10 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
           // 只下发 id（不是敏感数据），与 mainSession.id 同源（settings.main_session_id）。
           coordinatorSession: task.coordinator_session ?? null,
           targetDir: task.target_dir ?? null,
+          artifactDir: task.artifact_dir ?? null,
+          artifactStoreDir: task.artifact_store_dir ?? null,
+          artifactStage: task.artifact_stage ?? null,
+          deliveryPending: task.delivery_pending !== null,
           readOnly: task.read_only === true,
           // P8：计划模式（列表小标 / 抽屉概览）；非计划任务固定 false + 'none'。
           planFirst: task.plan_first === true,

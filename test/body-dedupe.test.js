@@ -35,6 +35,7 @@ async function setup(options = {}) {
   const queue = createQueue({ db, dispatcher: noopDispatcher, config: {} })
   const tools = Object.fromEntries(createTools({
     db,
+    defaultCwd: tempDir(),
     dispatcher: noopDispatcher,
     queue,
     config: { coordinatorSession: 's-1', staleMinutes: 30 },
@@ -43,6 +44,7 @@ async function setup(options = {}) {
   }).map(tool => [tool.name, tool]))
   const panel = createPanelActions({
     db,
+    defaultCwd: tempDir(),
     dispatcher: noopDispatcher,
     queue,
     config: {},

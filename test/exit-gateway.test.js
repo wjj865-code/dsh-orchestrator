@@ -19,10 +19,10 @@ import { idleSummary } from '../src/watchdog.js'
 import { sanitizeUserFacing } from '../src/user-facing.js'
 import { taskRefOf } from '../src/task-ref.js'
 import { taskLabel, taskLabelWithRef } from '../src/task-label.js'
-import { sampleBrief, tempDir } from './helpers.js'
+import { sampleBrief, tempDir, endReportedTurn } from './helpers.js'
 
 /** 裸编号形态（`t-` + 至少 4 位小写字母/数字）：用户面出现即判定泄漏。 */
-const BARE_ID = /\bt-[0-9a-z]{4,}\b/
+const BARE_ID = /(?<!artifacts\/)(?<!artifact-store\/)\bt-[0-9a-z]{4,}\b/
 const REF = /tk-[0-9a-z]{6}/
 
 function fakeDispatcher() {
@@ -38,6 +38,7 @@ function fakeDispatcher() {
 }
 
 async function setup({ mainDir } = {}) {
+  const fallback = tempDir()
   const db = await openLedger(tempDir())
   const dispatcher = fakeDispatcher()
   const pushed = []
@@ -47,8 +48,15 @@ async function setup({ mainDir } = {}) {
   const tools = Object.fromEntries(createTools({
     db, dispatcher, queue, notifier, config,
     coordinatorStatus: () => ({ id: 's-1', live: true }),
-    defaultCwd: () => mainDir,
+    defaultCwd: () => mainDir ?? fallback,
   }).map(tool => [tool.name, tool]))
+  const report = tools.task_report.execute
+  tools.task_report.execute = async (args, exec) => {
+    const response = await report(args, exec)
+    const task = listTasks(db).find(t => t.id === args.task_id || t.ref === args.task_id)
+    if (task?.delivery_pending) await endReportedTurn(db, { taskId: task.id, notifier, dispatcher, queue })
+    return response
+  }
   return { db, dispatcher, notifier, pushed, tools }
 }
 
@@ -110,7 +118,8 @@ test('出口：task_report 回执 / 问题 / 选项 / 产物 label 全部清洗�
   assert.equal(saved.options.join(' ').includes(task.id), false, saved.options.join(' '))
   assert.equal(saved.artifacts[0].label.includes(task.id), false, saved.artifacts[0].label)
   // 产物 **path** 不清洗：那是真实文件路径，改了就读不到。
-  assert.equal(saved.artifacts[0].path, artifact)
+  assert.match(saved.artifacts[0].path, /manifest\.json$/)
+  assert.equal(saved.artifact_stage.complete, false)
   // 通知正文同源（notify 用 tools 给的 summary/question）。
   const pushedItem = pushed.at(-1)
   assert.equal(String(pushedItem.summary).includes(task.id), false)
@@ -134,7 +143,7 @@ test('出口：通知正文（含交付动作指令）只有任务名 + tk- 引�
   const text = sent.join('\n')
   assert.match(text, REF)
   assert.doesNotMatch(text, BARE_ID, text)
-  assert.equal(text.includes(task.id), false, text)
+  assert.equal(text.replace(/(?:artifacts|artifact-store)\/t-[0-9a-z]{8}/g, 'artifacts/task').includes(task.id), false, text)
   db.close()
 })
 
@@ -169,7 +178,7 @@ test('出口：计划文档（文件名 + 头部 + 回执）零裸编号', async
   assert.doesNotMatch(saved, BARE_ID, saved)
   assert.match(saved, /计划已落盘/)
   const path = getTask(db, task.id).plan_path
-  assert.equal(path.endsWith('计划出口.md'), true, path)
+  assert.equal(path.endsWith('计划出口-1.md'), true, path)
   const body = readFileSync(path, 'utf8')
   assert.doesNotMatch(body, BARE_ID, body)
   // 正文里的编号被换成引用（写入前清洗），而不是原样落盘。

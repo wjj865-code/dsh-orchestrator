@@ -18,7 +18,7 @@ import {
 } from '../src/write-guard.js'
 import { loadConfig } from '../src/config.js'
 import { renderCoordinatorPolicy } from '../index.js'
-import { tempDir, sampleBrief } from './helpers.js'
+import { tempDir, sampleBrief, endReportedTurn } from './helpers.js'
 
 // —— 一、纯函数 ——
 
@@ -302,10 +302,15 @@ async function setup({ config: overrides = {}, worktree } = {}) {
   const queue = createQueue({ db, dispatcher, config, notifier, worktree })
   const tools = Object.fromEntries(createTools({
     db, dispatcher, queue, notifier, config,
+    defaultCwd: tempDir(),
     worktree,
     coordinatorStatus: () => ({ id: 's-1', live: true }),
   }).map(tool => [tool.name, tool]))
-  const call = (name, args, exec) => tools[name].execute(args, exec ?? { agent: { id: 's-1' } })
+  const call = async (name, args, exec) => {
+    const response = await tools[name].execute(args, exec ?? { agent: { id: 's-1' } })
+    if (name === 'task_report' && getTask(db, args.task_id)?.delivery_pending) await endReportedTurn(db, { taskId: args.task_id, dispatcher, queue })
+    return response
+  }
   return { db, dispatcher, queue, tools, call }
 }
 

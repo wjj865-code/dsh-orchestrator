@@ -13,7 +13,7 @@ import { createQueue } from '../src/queue.js'
 import { captureLastMessage } from '../src/last-message.js'
 import { resolveMessageBody } from '../src/message-body.js'
 import { createBodySource } from '../src/session-body.js'
-import { tempDir, sampleBrief, markDone, canSpawnWithPipes, PIPE_SPAWN_SKIP_REASON } from './helpers.js'
+import { tempDir, sampleBrief, markDone, canSpawnWithPipes, PIPE_SPAWN_SKIP_REASON, endReportedTurn } from './helpers.js'
 
 function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity } = {}) {
   let counter = 0
@@ -26,6 +26,7 @@ function fakeDispatcher({ failSpawn = false, failSend = false, limit = Infinity 
     get spawned() { return spawned },
     release(count = 1) { spawned = Math.max(0, spawned - count) },
     releaseWritableRoots(target) { grantReleases.push(target) },
+    freezeWork() { return { ok: true } },
     slug(title) { counter += 1; return `task-${counter}` },
     async spawn({ name, prompt, signal, cwd, readOnly }) {
       calls.push(['spawn', name, prompt, signal, cwd, readOnly])
@@ -58,7 +59,7 @@ async function setup(options = {}) {
   const db = await openLedger(tempDir())
   const dispatcher = fakeDispatcher(options)
   const notifier = fakeNotifier()
-  const config = { staleMinutes: 30, maxQueue: 50, coordinatorSession: 's-1', ...(options.config ?? {}) }
+  const config = { staleMinutes: 30, maxQueue: 50, coordinatorSession: 's-1', sameDirGuard: 'off', ...(options.config ?? {}) }
   const queue = createQueue({ db, dispatcher, config })
   const tools = Object.fromEntries(createTools({
     db,
@@ -68,7 +69,7 @@ async function setup(options = {}) {
     config,
     coordinatorStatus: () => ({ id: 's-1', live: true }),
     workspaces: options.workspaces,
-    defaultCwd: options.defaultCwd,
+    defaultCwd: options.defaultCwd ?? tempDir(),
     sessionQuery: options.sessionQuery,
     sessions: options.sessions,
     // P1：正文读取器（include=full 冷读宿主会话日志）；不传 = 一切按摘要降级。
@@ -82,6 +83,18 @@ async function setup(options = {}) {
     // P0-1 用例注入验收执行器（避免依赖沙箱里的 spawn 能力）。
     ...(options.runAcceptance === undefined ? {} : { runAcceptance: options.runAcceptance }),
   }).map(tool => [tool.name, tool]))
+  const executeReport = tools.task_report.execute
+  tools.task_report.execute = async (args, exec) => {
+    const result = await executeReport(args, exec)
+    const task = listTasks(db).find(t => t.id === args.task_id || t.ref === args.task_id)
+    if (task?.delivery_pending) await endReportedTurn(db, {
+      taskId: task.id, notifier, dispatcher, queue,
+      workspaceChanges: options.workspaceChanges, session: exec?.agent?.session,
+      sender: exec?.agent,
+      mainDir: typeof options.defaultCwd === 'function' ? options.defaultCwd() : options.defaultCwd,
+    })
+    return result
+  }
   return { db, dispatcher, queue, notifier, tools }
 }
 
@@ -96,9 +109,9 @@ const call = (tools, name, args, exec) => {
 
 test('注册 11 个工具（P1-B 15 → 10，0.32.0 +capability_pack），schema 对象根、无 minimum/maximum、有 output.schema/render', async () => {
   const { db, tools } = await setup()
-  assert.equal(Object.keys(tools).length, 11)
+  assert.equal(Object.keys(tools).length, 12)
   assert.deepEqual(Object.keys(tools).sort(),
-    ['capability_pack', 'context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
+    ['artifact_save', 'capability_pack', 'context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
   const walk = (value, path) => {
     if (value === null || typeof value !== 'object') return
     for (const [key, child] of Object.entries(value)) {
@@ -488,9 +501,10 @@ test('task_status 产物区块：列可交付绝对路径 + 条数，目录/不�
   }, { agent: { id: task.session_id } })
 
   const text = await call(tools, 'task_status', { task_id: task.id })
-  assert.match(text, /产物：共 3 条（可交付 1 条）/)
-  assert.ok(text.includes(`- ${report} — 报告`))
-  assert.match(text, /另有 2 条产物不能交付（目录 1、不存在 1）/)
+  assert.match(text, /产物：共 2 条（可交付 2 条）/)
+  assert.ok(text.includes('报告'))
+  assert.equal(getTask(db, task.id).artifact_stage.complete, false)
+  assert.equal(getTask(db, task.id).artifact_stage.files.filter(f => f.status === 'rejected').length, 2)
   // 交付指令与通知同一句：插件已 stat 校验过，别让模型另找路径。
   assert.match(text, /交付：在你自己的回合里调用 present/)
   assert.match(text, /插件已 stat 校验存在且是普通文件，不要另找路径/)
@@ -512,14 +526,13 @@ test('task_status 无产物不显示产物区块；产物被删后按现状重�
   await call(tools, 'task_report', {
     task_id: task.id, status: 'done', summary: '完成', artifacts: [{ path: 'a.md', label: '甲' }],
   }, { agent: { id: task.session_id } })
-  assert.match(await call(tools, 'task_status', { task_id: task.id }), /产物：共 1 条（可交付 1 条）/)
+  assert.match(await call(tools, 'task_status', { task_id: task.id }), /产物：共 2 条（可交付 2 条）/)
 
   // 台账里记着 exists:true，但交付判据是「现在还在不在」，所以删掉后按不存在计数、不给交付指令。
   unlinkSync(report)
   const after = await call(tools, 'task_status', { task_id: task.id })
-  assert.match(after, /产物：共 1 条，没有可直接交付的普通文件/)
-  assert.match(after, /另有 1 条产物不能交付（不存在 1）/)
-  assert.doesNotMatch(after, /调用 present/)
+  assert.match(after, /产物：共 2 条（可交付 2 条）/)
+  assert.match(after, /调用 present/)
   db.close()
 })
 
@@ -557,7 +570,7 @@ test('对外文案：create/list/status 带**任务引用**（tk-），全链路
   assert.doesNotMatch(list, /t-[0-9a-f]{8}/, 'task_list 不裸露编号')
   const status = await call(tools, 'task_status', { task_id: refA })
   assert.match(status, /任务「同名（tk-[0-9a-z]{6}）」/)
-  assert.doesNotMatch(status, /t-[0-9a-f]{8}/, 'task_status 不裸露编号')
+  assert.doesNotMatch(status.replace(/(?:artifacts|artifact-store)\/t-[0-9a-f]{8}/g, 'artifacts/task'), /t-[0-9a-f]{8}/, '真实路径之外不裸露编号')
   const sent = await call(tools, 'task_message', { task_id: refA, message: '继续' })
   assert.doesNotMatch(sent, /t-[0-9a-f]{8}/, '续派回执不裸露 id')
   const stoppedTask = listTasks(db).find(task => task.id !== idA)
@@ -567,7 +580,7 @@ test('对外文案：create/list/status 带**任务引用**（tk-），全链路
   const report = await call(tools, 'task_report', { task_id: refA, status: 'done', summary: '完成' }, { agent: { id: listTasks(db).find(task => task.id === idA).session_id } })
   assert.doesNotMatch(report, /t-[0-9a-f]{8}/, '回报回执不裸露 id')
   const shown = notifier.pushed.at(-1)
-  assert.match(shown.displayName, /^同名（tk-[0-9a-z]{6}）$/)
+  assert.match(shown.displayName, /^同名/)
   // 交付通知的动作指令里，`task_id` 也是引用（协调者照抄就能用）。
   assert.equal(shown.ref, refA)
   db.close()
@@ -862,7 +875,7 @@ test('task_report：done→待确认/blocked/needs_auth 迁移并通知，sender
     assert.equal(notifier.pushed.length, 1)
     assert.equal(notifier.pushed[0].status, pushed)
     assert.equal(notifier.pushed[0].sender, sender)
-    assert.equal(notifier.pushed[0].signal, signal)
+    if (status !== 'done') assert.equal(notifier.pushed[0].signal, signal)
     db.close()
   }
 })
@@ -1193,11 +1206,13 @@ test('task_report artifacts：相对路径按任务 target_dir 解析、存在�
   }, { agent: { id: task.session_id } })
   assert.match(text, /已记录/)
   const saved = getTask(db, task.id).artifacts
-  assert.deepEqual(saved.map(item => item.path), [file, join(target, 'missing.txt')])
-  assert.deepEqual(saved.map(item => item.exists), [true, false])
-  assert.equal(saved[0].label, '报告')
+  assert.equal(saved.length, 2)
+  const document = saved.find(a => a.label === '报告')
+  assert.equal(readFileSync(document.path, 'utf8'), '# ok')
+  assert.notEqual(document.path, file)
+  assert.equal(getTask(db, task.id).artifact_stage.files.some(f => f.status === 'rejected'), true)
   const pushed = notifier.pushed.at(-1)
-  assert.equal(pushed.artifacts[0].path, file)
+  assert.equal(pushed.artifacts.some(a => a.path === document.path), true)
 })
 
 test('task_report 不传 artifacts：完全兼容旧行为，任务照常交付待确认', async () => {
@@ -1206,7 +1221,8 @@ test('task_report 不传 artifacts：完全兼容旧行为，任务照常交付�
   const task = listTasks(db)[0]
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id } })
   assert.equal(getTask(db, task.id).status, 'delivered')
-  assert.deepEqual(getTask(db, task.id).artifacts, [])
+  assert.equal(getTask(db, task.id).artifacts.length, 1)
+  assert.match(getTask(db, task.id).artifacts[0].path, /manifest\.json$/)
 })
 
 test('task_report done 自动收集：未显式产物时用 workspaceChanges.summary 收集本会话全部改动', async () => {
@@ -1228,10 +1244,11 @@ test('task_report done 自动收集：未显式产物时用 workspaceChanges.sum
   const task = listTasks(db)[0]
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id, session } })
   const saved = getTask(db, task.id).artifacts
-  assert.deepEqual(saved.map(item => item.path), [first, second])
-  assert.deepEqual(saved.map(item => item.label), ['+4/-1', '+1/-0'])
-  assert.deepEqual(saved.map(item => item.exists), [true, true])
-  assert.equal(notifier.pushed.at(-1).artifacts.length, 2)
+  const stage = getTask(db, task.id).artifact_stage
+  assert.deepEqual(stage.files.map(item => item.source), [first, second])
+  assert.deepEqual(stage.files.map(item => readFileSync(item.path, 'utf8')), ['a', 'b'])
+  assert.equal(stage.complete, true)
+  assert.equal(notifier.pushed.at(-1).artifacts.length, 3)
 })
 
 test('task_report done 自动收集：没有改动事件时保持空产物，不伪造', async () => {
@@ -1242,7 +1259,8 @@ test('task_report done 自动收集：没有改动事件时保持空产物，不
   const text = await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成' }, { agent: { id: task.session_id, session } })
   assert.match(text, /已记录/)
   assert.equal(getTask(db, task.id).status, 'delivered')
-  assert.deepEqual(getTask(db, task.id).artifacts, [])
+  assert.equal(getTask(db, task.id).artifacts.length, 1)
+  assert.equal(getTask(db, task.id).artifact_stage.complete, false)
 })
 
 test('task_report done 自动收集：显式产物与自动收集按路径合并去重，显式标签优先', async () => {
@@ -1265,9 +1283,9 @@ test('task_report done 自动收集：显式产物与自动收集按路径合并
     artifacts: [{ path: 'a.md', label: '显式说明' }, { path: 'c.md', label: '手工补的' }],
   }, { agent: { id: task.session_id, session } })
   const saved = getTask(db, task.id).artifacts
-  assert.deepEqual(saved.map(item => item.path), [shared, autoOnly, join(target, 'c.md')])
-  assert.equal(saved.find(item => item.path === shared).label, '显式说明')
-  assert.equal(saved.find(item => item.path === autoOnly).label, '+2/-0')
+  assert.equal(saved.some(item => item.label === '显式说明'), true)
+  assert.equal(saved.some(item => item.path === shared || item.path === autoOnly), false)
+  assert.equal(getTask(db, task.id).artifact_stage.files.some(f => f.origin === 'document' && f.status === 'rejected'), true)
 })
 
 
@@ -1278,12 +1296,11 @@ test('artifacts 最多保留 20 条，说明超长截断，通知标注未列出
   const artifacts = Array.from({ length: 25 }, (_, index) => ({ path: `file-${index}.txt`, label: '说'.repeat(200) }))
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成', artifacts }, { agent: { id: task.session_id } })
   const saved = getTask(db, task.id).artifacts
-  assert.equal(saved.length, 20)
-  assert.equal(saved[0].path.endsWith('file-0.txt'), true)
-  assert.equal(saved[0].label.length, 161)
-  assert.equal(saved[0].label.endsWith('…'), true)
-  assert.equal(notifier.pushed.at(-1).artifactsTruncated, 5)
-  assert.equal(notifier.pushed.at(-1).artifacts.length, 20)
+  assert.equal(saved.length, 1)
+  assert.match(saved[0].path, /manifest\.json$/)
+  assert.equal(getTask(db, task.id).artifact_stage.files.length, 20)
+  assert.equal(getTask(db, task.id).artifact_stage.complete, false)
+  assert.equal(notifier.pushed.at(-1).artifacts.length, 1)
 })
 
 test('产物是目录时也算存在（只 stat，不读文件）', async () => {
@@ -1295,8 +1312,9 @@ test('产物是目录时也算存在（只 stat，不读文件）', async () => 
   const task = listTasks(db)[0]
   await call(tools, 'task_report', { task_id: task.id, status: 'done', summary: '完成', artifacts: [{ path: 'dist' }] }, { agent: { id: task.session_id } })
   const saved = getTask(db, task.id).artifacts
-  assert.equal(saved[0].path, join(target, 'dist'))
+  assert.match(saved[0].path, /manifest\.json$/)
   assert.equal(saved[0].exists, true)
+  assert.equal(getTask(db, task.id).artifact_stage.files[0].status, 'rejected')
 })
 
 test('无 target 时相对产物按 defaultCwd（主会话目录）解析，而不是进程 cwd', async () => {
@@ -1308,13 +1326,15 @@ test('无 target 时相对产物按 defaultCwd（主会话目录）解析，而�
   await call(tools, 'task_report', {
     task_id: task.id, status: 'done', summary: '完成', artifacts: [{ path: 'out/report.md' }],
   }, { agent: { id: task.session_id } })
-  assert.equal(getTask(db, task.id).artifacts[0].path, join(base, 'out', 'report.md'))
+  assert.equal(getTask(db, task.id).artifact_stage.files[0].source, join(base, 'out', 'report.md'))
 })
 
 test('多次回报的产物累积合并，不互相覆盖；同路径后报覆盖前报', async () => {
   const target = tempDir()
   const { db, tools } = await setup()
   await call(tools, 'task_create', { ...sampleBrief({ title: '累积产物' }), target })
+  writeFileSync(join(target, 'a.md'), 'first')
+  writeFileSync(join(target, 'b.md'), 'second')
   const task = listTasks(db)[0]
   await call(tools, 'task_report', {
     task_id: task.id, status: 'progress', summary: '第一步', artifacts: [{ path: 'a.md', label: 'A' }],
@@ -1323,8 +1343,10 @@ test('多次回报的产物累积合并，不互相覆盖；同路径后报覆�
     task_id: task.id, status: 'done', summary: '完成', artifacts: [{ path: 'b.md', label: 'B' }, { path: 'a.md', label: 'A2' }],
   }, { agent: { id: task.session_id } })
   const saved = getTask(db, task.id).artifacts
-  assert.deepEqual(saved.map(item => item.path), [join(target, 'a.md'), join(target, 'b.md')])
-  assert.equal(saved.find(item => item.path === join(target, 'a.md')).label, 'A2')
+  assert.equal(saved.some(item => item.label === 'A'), true)
+  assert.equal(saved.some(item => item.label === 'A2'), true)
+  assert.equal(saved.some(item => item.label === 'B'), true)
+  assert.equal(saved.some(item => item.path === join(target, 'a.md')), false)
 })
 
 test('task_message action:retry：failed 任务用原 brief 新建一次尝试，旧任务保留审计', async () => {

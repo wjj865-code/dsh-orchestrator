@@ -13,7 +13,7 @@
 // 判据（写新文案前先自问）：这句话会不会在第二个模块出现？会 → 放这里；不会 → 留在本层。
 
 /** 计划文档目录（展示用；真实路径由 `src/plan-doc.js` 的 `PLAN_SUBDIR` 拼，两者必须一致）。 */
-export const PLAN_SAVE_DIR = '主会话工作区的 reports/plans/'
+export const PLAN_SAVE_DIR = '任务产物目录的 docs/'
 
 // ── 拍板流程（版本 A，2026-11-22 用户最终拍板：**只改提示词/文案**） ─────────────────
 //
@@ -57,7 +57,7 @@ export const DECISION_FLOW_LINES = Object.freeze({
     + `用户明确批准后走两步：先 \`${PLAN_APPROVE_CALL}\`（插件切可写 + 落审批审计），再 task_message 续派实现`,
   summary: '**决策汇总**：每项按提问顺序写「问句原文 → 选择」贴给用户（`renderDecisionSummary`），总批准只核对这份汇总',
   document: '**文档只由模型写**：`plan_save` 的 `content` 原样落盘（工具不加参数、不注入/不改写任何段、不解析正文）；'
-    + '用户确认后由模型自己把决策写进新正文，再调一次 `plan_save` 覆盖即可',
+    + '用户确认后由模型自己把决策写进新正文，再调一次 `plan_save` 保存新版本即可',
   soft: `**软门禁**：逐项提问是提示词约束，不是执行层拦截；工具层不做格式校验，也不存待拍板元数据；`
     + `批准是**显式动作**——普通 task_message 只记讨论/修订、不会批准计划（见 \`${PLAN_APPROVE_CALL}\`）`,
 })
@@ -97,7 +97,7 @@ export function renderDecisionSummary(items = []) {
  */
 export const planDocPathText = name => {
   const value = typeof name === 'string' && name.trim() !== '' ? name.trim() : '<任务名>'
-  return `${PLAN_SAVE_DIR}${value}.md`
+  return `${PLAN_SAVE_DIR}${value}-<版本>.md`
 }
 
 /** danger-full-access 的一句话事实（下面四处文案都从这里拼，别再各写一遍）。 */
@@ -132,7 +132,7 @@ export const PLAN_PHASE_LINES = Object.freeze({
   sandbox: '沙箱 read-only（只读）——写文件/写 shell 会被拒绝，这是预期行为，不是权限故障。',
   explore: '- 只读探索：读代码/文档、跑只读命令、验证假设；不要创建或修改文件。',
   saveCall: 'plan_save({ task_id, content })',
-  saveEntry: '计划阶段唯一允许的写入口：路径固定、不接受自定义路径、禁止逃逸，也不要用 write/edit/pwsh 硬写。',
+  saveEntry: '计划用 plan_save、阶段报告用 artifact_save：路径固定、不接受自定义路径、禁止逃逸，也不要用 write/edit/pwsh 硬写。',
   reportCall: 'task_report 报 blocked',
   reportSummaryShort: REPORT_SUMMARY_SHORT,
   reportSummary: REPORT_SUMMARY,
@@ -175,7 +175,7 @@ export const PLAN_STATUS_LINES = Object.freeze({
 })
 
 /** `task_create` 回执里的计划模式提示（给协调者看的动作指令；路径按**任务名**说）。 */
-export const planCreateReceipt = title => `计划模式：子会话只读探索，探索完先 plan_save 把计划写入${planDocPathText(title)}（文件名=任务名，自动登记为产物），`
+export const planCreateReceipt = title => `计划模式：子会话只读探索，探索完先 plan_save 把计划写入${planDocPathText(title)}（文件名=任务名加版本，自动登记为产物），`
   + `再用 ${PLAN_PHASE_LINES.reportCall} 只上报 ${PLAN_PHASE_LINES.reportSummaryShort} + ${PLAN_PHASE_LINES.reportQuestion}；`
   + `你转交用户，用户明确批准后先 ${PLAN_APPROVE_CALL} 再 task_message 续派（插件不会因为普通 message 自动批准）。`
 
@@ -427,6 +427,7 @@ export const BLOCKED_HINT = `执行中只把**堵塞项**交给用户拍板：${
 export const CONFIRM_HINT = `完成后用 task_report 回报（progress / done / blocked / needs_auth）：`
   + `把 summary 写成「结论 + ${SUMMARY_FIELDS}」，并带上待确认要点；`
   + 'done 会清空 question/options，所以要点必须在 summary 里；'
+  + 'done 先记录交付请求，回合结束保存最终快照后才交付；回报后不要继续修改文件。阶段文档用 artifact_save；checkpoint:true 保存阶段，changedFiles 补充宿主未捕获文件。'
   + `报 done 只是「交付」：任务停在「${DELIVERY_LINES.state}」，由协调者/用户确认或${DELIVERY_LINES.timeout}；`
   + '收到追问就在同一个会话里继续，不要自行宣告任务结束；'
   + '子会话直接调 ask_user_question 会被平台拒（DELEGATED_CALLER）：交付后协调者不会为「能不能关闭」来问你。'

@@ -288,6 +288,15 @@ export function createWorktreeService({ exec = runGit, now = Date.now, recentDay
     const name = trim(branch)
     if (root === '') return failure('NOT_A_REPO', '缺少源仓库根（台账 repo_root 为空）')
     if (checkout === '') return { ok: true, skipped: true, reason: 'no-checkout' }
+    if (exists(checkout)) {
+      const dirty = await run(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored'], { cwd: checkout, signal })
+      if (!dirty.ok || dirty.stdout.trim() !== '') return failure('UNARCHIVED', '检出存在未归档内容或无法核验，已保留检出')
+    }
+    if (mode === 'full' && name !== '') {
+      const base = await resolveDefaultBranch(root, signal)
+      const merged = await run(['merge-base', '--is-ancestor', name, base], { cwd: root, signal })
+      if (!merged.ok) return failure('UNARCHIVED', '分支尚未合并或无法核验，已保留检出和分支')
+    }
     const removed = await run(['worktree', 'remove', '--force', checkout], { cwd: root, signal })
     await run(['worktree', 'prune'], { cwd: root, signal })
     if (!removed.ok) {
@@ -463,6 +472,10 @@ export async function prepareTaskWorktree({ db, task, service, log = () => {} } 
  * `full` 档传 confirm=true：`worktreeCleanup:'full'` 本身就是协调者/用户的显式选择。
  */
 export async function cleanupTaskWorktree({ db, task, service, log = () => {} } = {}) {
+  if (task?.delivery_pending || task?.artifact_stage?.complete === false) {
+    log('worktree.cleanup-deferred', { taskId: task.id, detail: { reason: 'artifacts-pending-or-incomplete' } })
+    return { ok: false, code: 'ARTIFACTS_INCOMPLETE' }
+  }
   const mode = task?.brief?.worktreeCleanup
   if (mode !== 'checkout-only' && mode !== 'full') return { ok: true, skipped: true }
   // 清理前置：只有「有检出」的状态才谈得上清（created/reused；cleaned 已经清过了，幂等跳过）。

@@ -147,6 +147,7 @@ export const CHAIN_AUTO_FIELD = 'chain'
  * @returns {{ok:boolean, reason?:'no-chain'|'not-delivered'|'no-waiting-dependent', waiting:string[]}}
  */
 export function chainAutoGate(db, task) {
+  if (task?.artifact_stage?.mode !== 'git' && task?.artifact_stage?.complete === false) return { ok: false, reason: 'artifacts-incomplete', waiting: [] }
   if (task?.brief?.[CHAIN_AUTO_FIELD] !== CHAIN_AUTO) return { ok: false, reason: 'no-chain', waiting: [] }
   if (task.status !== 'delivered') return { ok: false, reason: 'not-delivered', waiting: [] }
   const waiting = listWaitingDependents(db, task.id)

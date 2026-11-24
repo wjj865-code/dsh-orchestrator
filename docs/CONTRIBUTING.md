@@ -19,7 +19,7 @@ src/                 宿主侧逻辑（每个模块一个职责，见 docs/ARCHI
   state.js           状态机（STATUSES / 迁移 / 文案）
   status-facts.js    状态能力表（唯一真源，别在别处再写一份 Set）
   copy.js            文案单一真源（计划/交付/完整访问的原子句）
-  tools.js           10 个工具的 schema + 文案 + 门控
+  tools.js           12 个工具的 schema + 文案 + 门控
   dispatch.js        派发（subagent）、沙箱/plan/guard 注入
   acceptance.js      可执行验收（checks）runner
   handoff.js         交接契约 v1（字段 + JSONL 事件）

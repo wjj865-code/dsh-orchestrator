@@ -17,19 +17,20 @@ import { renderTaskDetail } from './task-detail.js'
 import {
   GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, MAX_WORKER_MEMORIES_PER_TASK, MEMORY_FACT_KINDS,
   MEMORY_SOURCE_WORKER, TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock, countWorkerMemories,
-  distillLessons, distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember, searchMemories, taskLogText,
+  distillText, memoryKindLabel, memoryTokens, projectKeyOf, remember, searchMemories,
 } from './memory.js'
 import {
   addMessage, createTask, findTaskBySession, getTask, lastSentMessageId, listTasks, recentMessages, setMessageDelivery,
   setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
-  countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected, setTaskPlanPath, setPlanState,
+  countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected, setTaskPlanPath, setPlanState, setTaskDeliveryPending,
 } from './ledger.js'
 import {
   acceptanceFailureText, acceptancePassText, acceptanceStatusLines,
   checksOf, executionDirOf, normalizeChecks, runChecks, specOf,
 } from './acceptance.js'
-import { collectWorkspaceArtifacts } from './artifact-collect.js'
+import { ensureArtifactDirectory, saveArtifactDocument } from './artifact-store.js'
+import { collectArtifactStage } from './artifact-stage.js'
 import { formatBytes, PREVIEW_CHARS, readLastMessage, resolveLastMessage } from './last-message.js'
 // P1 去重：正文类消息只存借条（digest + 摘要），正文按需从宿主会话日志冷读。
 import { compactMessage } from './message-body.js'
@@ -39,7 +40,7 @@ import { registeredArtifacts } from './artifact-location.js'
 import { preferenceSavedHint, projectPreferenceSavedHint, upsertPreference } from './preferences.js'
 import { artifactLines } from './notify.js'
 import {
-  CHAIN_AUTO, CHAIN_AUTO_FIELD, CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, autoCloseChainDelivered, closeDelivered,
+  CHAIN_AUTO, CHAIN_AUTO_FIELD, CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered,
   closeReasonLabel,
 } from './delivered.js'
 // P2-3 交接契约 v1：`task_status` 的「交接」段与面板/JSONL 同源（src/handoff.js 是唯一字段真源）。
@@ -55,12 +56,12 @@ import {
   approvalNote, dispatchReadOnly, isPlanTask, needsPlanWriteSwitch, planApproveGate,
   planListMarker, planStateOf, planStatusLine, PLAN_STATE_LABEL, recordApproval,
 } from './plan-mode.js'
-import { MAX_PLAN_CHARS, planSavedNote, writePlanDocument } from './plan-doc.js'
+import { MAX_PLAN_CHARS, planSavedNote } from './plan-doc.js'
 // P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
 import {
-  ACCESS_FULL, CHANGE_REVIEW_FIELDS, CHAIN_AUTO_CREATE_NOTE, CHAIN_AUTO_NOTICE, CHAIN_AUTO_RECEIPT_NOTE,
+  ACCESS_FULL, CHANGE_REVIEW_FIELDS, CHAIN_AUTO_CREATE_NOTE,
   CHAIN_AUTO_TOOL_DESC, DELIVERY_LINES, PLAN_MESSAGE_NOTES, PLAN_SAVE_TOOL_DESC, TASK_CHAIN_TOOL_DESC,
-  TASK_CHAIN_WAITING_NOTE, deliveredReceiptNote, planCreateReceipt,
+  TASK_CHAIN_WAITING_NOTE, planCreateReceipt,
 } from './copy.js'
 import {
   branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, reusableCheckoutCandidates,
@@ -328,22 +329,6 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       return undefined
     }
   }
-  const autoArtifacts = (task, exec) => {
-    const session = reportSession(task, exec)
-    if (session === undefined || session === null) return { artifacts: [], turns: 0, omitted: 0 }
-    let service
-    try {
-      service = typeof workspaceChanges === 'function' ? workspaceChanges() : workspaceChanges
-    } catch {
-      service = undefined
-    }
-    return collectWorkspaceArtifacts({
-      session,
-      workspaceChanges: service,
-      fallbackCwd: baseDirOf(task),
-      max: MAX_TASK_ARTIFACTS,
-    })
-  }
 
   // 工作区服务用惰性 getter（index 传入），取不到就按「无工作区」降级，不影响派发。
   const workspaceList = () => {
@@ -589,6 +574,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     if (found.ok !== true) return found.message
     const task = found.task
     // 与面板「追加」按钮同源（src/panel-gates.js）：终态/等前置/待派发/失败/无会话各自给可执行提示。
+    if (task.delivery_pending) return '交付收集中，暂不能追加；请等回合结束。'
+    ensureArtifactDirectory(db, task, defaultDir())
     const gate = followupGate(task)
     if (gate.ok !== true) {
       if (gate.reason === 'waiting_dep') {
@@ -930,6 +917,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     // G1：旧尝试的目标到此为止（failed/orphaned），清掉后再建新任务；新子会话派发时重新 create。
     void goalBridge?.clear?.(task.id, task.session_id)
     const retried = createTask(db, {
+      artifactRoot: defaultDir(),
       brief: task.brief,
       coordinatorSession: current.id ?? coordinatorSession,
       targetDir: retryTarget,
@@ -992,6 +980,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     if (found.ok !== true) return found.message
     const task = found.task
     const history = countTaskMessages(db, task.id)
+    if (task.delivery_pending) return '交付收集中，暂不能续跑。'
+    ensureArtifactDirectory(db, task, defaultDir())
     const gate = resumeGate(task, { history })
     if (gate.ok !== true) {
       if (gate.reason === 'closed') return toolFailure('RESUME_CLOSED', { label: labelFor(task), closeReason: closeReasonLabel(task.close_reason) ?? '已确认' })
@@ -1721,6 +1711,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         })
       }
       const task = createTask(db, {
+        artifactRoot: defaultDir(),
         brief,
         coordinatorSession: current.id ?? coordinatorSession,
         targetDir: effectiveTarget,
@@ -1954,6 +1945,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         }).join('、')}`)
       }
       if (task.write_scopes.length > 0) lines.push(`写域：${task.write_scopes.join('、')}`)
+      if (task.artifact_dir) lines.push(`产物目录：${task.artifact_dir}`)
+      if (task.artifact_store_dir) lines.push(`产物真源：${task.artifact_store_dir}`)
+      if (task.delivery_pending) lines.push('交付：等待回合结束后保存快照')
+      if (task.artifact_stage) lines.push(`产物收集：${task.artifact_stage.mode}｜${task.artifact_stage.complete ? '已保存捕获范围' : '不完整'}${task.artifact_stage.git?.unarchived ? '｜Git 未归档' : ''}`)
       if (task.question) {
         lines.push(`问题：${task.question}`)
         if (task.options.length > 0) lines.push(`选项：${task.options.join(' / ')}`)
@@ -2218,6 +2213,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       status: { type: 'string', enum: REPORT_STATUS, description: 'progress / done / blocked / needs_auth' },
       summary: str('一句话说明这轮做了什么'),
       workspace_index: str('只读工作区与仓库索引任务专用：完整扫描JSON，entries含id/path/status/sampledAt和repoRoot/branch/head/origin/commonDir；仅done且本人可持久化'),
+      checkpoint: { type: 'boolean', description: '请求保存一次阶段快照（done 自动保存最终阶段）' },
+      changedFiles: strList('补充改动文件清单，相对任务工作目录；非 Git 保存副本，Git 只记引用'),
       question: str('blocked / needs_auth 时可选：要用户拍板的问题'),
       options: strList('blocked / needs_auth 时可选：给用户的选项，如 ["方案A", "方案B"]'),
       artifacts: {
@@ -2240,6 +2237,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (found.ok !== true) return found.message
       const task = found.task
       if (!REPORT_STATUS.includes(args.status)) return `status 只能是 ${REPORT_STATUS.join(' / ')}。`
+      if (task.delivery_pending) return '交付请求已记录，回合结束后完成收集；请勿继续修改工作文件。'
       const reporter = exec?.agent
       const reporterId = reporter?.id ?? reporter?.session?.id
       if (reporter !== undefined && task.session_id !== null && task.session_id !== undefined
@@ -2257,6 +2255,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       // 两段式终态：重复 done 不重跑验收、不重复迁移（保持既有幂等）。
       const settled = task.status === 'delivered' || task.status === 'done'
+      if (args.status === 'done' && !settled && task.status !== 'running' && !WAITING_STATUS.has(task.status)) return '当前任务不能提交交付请求。'
       const deliveredNow = args.status === 'done' && !settled
       // P2-1 A1：交付前机器验收。命令只来自 brief 快照（协调者写入 task_create），
       // task_report 没有任何命令参数——子会话无法注入/覆盖要跑的东西。
@@ -2320,20 +2319,42 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         }
         acceptanceNotice = acceptancePassText(result)
       }
-      // 显式产物优先；done 时再用 workspaceChanges 摘要补齐整轮改动文件（同路径去重，显式标签覆盖自动标签）。
-      const normalized = normalizeArtifacts(task, args.artifacts)
-      let artifacts = normalized.artifacts
-      let artifactsOmitted = normalized.omitted
-      let auto = { artifacts: [], turns: 0, omitted: 0 }
-      if (args.status === 'done') {
-        auto = autoArtifacts(task, exec)
-        if (auto.artifacts.length > 0) {
-          const autoPaths = new Set(auto.artifacts.map(item => item.path))
-          const unique = autoPaths.size + artifacts.filter(item => !autoPaths.has(item.path)).length
-          artifacts = mergeArtifacts(auto.artifacts, artifacts, MAX_TASK_ARTIFACTS)
-          artifactsOmitted += auto.omitted + Math.max(0, unique - artifacts.length)
+      // done 先持久记录请求，最终阶段由回合结束统一收集，避免下一任务覆盖源文件。
+      if (deliveredNow) {
+        ensureArtifactDirectory(db, task, defaultDir())
+        if (WAITING_STATUS.has(task.status)) transition(db, task.id, 'running', { error: null })
+        const normalized = normalizeArtifacts(task, args.artifacts)
+        const request = {
+          attempt: task.attempts ?? 0, requestedAt: Date.now(), summary: sanitizeFacing(String(args.summary ?? '')),
+          artifacts: normalized.artifacts, artifactsOmitted: normalized.omitted,
+          changedFiles: Array.isArray(args.changedFiles) ? args.changedFiles : [],
+          eventSeq: Math.max(0, ...(reportSession(task, exec)?.events ?? []).map(e => Number.isFinite(e.seq) ? e.seq : 0)),
         }
+        setTaskDeliveryPending(db, task.id, request)
+        const frozen = dispatcher.freezeWork?.(task.session_id ?? task.target)
+        setTaskDeliveryPending(db, task.id, { ...request, frozen: frozen?.ok === true })
+        if (frozen?.ok === false) log('task.delivery.freeze-failed', { taskId: task.id })
+        const reportBody = compactMessage('report', renderReportText('done', request.summary))
+        addMessage(db, task.id, { kind: 'report', rendered: reportBody.rendered, meta: reportBody.meta })
+        if (acceptanceNotice) addMessage(db, task.id, { kind: 'acceptance', rendered: acceptanceNotice })
+        clearTaskQuestion(db, task.id)
+        clearReportExpected(db, task.id)
+        return `交付请求已记录，回合结束后完成收集；请勿继续修改工作文件。${acceptanceNotice ? `\n${acceptanceNotice}` : ''}`
       }
+      let stage
+      if (args.checkpoint === true || (Array.isArray(args.artifacts) && args.artifacts.length > 0)) {
+        const service = typeof workspaceChanges === 'function' ? workspaceChanges() : workspaceChanges
+        const normalized = normalizeArtifacts(task, args.artifacts)
+        stage = await collectArtifactStage({
+          db, task, cwd: baseDirOf(task), mainDir: defaultDir(), session: reportSession(task, exec),
+          workspaceChanges: service, changedFiles: args.changedFiles ?? [], artifacts: normalized.artifacts, artifactsOmitted: normalized.omitted,
+          key: `checkpoint:${task.attempts ?? 0}:${exec?.callId ?? randomUUID()}`,
+        })
+      }
+      // 非交付回报保留显式登记契约；自动工作文件由统一阶段收集入口处理。
+      const normalized = normalizeArtifacts(task, args.artifacts)
+      let artifacts = stage?.artifacts ?? normalized.artifacts
+      let artifactsOmitted = normalized.omitted
       // 版本 B 出口清洗（第 ② 层）：summary / question / options / 产物 label 是**用户会读到的文本**
       // （通知正文、blocked 的 question、抽屉里的产物清单），写入前把台账已知编号换成 tk-。
       // 产物 **path 不清洗**：那是真实文件路径（历史计划文件本来就叫 t-xxxx.md），改了就读不到。
@@ -2354,8 +2375,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
             count: artifacts.length,
             omitted: artifactsOmitted,
             missing: artifacts.filter(item => item.exists === false).length,
-            autoTurns: auto.turns,
-            autoCount: auto.artifacts.length,
+            stage: stage?.path ?? null,
           },
         })
       }
@@ -2371,16 +2391,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       // 两段式终态：子会话报 done 先落 delivered（已交付待确认），协调者 task_close / 超时才收成 done。
       // 已经在 delivered/done 上的回报是重复/迟到事件：只记消息，不迁移、不重复通知。
       if (args.status === 'done') {
-        if (deliveredNow) {
-          // blocked/needs_auth 之后子任务直接交付：先回到 running，再走合法迁移到 delivered。
-          if (WAITING_STATUS.has(task.status)) next = transition(db, task.id, 'running', { error: null })
-          next = transition(db, task.id, 'delivered')
-          // P0-3：交付即释放写根（同目录才能新派）；追问投递成功时由 dispatch.send 幂等重建。
-          // 验收失败在更早的分支已经 return（状态保持 running），不会走到这里。
-          releaseTaskSession(next)
-        } else {
-          next = touchTask(db, task.id)
-        }
+        next = touchTask(db, task.id)
       } else if (settled) {
         // 已交付/已完成上的迟到 blocked/progress：不改状态，只留痕（重复回报不该把任务拉回等待态）。
         next = touchTask(db, task.id)
@@ -2418,59 +2429,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         })
         if (progressInfo !== undefined) next = progressInfo.task
       }
-      if (deliveredNow) {
-        try {
-          // M1 记忆分层：done 摘要只进日志层 task-log（一行、无产物清单、不进 brief）；
-          // 写入即蒸馏——摘要里带经验/教训标记的分句抽成 lesson 原子事实，才允许注入后续 brief。
-          // 只在真正交付的这一次沉淀（重复 done 回报不重复写）。
-          // worktree 记忆归一（审计 §2.5 缺陷 2）：隔离任务的 target_dir 是检出目录
-          // （<repo>/.agents/worktrees/t-xxx），拿它当 project_key 会写出 8 个分裂键、项目键检索不到。
-          // 归一顺序：用户给的原始 target（brief.target）→ 源仓库根（repo_root）→ 最后才退回 target_dir。
-          const projectKey = projectKeyOf(next.brief?.target ?? next.repo_root ?? next.target_dir)
-          const summary = summaryFacing
-          addMemory(db, {
-            projectKey,
-            kind: TASK_LOG_KIND,
-            text: taskLogText(next.title, summary),
-            sourceTaskId: next.id,
-            sourceSessionId: next.session_id,
-          })
-          for (const fact of distillLessons(summary, { max: 2 })) {
-            addMemory(db, {
-              projectKey,
-              kind: LESSON_KIND,
-              text: fact,
-              sourceTaskId: next.id,
-              sourceSessionId: next.session_id,
-            })
-          }
-        } catch { /* 记忆沉淀失败不能影响回报 */ }
-      }
-      // 链式自动放行（chain:'auto'）：交付时仍有 waiting_dep 下游 → 复用 closeDelivered 收成 done。
-      // 放在通知之前：通知要是「已完成」口径，不能让协调者去 confirm 一个已经 done 的任务。
-      // 下游晋升由 closeDelivered 的 pump（queue.pump 开头就是 promoteDependents）负责，不在这里另调。
-      let chainAuto = { closed: false }
-      if (deliveredNow) {
-        try {
-          chainAuto = autoCloseChainDelivered({
-            db,
-            taskId: next.id,
-            releaseSession: releaseTaskSession,
-            completeGoal: closed => { void goalBridge?.complete?.(closed.id, closed.session_id) },
-            cleanupWorktree,
-            pump: () => queue?.pump(),
-            logger,
-          })
-          if (chainAuto.closed && chainAuto.task !== undefined) next = chainAuto.task
-        } catch (error) {
-          log('task.report.chain-auto-failed', { taskId: next.id, detail: { error: error?.message ?? String(error) } })
-        }
-      }
       const displayName = labelFor(next)
-      // 交付回报用 delivered 通知（带「确认/追问」动作指令）；链式自动放行的发「已完成」，
-      // 不给 close 指引（任务已是 done，再让协调者去 close 只会撞幂等提示）。
-      const notifyStatus = args.status === 'done' ? (chainAuto.closed ? 'done' : 'delivered') : args.status
-      if (deliveredNow || args.status !== 'done') {
+      if (args.status !== 'done') {
         notifier.push({
           taskId: next.id,
           title: next.title,
@@ -2479,8 +2439,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           ref: next.ref,
           readOnly: next.read_only === true,
           access: next.access === 'full' ? 'full' : null,
-          status: notifyStatus,
-          summary: chainAuto.closed ? `${summaryFacing}\n${CHAIN_AUTO_NOTICE}` : summaryFacing,
+          status: args.status,
+          summary: summaryFacing,
           question: args.status === 'blocked' || args.status === 'needs_auth' ? question : null,
           options: args.status === 'blocked' || args.status === 'needs_auth' ? options : [],
           artifacts,
@@ -2510,19 +2470,16 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         sessionId: task.session_id,
         agentId: exec?.agent?.id,
         // 台账/日志保留原始摘要（审计真源）；用户面用 summaryFacing（已清洗引用）。
-        detail: { status: args.status, summary: args.summary ?? '', delivered: deliveredNow, chainAuto: chainAuto.closed, access: next.access ?? null, answeredFollowup, callId: exec?.callId },
+        detail: { status: args.status, summary: args.summary ?? '', access: next.access ?? null, answeredFollowup, callId: exec?.callId },
       })
       // 交付/终态都让出一个并发位，唤醒队列补位。可写根在交付那一刻就释放（同目录可新派），
       // goal 仍留到 done（确认/超时）再收口；追问投递成功时由 dispatch.send 幂等重建写根。
-      if (deliveredNow || next.status === 'failed' || next.status === 'cancelled') queue.pump()
+      if (next.status === 'failed' || next.status === 'cancelled') queue.pump()
       const hint = invalidHint()
       if (args.status === 'done' && !deliveredNow) {
         return `已记录任务「${labelFor(next)}」的重复 done 回报（当前${labelOf(next.status)}，未重复迁移）。${hint === '' ? '' : `\n${hint}`}`
       }
-      const deliveredNote = deliveredNow
-        ? `${chainAuto.closed ? CHAIN_AUTO_RECEIPT_NOTE : deliveredReceiptNote}${acceptanceNotice === '' ? '' : `\n${acceptanceNotice}`}`
-        : ''
-      return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${deliveredNote}${hint === '' ? '' : `\n${hint}`}`
+      return `已记录任务「${labelFor(next)}」的 ${args.status} 回报。${hint === '' ? '' : `\n${hint}`}`
     }),
 
     // 计划落盘（P8 计划交付）：计划阶段是只读沙箱，这是子会话**唯一**被允许的写入口。
@@ -2541,6 +2498,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (!isPlanTask(task)) {
         return `计划未落盘：只有计划模式（planFirst）的任务需要落盘计划；任务「${labelFor(task)}」是普通任务，直接写到自己的工作目录即可。`
       }
+      if (task.delivery_pending) return '交付收集中，暂不能保存新计划。'
       // 越权：只有任务自己的子会话能落盘（与 task_report 同口径）。
       const reporter = exec?.agent
       const reporterId = reporter?.id ?? reporter?.session?.id
@@ -2557,11 +2515,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       }
       const mainDir = defaultDir()
       if (mainDir === undefined) return '计划未落盘：找不到主会话工作区（主会话尚未打开），请让协调者先从面板「打开主会话」。'
-      const written = await writePlanDocument({ db, mainDir, task, content, savedAt: Date.now() })
-      if (written.ok !== true) return `计划未落盘：${written.error}${written.path === undefined ? '' : `（目标路径 ${written.path}）`}`
+      const written = saveArtifactDocument({ db, mainDir, task, name: task.title.replace(/[\\/]/g, '-'), content, callId: exec?.callId })
       // 登记产物：通知、task_status、面板抽屉都从台账产物里读，不需要另开一套视图。
       setTaskArtifacts(db, task.id, [{ path: written.path, label: `计划文档（${written.chars} 字）`, exists: true }])
-      // 记下落盘路径 = 幂等依据（同一任务二次 plan_save 覆写原文件，不再生成 -2）。
+      // 批准始终引用最新版本；旧文档不覆盖。
       setTaskPlanPath(db, task.id, written.path)
       log('task.plan.saved', {
         taskId: task.id,
@@ -2570,6 +2527,19 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         detail: { path: written.path, chars: written.chars, bytes: written.bytes, callId: exec?.callId },
       })
       return planSavedNote(written)
+    }),
+
+    wrap('artifact_save', '保存自己的阶段 Markdown 文档到任务产物目录（版本化，不开放工作区写权限）。', objectSchema({
+      task_id: str('自己的任务引用'), name: str('文档名称，不含路径'), content: str('Markdown 正文'),
+    }), async (args, exec) => {
+      const found = findTaskInput(args.task_id)
+      if (!found.ok) return found.message
+      const task = found.task
+      const caller = exec?.agent?.id ?? exec?.agent?.session?.id
+      if (!caller || !task.session_id || String(caller) !== String(task.session_id)) return '文档保存被拒绝：仅任务自己的执行者可保存。'
+      if (task.delivery_pending || (task.status !== 'running' && !WAITING_STATUS.has(task.status))) return '当前任务不接受新文档。'
+      const saved = saveArtifactDocument({ db, task, mainDir: defaultDir(), name: args.name, content: args.content, callId: exec?.callId })
+      return `文档已保存并登记：${saved.path}`
     }),
 
     // 0.32.0 能力包工厂（协调者专用；worker/包会话由 preset-tools deny 掉）：

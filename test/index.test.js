@@ -84,7 +84,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
     if (!handlerMap.has(event)) {
       handlerMap.set(event, [])
       // 变参：`tools/result` 这类事件一次给两个参数（exec, result），单参截断会让第二个参数丢掉。
-      listeners.set(event, (...args) => { for (const item of handlerMap.get(event)) item(...args) })
+      listeners.set(event, (...args) => Promise.all(handlerMap.get(event).map(item => item(...args))))
     }
     handlerMap.get(event).push(handler)
     return () => {}
@@ -112,7 +112,7 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       return {
         childId,
         messageId: 'msg-1',
-        result: Promise.resolve({ output: [], stopReason: 'completed' }),
+        result: new Promise(() => {}),
         dispose: async () => {},
       }
     },
@@ -126,7 +126,21 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       info(message) { infos.push(message) },
     },
     tools: {
-      register(tool) { registered.push(tool); return () => {} },
+      register(tool) {
+        if (tool.name === 'task_report') {
+          const report = tool.execute
+          tool.execute = async (args, exec) => {
+            const response = await report(args, exec)
+            if (args.status === 'done' && /交付请求已记录/.test(response)) {
+              if (exec?.agent) live.set(exec.agent.id, exec.agent)
+              await listeners.get('subagent/end')?.({ id: exec?.agent?.id ?? 'm-1', local: true, stopReason: 'completed' })
+            }
+            return response
+          }
+        }
+        registered.push(tool)
+        return () => {}
+      },
       guard(guard) { guards.push(guard); return () => {} },
     },
     systemPrompt: {
@@ -140,6 +154,8 @@ function fakeCtx({ agent = makeAgent('s-1'), agents, spawnResult = { member: { i
       if (name === 'workspaceRegistry') return workspaces
       if (name === 'sessions') return sessions
       if (name === 'workspaceChanges') return workspaceChanges
+      // 非权限用例不运行宿主文件/shell；保护模块和 web profile 单独验证真实写根。
+      if (name === 'sandboxPolicy') return extraServices[name] ?? { resolve: () => ({ mode: 'read-only' }) }
       if (name === 'goals') return goals
       if (name === 'agentTeams') return agentTeamsService
       if (name === 'subagents') return subagentsService
@@ -181,7 +197,7 @@ test('inject 不再硬依赖 agentTeams（缺服务也要能激活）', () => {
 test('profile 没有 agentTeams 也能 apply：工具/路由照常注册，subagent 可用', withHome(async () => {
   const f = fakeCtx({ withAgentTeams: false })
   await apply(f.ctx, {})
-  assert.equal(f.registered.length, 11)
+  assert.equal(f.registered.length, 12)
   assert.equal(f.routes.length, 1)
   assert.equal(f.warnings.some(message => /agentTeams|waiting for service/.test(message)), false)
 }))
@@ -191,7 +207,7 @@ test('旧配置键（backend）仍能加载：warn 一次、工具照常注册�
   resetDeprecatedKeyWarnings()
   const f = fakeCtx({ withAgentTeams: false })
   await assert.doesNotReject(() => apply(f.ctx, { backend: 'team' }))
-  assert.equal(f.registered.length, 11)
+  assert.equal(f.registered.length, 12)
   assert.ok(f.warnings.some(message => /配置键 backend 已删除/.test(message)), f.warnings.join(' | '))
 }))
 
@@ -206,9 +222,9 @@ test('缺 systemPrompt 时 warn，guard 仍然安装', withHome(async () => {
 test('apply 注册 11 个工具（P1-B 15 → 10，0.32.0 +capability_pack），只写 $DSH_HOME/state/orchestrator', withHome(async home => {
   const { ctx, registered } = fakeCtx()
   await apply(ctx, { coordinatorSession: 's-1' })
-  assert.equal(registered.length, 11)
+  assert.equal(registered.length, 12)
   assert.deepEqual(registered.map(tool => tool.name).sort(),
-    ['capability_pack', 'context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
+    ['artifact_save', 'capability_pack', 'context', 'memory_note', 'plan_save', 'read_workspace', 'task_create', 'task_detail', 'task_list', 'task_message', 'task_report', 'task_status'])
   assert.deepEqual(readdirSync(home), ['state'])
   // 0.32.0：capability-packs 根在启动时建好（purgeUnregistered 需要 packs/tools/.trash 存在）。
   assert.deepEqual(readdirSync(join(home, 'state', 'orchestrator')).filter(file => !file.startsWith('tasks.sqlite')), ['capability-packs', 'logs', 'snapshots'])
@@ -251,7 +267,7 @@ test('P2-3 交接事件：交付写 task.handoff.delivered、确认写 task.hand
   }
 
   const receipt = await byName.task_report.execute({ task_id: ref, status: 'done', summary: '结论：完成' }, { agent: { id: 'm-1' } })
-  assert.match(receipt, /待确认/)
+  assert.match(receipt, /交付请求已记录/)
   const delivered = readEvents()
   assert.deepEqual(delivered.map(line => line.event), ['task.handoff.delivered'])
   const taskId = delivered[0].taskId
@@ -289,13 +305,13 @@ test('apply 给 createTools 传 defaultCwd：无 target 时相对产物按主会
   const after = new DatabaseSync(dbPath)
   const saved = JSON.parse(after.prepare('SELECT artifacts_json FROM tasks WHERE id = ?').get(task.id).artifacts_json)
   after.close()
-  assert.equal(saved[0].path, join(home, 'state', 'orchestrator', 'workspace', 'out.txt'))
+  assert.match(saved[0].path, /manifest\.json$/)
 }))
 
 test('无 coordinatorSession：warn 但工具注册；派活给「先打开主会话」提示', withHome(async () => {
   const { ctx, registered, warnings } = fakeCtx()
   await apply(ctx, {})
-  assert.equal(registered.length, 11)
+  assert.equal(registered.length, 12)
   assert.ok(warnings.some(message => /尚未打开主会话/.test(message)))
   const create = registered.find(tool => tool.name === 'task_create')
   const text = await create.execute({ title: 't', goal: 'g', acceptance: ['a'] })
@@ -505,7 +521,7 @@ test('主会话失效：通知记 skipped 并在结果里提示', withHome(async
   db.close()
   live.delete('s-1')
   const reported = await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '完成' }, { agent: { id: 'm-1' } })
-  assert.match(reported, /主会话已失效/)
+  assert.match(reported, /交付请求已记录/)
   await wait(30)
   const check = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   const row = check.prepare('SELECT status, delivered_at, reason FROM notifications').get()
@@ -586,7 +602,7 @@ test('主会话保留四个原生自动化工具，团队工具仍被 guard 硬�
   }
   const create = f.registered.find(tool => tool.name === 'task_create')
   assert.match(await create.execute({ title: 'new/new_once', goal: 'g', acceptance: ['a'] }, { agent: otherRoot }), /主会话/)
-  assert.equal(f.registered.length, 11, '不在 host plane 注册自动化包装')
+  assert.equal(f.registered.length, 12, '不在 host plane 注册自动化包装')
 }))
 
 test('自动化诊断在边界重查、warning 去重、恢复可见且不污染其他会话', withHome(async () => {
@@ -752,7 +768,7 @@ test('缺 tools.guard 时 warn 不崩，10 工具照常注册', withHome(async (
   delete ctx.tools.guard
   await apply(ctx, {})
   assert.ok(warnings.some(message => /tools\.guard/.test(message)))
-  assert.equal(registered.length, 11)
+  assert.equal(registered.length, 12)
 }))
 
 test('系统提示只渲染给已绑定协调者，绑定后下一步生效', withHome(async () => {
@@ -889,7 +905,7 @@ test('无 coordinatorSession 时不投递通知', withHome(async home => {
   assert.equal(sent.length, 0)
 }))
 
-test('回报缺少 sender：不投递，通知行记 skipped', withHome(async home => {
+test('回合结束无 sender：结算通知以系统来源投递', withHome(async home => {
   const { ctx, registered, sent } = fakeCtx()
   await apply(ctx, { coordinatorSession: 's-1' })
   const create = registered.find(tool => tool.name === 'task_create')
@@ -902,8 +918,8 @@ test('回报缺少 sender：不投递，通知行记 skipped', withHome(async ho
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
   const row = db.prepare('SELECT status, delivered_at FROM notifications').get()
-  assert.equal(row.status, 'skipped')
-  assert.equal(row.delivered_at, null)
+  assert.equal(row.status, 'delivered')
+  assert.ok(row.delivered_at)
   db.close()
 }))
 
@@ -1028,7 +1044,8 @@ test('结算唤醒：容量 1 时第二个任务排队，第一个 settle 后自
   assert.equal(spawned.length, 1)
 
   settleFirst()
-  await wait(30)
+  // 最终阶段包含异步 Git 探测；等待可观察结果而非假定 30ms 内结束。
+  for (let n = 0; n < 100 && spawned.length < 2; n += 1) await wait(10)
   assert.equal(spawned.length, 2)
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(join(process.env.DSH_HOME, 'state', 'orchestrator', 'tasks.sqlite'))
@@ -1220,6 +1237,7 @@ test('S1：派发侧 settle completed 落「已交付待确认」，写结算消
   assert.equal(record.summary, '改完了，测试全绿')
   const message = after.prepare("SELECT rendered FROM messages WHERE task_id = ? AND kind = 'settle'").get(row.id)
   assert.match(message.rendered, /结算.*待确认/)
+  for (let n = 0; n < 100 && !after.prepare("SELECT level FROM notifications WHERE task_id = ?").get(row.id); n += 1) await wait(10)
   assert.equal(after.prepare("SELECT level, status FROM notifications WHERE task_id = ?").get(row.id).level, 'notify')
   after.close()
   // 协调者确认 → done；确认不再发第二条通知。
@@ -1276,16 +1294,20 @@ test('D5：结算自动 done 的通知在发送前补齐产物，注入文案带
   const row = db.prepare('SELECT id, status, artifacts_json FROM tasks').get()
   db.close()
   assert.equal(row.status, 'delivered')
-  assert.deepEqual(JSON.parse(row.artifacts_json).map(item => item.path), [report])
+  const artifacts = JSON.parse(row.artifacts_json)
+  assert.equal(artifacts.length, 2)
+  assert.match(artifacts[0].path, /manifest\.json$/)
+  assert.equal(readFileSync(artifacts[1].path, 'utf8'), '# ok')
   // 协调者收到的通知里就是这份清单（不是空产物），并带 present 交付指令。
+  for (let n = 0; n < 100 && s1.injected.length === 0; n += 1) await wait(10)
   assert.equal(s1.injected.length, 1)
   const text = s1.injected[0].content[0].text
   assert.match(text, /产物：/)
-  assert.ok(text.includes(`- ${report} — +3/-0`))
+  assert.ok(text.includes('files/report.md'))
   assert.match(text, /交付：在你自己的回合里调用 present/)
   // 同一份清单也能从 task_status 取回（错过通知的兜底路径）。
   const status = await byName.task_status.execute({ task_id: row.id }, { agent: s1 })
-  assert.ok(status.includes(`- ${report} — +3/-0`))
+  assert.ok(status.includes('files/report.md'))
   await disposers.at(-1)?.()
 }))
 
@@ -1601,7 +1623,7 @@ test('P2-4 快照：装了官方板就下发只读行，且读板不创建任务
   assert.equal('description' in body.teamBoard.rows[0], false)
   // 只读：快照只调 isEnabled/listTasks，绝不写官方板。
   assert.deepEqual(agentTeams.calls.filter(([kind]) => kind === 'updateTask'), [])
-  assert.equal(f.registered.length, 11, '没有新增工具面')
+  assert.equal(f.registered.length, 12, '新增执行者 artifact_save')
   await f.disposers.at(-1)?.()
 }))
 

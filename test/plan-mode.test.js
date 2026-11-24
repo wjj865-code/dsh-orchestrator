@@ -86,12 +86,12 @@ test('P8 exit_plan_mode 拒绝文案指向 task_report blocked（不是 exit_pla
   assert.match(PLAN_FIRST_DETAIL, /不要调用 exit_plan_mode/)
   // 计划交付流程：先落盘（plan_save → reports/plans/<taskId>.md），再只报 3–8 行摘要 + 绝对路径 + 待拍板清单。
   assert.match(PLAN_FIRST_DETAIL, /plan_save/)
-  assert.match(PLAN_FIRST_DETAIL, /reports\/plans\/<任务名>\.md/)
+  assert.match(PLAN_FIRST_DETAIL, /docs\/<任务名>-<版本>\.md/)
   assert.match(PLAN_FIRST_DETAIL, /3–8 行摘要/)
   assert.match(PLAN_FIRST_DETAIL, /待拍板问题清单/)
-  assert.match(PLAN_FIRST_DETAIL, /唯一.*写入口/)
+  assert.match(PLAN_FIRST_DETAIL, /计划用 plan_save、阶段报告用 artifact_save/)
   assert.match(EXIT_PLAN_MODE_DENIAL, /plan_save/)
-  assert.match(EXIT_PLAN_MODE_DENIAL, /reports\/plans\/<任务名>\.md/)
+  assert.match(EXIT_PLAN_MODE_DENIAL, /docs\/<任务名>-<版本>\.md/)
 })
 
 // —— 二、台账：两列 + 旧库补列 + 终态收口 ——
@@ -227,6 +227,7 @@ async function setupTools(options = {}) {
   const config = { staleMinutes: 30, maxQueue: 50, coordinatorSession: 's-1', ...(options.config ?? {}) }
   const queue = createQueue({ db, dispatcher, config })
   const tools = Object.fromEntries(createTools({
+    defaultCwd: tempDir(),
     db, dispatcher, queue, notifier, config,
     coordinatorStatus: () => ({ id: 's-1', live: true }),
   }).map(tool => [tool.name, tool]))
@@ -780,6 +781,7 @@ test('P1-4 审计：借条行写失败时不泄漏 hold（acquire 必须在 addM
     },
   })
   const tools = Object.fromEntries(createTools({
+    defaultCwd: tempDir(),
     db: failingDb, dispatcher, queue, notifier, config,
     coordinatorStatus: () => ({ id: 's-1', live: true }),
   }).map(tool => [tool.name, tool]))
@@ -888,7 +890,7 @@ test('P0-4 面板「追加」：不批准计划、不改 plan_state（面板无�
   const db = await openLedger(tempDir())
   const dispatcher = fakeDispatcher()
   const queue = createQueue({ db, dispatcher, config: {} })
-  const panel = createPanelActions({ db, dispatcher, queue, config: {}, coordinatorStatus: () => ({ id: 's-1', live: true }) })
+  const panel = createPanelActions({ db, dispatcher, queue, config: {}, defaultCwd: tempDir(), coordinatorStatus: () => ({ id: 's-1', live: true }) })
   const task = planTaskRow(db, { status: 'waiting_user', planPath: 'C:/ws/reports/plans/x.md' })
   setPlanState(db, task.id, 'waiting_user')
   const result = await panel.message(task.id, '把验收再细化一点')

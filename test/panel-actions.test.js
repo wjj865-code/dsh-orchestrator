@@ -33,6 +33,7 @@ function setup(options = {}) {
   const dispatcher = options.makeDispatcher ? options.makeDispatcher(() => db) : defaultDispatcher
   const actions = () => createPanelActions({
     db,
+    defaultCwd: tempDir(),
     dispatcher,
     queue,
     config: options.config ?? {},

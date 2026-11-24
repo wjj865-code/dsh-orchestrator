@@ -57,6 +57,7 @@ const hasTarget = task => task?.target !== null && task?.target !== undefined &&
 export function followupGate(task) {
   if (task === undefined || task === null) return { ok: false, reason: 'not_found' }
   const status = statusOf(task)
+  if (task.delivery_pending) return { ok: false, reason: 'not_followable' }
   if (TERMINAL.has(status)) return { ok: false, reason: 'ended' }
   if (status === 'waiting_dep') return { ok: false, reason: 'waiting_dep' }
   if (status === 'pending') {

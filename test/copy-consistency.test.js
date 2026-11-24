@@ -220,7 +220,7 @@ test('present 口径：通知里的交付指令与协调者 policy 一致（1-4 
 test('README 与预设同口径：默认保持待确认、工具数 11、升级要重启', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
   assert.match(readme, /默认保持待确认/)
-  assert.match(readme, /11 个工具/)
+  assert.match(readme, /12 个工具/)
   // 迁移映射表在 README 里（旧名 → 新调用），旧名不能只删不说。
   assert.match(readme, /工具迁移映射/)
   for (const legacy of ['task_stop', 'task_retry', 'task_close', 'task_inbox', 'history_search', 'project_context']) assert.ok(readme.includes(legacy), `README 迁移表缺少 ${legacy}`)
@@ -256,7 +256,7 @@ test('文档工具数一致：docs 与 README 都说 10 个（审计 §3.1/§3.2
   for (const [file, text] of docs) {
     // 任何「N 个工具」的说法都必须与实现一致（P1-B 起 10 个全局工具：7 协调者 + 3 子会话专属）。
     for (const match of text.matchAll(/(\d+)\s*个(?:全局)?工具/g)) {
-      assert.equal(match[1], '11', `${file} 的工具数写成 ${match[1]}，实现是 11 个`)
+      assert.equal(match[1], '12', `${file} 的工具数写成 ${match[1]}，实现是 12 个`)
     }
     assert.doesNotMatch(text, /仍为\s*14|工具数\s*14/, `${file} 还写着 14 个工具`)
   }
@@ -302,7 +302,7 @@ const planDetail = () => renderTaskDetail({
 
 test('文案单源：计划/交付/完整访问的原子句只在 src/copy.js 定义（其它模块只能引用）', () => {
   const markers = [
-    '唯一允许的写入口',
+    '计划用 plan_save、阶段报告用 artifact_save',
     '3–8 行摘要',
     '计划文档绝对路径 + 待拍板问题清单',
     '不要自行宣告任务结束',
@@ -344,7 +344,7 @@ test('计划文案只有一处真源：详情 / 创建回执 / 工具描述 / �
   assert.ok(EXIT_PLAN_MODE_DENIAL.includes(PLAN_PHASE_LINES.reportCallFull))
   assert.ok(EXIT_PLAN_MODE_DENIAL.includes(planDocPathText()))
   // 计划状态行与 plan_save 的落盘目录同一口径。
-  assert.ok(PLAN_STATUS_LINES.planning.includes('reports/plans/'))
+  assert.ok(PLAN_STATUS_LINES.planning.includes('docs/'))
   // 协调者 policy（L1）仍要提到同一批事实（口径对齐，不重复定义句子）。
   const policy = renderCoordinatorPolicy({})
   assert.ok(policy.includes(PLAN_PHASE_LINES.reportQuestion))

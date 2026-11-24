@@ -23,12 +23,13 @@ import { listWaitingDependents, promoteDependents } from '../src/deps.js'
 import { ACCEPTED_BY, acceptedByLabel, setHandoffSink } from '../src/handoff.js'
 import { shouldReverseConfirm } from '../src/team-board.js'
 import { CHAIN_AUTO_TOOL_DESC } from '../src/copy.js'
-import { sampleBrief, tempDir } from './helpers.js'
+import { sampleBrief, tempDir, endReportedTurn } from './helpers.js'
 
 function fakeDispatcher() {
   let counter = 0
   const calls = []
   return {
+    freezeWork() { return { ok: true } },
     calls,
     slug: title => `task-${counter += 1}-${title}`,
     async spawn({ prompt }) {
@@ -49,7 +50,7 @@ const setup = async () => {
   const dispatcher = fakeDispatcher()
   const pushed = []
   const logs = []
-  const config = { staleMinutes: 30, maxQueue: 50, coordinatorSession: 's-1' }
+  const config = { staleMinutes: 30, maxQueue: 50, coordinatorSession: 's-1', sameDirGuard: 'off' }
   const queue = createQueue({ db, dispatcher, config })
   const tools = Object.fromEntries(createTools({
     db,
@@ -57,9 +58,17 @@ const setup = async () => {
     queue,
     notifier: { push: item => pushed.push(item) },
     config,
+    defaultCwd: tempDir(),
     coordinatorStatus: () => ({ id: 's-1', live: true }),
     logger: { log: (event, fields) => logs.push([event, fields]) },
   }).map(tool => [tool.name, tool]))
+  const report = tools.task_report.execute
+  tools.task_report.execute = async (args, exec) => {
+    const response = await report(args, exec)
+    const task = listTasks(db).find(t => t.id === args.task_id || t.ref === args.task_id)
+    if (task?.delivery_pending) await endReportedTurn(db, { taskId: task.id, notifier: { push: item => pushed.push(item) }, dispatcher, queue })
+    return response
+  }
   return { db, dispatcher, queue, tools, pushed, logs }
 }
 
@@ -160,7 +169,7 @@ test('task_report done + chain + 下游在等 → 交付即 done，下游晋升�
   const text = await reportDone(env, upstream)
   await wait()
 
-  assert.match(text, /自动放行/, '回执要说明已自动放行（不是「等确认」）')
+  assert.match(text, /交付请求已记录/, '先记录请求，回合结束才自动放行')
   assert.doesNotMatch(text, /已交付待确认：这是交付/)
 
   const closed = getTask(env.db, upstream.id)
@@ -194,7 +203,7 @@ test('task_report done + chain 但无下游 → 保持 delivered（不猜「将�
   assert.equal(kept.status, 'delivered')
   assert.equal(kept.accepted_by, null)
   assert.equal(kept.close_reason, null)
-  assert.match(text, /已交付待确认/, '没有下游时回执仍是普通交付口径')
+  assert.match(text, /交付请求已记录/)
   assert.deepEqual(env.pushed.filter(item => item.taskId === upstream.id).map(item => item.status), ['delivered'])
 })
 
@@ -207,7 +216,7 @@ test('task_report done + 不带 chain + 有下游 → 默认行为完全不变�
   assert.equal(getTask(env.db, upstream.id).status, 'delivered')
   assert.equal(getTask(env.db, downstream.id).status, 'waiting_dep', '不带标记的链仍然被 delivered 挡住')
   assert.equal(recentMessages(env.db, upstream.id, 10).filter(row => row.kind === 'close').length, 0)
-  assert.match(text, /已交付待确认/)
+  assert.match(text, /交付请求已记录/)
   assert.deepEqual(env.pushed.filter(item => item.taskId === upstream.id).map(item => item.status), ['delivered'])
 })
 

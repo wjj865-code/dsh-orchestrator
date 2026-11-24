@@ -2,7 +2,7 @@
 // 后端：subagent（唯一实现，直连 ctx.subagents）。旧的 team 后端与 `backend` 配置键已删除
 // （P0-1 删实现，P1-A 删键与占位派发器）。
 import { randomUUID } from 'node:crypto'
-import { resolve as resolvePath } from 'node:path'
+import { join, resolve as resolvePath } from 'node:path'
 import { messageText } from './last-message.js'
 import { EXIT_PLAN_MODE_DENIAL } from './plan-mode.js'
 import { WRITE_DOMAIN_DENIED } from './action-errors.js'
@@ -57,7 +57,7 @@ export function sameDirectory(left, right) {
   }
 }
 
-export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000, goalBridge, writableRootJudge }) {
+export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000, goalBridge, writableRootJudge, artifactDirectoryOf, artifactProtectionJudge }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
   const requireAgent = () => {
     const current = currentAgent()
@@ -437,6 +437,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
    * @returns {{ok:true, skipped?:string} | {ok:false, code:string, text?:string}}
    */
   const grantWritableRoot = (childId, session, target, taskId) => {
+    const protection = artifactProtectionJudge?.({ taskId, session, target })
+    if (protection?.ok === false) return { ok: false, code: 'ARTIFACT_STORE_UNPROTECTED', text: protection.reason }
     const policy = serviceOf(sandboxPolicy)
     if (policy === undefined || typeof policy.registerWritableRoot !== 'function') return { ok: true, skipped: 'no-policy' }
     if (session === undefined || session === null) return { ok: false, code: 'WRITE_ROOT_NO_SESSION' }
@@ -453,6 +455,12 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       return { ok: false, code: 'WRITE_ROOT_FAILED', text: errorText(error) }
     }
   }
+  const grantArtifactRoot = (childId, taskId) => {
+    const directory = artifactDirectoryOf?.(taskId)
+    if (!directory) return
+    const session = childSessionOf(childId)
+    if (session) grantWritableRoot(childId, session, join(directory, 'staging'), taskId)
+  }
 
   /**
    * 已批准计划任务的授予（judge → append workspace-write → grant）。
@@ -466,6 +474,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   const grantApprovedWrite = (childId, session, targetDir, taskId, { compensateOnFailure = false } = {}) => {
     if (session === undefined || session === null) return { ok: false, code: 'WRITE_ROOT_NO_SESSION' }
     const actual = typeof targetDir === 'string' && targetDir.trim() !== '' ? targetDir : session.header?.cwd
+    const protection = artifactProtectionJudge?.({ taskId, session, target: actual })
+    if (protection?.ok === false) return { ok: false, code: 'ARTIFACT_STORE_UNPROTECTED', text: protection.reason }
     if (typeof actual !== 'string' || actual.trim() === '') return { ok: true, skipped: 'no-target' }
     const denied = judgeWritableRoot(taskId, actual)
     if (denied !== undefined && denied.ok !== true) {
@@ -787,6 +797,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       // 写域 chokepoint：起子会话之前最后判一次（动作层 guard 是快速失败，这里才是唯一授予点）。
       // 拒绝 → 一个子会话都不起，直接把可读拒绝抛给 queue（走既有非可重试分支标 failed + 通知）。
       if (readOnly !== true && planFirst !== true) {
+        const protection = artifactProtectionJudge?.({ taskId, session: parent.session, target: cwd, access })
+        if (protection?.ok === false) throw writeDomainError(protection.reason)
         const denied = deniedChild(taskId, cwd)
         if (denied !== undefined) throw denied
       }
@@ -849,6 +861,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         }
         if (granted.ok !== true) onWarn(`dsh-orchestrator: 登记 target 可写根失败：${granted.text}`)
       }
+      if (readOnly !== true && planFirst !== true) grantArtifactRoot(activation.childId, taskId)
       // G1：子会话起来后声明式建 goal（create + disarm，不驱动续轮）。
       // 不 await：goal 服务不可用/子 agent 晚出现都不能拖慢派发；桥内部吞错。
       if (goalBridge !== undefined && typeof goalBridge.attach === 'function' && typeof goal === 'string' && goal.trim() !== '') {
@@ -863,6 +876,10 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     //   - planApproved：已批准计划任务的续派 → 先关 plan mode，再在 post-send 授予可写根；
     //   - messageId / attemptKey：同一逻辑投递的重放（跨重启靠 followup 行 meta.messageId）→ 只重试授予，不再投递。
     async send(target, message, signal, targetDir, taskId, readOnly, objective, access, options = {}) {
+      if (readOnly !== true) {
+        const protection = artifactProtectionJudge?.({ taskId, session: childSessionOf(target) ?? requireAgent().session, target: targetDir, access })
+        if (protection?.ok === false) throw writeDomainError(protection.reason)
+      }
       const opts = options ?? {}
       // 0) 幂等：已有一条「同一次投递」的记录 → 只按运行期事实补授予并返回原 messageId，绝不二次 sendMessage。
       //    只读/计划未批准的任务在这里**不授予**（P0-3）：否则重放一次就能绕过「批准前不切可写」。
@@ -938,6 +955,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         if (readOnly === true) ensureReadOnly(target)
         // 完整访问续派同理（resume 出的新 Session 对象投影可能还没读回模式；已有则跳过）。
         if (access === 'full' && readOnly !== true) ensureModeReady(target, 'danger-full-access')
+        if (readOnly !== true && !planApproved && access !== 'full') ensureModeReady(target, 'workspace-write')
         // 冷恢复/续派时子会话在发送前还取不到，sendMessage 之后才 resolve 出**新的 Session 对象**；
         // 权威授予在这里（hook 只是尽力提前）：投递前的 preflight 已判过，这里失败只改 switching。
         if (readOnly !== true) {
@@ -954,9 +972,11 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
                 pending.reason = granted.ok === true ? (granted.skipped ?? null) : (granted.code ?? 'grant-failed')
                 pending.updatedAt = Date.now()
               }
+              if (granted.ok === true) grantArtifactRoot(target, taskId)
             }
           } else {
             const granted = await ensureWritableRoot(target, targetDir, { taskId, phase: 'post-send' })
+            if (granted.ok === true) grantArtifactRoot(target, taskId)
             if (granted.ok !== true) {
               safeEvent('subagent.writable-root.post-send-failed', {
                 taskId,
@@ -1008,6 +1028,15 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
      */
     retryPlanGrant(target, input = {}) {
       return retryPlanGrantImpl(target, input)
+    },
+    freezeWork(target) {
+      const session = childSessionOf(target)
+      if (!session || typeof session.append !== 'function') return { ok: false }
+      releaseWritableRoot(target)
+      try {
+        session.append('sandbox/mode', { mode: 'read-only' })
+        return { ok: true }
+      } catch { return { ok: false } }
     },
     /** 计划写入意图的只读快照（task_detail/诊断）：`{state, reason, messageId, targetDir, taskId, updatedAt}`。 */
     planWriteInfo(target) {
@@ -1061,6 +1090,6 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
 }
 
 // 派发后端只剩 subagent：`backend` 键已随 P1-A 删除（P0-1 已删 team 实现），这里不再有分派。
-export function createDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge }) {
-  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge })
+export function createDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge, artifactDirectoryOf, artifactProtectionJudge }) {
+  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge, artifactDirectoryOf, artifactProtectionJudge })
 }

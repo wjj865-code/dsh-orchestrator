@@ -7,7 +7,8 @@ import {
   openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts,
   getTask, listTasks, setTransitionObserver,
 } from './src/ledger.js'
-import { collectWorkspaceArtifacts, appendMissingArtifacts, MAX_AUTO_ARTIFACTS } from './src/artifact-collect.js'
+import { createArtifactDelivery } from './src/artifact-delivery.js'
+import { artifactProtection } from './src/artifact-protection.js'
 import { createSettlementReporter } from './src/settlement.js'
 // P1 去重：正文（简报/回报/最后一条消息）只在宿主会话日志里存一份，台账留借条。
 import { createBodySource } from './src/session-body.js'
@@ -112,7 +113,7 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
 - **收到 progress 通知**：${PROGRESS_NOTICE_HINT}——它不是完成汇报，也不需要你当场回话；用户问起进度就照它报，要结论才追问。
 - **只在真正需要拍板时提问，且必须用 ask_user_question 结构化提问**：出现方案歧义/业务取舍、范围变更、权限变更、不可逆操作（删数据、覆盖历史、强推）、或需要远端写授权（推送、建 MR、发布、改权限）时，**必须用 ask_user_question 结构化提问**（question + 2–4 个 options），**不得用纯文字问句代替**——纯文字问句容易被用户忽略，也没有选项可点，等于让决策悬空。不可逆操作必须先拿到用户拍板，不能先做后报。**待拍板项**（子会话 blocked 的 question 里列出的待拍板项）按「一项一问」逐项提问（每问独立 options、不合成一个总体确认，见下「## 拍板流程」段）；其余需要拍板的点一次把要点列进 question（每行一项，带任务名与要点），不逐任务连问。「任务能否关闭」不属于需要提问的范畴。开工前的意图确认、用户追加调整的评估确认都属于「需要拍板」：同样用结构化提问、同样一次问完。
 - 需要看“待你决定/失败/长时间没动静”时用 task_list({ view: 'inbox' })。
-- 本插件的工具就这 11 个（你能用 8 个）：task_create / task_list / task_status / task_message / context / memory_note / read_workspace / capability_pack，加上只对子会话开放的 task_report / task_detail / plan_save（它们不在你的工具表里）。除此之外你还能用宿主原生的 read（只读看单个文件；glob/grep 已从预设移除，检索类工作派任务）、skill（按名加载技能）、present（交付）、ask_user_question、schedule_*（原生自动化）：没有 write / edit / bash / pwsh——写与执行不在你的职责里，权限也钉在只读。旧的 task_stop / task_retry / task_close 已并入 task_message 的 action（stop / retry / close），task_inbox 并入 task_list({ view: 'inbox' })，history_search / project_context 并入 context 的 mode（history / project / workspaces）；旧名已删除，硬调会拿到迁移提示（映射表见 README「工具迁移映射」）。
+- 本插件全局注册 12 个工具（你能用 8 个）：task_create / task_list / task_status / task_message / context / memory_note / read_workspace / capability_pack，加上只对子会话开放的 task_report / task_detail / plan_save / artifact_save（它们不在你的工具表里）。除此之外你还能用宿主原生的 read（只读看单个文件；glob/grep 已从预设移除，检索类工作派任务）、skill（按名加载技能）、present（交付）、ask_user_question、schedule_*（原生自动化）：没有 write / edit / bash / pwsh——写与执行不在你的职责里，权限也钉在只读。旧的 task_stop / task_retry / task_close 已并入 task_message 的 action（stop / retry / close），task_inbox 并入 task_list({ view: 'inbox' })，history_search / project_context 并入 context 的 mode（history / project / workspaces）；旧名已删除，硬调会拿到迁移提示（映射表见 README「工具迁移映射」）。
 - 任何关于任务数量、重复、冲突、状态的断言，必须先调用 task_list / task_status 拿到工具返回再说话；没有工具输出佐证就不许下结论，不得凭记忆或推断。
 - 子任务完成或需要你决定时会主动通知你；收到通知再行动。
 - 本回合没有别的事就立即结束回合；通知会开启新回合。
@@ -800,6 +801,13 @@ export async function apply(ctx, rawConfig = {}) {
     onAgentCreated: handler => ctx.on('agent/created', ({ agent } = {}) => handler(agent)),
     goalBridge,
     writableRootJudge,
+    artifactDirectoryOf: taskId => getTask(db, taskId)?.artifact_dir,
+    artifactProtectionJudge: ({ taskId, session, target, access }) => {
+      let policy
+      const full = access === 'full' || getTask(db, taskId)?.access === 'full'
+      try { policy = service('sandboxPolicy')?.resolve?.({ session, mode: full ? 'danger-full-access' : 'workspace-write' }) } catch { /* fail closed */ }
+      return artifactProtection({ store: join(dir, 'artifact-store'), policy, target })
+    },
     onEvent: (event, fields) => {
       logger.log(event, fields)
       // W1：派发被接受时先记下「子会话 id → 任务 id」，首回合就能拿到 agent policy（不等台账回写）。
@@ -821,10 +829,10 @@ export async function apply(ctx, rawConfig = {}) {
           source: 'dispatcher',
         })
       } else if (event === 'subagent.failed') {
-        settlement?.fail({ taskId: fields.taskId, sessionId: fields.sessionId, error: fields.detail?.error, source: 'dispatcher' })
+        void reportSettle({ taskId: fields.taskId, sessionId: fields.sessionId, stopReason: 'error', error: fields.detail?.error, source: 'dispatcher' })
       }
       // 子会话结算 = 并发槽位释放，唤醒队列补位。
-      if (event === 'subagent.settled' || event === 'subagent.failed') queue?.pump()
+      // 收集完成后由结算器唤醒队列。
     },
   })
   // P2-2：合并窗口是 notify.js 里的固定常量（配置键 mergeWindowMs 已删）——5 秒属于 UX 阈值，
@@ -893,48 +901,16 @@ export async function apply(ctx, rawConfig = {}) {
     onOrphaned: task => { void goalBridge.clear(task.id, task.session_id) },
   })
 
-  // 自动 done 的产物补齐（D5）：必须在结算通知发出**之前**跑完，否则「子会话自然结束 → 结算自动判 done」
-  // 这条最常见收场路径的通知里永远没有产物，也就没有 present 交付指令（reports/t6.1-present.md §5）。
-  // 返回补齐后的台账行给通知渲染；收集失败只告警，不影响已落库的终态。
-  function collectArtifactsBeforeSettleNotify(task, status) {
-    // delivered 也会发通知（且同样带 present 指令），产物补齐对它一样有意义。
-    if (status !== 'done' && status !== 'delivered') return task
-    const sessionId = task?.session_id
-    if (sessionId === undefined || sessionId === null) return task
-    const session = service('agents')?.get?.(sessionId)?.session ?? service('sessions')?.get?.(sessionId)
-    if (session === undefined) return task
-    try {
-      const result = collectWorkspaceArtifacts({
-        session,
-        workspaceChanges: service('workspaceChanges'),
-        fallbackCwd: task.target_dir ?? join(dir, 'workspace'),
-        max: MAX_AUTO_ARTIFACTS,
-      })
-      const added = appendMissingArtifacts(task.artifacts, result.artifacts)
-      if (added.length === 0) return task
-      const updated = setTaskArtifacts(db, task.id, added)
-      logger.log('task.settle.artifacts.auto', {
-        taskId: task.id,
-        detail: { added: added.length, turns: result.turns },
-      })
-      return updated ?? task
-    } catch (error) {
-      warnings(`dsh-orchestrator: 结算前产物收集失败：${error?.message ?? error}`)
-      return task
-    }
-  }
-
   settlement = createSettlementReporter({
     db,
     notifier,
     logger,
+    senderOf: id => service('agents')?.get?.(id),
     labelFor: task => taskLabel(task, { all: listTasks(db) }),
     // B1：超 64KB 的返回消息写这里（按需创建，启动时不建目录）。
     reportsDir: join(dir, 'reports'),
     releaseSession: target => dispatcher.releaseWritableRoots?.(target),
     pump: () => queue?.pump(),
-    // D5：通知前补齐产物，让结算通知也带可交付清单（与 task_report 那条路同一份产物）。
-    beforeNotify: collectArtifactsBeforeSettleNotify,
     // G1：结算自动收场时收敛平台 goal：done → complete；其余终态（cancelled/failed/orphaned）→ clear。
     onTerminal: (task, status) => {
       void (status === 'done' ? goalBridge.complete(task.id, task.session_id) : goalBridge.clear(task.id, task.session_id))
@@ -974,10 +950,16 @@ export async function apply(ctx, rawConfig = {}) {
     enabled: config.idleWatchdog,
   })
 
-  // 产物补齐已挪到通知之前（collectArtifactsBeforeSettleNotify，作为 beforeNotify 钩子），
-  // 这条路径只需要把事件喂给结算器：task_report done 那条路另有 workspace/changes 钩子。
+  // 两个生命周期来源共用同一个 promise；只有保存完成后结算器才能释放工作占用。
+  const artifactDelivery = createArtifactDelivery({
+    db, settlement,
+    sessionOf: id => service('agents')?.get?.(id)?.session ?? service('sessions')?.get?.(id),
+    workspaceChanges: () => service('workspaceChanges'),
+    mainDir: () => resolveCoordinator()?.session?.header?.cwd ?? join(dir, 'workspace'),
+    log: (event, fields) => logger.log(event, fields),
+  })
   function reportSettle(input) {
-    return settlement?.report(input)
+    return artifactDelivery.report(input)
   }
 
   // 平台生命周期事件：续派/冷恢复起的新 activation 不走 dispatch 的 track，只有 subagent/end 能看到。
@@ -985,7 +967,7 @@ export async function apply(ctx, rawConfig = {}) {
   const settleDisposer = typeof ctx.on === 'function'
     ? ctx.on('subagent/end', info => {
       if (info?.local !== true || info?.id === undefined) return
-      reportSettle({
+      return reportSettle({
         sessionId: String(info.id),
         stopReason: info.stopReason,
         output: info.lastAssistantMessage,
@@ -997,6 +979,11 @@ export async function apply(ctx, rawConfig = {}) {
   // 启动对账（S2）：running 无活跃子会话 / catalog 查不到 → orphaned，并汇总上报一次；
   // 此时协调者可能还没加载，汇总会保留到 agent/created 再补发。
   await reconciler.reconcile({ coordinatorSessionId: resolvedCoordinatorId() })
+  for (const task of listTasks(db)) {
+    if (task.delivery_pending && !isChildLive(task.session_id)) {
+      await reportSettle({ taskId: task.id, sessionId: task.session_id, stopReason: 'error', source: 'startup-recovery' })
+    }
+  }
 
   // 看门狗放在启动对账之后：先让 S2 把「进程重启后没人在跑」的 running 标 orphaned，
   // 剩下的 running 才交给看门狗判断是否空闲（避免同一任务既报丢失又报卡住）。
@@ -1059,34 +1046,15 @@ export async function apply(ctx, rawConfig = {}) {
   }).map(tool => ctx.tools.register(tool))
 
   // task_report done 所在回合的 workspace/changes 事件在 turn stopping 时才追加：
-  // 监听提交后的事件（摘要服务在 append 返回后才登记，所以推迟到微任务再读），把当前回合的改动补进已结束任务。
-  // 两段式终态：子会话报 done 会先把任务落到 delivered，确认后才 done，所以两个状态都要兜。
-  const collectArtifactsAfterTurn = session => {
+  // 摘要服务在 append 返回后才登记，推迟到微任务再读取，完成待交付请求。
+  const collectArtifactsAfterTurn = (session, event) => {
     queueMicrotask(() => {
-      try {
-        const task = findTaskBySession(db, session?.id, { status: 'delivered' })
-          ?? findTaskBySession(db, session?.id, { status: 'done' })
-        if (task === undefined) return
-        const result = collectWorkspaceArtifacts({
-          session,
-          workspaceChanges: service('workspaceChanges'),
-          fallbackCwd: task.target_dir ?? join(dir, 'workspace'),
-          max: MAX_AUTO_ARTIFACTS,
-        })
-        const added = appendMissingArtifacts(task.artifacts, result.artifacts)
-        if (added.length === 0) return
-        const next = setTaskArtifacts(db, task.id, added)
-        logger.log('task.report.artifacts.auto', {
-          taskId: task.id,
-          detail: { added: added.length, turns: result.turns, total: next.artifacts.length },
-        })
-      } catch (error) {
-        warnings(`dsh-orchestrator: 产物自动收集失败：${error?.message ?? error}`)
-      }
+      const task = findTaskBySession(db, session?.id)
+      if (task?.delivery_pending && event.seq > (task.delivery_pending.eventSeq ?? 0)) void reportSettle({ taskId: task.id, sessionId: session.id, eventSeq: event.seq, stopReason: 'completed', source: 'workspace-changes' })
     })
   }
   const artifactDisposer = ctx.on?.('session/event', (session, event) => {
-    if (event?.type === 'workspace/changes') collectArtifactsAfterTurn(session)
+    if (event?.type === 'workspace/changes') collectArtifactsAfterTurn(session, event)
   })
 
   const panel = createPanelActions({

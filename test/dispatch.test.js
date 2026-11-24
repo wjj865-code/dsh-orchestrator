@@ -250,9 +250,9 @@ test('access:full：续派仍是完整访问（resume 出的新 Session 对象�
   assert.equal(modes.length, 2)
   assert.deepEqual(modes[1][2], { mode: 'danger-full-access', source: 'delegation' })
 
-  // 不传 access 的续派不再动沙箱。
+  // 普通续派恢复 workspace-write（done 请求会临时冻结为只读）。
   await dispatcher.send(member.id, '再再续', undefined, undefined, 't-1', false)
-  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 2)
+  assert.equal(env.appends.filter(([, event]) => event === 'sandbox/mode').length, 3)
 })
 
 test('access:full：缺 sandboxPolicy 服务也不炸，不影响派发', async () => {

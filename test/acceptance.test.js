@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -406,7 +406,7 @@ test('真进程：cwd 就是任务目录（命令拿到的 process.cwd() 一致�
     cwd,
   })
   assert.equal(result.ok, true)
-  assert.equal(result.results[0].outputTail, cwd)
+  assert.equal(realpathSync(result.results[0].outputTail), realpathSync(cwd))
   rmSync(cwd, { recursive: true, force: true })
 })
 

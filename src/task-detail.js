@@ -106,6 +106,10 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
     `状态：${statusLabel(task.status)}${effectiveReadOnly ? '｜只读' : (fullAccess ? '｜完整访问' : '')}`,
     `目标：${text(brief.goal ?? task.goal)}`,
   ]
+  if (task.artifact_dir) lines.push(`产物目录：${task.artifact_dir}（不是工作目录；阶段文档用 artifact_save，计划用 plan_save）`)
+  if (task.artifact_store_dir) lines.push(`产物真源：${task.artifact_store_dir}（宿主私有存储；主会话目录仅暂存与引用）`)
+  if (task.delivery_pending) lines.push('交付：等待回合结束后的产物收集，不能继续修改')
+  if (task.artifact_stage) lines.push(`产物收集：${task.artifact_stage.mode}｜${task.artifact_stage.complete ? '已保存捕获范围' : '不完整'}${task.artifact_stage.git?.unarchived ? '｜Git 有未归档内容' : ''}`)
   // 工作目录最多出现一个：就是 target_dir；写提示紧跟其后（与旧 brief 同口径）。
   if (target !== '') {
     lines.push(`工作目录：${target}${targetInherited ? '（继承协调者 cwd：任务没有显式 target）' : ''}`)

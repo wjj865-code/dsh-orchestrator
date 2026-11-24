@@ -11,6 +11,7 @@ import {
 } from './ledger.js'
 import { dependencyState, validateDepends } from './deps.js'
 import { taskLabel } from './task-label.js'
+import { ensureArtifactDirectory } from './artifact-store.js'
 import { statusLabel } from './state.js'
 import { panelFailure } from './action-errors.js'
 // P0-2/P0-3：面板「追加」与 task_message 同口径——判定走 write-gate 门面（共用同一份判定 + 内存占位），
@@ -191,6 +192,10 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         createdAt: task.created_at,
         updatedAt: task.updated_at,
         artifacts: task.artifacts,
+        artifactDir: task.artifact_dir,
+        artifactStoreDir: task.artifact_store_dir,
+        artifactStage: task.artifact_stage,
+        deliveryPending: task.delivery_pending !== null,
         brief: task.brief,
         // 平台 goal 只读镜像：面板只展示，不提供暂停/恢复/清除动作。
         goalState: task.goal_state ?? null,
@@ -442,6 +447,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     let retried
     try {
       retried = createTask(db, {
+        artifactRoot: defaultDir(),
         brief: task.brief,
         coordinatorSession: status.id ?? task.coordinator_session,
         targetDir: retryTarget,
@@ -493,6 +499,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     // 与面板按钮同源（panel-gates.followupGate）：终态/等前置/待派发/失败/无会话一律拒绝。
     const denied = followupFailure(task)
     if (denied !== undefined) return denied
+    ensureArtifactDirectory(db, task, defaultDir())
     // 幂等：同任务 + 同文本 + 窗口内已成功投递过 → 视为同一次点击，不重复发、不重复累计 attempts。
     // 上一次投递失败（后面有 delivery_failed 行）不算成功，窗口内允许立刻重发。
     const dedupeMs = Number.isFinite(config?.messageDedupeMs)

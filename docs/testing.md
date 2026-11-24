@@ -37,7 +37,7 @@
 | G5 | 工具 schema 契约 | 逐个工具体检 | `parameters.type === 'object'`、根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 中文可读；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面 |
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
-| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 25 键；全局工具 11 个（协调者可见 8 + 子会话 3）；协调者另有预设自有的只读 `read` 与 `skill`（不计入 11）；**协调者预设不得出现 `tool-fs-search`**（`glob`/`grep` 已移除，`test/config.test.js` 直接断言无该行/无该包名）；deny/keep 名单与工具表一致 |
+| G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 25 键；全局工具 12 个（协调者可见 8 + worker 专属 4）；协调者另有预设自有的只读 `read` 与 `skill`；**协调者预设不得出现 `tool-fs-search`**；deny/keep 名单与工具表一致 |
 | G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、参考表同源、内链可达） |
 | G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **160 KiB**；160 KiB 之下按子预算表（脚本头部，合计 = 160）逐块核算，某一页超了先删重复渲染/收敛样式，再谈抬预算。**为什么从 95 调到 148**：工作台 v1 要新增总览/任务组/组工作台/排期/自动化五页与常驻只读 dock，平台只 serve 一个 `client.js`（无代码分割），全功能实测 143–146 KiB；先定 128 KiB 实测不够（差 12–16 KiB），用户拍板保留全功能 → 148 KiB。**0.32.0 能力包面板**（独立 main panel + 侧栏入口 + 安装确认卡 + EnvVarsCard）没有代码分割，只能加进同一个产物 → 用户拍板抬到 **160 KiB**。**0.33.0 自动化创建入口**（删自定义表单、加「创建自动化」按钮 + 主会话预填 + 会话头角色判定）是**净减**，不抬预算 |
 
@@ -228,7 +228,7 @@ dsh --profile verify web --no-open --port <空闲端口> --host 127.0.0.1
 | 2 | 子会话 `task_report done` | 协调者收到通知；`task_message({action:'close'})` 收成「已完成」 |
 | 3 | 交付后追问 | 复用同一个子会话，任务回「进行中」，完成后再次交付 |
 | 4 | `task_message({action:'stop'})` | 任务「已取消」，子会话被中断 |
-| 5 | 计划任务 `planFirst:true` | 只读沙箱；计划落 `reports/plans/<任务名>.md`；`blocked` 上报后**普通 message 不批准**，`task_message({action:'approve'})` 才切可写并落审计 |
+| 5 | 计划任务 `planFirst:true` | 只读沙箱；计划落任务产物目录 `docs/<任务名>-<版本>.md`；`blocked` 上报后**普通 message 不批准**，`task_message({action:'approve'})` 才切可写并落审计 |
 | 6 | 只读任务 `readOnly:true` | 写文件/写 shell 被拒且可读；续派仍只读 |
 | 7 | `worktree:true` | 真的建出 `orch/<taskId>` 与检出；通知/`task_status` 标「隔离」；`git status` 无 `.agents/` |
 | 8 | 多分支仓库不给 `worktreeBase` | 任务不创建、返回候选，带基线重调后建树 |

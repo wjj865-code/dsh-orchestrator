@@ -26,13 +26,14 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
   const spawned = []
   const sent = []
   const tools = []
+  const listeners = new Map()
   const subagentsService = {
     async startActivation(spec) {
       spawned.push(spec)
       return {
         childId: teammate.id,
         messageId: 'msg-1',
-        result: Promise.resolve({ output: [], stopReason: 'completed' }),
+        result: new Promise(() => {}),
         dispose: async () => {},
       }
     },
@@ -46,10 +47,11 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
     // inject 里声明的服务同样返回实例），其余服务沿用冒烟用的 agents 替身。
     get(name) {
       if (name === 'subagents') return subagentsService
+      if (name === 'sandboxPolicy') return { resolve: () => ({ mode: 'read-only' }) }
       return { get: id => (id === coordinator.id ? coordinator : undefined) }
     },
     tools: { register(tool) { tools.push(tool); return () => {} } },
-    on: () => () => {},
+    on: (name, handler) => { listeners.set(name, handler); return () => {} },
     effect: () => () => {},
     agentTeams: {
       async spawnTeammate(agent, input) {
@@ -94,10 +96,12 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
     assert.equal(sent.length, 0)
 
     await byName.task_report.execute({ task_id: taskId, status: 'done', summary: '改完，测试全绿' }, { agent: teammate })
+    await listeners.get('subagent/end')({ id: teammate.id, local: true, stopReason: 'completed' })
     await wait(30)
     assert.equal(sent.length, 0)
-    assert.equal(coordinator.injected.length, 1)
-    assert.match(coordinator.injected[0].content[0].text, /任务「修复空数据文案」已交付待确认/)
+    const deliveryNotices = coordinator.injected.filter(n => /已交付待确认/.test(n.content[0].text))
+    assert.equal(deliveryNotices.length, 1)
+    assert.match(deliveryNotices[0].content[0].text, /任务「修复空数据文案」已交付待确认/)
 
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
@@ -164,6 +168,7 @@ test('追问后子会话先报 progress：主会话立刻收到；后续 progres
     logger: { warn() {} },
     get(name) {
       if (name === 'subagents') return subagentsService
+      if (name === 'sandboxPolicy') return { resolve: () => ({ mode: 'read-only' }) }
       return { get: id => (id === coordinator.id ? coordinator : undefined) }
     },
     tools: { register(tool) { tools.push(tool); return () => {} } },
