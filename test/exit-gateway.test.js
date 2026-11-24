@@ -21,8 +21,10 @@ import { taskRefOf } from '../src/task-ref.js'
 import { taskLabel, taskLabelWithRef } from '../src/task-label.js'
 import { sampleBrief, tempDir, endReportedTurn } from './helpers.js'
 
-/** 裸编号形态（`t-` + 至少 4 位小写字母/数字）：用户面出现即判定泄漏。 */
-const BARE_ID = /(?<!artifacts\/)(?<!artifact-store\/)\bt-[0-9a-z]{4,}\b/
+/** 裸编号形态（`t-` + 至少 4 位小写字母/数字）：用户面出现即判定泄漏。
+ *  白名单只放「真实文件路径」：`artifacts/t-…`、`artifact-store/t-…` 是产物目录/真源目录的**路径段**
+ *  （改了就读不到产物），分隔符按平台取——Windows 上是 `\`，只写 `/` 会把本地每条带路径的回执误判成泄漏。 */
+const BARE_ID = /(?<!artifacts[\\/])(?<!artifact-store[\\/])\bt-[0-9a-z]{4,}\b/
 const REF = /tk-[0-9a-z]{6}/
 
 function fakeDispatcher() {
@@ -143,7 +145,8 @@ test('出口：通知正文（含交付动作指令）只有任务名 + tk- 引�
   const text = sent.join('\n')
   assert.match(text, REF)
   assert.doesNotMatch(text, BARE_ID, text)
-  assert.equal(text.replace(/(?:artifacts|artifact-store)\/t-[0-9a-z]{8}/g, 'artifacts/task').includes(task.id), false, text)
+  // 路径段白名单按平台分隔符（Windows `\`）：剥掉已知的产物路径后，正文里不许再剩裸编号。
+  assert.equal(text.replace(/(?:artifacts|artifact-store)[\\/]t-[0-9a-z]{8}/g, 'artifacts/task').includes(task.id), false, text)
   db.close()
 })
 

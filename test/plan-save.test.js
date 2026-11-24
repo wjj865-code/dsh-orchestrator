@@ -74,8 +74,8 @@ test('P8 plan_save：计划写入 reports/plans/<任务名>.md 并登记为产�
   assert.match(text, /3–8 行摘要/)
   assert.match(text, /待拍板问题清单/)
   assert.equal(existsSync(path), true)
-  // 回执里零裸编号：路径与文案都不带 t-xxxx。
-  assert.match(path, /artifact-store\/t-[0-9a-z]{8}\/docs\/落盘计划-1\.md$/)
+  // 回执里零裸编号：路径与文案都不带 t-xxxx（路径分隔符按平台取，Windows 上是 `\`）。
+  assert.match(path, /artifact-store[\\/]t-[0-9a-z]{8}[\\/]docs[\\/]落盘计划-1\.md$/)
   const body = readFileSync(path, 'utf8')
   // 文档头带任务名 + 任务引用 + 目标，正文原样保留。
   assert.ok(body.startsWith('# 目标'))

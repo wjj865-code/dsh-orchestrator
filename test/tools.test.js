@@ -570,7 +570,8 @@ test('对外文案：create/list/status 带**任务引用**（tk-），全链路
   assert.doesNotMatch(list, /t-[0-9a-f]{8}/, 'task_list 不裸露编号')
   const status = await call(tools, 'task_status', { task_id: refA })
   assert.match(status, /任务「同名（tk-[0-9a-z]{6}）」/)
-  assert.doesNotMatch(status.replace(/(?:artifacts|artifact-store)\/t-[0-9a-f]{8}/g, 'artifacts/task'), /t-[0-9a-f]{8}/, '真实路径之外不裸露编号')
+  // 白名单只放真实产物路径（分隔符按平台取）；剥掉它们之后正文里不许再剩裸编号。
+  assert.doesNotMatch(status.replace(/(?:artifacts|artifact-store)[\\/]t-[0-9a-f]{8}/g, 'artifacts/task'), /t-[0-9a-f]{8}/, '真实路径之外不裸露编号')
   const sent = await call(tools, 'task_message', { task_id: refA, message: '继续' })
   assert.doesNotMatch(sent, /t-[0-9a-f]{8}/, '续派回执不裸露 id')
   const stoppedTask = listTasks(db).find(task => task.id !== idA)
