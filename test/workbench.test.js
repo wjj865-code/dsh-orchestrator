@@ -402,6 +402,29 @@ test('createWorkbench 自动化全链路：授权确认 → 宿主创建 → 暂
   db.close()
 })
 
+test('createWorkbench.automations：绑定任务的自动化显示「任务名 + 引用」，不暴露台账编号', async () => {
+  const db = await openLedger(tempDir())
+  const task = makeTask(db, { title: '跟进中的活', status: 'running' })
+  const schedule = fakeSchedule()
+  const bench = createWorkbench({ db, schedule: () => schedule, mainSessionId: () => 's-main' })
+  const created = await bench.saveAutomation({
+    kind: 'task', refId: task.id, title: '每日跟进', timing: { kind: 'daily', time: '09:00' }, confirm: true,
+  })
+  assert.equal(created.ok, true)
+  const row = (await bench.automations()).rows[0]
+  // R1：refLabel 是「名称（tk-xxx）」，ref 单独给前端做 chip；refId 仍留作动作键。
+  assert.equal(row.refLabel, `跟进中的活（${task.ref}）`)
+  assert.equal(row.ref, task.ref)
+  assert.equal(row.refId, task.id)
+  // 任务被删掉：引用置墓碑 → 标签回落到那条引用（不再回落 t-xxxx）。
+  const { deleteTask } = await import('../src/ledger.js')
+  deleteTask(db, task.id)
+  const gone = (await bench.automations()).rows[0]
+  assert.equal(gone.refLabel, task.ref)
+  assert.equal(gone.ref, task.ref)
+  db.close()
+})
+
 test('门控纯函数：组改名 / 归档 / 自动化（与端点下发的布尔值同源）', () => {
   assert.equal(groupSaveGate(undefined, { name: 'a' }).ok, true, '虚拟组允许第一次改名')
   assert.equal(groupSaveGate(undefined, { name: 'a', exists: false }).reason, 'not_found')

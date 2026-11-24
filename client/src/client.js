@@ -19,6 +19,7 @@ import {
   displayNameOf, textOf, listOf, timeLabel, shortPath, fileAddressOf, fileAddressProblem,
   createFocusRequest, selectTaskChips, chipStateOf, chipViewOf, chipTooltipOf, chipVisibleTitle,
   chipOpenTargetOf, isLatestTurn,
+  splitTaskRefs, refDisplayOf, refSegmentsOf,
   startOfMonth, plannedOnDay, planStampOnDay, groupTasksOf, nextPlannedTask, automationStateLabel,
   monthGrid, dateKeyOf,
 } from './logic.js'
@@ -103,6 +104,8 @@ export const createClient = (req) => {
     chipVisibleTitle,
     chipOpenTargetOf,
     isLatestTurn,
+    // R3：抽屉正文里的任务引用 → 名字 chip（纯函数在 logic.js，视图只装配）。
+    refSegmentsOf,
     // 工作台 v1（P11）：页面组件 + 数据源 + 纯逻辑。
     createWorkbench,
     WORKBENCH_PAGES,
@@ -451,6 +454,10 @@ export const createClient = (req) => {
       chipTooltipOf,
       chipVisibleTitle,
       chipOpenTargetOf,
+      // R3：正文里的引用切段/查表（五种兜底的纯函数，test/client.test.js 直接断言）。
+      splitTaskRefs,
+      refDisplayOf,
+      refSegmentsOf,
       isLatestTurn,
       createFocusRequest,
       createTaskFeed,

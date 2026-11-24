@@ -19,7 +19,8 @@ import {
 } from './panel-gates.js'
 import { statusLabel } from './state.js'
 import { statusesWith } from './status-facts.js'
-import { taskLabel } from './task-label.js'
+import { taskLabel, taskLabelWithRef } from './task-label.js'
+import { taskRefTokenOfAny } from './task-ref.js'
 
 /** 工作台投影的硬上限（防止一个大组/一个长窗口把面板拖死）。 */
 export const WORKBENCH_LIMITS = Object.freeze({
@@ -446,11 +447,23 @@ export function createWorkbench({ db, schedule, mainSessionId, log = () => {}, n
     const nextFireAt = host !== null && !host.missing && typeof host.scheduledAt === 'string'
       ? parseStamp(host.scheduledAt)
       : null
+    // R1：绑定「单条任务」的自动化，绑的其实是台账编号（`ref_id`）。面板显示一律用**任务名 + 引用**
+    // （`taskLabelWithRef`），不再把 `t-xxxx` 当标签贴出来；任务已删除时才回落到它的墓碑引用。
+    const boundTask = row.kind === 'task' && typeof row.ref_id === 'string' && row.ref_id !== ''
+      ? getTask(db, row.ref_id)
+      : undefined
+    const boundRef = boundTask === undefined
+      ? (typeof row.ref_id === 'string' && row.ref_id !== '' ? taskRefTokenOfAny(db, row.ref_id) : null)
+      : (boundTask.ref ?? null)
     return {
       id: row.id,
       kind: row.kind,
       refId: row.ref_id,
-      refLabel: row.ref_id,
+      // refLabel = 面板上那一句「任务 X（tk-xxxxxx）」；ref 单独给引用，前端做 chip 用。
+      refLabel: boundTask !== undefined
+        ? taskLabelWithRef(boundTask)
+        : (boundRef ?? row.ref_id),
+      ref: boundRef,
       title: row.title,
       prompt: row.prompt,
       timing: row.timing,

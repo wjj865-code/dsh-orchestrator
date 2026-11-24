@@ -1437,12 +1437,14 @@ test('T1 brief 纯指引：目标与经验都不进提示词，详情在 task_de
   await call(tools, 'task_create', { ...sampleBrief({ title: '修复登录模块', goal: longGoal }), target })
   const task = listTasks(db).find(item => item.title === '修复登录模块')
   const prompt = dispatcher.calls.find(callRow => callRow[0] === 'spawn')[2]
-  // t-4f7ce108：提示词只剩编号 + 详情指针两行；静态提示（上报/交付/装依赖）归 W1 每回合注入。
+  // t-4f7ce108：提示词只剩引用 + 任务名 + 详情指针三行；静态提示（上报/交付/装依赖）归 W1 每回合注入。
+  // R2：多了【任务名】一行——子会话第一句就能用任务名汇报（不再等到读完详情才知道怎么称呼）。
   const promptLines = prompt.split('\n')
-  assert.equal(promptLines.length, 2)
+  assert.equal(promptLines.length, 3)
   assert.equal(promptLines[0], `【任务引用】${task.ref}`)
+  assert.equal(promptLines[1], '【任务名】修复登录模块')
   assert.match(prompt, /task_detail/)
-  assert.match(promptLines[1], /^【任务详情】/)
+  assert.match(promptLines[2], /^【任务详情】/)
   assert.equal(prompt.includes('【worktree 依赖】'), false)
   assert.equal(prompt.includes('【执行中待确认】'), false)
   assert.equal(prompt.includes('【确认方式】'), false)

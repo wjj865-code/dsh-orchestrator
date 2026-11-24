@@ -36,6 +36,8 @@ export function createViews({
   countTasks, matchesFilter, matchesQuery, groupArtifacts,
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
   selectTaskChips, chipViewOf, chipTooltipOf, chipVisibleTitle, chipOpenTargetOf, isLatestTurn,
+  // R3：正文里的任务引用切段 + 查表（logic.js 的纯函数，视图只渲染）。
+  refSegmentsOf,
   // 工作台 v1（P11）：页面组件 + 数据源 + 纯逻辑。
   createWorkbench, WORKBENCH_PAGES, WORKBENCH_STORAGE_KEY, WORKBENCH_POLL_MS,
   workbenchApi, startOfMonth, plannedOnDay, planStampOnDay, groupTasksOf, nextPlannedTask, automationStateLabel,
@@ -60,6 +62,27 @@ export function createViews({
       {labelOf(STATUS_LABEL, status)}
     </Badge>
   )
+  // R3：正文里的任务引用（tk-xxxxxx）渲染成「任务名」chip，其余文字原样。
+  // 没有引用时直接返回原字符串（零额外节点、不改既有快照的 DOM 形状）。
+  // 查表来源：面板快照 tasks（现名 + 同名判定）+ 详情 refs（含已删除的墓碑引用）；
+  // 查不到/已删除的引用**原样显示**（logic.js 的 refDisplayOf 负责五种兜底）。
+  const RefText = ({ text, tasks, refs }) => {
+    const value = typeof text === 'string' ? text : String(text ?? '')
+    if (value === '') return value
+    const segments = refSegmentsOf(value, { tasks, refs })
+    if (!segments.some(segment => segment.type === 'ref')) return value
+    return segments.map((segment, index) => {
+      if (segment.type !== 'ref') return <span key={`t${index}`}>{segment.text}</span>
+      const display = segment.display
+      return (
+        <Chip
+          key={`r${index}`}
+          tone={display === null ? 'muted' : display.tone}
+          title={display === null ? segment.ref : display.tooltip}
+        >{display === null ? segment.ref : display.label}</Chip>
+      )
+    })
+  }
   // 只读圆点行：产物 / 验收检查 / 依赖 / 官方板共用（行内没有动作，按钮由调用方补）。
   const DotRow = ({ tone, children }) => (
     <div className="orch-artifact">
@@ -1552,6 +1575,8 @@ export function createViews({
 
     const detailBody = () => {
       const task = detail.task || {}
+      // R3：详情下发的「消息里提到的引用 → 台账现名/墓碑状态」索引（老服务端没有这个字段时按空表）。
+      const detailRefs = Array.isArray(detail.refs) ? detail.refs : []
       // 1) 概览：引用/状态/目录/分组/优先级/写域/时间。
       const overviewBody = (
         <div className="orch-kv">
@@ -1605,7 +1630,7 @@ export function createViews({
               : null}
             <pre className="orch-pre">{lastMessage.stored === 'file'
               ? `${lastMessage.summary || ''}\n\n全文：${lastMessage.path || '（路径缺失）'}`
-              : String(lastMessage.text || lastMessage.summary || '（空）')}</pre>
+              : <RefText text={String(lastMessage.text || lastMessage.summary || '（空）')} tasks={tasks} refs={detailRefs} />}</pre>
           </div>
         )
 
@@ -1756,7 +1781,8 @@ export function createViews({
                     : null}
                   <span className="orch-msg-at">{timeLabel(row.at)}</span>
                 </div>
-                <div className="orch-msg-text">{row.text}</div>
+                {/* R3：消息正文里的 tk- 引用显示成任务名（查不到就原样显示）。 */}
+                <div className="orch-msg-text"><RefText text={row.text} tasks={tasks} refs={detailRefs} /></div>
               </div>
             ))}
             {messages.length > shownMessages.length
@@ -1768,9 +1794,13 @@ export function createViews({
       // 6) 依赖：上游前置 + 下游依赖本任务，各自带状态和错误提示。
       const dependencies = Array.isArray(detail.dependencies) ? detail.dependencies : []
       const dependents = Array.isArray(detail.dependents) ? detail.dependents : []
+      // R1：前置/下游行只显示「名称 + 引用」；已删除的前置不回落内部编号（显示占位 + 墓碑引用）。
       const depRow = row => (
         <DotRow key={`${row.status}:${row.id}`} tone={toneOf(STATUS_TONE, row.status)}>
-          <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }} title={row.error || row.id}>{row.title}</span>
+          <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }} title={row.error || row.ref || row.title}>
+            {(row.title === '' || row.title === undefined || row.title === null) ? '（任务已删除）' : row.title}
+          </span>
+          {row.ref ? <Chip tone="muted" title={`引用 ${row.ref}`}>{row.ref}</Chip> : null}
           {statusBadge(row.status)}
           {row.error ? <Chip tone="bad" title={row.error}>{'有错误'}</Chip> : null}
         </DotRow>

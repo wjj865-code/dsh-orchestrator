@@ -101,7 +101,8 @@ test('集成冒烟：建任务 → 子会话 → 回报 → 卡片 → 交付通
     assert.equal(sent.length, 0)
     const deliveryNotices = coordinator.injected.filter(n => /已交付待确认/.test(n.content[0].text))
     assert.equal(deliveryNotices.length, 1)
-    assert.match(deliveryNotices[0].content[0].text, /任务「修复空数据文案」已交付待确认/)
+    // R3：通知标题带任务引用（tk-），用户一眼对上 task_list 里的那条。
+  assert.match(deliveryNotices[0].content[0].text, /任务「修复空数据文案（tk-[0-9a-z]{6}）」已交付待确认/)
 
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
@@ -188,7 +189,7 @@ test('追问后子会话先报 progress：主会话立刻收到；后续 progres
     await byName.task_report.execute({ task_id: taskId, status: 'progress', summary: '部分结论：PR 已开，等 CI' }, { agent: teammate })
     assert.equal(coordinator.injected.length, 1)
     const text = coordinator.injected[0].content[0].text
-    assert.match(text, /任务「长任务」有新进展（回答你的追问）：部分结论：PR 已开，等 CI/)
+    assert.match(text, /任务「长任务（tk-[0-9a-z]{6}）」有新进展（回答你的追问）：部分结论：PR 已开，等 CI/)
     assert.match(text, /task_message 追问同一子会话/)
 
     const { DatabaseSync } = await import('node:sqlite')

@@ -182,3 +182,59 @@ export function resolveTaskInput(db, raw) {
 
 /** token 是否形如 `tk-xxxxxx`（出口清洗/测试断言用，不查库）。 */
 export const looksLikeTaskRef = value => typeof value === 'string' && TASK_REF_RE.test(value.trim())
+
+/**
+ * 一段自由文本里出现的任务引用（去重、保序、不查库）。
+ *
+ * 面板「最新回复 / 消息」把回复正文里的 `tk-xxxxxx` 渲染成 chip（名字 + 引用）就靠它切段；
+ * 只认严格形态（`tk-` + 6 位小写字母数字），别把 `tk-xxx` 这类占位符当成引用。
+ * 两侧边界断言与客户端 `client/src/logic.js` 的 `TASK_REF_TEXT_RE` 同口径：`tk-abc1234`、
+ * `x-tk-abc123` 都不算引用（否则会把用户正文里的长 token 截一半、换成一个错的任务名）。
+ * @param {string} value 正文
+ * @param {{limit?: number}} [options] limit > 0 时只取前 N 个（面板投影要限长）
+ * @returns {string[]}
+ */
+export function refsInText(value, { limit = 0 } = {}) {
+  const text = typeof value === 'string' ? value : ''
+  const found = []
+  for (const match of text.matchAll(/(?<![0-9a-z-])tk-[0-9a-z]{6}(?![0-9a-z])/g)) {
+    if (found.includes(match[0])) continue
+    found.push(match[0])
+    if (limit > 0 && found.length >= limit) break
+  }
+  return found
+}
+
+/**
+ * 按 token 查引用行——**包含已置墓碑的引用**（面板要能说「这条引用已失效」）。
+ *
+ * 与 `taskRefOf` 的差别：后者只对「还能用来调工具」的引用返回 token，墓碑行返回 null；
+ * 这里返回 `{taskId, retired}`，墓碑也如实报 retired=true。
+ * @returns {{taskId: string, retired: boolean} | null} 查不到（含 token 形状不对）返回 null
+ */
+export function taskRefInfo(db, token) {
+  const value = typeof token === 'string' ? token.trim() : ''
+  if (!TASK_REF_RE.test(value)) return null
+  if (db === null || db === undefined || typeof db.prepare !== 'function') return null
+  try {
+    const row = db.prepare('SELECT task_id, retired_at FROM task_refs WHERE token = ?').get(value)
+    return row === undefined ? null : { taskId: String(row.task_id), retired: row.retired_at !== null }
+  } catch (error) {
+    if (tableMissing(error)) return null
+    throw error
+  }
+}
+
+/** 台账编号 → 它的引用 token（**含已失效的墓碑引用**；没登记过返回 null）。 */
+export function taskRefTokenOfAny(db, taskId) {
+  const id = typeof taskId === 'string' ? taskId.trim() : ''
+  if (id === '') return null
+  if (db === null || db === undefined || typeof db.prepare !== 'function') return null
+  try {
+    const row = db.prepare('SELECT token FROM task_refs WHERE task_id = ?').get(id)
+    return row === undefined ? null : String(row.token)
+  } catch (error) {
+    if (tableMissing(error)) return null
+    throw error
+  }
+}

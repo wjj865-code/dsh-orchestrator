@@ -98,11 +98,13 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   const effectiveReadOnly = readOnly || planning
   // per-task 完整访问：只读/计划阶段永远压过它（运行期事实优先），台账与 brief 任一处标了 full 都算。
   const fullAccess = !effectiveReadOnly && (brief.access === 'full' || task.access === 'full')
+  // 版本 B《ID 出口网关》+ R1（人类友好展示）：首行是**任务名 + 引用**合一行——
+  // `任务：名称（tk-xxxxxx）`。子会话第一次就同时拿到「怎么称呼它」与「怎么调工具」，
+  // 给用户的回复里自然会用名称；台账内部编号（t-xxxx）仍然一个字都不出现。
+  const title = single(brief.title ?? task.title)
+  const ref = text(task.ref)
   const lines = [
-    // 版本 B《ID 出口网关》：详情只写**任务引用**（tk-xxxxxx），不写台账内部编号——
-    // 子会话手里没有 t-xxxx，也就抄不进它给用户的回复。
-    `任务引用：${text(task.ref) || '（未生成）'}`,
-    `任务：${single(brief.title ?? task.title)}`,
+    `任务：${title === '' ? '（未命名）' : title}（${ref === '' ? '引用未生成' : ref}）`,
     `状态：${statusLabel(task.status)}${effectiveReadOnly ? '｜只读' : (fullAccess ? '｜完整访问' : '')}`,
     `目标：${text(brief.goal ?? task.goal)}`,
   ]

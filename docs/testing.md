@@ -39,7 +39,7 @@
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
 | G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 25 键；全局工具 12 个（协调者可见 8 + worker 专属 4）；协调者另有预设自有的只读 `read` 与 `skill`；**协调者预设不得出现 `tool-fs-search`**；deny/keep 名单与工具表一致 |
 | G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、参考表同源、内链可达） |
-| G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **160 KiB**；160 KiB 之下按子预算表（脚本头部，合计 = 160）逐块核算，某一页超了先删重复渲染/收敛样式，再谈抬预算。**为什么从 95 调到 148**：工作台 v1 要新增总览/任务组/组工作台/排期/自动化五页与常驻只读 dock，平台只 serve 一个 `client.js`（无代码分割），全功能实测 143–146 KiB；先定 128 KiB 实测不够（差 12–16 KiB），用户拍板保留全功能 → 148 KiB。**0.32.0 能力包面板**（独立 main panel + 侧栏入口 + 安装确认卡 + EnvVarsCard）没有代码分割，只能加进同一个产物 → 用户拍板抬到 **160 KiB**。**0.33.0 自动化创建入口**（删自定义表单、加「创建自动化」按钮 + 主会话预填 + 会话头角色判定）是**净减**，不抬预算 |
+| G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **164 KiB**；164 KiB 之下按子预算表（脚本头部，合计 = 164）逐块核算，某一页超了先删重复渲染/收敛样式，再谈抬预算。**为什么从 95 调到 148**：工作台 v1 要新增总览/任务组/组工作台/排期/自动化五页与常驻只读 dock，平台只 serve 一个 `client.js`（无代码分割），全功能实测 143–146 KiB；先定 128 KiB 实测不够（差 12–16 KiB），用户拍板保留全功能 → 148 KiB。**0.32.0 能力包面板**（独立 main panel + 侧栏入口 + 安装确认卡 + EnvVarsCard）没有代码分割，只能加进同一个产物 → 用户拍板抬到 **160 KiB**。**0.33.0 自动化创建入口**（删自定义表单、加「创建自动化」按钮 + 主会话预填 + 会话头角色判定）是**净减**，不抬预算。**0.35.0 引用 chip**（正文 `tk-xxxxxx` 渲染成任务名 chip）无代码分割 → 用户拍板抬到 **164 KiB** |
 
 ## 3. 断言口径（测试怎么写）
 
@@ -55,8 +55,8 @@
 - `test/copy-consistency.test.js` 锁口径：`done` 不是终态、协调者默认不主动确认交付、`present` 1–4 个、
   brief 不越权定义交付语义、计划/完整访问的原子句只允许在 `src/copy.js` 定义一次。
 - `test/prompt-layers.test.js` 锁分层：L1 policy / W1 任务执行者 policy / L2 brief / L3 task_detail / L4 onboarding / 通知 hint 各自独占，
-  `layerViolations` 防「删掉的重叠又抄回来」（L2 探针会抓「W1 的静态句被抄回 brief」）；brief 行数为 **2 行基准，
-  `access:'full'` 多一行 → 2–3 行**，静态提示（上报 / 交付 / 装依赖 / 主动读 `context`）只在 W1 出现一次。
+  `layerViolations` 防「删掉的重叠又抄回来」（L2 探针会抓「W1 的静态句被抄回 brief」）；brief 行数为 **2 行基准（只给引用），
+  有任务名 +1、`access:'full'` +1 → 2–4 行**，静态提示（上报 / 交付 / 装依赖 / 主动读 `context`）只在 W1 出现一次。
 - `test/index.test.js` 锁 W1 注入：`orchestrator:worker-policy` 的 `order` 是 131（与 L1 的 130 分开注册）、
   只命中 `tasks.session_id` 属于任务的子会话（协调者、无关会话、孙会话都拿到空串）；隔离任务（台账
   `worktree_state=created`）多一句装依赖授权。worker 预设 persona 只剩身份一句，不再内联 `WORKER_CONTEXT_HINT`。

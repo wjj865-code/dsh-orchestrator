@@ -893,7 +893,8 @@ test('回报通知由子任务 agent 发出，目标 lead，并落库', withHome
   assert.equal(sent.length, 0)
   assert.equal(coordinator.injected.length, 1)
   // 两段式终态：交付通知写「已交付待确认」并带 action:close / task_message 动作指令。
-  assert.match(coordinator.injected[0].content[0].text, /任务「甲」已交付待确认/)
+  // R3：标题带任务引用（tk-），用户一眼对上 task_list 里的那条。
+  assert.match(coordinator.injected[0].content[0].text, /任务「甲（tk-[0-9a-z]{6}）」已交付待确认/)
   assert.match(coordinator.injected[0].content[0].text, /action: "close"/)
   assert.deepEqual(coordinator.injected[0].source, { kind: 'agent-message', form: 'relay', senderSessionId: teammate.id })
   const { DatabaseSync } = await import('node:sqlite')

@@ -247,8 +247,8 @@ test('P8 计划交付链路：详情/创建提示/协调者 policy 都写明落�
     brief: { title: '计划', goal: 'g', acceptance: ['a'] },
   })
   assert.match(detail, /plan_save/)
-  // 版本 B：详情只写任务引用，不写台账内部编号。
-  assert.match(detail, /任务引用：tk-000001/)
+  // 版本 B / R1：详情首行是「任务：名称（tk-xxx）」，不写台账内部编号。
+  assert.match(detail, /任务：计划（tk-000001）/)
   assert.doesNotMatch(detail, /任务编号/)
 
   // task_create 返回给协调者的提示：写清落盘路径（任务名）+ 摘要上报。
@@ -265,6 +265,9 @@ test('P8 计划交付链路：详情/创建提示/协调者 policy 都写明落�
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /只用任务名 \+ 任务引用/)
   assert.match(policy, /不要出现 t-xxxx/)
+  // R2：再提到同一个任务只写名称、不要只写 tk-xxxxxx（用户认不出是哪条）。
+  assert.match(policy, /\*\*再次提到同一个任务只写名称\*\*/)
+  assert.match(policy, /\*\*不要只写 tk-xxxxxx\*\*/)
   assert.match(policy, /plan_save/)
   // 0.26.0：角色专属工具改在预设层遮（执行层名单只留编排正确性项），工具表里仍然看不到 plan_save。
   assert.equal(COORDINATOR_DENY.includes('plan_save'), false, 'plan_save 不再进执行层名单')

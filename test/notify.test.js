@@ -28,7 +28,8 @@ test('交付通知：写「已交付待确认」并带 action:close / task_messa
   const notifier = createNotifier({ send: async text => delivered.push(text), mergeWindowMs: 5 })
   notifier.push({ taskId: 't-close', ref: 'tk-close1', title: '交付任务', status: 'delivered', summary: '改完了' })
   await wait(20)
-  assert.match(delivered[0], /任务「交付任务」已交付待确认：改完了/)
+  // R3：通知标题带任务引用（tk-），用户一眼对上 task_list 里的那条。
+  assert.match(delivered[0], /任务「交付任务（tk-close1）」已交付待确认：改完了/)
   // 版本 B：动作指令里的 task_id 是**引用**（tk-），通知正文不出现裸编号。
   assert.match(delivered[0], /task_message\(\{ action: "close", task_id: 'tk-close1' \}\)/)
   assert.doesNotMatch(delivered[0], /t-close/)
@@ -72,9 +73,11 @@ test('批量交付引用过多时截断：只列前几个，其余指向 task_li
   }))
   await wait(20)
   assert.equal(sent.length, 1)
-  assert.ok(sent[0].includes('tk-aa0001、tk-aa0002、tk-aa0003、tk-aa0004'), `前 4 个引用要列出：${sent[0]}`)
-  assert.equal(sent[0].includes('tk-aa0005'), false)
-  assert.equal(sent[0].includes('tk-aa0006'), false)
+  // 提醒行（标题）现在各自带引用，所以「只列前 4 个」要在**交付确认那一行**上断言。
+  const closeLine = sent[0].split('\n').find(line => line.includes('close')) ?? ''
+  assert.ok(closeLine.includes('tk-aa0001、tk-aa0002、tk-aa0003、tk-aa0004'), `前 4 个引用要列出：${closeLine}`)
+  assert.equal(closeLine.includes('tk-aa0005'), false)
+  assert.equal(closeLine.includes('tk-aa0006'), false)
   assert.match(sent[0], /其余 2 条用 task_list 查/)
   assert.doesNotMatch(sent[0], /<任务引用>/)
   assert.doesNotMatch(sent[0], /task_id: ''/)

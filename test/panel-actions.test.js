@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   openLedger, createTask, getTask, listTasks, transition, addMessage, addNotification,
-  setTaskAcceptance, setTaskArtifacts, setTaskLastMessage,
+  setTaskAcceptance, setTaskArtifacts, setTaskLastMessage, deleteTask,
 } from '../src/ledger.js'
 import { createPanelActions } from '../src/panel-actions.js'
 import { resolveMessageBody } from '../src/message-body.js'
@@ -144,15 +144,17 @@ test('retry 的 brief 与 task_create 同口径：任务引用 + task_detail 指
     {},
   )
   const lines = resolved.text.split('\n')
-  // t-4f7ce108：面板重派与 task_create 同口径——只剩新任务**引用** + 详情指针（静态提示归 W1，不再内联目标）。
+  // t-4f7ce108：面板重派与 task_create 同口径——只剩新任务**引用 + 任务名** + 详情指针
+  // （静态提示归 W1，不再内联目标）。R2：brief 补名字，子会话第一句就能用任务名汇报。
   // 版本 B：这里写 tk-，不写台账编号（子会话手里没有 id，就不会把它抄进给用户的回复）。
   assert.equal(resolved.source, 'derived')
-  assert.equal(lines.length, 2)
+  assert.equal(lines.length, 3)
   const retried = getTask(db, result.taskId)
   assert.match(lines[0], /^【任务引用】tk-[0-9a-z]{6}$/)
   assert.equal(lines[0], `【任务引用】${retried.ref}`)
+  assert.equal(lines[1], `【任务名】${retried.title}`)
   assert.doesNotMatch(resolved.text, /\bt-[0-9a-z]{8}\b/)
-  assert.match(lines[1], /^【任务详情】.*task_detail/)
+  assert.match(lines[2], /^【任务详情】.*task_detail/)
   assert.equal(resolved.text.includes('把目标写得很长把目标写得很长'), false)
   assert.equal(resolved.text.includes('【目标】'), false)
   db.close()
@@ -599,7 +601,57 @@ test('detail 上游依赖缺失时标 missing，不伪造标题', async () => {
     brief: sampleBrief({ title: '缺前置' }), coordinatorSession: 's-1', dependsOn: ['t-404'],
   })
   const detail = actions.detail(task.id)
-  assert.deepEqual(detail.dependencies, [{ id: 't-404', title: 't-404', status: 'missing' }])
+  // R1：缺前置时不伪造标题、也不回落内部编号（t-404 那个 4 位后缀不再当名字）；
+  // 带上墓碑引用（这里没有登记过引用 → ref 为 null）与「已删除」标记，由客户端显示占位。
+  assert.deepEqual(detail.dependencies, [{ id: 't-404', ref: null, title: '', status: 'missing', deleted: true }])
+  db.close()
+})
+
+test('detail 依赖行带 ref；已删除的前置用墓碑引用（客户端显示名字 + 引用，不回落编号）', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const up = createTask(db, { brief: sampleBrief({ title: '前置活' }), coordinatorSession: 's-1' })
+  markDone(db, up.id)
+  const down = createTask(db, {
+    brief: sampleBrief({ title: '下游活' }), coordinatorSession: 's-1', dependsOn: [up.id],
+  })
+  const detail = actions.detail(down.id)
+  assert.equal(detail.dependencies[0].ref, up.ref, '依赖行要带引用（抽屉显示 tk- 用）')
+  assert.equal(detail.dependents.length, 0)
+  const upDetail = actions.detail(up.id)
+  assert.equal(upDetail.dependents[0].ref, down.ref, '下游行也要带引用')
+  // 删除前置：任务行没了、引用置墓碑；依赖行仍能给出那条引用（面板说「（任务已删除）tk-xxx」）。
+  const ref = up.ref
+  deleteTask(db, up.id)
+  const after = actions.detail(down.id)
+  assert.equal(after.dependencies[0].ref, ref, '已删除的前置要给出墓碑引用')
+  assert.equal(after.dependencies[0].title, '')
+  assert.equal(after.dependencies[0].deleted, true)
+  db.close()
+})
+
+test('detail refs：消息正文里提到的引用解析成台账现名（含已删除的墓碑引用）', async () => {
+  const env = setup()
+  const { db, actions } = await env.init()
+  const target = createTask(db, { brief: sampleBrief({ title: '被提到的' }), coordinatorSession: 's-1' })
+  const gone = createTask(db, { brief: sampleBrief({ title: '会被删的' }), coordinatorSession: 's-1' })
+  const goneRef = gone.ref
+  deleteTask(db, gone.id)
+  const task = runningTask(db, '提到引用')
+  addMessage(db, task.id, {
+    kind: 'report',
+    rendered: `做完了，等 ${target.ref} 与 ${goneRef}；另外 tk-zzzzzz 不存在。`,
+  })
+  const detail = actions.detail(task.id)
+  const byRef = Object.fromEntries(detail.refs.map(row => [row.ref, row]))
+  assert.deepEqual(byRef[target.ref], { ref: target.ref, title: '被提到的', status: target.status, deleted: false })
+  // 已删除：引用置墓碑 → deleted=true、没有现名（客户端原样显示 + 「引用已失效」）。
+  assert.deepEqual(byRef[goneRef], { ref: goneRef, title: '', status: 'missing', deleted: true })
+  // 查不到的引用也进索引（found=false 的形态），客户端据此原样显示。
+  assert.equal(byRef['tk-zzzzzz'].deleted, false)
+  // 同一条消息里重复出现的引用只索引一次。
+  addMessage(db, task.id, { kind: 'report', rendered: `再说一次 ${target.ref}` })
+  assert.equal(actions.detail(task.id).refs.filter(row => row.ref === target.ref).length, 1)
   db.close()
 })
 

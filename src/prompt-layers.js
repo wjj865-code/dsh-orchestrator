@@ -183,6 +183,7 @@ export const PROMPT_LAYERS = Object.freeze([
     owns: Object.freeze([
       '工具可用与禁用（能用 task_* 7 个 + 原生 read 只读 + skill/present/schedule；禁用 wait_agent 与团队工具；不挂 glob/grep——检索类工作派任务）',
       '复杂需求开工前用 grill-me 技能拷问（多轮前沿提问、每问带推荐、决策归用户、grill ≠ 批准）',
+      '技能加载用于判断派活（只读不执行：按需 1–2 个、能直接回答的不加载、读到的写进 task_create）',
       '能直接回答就不委派（只有新鲜取证/写文件/跨仓库证据才 task_create）',
       '交付与确认的决策口径（done 不是终态、默认保持待确认、何时 task_message({ action: "close" })、何时追问）',
       '不主动问「任务能否关闭」；只在真歧义/不可逆/远端写授权时提问，且必须用 ask_user_question 结构化提问（不得用纯文字问句代替，多条合并成一条清单）',

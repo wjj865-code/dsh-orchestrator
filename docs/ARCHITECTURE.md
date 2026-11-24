@@ -465,7 +465,7 @@
 - **`working_directory` 被两处遮掉**（发版前真机复验补漏）：宿主全局工具 `@deepseek-ai/dsh-tool-working-directory` 在 0.25.x 的 `allow` 补集下被顺带遮住，0.26.0 改遮挡式后漏进了协调者工具表。它会改**协调者会话的 cwd**——而 cwd 是指挥锚（`task_create` 未给 `target` 时子会话继承它、工作区/写域判定与 `projectKeyOf` 推断都以它为准），会话内切目录会让锚点静默漂移。所以协调者预设 `preset-tools` 的 `deny` 与执行层 `COORDINATOR_DENY` 各列一份（预设层出生即生效、执行层再硬拦），`test/config.test.js` / `test/index.test.js` 双锁。看文件不需要它：`read` 收绝对路径。
 - **A 片：grill-me 技能**。`skills/grill-me/SKILL.md` 随包发（`package.json.files` 含 `skills/`），`skill-grill-me.js` 在 `apply()` 里读该文件 → `parseSkillMarkdown` 解析 frontmatter（name/description/whenToUse，只认顶层标量）→ `ctx.skills.register({ name, description, whenToUse, content, source: 'bundled', path })`。注册进的是**调用方 context 的作用域层**（dsh-skill 的分层注册表：预设挂载的插件进该预设层，unscoped 插件进全局层），所以协调者预设挂的这份**只有协调者可见**，worker 预设没挂这个模块就看不到。`@deepseek-ai/dsh-tool-skill` 同挂该预设，提供模型面 `skill({name})` 与技能目录（目录随会话注入、只含 name+description，正文按需加载）。
 - **不用 `customSkillDirs` 指目录**：patch 里的 `!!js` 表达式在磁盘上求值，`createRequire(baseUrl)` 在 bundle 里会 `MODULE_NOT_FOUND`（`test/config.test.js` 锁了这条）。运行时注册只依赖 `import.meta.url` 解析出的 SKILL.md 文本，安装目录在哪都成立。
-- **L1 只加一行触发语**（判为 T2/T3 时先 `skill({ name: 'grill-me' })`），技能正文不进系统提示；SKILL.md 缺失或格式不合法时只 `warn`、不注册——技能是增强项，不能让协调者预设挂载失败（`test/skill-grill-me.test.js` 覆盖）。
+- **L1 只加一行触发语**（判为 T2/T3 时先 `skill({ name: 'grill-me' })`），技能正文不进系统提示；SKILL.md 缺失或格式不合法时只 `warn`、不注册——技能是增强项，不能让协调者预设挂载失败（`test/skill-grill-me.test.js` 覆盖）。同一工具也**允许按需加载其它技能，只为判断「怎么派活」**（该不该派、带什么约束、要不要建议用户走某个技能；一次 1–2 个、只在摘要不足时加载）：协调者**只读不执行**——加载技能不等于按技能步骤干活，仍不写文件、不跑命令。
 - **协议**：多轮前沿提问（一次一个决定性问题）、每问带我的推荐、事实自己查、决策归用户、最多 2 轮 8 问、最后给三栏决策记录（决策点｜你定的｜影响），与交互三闸门 T2/T3 衔接；**grill ≠ 批准**。灵感来自 Matt Pocock 的 grilling（MIT），措辞重写。
 
 ## 只读子任务

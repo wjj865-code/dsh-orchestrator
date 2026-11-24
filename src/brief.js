@@ -50,17 +50,23 @@ export function validateTargetDir(target, { isDirectory = value => statSync(valu
 /**
  * 渲染派发给子会话的 brief（只留一次性参数）。
  *
- * 输出【任务引用】+【访问级别】（仅完整访问任务）+【任务详情】指针：
+ * 输出【任务引用】+【任务名】（有名字时）+【访问级别】（仅完整访问任务）+【任务详情】指针：
  * 静态提示（上报/交付/worktree 装依赖/主动读 context）都在 W1 每回合注入，brief 不再内联。
  *
- * @param {{ taskRef?: string, access?: string }} [options]
+ * 为什么带任务名：子会话给用户的回复要用**名字**称呼任务（L1 的口径是「只用任务名 + 引用」），
+ * 它手里必须先有名字；只在 task_detail 里给的话，第一句话就得先把详情读一遍才知道怎么称呼。
+ *
+ * @param {{ taskRef?: string, taskName?: string, access?: string }} [options]
  *   taskRef 是任务引用（tk-xxxxxx，如 tk-7f3a2c），也是 task_detail 的参数；
+ *   taskName 是任务名（人类友好展示用，可为空）；
  *   access='full' 时多一行访问级别，子会话一开始就知道自己不在沙箱里跑（不必试探写权限）。
  */
-export function renderBrief({ taskRef, access } = {}) {
+export function renderBrief({ taskRef, taskName, access } = {}) {
   const ref = single(taskRef)
+  const name = single(taskName)
   const lines = []
   if (ref !== '') lines.push(`【任务引用】${ref}`)
+  if (name !== '') lines.push(`【任务名】${name}`)
   if (access === 'full') lines.push(ACCESS_FULL.briefLine)
   lines.push(`【任务详情】${DETAIL_POINTER_TEXT}`)
   return lines.join('\n')
@@ -78,6 +84,8 @@ export function renderBrief({ taskRef, access } = {}) {
 export function renderBriefForTask(task = {}) {
   return renderBrief({
     taskRef: task?.ref,
+    // R2（brief 补名字）：名字来自台账 title，与 task_detail / 面板 / 通知同一个来源。
+    taskName: task?.title,
     access: task?.access === 'full' ? 'full' : undefined,
   })
 }

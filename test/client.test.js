@@ -1701,9 +1701,14 @@ test('chip 状态映射：旋转圆环 / 虚线静圈 / 脉冲半色 / ✓ / ✗
   assert.equal(chipViewOf('failed').icon, 'close')
   assert.equal(chipViewOf('cancelled').icon, 'dash')
 
-  // 悬浮提示 = 任务名 + 状态 + 点下去会发生什么；没有标题时退化成「任务 t-xxx」。
+  // 悬浮提示 = 任务名（+ 引用）+ 状态 + 点下去会发生什么；没有标题/引用时退化成「任务」。
+  // R3：有引用时 tooltip 补 `（tk-xxxxxx）`，用户才能跟 task_list 的那条对上。
+  assert.equal(chipTooltipOf(chipTask('t-1', 'waiting_dep', { title: '修发版', ref: 'tk-ref001' })),
+    '修发版（tk-ref001）｜等前置｜无子会话，点击打开任务详情')
   assert.equal(chipTooltipOf(chipTask('t-1', 'waiting_dep', { title: '修发版' })), '修发版｜等前置｜无子会话，点击打开任务详情')
-  assert.equal(chipTooltipOf({ id: 't-2', status: 'done' }), '任务 t-2｜已完成｜无子会话，点击打开任务详情')
+  // R1：没有标题时不回落台账内部编号（id 只作动作键）。
+  assert.equal(chipTooltipOf({ id: 't-2', status: 'done' }), '任务｜已完成｜无子会话，点击打开任务详情')
+  assert.equal(chipTooltipOf({ id: 't-2', ref: 'tk-ref002', status: 'done' }), '任务 tk-ref002｜已完成｜无子会话，点击打开任务详情')
   // 有子会话：提示明说「点击打开子会话」（用户预期的那条路）。
   assert.equal(
     chipTooltipOf(chipTask('t-3', 'running', { title: '修发版', childSessionId: 'c-3' })),
@@ -2120,11 +2125,18 @@ test('chip feed：没订阅者不建表；内容不变复用快照；节奏 3s/1
   assert.equal(notified, 2)
   assert.equal(clock.list[3].ms, 15000)
 
+  // R3：快照里带 ref（chip tooltip 要写「名称（tk-xxx）」）；ref 变了也算内容变化（要重渲染）。
+  payload = { ok: true, tasks: [{ ...payload.tasks[0], ref: 'tk-feed01', lastEventAt: 7, updatedAt: 7 }] }
+  await clock.list[3].run()
+  assert.equal(notified, 3)
+  assert.equal(feed.getSnapshot().tasks[0].ref, 'tk-feed01')
+  assert.equal(clock.list[4].ms, 15000)
+
   // 退订：最后一个订阅者走了就停表（已排的定时器被清掉，迟到的 run 也不再拉）。
   off()
-  assert.equal(clock.list[3].cleared, true)
+  assert.equal(clock.list[4].cleared, true)
   const before = calls
-  await clock.list[3].run()
+  await clock.list[4].run()
   assert.equal(calls, before, '退订后不再请求')
 
   // 失败：退避 30s，且保留上一份快照（chip 不闪没）。
@@ -2439,5 +2451,153 @@ test('P1 正文去重：抽屉「最新回复」标出正文来源与降级原�
   assert.match(source, /detail\.body/)
   assert.match(source, /正文来自子会话/)
   assert.match(source, /正文不可读（摘要）/)
+})
+
+// ---------------------------------------------------------------------------
+// R3：正文里的任务引用（tk-xxxxxx）→ 任务名 chip
+//
+// 背景：模型回复里常出现 `tk-7f3a2c` 这种引用，用户认不出是哪个任务。抽屉把「最新回复 / 消息」
+// 正文里的引用渲染成名字 chip；查不到就原样显示（绝不隐藏用户写的字）。五种兜底逐条锁在下面。
+// ---------------------------------------------------------------------------
+
+test('R3 引用切段：splitTaskRefs 只认严格形态，文字原样保留（纯函数）', () => {
+  const { loaded } = load()
+  const { splitTaskRefs } = loaded.__test
+  const plain = segment => ({ type: segment.type, text: segment.text })
+
+  // 没有引用：单个文字片段（视图据此零开销按原样渲染）。
+  assert.deepEqual(Array.from(splitTaskRefs('没有引用的正文')).map(plain), [{ type: 'text', text: '没有引用的正文' }])
+  assert.deepEqual(Array.from(splitTaskRefs('')).map(plain), [])
+  assert.deepEqual(Array.from(splitTaskRefs(null)).map(plain), [])
+  assert.deepEqual(Array.from(splitTaskRefs(undefined)).map(plain), [])
+
+  // 混合：文字 / 引用 / 文字 / 引用 / 文字，顺序与原文一致。
+  const mixed = Array.from(splitTaskRefs('做完 tk-abc123，等 tk-def456 回归。'))
+  assert.deepEqual(mixed.map(plain), [
+    { type: 'text', text: '做完 ' },
+    { type: 'ref', text: 'tk-abc123' },
+    { type: 'text', text: '，等 ' },
+    { type: 'ref', text: 'tk-def456' },
+    { type: 'text', text: ' 回归。' },
+  ])
+  assert.equal(mixed[1].ref, 'tk-abc123')
+
+  // 开头/结尾就是引用时不产生空文字片段。
+  assert.deepEqual(Array.from(splitTaskRefs('tk-abc123')).map(plain), [{ type: 'ref', text: 'tk-abc123' }])
+  assert.deepEqual(Array.from(splitTaskRefs('tk-abc123 收尾')).map(plain), [
+    { type: 'ref', text: 'tk-abc123' },
+    { type: 'text', text: ' 收尾' },
+  ])
+
+  // 不是严格形态的一律当文字：占位符 / 大写 / 长度不对 / 台账编号（`t-xxxx` 本来就该留在台账里）。
+  for (const notRef of ['tk-xxx', 'tk-XXX123', 'tk-abc12', 'tk-abc1234', 't-abc123', 't-1a2b3c4d', 'x-tk-abc123']) {
+    assert.equal(Array.from(splitTaskRefs(notRef)).every(segment => segment.type === 'text'), true, notRef)
+  }
+})
+
+test('R3 引用查表：重名 / 改名过期 / 长名 / 查不到 / 已删除 五种兜底（纯函数）', () => {
+  const { loaded } = load()
+  const { refDisplayOf, refSegmentsOf } = loaded.__test
+  // chip 名字上限（与 logic.js 的 REF_TEXT_MAX 同值；不导出常量，避免把它塞进 __test 契约）。
+  const REF_TEXT_MAX = 24
+  const pick = display => ({
+    ref: display.ref, label: display.label, found: display.found, deleted: display.deleted,
+    duplicate: display.duplicate, truncated: display.truncated, tone: display.tone,
+  })
+
+  // 普通命中：显示台账现名。
+  assert.deepEqual(pick(refDisplayOf('tk-aaaaaa', { tasks: [{ id: 't-1', ref: 'tk-aaaaaa', title: '修发版' }] })),
+    { ref: 'tk-aaaaaa', label: '修发版', found: true, deleted: false, duplicate: false, truncated: false, tone: 'info' })
+
+  // F1 重名：两个任务同名 → chip 写「名称（tk-xxx）」，否则用户分不清。
+  const dupes = [
+    { id: 't-1', ref: 'tk-aaaaaa', title: '周报' },
+    { id: 't-2', ref: 'tk-bbbbbb', title: '周报' },
+  ]
+  assert.equal(refDisplayOf('tk-bbbbbb', { tasks: dupes }).label, '周报（tk-bbbbbb）')
+  assert.equal(refDisplayOf('tk-bbbbbb', { tasks: dupes }).duplicate, true)
+
+  // F2 改名过期：正文写的时候叫旧名，台账已改名 → 以**现名**为准（详情索引里的旧名不作数）。
+  const renamed = refDisplayOf('tk-cccccc', {
+    tasks: [{ id: 't-3', ref: 'tk-cccccc', title: '新名字' }],
+    refs: [{ ref: 'tk-cccccc', title: '旧名字', status: 'done', deleted: false }],
+  })
+  assert.equal(renamed.label, '新名字')
+  assert.equal(renamed.found, true)
+
+  // F3 长名：chip 按码点截断，tooltip 给全名。
+  const long = '非常长的任务名称'.repeat(6)
+  const truncated = refDisplayOf('tk-dddddd', { tasks: [{ id: 't-4', ref: 'tk-dddddd', title: long }] })
+  assert.equal(truncated.truncated, true)
+  assert.ok(Array.from(truncated.label).length <= REF_TEXT_MAX, `截断后长度 ${Array.from(truncated.label).length}`)
+  assert.ok(truncated.label.endsWith('…'))
+  assert.ok(truncated.tooltip.includes(long), 'tooltip 要给全名')
+
+  // F4 查不到：原样显示引用，不猜名字、不隐藏。
+  assert.deepEqual(pick(refDisplayOf('tk-eeeeee', { tasks: [], refs: [] })),
+    { ref: 'tk-eeeeee', label: 'tk-eeeeee', found: false, deleted: false, duplicate: false, truncated: false, tone: 'muted' })
+  assert.match(refDisplayOf('tk-eeeeee', {}).tooltip, /找不到这个任务引用/)
+
+  // F5 已删除：详情索引标了墓碑（deleted）→ 原样显示 + 「引用已失效」。
+  const gone = refDisplayOf('tk-ffffff', { tasks: [], refs: [{ ref: 'tk-ffffff', title: '', status: 'missing', deleted: true }] })
+  assert.equal(gone.label, 'tk-ffffff')
+  assert.equal(gone.deleted, true)
+  assert.match(gone.tooltip, /引用已失效（任务已删除）/)
+
+  // 形态不对的入参返回 null（调用方原样显示，不查表）。
+  assert.equal(refDisplayOf('t-1a2b3c4d', { tasks: [] }), null)
+  assert.equal(refDisplayOf('', { tasks: [] }), null)
+  assert.equal(refDisplayOf(undefined, { tasks: [] }), null)
+
+  // refSegmentsOf = 切段 + 查表（视图只做装配）。
+  const segments = Array.from(refSegmentsOf('看 tk-aaaaaa', { tasks: [{ id: 't-1', ref: 'tk-aaaaaa', title: '修发版' }] }))
+  assert.equal(segments[0].type, 'text')
+  assert.equal(segments[1].type, 'ref')
+  assert.equal(segments[1].display.label, '修发版')
+})
+
+test('R3 抽屉覆盖：最新回复与消息正文里的 tk- 引用都渲染成任务名 chip', () => {
+  const { hooks, panel, resetHooks } = panelOf()
+  const task = (id, ref, title) => taskRow(id, 'done', { ref, title })
+  // 两个同名任务：chip 必须带引用后缀，否则分不清。
+  const snapshot = snapshotOf([task('t-a', 'tk-name01', '周报'), task('t-b', 'tk-name02', '周报')])
+  const detail = {
+    ok: true,
+    task: {
+      id: 't-cur', ref: 'tk-cur001', title: '当前任务', status: 'done', goal: 'g', targetDir: 'C:/work', target: 'c-1',
+      readOnly: false, group: null, priority: 0, dependsOn: [], writeScopes: [], question: null, options: [],
+      error: null, createdAt: 0, updatedAt: 0, artifacts: [], brief: {}, goalState: null, acceptance: null,
+      canFollowup: false, canClose: false, canDelete: true, deliveredAt: null, closeReason: null,
+      closeReasonLabel: null, planFirst: false, planState: 'none', worktreeState: 'none', worktreeBranch: null,
+      worktreePath: null, worktreeBase: null, worktreeSource: 'default', handoff: null, teamTask: null,
+      artifactDir: '', artifactStoreDir: '', artifactStage: null, deliveryPending: false,
+      lastMessage: {
+        at: 1_700_000_000_000, stored: 'inline', stopReason: 'completed',
+        text: '已完成 tk-name01 的前置，等 tk-gone01 的结论',
+      },
+    },
+    dependencies: [],
+    dependents: [],
+    // 详情下发的引用索引：tk-gone01 已置墓碑（任务已删除）。
+    refs: [{ ref: 'tk-gone01', title: '', status: 'missing', deleted: true }],
+    messages: [
+      { seq: 1, kind: 'followup', text: '顺手看看 tk-name02 和 tk-zzz999', at: 0, delivery: 'delivered', body: 'inline' },
+    ],
+  }
+  resetHooks()
+  hooks.slots[0] = snapshot
+  hooks.slots[10] = detail
+  hooks.slots[13] = detail.task.id
+  const text = textAll(panel.component({ openSession: () => {} }))
+
+  // 最新回复：引用 → 名字 chip（快照里两个同名任务 → 带引用后缀），每个引用只换显示、不吞原文。
+  assert.match(text, /已完成 周报（tk-name01） 的前置/, '最新回复里的引用要显示成任务名')
+  assert.doesNotMatch(text, /已完成 tk-name01 的前置/)
+  // 已删除的引用：原样显示（不隐藏用户写的字）。
+  assert.match(text, /等 tk-gone01 的结论/)
+  // 消息：同样渲染成名字 chip；查不到的引用原样显示。
+  assert.match(text, /顺手看看 周报（tk-name02） 和 tk-zzz999/)
+  // 源码层：两处正文都走 RefText（不是只改了一处）。
+  assert.equal((source.match(/<RefText /g) ?? []).length, 2, '抽屉「最新回复」与「消息」两处都要覆盖')
 })
 

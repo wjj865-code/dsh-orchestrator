@@ -138,6 +138,112 @@ export const fileAddressProblem = (sessionId, path) => {
 }
 
 // ---------------------------------------------------------------------------
+// R1/R3：正文里的任务引用（tk-xxxxxx）→ 「任务名」chip
+//
+// 为什么在客户端做：模型回复（最新回复 / 消息）里常出现 `tk-7f3a2c` 这种引用，用户认不出是哪个任务。
+// 这里把正文按引用切段，查台账现名后渲染成 chip；查不到就**原样显示**（绝不隐藏用户的字）。
+//
+// 五种兜底（改这里必须同步 test/client.test.js 的 RefText 用例）：
+//   F1 重名：两个任务同名 → chip 写「名称（tk-xxx）」，否则用户分不清是哪一个；
+//   F2 改名过期：正文是旧时间段写的，名字以**台账现名**为准（快照/详情每轮刷新，不用正文里的旧名）；
+//   F3 长名：chip 按码点截断（chipVisibleTitle），全名放 tooltip；
+//   F4 查不到：引用不在快照/引用索引里 → 原样显示 `tk-xxxxxx`（不猜、不隐藏）；
+//   F5 已删除：引用已置墓碑（详情 refs 里 deleted=true）→ 原样显示 + tooltip「引用已失效」。
+// ---------------------------------------------------------------------------
+
+/**
+ * 正文里认的引用形态：`tk-` + 6 位小写字母数字（与 src/task-ref.js 的 TASK_REF_RE 同口径）。
+ *
+ * 两侧的边界断言是必要的：`tk-abc1234`（多一位）、`x-tk-abc123`（前面粘着别的 token）都不是引用，
+ * 不能只匹配到前面 6 位就当成引用——那会把用户的字吞掉一半、换成一个错的任务名。
+ */
+export const TASK_REF_TEXT_RE = /(?<![0-9a-z-])tk-[0-9a-z]{6}(?![0-9a-z])/g
+
+/** chip 上名字的最大码点数（与回复底部 chip 的 `CHIP_TITLE_MAX` 一致，值相同不互相依赖）。 */
+export const REF_TEXT_MAX = 24
+
+/**
+ * 把一段自由文本切成「文字 / 引用」片段（纯函数，不查表）。
+ *
+ * @param {string} value 正文
+ * @returns {Array<{type:'text', text:string} | {type:'ref', text:string, ref:string}>}
+ *   无引用时返回单个 text 片段（调用方可据此零开销地按原样渲染）。
+ */
+export const splitTaskRefs = value => {
+  const text = typeof value === 'string' ? value : ''
+  const segments = []
+  let last = 0
+  for (const match of text.matchAll(TASK_REF_TEXT_RE)) {
+    const at = match.index ?? 0
+    if (at > last) segments.push({ type: 'text', text: text.slice(last, at) })
+    segments.push({ type: 'ref', text: match[0], ref: match[0] })
+    last = at + match[0].length
+  }
+  if (last < text.length) segments.push({ type: 'text', text: text.slice(last) })
+  return segments
+}
+
+/**
+ * 引用 → 展示信息（查表现名 + 五种兜底）。
+ *
+ * @param {string} ref `tk-xxxxxx`
+ * @param {{tasks?: object[], refs?: object[]}} [source]
+ *   tasks = 面板快照（现名 + 同名判定）；refs = 详情下发的引用索引（含已删除的墓碑引用）。
+ * @returns {{ref:string, label:string, found:boolean, deleted:boolean, duplicate:boolean,
+ *   truncated:boolean, tone:string, tooltip:string}|null}
+ *   形态不像引用时返回 null（调用方原样显示）。
+ */
+export const refDisplayOf = (ref, { tasks = [], refs = [] } = {}) => {
+  const value = textOf(ref)
+  if (value === '' || !/^tk-[0-9a-z]{6}$/.test(value)) return null
+  const live = (Array.isArray(tasks) ? tasks : []).find(task => textOf(task?.ref) === value)
+  const index = (Array.isArray(refs) ? refs : []).find(row => textOf(row?.ref) === value) ?? null
+  const deleted = live === undefined && index?.deleted === true
+  // F2：名字一律取台账现名（快照优先，详情索引兜底），正文里写的时间点不影响显示名。
+  const title = textOf(live?.title) || (deleted ? '' : textOf(index?.title))
+  if (title === '') {
+    // F4 / F5：查不到或已删除 —— 原样显示引用，只换 tooltip。
+    return {
+      ref: value,
+      label: value,
+      found: false,
+      deleted,
+      duplicate: false,
+      truncated: false,
+      tone: 'muted',
+      tooltip: deleted ? `引用已失效（任务已删除）：${value}` : `找不到这个任务引用：${value}`,
+    }
+  }
+  // F1：同名任务用引用后缀区分（与 displayNameOf / taskLabel 同口径）。
+  const duplicate = (Array.isArray(tasks) ? tasks : [])
+    .some(other => textOf(other?.title) === title && textOf(other?.ref) !== value)
+  const full = duplicate ? `${title}（${value}）` : title
+  // F3：chip 上截断，tooltip 里给全名。
+  const label = chipVisibleTitle(full, REF_TEXT_MAX)
+  return {
+    ref: value,
+    label,
+    found: true,
+    deleted: false,
+    duplicate,
+    truncated: label !== full,
+    tone: 'info',
+    tooltip: `${full}｜点击面板任务卡片可查看详情`,
+  }
+}
+
+/**
+ * 正文 → 片段 + 每条引用的展示信息（view 层只做装配，单测直接断言这个函数）。
+ * @param {string} value 正文
+ * @param {{tasks?: object[], refs?: object[]}} [source] 同 refDisplayOf
+ */
+export const refSegmentsOf = (value, source = {}) => splitTaskRefs(value).map(segment => (
+  segment.type === 'ref'
+    ? { ...segment, display: refDisplayOf(segment.ref, source) }
+    : segment
+))
+
+// ---------------------------------------------------------------------------
 // 回复底部「关联任务 chip」（conversation.chat.turnTail）
 //
 // 关联规则（写进报告；改这里必须同步 test/client.test.js 的 chip 用例）：
@@ -166,8 +272,9 @@ export const chipViewOf = status => {
 export const chipNameOf = task => {
   const title = textOf(task === null || task === undefined ? undefined : task.title)
   if (title !== '') return title
-  const id = textOf(task === null || task === undefined ? undefined : task.id)
-  return id === '' ? '任务' : `任务 ${id}`
+  // R1：没有标题时用**引用**兜底（`任务 tk-xxxxxx`），不回落台账内部编号。
+  const ref = textOf(task === null || task === undefined ? undefined : task.ref)
+  return ref === '' ? '任务' : `任务 ${ref}`
 }
 
 /**
@@ -186,14 +293,17 @@ export const chipOpenTargetOf = task => {
   return sessionId === '' ? { kind: 'detail', sessionId: null } : { kind: 'session', sessionId }
 }
 
-/** 悬浮提示：任务名 + 状态 + 点下去会发生什么（标题截断后仍能看到全名与状态）。 */
+/** 悬浮提示：任务名（+ 引用）+ 状态 + 点下去会发生什么（标题截断后仍能看到全名与状态）。 */
 export const chipTooltipOf = task => {
   const status = task === null || task === undefined ? undefined : task.status
   const label = Object.hasOwn(STATUS_LABEL, status) ? STATUS_LABEL[status] : '状态未知'
   const hint = chipOpenTargetOf(task).kind === 'session'
     ? '点击打开子会话'
     : '无子会话，点击打开任务详情'
-  return `${chipNameOf(task)}｜${label}｜${hint}`
+  // R3：tooltip 补引用（tk-xxxxxx）——chip 上只有名字，引用放在 tooltip 里对账 task_list。
+  const name = chipNameOf(task)
+  const ref = textOf(task === null || task === undefined ? undefined : task.ref)
+  return `${name}${ref === '' || name.includes(ref) ? '' : `（${ref}）`}｜${label}｜${hint}`
 }
 
 export const CHIP_TITLE_MAX = 24

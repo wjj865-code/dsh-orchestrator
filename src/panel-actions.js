@@ -11,6 +11,7 @@ import {
 } from './ledger.js'
 import { dependencyState, validateDepends } from './deps.js'
 import { taskLabel } from './task-label.js'
+import { refsInText, taskRefInfo, taskRefTokenOfAny } from './task-ref.js'
 import { ensureArtifactDirectory } from './artifact-store.js'
 import { statusLabel } from './state.js'
 import { panelFailure } from './action-errors.js'
@@ -49,6 +50,9 @@ const MESSAGE_DEDUPE_MS = 3000
 // 详情一次最多回 50 条消息、50 个下游任务；面板只展示最近 20 条消息（更早的靠台账/日志）。
 const DETAIL_MESSAGE_LIMIT = 50
 const DETAIL_DEPENDENT_LIMIT = 50
+// 详情里「消息正文提到的任务引用」索引上限：抽屉把这些 `tk-xxxxxx` 渲染成「名称」chip，
+// 一条回复里可能引用很多任务，超过上限的仍按原样显示引用（不丢、只是不查表）。
+const DETAIL_REF_LIMIT = 40
 // 预览只读前 64 KiB：足够看文本产物，避免把大文件整个读进内存。
 const PREVIEW_BYTES = 64 * 1024
 
@@ -150,15 +154,31 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     }))
     const dependencies = task.depends_on.map(id => {
       const dep = getTask(db, id)
+      // R1：前置任务查不到时**不回落内部编号**（`t-xxxx` 只该留在台账/日志）。带上它的引用
+      // （墓碑引用也带上）与一句可读占位，面板就能显示「（任务已删除）tk-xxxxxx」。
       return dep === undefined
-        ? { id, title: id, status: 'missing' }
-        : { id, title: dep.title, status: dep.status, error: dep.error ?? null }
+        ? { id, ref: taskRefTokenOfAny(db, id), title: '', status: 'missing', deleted: true }
+        : { id, ref: dep.ref ?? null, title: dep.title, status: dep.status, error: dep.error ?? null }
     })
     // 下游 = 依赖链上引用本任务的任务；失败会沿依赖链传播，面板要能看到「谁会被我拖住」。
     const dependentTasks = listTasks(db, { active: false }).filter(item => item.depends_on.includes(task.id))
     const dependents = dependentTasks
       .slice(0, DETAIL_DEPENDENT_LIMIT)
-      .map(item => ({ id: item.id, title: item.title, status: item.status, error: item.error ?? null }))
+      .map(item => ({ id: item.id, ref: item.ref ?? null, title: item.title, status: item.status, error: item.error ?? null }))
+    // R3：消息正文里的 `tk-xxxxxx` 要在抽屉里显示成任务名（而不是一串引用）——这里把出现过的引用
+    // 按台账现名解析一次，随详情下发。已删除任务（引用置墓碑）如实标 deleted=true，客户端据此
+    // 把它原样显示并提示「引用已失效」；查不到的引用不在索引里，客户端同样原样显示。
+    const refs = []
+    for (const row of rows) {
+      for (const token of refsInText(row.rendered, { limit: DETAIL_REF_LIMIT })) {
+        if (refs.some(item => item.ref === token)) continue
+        const info = taskRefInfo(db, token)
+        const target = info === null ? undefined : getTask(db, info.taskId)
+        refs.push(target === undefined
+          ? { ref: token, title: '', status: 'missing', deleted: info === null ? false : info.retired }
+          : { ref: token, title: target.title, status: target.status, deleted: false })
+      }
+    }
     // 活跃下游会挡住删除：与 snapshot/动作同源（panel-gates.deleteGate）。
     const activeDependents = dependentTasks.filter(item => ACTIVE.has(item.status)).length
     return {
@@ -225,6 +245,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       },
       dependencies,
       dependents,
+      // R3：消息里提到的引用 → 台账现名/墓碑状态（客户端 RefText 查表用，不认识的引用原样显示）。
+      refs,
       messages,
     }
   }

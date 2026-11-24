@@ -17,8 +17,10 @@ const CHIP_ACTIVE = new Set(CHIP_ACTIVE_STATUSES)
 
 // 只保留下游要用的字段：快照里那些产物/依赖/选项对 chip 没用，剪掉能让身份比较更便宜。
 // childSessionId 要留：chip 点击靠它跳子会话（logic.js 的 chipOpenTargetOf），剪了就只能降级详情。
+// ref 也要留（R3）：chip 的 tooltip 要写「名称（tk-xxxxxx）」，用户才能跟 task_list 里的那条对上。
 const slimTask = task => ({
   id: typeof task.id === 'string' ? task.id : '',
+  ref: typeof task.ref === 'string' ? task.ref : '',
   title: typeof task.title === 'string' ? task.title : '',
   status: typeof task.status === 'string' ? task.status : '',
   coordinatorSession: typeof task.coordinatorSession === 'string' ? task.coordinatorSession : null,
@@ -39,7 +41,7 @@ const recencyOf = (task, at) => {
 const signatureOf = (tasks, at) => {
   let text = ''
   for (const task of tasks) {
-    text += `${task.id}\u0001${task.status}\u0001${task.title}\u0001${task.coordinatorSession ?? ''}\u0001${task.childSessionId ?? ''}\u0001${task.lastEventAt ?? ''}\u0001${task.updatedAt ?? ''}\u0001${recencyOf(task, at)}\u0002`
+    text += `${task.id}\u0001${task.ref}\u0001${task.status}\u0001${task.title}\u0001${task.coordinatorSession ?? ''}\u0001${task.childSessionId ?? ''}\u0001${task.lastEventAt ?? ''}\u0001${task.updatedAt ?? ''}\u0001${recencyOf(task, at)}\u0002`
   }
   return text
 }

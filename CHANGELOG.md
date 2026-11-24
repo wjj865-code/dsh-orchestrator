@@ -1,8 +1,22 @@
 # Changelog
 
-## 未发布（2026-11-24）—— 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径 / worktree 分支名改约定式命名
+## 未发布（2026-11-24）—— 任务引用人类友好展示（名字+chip）/ 协调者可加载技能判断派活 / 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径 / worktree 分支名改约定式命名
 
-**一句话**：这一批不含发版动作（**不 bump 版本**）：写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径、worktree 分支名改由协调者按约定式 `<type>/<slug>` 传入（必填，不再默认 `orch/<taskId>`）。
+**一句话**：这一批不含发版动作（**不 bump 版本**）：用户面不再出现 `t-xxxx`/光秃秃的 `tk-xxxxxx`——任务一律「名字 + 引用」，抽屉正文里的引用渲染成名字 chip；协调者仍不干活，但被明确允许按需加载技能来判断「怎么派活」（只读不执行）；此外写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径、worktree 分支名改由协调者按约定式 `<type>/<slug>` 传入（必填，不再默认 `orch/<taskId>`）。
+
+**任务引用人类友好展示（R1–R3，用户拍板：抬 164 KiB / task_detail 合成一行 / 通知标题带引用 / brief 补名字 / 面板两处都做）**
+- `task_detail` 首行合成 `任务：名称（tk-xxxxxx）`（`src/task-detail.js`）：子会话第一次就同时拿到「怎么称呼」与「怎么调工具」，原来单列的「任务引用：」行删掉，`t-xxxx` 仍然一个字都不出现。
+- 面板两处不再回落内部编号：抽屉依赖/下游行补 `ref`，缺失的前置显示「（任务已删除）」+ 墓碑引用而不是 4 位 `t-` 后缀（`src/panel-actions.js`）；自动化列表的 `refLabel` 改 `taskLabelWithRef`（`src/workbench.js`，客户端 `client/src/workbench.js` 读它）。
+- 通知标题带引用（`src/notify.js` 的 `nameOf`）：`任务「名字（tk-xxx）」完成/已交付待确认`，`displayName` 里已有引用时不重复追加；`ref` 缺失（旧行）只写名字。
+- brief 补任务名（`src/brief.js`）：`【任务引用】tk-xxx` 之后多一行 `【任务名】名称`（可选，2–4 行仍守 L2 预算），子会话第一句就能用名字汇报。
+- L1 汇报口径补两句（`index.js`）：「**再次提到同一个任务只写名称**」「**不要只写 tk-xxxxxx**」，原来「只用任务名 + 任务引用」「不要出现 t-xxxx」两句照留。
+- 抽屉正文里的引用 → 名字 chip（`client/src/logic.js` + `views.js` + `feed.js`）：新增纯函数 `splitTaskRefs`（严格形态、两侧边界断言，`tk-abc1234`/`x-tk-abc123` 不当引用）、`refDisplayOf`/`refSegmentsOf` 与 `RefText` 组件，覆盖「最新回复」「消息」两处；五种兜底各有实现与用例——重名（名字+引用）、改名过期（以台账现名为准）、长名（chip 截断、tooltip 全名）、查不到（原样显示引用）、已删除（引用置墓碑 → 原样显示 + 「引用已失效」）。详情新增只读 `refs` 索引（消息里出现过的引用 → 现名/墓碑状态）；回复底部 chip 的 tooltip 与 feed 快照也补 `ref`。
+- 体积：`scripts/check-client-size.mjs`、`test/client-build.test.js:58`、`docs/testing.md` 的 G10 同步抬到 **164 KiB**（实测见下），`dist/client.js` 重建、`node --check` 通过。
+
+**协调者可加载技能判断派活（R0，用户追加）**
+- L1 新增一条通用许可（`index.js`）：协调者可以 `skill({ name })` 读技能说明来判断「该不该派、带什么约束、要不要建议用户走某个技能」——一次 1–2 个、只在摘要不足/匹配不确定时加载、能直接回答的不加载；**只读不执行**（加载技能 ≠ 按步骤干活，仍不写文件、不跑命令），读到的信息写进 `task_create` 的 goal/constraints 或汇报里点一句「这项可以走 X 技能」。技能目录（名称+摘要）由宿主注入上下文，协调者预设自 0.26.0 就挂着只读 `read` 与 `tool-skill`（`cordis.patch.yml:36/44-47`），此前 L1 只有 grill-me 一条触发语，没有通用许可。
+- 没新增任何工具、没动 `MAIN_PERMISSION_PRESET` 的沙箱与审批；`src/prompt-layers.js` 的 L1 `owns` 登记这条职责。
+- 文档：`docs/ARCHITECTURE.md`「协调者只读工具与 grill-me 技能」节补一句「可加载技能只为判断派活（只读不执行）」、`README.md` 的「只读总指挥」一句同步；**文档总行数仍 1799/1800**（同段内合并，不加行）。
 
 **写域判定修复（隔离任务写根 = 检出）**
 - 新增 `isolatedConflicts` 与单向包含 `pathWithin`（`src/write-guard.js`）：隔离任务（`requested`/`created`/`reused`）重新拿写根（resume / 追问 / retry / 派发）只判「同一份检出（含 `worktreeMode:'continue'` 复用）」与「别人写进我的检出」，**原 target 与 `writeScopes` 不参与**。
@@ -31,6 +45,7 @@
 **边界与验证**
 - 不含发版动作：**不 bump `package.json` version、不 push、不打 tag、不 publish、不删分支**。
 - 验证：`test/write-guard.test.js`、`test/write-gate.test.js`、`test/write-hold.test.js`、`test/artifact-stage.test.js`、`test/mirror-sync.test.js`、`test/worktree.test.js`、`test/worktree-request.test.js`、`test/access-full.test.js`、`test/config*.test.js`、`test/client-config-form.test.js` 全绿；`node scripts/check-docs.mjs`（1799/1800、配置参考 24 键）与 `pnpm run check:version` 通过；客户端只少一行字段投影 → `dist/client.js` 重建、`check:client-size` 通过。
+- 本批（引用展示）追加验证：全量 `node --test --experimental-test-isolation=none "test/*.test.js"` **1475 项 / 0 fail / 5 skip**；`test/client.test.js`（`splitTaskRefs` 切段 + 五种兜底 + 抽屉两处渲染）、`test/client-build.test.js`（`__test` 出口与 164 KiB）、`test/task-detail.test.js`、`test/panel-actions.test.js`、`test/workbench.test.js`、`test/notify.test.js`、`test/brief.test.js`、`test/prompt-layers.test.js`（L1 技能许可）、`test/plan-save.test.js` 同步；`dist/client.js` 重建后 **165,597 B / 167,936 B（余 2,339 B）**、`node --check` 通过；`check:docs` 1799/1800、`check:version` 未 bump。
 
 ## 0.34.0（2026-11-24）—— 任务私有产物存储 / Git 与非 Git 阶段收集 / 收集后交付
 

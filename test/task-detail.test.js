@@ -57,8 +57,8 @@ test('renderTaskDetail：目标全文/验收/约束/背景/用户原话/工作�
     read_only: false,
   }
   const text = renderTaskDetail(task)
-  assert.match(text, /任务引用：tk-1a2b3c/)
-  assert.match(text, /任务：登录修复/)
+  // R1：首行是「任务：名称（tk-xxx）」合一行（人类友好展示），不再单列任务引用行。
+  assert.match(text, /^任务：登录修复（tk-1a2b3c）$/m)
   assert.match(text, /状态：进行中/)
   // 目标保留换行（全文，不压成一行）。
   assert.match(text, /目标：让登录失败时给出明确提示\n第二行也要保留/)
@@ -163,7 +163,7 @@ test('task_detail：任务自己的子会话能读到创建详情（含依赖与
   const task = seed(db, { brief: briefOf({ target: tempDir() }) })
   setTaskArtifacts(db, task.id, [{ path: join(tempDir(), 'out.md'), label: '产物' }])
   const text = await tools.task_detail.execute({ task_id: task.id }, { agent: { id: task.session_id } })
-  assert.match(text, new RegExp(`任务引用：${task.ref}`))
+  assert.match(text, new RegExp(`任务：登录修复（${task.ref}）`))
   assert.match(text, /【验收标准】/)
   assert.match(text, /【已有产物】/)
   db.close()
@@ -173,7 +173,7 @@ test('task_detail：exec.agent.session.id 也认（不只 agent.id）', async ()
   const { db, tools } = await setup()
   const task = seed(db)
   const text = await tools.task_detail.execute({ task_id: task.id }, { agent: { session: { id: task.session_id } } })
-  assert.match(text, /任务引用：/)
+  assert.match(text, /任务：登录修复（tk-[0-9a-z]{6}）/)
   db.close()
 })
 
@@ -214,7 +214,7 @@ test('task_detail：缺 task_id / 抄错引用给可读提示（不回声、不�
   // 版本 B：接受 tk- 引用（task_list / 回执里给的就是它）。
   const seeded = seed(db)
   const byRef = await tools.task_detail.execute({ task_id: seeded.ref }, { agent: { id: seeded.session_id } })
-  assert.match(byRef, new RegExp(`任务引用：${seeded.ref}`))
+  assert.match(byRef, new RegExp(`任务：登录修复（${seeded.ref}）`))
   db.close()
 })
 

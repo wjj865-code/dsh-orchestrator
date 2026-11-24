@@ -226,13 +226,18 @@ test('L2 只报送商品：堵塞项口径的渲染归 W1，brief 不复述 L1 �
   }
 })
 
-test('L2 行数：2 行基准，full 加一行；worktree 状态不再进 brief', () => {
+test('L2 行数：2 行基准，有任务名 +1、full +1；worktree 状态不再进 brief', () => {
   const plain = renderBrief({ taskRef: 'tk-test1' }).split('\n')
   const full = renderBrief({ taskRef: 'tk-test1', access: 'full' }).split('\n')
   assert.equal(plain.length, 2)
   assert.equal(full.length, 3)
   assert.match(full[1], /^【访问级别】/)
   assert.match(plain[1], /^【任务详情】/)
+  // R2：任务名是可选项——给了才多一行，仍不内联目标/验收/静态提示。
+  const named = renderBrief({ taskRef: 'tk-test1', taskName: '修发版' }).split('\n')
+  assert.equal(named.length, 3)
+  assert.match(named[1], /^【任务名】修发版$/)
+  assert.equal(renderBrief({ taskRef: 'tk-test1', taskName: '修发版', access: 'full' }).split('\n').length, 4)
 })
 
 test('L3 task_detail 只给任务详情：不重复 brief 的指路，不讲协调者口径，不重复 W1 的回报口径', () => {
@@ -251,6 +256,24 @@ test('通知只讲动作：交付指令与 present 上限不重复解释能力�
   assert.match(PRESENT_HINT, new RegExp(PRESENT_LIMIT_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   assert.match(PRESENT_HINT, /已登记的产物/)
   assert.match(DELIVERED_HINT, /默认保持待确认/)
+})
+
+// R0（用户追加）：协调者不干活，但知道有哪些技能才能更好派活——L1 要给出**通用**许可，
+// 不只 grill-me 那一条。边界同样是硬要求：只读不执行、按需少而准。
+test('L1 允许协调者按需加载技能来判断派活（只读不执行、一次 1–2 个）', () => {
+  const policy = renderCoordinatorPolicy({})
+  assert.match(policy, /可以按需加载技能，只为判断怎么派活/)
+  assert.match(policy, /技能目录＝名称＋摘要，由宿主注入上下文/)
+  assert.match(policy, /\*\*只读不执行\*\*：加载技能 ≠ 按技能步骤干活/)
+  assert.match(policy, /一次 1–2 个/)
+  assert.match(policy, /能直接回答的不加载/)
+  assert.match(policy, /task_create 的 goal \/ constraints/)
+  // 它仍然不是执行者：许可段落里不许出现写/命令工具的旁路。
+  assert.doesNotMatch(policy, /skill\s*\([^)]*\)[^。\n]*写文件/)
+  // 这条许可只属于 L1：brief（L2）与 task_detail（L3）都不许抄。
+  assert.deepEqual(layerViolations('L2', renderBrief({ taskRef: 'tk-test1' })), [])
+  assert.equal(renderBrief({ taskRef: 'tk-test1' }).includes('按需加载技能'), false)
+  assert.equal(sampleDetail().includes('按需加载技能'), false)
 })
 
 test('矛盾 2 已修：交付口径只有 W1 一份（summary 三问 + done 清空 question/options）', () => {
@@ -275,11 +298,14 @@ test('矛盾 1 已修：文档不再教「交付时选项进 question+options」
   assert.match(limits, /done\*\*?不支持|不支持 `question`\/`options`|会把它们清空/)
 })
 
-test('矛盾 3 已修：文档的 brief 行数描述与实现一致（2–3 行）', () => {
+test('矛盾 3 已修：文档的 brief 行数描述与实现一致（2–4 行）', () => {
   const doc = readFileSync(new URL('../docs/testing.md', import.meta.url), 'utf8')
-  assert.match(doc, /2–3 行/)
-  // 实现侧核对：不 full 就是 2 行。
+  // R2 起：引用 2 行基准，任务名 +1、access:'full' +1 → 2–4 行。
+  assert.match(doc, /2–4 行/)
+  // 实现侧核对：只有引用就是 2 行，加了名字/完整访问各多一行。
   assert.equal(renderBrief({ taskRef: 'tk-test1' }).split('\n').length, 2)
+  assert.equal(renderBrief({ taskRef: 'tk-test1', taskName: 'x' }).split('\n').length, 3)
+  assert.equal(renderBrief({ taskRef: 'tk-test1', taskName: 'x', access: 'full' }).split('\n').length, 4)
 })
 
 test('跨层共享口径只有一个来源：present 上限、交付不是结束', () => {

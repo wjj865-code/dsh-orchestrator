@@ -220,12 +220,16 @@ const worktreeBlock = item => {
 }
 
 // 显示名由 tools 算好放进 item.displayName（重名短后缀也在那里算）；没有就回落 title。
-// 权限在通知标题里明确标出来：只读（不会写文件）/ 完整访问（沙箱不拦写，破坏了可能更大）。
+// R3：标题带**任务引用**（tk-xxxxxx）——用户看到「任务「X（tk-7f3a2c）」完成」才能对上 task_list 里的那条；
+// displayName 里已经带引用（重名后缀）时不重复追加。没有引用（旧行 / 未生成）就只写名称。
 const nameOf = item => {
-  const base = item.displayName ?? item.title
-  if (item.readOnly === true) return `${base}（只读）`
-  if (item.access === 'full') return `${base}（完整访问）`
-  return base
+  const base = String(item.displayName ?? item.title ?? '').trim() || '任务'
+  const ref = typeof item.ref === 'string' ? item.ref.trim() : ''
+  const named = ref === '' || base.includes(ref) ? base : `${base}（${ref}）`
+  // 权限在通知标题里明确标出来：只读（不会写文件）/ 完整访问（沙箱不拦写，破坏了可能更大）。
+  if (item.readOnly === true) return `${named}（只读）`
+  if (item.access === 'full') return `${named}（完整访问）`
+  return named
 }
 // progress 是一档独立语义：没有产物、没有交付确认、也没有「等你决定」的问题，只有「还在跑 + 到哪了」。
 // 追问后的第一条额外标「回答你的追问」——否则协调者会把它当成又一次心跳，追问等于没问。

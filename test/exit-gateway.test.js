@@ -200,7 +200,7 @@ test('出口：brief / task_detail / resume 里没有 t-xxxx，只有 tk-', asyn
   assert.doesNotMatch(briefText, BARE_ID, briefText)
   const detail = await tools.task_detail.execute({ task_id: ref }, { agent: { id: task.session_id } })
   assert.doesNotMatch(detail, BARE_ID, detail)
-  assert.match(detail, new RegExp(`任务引用：${ref}`))
+  assert.match(detail, new RegExp(`任务：派发（${ref}）`))
   // 续跑文案同样只写引用。
   const { resumePrompt } = await import('../src/resume.js')
   const prompt = resumePrompt(task)

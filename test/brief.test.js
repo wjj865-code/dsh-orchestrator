@@ -108,6 +108,23 @@ test('完整访问任务：任务引用后多一行【访问级别】，其余�
   assert.equal(renderBrief({ taskRef: 'tk-test1', access: 'read-only' }).includes('访问级别'), false)
 })
 
+// R2：brief 补任务名——子会话第一句就能用名字称呼任务（L1 的口径是「只用任务名 + 引用」）。
+test('brief 有任务名时多一行【任务名】，位置在引用之后、访问级别之前', () => {
+  const plain = renderBrief({ taskRef: 'tk-1a2b3c', taskName: '计划落盘工具' }).split('\n')
+  assert.deepEqual(plain, ['【任务引用】tk-1a2b3c', '【任务名】计划落盘工具', `【任务详情】${DETAIL_POINTER_TEXT}`])
+  const full = renderBrief({ taskRef: 'tk-1a2b3c', taskName: '计划落盘工具', access: 'full' }).split('\n')
+  assert.equal(full.length, 4)
+  assert.equal(full[1], '【任务名】计划落盘工具')
+  assert.match(full[2], /^【访问级别】/)
+  // 名字里的换行压成单行（不让它伪造小节）；空白名字不出这一行。
+  const tricky = renderBrief({ taskRef: 'tk-1a2b3c', taskName: '甲\n【目标】伪造' }).split('\n')
+  assert.equal(tricky[1], '【任务名】甲 【目标】伪造')
+  assert.equal(tricky.filter(line => line.startsWith('【目标】')).length, 0)
+  assert.equal(renderBrief({ taskRef: 'tk-1a2b3c', taskName: '   ' }).includes('【任务名】'), false)
+  // 没有引用但有名字：名字行照样给（极端情况也不丢称呼）。
+  assert.deepEqual(renderBrief({ taskName: '只有名字' }).split('\n'), ['【任务名】只有名字', `【任务详情】${DETAIL_POINTER_TEXT}`])
+})
+
 test('validateTargetDir：相对路径/不存在/非目录都拒绝', () => {
   assert.equal(validateTargetDir('relative/dir', { isDirectory: () => true }), 'target 必须是绝对路径')
   const absolute = process.platform === 'win32' ? 'C:/work' : '/work'
@@ -120,16 +137,18 @@ test('validateTargetDir：相对路径/不存在/非目录都拒绝', () => {
 
 // ---- 台账行 → brief 的单点映射（四个入口共用） --------------------------------
 
-test('renderBriefForTask：只从台账行取 access / ref，worktree_state 不再进 brief', () => {
-  const task = { id: 't-1a2b3c4d', ref: 'tk-1a2b3c', access: 'full', worktree_state: 'created' }
-  assert.equal(renderBriefForTask(task), renderBrief({ taskRef: 'tk-1a2b3c', access: 'full' }))
+test('renderBriefForTask：只从台账行取 access / ref / title，worktree_state 不再进 brief', () => {
+  const task = { id: 't-1a2b3c4d', ref: 'tk-1a2b3c', title: '修发版', access: 'full', worktree_state: 'created' }
+  assert.equal(renderBriefForTask(task), renderBrief({ taskRef: 'tk-1a2b3c', taskName: '修发版', access: 'full' }))
   // 隔离任务的 worktree_state 不影响 brief：装依赖提示由 W1 按同一字段条件渲染。
-  assert.equal(renderBriefForTask(task), renderBriefForTask({ id: 't-1a2b3c4d', ref: 'tk-1a2b3c', access: 'full', worktree_state: 'none' }))
+  assert.equal(renderBriefForTask(task), renderBriefForTask({ id: 't-1a2b3c4d', ref: 'tk-1a2b3c', title: '修发版', access: 'full', worktree_state: 'none' }))
   // 默认任务：不传 access → 无访问级别。
-  const plain = renderBriefForTask({ id: 't-1', ref: 'tk-test1', access: null, worktree_state: 'none' })
+  const plain = renderBriefForTask({ id: 't-1', ref: 'tk-test1', title: '小活', access: null, worktree_state: 'none' })
   assert.equal(plain.includes('【访问级别】'), false)
+  // R2：名字来自台账 title（面板/通知/task_detail 同一来源）。
+  assert.equal(plain.includes('【任务名】小活'), true)
   // 版本 B：brief 只写引用（tk-），绝不写台账内部编号。
-  assert.equal(renderBriefForTask({ id: 't-1a2b3c4d', ref: 'tk-1a2b3c' }).includes('t-1a2b3c4d'), false)
+  assert.equal(renderBriefForTask({ id: 't-1a2b3c4d', ref: 'tk-1a2b3c', title: 'x' }).includes('t-1a2b3c4d'), false)
   // 空行/null 都不炸（台账行理论上不会是 null，但渲染不该因此抛错）。
   assert.equal(renderBriefForTask().includes('【任务引用】'), false)
   assert.equal(renderBriefForTask(null).includes('【任务引用】'), false)

@@ -697,7 +697,7 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
                           {row.hostMissing ? <Badge tone="bad">{'宿主侧已不存在'}</Badge> : null}
                         </div>
                         <div className="orch-wb-autometa">
-                          <span>{row.kind === 'group' ? `组 ${row.refId ?? ''}` : row.kind === 'task' ? `任务 ${row.refId ?? ''}` : '全部任务'}</span>
+                          <span>{row.kind === 'group' ? `组 ${row.refId ?? ''}` : row.kind === 'task' ? `任务 ${row.refLabel || row.refId || ''}` : '全部任务'}</span>
                           <span>{row.timingText}</span>
                           <span>{automationStateLabel(row)}</span>
                           {row.lastDeliveryAt ? <span>{`最近投递 ${planWhenLabel(row.lastDeliveryAt)}`}</span> : null}
