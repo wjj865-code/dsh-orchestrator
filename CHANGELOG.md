@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.35.1（2026-11-25）—— 修复 npmmirror 触发过早导致「同步成功但 0 新增」
+
+**一句话**：0.35.0 的 release workflow 在 npm publish 回执后 1 秒就 PUT npmmirror，但此时上游 `r.cnpmjs.org` 的 packument 仍是 `latest=0.34.0`；npmmirror 任务约 3 秒就记 `success` 且「新增 0 版本」，而 workflow 只轮询不重试，于是 3 分钟全是 404。0.35.1 先等 npm 版本端点可下载再触发；镜像仍未出现时每 60 秒重新触发，避免单次空跑后一直假死。
+
+**根因与修复**
+- `scripts/mirror-sync.mjs` 不再用 packument 判断上游是否可同步：改为轮询 npm 的版本专用端点 `/:name/:version`，200 才 PUT。packument 有 CDN/回源延迟，不能代表版本已经可下载。
+- 首次触发后仍未被镜像看见时，按 `--retrigger`（默认 60 秒）重新 PUT；总预算仍由 `--timeout` 控制，重试不重置 deadline。
+- `.github/workflows/release.yml` 删除重复的 curl 轮询逻辑，直接调用同一套脚本：`node scripts/mirror-sync.mjs --timeout 600`，最长等 10 分钟；失败只告警，不让已经完成的 npm 发布判红。
+- `--check` 仍是纯查询：镜像缺版本时只探一次上游版本端点并报告，不触发 PUT、不等待。
+- `--no-wait` 保持「只触发不等待」：只探一次上游，版本已可下载才 PUT，否则立即 exit 1，不再悄悄等满超时。
+- 验证：`test/mirror-sync.test.js` 17/17 通过，新增「上游未就绪先等」「同步空跑后重触发」「上游超时绝不 PUT」「--no-wait 只探一次」四条回归；全量测试通过。
+- 文档：`docs/CONTRIBUTING.md`、`docs/testing.md` 同步新的等待/重触发口径。
+
 ## 0.35.0（2026-11-25）—— 任务引用人类友好展示（名字+chip）/ 协调者可加载技能判断派活 / 协调者预设挂本地技能发现（技能面 8→35）/ 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径 / worktree 分支名改约定式命名
 
 **一句话**：0.35.0 发布：用户面不再出现 `t-xxxx`/光秃秃的 `tk-xxxxxx`——任务一律「名字 + 引用」，抽屉正文里的引用渲染成名字 chip；协调者仍不干活，但被明确允许按需加载技能来判断「怎么派活」（只读不执行），并且协调者预设补挂了 `skill-filesystem`——主会话技能目录从此纳入**用户本地全局技能**（本机 8→35 条，需新开会话生效）；此外写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径、worktree 分支名改由协调者按约定式 `<type>/<slug>` 传入（必填，不再默认 `orch/<taskId>`）。

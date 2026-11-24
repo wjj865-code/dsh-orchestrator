@@ -21,8 +21,8 @@ name: release
 #   git push --follow-tags     # 推提交 + 推 tag vX.Y.Z → 本工作流接管
 #   首次对已有版本补 tag：git tag v0.3.1 && git push origin v0.3.1（版本已在 npm 上会被下面「已在 npm 上」的步骤拦下）
 #
-# 发布后镜像同步：最后一步会主动 PUT npmmirror 的 syncs 接口并轮询约 3 分钟。
-#   该步 continue-on-error，超时只出 warning；手动补做：pnpm run mirror:sync（查状态：pnpm run mirror:check）。
+# 发布后镜像同步：先等 npm 版本端点可下载，再 PUT npmmirror；同步空跑时自动重触发，最多等 10 分钟。
+#   超时只出 warning；手动补做：pnpm run mirror:sync（查状态：pnpm run mirror:check）。
 #   国内用户默认走 registry.npmmirror.com，镜像没刷出来时 npm i @latest 还拿旧版。
 on:
   push:
@@ -95,36 +95,12 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: 触发 npmmirror 镜像同步
-        # npm publish 只落 registry.npmjs.org；npmmirror 靠自己的后台回源，常常几十分钟到几小时才出现。
-        # 这一步主动 PUT 一次同步请求，把「镜像有新版」从小时级压到分钟级。
-        # continue-on-error：镜像同步失败不能让发布判红（npm 已经发出去了，重跑整个工作流只会卡在「已发布」拦截上）。
-        continue-on-error: true
+        # npm publish 回执不等于版本已在上游可下载；太早触发会让 npmmirror 从旧 packument
+        # 同步后直接 success（新增 0 版本）。脚本会先等版本端点，再触发并按间隔重试。
+        # 镜像同步失败不能让发布判红：npm 已发出，重跑工作流只会卡在「已发布」拦截上。
         shell: bash
         run: |
-          name="$(node -p "require('./package.json').name")"
-          version="$(node -p "require('./package.json').version")"
-          encoded="$(node -e "process.stdout.write(encodeURIComponent(process.argv[1]))" "${name}")"
-          echo "触发镜像同步：${name}@${version}"
-          curl -sS -X PUT "https://registry.npmmirror.com/-/package/${encoded}/syncs" -w '\nHTTP %{http_code}\n'
-          # 轮询等镜像刷出来（最多约 3 分钟）：只用来把结果写进日志，超时只警告不失败。
-          # 判据用版本专用端点（/:name/:version，有 200 / 没有 404），不再用 npm view 读 packument：
-          # packument 走 CDN（public, max-age=300），刚同步完还会回旧内容，轮询会一直假阴性跑满预算。
-          # 每次请求再叠 ?t= 时间戳 + no-cache 头，绕过中间缓存，「已同步」能在 10 秒级被识别。
-          # 非 200 一律只记一行日志继续：404 = 还没同步；5xx / 429 / 连不上 = 镜像侧暂时不可用，
-          # 等它恢复（这是有意为之，不提前判失败），跑满预算仍没有才出 warning，且整步 continue-on-error。
-          deadline=$(( $(date +%s) + 180 ))
-          attempt=0
-          while [ "$(date +%s)" -lt "${deadline}" ]; do
-            attempt=$((attempt + 1))
-            url="https://registry.npmmirror.com/${encoded}/${version}?t=$(date +%s)"
-            code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 \
-              -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' -H 'Accept: application/json' \
-              "${url}" 2>/dev/null || true)"
-            if [ "${code}" = "200" ]; then
-              echo "::notice::镜像已就绪：${name}@${version}"
-              exit 0
-            fi
-            echo "  第 ${attempt} 次轮询：版本端点 HTTP ${code:-000}（镜像还没有 ${version}）"
-            sleep 10
-          done
-          echo "::warning::镜像尚未出现 ${name}@${version}，npmmirror 会继续后台同步；稍后用 pnpm run mirror:check 复查（或 node scripts/mirror-sync.mjs）"
+          node scripts/mirror-sync.mjs --timeout 600 || {
+            echo "::warning::镜像同步未在 10 分钟内完成，npmmirror 会继续后台回源；稍后用 pnpm run mirror:check 复查"
+            exit 0
+          }

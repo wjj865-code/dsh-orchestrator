@@ -5,13 +5,9 @@ import {
   UPSTREAM,
   cacheBust,
   describeUnknown,
-  fetchPackument,
-  isSynced,
   main,
-  packumentUrl,
   parseArgs,
   probeVersion,
-  readMirrorState,
   syncUrl,
   versionUrl,
 } from '../scripts/mirror-sync.mjs'
@@ -56,18 +52,30 @@ function fakeClock() {
   }
 }
 
-// 镜像侧按顺序回状态码（用完之后一直重复最后一个），上游 packument 恒有 version，PUT 恒成功。
-function routedFetch(sequence, { calls = [] } = {}) {
+function statusResponse(status, body = '') {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => body,
+    json: async () => ({}),
+  }
+}
+
+// 镜像与上游各按顺序回状态码（用完之后一直重复最后一个），PUT 恒成功。
+function routedFetch(mirrorSequence, { upstreamSequence = [200], calls = [] } = {}) {
   let mirrorHits = 0
+  let upstreamHits = 0
   const impl = async (url, init) => {
     calls.push({ url, method: init?.method })
-    if (init?.method === 'PUT') return { ok: true, status: 200, text: async () => '{}' }
+    if (init?.method === 'PUT') return statusResponse(200, '{}')
     if (url.startsWith(UPSTREAM)) {
-      return { ok: true, status: 200, json: async () => ({ 'dist-tags': { latest: '0.34.0' }, versions: { '0.34.0': {} } }) }
+      const status = upstreamSequence[Math.min(upstreamHits, upstreamSequence.length - 1)]
+      upstreamHits += 1
+      return statusResponse(status)
     }
-    const status = sequence[Math.min(mirrorHits, sequence.length - 1)]
+    const status = mirrorSequence[Math.min(mirrorHits, mirrorSequence.length - 1)]
     mirrorHits += 1
-    return { ok: status === 200, status }
+    return statusResponse(status)
   }
   return { impl, calls }
 }
@@ -78,13 +86,6 @@ test('syncUrl：scoped 包名要 URL 编码，路径落在 /-/package/:name/sync
   // 只编码一次：% 不能再被编码成 %25
   assert.ok(!syncUrl(NAME).includes('%2540'))
   assert.equal(syncUrl(NAME, 'https://example.test'), 'https://example.test/-/package/%40wjj865-code%2Fdsh-orchestrator/syncs')
-})
-
-test('packumentUrl：scoped 包的 / 编码成 %2F（@ 保持原样，与 npm CLI 一致），域名带协议', () => {
-  assert.equal(packumentUrl(NAME), `${ENDPOINT}/@wjj865-code%2Fdsh-orchestrator`)
-  assert.equal(packumentUrl(NAME, UPSTREAM), `${UPSTREAM}/@wjj865-code%2Fdsh-orchestrator`)
-  assert.equal(packumentUrl('plain-pkg'), `${ENDPOINT}/plain-pkg`)
-  assert.ok(!packumentUrl(NAME).includes('@wjj865-code/dsh-orchestrator'))
 })
 
 test('versionUrl：版本专用端点（scoped 包的 / 编码），版本号单独编码', () => {
@@ -139,59 +140,24 @@ test('probeVersion：404 → absent；503/429/网络错 → unknown（不冒充�
   assert.equal(describeUnknown(offline), '请求失败：boom')
 })
 
-test('fetchPackument：packument 也带 ?t= 与 no-cache（不吃 CDN 缓存），404 当空', async () => {
-  const { impl, calls } = stubFetch(() => ({
-    status: 200,
-    ok: true,
-    json: async () => ({ 'dist-tags': { latest: '0.34.0' }, versions: { '0.34.0': {} } }),
-  }))
-  const result = await fetchPackument(NAME, ENDPOINT, { now: 123, fetchImpl: impl })
-  assert.equal(result.ok, true)
-  assert.deepEqual(result.state, { latest: '0.34.0', versions: ['0.34.0'] })
-  assert.equal(calls[0].url, `${ENDPOINT}/@wjj865-code%2Fdsh-orchestrator?t=123`)
-  assert.equal(calls[0].init.headers['cache-control'], 'no-cache')
-  assert.equal(calls[0].init.headers.accept, 'application/vnd.npm.install-v1+json')
-
-  const missing = await fetchPackument(NAME, ENDPOINT, { fetchImpl: async () => ({ status: 404, ok: false }) })
-  assert.equal(missing.ok, true)
-  assert.deepEqual(missing.state, { latest: undefined, versions: [] })
-})
-
-test('readMirrorState：摘 latest 与版本列表，缺字段一律当空', () => {
-  const state = readMirrorState({
-    'dist-tags': { latest: '0.11.0', next: '0.12.0-beta.1' },
-    versions: { '0.10.0': {}, '0.11.0': {} },
-  })
-  assert.deepEqual(state, { latest: '0.11.0', versions: ['0.10.0', '0.11.0'] })
-  assert.deepEqual(readMirrorState({}), { latest: undefined, versions: [] })
-  assert.deepEqual(readMirrorState(undefined), { latest: undefined, versions: [] })
-  assert.deepEqual(readMirrorState({ 'dist-tags': { latest: 42 }, versions: null }), { latest: undefined, versions: [] })
-})
-
-test('isSynced：latest 命中或版本列表命中都算已同步', () => {
-  const state = readMirrorState({ 'dist-tags': { latest: '0.10.0' }, versions: { '0.10.0': {}, '0.11.0': {} } })
-  assert.equal(isSynced(state, '0.10.0'), true)
-  assert.equal(isSynced(state, '0.11.0'), true, '没推到 latest 但版本已在列表里也算同步完成')
-  assert.equal(isSynced(state, '0.12.0'), false)
-  assert.equal(isSynced(readMirrorState({}), '0.11.0'), false)
-})
-
-test('parseArgs：默认触发并等待 180s、间隔 10s', () => {
+test('parseArgs：默认触发并等待 180s、间隔 10s、重触发 60s', () => {
   const args = parseArgs([])
   assert.equal(args.check, false)
   assert.equal(args.wait, true)
   assert.equal(args.timeout, 180)
   assert.equal(args.interval, 10)
+  assert.equal(args.retrigger, 60)
   assert.equal(args.version, undefined)
   assert.equal(args.packageName, undefined)
 })
 
-test('parseArgs：--check / --no-wait / --timeout / --interval / --version / --package', () => {
-  const args = parseArgs(['--check', '--timeout', '600', '--interval', '5', '--version', '1.2.3', '--package', 'x'])
+test('parseArgs：--check / --no-wait / --timeout / --interval / --retrigger / --version / --package', () => {
+  const args = parseArgs(['--check', '--timeout', '600', '--interval', '5', '--retrigger', '30', '--version', '1.2.3', '--package', 'x'])
   assert.equal(args.check, true)
   assert.equal(args.wait, true)
   assert.equal(args.timeout, 600)
   assert.equal(args.interval, 5)
+  assert.equal(args.retrigger, 30)
   assert.equal(args.version, '1.2.3')
   assert.equal(args.packageName, 'x')
   assert.equal(parseArgs(['--no-wait']).wait, false)
@@ -202,12 +168,13 @@ test('parseArgs：非数字/非正数超时与未知参数给可读错误', () =
   assert.throws(() => parseArgs(['--timeout', 'abc']), /--timeout/)
   assert.throws(() => parseArgs(['--timeout', '0']), /--timeout/)
   assert.throws(() => parseArgs(['--interval', '-1']), /--interval/)
+  assert.throws(() => parseArgs(['--retrigger', '0']), /--retrigger/)
   assert.throws(() => parseArgs(['--wat']), /未知参数：--wat/)
 })
 
 test('等待循环：503 → 503 → 200 继续等并最终 exit 0，unknown 只记日志', async () => {
   const clock = fakeClock()
-  // 首次探测 404（镜像缺）→ 上游已有 → PUT 触发 → 循环里 503、503、200
+  // 首次探测 404（镜像缺）→ 上游版本端点已有 → PUT 触发 → 循环里 503、503、200
   const { impl, calls } = routedFetch([404, 503, 503, 200])
   const { result, logs } = await captureConsole(() =>
     main(['--package', NAME, '--version', '0.34.0', '--timeout', '30', '--interval', '10'], {
@@ -223,6 +190,103 @@ test('等待循环：503 → 503 → 200 继续等并最终 exit 0，unknown 只
   assert.match(text, /镜像已就绪（第 3 次轮询/)
   assert.equal(text.match(/暂时不可用，继续等/g).length, 2)
   assert.equal(calls.filter((call) => call.method === 'PUT').length, 1)
+})
+
+test('上游 npm 版本端点未就绪时先等，不提前 PUT', async () => {
+  const clock = fakeClock()
+  const { impl, calls } = routedFetch([404, 200], { upstreamSequence: [404, 200] })
+  const { result, logs } = await captureConsole(() =>
+    main(['--package', NAME, '--version', '0.34.0', '--timeout', '30', '--interval', '10'], {
+      fetchImpl: impl,
+      sleepImpl: clock.sleep,
+      now: clock.now,
+    }),
+  )
+  assert.equal(result, 0)
+  assert.equal(calls.filter((call) => call.method === 'PUT').length, 1)
+  assert.match(logs.join('\n'), /上游 npm 还没出现（第 1 次探测：版本端点回 404），继续等/)
+  assert.match(logs.join('\n'), /上游 npm 已有 0\.34\.0（第 2 次探测）/)
+  const firstPut = calls.findIndex((call) => call.method === 'PUT')
+  const firstUpstreamReady = calls.findIndex((call, index) => index > 0 && call.url.startsWith(UPSTREAM) && index < firstPut)
+  assert.ok(firstUpstreamReady > 0, 'PUT 之前必须已经打到了上游版本端点')
+})
+
+test('同步任务空跑（镜像仍 404）时按间隔重新触发，直到版本出现', async () => {
+  const clock = fakeClock()
+  const { impl, calls } = routedFetch([404, 404, 404, 200])
+  const { result, logs } = await captureConsole(() =>
+    main(['--package', NAME, '--version', '0.34.0', '--timeout', '50', '--interval', '10', '--retrigger', '20'], {
+      fetchImpl: impl,
+      sleepImpl: clock.sleep,
+      now: clock.now,
+    }),
+  )
+  assert.equal(result, 0)
+  assert.equal(calls.filter((call) => call.method === 'PUT').length, 2, '首次 PUT 后空跑，应再触发一次')
+  assert.match(logs.join('\n'), /仍未出现，已重新触发同步（第 2 次）/)
+})
+
+test('上游 npm 等到超时仍没有版本：exit 1 且不 PUT', async () => {
+  const clock = fakeClock()
+  const { impl, calls } = routedFetch([404], { upstreamSequence: [503] })
+  const { result, errors } = await captureConsole(() =>
+    main(['--package', NAME, '--version', '0.34.0', '--timeout', '20', '--interval', '10'], {
+      fetchImpl: impl,
+      sleepImpl: clock.sleep,
+      now: clock.now,
+    }),
+  )
+  assert.equal(result, 1)
+  assert.match(errors.join('\n'), /等满 20s 上游 npm 仍没有 0\.34\.0/)
+  assert.equal(calls.filter((call) => call.method === 'PUT').length, 0)
+})
+
+test('--no-wait 上游已就绪：只 PUT 一次并立即返回，不轮询镜像', async () => {
+  const clock = fakeClock()
+  const { impl, calls } = routedFetch([404], { upstreamSequence: [200] })
+  const { result } = await captureConsole(() =>
+    main(['--no-wait', '--package', NAME, '--version', '0.34.0'], {
+      fetchImpl: impl,
+      sleepImpl: async () => {
+        throw new Error('--no-wait 不应该等待')
+      },
+      now: clock.now,
+    }),
+  )
+  assert.equal(result, 0)
+  assert.equal(calls.filter((call) => call.method === 'PUT').length, 1)
+})
+
+test('--no-wait 上游未就绪：exit 1、不 PUT、不等待', async () => {
+  const clock = fakeClock()
+  const { impl, calls } = routedFetch([404], { upstreamSequence: [404] })
+  const { result, errors } = await captureConsole(() =>
+    main(['--no-wait', '--package', NAME, '--version', '0.34.0'], {
+      fetchImpl: impl,
+      sleepImpl: async () => {
+        throw new Error('--no-wait 不应该等待')
+      },
+      now: clock.now,
+    }),
+  )
+  assert.equal(result, 1)
+  assert.match(errors.join('\n'), /上游 npm 还没有 0\.34\.0（版本端点回 404）：--no-wait 不等待/)
+  assert.equal(calls.filter((call) => call.method === 'PUT').length, 0)
+})
+
+test('--check 在镜像缺、上游已有时只报告不触发', async () => {
+  const { impl, calls } = routedFetch([404], { upstreamSequence: [200] })
+  const { result, errors } = await captureConsole(() =>
+    main(['--check', '--package', NAME, '--version', '0.34.0'], {
+      fetchImpl: impl,
+      sleepImpl: async () => {
+        throw new Error('--check 不应该等待')
+      },
+    }),
+  )
+  assert.equal(result, 1)
+  assert.match(errors.join('\n'), /--check 只查询不触发/)
+  assert.equal(calls.filter((call) => call.method === 'PUT').length, 0)
 })
 
 test('--check 遇 503：报「镜像状态未知」exit 1，不冒充缺版本也不触发同步', async () => {

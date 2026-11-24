@@ -108,14 +108,14 @@ node docs/probes/api-probe.mjs               # 契约探针（升级 DSH 后按 
    两个工作流都用 `pnpm/action-setup@v4`（版本取自 `packageManager`）+ `actions/setup-node` 的 pnpm 缓存 +
    `pnpm install --frozen-lockfile`。发布工作流还会校验 tag 与 `package.json` 一致 → 该版本未发布过 →
    `pnpm test` + `pnpm run check:client` → `npm publish --provenance --access public --ignore-scripts`
-   （发布这一步仍走 npm CLI，provenance/`--ignore-scripts` 语义最稳）→ 触发 npmmirror 镜像同步。
+   （发布这一步仍走 npm CLI，provenance/`--ignore-scripts` 语义最稳）→ 先等 npm 版本端点可下载，再触发 npmmirror（空跑自动重触发，最多 10 分钟）。
    仓库 Secrets 需要 `NPM_TOKEN`（npm Granular Token，Read and write，Bypass 2FA）；长期可换 Trusted Publishing（OIDC）。
 5. **补镜像同步**：`registry.npmmirror.com` 是独立的库，新版本常延迟出现，国内用户装不到新版。
-   `release.yml` 会自动 `PUT /-/package/<name>/syncs` 并轮询；失败或手动发版时：
+   `release.yml` 会先等 npm 版本端点，再 `PUT /-/package/<name>/syncs`；镜像仍未出现时每 60 秒重触发，最多等 10 分钟。失败或手动发版时：
 
    ```powershell
    pnpm run mirror:check  # 只看镜像有没有 package.json 的版本（打版本端点，判定「已同步」不吃 CDN 缓存）
-   pnpm run mirror:sync   # 触发同步并轮询（--no-wait 只触发，--timeout 600 多等会儿）
+   pnpm run mirror:sync   # 先等 npm 版本出现再触发；空跑自动重触发（--no-wait 只探一次上游、不等镜像）
    ```
 
    本地 `npm view` 有缓存，怀疑时加 `--prefer-online`；`mirror:check` 每次发真请求（`/:name/:version` 版本端点 + `?t=` 时间戳与 `no-cache` 头，绕过 packument 的 CDN 缓存）。
