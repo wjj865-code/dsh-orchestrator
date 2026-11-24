@@ -68,7 +68,7 @@
 
 - `dependsOn` 只能指向已存在任务；没有「编辑依赖」接口，因此不会成环。前置失败后下游标 `failed`；恢复要先重派前置再重派下游。
 - **同写域并发防护是「事后判定 + 可绕过」的护栏，不是文件锁**：`sameDirGuard=require` 在 `task_create` 那一刻与「追问交付过的任务」那一刻按台账判定，放行路有（关闭/停止旧任务、`worktree:true`、`allowConcurrent:true`；追问没有 `allowConcurrent`）；显式放行后两个子会话仍会同时写，冲突要人兜。**交付即释放**：`delivered` 不再占目录，同目录可以新派；追问回 `running` 前会复判 target/写域，被占用就拒绝投递（`MESSAGE_WRITE_CONFLICT`）——代价是有约一个回合的「回报后到回合结束」窗口，子会话此时再写 target 会被沙箱拒（正常收尾不会发生）。判定是**路径字面量**比较（绝对路径相等/父子目录），不解析符号链接与 `..` 之外的挂载点/大小写语义；两个不同路径指向同一实体目录（bind mount/软链）时判不出来。`writeScopes` 是声明不是事实。
-- **防护覆盖 `task_create` 与追问，不覆盖 `retry`/`resume`**：`retry` 与面板「重派」按原 brief/target 新起任务，`resume` 是原会话冷恢复，都不走写域判定。
+- **防护覆盖 `task_create`、`retry`、`resume`、追问与派发 chokepoint**（都走 `write-gate` 的同一次判定）：`retry` 与面板「重派」按原 brief/target 新起任务，`resume` 是原会话冷恢复、投递前同样复判。**隔离任务**（`worktree`）只按它那份检出判（同一份检出仍拒、别人写进我的检出仍拒），原 target 与 `writeScopes` 不参与——检出天生在仓库根内，父子包含不是同一份工作树。
 - `priority` 只影响队列顺序，不抢占正在运行的子会话。连续 3 次 progress 无变化只提醒一次（固定口径），没有二次升级阶梯。
 - 空闲看门狗（W1）只告警一次、不改状态也不 kill；去重表在内存，重启后允许再报一次。长时间跑测试的单回合可能被误判「可能卡住」——先用 `task_status` 核对。
 - 面板组进度是 `task_list({group})` 文本 + 行内徽标，不是独立分组看板。

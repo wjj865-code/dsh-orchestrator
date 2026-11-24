@@ -19,6 +19,10 @@
 // - 隔离任务（`requested`/`created`/`reused`）在各自检出目录里跑，不算冲突方；
 //   `requested` 是派发时才建检出的待建状态，任务注定在检出里跑、不碰原目录，同样不算。
 //   `degraded`（目标不是 git 仓库）降级后仍在原工作树写，必须继续占目录。
+// - 隔离任务**重新拿写根**（resume / 追问 / retry / 派发）时，写域是它那份检出：只判「同一份检出」
+//   与「别人写进我的检出」（`isolatedConflicts`）。**原 target 一概不算**——检出天生在仓库根内
+//   （`<repo>/.agents/worktrees/<taskId>`），拿「互相包含」判它会把仓库根任务当成占用方，
+//   隔离任务的 resume/追问因此被误拦（0.34.x 修的就是这条；派发 chokepoint 一直是只看检出）。
 // - 只对活跃任务判定：done/cancelled/failed/orphaned 都已释放目录。
 //
 // 本模块只做纯计算与文案，不读库、不跑 git，便于单测（台账遍历在 tools.js）。
@@ -48,6 +52,19 @@ export function normalizePath(value) {
   }
   const stripped = path.length > 1 ? path.replace(/[\\/]+$/, '') : path
   return process.platform === 'win32' ? stripped.toLowerCase() : stripped
+}
+
+/**
+ * 单向包含：`child` 与 `parent` 是同一目录，或 `child` 落在 `parent` 目录里。
+ *
+ * 和 `pathsOverlap` 的区别是**方向**：隔离任务判写域时要问「别人有没有写进我的检出」，
+ * 不能问「我是不是在别人目录里」——检出天生在仓库根内，后者会把仓库根任务当成占用方。
+ */
+export function pathWithin(child, parent) {
+  const a = normalizePath(child)
+  const b = normalizePath(parent)
+  if (a === '' || b === '') return false
+  return a === b || a.startsWith(`${b}${sep}`)
 }
 
 /** 两个路径是否同一目录或互相包含（一方是另一方的祖先）。 */
@@ -263,6 +280,45 @@ export function checkoutConflicts(tasks, { path, excludeId, serializedIds, holds
   return conflicts
 }
 
+/**
+ * 隔离任务的写域冲突：写域 = 它那份检出目录，**原 target 不算**（与 `decideDispatchGrant` 同口径）。
+ *
+ * 为什么不能沿用 `targetConflicts` 的「互相包含」：worktree 检出天生在仓库根内
+ * （`<repo>/.agents/worktrees/<taskId>`），以仓库根为 target 的任务与它构成父子包含，
+ * 但两者写的是**两份不同的工作树**。旧口径把这种包含当同写域，于是隔离任务的 resume / 追问
+ * 被仓库根任务误拦（`decideDispatchGrant` 早就只看检出，两处口径分叉就是这个 bug 的根）。
+ *
+ * 只有两类是真冲突：
+ * - `checkouts`：另一个活跃任务占着**同一份检出**（`worktreeMode:'continue'` 复用同一个 `worktree_path`，
+ *   两个子会话会互相踩 git 索引）；
+ * - `targets`：别人的写域落在**我的检出内部**（含相等）——反向一律不算，反向正是「检出在仓库根里」。
+ *
+ * 没有检出路径（未建树 / 已清理）时判不出写域：派发会新建一份独有检出，与 `decideDispatchGrant` 一致放行。
+ *
+ * @returns {{checkouts: Array<{task: object, path: string}>, targets: Array<{task: object, target: string}>}}
+ */
+export function isolatedConflicts(tasks, { checkout, excludeId, serializedIds, includeDelivered = false, holds = [] } = {}) {
+  const checkouts = checkoutConflicts(tasks, { path: checkout, excludeId, serializedIds, holds })
+  const targets = []
+  const owned = normalizePath(checkout)
+  if (owned === '') return { checkouts, targets }
+  const serialized = serializedIds instanceof Set ? serializedIds : new Set()
+  const sameCheckoutIds = new Set(checkouts.map(({ task }) => task.id))
+  for (const task of tasksWithHolds(tasks, holds)) {
+    if (task === null || typeof task !== 'object') continue
+    if (excludeId !== undefined && task.id === excludeId) continue
+    if (sameCheckoutIds.has(task.id) || serialized.has(task.id)) continue
+    if (readOnlyTask(task)) continue
+    if (includeDelivered !== true && deliveredTask(task)) continue
+    // 对方真正会写的目录：隔离任务是检出，其它任务是 target（两者都没有就判不出）。
+    const domain = checkoutPath(task) || taskTargetDir(task)
+    if (!pathWithin(domain, owned)) continue
+    targets.push({ task, target: domain })
+    if (targets.length >= 5) break
+  }
+  return { checkouts, targets }
+}
+
 /** 复用检出被占用时的拒绝文案（两条出路：dependsOn 串行 / 新建检出）。 */
 export function checkoutRejection({ path, conflicts = [] } = {}) {
   return [
@@ -301,7 +357,7 @@ export function scopeRejection({ scopes = [], conflicts = [] } = {}) {
 }
 
 /** 放行 / 降级时写进返回文本的风险标注（require 档被 allowConcurrent 放行、warn 档照常创建）。 */
-export function concurrentRiskNote({ target, targetConflicts: same = [], scopeConflicts: scopes = [], mode = DEFAULT_SAME_DIR_GUARD, allowed = false } = {}) {
+export function concurrentRiskNote({ target, targetConflicts: same = [], scopeConflicts: scopes = [], checkoutConflicts: checkouts = [], mode = DEFAULT_SAME_DIR_GUARD, allowed = false } = {}) {
   const lines = []
   const head = allowed
     ? '并发风险（allowConcurrent:true 已放行）'
@@ -313,6 +369,10 @@ export function concurrentRiskNote({ target, targetConflicts: same = [], scopeCo
   if (scopes.length > 0) {
     lines.push(`${head}：写域 ${scopes.map(scope => `「${scope}」`).join('、')} 与活跃任务重叠——两个子会话可能同时改同一批文件。`)
     lines.push(...scopes.map(({ task, scope, other }) => `- 「${taskLabelWithRef(task)}」（${statusLabel(task.status)}）：重叠 ${other}（本次 ${scope}）`))
+  }
+  if (checkouts.length > 0) {
+    lines.push(`${head}：检出 ${trim(checkouts[0].path) || '(未指定)'} 正被下面这些任务占着——两个子会话会同时写同一份检出，git 索引也会互相踩。`)
+    lines.push(...checkouts.map(({ task, path }) => `- 「${taskLabelWithRef(task)}」（${statusLabel(task.status)}）：同一个检出 ${trim(path) || '(未记录)'}`))
   }
   return lines.join('\n')
 }
@@ -429,6 +489,9 @@ export function regrantConflictText({ target, conflicts = [], scopes = [], check
  * - 这里判「这个已有任务重新开工」vs 活跃任务 + 内存 hold，并把 `worktree_path` 冲突一起算
  *   （隔离任务复用自己的检出时，检出被别人占着同样会互相踩 git 索引）。
  *
+ * 隔离任务（`requested`/`created`/`reused`）走单独一支：写域是检出目录，只判 `isolatedConflicts`
+ * （同一份检出 / 别人写进我的检出）。**不判原 target**——检出在仓库根内，父子包含不是同一份工作树。
+ *
  * `includeDelivered` 跟着**任务自身**的状态走：`delivered` 的写根已释放，它随时可能被追问，
  * 所以复判时要把别的 delivered 也算潜在写者；已占着写域的任务（running / waiting_*）不必——
  * 反过来「我一定是当前写者」，此时别的 delivered 不写文件，不应误拦。
@@ -459,17 +522,35 @@ export function decideRegrantGuard({ tasks = [], task, mode = DEFAULT_SAME_DIR_G
   ])
   // 无 target 的任务按父 cwd 归一（调用方给 `fallbackTarget`：派发层是子会话/父会话 cwd，动作层是 defaultCwd）。
   const target = taskTargetDir(task) || trim(fallbackTarget)
-  const same = targetConflicts(tasks, { target, excludeId: task.id, serializedIds, includeDelivered, holds })
-  const scopeHits = scopeConflicts(tasks, {
-    scopes: Array.isArray(task.write_scopes) ? task.write_scopes : [],
-    excludeId: task.id,
-    skipTaskIds: same.map(({ task: item }) => item.id),
-    serializedIds,
-    includeDelivered,
-    holds,
-  })
-  // 隔离任务的写域是检出目录（它不占原 target），单独按 worktree_path 判。
-  const checkouts = checkoutConflicts(tasks, { path: checkoutPath(task), excludeId: task.id, serializedIds, holds })
+  let same
+  let scopeHits
+  let checkouts
+  if (isolatedTask(task)) {
+    // 隔离任务：写域是检出目录，原 target 不占——只判「同一份检出」与「别人写进我的检出」。
+    // 拿 target 的父子包含判它，等于把仓库根任务当占用方（检出天生在仓库根内）：这正是修掉的误拦。
+    // `write_scopes` 同理是相对各自工作树的路径，两份检出里同名目录不是同一批文件，不参与判定。
+    const hits = isolatedConflicts(tasks, {
+      checkout: checkoutPath(task),
+      excludeId: task.id,
+      serializedIds,
+      includeDelivered,
+      holds,
+    })
+    same = hits.targets
+    scopeHits = []
+    checkouts = hits.checkouts
+  } else {
+    same = targetConflicts(tasks, { target, excludeId: task.id, serializedIds, includeDelivered, holds })
+    scopeHits = scopeConflicts(tasks, {
+      scopes: Array.isArray(task.write_scopes) ? task.write_scopes : [],
+      excludeId: task.id,
+      skipTaskIds: same.map(({ task: item }) => item.id),
+      serializedIds,
+      includeDelivered,
+      holds,
+    })
+    checkouts = checkoutConflicts(tasks, { path: checkoutPath(task), excludeId: task.id, serializedIds, holds })
+  }
   if (same.length === 0 && scopeHits.length === 0 && checkouts.length === 0) return pass
   if (guard === 'warn') {
     return {
@@ -478,7 +559,7 @@ export function decideRegrantGuard({ tasks = [], task, mode = DEFAULT_SAME_DIR_G
       targetConflicts: same,
       scopeConflicts: scopeHits,
       checkoutConflicts: checkouts,
-      note: concurrentRiskNote({ target, targetConflicts: same, scopeConflicts: scopeHits, mode: guard, allowed: false }),
+      note: concurrentRiskNote({ target, targetConflicts: same, scopeConflicts: scopeHits, checkoutConflicts: checkouts, mode: guard, allowed: false }),
       text: '',
     }
   }
