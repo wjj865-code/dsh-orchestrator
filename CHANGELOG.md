@@ -1,8 +1,8 @@
 # Changelog
 
-## 未发布（2026-11-24）—— 任务引用人类友好展示（名字+chip）/ 协调者可加载技能判断派活 / 协调者预设挂本地技能发现（技能面 8→35）/ 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径 / worktree 分支名改约定式命名
+## 0.35.0（2026-11-25）—— 任务引用人类友好展示（名字+chip）/ 协调者可加载技能判断派活 / 协调者预设挂本地技能发现（技能面 8→35）/ 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径 / worktree 分支名改约定式命名
 
-**一句话**：这一批不含发版动作（**不 bump 版本**）：用户面不再出现 `t-xxxx`/光秃秃的 `tk-xxxxxx`——任务一律「名字 + 引用」，抽屉正文里的引用渲染成名字 chip；协调者仍不干活，但被明确允许按需加载技能来判断「怎么派活」（只读不执行），并且协调者预设补挂了 `skill-filesystem`——主会话技能目录从此纳入**用户本地全局技能**（本机 8→35 条，需新开会话生效）；此外写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径、worktree 分支名改由协调者按约定式 `<type>/<slug>` 传入（必填，不再默认 `orch/<taskId>`）。
+**一句话**：0.35.0 发布：用户面不再出现 `t-xxxx`/光秃秃的 `tk-xxxxxx`——任务一律「名字 + 引用」，抽屉正文里的引用渲染成名字 chip；协调者仍不干活，但被明确允许按需加载技能来判断「怎么派活」（只读不执行），并且协调者预设补挂了 `skill-filesystem`——主会话技能目录从此纳入**用户本地全局技能**（本机 8→35 条，需新开会话生效）；此外写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径、worktree 分支名改由协调者按约定式 `<type>/<slug>` 传入（必填，不再默认 `orch/<taskId>`）。
 
 **任务引用人类友好展示（R1–R3，用户拍板：抬 164 KiB / task_detail 合成一行 / 通知标题带引用 / brief 补名字 / 面板两处都做）**
 - `task_detail` 首行合成 `任务：名称（tk-xxxxxx）`（`src/task-detail.js`）：子会话第一次就同时拿到「怎么称呼」与「怎么调工具」，原来单列的「任务引用：」行删掉，`t-xxxx` 仍然一个字都不出现。
@@ -52,10 +52,10 @@
 - 文档：`README.md`、`docs/CONFIG.md`、`docs/ARCHITECTURE.md`、`docs/LIMITATIONS.md`、`docs/testing.md`、`docs/compat.md` 同步。
 
 **边界与验证**
-- 不含发版动作：**不 bump `package.json` version、不 push、不打 tag、不 publish、不删分支**。
+- 发版边界：本批随 `0.35.0` 发布（`package.json` bump、打 tag、push 与 publish 均由发布流程完成）；不删除既有分支。
 - 验证：`test/write-guard.test.js`、`test/write-gate.test.js`、`test/write-hold.test.js`、`test/artifact-stage.test.js`、`test/mirror-sync.test.js`、`test/worktree.test.js`、`test/worktree-request.test.js`、`test/access-full.test.js`、`test/config*.test.js`、`test/client-config-form.test.js` 全绿；`node scripts/check-docs.mjs`（1799/1800、配置参考 24 键）与 `pnpm run check:version` 通过；客户端只少一行字段投影 → `dist/client.js` 重建、`check:client-size` 通过。
-- 本批（引用展示）追加验证：全量 `node --test --experimental-test-isolation=none "test/*.test.js"` **1475 项 / 0 fail / 5 skip**；`test/client.test.js`（`splitTaskRefs` 切段 + 五种兜底 + 抽屉两处渲染）、`test/client-build.test.js`（`__test` 出口与 164 KiB）、`test/task-detail.test.js`、`test/panel-actions.test.js`、`test/workbench.test.js`、`test/notify.test.js`、`test/brief.test.js`、`test/prompt-layers.test.js`（L1 技能许可）、`test/plan-save.test.js` 同步；`dist/client.js` 重建后 **165,597 B / 167,936 B（余 2,339 B）**、`node --check` 通过；`check:docs` 1799/1800、`check:version` 未 bump。
-- P0（协调者预设挂 `skill-filesystem`）验证：`test/config.test.js` 的「协调者挂 grill-me + 本地技能发现」一条改锁三行 + 顺序 + 「不是工具面变更」，配套 `test/prompt-layers.test.js`；`node --test --experimental-test-isolation=none test/config.test.js test/prompt-layers.test.js` **44/44 通过**，全量仍 **1475 项 / 0 fail / 5 skip**；`node scripts/check-docs.mjs` 仍 **1799/1800**、`check:version` 未 bump；本地 commit（不 push / 不打 tag）。技能面 8→35 的真机验证方式：重启 DSH 后**新开**一个协调者会话，会话日志里的 `<available_skills>` 目录条数即从 8 变为 35（`~/.dsh/sessions/<workspace>/<sessionId>/session.v4.jsonl.zstd`，解 zstd 帧后按 `skill-catalog` 取 `entries`）。
+- 本批（引用展示）追加验证：全量 `node --test --experimental-test-isolation=none "test/*.test.js"` **1475 项 / 0 fail / 5 skip**；`test/client.test.js`（`splitTaskRefs` 切段 + 五种兜底 + 抽屉两处渲染）、`test/client-build.test.js`（`__test` 出口与 164 KiB）、`test/task-detail.test.js`、`test/panel-actions.test.js`、`test/workbench.test.js`、`test/notify.test.js`、`test/brief.test.js`、`test/prompt-layers.test.js`（L1 技能许可）、`test/plan-save.test.js` 同步；`dist/client.js` 重建后 **165,597 B / 167,936 B（余 2,339 B）**、`node --check` 通过；`check:docs` 1799/1800、`check:version` 通过（0.35.0）。
+- P0（协调者预设挂 `skill-filesystem`）验证：`test/config.test.js` 的「协调者挂 grill-me + 本地技能发现」一条改锁三行 + 顺序 + 「不是工具面变更」，配套 `test/prompt-layers.test.js`；`node --test --experimental-test-isolation=none test/config.test.js test/prompt-layers.test.js` **44/44 通过**，全量仍 **1475 项 / 0 fail / 5 skip**；`node scripts/check-docs.mjs` 仍 **1799/1800**、`check:version` 通过（0.35.0）。技能面 8→35 的真机验证方式：重启 DSH 后**新开**一个协调者会话，会话日志里的 `<available_skills>` 目录条数即从 8 变为 35（`~/.dsh/sessions/<workspace>/<sessionId>/session.v4.jsonl.zstd`，解 zstd 帧后按 `skill-catalog` 取 `entries`）。
 
 ## 0.34.0（2026-11-24）—— 任务私有产物存储 / Git 与非 Git 阶段收集 / 收集后交付
 
