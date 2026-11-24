@@ -109,10 +109,6 @@ export const CONFIG_FIELDS = Object.freeze([
     label: 'worktree 隔离策略', hint: 'required = 每个需求都隔离；auto = 满足三条件才建议',
   }),
   Object.freeze({
-    key: 'worktreeBranchPrefix', group: 'isolation', kind: 'string', default: 'orch/',
-    label: '隔离分支前缀', hint: '默认分支名 <prefix><taskId>',
-  }),
-  Object.freeze({
     key: 'worktreeRecentDays', group: 'isolation', kind: 'number', min: 1, max: 90, integer: true, default: 7,
     label: '近期活跃分支窗口（天）',
   }),

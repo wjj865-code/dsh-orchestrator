@@ -64,7 +64,7 @@ import {
   TASK_CHAIN_WAITING_NOTE, planCreateReceipt,
 } from './copy.js'
 import {
-  branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent, reusableCheckoutCandidates,
+  branchChoiceText, decideWorktreeFacts, decideWorktreeIntent, reusableCheckoutCandidates,
   notifyWorktreeOf, parseWorktreeRequest, worktreeListMarker, worktreeNoteLines, worktreeStatusLine,
 } from './worktree-request.js'
 import { checkoutPathFor, createWorktreeService, retryWorktreeOf } from './worktree.js'
@@ -1346,7 +1346,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       allowConcurrent: { type: 'boolean', description: '显式放行同写域并发：默认不传时，目标目录（或写域）与活跃未隔离任务冲突会被拒绝；只在用户明确要求并发写同一目录时传 true，放行后返回里会标注并发风险' },
       worktree: { type: 'boolean', description: '在目标仓库里新建 git worktree 隔离执行：true=建、false=不建；不传时按配置 worktreePolicy 兜底（required 自动建）；字符串 "true" 不生效；与 readOnly/planFirst 互斥' },
       worktreeBase: str('隔离基线：分支名或 commit-ish（缺省 "default"=仓库默认分支）；仓库近 N 天有 ≥2 个活跃分支时先问用户，指定后再派'),
-      worktreeBranch: str('新分支名（缺省 orch/<taskId>）；非法或已存在会报错，插件不自动改名'),
+      worktreeBranch: str('新分支名，**必填**（非要建检出时）：约定式命名 `<type>/<slug>`（如 `fix/mirror-poll-cache`）；'
+        + 'type 白名单 feat|fix|docs|refactor|chore|test|perf|build|ci|style|revert，slug 为小写 ASCII kebab（1–40 字符）。'
+        + '没传或不规范直接报错；`worktreeMode:"continue"` 复用检出时不需要。插件不猜名字、不改名、已存在会报错'),
       worktreeMode: str('"new"（默认：新建检出）或 "continue"（复用同 group/dependsOn 的已有检出）'),
       worktreeCleanup: str('终态后清理档位："off"（默认，检出+分支都保留）｜"checkout-only"（只删检出）｜"full"（连分支一起删）'),
     }), async (args, exec) => {
@@ -1591,7 +1593,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         if (facts.isRepo === true && typeof wtIntent.base === 'string' && wtIntent.base.trim() !== '') {
           baseExists = await worktreeService.refExists(facts.repoRoot, wtIntent.base)
         }
-        // 用户指定分支名时提前校验重名（默认 orch/<taskId> 天然唯一，派发时由 git 再兜一次）。
+        // 协调者传了分支名时提前校验重名（名字必填、由模型按 <type>/<slug> 取；派发时由 git 再兜一次）。
         if (facts.isRepo === true && typeof wtIntent.branch === 'string' && wtIntent.branch.trim() !== '') {
           if (await worktreeService.branchExists(facts.repoRoot, wtIntent.branch)) {
             log('task.create.rejected', { agentId, detail: { reason: 'BRANCH_EXISTS', branch: wtIntent.branch, callId } })
@@ -1728,9 +1730,9 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         priority,
         status: initialStatus,
       })
-      // 默认分支名与检出路径要用 taskId 派生（协调者传了 branch 就用它的）。
+      // 分支名由协调者传入（`<type>/<slug>`，创建期已校验非空），检出路径仍只按 taskId 派生。
       if (worktreeRecord?.state === 'requested') {
-        const branch = branchNameFor(wtRequest, task.id, config?.worktreeBranchPrefix)
+        const branch = wtRequest.worktreeBranch
         const checkout = checkoutPathFor(worktreeRecord.repoRoot, task.id)
         setTaskWorktree(db, task.id, { branch, path: checkout })
         worktreeRecord = { ...worktreeRecord, branch, path: checkout }

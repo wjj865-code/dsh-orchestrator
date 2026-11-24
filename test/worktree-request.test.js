@@ -3,10 +3,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  CLEANUP_HINT, DEGRADE_HINT, IMPLICIT_HINT, OFF_BUILD_HINT, REQUIRED_FALLBACK_HINT, REQUIRED_SKIP_HINT,
-  WORKTREE_STATES, askBranchHint, branchChoiceText, branchNameFor, decideWorktreeFacts, decideWorktreeIntent,
-  findReusableCheckout, isWorktreeTask, notifyWorktreeOf, parseWorktreeRequest, requestOfTask, reusableCheckoutCandidates,
-  worktreeDetailLines, worktreeListMarker, worktreeNoteLines, worktreeNotifyLine, worktreeStatusLine,
+  BRANCH_REQUIRED_HINT, BRANCH_TYPES, CLEANUP_HINT, DEGRADE_HINT, IMPLICIT_HINT, OFF_BUILD_HINT,
+  REQUIRED_SKIP_HINT, WORKTREE_STATES, askBranchHint, branchChoiceText, branchNameProblem,
+  decideWorktreeFacts, decideWorktreeIntent, findReusableCheckout, isWorktreeTask, notifyWorktreeOf,
+  parseWorktreeRequest, requestOfTask, reusableCheckoutCandidates, worktreeDetailLines, worktreeListMarker,
+  worktreeNoteLines, worktreeNotifyLine, worktreeStatusLine,
 } from '../src/worktree-request.js'
 import { loadConfig } from '../src/config.js'
 
@@ -24,22 +25,37 @@ test('P9 结构化请求：worktree 只认布尔值，字符串 true / auto 都�
   }
 })
 
-test('P9 结构化请求：worktreeMode / worktreeCleanup 枚举校验，worktreeBranch 词法校验', () => {
+test('P9 结构化请求：worktreeMode / worktreeCleanup 枚举校验，worktreeBranch 走约定式命名', () => {
   assert.equal(parseWorktreeRequest({ worktreeMode: 'group' }).ok, false)
   assert.equal(parseWorktreeRequest({ worktreeCleanup: 'always' }).ok, false)
   assert.equal(parseWorktreeRequest({ worktreeMode: 'continue' }).request.mode, 'continue')
   assert.equal(parseWorktreeRequest({ worktreeCleanup: 'checkout-only' }).request.cleanup, 'checkout-only')
-  // 非法分支名在创建期就拒绝（插件不自动改名）。
+  // 非法分支名在创建期就拒绝（插件不猜名字、不改名），错误里带白名单与正例。
   const bad = parseWorktreeRequest({ worktree: true, worktreeBranch: 'feat/bad name' })
   assert.equal(bad.ok, false)
   assert.match(bad.error, /不合法/)
+  assert.match(bad.error, /白名单/)
+  assert.match(bad.error, /fix\/mirror-poll-cache/)
   assert.equal(parseWorktreeRequest({ worktree: true, worktreeBranch: 'feat/x' }).ok, true)
+  // 旧默认 orch/<taskId> 不再接受（反例也写进错误文案）。
+  const legacy = parseWorktreeRequest({ worktree: true, worktreeBranch: 'orch/t-1a2b3c4d' })
+  assert.equal(legacy.ok, false)
+  assert.match(legacy.error, /orch\/<taskId>/)
+  // 非字符串明确拒绝。
+  assert.equal(parseWorktreeRequest({ worktree: true, worktreeBranch: 42 }).ok, false)
 })
 
 test('P9 结构化请求：只给了 worktree 相关字段也算要隔离（防漏传吃掉意图）', () => {
   const parsed = parseWorktreeRequest({ worktreeBase: 'release/1.0' })
   assert.equal(parsed.request.implicit, true)
-  const intent = decideWorktreeIntent({ request: parsed.request, policy: 'auto' })
+  // 只说了基线、没说名字 → 仍算「要隔离」，但名字必填：拒绝而不是悄悄用 orch/<taskId>。
+  const missing = decideWorktreeIntent({ request: parsed.request, policy: 'auto' })
+  assert.equal(missing.action, 'reject')
+  assert.equal(missing.code, 'BRANCH_REQUIRED')
+  const intent = decideWorktreeIntent({
+    request: parseWorktreeRequest({ worktreeBase: 'release/1.0', worktreeBranch: 'docs/release-notes' }).request,
+    policy: 'auto',
+  })
   assert.equal(intent.action, 'resolve')
   assert.equal(intent.source, 'task')
   assert.equal(intent.hint, IMPLICIT_HINT)
@@ -54,18 +70,21 @@ test('P9 机械映射 #1：不传 + auto → 不隔离，来源 default，零提
   assert.equal(intent.hint, '')
 })
 
-test('P9 机械映射 #2：不传 + required → 兜底建（来源 config + 明确提示）', () => {
+test('P9 机械映射 #2：不传 + required → 拒绝并要名字（配置只决定要不要隔离，不包办名字）', () => {
   const intent = decideWorktreeIntent({ request: parseWorktreeRequest({}).request, policy: 'required' })
-  assert.equal(intent.action, 'resolve')
+  assert.equal(intent.action, 'reject')
+  assert.equal(intent.code, 'BRANCH_REQUIRED')
   assert.equal(intent.source, 'config')
-  assert.equal(intent.hint, REQUIRED_FALLBACK_HINT)
+  assert.equal(intent.error, BRANCH_REQUIRED_HINT)
+  assert.match(intent.error, /worktreeBranch 必填/)
+  assert.match(intent.error, /feat \| fix \| docs/)
 })
 
 test('P9 机械映射 #3/#4：配置与协调者决定冲突只给 hint，不拦截', () => {
   const skip = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: false }).request, policy: 'required' })
   assert.equal(skip.action, 'none')
   assert.equal(skip.hint, REQUIRED_SKIP_HINT)
-  const build = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: true }).request, policy: 'off' })
+  const build = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: true, worktreeBranch: 'feat/x' }).request, policy: 'off' })
   assert.equal(build.action, 'resolve')
   assert.equal(build.hint, OFF_BUILD_HINT)
 })
@@ -90,6 +109,8 @@ test('P9 机械映射 #8/#9：continue 有检出就复用，没有就拒绝并�
   assert.equal(reuse.action, 'reuse')
   assert.equal(reuse.path, 'C:/repo/.agents/worktrees/t-1')
   assert.match(reuse.hint, /复用已有检出/)
+  // 必填只针对「新建」：continue 不传 worktreeBranch 照样复用（request 里就没带 branch）。
+  assert.equal(request.worktreeBranch, undefined)
   const none = decideWorktreeIntent({ request, policy: 'auto' })
   assert.equal(none.action, 'reject')
   assert.equal(none.code, 'NO_CHECKOUT')
@@ -134,7 +155,7 @@ const repoFacts = overrides => ({
 })
 
 test('P9 事实分档：n=0 用默认分支，n=1 直接用那条，n≥2 返回 ask（任务不落库）', () => {
-  const intent = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: true }).request, policy: 'auto' })
+  const intent = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: true, worktreeBranch: 'feat/x' }).request, policy: 'auto' })
   const zero = decideWorktreeFacts({ intent, facts: repoFacts({}) })
   assert.equal(zero.action, 'create')
   assert.equal(zero.base, 'main')
@@ -163,12 +184,12 @@ test('P9 事实分档：n=0 用默认分支，n=1 直接用那条，n≥2 返回
 })
 
 test('P9 事实分档：非 git 仓库降级、基线不存在拒绝、显式基线直接用', () => {
-  const intent = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: true }).request, policy: 'auto' })
+  const intent = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: true, worktreeBranch: 'feat/x' }).request, policy: 'auto' })
   const degraded = decideWorktreeFacts({ intent, facts: { isRepo: false, reason: 'NOT_A_REPO' } })
   assert.equal(degraded.action, 'degrade')
   assert.equal(degraded.hint, DEGRADE_HINT)
 
-  const explicit = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: true, worktreeBase: 'release' }).request, policy: 'auto' })
+  const explicit = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: true, worktreeBranch: 'fix/x', worktreeBase: 'release' }).request, policy: 'auto' })
   const missing = decideWorktreeFacts({ intent: explicit, facts: repoFacts({ recentBranches: [{ name: 'main' }] }), baseExists: false })
   assert.equal(missing.action, 'reject')
   assert.equal(missing.code, 'BASE_NOT_FOUND')
@@ -178,11 +199,37 @@ test('P9 事实分档：非 git 仓库降级、基线不存在拒绝、显式基
   assert.equal(ok.base, 'release')
 })
 
-test('P9 分支名：默认 <prefix><taskId>，协调者传了就用；坏前缀回落 orch/', () => {
-  assert.equal(branchNameFor({}, 't-1a2b3c4d'), 'orch/t-1a2b3c4d')
-  assert.equal(branchNameFor({}, 't-1', 'feat/'), 'feat/t-1')
-  assert.equal(branchNameFor({ worktreeBranch: 'feat/x' }, 't-1'), 'feat/x')
-  assert.equal(branchNameFor({}, 't-1', 'bad prefix/'), 'orch/t-1')
+test('P9 分支名校验：<type>/<slug>，11 个 type 白名单 + kebab ASCII slug + 长度上限', () => {
+  // 11 个类型各一个正例（白名单只有一个真源）。
+  assert.equal(BRANCH_TYPES.length, 11)
+  for (const type of BRANCH_TYPES) assert.equal(branchNameProblem(`${type}/x`), '', `${type}/x 应合法`)
+  assert.equal(branchNameProblem('fix/mirror-poll-cache'), '')
+  assert.equal(branchNameProblem('feat/login-retry-2'), '')
+  // 反例：旧默认 / 大写 type / 非白名单 type / 空格 / 下划线 / 首尾与连续连字符 / 空 slug / 缺 type / 长度
+  const cases = [
+    ['orch/t-1a2b3c4d', /白名单/],
+    ['Feat/x', /白名单/],
+    ['feature/x', /白名单/],
+    ['feat/Login Retry', /空格/],
+    ['feat/x_y', /slug/],
+    ['feat/-x', /slug/],
+    ['feat/x-', /slug/],
+    ['feat/x--y', /slug/],
+    ['feat/', /不能以 \/ 或 \. 结尾/],
+    ['feat', /type/],
+    [`feat/${'a'.repeat(41)}`, /40/],
+    ['feat/x.lock', /lock/],
+    ['', /空/],
+  ]
+  for (const [name, pattern] of cases) assert.match(branchNameProblem(name), pattern, `${JSON.stringify(name)} 应被拒绝`)
+  assert.equal(branchNameProblem('feat/' + 'a'.repeat(40)), '', 'slug 40 字符正好合法')
+  assert.equal(branchNameProblem(42), '必须是字符串')
+  // 缺名字不是「格式错」，而是「必填」：要留到 decideWorktreeIntent 统一拒绝（continue 复用不需要名字）。
+  assert.equal(parseWorktreeRequest({ worktree: true }).request.worktreeBranch, undefined)
+  const missing = decideWorktreeIntent({ request: parseWorktreeRequest({ worktree: true }).request, policy: 'auto' })
+  assert.equal(missing.action, 'reject')
+  assert.equal(missing.code, 'BRANCH_REQUIRED')
+  assert.match(missing.error, /正例：worktreeBranch: "fix\/mirror-poll-cache"/)
 })
 
 // —— 四、视图 / 文案：普通任务零字样，隔离任务说清「产物不在你工作树」 ——
@@ -261,26 +308,31 @@ test('P9 台账请求快照：重派能还原 mode/cleanup/base/branch', () => {
 
 // —— 五、配置：结构化默认值渲染进协调者 policy（不是解析用户文档） ——
 
-test('P9 配置：worktreePolicy 默认 auto，非法值回落；前缀与窗口归一', () => {
+test('P9 配置：worktreePolicy 默认 auto，非法值回落；分支前缀键已删除、窗口归一', () => {
   const config = loadConfig({})
   assert.equal(config.worktreePolicy, 'auto')
-  assert.equal(config.worktreeBranchPrefix, 'orch/')
   assert.equal(config.worktreeRecentDays, 7)
   assert.equal(loadConfig({ worktreePolicy: 'required' }).worktreePolicy, 'required')
   assert.equal(loadConfig({ worktreePolicy: 'always' }).worktreePolicy, 'auto')
-  assert.equal(loadConfig({ worktreePolicy: 'auto', worktreeBranchPrefix: '  ' }).worktreeBranchPrefix, 'orch/')
+  // 0.35.0：worktreeBranchPrefix 删除（分支名归 task_create.worktreeBranch），旧值不回填。
+  assert.equal('worktreeBranchPrefix' in config, false)
+  assert.equal('worktreeBranchPrefix' in loadConfig({ worktreeBranchPrefix: 'feat/' }), false)
   assert.equal(loadConfig({ worktreeRecentDays: 0 }).worktreeRecentDays, 1)
   assert.equal(loadConfig({ worktreeRecentDays: 400 }).worktreeRecentDays, 90)
   assert.equal(loadConfig({ worktreeRecentDays: 'x' }).worktreeRecentDays, 7)
 })
 
-test('P9 协调者 policy：结构化渲染当前策略 + 判断流程 + 分支询问 + 合并责任', async () => {
+test('P9 协调者 policy：结构化渲染当前策略 + 判断流程 + 分支命名必填 + 合并责任', async () => {
   const { renderCoordinatorPolicy, renderWorktreePolicy } = await import('../index.js')
-  const text = renderWorktreePolicy({ worktreePolicy: 'required', worktreeBranchPrefix: 'feat/', worktreeRecentDays: 14 })
+  const text = renderWorktreePolicy({ worktreePolicy: 'required', worktreeRecentDays: 14 })
   assert.match(text, /当前配置策略：required/)
-  assert.match(text, /分支前缀：feat\//)
+  assert.match(text, /分支命名：<type>\/<slug>（必填，由你传）/)
   assert.match(text, /最近活跃窗口：14 天/)
   assert.match(text, /required：每个需求都用 task_create/)
+  assert.match(text, /required 只决定「默认要隔离」，不包办分支名/)
+  assert.match(text, /不传或不规范当场报错/)
+  assert.match(text, /不再有默认 orch\/<taskId>/)
+  assert.match(text, /feat \| fix \| docs \| refactor \| chore \| test \| perf \| build \| ci \| style \| revert/)
   assert.match(text, /auto：默认不隔离/)
   assert.match(text, /off：一律不隔离/)
   // 三条件引导 + 协调者判断 + 插件只执行。

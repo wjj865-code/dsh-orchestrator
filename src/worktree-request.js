@@ -28,20 +28,38 @@ export const WORKTREE_STATE_LABEL = Object.freeze({
   cleaned: '检出已清理',
 })
 
-export const DEFAULT_BRANCH_PREFIX = 'orch/'
+/** 约定式分支名的 type 白名单（11 个）：第二段 slug 由协调者按任务内容取，插件不猜、不写死。 */
+export const BRANCH_TYPES = Object.freeze([
+  'feat', 'fix', 'docs', 'refactor', 'chore', 'test', 'perf', 'build', 'ci', 'style', 'revert',
+])
+/** slug：小写 ASCII kebab（单词间单个连字符，不许大写/下划线/点/首尾或连续连字符）。 */
+export const BRANCH_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+export const BRANCH_SLUG_MAX = 40
+// 全名长度不用单独设限：type 最长 7（refactor）+ '/' + slug ≤40 → 最坏 49 字符，天然低于 git 的实用上限。
+
+/**
+ * 命名规则说明：错误文案与协调者 L1 提示词共用同一批事实（类型清单只有这一处）。
+ * 不带句末句号——工具层返回时会补一个「。」。
+ */
+export const BRANCH_FORMAT_HINT = '隔离任务的分支名由你按 <type>/<slug> 传入（插件不再默认 orch/<taskId>、不猜名字、不自动改名）。'
+  + `type 白名单：${BRANCH_TYPES.join(' | ')}；`
+  + `slug：小写 ASCII kebab（1–${BRANCH_SLUG_MAX} 字符，如 login-retry）。`
+  + '正例：worktreeBranch: "fix/mirror-poll-cache"；反例：worktreeBranch: "orch/t-1a2b3c4d"（旧默认，不再接受）'
+
 export const WORKTREE_POLICIES = Object.freeze(['required', 'auto', 'off'])
 export const WORKTREE_MODES = Object.freeze(['new', 'continue'])
 export const WORKTREE_CLEANUPS = Object.freeze(['off', 'checkout-only', 'full'])
 /** 决策来源：协调者传字段 / 配置兜底 / 都没说（面板要能回答「谁决定的」）。 */
 export const WORKTREE_SOURCES = Object.freeze(['task', 'config', 'default'])
 
-export const REQUIRED_FALLBACK_HINT = '按配置 worktreePolicy=required 建了隔离（协调者未传参数）'
 export const REQUIRED_SKIP_HINT = '配置声明 required，但本次未隔离（协调者判断）；若属漏传请重派'
 export const OFF_BUILD_HINT = '配置声明 off，按协调者要求建了隔离（不拦截）'
 export const IMPLICIT_HINT = '按 worktree 相关字段推定要隔离（未显式传 worktree:true）'
 export const DEGRADE_HINT = '目标不是 git 仓库，隔离已降级为普通模式；产物落在你当前工作树'
 export const NO_CHECKOUT_HINT = '没有可复用的检出：改 worktreeMode="new" 或先派一个任务'
 export const CLEANUP_HINT = 'worktreeCleanup 默认 "off"（检出与分支都保留）；"checkout-only" 只删检出、保留分支；"full" 连分支一起删'
+/** 缺 worktreeBranch 的拒绝文案（worktreePolicy=required 兜底时同样适用：配置不包办名字）。 */
+export const BRANCH_REQUIRED_HINT = `worktreeBranch 必填：${BRANCH_FORMAT_HINT}`
 
 /** 多分支时给协调者的引导（天数来自 config.worktreeRecentDays）。 */
 export const askBranchHint = days => `仓库里近 ${days} 天有多个活跃分支：请 ask_user_question 让用户选基线，再带 worktreeBase 重调 task_create（本次未创建任务）`
@@ -50,6 +68,31 @@ export const askBranchHint = days => `仓库里近 ${days} 天有多个活跃分
 export const WORKTREE_LIST_MARKER = '隔离'
 
 const trim = value => (typeof value === 'string' ? value.trim() : '')
+
+/**
+ * 约定式分支名校验：返回 `''`（合法）或一句原因。
+ * 先过 git 词法（`branchNameLooksValid`），再判 type 白名单 + kebab slug + 长度。
+ * 只作用于 `task_create` 入参；台账里既有的 `orch/*` 分支名不回扫、不影响复用与清理。
+ */
+export function branchNameProblem(name) {
+  if (typeof name !== 'string') return '必须是字符串'
+  if (name.trim() === '') return '不能为空'
+  if (name !== name.trim()) return '两侧不能有空白'
+  if (!branchNameLooksValid(name)) {
+    return '不能含空格/~^:?*[\\、不能以 - 或 / 开头、不能以 / 或 . 结尾、不能出现 .. 或 .lock'
+  }
+  const slash = name.indexOf('/')
+  if (slash === -1) return `缺少 <type>/ 前缀（type 白名单：${BRANCH_TYPES.join(' | ')}）`
+  const type = name.slice(0, slash)
+  const slug = name.slice(slash + 1)
+  if (!BRANCH_TYPES.includes(type)) {
+    return `type "${type}" 不在白名单（${BRANCH_TYPES.join(' | ')}）；旧默认 orch/<taskId> 不再接受`
+  }
+  if (slug === '') return 'slug 不能为空'
+  if (!BRANCH_SLUG_RE.test(slug)) return 'slug 只能是小写 ASCII 字母/数字与单个连字符（如 login-retry）'
+  if (slug.length > BRANCH_SLUG_MAX) return `slug 最长 ${BRANCH_SLUG_MAX} 字符（当前 ${slug.length}）`
+  return ''
+}
 
 /** `task_create` 的 worktree* 参数 → 结构化请求（类型错立刻拒绝，不猜）。 */
 export function parseWorktreeRequest(args = {}) {
@@ -73,11 +116,12 @@ export function parseWorktreeRequest(args = {}) {
   let branch
   if (branchRaw === undefined || branchRaw === null || branchRaw === '') branch = undefined
   else if (typeof branchRaw === 'string') {
-    branch = branchRaw.trim()
-    if (!branchNameLooksValid(branch)) {
-      return { ok: false, error: `worktreeBranch 不合法：${branchRaw}（不能含空格/~^:?*[\\、不能以 - 开头、不能出现 .. 或以 .lock 结尾）` }
+    const problem = branchNameProblem(branchRaw.trim())
+    if (problem !== '') {
+      return { ok: false, error: `worktreeBranch 不合法：${branchRaw}（${problem}）。${BRANCH_FORMAT_HINT}` }
     }
-  } else return { ok: false, error: 'worktreeBranch 必须是字符串（缺省 orch/<taskId>）' }
+    branch = branchRaw.trim()
+  } else return { ok: false, error: `worktreeBranch 必须是字符串（形如 <type>/<slug>）。${BRANCH_FORMAT_HINT}` }
 
   const modeRaw = args?.worktreeMode
   let mode = 'new'
@@ -126,15 +170,6 @@ export const isWorktreeTask = task => WORKTREE_STATES.includes(task?.worktree_st
 export const hasCheckout = task => worktreeHasCap(task?.worktree_state, 'hasCheckout')
   && trim(task?.worktree_path) !== ''
 
-/** 默认分支名：协调者传了就用协调者的；没传用 `<prefix><taskId>`（默认值填充，不算插件判断）。 */
-export function branchNameFor(request = {}, taskId = '', prefix = DEFAULT_BRANCH_PREFIX) {
-  const explicit = trim(request.worktreeBranch)
-  if (explicit !== '') return explicit
-  const candidatePrefix = trim(prefix) === '' ? DEFAULT_BRANCH_PREFIX : trim(prefix)
-  const name = `${candidatePrefix}${taskId}`
-  return branchNameLooksValid(name) ? name : `${DEFAULT_BRANCH_PREFIX}${taskId}`
-}
-
 /**
  * 第一步机械映射：只看结构化字段 + 配置 + 互斥规则 + 台账里的可复用检出。
  * 不碰 git、不碰文件；返回 none / reuse / reject / resolve（resolve 还要物理事实）。
@@ -177,9 +212,15 @@ export function decideWorktreeIntent({
   if (request.worktree === false) {
     return { action: 'none', source: 'task', hint: policy === 'required' ? REQUIRED_SKIP_HINT : '' }
   }
+  // #5 分支名必填：走到这里就是「真要建检出」（continue 复用已在上面返回）。
+  // 名字归协调者（模型按任务内容取 `<type>/<slug>`）：插件不猜、不写死、不自动改名；
+  // 配置 worktreePolicy=required 只决定「默认要不要隔离」，不包办名字，漏传同样拒绝。
+  if (trim(request.worktreeBranch) === '') {
+    return { action: 'reject', code: 'BRANCH_REQUIRED', source, error: BRANCH_REQUIRED_HINT }
+  }
   const hint = policy === 'off' && request.worktree === true
     ? OFF_BUILD_HINT
-    : (source === 'config' ? REQUIRED_FALLBACK_HINT : (request.implicit === true ? IMPLICIT_HINT : ''))
+    : (request.implicit === true ? IMPLICIT_HINT : '')
   return {
     action: 'resolve',
     source,

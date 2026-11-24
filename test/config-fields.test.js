@@ -108,6 +108,7 @@ test('废弃键不出现在 UI 字段表', () => {
     'mergeWindowMs', 'stallRounds', 'preferencesMaxItems',
     'mainRotation', 'rotateAfterMainLogMiB', 'rotateAfterDays', 'rotateCooldownHours',
     'rotateMinAgeHours', 'rotateIdleMinutes', 'rotateCheckIntervalHours', 'rotateArchiveOld',
+    'worktreeBranchPrefix',
   ].sort())
   for (const key of Object.keys(DEPRECATED_KEYS)) {
     assert.equal(FIELD_BY_KEY[key], undefined, `废弃键 ${key} 不得出现在字段表`)
@@ -115,9 +116,9 @@ test('废弃键不出现在 UI 字段表', () => {
   }
 })
 
-test('语义对齐：字段表只投影 loadConfig({}) 实际产出的 25 个键', () => {
+test('语义对齐：字段表只投影 loadConfig({}) 实际产出的 24 个键', () => {
   // 反向验证：把已删的 7 键任意一个加回 config-fields.js → 本条立刻红。
-  const deleted = ['keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt', 'mergeWindowMs', 'stallRounds', 'preferencesMaxItems']
+  const deleted = ['keepAlive', 'keepAliveMode', 'keepAliveMaxRounds', 'keepAlivePrompt', 'mergeWindowMs', 'stallRounds', 'preferencesMaxItems', 'worktreeBranchPrefix']
   for (const key of deleted) {
     assert.equal(FIELD_KEYS.includes(key), false, `${key} 已删除，不得回到表单`)
   }
@@ -128,7 +129,7 @@ test('语义对齐：字段表只投影 loadConfig({}) 实际产出的 25 个键
   ]) {
     assert.equal(FIELD_KEYS.includes(key), false, `${key} 已删除（轮换整套下线）`)
   }
-  assert.equal(FIELD_KEYS.length, 25, '字段表应与 loadConfig({}) 的 25 键同规模')
+  assert.equal(FIELD_KEYS.length, 24, '字段表应与 loadConfig({}) 的 24 键同规模')
   // 续跑只剩「按任务声明」这一条路：不再有续跑分组，也没有任何 keepalive 分组。
   assert.deepEqual(FIELD_GROUPS.map(group => group.id).includes('keepalive'), false, '续跑分组应随四个续跑键一起删除')
 })

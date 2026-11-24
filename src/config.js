@@ -1,6 +1,6 @@
 // 配置归一化：非法值一律回落默认，不让坏配置把插件带崩。
 import { DEFAULT_WATCHDOG_IDLE_MINUTES, DEFAULT_WATCHDOG_INTERVAL_MINUTES } from './watchdog.js'
-import { DEFAULT_BRANCH_PREFIX, WORKTREE_POLICIES } from './worktree-request.js'
+import { WORKTREE_POLICIES } from './worktree-request.js'
 import { guardModeOf } from './write-guard.js'
 import { DELIVERED_TIMEOUT_MINUTES } from './delivered.js'
 import {
@@ -37,6 +37,9 @@ export const DEPRECATED_KEYS = Object.freeze({
   rotateIdleMinutes: '轮换已删除：插件不再有闲置判定',
   rotateCheckIntervalHours: '轮换已删除：插件没有后台巡检，压力只在「打开主会话」时算一次',
   rotateArchiveOld: '轮换已删除：插件不再归档/退役旧主会话（换协调者只切指针，旧会话保留可回看）',
+  // 0.35.0：分支前缀键删除——分支名改由 task_create.worktreeBranch 按 <type>/<slug> 传入（必填）。
+  // 配过旧键的 profile 读到就 warn 一次、值不回填。
+  worktreeBranchPrefix: '分支名改由 task_create.worktreeBranch 按 <type>/<slug> 传入（必填）；本次按默认值运行，请从 profile 删掉本键',
 })
 
 const warnedDeprecated = new Set()
@@ -126,7 +129,7 @@ export function loadConfig(raw = {}, { onWarn } = {}) {
   // P9 worktree 隔离：用户级**结构化**默认（渲染进协调者 policy，并在 task_create 没传 worktree 时兜底）。
   // required = 每个需求都隔离；auto = 默认不隔离、满足三条件才建议；off = 一律不隔离。
   config.worktreePolicy = WORKTREE_POLICIES.includes(raw?.worktreePolicy) ? raw.worktreePolicy : 'auto'
-  config.worktreeBranchPrefix = nonEmpty(raw?.worktreeBranchPrefix, DEFAULT_BRANCH_PREFIX)
+  // 分支前缀（worktreeBranchPrefix）0.35.0 起删除：名字归协调者（task_create.worktreeBranch）。
   // 「近期活跃分支」窗口（天）：1–90，越界夹到边界，非法回落 7。
   config.worktreeRecentDays = Number.isFinite(raw?.worktreeRecentDays)
     ? Math.min(90, Math.max(1, Math.floor(raw.worktreeRecentDays)))

@@ -177,8 +177,9 @@ test("access:'full'：续派与重派都沿用完整访问（不静默降级成�
 test("access:'full' 与 worktree 不互斥（隔离是目录、沙箱是权限，两回事）", async () => {
   const { db, tools } = await setup()
   // 不是 git 仓库 → 降级普通模式，但创建期不该因为 access 被拒。
+  // 分支名照旧必填（名字归协调者，降级是物理事实、不影响入参校验顺序）。
   const reply = await call(tools, 'task_create', {
-    ...sampleBrief({ title: '隔离+完整访问' }), target: tempDir(), access: 'full', worktree: true,
+    ...sampleBrief({ title: '隔离+完整访问' }), target: tempDir(), access: 'full', worktree: true, worktreeBranch: 'chore/access-full-iso',
   })
   assert.doesNotMatch(reply, /互斥/)
   const task = listTasks(db).find(item => item.title === '隔离+完整访问')

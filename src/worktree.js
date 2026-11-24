@@ -400,7 +400,9 @@ export function retryWorktreeOf(task) {
   }
   return {
     path: null,
-    branch: null,
+    // 沿用台账原分支名重建：名字由协调者按 <type>/<slug> 取过，重派不再由插件另起一个名字
+    // （分支还在时派发期会 BRANCH_EXISTS，换名或改 worktreeMode:'continue' 由协调者决定）。
+    branch: task.worktree_branch ?? null,
     repoRoot: root === '' ? null : root,
     base: task.worktree_base ?? null,
     mode: 'new',
@@ -432,6 +434,7 @@ export async function prepareTaskWorktree({ db, task, service, log = () => {} } 
     return { ok: true, cwd: cwd === '' ? (task.target_dir ?? undefined) : cwd, state: 'reused', branch: task.worktree_branch, path: task.worktree_path }
   }
   const checkout = trim(task.worktree_path) || checkoutPathFor(root, task.id)
+  // legacy 兜底：只服务 0.34 及更早台账里 branch 为空的行（新任务创建期已强制 <type>/<slug>）。
   const branch = trim(task.worktree_branch) || `orch/${task.id}`
   const created = await service.create({
     repoRoot: root,

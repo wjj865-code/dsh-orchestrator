@@ -15,7 +15,7 @@ const collect = raw => {
   return { config, warnings }
 }
 
-test('弃用键清单：P1-A 的 6 个 + P2-2 的 7 个 − 恢复的检查节流键 + 0.25.0 的轮换 8 键，每个都有迁移提示', () => {
+test('弃用键清单：P1-A 的 6 个 + P2-2 的 7 个 − 恢复的检查节流键 + 0.25.0 的轮换 8 键 + 0.35.0 的分支前缀键，每个都有迁移提示', () => {
   assert.deepEqual(Object.keys(DEPRECATED_KEYS).sort(), [
     'backend',
     'keepAlive', 'keepAliveMaxRounds', 'keepAliveMode', 'keepAlivePrompt',
@@ -26,6 +26,7 @@ test('弃用键清单：P1-A 的 6 个 + P2-2 的 7 个 − 恢复的检查节�
     'rotateAfterTasks', 'rotateAfterDays', 'rotateAfterMainLogMiB', 'rotateArchiveOld',
     'rotateCheckIntervalHours', 'rotateCooldownHours', 'rotateIdleMinutes', 'rotateMinAgeHours',
     'stallRounds',
+    'worktreeBranchPrefix',
   ].sort())
   for (const [key, note] of Object.entries(DEPRECATED_KEYS)) {
     assert.equal(typeof note, 'string')
@@ -43,6 +44,17 @@ test('0.25.0 旧键：轮换相关键的提示指向「宿主自压 + 插件只�
   // 值不回填：旧键不出现在归一化结果里。
   assert.equal('mainRotation' in config, false)
   assert.equal('rotateAfterMainLogMiB' in config, false)
+})
+
+test('0.35.0 旧键：分支前缀的提示指向 task_create.worktreeBranch 的 <type>/<slug>', () => {
+  resetDeprecatedKeyWarnings()
+  const { config, warnings } = collect({ worktreeBranchPrefix: 'feat/' })
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /配置键 worktreeBranchPrefix 已删除/)
+  assert.match(warnings[0], /worktreeBranch/)
+  assert.match(warnings[0], /<type>\/<slug>/)
+  // 值不回填：旧前缀不再出现在配置面，也不会悄悄拼回分支名。
+  assert.equal('worktreeBranchPrefix' in config, false)
 })
 
 test('P2-2 旧键：续跑四键的提示指向 task_create.goalRounds（不是「再打开某个开关」）', () => {
@@ -96,5 +108,5 @@ test('没有 onWarn 时静默（纯函数场景不抛、不写日志）', () => 
   resetDeprecatedKeyWarnings()
   assert.doesNotThrow(() => loadConfig({ backend: 'team' }))
   // 静默调用不该「消耗」去重名额的前提是没 onWarn 就不记；这里只断言结果仍是 22 键的默认值。
-  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 25)
+  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 24)
 })

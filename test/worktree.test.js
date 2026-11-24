@@ -381,7 +381,7 @@ test('P9 清理：默认 off 不清理；checkout-only 清检出并落 cleaned�
   db.close()
 })
 
-test('P9 重派：检出还在就复用，被清理/不见了按原基线重建', () => {
+test('P9 重派：检出还在就复用，被清理/不见了按原分支名 + 原基线重建', () => {
   const repoRoot = tempDir()
   const checkout = checkoutPathFor(repoRoot, 't-1')
   mkdirSync(checkout, { recursive: true })
@@ -393,10 +393,12 @@ test('P9 重派：检出还在就复用，被清理/不见了按原基线重建'
   assert.equal(reused.path, checkout)
   const rebuild = retryWorktreeOf({
     id: 't-2', worktree_state: 'cleaned', worktree_path: join(repoRoot, 'gone'), repo_root: repoRoot,
-    worktree_branch: 'orch/t-2', worktree_base: 'main', worktree_source: 'config',
+    worktree_branch: 'fix/mirror-poll-cache', worktree_base: 'main', worktree_source: 'config',
   })
   assert.equal(rebuild.state, 'requested')
   assert.equal(rebuild.base, 'main')
+  // 重派沿用台账原分支名：名字是协调者按 <type>/<slug> 取过的，插件不再另起一个（也不回落 orch/<taskId>）。
+  assert.equal(rebuild.branch, 'fix/mirror-poll-cache')
   assert.equal(retryWorktreeOf({ worktree_state: 'none' }), null)
 })
 
@@ -428,7 +430,7 @@ async function setupTools({ worktree, config: overrides = {}, defaultCwd } = {})
   const notifier = { pushed: [], push(item) { this.pushed.push(item) } }
   const config = {
     staleMinutes: 30, maxQueue: 50, coordinatorSession: 's-1',
-    worktreePolicy: 'auto', worktreeBranchPrefix: 'orch/', worktreeRecentDays: 7, ...overrides,
+    worktreePolicy: 'auto', worktreeRecentDays: 7, ...overrides,
   }
   const service = worktree ?? fakeService()
   const queue = createQueue({ db, dispatcher, config, notifier, worktree: service })
@@ -448,7 +450,7 @@ test('P9 task_create：worktree:true 建分支 + 检出，spawn cwd 是检出目
   const { db, dispatcher, tools } = await setupTools({
     worktree: fakeServiceWithFacts({ repoRoot, n: 1, suggestedBase: 'main' }),
   })
-  const text = await call(tools, 'task_create', sampleBrief({ title: '隔离A', goal: 'g', target: repoRoot, worktree: true }), {})
+  const text = await call(tools, 'task_create', sampleBrief({ title: '隔离A', goal: 'g', target: repoRoot, worktree: true, worktreeBranch: 'feat/isolated-a' }), {})
   assert.match(text, /已派发/)
   assert.match(text, /隔离：新分支/)
   assert.match(text, /合并到你的工作树由你\/用户决定/)
@@ -456,7 +458,7 @@ test('P9 task_create：worktree:true 建分支 + 检出，spawn cwd 是检出目
   assert.equal(task.worktree_state, 'created')
   assert.equal(task.worktree_source, 'task')
   assert.equal(task.worktree_base, 'main')
-  assert.equal(task.worktree_branch, `orch/${task.id}`)
+  assert.equal(task.worktree_branch, 'feat/isolated-a')
   const spawn = dispatcher.calls.find(item => item[0] === 'spawn')
   assert.equal(spawn[1].cwd, checkoutPathFor(repoRoot, task.id))
   db.close()
@@ -468,7 +470,7 @@ test('P9 brief：brief 只留一次性参数；装依赖提示改由 W1 按 work
   const briefOf = taskId => recentMessages(db, taskId, 1)[0].rendered
 
   // 隔离任务（worktree_state=created）→ brief 不再内联装依赖提示（t-4f7ce108 归 W1 per-turn policy）。
-  await call(tools, 'task_create', sampleBrief({ title: '隔离装依赖', goal: 'g', target: repoRoot, worktree: true }), {})
+  await call(tools, 'task_create', sampleBrief({ title: '隔离装依赖', goal: 'g', target: repoRoot, worktree: true, worktreeBranch: 'feat/isolated-deps' }), {})
   const isolated = listTasks(db, { active: true }).find(task => task.title === '隔离装依赖')
   assert.equal(isolated.worktree_state, 'created')
   const isolatedBrief = briefOf(isolated.id)
@@ -493,7 +495,7 @@ test('P9 brief：brief 只留一次性参数；装依赖提示改由 W1 按 work
 test('P9 brief：隔离降级（不是 git 仓库）不给装依赖提示——仍在原工作树里跑', async () => {
   const target = tempDir()
   const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ isRepo: false, reason: 'NOT_A_REPO' }) })
-  await call(tools, 'task_create', sampleBrief({ title: '降级任务', goal: 'g', target, worktree: true }), {})
+  await call(tools, 'task_create', sampleBrief({ title: '降级任务', goal: 'g', target, worktree: true, worktreeBranch: 'chore/degrade' }), {})
   const [task] = listTasks(db, { active: true })
   assert.equal(task.worktree_state, 'degraded')
   assert.equal(recentMessages(db, task.id, 1)[0].rendered.includes('【worktree 依赖】'), false)
@@ -504,18 +506,22 @@ test('P9 brief：隔离降级（不是 git 仓库）不给装依赖提示——�
 test('P9 brief：重派隔离任务时 brief 仍是纯参数（装依赖归 W1，按重派后的 state 渲染）', async () => {
   const repoRoot = tempDir()
   const checkout = checkoutPathFor(repoRoot, 't-old')
-  const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot }) })
+  const service = fakeServiceWithFacts({ repoRoot })
+  const { db, tools } = await setupTools({ worktree: service })
   const old = createTask(db, {
     brief: sampleBrief({ title: '旧隔离任务', target: repoRoot }),
     coordinatorSession: 's-1',
     targetDir: checkout,
-    worktree: { state: 'created', source: 'task', repoRoot, path: checkout, branch: 'orch/t-old', base: 'main', mode: 'new' },
+    worktree: { state: 'created', source: 'task', repoRoot, path: checkout, branch: 'fix/old-iso', base: 'main', mode: 'new' },
   })
   transition(db, old.id, 'failed', { error: 'boom' })
   await call(tools, 'task_message', { action: 'retry', task_id: old.id })
   const retried = listTasks(db).find(task => task.retry_of === old.id)
   // 检出目录已不在 → 按原基线重建（requested → 派发后 created），仍是隔离任务。
   assert.ok(['requested', 'created', 'reused'].includes(retried.worktree_state), retried.worktree_state)
+  // 重派沿用户台账原分支名重建：插件不另起名字、不回落 orch/<taskId>。
+  assert.equal(service.calls.create.length, 1)
+  assert.equal(service.calls.create[0].branch, 'fix/old-iso', '重派应沿用台账里的原分支名')
   const rendered = recentMessages(db, retried.id, 1)[0].rendered
   assert.doesNotMatch(rendered, /【worktree 依赖】/)
   assert.match(rendered, /【任务详情】/)
@@ -528,7 +534,7 @@ test('P9 task_create：非 git 目录 → 降级普通模式（不报错），cw
   const { db, dispatcher, tools } = await setupTools({
     worktree: fakeServiceWithFacts({ isRepo: false, reason: 'NOT_A_REPO' }),
   })
-  const text = await call(tools, 'task_create', sampleBrief({ title: '降级', goal: 'g', target, worktree: true }), {})
+  const text = await call(tools, 'task_create', sampleBrief({ title: '降级', goal: 'g', target, worktree: true, worktreeBranch: 'chore/degrade-2' }), {})
   assert.match(text, /已派发/)
   assert.match(text, /降级为普通模式/)
   const [task] = listTasks(db, { active: true })
@@ -558,14 +564,14 @@ test('P9 task_create：多分支且没给基线 → needsBranchChoice，不落�
     knownRefs: ['feat/a', 'feat/b'],
   })
   const { db, dispatcher, tools } = await setupTools({ worktree: service })
-  const text = await call(tools, 'task_create', sampleBrief({ title: '多分支', goal: 'g', target: repoRoot, worktree: true }), {})
+  const text = await call(tools, 'task_create', sampleBrief({ title: '多分支', goal: 'g', target: repoRoot, worktree: true, worktreeBranch: 'feat/multi-a' }), {})
   assert.match(text, /基线需要你定/)
   assert.match(text, /feat\/a/)
   assert.match(text, /未创建任务/)
   assert.equal(listTasks(db).length, 0)
   assert.equal(dispatcher.calls.length, 0)
   // 带 worktreeBase 重调 → 正常建。
-  const retried = await call(tools, 'task_create', sampleBrief({ title: '多分支2', goal: 'g', target: repoRoot, worktree: true, worktreeBase: 'feat/a' }), {})
+  const retried = await call(tools, 'task_create', sampleBrief({ title: '多分支2', goal: 'g', target: repoRoot, worktree: true, worktreeBase: 'feat/a', worktreeBranch: 'feat/multi-b' }), {})
   assert.match(retried, /已派发/)
   assert.equal(listTasks(db, { active: true })[0].worktree_base, 'feat/a')
   db.close()
@@ -575,7 +581,7 @@ test('P9 task_create：基线不存在 / 分支已存在都在创建期拒绝', 
   const repoRoot = tempDir()
   const service = fakeServiceWithFacts({ repoRoot, n: 1, suggestedBase: 'main', knownRefs: [], existingBranches: ['feat/x'] })
   const { db, tools } = await setupTools({ worktree: service })
-  const missingBase = await call(tools, 'task_create', sampleBrief({ title: '基线缺失', target: repoRoot, worktree: true, worktreeBase: 'release/nope' }), {})
+  const missingBase = await call(tools, 'task_create', sampleBrief({ title: '基线缺失', target: repoRoot, worktree: true, worktreeBase: 'release/nope', worktreeBranch: 'fix/missing-base' }), {})
   assert.match(missingBase, /worktreeBase 不存在/)
   const existingBranch = await call(tools, 'task_create', sampleBrief({ title: '分支重名', target: repoRoot, worktree: true, worktreeBranch: 'feat/x' }), {})
   assert.match(existingBranch, /已存在/)
@@ -584,16 +590,22 @@ test('P9 task_create：基线不存在 / 分支已存在都在创建期拒绝', 
   db.close()
 })
 
-test('P9 task_create：worktreePolicy=required 时漏传也兜底建（来源 config）；显式 false 只给 hint', async () => {
+test('P9 task_create：worktreePolicy=required 也不包办分支名——漏传拒绝，显式传 branch 才建', async () => {
   const repoRoot = tempDir()
   const service = fakeServiceWithFacts({ repoRoot, n: 1, suggestedBase: 'main' })
   const { db, tools } = await setupTools({ worktree: service, config: { worktreePolicy: 'required' } })
-  const fallback = await call(tools, 'task_create', sampleBrief({ title: '兜底建', target: repoRoot }), {})
-  assert.match(fallback, /已派发/)
-  assert.match(fallback, /按配置 worktreePolicy=required 建了隔离（协调者未传参数）/)
+  // 配置只决定「默认要隔离」：名字仍归协调者，漏传直接拒绝且不落库、不碰 git。
+  const missing = await call(tools, 'task_create', sampleBrief({ title: '兜底建', target: repoRoot }), {})
+  assert.match(missing, /worktreeBranch 必填/)
+  assert.match(missing, /feat \| fix \| docs/)
+  assert.match(missing, /fix\/mirror-poll-cache/)
+  assert.equal(listTasks(db).length, 0)
+  assert.equal(service.calls.create.length, 0)
+  const built = await call(tools, 'task_create', sampleBrief({ title: '兜底建', target: repoRoot, worktree: true, worktreeBranch: 'chore/required-policy' }), {})
+  assert.match(built, /已派发/)
   const created = listTasks(db, { active: true })[0]
   assert.equal(created.worktree_state, 'created')
-  assert.equal(created.worktree_source, 'config')
+  assert.equal(created.worktree_branch, 'chore/required-policy')
 
   const skip = await call(tools, 'task_create', sampleBrief({ title: '显式不建', target: repoRoot, worktree: false }), {})
   assert.match(skip, /配置声明 required，但本次未隔离/)
@@ -606,7 +618,7 @@ test('P9 task_create：没传 target 时探测协调者默认目录（函数 get
   const cwd = tempDir()
   const service = fakeServiceWithFacts({ repoRoot: cwd })
   const { db, tools } = await setupTools({ worktree: service, defaultCwd: () => cwd })
-  await call(tools, 'task_create', sampleBrief({ title: '无 target 隔离', goal: 'g', worktree: true }), {})
+  await call(tools, 'task_create', sampleBrief({ title: '无 target 隔离', goal: 'g', worktree: true, worktreeBranch: 'chore/no-target' }), {})
   assert.equal(service.probeCalls[0], cwd)
   const [task] = listTasks(db, { active: true })
   assert.equal(task.worktree_state, 'created')
@@ -737,7 +749,7 @@ test('P9 派发失败：建树失败标 failed 并写原因（不静默降级）
   service.create = async () => ({ ok: false, code: 'BRANCH_EXISTS', message: '分支已存在：orch/x' })
   const { db, notifier, tools } = await setupTools({ worktree: service })
   // 工具层把异常转成可读结果（wrap），所以断言返回文案而不是抛错。
-  const text = await call(tools, 'task_create', sampleBrief({ title: '建树失败', target: repoRoot, worktree: true }), {})
+  const text = await call(tools, 'task_create', sampleBrief({ title: '建树失败', target: repoRoot, worktree: true, worktreeBranch: 'fix/tree-fail' }), {})
   assert.match(text, /隔离创建失败/)
   assert.match(text, /BRANCH_EXISTS/)
   const [task] = listTasks(db)
@@ -750,7 +762,7 @@ test('P9 派发失败：建树失败标 failed 并写原因（不静默降级）
 test('P9 视图接线：task_status 隔离行、task_list「·隔离」、通知带「合并由你决定」', async () => {
   const repoRoot = tempDir()
   const { db, tools } = await setupTools({ worktree: fakeServiceWithFacts({ repoRoot }) })
-  await call(tools, 'task_create', sampleBrief({ title: '视图任务', target: repoRoot, worktree: true }), {})
+  await call(tools, 'task_create', sampleBrief({ title: '视图任务', target: repoRoot, worktree: true, worktreeBranch: 'feat/view' }), {})
   const [task] = listTasks(db, { active: true })
   const status = await call(tools, 'task_status', { task_id: task.id })
   assert.match(status, /隔离：已隔离/)

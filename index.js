@@ -55,6 +55,7 @@ import { ensureDigest } from './src/digest.js'
 import { createPanelActions } from './src/panel-actions.js'
 import { createWorkbench } from './src/workbench.js'
 import { cleanupTaskWorktree, createWorktreeService } from './src/worktree.js'
+import { BRANCH_TYPES } from './src/worktree-request.js'
 // 0.32.0 能力包：内置公众号包 + 运行时预设注册（P0 GO；失败降级静态兜底）。
 import { createPackStore } from './src/pack/store.js'
 import { buildPresetDefinition } from './src/pack/preset-template.js'
@@ -129,11 +130,10 @@ const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则�
  */
 export function renderWorktreePolicy(config = {}) {
   const policy = config.worktreePolicy ?? 'auto'
-  const prefix = config.worktreeBranchPrefix ?? 'orch/'
   const days = Number.isFinite(config.worktreeRecentDays) ? config.worktreeRecentDays : 7
   return `## worktree 隔离（插件策略，非硬拦截）
-当前配置策略：${policy}（required | auto | off）｜分支前缀：${prefix}｜最近活跃窗口：${days} 天
-- required：每个需求都用 task_create({ worktree: true }) 派发；只读/计划阶段的任务跳过并说明。
+当前配置策略：${policy}（required | auto | off）｜分支命名：<type>/<slug>（必填，由你传）｜最近活跃窗口：${days} 天
+- required：每个需求都用 task_create({ worktree: true, worktreeBranch: "<type>/<slug>" }) 派发；只读/计划阶段的任务跳过并说明。**名字仍归你**：required 只决定「默认要隔离」，不包办分支名（漏传直接报错）。
 - auto：默认不隔离；目标仓库是 git 仓库、同一需求已有任务在执行、且本次是新需求时，建议隔离。**同一写域要和另一个活跃任务并行、且两者互不依赖、无需复用上下文时，优先传 worktree:true 隔离并行**（见上「并行策略」段），不要先排队。
 - off：一律不隔离。
 - 用户当场表述或 AGENTS.md 里的要求优先于本默认；判断后传结构化字段，不要问「怎么解析文件」。
@@ -141,7 +141,7 @@ export function renderWorktreePolicy(config = {}) {
 1. 读指引：上下文里 DSH 已注入用户级/工作区级 AGENTS.md；再用 context({ mode: 'project', target }) 看目标仓库的 AGENTS.md（有就按它，回复里写明来源）。用户当场表述优先于文件。
 2. 拿事实：context({ mode: 'project', target }) 看顶层结构是不是 git 仓库；task_list 看同 group / dependsOn 链上有没有在跑的任务。isRepo/defaultBranch/recentBranches 这类仓库事实由插件在 worktree:true 的返回里给，你不要跑 git。
 3. 判要不要建（默认三条件，仅在用户/配置都没说死时用）：A 目标是 git 仓库 ∧ B 同一需求已有任务在执行 ∧ C 本次是新需求 → worktree:true；若与某个活跃未隔离任务同写域、而两个任务互不依赖且无需复用上下文，也传 true（并行优先，见上「并行策略」段）；否则省略或传 false，并在回复里说一句原因（「不是 git 仓库」「续派复用已有检出」…）。
-4. 判基线 + 分支名：用户指定就从哪起（worktreeBase）；没说时插件给事实——近 ${days} 天 0 个活跃分支用默认分支、1 个直接用那条；**≥2 个时插件返回 needsBranchChoice 且不创建任务**，你用 ask_user_question 问用户，拿到答案后带 worktreeBase 重调 task_create。分支名默认 ${prefix}<taskId>，用户/项目有命名约定就传 worktreeBranch（非法/重名会报错，插件不改名）。
+4. 判基线 + 分支名：用户指定就从哪起（worktreeBase）；没说时插件给事实——近 ${days} 天 0 个活跃分支用默认分支、1 个直接用那条；**≥2 个时插件返回 needsBranchChoice 且不创建任务**，你用 ask_user_question 问用户，拿到答案后带 worktreeBase 重调 task_create。**分支名必须你传**：worktreeBranch: "<type>/<slug>"（type 白名单 ${BRANCH_TYPES.join(' | ')}；slug 小写 ASCII kebab，1–40 字符，如 feat/login-retry）；不传或不规范当场报错，插件不猜、不改名、不再有默认 orch/<taskId>（worktreeMode:'continue' 复用检出时不需要）。
 5. 收尾标注：按返回的 worktree 块在回复里写「产物在分支 X 的检出目录 Y，合并由你决定」；hint 非空时一并解释。
 - 隔离任务在检出目录里干活：产物不在用户工作树里，合并/提交由用户决定（插件不合并、不 push、不碰远程）。
 - worktree 与 readOnly / planFirst 互斥（创建期拒绝）；计划批准后要隔离就重新派发一个带 worktree:true 的任务。

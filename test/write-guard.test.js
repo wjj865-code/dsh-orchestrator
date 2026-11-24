@@ -505,7 +505,7 @@ test('worktree 隔离任务放行：新任务隔离、或旧任务已在检出�
   const first = await call('task_create', { ...sampleBrief({ title: '普通任务', goal: 'g1' }), target })
   assert.match(first, /已派发/)
   const isolated = await call('task_create', {
-    ...sampleBrief({ title: '隔离任务', goal: 'g2' }), target, worktree: true, worktreeBase: 'main',
+    ...sampleBrief({ title: '隔离任务', goal: 'g2' }), target, worktree: true, worktreeBranch: 'feat/guard-iso', worktreeBase: 'main',
   })
   assert.match(isolated, /已派发/)
   assert.match(isolated, /隔离：/)
@@ -546,7 +546,7 @@ test('回归：worktree:true + waiting_dep（worktree_state=requested）的隔�
   const dep = listTasks(db, { active: true })[0]
 
   const isolated = await call('task_create', {
-    ...sampleBrief({ title: '隔离任务', goal: 'g1' }), target, worktree: true, worktreeBase: 'main', dependsOn: [dep.id],
+    ...sampleBrief({ title: '隔离任务', goal: 'g1' }), target, worktree: true, worktreeBranch: 'feat/guard-waiting-dep', worktreeBase: 'main', dependsOn: [dep.id],
   })
   assert.match(isolated, /等待前置任务完成/)
   const iso = listTasks(db, { active: true }).find(task => task.title === '隔离任务')
