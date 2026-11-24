@@ -1,5 +1,29 @@
 # Changelog
 
+## 未发布（2026-11-24）—— 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径
+
+**一句话**：这一批不含发版动作（**不 bump 版本**）：写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径。
+
+**写域判定修复（隔离任务写根 = 检出）**
+- 新增 `isolatedConflicts` 与单向包含 `pathWithin`（`src/write-guard.js`）：隔离任务（`requested`/`created`/`reused`）重新拿写根（resume / 追问 / retry / 派发）只判「同一份检出（含 `worktreeMode:'continue'` 复用）」与「别人写进我的检出」，**原 target 与 `writeScopes` 不参与**。
+- 派发 chokepoint（`decideDispatchGrant`）与动作层（`decideRegrantGuard`）共用同一个判定函数（单源），口径不再分叉；检出被占的风险也写进 `concurrentRiskNote`。
+- 修掉的误拦：检出天生在仓库根内（`<repo>/.agents/worktrees/<taskId>`），父子包含不是同一份工作树——仓库根任务在跑时，隔离任务的 resume/追问曾被判「同写域占用」拒绝。
+- 文档：`README.md`、`docs/ARCHITECTURE.md`、`docs/LIMITATIONS.md` 同步；`docs/LIMITATIONS.md` 里「防护不覆盖 `retry`/`resume`」改为覆盖（都走 `write-gate` 同一次判定）。
+
+**镜像轮询：版本端点 + 缓存穿透 + unknown 三态**
+- `scripts/mirror-sync.mjs` 判「镜像有没有这个版本」只认版本端点 `GET /:name/:version`（200 / 404），每次请求叠 `?t=` 时间戳与 `no-cache` 头：packument 的 `dist-tags`/`versions` 走 CDN（`public, max-age=300`），刚同步完还会回旧内容，轮询会一直假阴性跑满预算。
+- `probeVersion` 三态：`ready`（200）/ `absent`（404）/ `unknown`（5xx、429、网络错）。unknown **不冒充「缺版本」**：不 PUT、不触发同步；轮询遇 unknown 只记一行继续等服务恢复，`--check` 遇 unknown 如实报「镜像状态未知」并 exit 1。
+- `.github/workflows/release.yml` 的轮询同样改打版本端点看 HTTP 码（200 即就绪），单请求 5s 连接 / 10s 总超时，非 200 只记日志继续，跑满 180s 才 warning（仍 `continue-on-error`）；`docs/CONTRIBUTING.md`、`docs/testing.md` 的 `mirror:check` 口径同步。
+
+**manifest 只记 Git 视野内的路径**
+- `src/artifact-stage.js` 的 Git 模式不再跑 `git status --ignored`：改用 `git ls-files -z --cached --others --exclude-standard -- :(literal)<path>`（50 条一批）精确问出「tracked 或未跟踪未忽略」，`files[]` 只留这些路径——`node_modules/`、`.pnpm/`、`dist/` 这类被 ignore 的树既不进清单，也不再让「只有 ignore 文件在工作」的仓库被标成未归档。
+- `.git` 内 / repo 外 / 被 ignore / 已删除的候选写进 `stage.excluded` 并带原因（`inside-git-dir` / `outside-repo` / `ignored` / `missing-or-deleted`）；批量核验失败记 `git.ignoreProbe='failed'`，不假装过滤过；产物库目录里的文件先剔掉、不参与 ignore 询问。
+- `docs/ARCHITECTURE.md` 的产物一节写明新口径。
+
+**边界与验证**
+- 不含发版动作：**不 bump `package.json` version、不 push、不打 tag、不 publish、不删分支**。
+- 验证：`test/write-guard.test.js`、`test/write-gate.test.js`、`test/write-hold.test.js`、`test/artifact-stage.test.js`、`test/mirror-sync.test.js` 全绿；`node scripts/check-docs.mjs` 与 `pnpm run check:version` 通过；无客户端改动，`dist/client.js` 无需重建。
+
 ## 0.34.0（2026-11-24）—— 任务私有产物存储 / Git 与非 Git 阶段收集 / 收集后交付
 
 - 分离工作目录、冲突声明 `writeScopes` 与产物存储：主会话 `artifacts/<taskId>` 仅暂存/引用，宿主私有 `artifact-store/<taskId>` 保存稳定文档与快照；历史路径不搬移，删除任务保留文件。
