@@ -103,7 +103,7 @@ task_create({
 
 ### 隔离与验收
 
-- **worktree 隔离**（`worktree: true`）：在 `<repo>/.agents/worktrees/<taskId>` 的独立检出里干活，产物在分支上，**合并由你决定**。
+- **worktree 隔离**（`worktree: true`）：在 `<repo>/.agents/worktrees/<taskId>` 的独立检出里干活，产物在分支上，**合并由你决定**。分支名由协调者按 `<type>/<slug>` 指定（**必填**，如 `fix/queue-stuck`，type 白名单 `feat|fix|docs|refactor|chore|test|perf|build|ci|style|revert`）；漏传或不规范当场报错，插件不猜、不改名。
 - **只读任务**（`readOnly: true`）/ **计划任务**（`planFirst: true`）：前者只读；后者先只读调研、用 `plan_save` 把计划存入任务产物目录 `docs/<任务名>-<版本>.md`（正文由子会话提供、原样落盘；待拍板问题也由它逐条列出），**计划批准必须由用户拍板，协调者不得自行批准**——它会用 `ask_user_question` 给你「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」：选「逐项确认」就按待拍板清单一项一问、答完先给决策汇总再总批准核对；「均按推荐」必须你明确点选。你明确批准后，协调者用 `task_message({ action: 'approve' })` 切回可写（落审批审计），再 `task_message` 续派实现——**普通 message 不会批准计划**（只记讨论/修订）。
 - **完整访问**（`access: 'full'`）：只对这一条任务解除沙箱写与命令限制；不继承、不改部署默认。
 - **机器验收**（`checks`）：子会话报 `done` 时，插件先在任务目录按 argv 跑一遍检查，全过才落「待确认」，失败**拒绝交付**并回执失败项、退出码与输出尾部。
@@ -138,7 +138,7 @@ task_create({
 | 生效方式 | **重载插件或重启 DSH 后生效**：运行中的插件不热重载，判定与计时器仍按启动时那份配置（台账在 SQLite，不受影响） |
 | 非法值 | 一律回落默认，不会让插件起不来 |
 
-常改的几项（完整 25 个键、默认值与区间见 [docs/CONFIG.md](docs/CONFIG.md)）：
+常改的几项（完整 24 个键、默认值与区间见 [docs/CONFIG.md](docs/CONFIG.md)）：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|

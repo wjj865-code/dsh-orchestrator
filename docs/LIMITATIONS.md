@@ -176,7 +176,7 @@
 ## worktree 隔离（P9）
 
 - **合并责任在用户**：平台没有合并工具，插件也不提供；worktree 任务的产物**不在你的工作树里**。要不要合并由你决定。
-- **判定权在协调者（模型）**：声明只有结构化两处，插件不解析自然语言。「用户写了必须隔离但模型漏传」是真实风险——缓解是配置 `required`，以及 `task_status`/面板显示「未隔离（决定 …）」让人能发现。
+- **判定权在协调者（模型）**：声明只有结构化两处，插件不解析自然语言。**名字也归协调者**：「用户写了必须隔离但模型漏传」是真实风险——缓解是配置 `required`，以及 `task_status`/面板显示「未隔离（决定 …）」让人能发现。分支名同理：漏传 `worktreeBranch` 直接报错（`BRANCH_REQUIRED`，文案带 11 类 type 白名单 + 正例），插件不兜底、不猜、不自动改名。
 - **`needsBranchChoice` 多一次往返**：仓库近 N 天 ≥2 个活跃分支且没给 `worktreeBase` 时**不建任务**、只返回候选；任务不落库、不占并发位。
 - **检出目录占磁盘**：默认 `worktreeCleanup:'off'` 全保留，长期会堆积（`.agents/worktrees/<taskId>`）；推荐 `checkout-only`。
 - **宿主依赖 git**：没装 git/不在 PATH 时建树失败 → 任务 `failed`（`GIT_MISSING`），不自动降级。`.git/info/exclude` 不可写时只 warn，`.agents/` 可能出现在 `git status`。

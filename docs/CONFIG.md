@@ -26,8 +26,7 @@
 | `preferencesMaxChars` | `1200` | 偏好段字数上限（条数上限固定 12 条，不可配） |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
 | `sameDirGuard` | `require` | 同写域并发防护：`require`（默认，拒绝）/ `warn`（只警告）/ `off`（关闭） |
-| `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，漏传时兜底 |
-| `worktreeBranchPrefix` | `orch/` | 隔离任务分支前缀（默认名 `<prefix><taskId>`） |
+| `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，只兜底「要不要隔离」，不包办分支名（名字由 `task_create.worktreeBranch` 传） |
 | `worktreeRecentDays` | `7` | 「近期活跃分支」窗口（1–90） |
 | `contextPressureThreshold` | `0.4` | **插件自己的提醒阈值**（0.1–0.95）：主会话最近一次请求 prompt 占上下文窗口的比例达到它时，弹一张问题卡问「要不要换新协调者会话」。**与宿主 compaction-basic 的 thresholdRatio（0.8）无关**，改它不会改变宿主压缩行为、也不影响子会话；插件只提醒、不压缩、不自动切换 |
 | `capabilityPacks` | `true` | 能力包总开关：关掉后不注册内置包预设、`capability_pack` 返回停用、面板隐藏入口 |
@@ -48,4 +47,4 @@
 
 ## 已删除的键
 
-老 profile 里留着已删键不影响加载——启动时各给一条弃用警告、按默认值运行。历史沿革：P1-A 删了 `backend` 与 5 个 `rotate*`；P2-2 删了续跑四键（续跑改用 `task_create({ goalRounds })`）与三个固定成常量的阈值键；0.25.0 删掉轮换的 8 个键（`mainRotation` + 7 个 `rotate*`），只留 `contextPressureThreshold`；0.32.0 新增能力包三键。逐键迁移说明见 [CHANGELOG](../CHANGELOG.md#02302026-11-19)。
+老 profile 里留着已删键不影响加载——启动时各给一条弃用警告、按默认值运行。历史沿革：P1-A 删了 `backend` 与 5 个 `rotate*`；P2-2 删了续跑四键（续跑改用 `task_create({ goalRounds })`）与三个固定成常量的阈值键；0.25.0 删掉轮换的 8 个键（`mainRotation` + 7 个 `rotate*`），只留 `contextPressureThreshold`；0.32.0 新增能力包三键；0.35 起删 `worktreeBranchPrefix`——分支名改由 `task_create.worktreeBranch` 按 `<type>/<slug>` 传入（必填，漏传直接报错），旧键只 warn、值不回填。逐键迁移说明见 [CHANGELOG](../CHANGELOG.md#02302026-11-19)。

@@ -506,16 +506,16 @@
 
 接口不变：参数仍叫 `task_id`、仍接受台账编号；`resolveTaskInput`（`src/task-ref.js`）是**五个 `task_*` + `plan_save` 的唯一解析入口**——先按 `t-xxxx` 查台账，未命中再按 `tk-` 查引用，空值/未知值/已失效都给可读文案（不出现表名/SQL/内部列/裸编号），不支持 session id 别名、不做空参绑定。`task_create.dependsOn` 同样接受两种值并归一成台账 id 落库。
 
-白名单（**不清洗**，审计真源）：`tasks.id`、`messages`/`notifications` 的 `task_id` 列、`logs`、`handoff/*.jsonl`、官方 Team 板 id、`worktree` 路径与分支名（`orch/<taskId>`）。计划文档文件名同理不迁移：历史 `t-xxxx.md` 保持原样。
+白名单（**不清洗**，审计真源）：`tasks.id`、`messages`/`notifications` 的 `task_id` 列、`logs`、`handoff/*.jsonl`、官方 Team 板 id、`worktree` 路径（`<repo>/.agents/worktrees/<taskId>`）与分支名（协调者传的 `<type>/<slug>`）。计划文档文件名同理不迁移：历史 `t-xxxx.md` 保持原样。
 
 ## worktree 隔离（P9）
 
 `task_create({ worktree: true })` 时插件在**宿主进程**建检出，子会话在检出目录里干活；不开 `worktree` 的任务行为一字不改（**一次 git 都不调**）。
 
-- **声明只有结构化两处**：profile 配置 `worktreePolicy` / `worktreeBranchPrefix` / `worktreeRecentDays`，以及 `task_create.worktree*` 字段。插件**不读** `AGENTS.md`、**不解析**自然语言：「要不要隔离」由协调者判断。
-- **模块**：`src/worktree.js` = 宿主侧 git 能力（`probeRepo` / `create` / `remove` / `ensureExcluded` / 分支名校验 / `prepareTaskWorktree` / `cleanupTaskWorktree` / `retryWorktreeOf`）；`src/worktree-request.js` = 结构化请求校验 + 机械映射 + 展示文案（纯函数）。
-- **创建期**：先互斥校验（`readOnly`/`planFirst`）与复用查找（`worktreeMode:'continue'`，按 `worktree_path` 判活跃占用——被占用就拒绝并给「dependsOn 串行 / `worktreeMode:'new'` 新建」两条路，`task.create.rejected` 记 `reason: checkout-busy`）；真要建时才 `probeRepo`（普通任务零 git 调用）→ 非仓库 `degrade`；基线：显式 `worktreeBase` 要 `rev-parse --verify` 通过、缺省时 n=0 用默认分支 / n=1 用那条 / **n≥2 返回 `needsBranchChoice` 且不落库**。落库七列（`worktree_path` / `_branch` / `repo_root` / `_base` / `_mode` / `_source` / `_state`），`state='requested'`。
-- **派发期**：`git worktree add -b <branch> <repo>/.agents/worktrees/<taskId> <base>`——**永远 -b 新分支**（直接检出已在主工作树检出的基线会被 git 拒绝）；`reused` 不调 git，只换算路径；`target_dir` 换成「检出目录 + 原 target 相对 repoRoot 的偏移」。建树失败标 `failed` 并写原因（不静默降级）。
+- **声明只有结构化两处**：profile 配置 `worktreePolicy` / `worktreeRecentDays`，以及 `task_create.worktree*` 字段；分支名不在配置面，由 `task_create.worktreeBranch` 按 `<type>/<slug>` 传入（**必填**，type 11 类白名单 + kebab slug，漏传/不合规创建期就拒）。插件**不读** `AGENTS.md`、**不解析**自然语言：「要不要隔离」与「叫什么名字」都由协调者判断。
+- **模块**：`src/worktree.js` = 宿主侧 git 能力（`probeRepo` / `create` / `remove` / `ensureExcluded` / 分支名词法校验 / `prepareTaskWorktree` / `cleanupTaskWorktree` / `retryWorktreeOf`）；`src/worktree-request.js` = 结构化请求校验 + 约定式命名（`BRANCH_TYPES` / `branchNameProblem`）+ 机械映射 + 展示文案（纯函数）。
+- **创建期**：先互斥校验（`readOnly`/`planFirst`）与复用查找（`worktreeMode:'continue'`，按 `worktree_path` 判活跃占用——被占用就拒绝并给「dependsOn 串行 / `worktreeMode:'new'` 新建」两条路，`task.create.rejected` 记 `reason: checkout-busy`）；真要建时才 `probeRepo`（普通任务零 git 调用）→ 非仓库 `degrade`；分支名漏传 → `BRANCH_REQUIRED`、格式错 → 词法拒绝，均不落库；基线：显式 `worktreeBase` 要 `rev-parse --verify` 通过、缺省时 n=0 用默认分支 / n=1 用那条 / **n≥2 返回 `needsBranchChoice` 且不落库**。落库七列（`worktree_path` / `_branch` / `repo_root` / `_base` / `_mode` / `_source` / `_state`），`state='requested'`。
+- **派发期**：`git worktree add -b <branch> <repo>/.agents/worktrees/<taskId> <base>`——`<branch>` 是协调者传的约定式名（`<type>/<slug>`），**永远 -b 新分支**（直接检出已在主工作树检出的基线会被 git 拒绝）；`reused` 不调 git，只换算路径；重派被清理过的任务用**台账原分支名**重建；`target_dir` 换成「检出目录 + 原 target 相对 repoRoot 的偏移」。建树失败标 `failed` 并写原因（不静默降级）。
 - **`.git/info/exclude`**：建树成功后把 `.agents/` 追加进去（幂等、不动 `.gitignore`；不可写只 warn）。
 - **清理三档**：`off`（默认，全留）/ `checkout-only`（只 `worktree remove`）/ `full`（连分支一起删，有未合并提交会提示）；在终态异步跑，失败只记日志。
 - **产物语义**：产物在检出目录里，**用户工作树没有这些改动**；平台没有合并工具，插件也不提供。

@@ -1,8 +1,8 @@
 # Changelog
 
-## 未发布（2026-11-24）—— 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径
+## 未发布（2026-11-24）—— 写域判定修复（隔离任务写根=检出）/ 镜像轮询缓存穿透 / manifest 只记 Git 视野路径 / worktree 分支名改约定式命名
 
-**一句话**：这一批不含发版动作（**不 bump 版本**）：写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径。
+**一句话**：这一批不含发版动作（**不 bump 版本**）：写域判定把「隔离任务的写域」收成它那份检出、镜像状态判定改打版本端点并区分 unknown、Git 阶段清单只收 Git 视野内的路径、worktree 分支名改由协调者按约定式 `<type>/<slug>` 传入（必填，不再默认 `orch/<taskId>`）。
 
 **写域判定修复（隔离任务写根 = 检出）**
 - 新增 `isolatedConflicts` 与单向包含 `pathWithin`（`src/write-guard.js`）：隔离任务（`requested`/`created`/`reused`）重新拿写根（resume / 追问 / retry / 派发）只判「同一份检出（含 `worktreeMode:'continue'` 复用）」与「别人写进我的检出」，**原 target 与 `writeScopes` 不参与**。
@@ -20,9 +20,17 @@
 - `.git` 内 / repo 外 / 被 ignore / 已删除的候选写进 `stage.excluded` 并带原因（`inside-git-dir` / `outside-repo` / `ignored` / `missing-or-deleted`）；批量核验失败记 `git.ignoreProbe='failed'`，不假装过滤过；产物库目录里的文件先剔掉、不参与 ignore 询问。
 - `docs/ARCHITECTURE.md` 的产物一节写明新口径。
 
+**worktree 分支名改约定式命名（`<type>/<slug>`，必填）**
+- `task_create.worktreeBranch` 改为**必填**（凡是要新建检出）：形态 `<type>/<slug>`，type 11 类白名单 `feat|fix|docs|refactor|chore|test|perf|build|ci|style|revert`，slug 为小写 ASCII kebab（1–40 字符、单词间单个 `-`）。没传 → `BRANCH_REQUIRED`，不合规 → 词法拒绝，都在**创建期**报错、不落库、不碰 git；错误文案带白名单 + 正例 `feat/login-retry` + 反例 `orch/t-1a2b3c4d`。
+- 删掉整套写死的默认名：`DEFAULT_BRANCH_PREFIX` / `branchNameFor` 移除，台账里的分支名就是协调者传的那个。`worktreeMode:'continue'`（复用检出）、`worktree:false` 与普通任务不受影响；`worktreePolicy=required` 也只决定「要不要隔离」，**不包办名字**（漏传同样拒绝）。
+- 配置键 `worktreeBranchPrefix` 删除并进 `DEPRECATED_KEYS`（老 profile 读到给一条弃用警告、值不回填）：配置面 25 → 24 键，客户端配置页少一行。
+- 重派被清理过的隔离任务沿用**台账原分支名**重建（`retryWorktreeOf` 不再返回空分支名）；`prepareTaskWorktree` 里的 `orch/<taskId>` 只留作 0.34 及更早台账里空分支行的 legacy 兜底。既有 `orch/*` 分支照旧可见/可复用/可清理，只是不再产生新名字。
+- L1 提示词 worktree 段改写：首行 `分支命名：<type>/<slug>（必填，由你传）`，required/auto/off 三条与步骤 4 都要求协调者传 `worktreeBranch`，不再出现「分支名默认 `orch/<taskId>`」。
+- 文档：`README.md`、`docs/CONFIG.md`、`docs/ARCHITECTURE.md`、`docs/LIMITATIONS.md`、`docs/testing.md`、`docs/compat.md` 同步。
+
 **边界与验证**
 - 不含发版动作：**不 bump `package.json` version、不 push、不打 tag、不 publish、不删分支**。
-- 验证：`test/write-guard.test.js`、`test/write-gate.test.js`、`test/write-hold.test.js`、`test/artifact-stage.test.js`、`test/mirror-sync.test.js` 全绿；`node scripts/check-docs.mjs` 与 `pnpm run check:version` 通过；无客户端改动，`dist/client.js` 无需重建。
+- 验证：`test/write-guard.test.js`、`test/write-gate.test.js`、`test/write-hold.test.js`、`test/artifact-stage.test.js`、`test/mirror-sync.test.js`、`test/worktree.test.js`、`test/worktree-request.test.js`、`test/access-full.test.js`、`test/config*.test.js`、`test/client-config-form.test.js` 全绿；`node scripts/check-docs.mjs`（1799/1800、配置参考 24 键）与 `pnpm run check:version` 通过；客户端只少一行字段投影 → `dist/client.js` 重建、`check:client-size` 通过。
 
 ## 0.34.0（2026-11-24）—— 任务私有产物存储 / Git 与非 Git 阶段收集 / 收集后交付
 

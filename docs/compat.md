@@ -61,7 +61,7 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 
 期望：`version` 为 `0.2.2-rc.3`/`-rc.5`、`versionStatus: inside`、`available: 10`（`missing: []`）。缺项时按 §4 的降级行为判读，不要当成「偶发失败」。
 
-**启动瞬间读数 ≠ 最终能力面**：全新 profile 刚加载那一刻，`host.capabilities` 可能报 `available: 8`、`missing: ["registry","team-board"]`——这两项按需懒挂载，不是缺能力；等协调者会话起来（或延迟加载）后即可用：面板快照的 `teamBoard` 不再带 `degraded`、worktree 建树正常。§3 三条冒烟都不依赖这两项，所以「首次加载行不是 10/10」不构成冒烟失败；判能力面缺失前先等主会话起来再看一行。（0.28.0 隔离 web 冒烟实测：启动瞬间 8/10，会话起来后 teamBoard 可用、worktree 正常建出 `orch/<taskId>` 检出。）
+**启动瞬间读数 ≠ 最终能力面**：全新 profile 刚加载那一刻，`host.capabilities` 可能报 `available: 8`、`missing: ["registry","team-board"]`——这两项按需懒挂载，不是缺能力；等协调者会话起来（或延迟加载）后即可用：面板快照的 `teamBoard` 不再带 `degraded`、worktree 建树正常。§3 三条冒烟都不依赖这两项，所以「首次加载行不是 10/10」不构成冒烟失败；判能力面缺失前先等主会话起来再看一行。（0.28.0 隔离 web 冒烟实测：启动瞬间 8/10，会话起来后 teamBoard 可用、worktree 按传入的 `<type>/<slug>` 正常建出检出。）
 
 **冒烟 1：派 3 个活 → 交付确认 → 追问复用同一子会话**
 协调者会话里说：*「用 task_create 给三个不同目录各派一个只读任务，标题分别 call-A/B/C」* → 期望 `task_list` 出现 3 行、`task_status` 可查；让其中一个 `task_report(done)` → 状态变「已交付待确认」；`task_message` 追问 → **同一个 sessionId** 继续；`task_message({action:'close'})` → `done`。
@@ -72,7 +72,7 @@ grep host.capabilities "$DSH_HOME/state/orchestrator/logs/orchestrator-$(date +%
 失败判据：**写得进去** = 只读档失效，立刻记 `session-create` / `team-api` 行的现状并停用 `readOnly`。
 
 **冒烟 3：worktree 隔离建检出**
-`task_create({ worktree: true, target: <git 仓库> })` → 期望返回 `worktree` 块（检出目录 + 分支名 `orch/<taskId>`），产物落在检出目录、不在用户工作树。
+`task_create({ worktree: true, worktreeBranch: 'feat/smoke', target: <git 仓库> })` → 期望返回 `worktree` 块（检出目录 + 分支名 `feat/smoke`），产物落在检出目录、不在用户工作树；漏传 `worktreeBranch` 直接报错（带 11 类 type 白名单 + 正例）。
 失败判据：报「缺少 git」/ 检出目录不存在 = 宿主 git 能力或 cwd 形状变了，记 `session-create` 行。
 
 ## 4. 能力探测与降级（10 类）

@@ -201,7 +201,7 @@ dsh --profile verify web --no-open --port <空闲端口> --host 127.0.0.1
 
 1. HTTP 面：`POST /api/orchestrator` 取 `snapshot` → 结构与筛选档正确；无 cookie 401/405 均可（拒绝即通过）、跨站 Origin 403；调接口前后 `tasks.sqlite` 行数不变。
 2. UI 面：无头 Chrome 打开带 token 的 URL → 侧栏「主会话」/ 会话头「任务」可点、`data-page` 五页切换、抽屉与 dock 实渲染、console 零 error（§7.1 逐条挑）。
-3. 任务流面：派任务 → `task_report` → 「已交付待确认」→ `close` 收 `done`；只读任务写文件被拒；worktree 建出 `orch/<taskId>`（§7.2）。
+3. 任务流面：派任务 → `task_report` → 「已交付待确认」→ `close` 收 `done`；只读任务写文件被拒；worktree 按传入的 `<type>/<slug>` 建出分支与检出（漏传报错）（§7.2）。
 4. 插件页：`[data-orchestrator-config]` 存在，配置卡片组数/行数与代码一致。
 5. 隔离审计：临时 home 之外零新增；真实 `~/.dsh` 与用户 profile 未被写；收工清理（§1「不碰真实数据」）。
 
@@ -230,7 +230,7 @@ dsh --profile verify web --no-open --port <空闲端口> --host 127.0.0.1
 | 4 | `task_message({action:'stop'})` | 任务「已取消」，子会话被中断 |
 | 5 | 计划任务 `planFirst:true` | 只读沙箱；计划落任务产物目录 `docs/<任务名>-<版本>.md`；`blocked` 上报后**普通 message 不批准**，`task_message({action:'approve'})` 才切可写并落审计 |
 | 6 | 只读任务 `readOnly:true` | 写文件/写 shell 被拒且可读；续派仍只读 |
-| 7 | `worktree:true` | 真的建出 `orch/<taskId>` 与检出；通知/`task_status` 标「隔离」；`git status` 无 `.agents/` |
+| 7 | `worktree:true` + `worktreeBranch:"feat/smoke"` | 真的按传入名建出 `feat/smoke` 与检出；漏传 `worktreeBranch` 直接报错（带 type 白名单）；通知/`task_status` 标「隔离」；`git status` 无 `.agents/` |
 | 8 | 多分支仓库不给 `worktreeBase` | 任务不创建、返回候选，带基线重调后建树 |
 | 9 | 同目录并发派两条 | 默认拒绝并给三条出路；`allowConcurrent:true` 放行并标风险 |
 | 10 | 主会话上下文维护（0.25.0） | 在指挥舱新建会话选「协调者」→ 会话头点「设为协调者」后 `settings.main_session_id` 切到它、旧会话不改名不归档；压力 ≥ `contextPressureThreshold`（可先调低到 0.1 复现）时弹一次问题卡，选「继续当前会话」后同一 band 不再问 |
