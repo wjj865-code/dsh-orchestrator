@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.35.2（2026-11-25）—— 修复 worktree exclude 时序与 CRLF 写入
+
+**一句话**：`worktree` 的 `.git/info/exclude` 换成「**建树之前**先幂等写」，并把追加口径修成「行尾跟着文件走（CRLF 文件不再混入裸 LF）+ 精确整行匹配（`.agents-notes/` 这类近似名不再被误判成已忽略）」；写不动仍然只告警、绝不阻断建树。
+
+**根因与修复**
+- **时序**：`prepareTaskWorktree` 原来先 `service.create()` 再 `ensureExcluded()`。`create()` 会先建出 `.agents/worktrees` 父目录，随后 `git worktree add` 可能失败（分支已存在 / 基线不存在 / 检出已存在），此时父目录已经留在仓库里，而 exclude 那条永远没写成——插件使用者（本机没配全局 ignore 的人）在 `git status` 里就会看到这堆未跟踪目录。现在改成**建树前**先幂等确保 exclude，建树失败时父目录也已被忽略。
+- **CRLF**：原实现按 `\r?\n` 切行、只判断 `endsWith('\n')` 并补 `\n`，于是 CRLF 文件里新追加的行变成裸 LF（Git for Windows 的仓库里很常见）。新增 `newlineOf()`：追加行跟随文件既有行尾（CRLF 保持 CRLF、纯 LF 保持 LF、空文件用 LF），末行没有换行时先补**同一个**行尾再追加，不把两行粘成一行。
+- **精确整行匹配**：新增 `isAgentsExcludeLine()`，只认整行等价写法（`.agents`、`.agents/`、`/.agents/`、`.agents/**`），并容忍首行 BOM、行尾空白与 CRLF；`!.agents/`（反选语法）与 `#` 注释不算已忽略。`--git-path` 给出空串时归一成 `EXCLUDE_UNWRITABLE`，不再拿空路径去 `resolve`。
+- **失败仍只降级**：只读仓库、权限不足（EPERM/EACCES）、路径是目录（EISDIR）、文件被占用，一律归一成 `{ok:false, reason}` 由调用方记 `worktree.exclude-failed` 继续建树；`ensureExcluded` 直接抛错也归一成降级（实现缺陷不许把建树拖下水）。按用户拍板：复用检出（`worktreeMode:'continue'`）不额外写 ensure，worktree notes 不加提示。
+- **文档**：`docs/ARCHITECTURE.md` 的 `.git/info/exclude` 一条改写成「建树前、只追加缺的行、行尾跟随、精确整行、写不动只 warn」。
+- **验证**：`test/worktree.test.js` 新增幂等/CRLF/末行无换行/精确匹配（含近似名不误伤）/写失败降级/真 git 仓库 `check-ignore` 生效来源（必须是仓库自己的 `.git/info/exclude`，不是本机全局 ignore）/建树失败也已先写 exclude，共 7 条回归；全量 `pnpm test` **1,484 项（1,479 pass / 0 fail / 5 skip）** 通过，`check:docs` 1799/1800、`check:client-size` 165,610 B / 167,936 B 一并通过。
+
 ## 0.35.1（2026-11-25）—— 修复 npmmirror 触发过早导致「同步成功但 0 新增」
 
 **一句话**：0.35.0 的 release workflow 在 npm publish 回执后 1 秒就 PUT npmmirror，但此时上游 `r.cnpmjs.org` 的 packument 仍是 `latest=0.34.0`；npmmirror 任务约 3 秒就记 `success` 且「新增 0 版本」，而 workflow 只轮询不重试，于是 3 分钟全是 404。0.35.1 先等 npm 版本端点可下载再触发；镜像仍未出现时每 60 秒重新触发，避免单次空跑后一直假死。

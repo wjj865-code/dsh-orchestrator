@@ -1,8 +1,9 @@
 // P9 worktree 宿主侧能力 + 派发接线：git 调用全部用 fake exec（不碰真 git），台账用临时库。
-// 覆盖：失败 7 分类、exclude 幂等、分支事实、建/删/清、target 偏移、task_create 契约、派发 cwd。
+// 覆盖：失败 7 分类、exclude 幂等/行尾风格/写失败降级、分支事实、建/删/清、target 偏移、task_create 契约、派发 cwd。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { openLedger, createTask, getTask, listTasks, recentMessages, setTaskWorktree, transition } from '../src/ledger.js'
 import { createTools } from '../src/tools.js'
@@ -178,21 +179,162 @@ test('P9 classifyGitFailure：already exists 先判分支再判路径；git 缺�
 
 // —— 三、exclude / 清理 / target 偏移 ——
 
-test('P9 ensureExcluded：幂等写入 .git/info/exclude，不动 .gitignore', async () => {
+/** 造一个「仓库根 + `.git/info/exclude`」的临时目录：git 命令走 fakeExec，只考 fs 行为。 */
+const excludeFixture = content => {
   const dir = tempDir()
   mkdirSync(join(dir, '.git', 'info'), { recursive: true })
   const exclude = join(dir, '.git', 'info', 'exclude')
-  writeFileSync(exclude, '# git exclude\n', 'utf8')
+  if (content !== undefined) writeFileSync(exclude, content, 'utf8')
   const fake = fakeExec({ repoRoot: dir })
-  const service = createWorktreeService({ exec: fake.exec })
+  return { dir, exclude, fake, service: createWorktreeService({ exec: fake.exec }) }
+}
+
+test('P9 ensureExcluded：幂等——连跑两次只追加一行，原有条目与 CRLF 行尾原样保留', async () => {
+  const { dir, exclude, fake, service } = excludeFixture('# git exclude\r\nnode_modules/\r\n')
   const first = await service.ensureExcluded(dir)
   assert.equal(first.ok, true)
   assert.equal(first.added, true)
-  assert.match(readFileSync(exclude, 'utf8'), /\.agents\//)
+  // 行尾风格跟着文件走：CRLF 文件里新加的行也是 CRLF，不混入裸 LF。
+  assert.equal(readFileSync(exclude, 'utf8'), '# git exclude\r\nnode_modules/\r\n.agents/\r\n')
+
   const second = await service.ensureExcluded(dir)
+  assert.equal(second.ok, true)
   assert.equal(second.added, false)
+  const after = readFileSync(exclude, 'utf8')
+  assert.equal(after, '# git exclude\r\nnode_modules/\r\n.agents/\r\n')
+  assert.equal(after.split(/\r\n|\r|\n/).filter(line => line.trim() === '.agents/').length, 1, '重复执行不得重复追加')
   // 只写 exclude，不碰 .gitignore（用户被跟踪的文件）。
   assert.equal(fake.calls.some(call => call.line.includes('.gitignore')), false)
+})
+
+test('P9 ensureExcluded：exclude 不存在时新建；末行无换行先补换行再追加（LF 文件保持 LF）', async () => {
+  const missing = excludeFixture(undefined)
+  const created = await missing.service.ensureExcluded(missing.dir)
+  assert.equal(created.ok, true)
+  assert.equal(created.added, true)
+  assert.equal(readFileSync(missing.exclude, 'utf8'), '.agents/\n')
+
+  const noEol = excludeFixture('a.txt\nb.txt')
+  assert.equal((await noEol.service.ensureExcluded(noEol.dir)).added, true)
+  // 不把 `b.txt` 和 `.agents/` 粘成一行；也不给 LF 文件写 CRLF。
+  assert.equal(readFileSync(noEol.exclude, 'utf8'), 'a.txt\nb.txt\n.agents/\n')
+})
+
+test('P9 ensureExcluded：精确整行匹配——等价写法视为已忽略，近似名字不得误伤', async () => {
+  // 等价写法（含行尾空白 / CRLF / 首行 BOM）都算「已忽略」，一个字都不许再写。
+  for (const content of ['.agents/\n', '.agents', '/.agents/\r\n', '.agents/   \r\nnode_modules/\n', '\uFEFF.agents/\r\n', '.agents/**\n']) {
+    const fixture = excludeFixture(content)
+    const result = await fixture.service.ensureExcluded(fixture.dir)
+    assert.equal(result.ok, true, `内容 ${JSON.stringify(content)} 应可读`)
+    assert.equal(result.added, false, `内容 ${JSON.stringify(content)} 已等价忽略，不该再追加`)
+    assert.equal(readFileSync(fixture.exclude, 'utf8'), content, `内容 ${JSON.stringify(content)} 不得被改写`)
+  }
+  // 近似名字与注释/反选都不算已忽略：必须补上真正的那一行。
+  for (const content of ['.agents-notes/\n', '.agentscache\n', '# .agents/\n', '!.agents/\n']) {
+    const fixture = excludeFixture(content)
+    assert.equal((await fixture.service.ensureExcluded(fixture.dir)).added, true, `内容 ${JSON.stringify(content)} 仍需追加`)
+    assert.equal(readFileSync(fixture.exclude, 'utf8'), `${content}.agents/\n`)
+  }
+})
+
+test('P9 ensureExcluded：写不动（只读 / 路径是目录）降级为 ok:false，不抛错、不改内容', async () => {
+  // 路径是目录（EISDIR）：任何环境都可复现的写失败形态。
+  const asDir = excludeFixture(undefined)
+  rmSync(asDir.exclude, { force: true })
+  mkdirSync(asDir.exclude)
+  const dirResult = await asDir.service.ensureExcluded(asDir.dir)
+  assert.equal(dirResult.ok, false)
+  assert.equal(dirResult.reason, 'EXCLUDE_UNWRITABLE')
+
+  // 只读文件（Windows 上 chmod 0o444 = 只读属性 → append 报 EPERM/EACCES）。
+  // root 用户能绕过文件权限，那种环境下这一条不成立（不是被测代码的问题）。
+  if (process.platform === 'win32' || process.getuid?.() !== 0) {
+    const readOnly = excludeFixture('# ro\n')
+    chmodSync(readOnly.exclude, 0o444)
+    try {
+      const result = await readOnly.service.ensureExcluded(readOnly.dir)
+      assert.equal(result.ok, false)
+      assert.equal(result.reason, 'EXCLUDE_UNWRITABLE')
+      assert.match(result.message, /EPERM|EACCES/)
+    } finally {
+      chmodSync(readOnly.exclude, 0o666)
+    }
+    assert.equal(readFileSync(readOnly.exclude, 'utf8'), '# ro\n', '写失败不得破坏原内容')
+  }
+})
+
+test('P9 ensureExcluded：真 git 仓库里由仓库自己的 exclude 生效（不是本机全局 ignore）', async () => {
+  const repo = tempDir()
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  execFileSync('git', ['init', '-q', repo])
+  git('config', 'user.email', 't@e.st')
+  git('config', 'user.name', 't')
+  writeFileSync(join(repo, 'README.md'), 'x\n')
+  git('add', '.')
+  git('commit', '-q', '-m', 'init')
+  const service = createWorktreeService()
+  const base = git('rev-parse', '--abbrev-ref', 'HEAD').trim()
+
+  // 与派发期同序：先写 exclude，再建树。
+  const first = await service.ensureExcluded(repo)
+  assert.equal(first.ok, true)
+  assert.equal(first.added, true)
+  const checkout = join(repo, '.agents', 'worktrees', 't-1')
+  const created = await service.create({ repoRoot: repo, path: checkout, branch: 'feat/probe-exclude', base })
+  assert.equal(created.ok, true)
+
+  // 主工作树里看不到 `.agents/worktrees` 这些未跟踪文件。
+  assert.equal(git('status', '--porcelain=v1', '--untracked-files=all').trim(), '')
+  // 生效来源必须是仓库自己的 `.git/info/exclude`：本机若配了全局 ignore，这里会指到别处。
+  const source = git('check-ignore', '-v', '.agents/worktrees/t-1/README.md').trim()
+  assert.match(source, /info[/\\]exclude/)
+  assert.doesNotMatch(source, /\.config[/\\]git[/\\]ignore/)
+
+  const second = await service.ensureExcluded(repo)
+  assert.equal(second.added, false)
+  const excludeText = readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8')
+  assert.equal(excludeText.split(/\r\n|\r|\n/).filter(line => line.trim() === '.agents/').length, 1)
+})
+
+test('P9 prepareTaskWorktree（真 git）：exclude 只读时建树仍成功，只记 worktree.exclude-failed', async t => {
+  // root 能无视文件权限，只读 exclude 造不出来（不是被测代码的问题）。
+  if (process.platform !== 'win32' && process.getuid?.() === 0) {
+    t.skip('root 环境无法把 exclude 置成不可写：跳过这条真降级用例，普通用户/CI 仍会真跑')
+    return
+  }
+  const db = await openLedger(tempDir())
+  const repo = tempDir()
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  execFileSync('git', ['init', '-q', repo])
+  git('config', 'user.email', 't@e.st')
+  git('config', 'user.name', 't')
+  writeFileSync(join(repo, 'a.txt'), 'a\n')
+  git('add', '.')
+  git('commit', '-q', '-m', 'init')
+  const exclude = join(repo, '.git', 'info', 'exclude')
+  writeFileSync(exclude, '# keep\r\n', 'utf8')
+  chmodSync(exclude, 0o444)
+  try {
+    const task = createTask(db, {
+      brief: sampleBrief({ title: '只读 exclude 也要建树' }),
+      coordinatorSession: 's-1',
+      targetDir: repo,
+      worktree: { state: 'requested', source: 'task', repoRoot: repo, base: git('rev-parse', '--abbrev-ref', 'HEAD').trim(), mode: 'new' },
+    })
+    const logs = []
+    const prepared = await prepareTaskWorktree({
+      db, task: getTask(db, task.id), service: createWorktreeService(), log: (event, fields) => logs.push([event, fields]),
+    })
+    assert.equal(prepared.ok, true, '写不动 exclude 不得拖住建树')
+    assert.equal(prepared.state, 'created')
+    assert.ok(logs.some(([event]) => event === 'worktree.exclude-failed'))
+    assert.equal(logs.some(([event]) => event === 'worktree.failed'), false)
+    assert.equal(readFileSync(exclude, 'utf8'), '# keep\r\n', '写不动的 exclude 内容保持原样')
+    assert.ok(existsSync(prepared.cwd), '检出真实建出来了')
+  } finally {
+    chmodSync(exclude, 0o666)
+    db.close()
+  }
 })
 
 test('P9 remove：checkout-only 保分支；full 有未合并提交要确认', async () => {
@@ -349,6 +491,59 @@ test('P9 prepareTaskWorktree：建树失败落 failed（不静默降级）；reu
   assert.equal(reused.state, 'reused')
   assert.equal(reused.cwd, join(repoRoot, 'w', 't-x'))
   assert.equal(service.calls.create.length, 0)
+  db.close()
+})
+
+test('P9 prepareTaskWorktree：exclude 写不动只告警，建树照常成功（不阻断）', async () => {
+  const db = await openLedger(tempDir())
+  const repoRoot = tempDir()
+  const make = title => {
+    const task = createTask(db, {
+      brief: sampleBrief({ title }),
+      coordinatorSession: 's-1',
+      targetDir: repoRoot,
+      worktree: { state: 'requested', source: 'task', repoRoot, base: 'main', mode: 'new' },
+    })
+    return getTask(db, task.id)
+  }
+
+  // ① ensureExcluded 返回失败（只读仓库 / 文件被占用）→ 仍然建树成功，只记 worktree.exclude-failed。
+  const logs = []
+  const failing = { ...fakeService(), ensureExcluded: async () => ({ ok: false, reason: 'EXCLUDE_UNWRITABLE', message: 'EPERM: 只读' }) }
+  const degraded = await prepareTaskWorktree({
+    db, task: make('写不动 exclude'), service: failing, log: (event, fields) => logs.push([event, fields]),
+  })
+  assert.equal(degraded.ok, true)
+  assert.equal(degraded.state, 'created')
+  assert.ok(logs.some(([event]) => event === 'worktree.exclude-failed'))
+  assert.equal(logs.some(([event]) => event === 'worktree.failed'), false)
+
+  // ② ensureExcluded 直接抛（实现缺陷也不许把建树拖下水）：结果归一成降级。
+  const throwing = { ...fakeService(), ensureExcluded: async () => { throw new Error('磁盘满了') } }
+  const survived = await prepareTaskWorktree({ db, task: make('exclude 抛错'), service: throwing })
+  assert.equal(survived.ok, true)
+  assert.equal(survived.state, 'created')
+  db.close()
+})
+
+test('P9 prepareTaskWorktree：先写 exclude 再建树（建树失败时 .agents/worktrees 也已忽略）', async () => {
+  const db = await openLedger(tempDir())
+  const repoRoot = tempDir()
+  const task = createTask(db, {
+    brief: sampleBrief({ title: '建树失败也要先写 exclude' }),
+    coordinatorSession: 's-1',
+    targetDir: repoRoot,
+    worktree: { state: 'requested', source: 'task', repoRoot, base: 'main', mode: 'new' },
+  })
+  const order = []
+  const service = {
+    async ensureExcluded() { order.push('exclude'); return { ok: true, added: true } },
+    async create() { order.push('create'); return { ok: false, code: 'BRANCH_EXISTS', message: '分支已存在' } },
+  }
+  const failed = await prepareTaskWorktree({ db, task: getTask(db, task.id), service })
+  assert.deepEqual(order, ['exclude', 'create'])
+  assert.equal(failed.ok, false)
+  assert.equal(failed.state, 'failed')
   db.close()
 })
 

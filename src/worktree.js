@@ -21,6 +21,32 @@ export const WORKTREES_DIR = join('.agents', 'worktrees')
 /** 写进 `.git/info/exclude` 的条目：不污染用户被跟踪的 `.gitignore`。 */
 export const EXCLUDE_ENTRY = '.agents/'
 
+/**
+ * 一行 exclude 内容是否等价于「忽略 `.agents/`」。
+ *
+ * 为什么不做 `content.includes('.agents/')`：用户仓库里常有 `.agents-notes/`、`.agentscache`
+ * 这类近似名字，宽泛子串会把它们当成「已经忽略过」而漏写真正的那一行。这里只认**整行**等价写法
+ * （`.agents`、`.agents/`、`/.agents/`、`.agents/**`），并容忍行尾空白、CRLF 与首行 BOM
+ * （Windows 编辑器/复制粘贴常见）——但 `!.agents`（排除语法反例）不算已忽略。
+ */
+export function isAgentsExcludeLine(line) {
+  const value = String(line ?? '').replace(/^\uFEFF/, '').trim()
+  if (value === '' || value.startsWith('#') || value.startsWith('!')) return false
+  const normalized = value.replace(/^\/+/, '').replace(/\/+$/, '')
+  return normalized === '.agents' || normalized === '.agents/**'
+}
+
+/** 追加行沿用文件既有行尾（CRLF 文件继续 CRLF；空文件/纯 LF 用 LF），不混入另一种换行。 */
+export function newlineOf(text) {
+  if (text.includes('\r\n')) return '\r\n'
+  if (text.includes('\n')) return '\n'
+  if (text.includes('\r')) return '\r'
+  return '\n'
+}
+
+const EXCLUDE_LINE_SPLIT = /\r\n|\r|\n/
+const ENDS_WITH_NEWLINE = /(?:\r\n|\r|\n)$/
+
 /** 失败分类（与 master-plan §4.5 一致）：协调者据此给用户可读解释。 */
 export const WORKTREE_FAILURE_TEXT = Object.freeze({
   NOT_A_REPO: '目标目录不是 git 仓库',
@@ -324,24 +350,42 @@ export function createWorktreeService({ exec = runGit, now = Date.now, recentDay
     return { ok: true, checkout: true, branch: true, unmerged }
   }
 
-  /** `.agents/` 写进 `.git/info/exclude`（幂等；不可写只降级，不动用户 `.gitignore`）。 */
+  /**
+   * 幂等确保 `.git/info/exclude` 含一行 `.agents/`（方案 A：插件使用者的新克隆也不再看到
+   * `.agents/worktrees` 这些未跟踪文件）。
+   *
+   * 口径（都是硬约束）：
+   * - **只检查 + 必要追加**，绝不重写整个文件：原有条目逐行保留，行尾风格跟着文件走（CRLF 保持 CRLF）；
+   * - 末行没有换行时先补一个换行再追加，避免把两行粘成一行；
+   * - 已有等效行（见 `isAgentsExcludeLine`）就什么都不写，连跑 N 次只有一行；
+   * - `git rev-parse --git-path` 拿到的路径可能是相对 cwd 的（`.git/info/exclude`），也可能是
+   *   链接检出/子模块下的绝对路径，统一 `resolve(root, …)`；
+   * - **失败不抛**：只读仓库、权限不足、文件被占用、路径是目录……都归一成 `{ok:false, reason}`，
+   *   由调用方降级成告警（写不了 exclude 绝不能挡住建树）。
+   *
+   * @returns {Promise<{ok: boolean, added?: boolean, path?: string, reason?: string, message?: string}>}
+   */
   const ensureExcluded = async (repoRoot, { signal } = {}) => {
     const root = trim(repoRoot)
     if (root === '') return { ok: false, reason: 'NOT_A_REPO' }
     const gitPath = await run(['rev-parse', '--git-path', 'info/exclude'], { cwd: root, signal })
     if (!gitPath.ok) return { ok: false, reason: classifyGitFailure(gitPath).code }
-    const file = resolve(root, trim(gitPath.stdout))
+    const relativePath = trim(gitPath.stdout)
+    if (relativePath === '') return { ok: false, reason: 'EXCLUDE_UNWRITABLE', message: 'git 没给出 info/exclude 路径' }
+    const file = resolve(root, relativePath)
     let current = ''
     try {
       current = readFileSync(file, 'utf8')
     } catch (error) {
+      // 文件不存在是正常情况（有些仓库没有 info/exclude），按空文件处理；其余（EACCES/EISDIR/EPERM…）是降级信号。
       if (error?.code !== 'ENOENT') return { ok: false, reason: 'EXCLUDE_UNWRITABLE', message: error?.message ?? String(error) }
     }
-    const entries = current.split(/\r?\n/).map(line => line.trim())
-    if (entries.includes(EXCLUDE_ENTRY) || entries.includes('.agents')) return { ok: true, added: false, path: file }
+    if (current.split(EXCLUDE_LINE_SPLIT).some(isAgentsExcludeLine)) return { ok: true, added: false, path: file }
+    const eol = newlineOf(current)
+    const leading = current === '' || ENDS_WITH_NEWLINE.test(current) ? '' : eol
     try {
       mkdirSync(dirname(file), { recursive: true })
-      appendFileSync(file, `${current === '' || current.endsWith('\n') ? '' : '\n'}${EXCLUDE_ENTRY}\n`)
+      appendFileSync(file, `${leading}${EXCLUDE_ENTRY}${eol}`)
     } catch (error) {
       return { ok: false, reason: 'EXCLUDE_UNWRITABLE', message: error?.message ?? String(error) }
     }
@@ -413,7 +457,8 @@ export function retryWorktreeOf(task) {
 
 /**
  * 派发前准备（queue.pump 在 spawn 之前调用）：
- * - `requested` → 真建检出（分支 + `<repo>/.agents/worktrees/<taskId>`），写 exclude，把 target_dir 换成
+ * - `requested` → **先幂等写 exclude**（`.agents/` → `.git/info/exclude`，写不动只 warn），再真建检出
+ *   （分支 + `<repo>/.agents/worktrees/<taskId>`），把 target_dir 换成
  *   「检出目录 + 原 target 相对 repoRoot 的偏移」，返回的 cwd 就是子会话的工作目录；
  * - `reused` → 只换算 target_dir，不调任何 git；
  * - 失败不静默降级：状态落 `failed`，调用方把任务标失败并写明原因。
@@ -436,6 +481,22 @@ export async function prepareTaskWorktree({ db, task, service, log = () => {} } 
   const checkout = trim(task.worktree_path) || checkoutPathFor(root, task.id)
   // legacy 兜底：只服务 0.34 及更早台账里 branch 为空的行（新任务创建期已强制 <type>/<slug>）。
   const branch = trim(task.worktree_branch) || `orch/${task.id}`
+  // 方案 A：**建树之前**就幂等确保 `<repo>/.git/info/exclude` 里有 `.agents/`。
+  // 为什么放在前面：`create()` 会先建出 `.agents/worktrees` 父目录，再跑 `git worktree add`；
+  // 建树失败（分支已存在/基线不存在/检出已存在）时父目录已经留在仓库里——先把 exclude 写好，
+  // 插件使用者（没有本机全局 ignore 的人）才不会在 `git status` 里看到这堆未跟踪目录。
+  // 写失败只降级成告警（只读仓库/权限不足/文件被占用），绝不阻断建树。
+  let excluded = { ok: true, added: false }
+  if (root !== '') {
+    try {
+      excluded = await service.ensureExcluded(root)
+    } catch (error) {
+      excluded = { ok: false, reason: 'EXCLUDE_UNWRITABLE', message: error?.message ?? String(error) }
+    }
+    if (excluded.ok !== true) {
+      log('worktree.exclude-failed', { taskId: task.id, detail: { reason: excluded.reason ?? null, message: excluded.message ?? null } })
+    }
+  }
   const created = await service.create({
     repoRoot: root,
     path: checkout,
@@ -446,11 +507,6 @@ export async function prepareTaskWorktree({ db, task, service, log = () => {} } 
     setTaskWorktree(db, task.id, { state: 'failed' })
     log('worktree.failed', { taskId: task.id, detail: { code: created.code ?? 'FAILED', message: created.message ?? null } })
     return { ok: false, state: 'failed', failure: created }
-  }
-  // `.agents/` 藏进 `.git/info/exclude`（不可写只降级，不影响建树结果，不让 `git status` 噪音挡住任务）。
-  const excluded = await service.ensureExcluded(root)
-  if (excluded.ok !== true) {
-    log('worktree.exclude-failed', { taskId: task.id, detail: { reason: excluded.reason ?? null, message: excluded.message ?? null } })
   }
   const cwd = targetInCheckout(created.path, offset) || created.path
   try {
