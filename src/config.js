@@ -7,6 +7,9 @@ import {
   CONTEXT_PRESSURE_THRESHOLD_DEFAULT, CONTEXT_PRESSURE_THRESHOLD_MAX, CONTEXT_PRESSURE_THRESHOLD_MIN,
 } from './main-context.js'
 import { DEFAULT_MAX_CHARS as DEFAULT_PREFERENCE_MAX_CHARS } from './preferences.js'
+import {
+  POLICY_MAX_CHARS_DEFAULT, POLICY_MAX_CHARS_MAX, POLICY_MAX_CHARS_MIN, POLICY_PROFILE_DEFAULT, POLICY_PROFILES,
+} from './prompt-layers.js'
 
 /**
  * 已删除的配置键（P1-A 41 → 35、P2-2 35 → 28、0.25.0 29 → 22）→ 迁移提示。
@@ -27,7 +30,7 @@ export const DEPRECATED_KEYS = Object.freeze({
   // P2-2：三个纯阈值/安全阀固定成常量（现场没有调参需求，留着只会变成「同一事实两处配置」）。
   mergeWindowMs: '完成通知的合并窗口固定 5000 ms（通知仍按任务合并，只是不再可调）',
   stallRounds: '「连续 N 次 progress 无变化」的提醒口径固定为 3 次',
-  preferencesMaxItems: '偏好段条数上限固定 12 条（字数主约束 preferencesMaxChars 仍可配）',
+  preferencesMaxItems: '偏好段条数上限固定 24 条（字数主约束 preferencesMaxChars 仍可配）',
   // 0.25.0：主会话轮换整套删除（改为「宿主自动压缩 + 插件只提醒 + 手动 adopt」）。
   mainRotation: '主会话轮换已删除：上下文过长交给宿主 compaction-basic 自动压缩，插件只在压力到阈值时弹问题卡问你要不要换新协调者会话',
   rotateAfterMainLogMiB: '轮换已删除：插件不再按日志体积自动换会话；要换请用会话头「设为协调者」或压力提醒卡里的「新建协调者会话」',
@@ -142,6 +145,15 @@ export function loadConfig(raw = {}, { onWarn } = {}) {
   config.preferencesMaxChars = Number.isFinite(raw?.preferencesMaxChars)
     ? Math.min(4000, Math.max(200, Math.floor(raw.preferencesMaxChars)))
     : DEFAULT_PREFERENCE_MAX_CHARS
+  // 协调者 policy 渲染（C3）：两个键都只影响提示词渲染，不改变执行层行为。
+  // 预算口径 2000–20000：低于 2000 连「硬规则 + 拍板流程」都放不下（这两段永不降级），
+  // 高于 20000 没有实际意义（八段全量约 7.6k）。非法值回落默认，不让坏配置把 policy 渲染成空。
+  config.policyMaxChars = Number.isFinite(raw?.policyMaxChars)
+    ? Math.min(POLICY_MAX_CHARS_MAX, Math.max(POLICY_MAX_CHARS_MIN, Math.floor(raw.policyMaxChars)))
+    : POLICY_MAX_CHARS_DEFAULT
+  // 档位只有两档：full（八段全渲染）/ minimal（只留硬规则 + 拍板流程）；拼错一律回落 full
+  // （宁可多渲染，也不要因为一个拼写错误让协调者丢掉判断口径）。
+  config.promptProfile = POLICY_PROFILES.includes(raw?.promptProfile) ? raw.promptProfile : POLICY_PROFILE_DEFAULT
   // 主会话上下文压力提醒（0.25.0）：**插件自己的提醒阈值**，与宿主 compaction-basic 的
   // thresholdRatio（默认 0.8）无关——改这里不会改变宿主压缩行为，只决定什么时候弹问题卡。
   // 口径：0.1–0.95，越界夹到边界，非法值（非数字/非正数）回落默认 0.4。

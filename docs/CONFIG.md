@@ -1,8 +1,6 @@
 # 配置参考
 
-插件全部配置键与默认值。日常其实只需要改几个（常用项与改法见 [README「配置」](../README.md#配置)）。
-
-**两种改法，等价**：① 在**插件页**（侧栏「插件」→ dsh-orchestrator 页面里的「配置」卡片）改；② 直接编辑当前 profile 的 `cordis.patch.yml`（`id: orchestrator` 那一行的 `config`）。
+插件全部配置键与默认值。日常其实只需要改几个（常用项与改法见 [README「配置」](../README.md#配置)）；**两种改法，等价**：① 在**插件页**（侧栏「插件」→ dsh-orchestrator 页面里的「配置」卡片）改；② 直接编辑当前 profile 的 `cordis.patch.yml`（`id: orchestrator` 那一行的 `config`）。
 
 ## 配置
 
@@ -23,7 +21,9 @@
 | `memoryInject` | `true` | 新任务是否注入事实层记忆 |
 | `memoryLimit` | `3` | 注入记忆条数（1–10） |
 | `preferencesInject` | `true` | 是否把协调者偏好段（`settings.orchestrator_preferences`）注入 L1 提示词 |
-| `preferencesMaxChars` | `1200` | 偏好段字数上限（条数上限固定 12 条，不可配） |
+| `preferencesMaxChars` | `2400` | 偏好段字数上限（条数上限固定 24 条，不可配） |
+| `policyMaxChars` | `8000` | 协调者 policy 字符预算（2000–20000）：超出按「并行→任务链→worktree→写域→推进循环→三闸门」丢段，**硬规则段与拍板流程段永不丢**，每次丢段 warn 一次 |
+| `promptProfile` | `full` | policy 档位：`full` 八段全渲染 / `minimal` 只留硬规则 + 拍板流程（省预算、不可逆闸门不丢） |
 | `snapshotRetentionDays` | `7` | 台账快照保留天数（1–30） |
 | `sameDirGuard` | `require` | 同写域并发防护：`require`（默认，拒绝）/ `warn`（只警告）/ `off`（关闭） |
 | `worktreePolicy` | `auto` | `required` / `auto` / `off`；渲染进协调者 policy，只兜底「要不要隔离」，不包办分支名（名字由 `task_create.worktreeBranch` 传） |

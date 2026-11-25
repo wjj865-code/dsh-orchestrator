@@ -1,5 +1,18 @@
 # Changelog
 
+## 未发布 —— C3：协调者 policy 字符预算与两档 profile（0.36.0 候选）
+
+**一句话**：协调者每回合注入的 L1 提示词从此有**显式预算**与**两档档位**——`policyMaxChars`（默认 8000）超限时按固定顺序丢段、`promptProfile` 分 `full`（八段全渲染）/ `minimal`（只留不可逆闸门两段）；偏好段预算同时从 1200 字/12 条提到 2400 字/24 条，修掉「存了却有一半静默不注入」的旧 bug。
+
+**改动**
+- **两个新配置键**（`src/config-fields.js` 新增 `policy` 分组 → `src/config.js` 归一化 → `src/config-schema.js` 自动投影，配置面 24 → 26 键）：`policyMaxChars`（2000–20000，默认 7000，非法值回落默认）、`promptProfile`（`full` | `minimal`，拼错回落 `full`）。
+- **降级顺序**（`src/prompt-layers.js` 的 `POLICY_DROP_ORDER`，`index.js` 的 `renderCoordinatorPolicy` 执行）：超预算先丢并行判据段 → 任务链判据段 → worktree 判据段 → 写域判据段 → 推进循环段 → 三闸门段；**硬规则段与拍板流程段永不降级**（丢它们的代价是不可逆动作被绕过），每丢一段 `console.warn` 一次（进程级去重），可降级段丢完仍超预算时再提示一次「不可逆闸门不降级」。
+- **两档 profile**：`minimal` 只渲染硬规则段 + 拍板流程段（`POLICY_MINIMAL_SEGMENTS`），用于预算紧/上下文小的场景；预算对两档同时生效。
+- **偏好段上限 1200/12 → 2400/24**（`src/preferences.js` 的 `DEFAULT_MAX_CHARS` / `DEFAULT_MAX_ITEMS`、`src/config-fields.js` 的 `preferencesMaxChars` 默认值）：旧口径下后半条偏好被静默截掉、界面却显示「已保存」；`preferenceSavedHint` 补一句注入预算说明，让「超限不注入」当场可见。
+- **新增 `test/policy-budget.test.js`**：字符预算回归门（总量、minimal 档、`policyMaxChars=3000` 时三个不可逆探针仍在、八段逐段上限）。
+- **文档**：`docs/CONFIG.md` 新增 2 行（等长置换，总行数仍 1799/1800）、`docs/ARCHITECTURE.md` 的任务链/并行两条改成「L1 只渲染判据一句」的真实口径并补 C3 预算说明。
+- **只改提示词渲染**：派发、队列、写域判定、状态机与工具面一行未动。
+
 ## 0.35.2（2026-11-25）—— 修复 worktree exclude 时序与 CRLF 写入
 
 **一句话**：`worktree` 的 `.git/info/exclude` 换成「**建树之前**先幂等写」，并把追加口径修成「行尾跟着文件走（CRLF 文件不再混入裸 LF）+ 精确整行匹配（`.agents-notes/` 这类近似名不再被误判成已忽略）」；写不动仍然只告警、绝不阻断建树。

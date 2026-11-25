@@ -23,9 +23,11 @@ import { GLOBAL_PROJECT } from './memory.js'
 export const PREFERENCES_KEY = 'orchestrator_preferences'
 
 /** 渲染预算：字数为主约束（防「一条 2000 字」），条数为安全阀（防「100 条各 10 字」）。
- *  P2-2：条数上限固定成常量（配置键 preferencesMaxItems 已删），只有字数仍可配。 */
-export const DEFAULT_MAX_CHARS = 1200
-export const DEFAULT_MAX_ITEMS = 12
+ *  P2-2：条数上限固定成常量（配置键 preferencesMaxItems 已删），只有字数仍可配。
+ *  C3：1200/12 → 2400/24。旧口径下「后半条偏好被静默截掉」是 bug（用户存了却不生效、界面上还显示已保存），
+ *  2400 字按单条 ≤120 字算可容 24 条，正好和条数安全阀对齐。 */
+export const DEFAULT_MAX_CHARS = 2400
+export const DEFAULT_MAX_ITEMS = 24
 /** 单条规则的字数上限（写入侧截断，渲染侧不再二次切半句）。 */
 export const MAX_RULE_CHARS = 120
 
@@ -204,9 +206,10 @@ export function renderPreferenceBlock(items, { maxItems = DEFAULT_MAX_ITEMS, max
  */
 export const PREFERENCE_SCOPE_GLOBAL = 'global'
 
-/** `memory_note` 的返回文案：说清这条偏好去了哪儿、会不会生效，别让人以为「记了就生效」。 */
+/** `memory_note` 的返回文案：说清这条偏好去了哪儿、会不会生效、预算多少，别让人以为「记了就生效」。 */
 export const preferenceSavedHint = title => `已保存为协调者偏好（${title ?? '全局'}）：`
   + '每回合注入协调者提示词，改完下一回合生效；它不进 memories（context 检索查不到，避免两份真相）。'
+  + `注入预算：最多 ${DEFAULT_MAX_ITEMS} 条 / ${DEFAULT_MAX_CHARS} 字（超出部分不注入，界面上仍保留）；`
   + '要停用请把对应条目 enabled 设为 false。'
 
 /** 项目偏好的返回文案：走 memories + task_detail，不进协调者提示词。 */

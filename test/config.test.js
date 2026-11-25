@@ -118,9 +118,9 @@ test('空闲看门狗：非法分钟数回落默认，超界夹到 1–1440', ()
   assert.equal(clamped.watchdogIdleMinutes, 1)
 })
 
-test('配置面总数 24（0.25.0：轮换 8 键删除、提醒阈值 1 键新增；0.32.0：能力包 3 键；0.35.0：worktreeBranchPrefix 删除）：loadConfig 不泄漏未声明的键', () => {
+test('配置面总数 26（0.25.0：轮换 8 键删除、提醒阈值 1 键新增；0.32.0：能力包 3 键；0.35.0：worktreeBranchPrefix 删除；C3：policyMaxChars/promptProfile 2 键）：loadConfig 不泄漏未声明的键', () => {
   const config = loadConfig({})
-  assert.equal(Object.keys(config).length, 24, `实际 ${Object.keys(config).length} 个键：${Object.keys(config).join(',')}`)
+  assert.equal(Object.keys(config).length, 26, `实际 ${Object.keys(config).length} 个键：${Object.keys(config).join(',')}`)
   assert.equal('worktreeBranchPrefix' in config, false, '分支前缀键已删除（分支名改由 task_create.worktreeBranch 传）')
   assert.equal('backend' in config, false, 'backend 键已删除（team 后端先于它删除）')
   for (const key of [

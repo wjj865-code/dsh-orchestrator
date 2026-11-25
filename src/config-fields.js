@@ -12,7 +12,8 @@
 // schema 与 UI 使用。两边由 test/config-fields.test.js 双向比对守住。
 //
 // 0.25.0（B'）：字段表投影的是 `loadConfig({})` **实际产出的键**（0.25.0 起 22 个，0.32.0 加入能力包
-// 三键后 25 个；上一版 29 个：轮换 8 键随功能删除，新增 1 个 `contextPressureThreshold`）。已删的键（`keepAlive*` 四个续跑键 +
+// 三键后 25 个，0.35.0 删 worktreeBranchPrefix 后 24 个，C3 加入 policyMaxChars / promptProfile 后 26 个；
+// 上一版 29 个：轮换 8 键随功能删除，新增 1 个 `contextPressureThreshold`）。已删的键（`keepAlive*` 四个续跑键 +
 // `mergeWindowMs` / `stallRounds` / `preferencesMaxItems` 三个常量化的阈值键 + 8 个轮换键）
 // **不得**再出现在这里——它们只留在 `src/config.js` 的 DEPRECATED_KEYS 里给弃用警告，
 // 表单上多一行「已删除的键」= 用户改完写回去仍是无效配置。
@@ -33,6 +34,7 @@ export const FIELD_GROUPS = Object.freeze([
   Object.freeze({ id: 'isolation', label: '隔离与并发' }),
   Object.freeze({ id: 'memory', label: '记忆与快照' }),
   Object.freeze({ id: 'preferences', label: '偏好注入' }),
+  Object.freeze({ id: 'policy', label: '协调者 policy' }),
   Object.freeze({ id: 'context', label: '主会话' }),
   Object.freeze({ id: 'packs', label: '能力包' }),
 ])
@@ -133,8 +135,22 @@ export const CONFIG_FIELDS = Object.freeze([
     label: '注入偏好段', hint: '协调者 policy 的第 4 段；关闭则整段消失',
   }),
   Object.freeze({
-    key: 'preferencesMaxChars', group: 'preferences', kind: 'number', min: 200, max: 4000, integer: true, default: 1200,
+    key: 'preferencesMaxChars', group: 'preferences', kind: 'number', min: 200, max: 4000, integer: true, default: 2400,
     label: '偏好字数上限',
+  }),
+
+  // ── 协调者 policy（C3：字符预算 + 两档 profile） ──────────────────
+  // 两个键都只影响**渲染**（index.js 的 renderCoordinatorPolicy），不改变任何执行层行为：
+  //   - policyMaxChars = 预算上限，超了按固定降级顺序丢段（硬规则段与拍板流程段永不丢）；
+  //   - promptProfile = 档位，full = 8 段全渲染，minimal = 只留硬规则 + 拍板流程（省预算）。
+  Object.freeze({
+    key: 'policyMaxChars', group: 'policy', kind: 'number', min: 2000, max: 20000, integer: true, default: 8000,
+    label: 'policy 字符预算',
+    hint: '超出后按「并行→任务链→worktree→写域→推进循环→三闸门」顺序丢段；硬规则段与拍板流程段永不丢，每次丢段 warn 一次',
+  }),
+  Object.freeze({
+    key: 'promptProfile', group: 'policy', kind: 'enum', values: ['full', 'minimal'], default: 'full',
+    label: 'policy 档位', hint: 'full = 八段全渲染；minimal = 只留硬规则 + 拍板流程（不可逆闸门）',
   }),
 
   // ── 主会话（1 键可编辑 + coordinatorSession 只读；压缩阈值归宿主，插件不设） ──────

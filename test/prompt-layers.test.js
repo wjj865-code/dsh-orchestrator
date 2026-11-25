@@ -329,7 +329,7 @@ test('跨层共享口径只有一个来源：present 上限、交付不是结束
 
 test('偏好段归 L1 末尾：优先级低于硬规则，且可单独开关', () => {
   // 用出厂种子验证渲染（真实 loadPreferences 的行为在 test/preferences.test.js 里覆盖）。
-  const block = renderPreferenceBlock(PRESET_PREFERENCES, { maxItems: 12, maxChars: 1200 })
+  const block = renderPreferenceBlock(PRESET_PREFERENCES, { maxItems: 24, maxChars: 2400 })
   assert.match(block, /^## 偏好/)
   // 优先级声明必须写明「不覆盖硬规则」——这是偏好不能变成权限通道的结构性保证。
   assert.match(block, /不覆盖/)

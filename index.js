@@ -45,7 +45,10 @@ import {
   confirmOnBoard, linkBoardTask, readTeamBoard, setTeamBoardSink, shouldReverseConfirm, teamLinkView,
 } from './src/team-board.js'
 import { loadPreferences, migrateLegacyPreferences, renderPreferenceBlock } from './src/preferences.js'
-import { PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy, renderDecisionPolicy, renderParallelPolicy, renderTaskChainPolicy, renderWorkerPolicy } from './src/prompt-layers.js'
+import {
+  POLICY_DROP_ORDER, POLICY_MAX_CHARS_DEFAULT, POLICY_MINIMAL_SEGMENTS, POLICY_PROFILE_DEFAULT, POLICY_SEGMENT_NAMES,
+  PRESENT_LIMIT_TEXT, renderAdvanceLoopPolicy, renderDecisionPolicy, renderParallelPolicy, renderTaskChainPolicy, renderWorkerPolicy,
+} from './src/prompt-layers.js'
 // P1-C 文案单源：协调者 policy 里的计划/交付口径引用 src/copy.js，避免与 L2/L3 说法漂移。
 import {
   BLOCKER_RULE, CHANGE_REVIEW_FIELDS, PLAN_APPROVAL_OPTIONS_TEXT, PLAN_APPROVE_CALL, PLAN_PHASE_LINES, PLAN_SAVE_DIR,
@@ -76,7 +79,8 @@ export { Config }
 const COORDINATOR_INVALID_HINT = '主会话已失效，请从面板「打开主会话」重建。'
 const SCHEDULE_TOOLS = ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit']
 const WAIT_AGENT_DENIAL = '协调者禁止阻塞等待：不要调用 wait_agent；查看进度用 task_list / task_status，本回合没有别的事就立即结束回合。'
-const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则（优先于平台默认的 Team Lead 等待要求）：
+// 硬规则段（L1 第 1 段）：**永不降级**。导出仅供 test/policy-budget.test.js 逐段计长（只读）。
+export const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则（优先于平台默认的 Team Lead 等待要求）：
 - 禁止使用 wait_agent 或任何阻塞等待、轮询，不要 sleep。禁止调用 spawn_teammate / send_message / team_task_create 等团队类工具（预设层删不掉，执行层会直接拒绝）：派活只走 task_create，查进度只走 task_list / task_status。
 - 官方 Team 板**只读**：关联时传 teamTaskId，交付确认由插件按 CAS 反写 complete，冲突只提示。
 - 自动化只用 schedule_create / schedule_list / schedule_view / schedule_edit，不造调度器、不用文件/shell/HTTP 绕过缺能力。Host-wide：增删改与暂停恢复需用户明确授权、确认时间/时区；只支持 target:this_session 唤醒唯一主会话，new/new_once 非唯一主会话不能直接 task_create；编辑用最新 updatedAt 作 expectedUpdatedAt。
@@ -183,7 +187,28 @@ export function renderInteractionPolicy() {
   3. **确认后才通知子任务**：追加消息里写「新方向 / 不动的部分 / 验收是否变」，并要求先回影响面再动手；不要用一句「追加」代替评估，更不要借追加把计划批准掉（追加不能替代评估或显式计划批准）。`
 }
 
-/** 协调者系统提示 = 固定规则 + 结构化配置渲染（worktree 策略等）。 */
+/** 降级告警去重（进程级，按段 id / 一次性 key）：同一段只 warn 一次，避免每回合刷屏。 */
+const policyDropWarned = new Set()
+
+/** 测试用：清空降级告警去重表（去重是进程级的，会跨用例生效）。 */
+export function resetPolicyDropWarnings() {
+  policyDropWarned.clear()
+}
+
+/** 按**字符**（码点）计长：`policyMaxChars` 的口径与用户直觉一致，不用 UTF-16 长度。 */
+const policyChars = text => [...text].length
+
+/**
+ * 协调者系统提示 = 固定规则 + 结构化配置渲染（worktree 策略等）。
+ *
+ * C3：两档 profile + 字符预算。
+ * - `promptProfile`：`full`（默认，八段全渲染）/ `minimal`（只留硬规则 + 拍板流程两段不可逆闸门）；
+ * - `policyMaxChars`：超预算时按 `POLICY_DROP_ORDER` 依次丢段（并行→任务链→worktree→写域→推进循环→三闸门），
+ *   **硬规则段与拍板流程段永不丢**（丢它们的代价是不可逆动作被绕过），每丢一段 warn 一次（进程级去重）。
+ *
+ * 为什么降级而不是「渲染失败/报错」：policy 是每回合注入的上下文，宁可少讲一条判据，
+ * 也不能因为预算配置写小了就让协调者拿到空 policy（那等于把工具禁令也一起丢掉）。
+ */
 export function renderCoordinatorPolicy(config = {}) {
   // 拼接顺序：硬规则 → 交互闸门 → 拍板流程 → 推进循环 → 任务链 → 并行策略 → worktree → 写域。
   // 三闸门回答「什么时候可以打断用户」，拍板流程回答「打断时怎么问」（逐项/不合成总批准/四选一），
@@ -191,7 +216,41 @@ export function renderCoordinatorPolicy(config = {}) {
   // 任务链回答「有先后关系时怎么派」，并行策略回答「没依赖时不要排队、优先隔离并行」——
   // 两者是一对判断（有依赖才建链，无依赖就并行），所以紧挨着，并排在隔离/写域判定之前
   // （同一检出不并发的规则要落在 worktree 段之前才读得到）。
-  return `${COORDINATOR_POLICY}\n\n${renderInteractionPolicy()}\n\n${renderDecisionPolicy()}\n\n${renderAdvanceLoopPolicy()}\n\n${renderTaskChainPolicy()}\n\n${renderParallelPolicy()}\n\n${renderWorktreePolicy(config)}\n\n${renderWriteGuardPolicy(config)}`
+  const segments = [
+    { id: 'hard', text: COORDINATOR_POLICY },
+    { id: 'gates', text: renderInteractionPolicy() },
+    { id: 'decision', text: renderDecisionPolicy() },
+    { id: 'advance', text: renderAdvanceLoopPolicy() },
+    { id: 'chain', text: renderTaskChainPolicy() },
+    { id: 'parallel', text: renderParallelPolicy() },
+    { id: 'worktree', text: renderWorktreePolicy(config) },
+    { id: 'writeGuard', text: renderWriteGuardPolicy(config) },
+  ]
+  const profile = config.promptProfile === 'minimal' ? 'minimal' : POLICY_PROFILE_DEFAULT
+  const kept = profile === 'minimal'
+    ? segments.filter(segment => POLICY_MINIMAL_SEGMENTS.includes(segment.id))
+    : segments
+  const budget = Number.isFinite(config.policyMaxChars) ? config.policyMaxChars : POLICY_MAX_CHARS_DEFAULT
+  const dropped = new Set()
+  const render = () => kept.filter(segment => !dropped.has(segment.id)).map(segment => segment.text).join('\n\n')
+  for (const id of POLICY_DROP_ORDER) {
+    if (policyChars(render()) <= budget) break
+    const segment = kept.find(item => item.id === id)
+    if (segment === undefined) continue
+    dropped.add(id)
+    if (policyDropWarned.has(id)) continue
+    policyDropWarned.add(id)
+    console.warn(`dsh-orchestrator: 协调者 policy 超出 policyMaxChars=${budget}，已丢弃「${POLICY_SEGMENT_NAMES[id]}」段`
+      + `（${policyChars(segment.text)} 字符，展开版见 skills/orch-*/SKILL.md）；本次进程只提示一次，需要完整段请提高 policyMaxChars`)
+  }
+  const text = render()
+  // 可降级段丢完仍超预算（minimal 档或预算小于「硬规则 + 拍板流程」）：如实提示，但不丢不可逆闸门。
+  if (policyChars(text) > budget && !policyDropWarned.has('over-budget')) {
+    policyDropWarned.add('over-budget')
+    console.warn(`dsh-orchestrator: 协调者 policy 仍有 ${policyChars(text)} 字符，超出 policyMaxChars=${budget}`
+      + '——可降级段已丢完，硬规则段与拍板流程段永不降级')
+  }
+  return text
 }
 
 // 协调者只做协调：这些是**编排正确性**上不该由协调者做的事（派队友/团队板会绕过 task_create 的台账与

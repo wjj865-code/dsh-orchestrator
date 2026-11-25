@@ -107,6 +107,6 @@ test('没有旧键就一条也不 warn；显式 undefined 也算命中（用户 
 test('没有 onWarn 时静默（纯函数场景不抛、不写日志）', () => {
   resetDeprecatedKeyWarnings()
   assert.doesNotThrow(() => loadConfig({ backend: 'team' }))
-  // 静默调用不该「消耗」去重名额的前提是没 onWarn 就不记；这里只断言结果仍是 22 键的默认值。
-  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 24)
+  // 静默调用不该「消耗」去重名额的前提是没 onWarn 就不记；这里只断言结果仍是 26 键的默认值（C3 起 24 → 26）。
+  assert.equal(Object.keys(loadConfig({ backend: 'team' })).length, 26)
 })

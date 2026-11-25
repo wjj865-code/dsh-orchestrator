@@ -80,6 +80,45 @@ export function renderDecisionPolicy() {
 }
 
 /**
+ * L1 的两档档位（C3）：`full` = 八段全渲染；`minimal` = 只留**不可降级的两段**。
+ *
+ * 为什么只有两档而不是任意组合：档位是给「预算紧/上下文小」的场景一个明确取舍，
+ * 而不是让用户拼积木——拼积木最后没人说得清当前 policy 里到底有哪些段。
+ * 两档的分界就是**不可逆闸门**：minimal 保留硬规则段（工具禁令、`access:'full'` 口径）
+ * 与拍板流程段（四选一批准），因为这两段丢掉的后果是「不可逆动作被绕过」，省下来的字符换不回来。
+ */
+export const POLICY_PROFILES = Object.freeze(['full', 'minimal'])
+export const POLICY_PROFILE_DEFAULT = 'full'
+/** minimal 档保留的段（顺序即渲染顺序）：硬规则 + 拍板流程。 */
+export const POLICY_MINIMAL_SEGMENTS = Object.freeze(['hard', 'decision'])
+
+/** L1 字符预算默认值与合法区间（与 src/config-fields.js 的字段规格同源）。 */
+export const POLICY_MAX_CHARS_DEFAULT = 8000
+export const POLICY_MAX_CHARS_MIN = 2000
+export const POLICY_MAX_CHARS_MAX = 20000
+
+/**
+ * 超预算时的**降级顺序**（先丢前面的）：并行判据 → 任务链判据 → worktree → 写域 → 推进循环 → 三闸门。
+ *
+ * 为什么是这个顺序：越靠前越「可以由技能按需补回」（并行/任务链/worktree 的展开版都在
+ * `skills/orch-<name>/SKILL.md` 里），越靠后越接近「每回合都要用的判断」；**硬规则段（hard）与
+ * 拍板流程段（decision）不在表里 = 永不降级**——它们是不可逆闸门，超预算也不丢。
+ */
+export const POLICY_DROP_ORDER = Object.freeze(['parallel', 'chain', 'worktree', 'writeGuard', 'advance', 'gates'])
+
+/** 段 id → 中文名（warn 文案与文档用，避免各处自己起名字）。 */
+export const POLICY_SEGMENT_NAMES = Object.freeze({
+  hard: '硬规则',
+  gates: '交互三闸门',
+  decision: '拍板流程',
+  advance: '推进循环',
+  chain: '任务链',
+  parallel: '并行策略',
+  worktree: 'worktree 隔离',
+  writeGuard: '同写域并发防护',
+})
+
+/**
  * L1「推进循环」段落（唯一渲染入口）：句子全部来自 `src/copy.js` 的 `ADVANCE_LOOP_LINES`，
  * 本模块只负责分层归属与渲染顺序，`index.js` 只把它拼进协调者 policy 的固定位置。
  *

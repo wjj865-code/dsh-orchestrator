@@ -3,7 +3,7 @@
 // 审计 §5.3 的四个待定项在这里各有一条正向用例：
 //   1. 位置 → policy 末尾独立段（`renderPreferenceBlock` 自带优先级声明）；
 //   2. 不双写 → 全局偏好只写 settings，`history_search` 查不到；
-//   3. 上限 → 字数为主（1200）+ 条数为安全阀（12），超限**显式告知**；
+//   3. 上限 → 字数为主（2400）+ 条数为安全阀（24），超限**显式告知**；
 //   4. v1 不带脚本 → 只有 `memory_note` 一条写入路径（本文件不测脚本）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -157,19 +157,19 @@ test('renderPreferenceBlock：超字数时保留完整条目、不切半句', ()
   assert.match(block, /因超限未展示/)
 })
 
-test('偏好预算默认值：字数为主（1200）+ 条数为安全阀（12）', () => {
-  assert.equal(DEFAULT_MAX_CHARS, 1200)
-  assert.equal(DEFAULT_MAX_ITEMS, 12)
+test('偏好预算默认值：字数为主（2400）+ 条数为安全阀（24）', () => {
+  assert.equal(DEFAULT_MAX_CHARS, 2400)
+  assert.equal(DEFAULT_MAX_ITEMS, 24)
   const line = preferenceBudgetLine(PRESET_PREFERENCES)
   assert.match(line, /当前 \d+ 条可注入偏好/)
-  assert.match(line, /上限 12 条 \/ 1200 字/)
+  assert.match(line, /上限 24 条 \/ 2400 字/)
 })
 
 test('config：偏好只留 inject 开关与字数上限（条数上限 P2-2 固定成常量）', () => {
   const defaults = loadConfig({})
   assert.equal(defaults.preferencesInject, true)
   assert.equal(defaults.preferencesMaxChars, DEFAULT_MAX_CHARS)
-  // P2-2：preferencesMaxItems 已删（固定 12 条安全阀），配置面不该再有这个键。
+  // P2-2：preferencesMaxItems 已删（条数安全阀固定成常量，C3 起 24 条），配置面不该再有这个键。
   assert.equal('preferencesMaxItems' in defaults, false)
   // 只有显式 false 才关。
   assert.equal(loadConfig({ preferencesInject: false }).preferencesInject, false)
