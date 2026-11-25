@@ -10,6 +10,7 @@
     "./client": "./dist/client.js",
     "./preset-tools": "./preset-tools.js",
     "./skill-grill-me": "./skill-grill-me.js",
+    "./skill-orch-guides": "./src/skill-orch-guides.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },

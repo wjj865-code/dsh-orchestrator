@@ -44,6 +44,12 @@
           # skill-filesystem 都挂在本预设里，目录才会把「随包技能 + 本地技能」一起注入。
           - id: skill-grill-me
             name: '@wjj865-code/dsh-orchestrator/skill-grill-me'
+          # C2（0.36.0）：三段编排指引技能（orch-worktree / orch-task-chain / orch-parallel）。同一个注册
+          # 模块批量读包内 skills/<name>/SKILL.md → 预设作用域 ctx.skills.register，所以只对协调者可见；
+          # worker 预设不挂这一行，子会话看不到。单文件缺失/坏格式只 warn 并跳过该技能，不阻断预设挂载。
+          # 正文（判据）全在 skills/ 下，本行只做注册——改判据不用动 cordis.patch.yml。
+          - id: skill-orch-guides
+            name: '@wjj865-code/dsh-orchestrator/skill-orch-guides'
           # 0.35.0（P0，用户拍板「P0 协调者预设挂 skill-filesystem」）：**本地技能发现**。
           # 宿主 base 补丁把 skill-filesystem / tool-skill 都 disabled 了（web-app 补丁注释：
           # presets own local discovery），所以协调者预设不自己挂这一行，主会话技能目录里就只有
