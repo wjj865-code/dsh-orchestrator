@@ -13,7 +13,8 @@ import {
   WORKER_MEMORY_HINT, layerViolations, renderAdvanceLoopPolicy, renderTaskChainPolicy, renderWorkerPolicy,
 } from '../src/prompt-layers.js'
 import {
-  ADVANCE_LOOP_LINES, ADVANCE_NOTICE_HINT, TASK_CHAIN_LINES, WORKER_PERMISSION_HINT, WORKER_POLICY_HEADING, WORKER_POLICY_LINES,
+  ADVANCE_LOOP_LINES, ADVANCE_NOTICE_HINT, TASK_CHAIN_CRITERIA, TASK_CHAIN_LINES, WORKER_PERMISSION_HINT,
+  WORKER_POLICY_HEADING, WORKER_POLICY_LINES,
 } from '../src/copy.js'
 import { renderCoordinatorPolicy } from '../index.js'
 import { BLOCKED_HINT, CONFIRM_HINT, SUMMARY_FIELDS, renderBrief } from '../src/brief.js'
@@ -94,22 +95,23 @@ test('推进循环归 L1：句子逐字来自 copy.js，通知尾部动作指令
   assert.ok(notify.owns.some(item => item.includes('ADVANCE_NOTICE_HINT')), 'NOTIFY owns 应登记动作指令')
 })
 
-test('任务链归 L1：五条规则逐字来自 copy.js，W1/L2/L3 不许复述', () => {
+test('任务链归 L1：判据句逐字来自 copy.js + 技能指针，W1/L2/L3 不许复述', () => {
   const policy = renderCoordinatorPolicy({})
   const block = renderTaskChainPolicy()
-  // 每一句都逐字来自 copy.js 的 TASK_CHAIN_LINES（改一处两处一起变，不许各写一套）。
+  // 改判据版（C2-3b）：L1 只渲染「标题 + 一句判据」。原断言「TASK_CHAIN_LINES 每条逐字出现」改为
+  // 「判据句逐字出现」——细则句下沉到 skills/orch-task-chain，判据句仍单源在 copy.js（不各写一套）。
+  assert.ok(block.includes(TASK_CHAIN_CRITERIA), '任务链段落缺少判据句')
+  assert.ok(policy.includes(TASK_CHAIN_CRITERIA), 'L1 policy 缺少判据句')
   for (const [key, line] of Object.entries(TASK_CHAIN_LINES)) {
-    assert.ok(block.includes(line), `任务链段落缺少 ${key}`)
-    assert.ok(policy.includes(line), `L1 policy 缺少 ${key}`)
+    if (key === 'heading') continue
+    assert.equal(block.includes(line), false, `任务链段落不该再摊开细则 ${key}`)
   }
-  // 判据 / 建链时机 / 不阻塞 / 失败传播 / delivered≠done / 同检出串行 —— 五条规则的分句都在。
-  for (const fragment of ['判据（什么时候该建链）', '建链时机', '不是阻塞等待', '下游自动 failed', '不算 done', '必须用 dependsOn 串行']) {
-    assert.ok(block.includes(fragment), `任务链段缺少规则片段：${fragment}`)
-  }
+  // 判据 + 技能指针：缺指针，模型只知道「是一条链」却拿不到建链时机/失败传播的细节。
+  assert.match(block, /详见 skill\(\{ name: 'orch-task-chain' \}\)/)
   // 归层：L1 独占（子会话只读前置事实，不建链、不判断时机）。
   const l1 = PROMPT_LAYERS.find(layer => layer.id === 'L1')
   assert.ok(l1.owns.some(item => item.includes('任务链')), 'L1 owns 应登记任务链')
-  assert.ok(l1.owns.some(item => item.includes('TASK_CHAIN_LINES')), 'L1 owns 应写明措辞源')
+  assert.ok(l1.owns.some(item => item.includes('TASK_CHAIN_CRITERIA')), 'L1 owns 应写明措辞源（判据常量）')
   assert.deepEqual(layerViolations('L1', policy), [])
   for (const leaked of ['任务链：B 的输入是 A 的产物', 'dependsOn 不是阻塞等待：先落 waiting_dep']) {
     assert.notDeepEqual(layerViolations('W1', leaked), [], `W1 不该复述：${leaked}`)

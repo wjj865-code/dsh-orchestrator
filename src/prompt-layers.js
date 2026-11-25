@@ -43,7 +43,11 @@
 //   3. 它是不是「收到通知后马上要做的动作」？——是 → 通知 hint；否则别写进通知。
 import { ISOLATED_WORKTREE_STATES } from './write-guard.js'
 // P1-C 文案单源：跨层共享的「交付不是结束」与通知/详情/工具回执同源（src/copy.js）。
-import { ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, DELIVERY_NOT_FINAL, PARALLEL_LINES, TASK_CHAIN_LINES } from './copy.js'
+// C2-3b：L1 的任务链/并行策略两段只渲染判据一句，判据句同样单源在 copy.js（*_CRITERIA）。
+import {
+  ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, DELIVERY_NOT_FINAL, PARALLEL_CRITERIA, PARALLEL_LINES,
+  TASK_CHAIN_CRITERIA, TASK_CHAIN_LINES,
+} from './copy.js'
 // W1（任务子会话 per-turn policy）的句子只在 copy.js 定义一次，本模块只负责分层归属与渲染顺序。
 import {
   BLOCKED_HINT, CONFIRM_HINT, WORKER_CONTEXT_HINT, WORKER_MEMORY_HINT, WORKER_PERMISSION_HINT, WORKER_POLICY_HEADING,
@@ -98,36 +102,32 @@ export function renderAdvanceLoopPolicy() {
 }
 
 /**
- * L1「任务链」段落（唯一渲染入口）：五条规则的句子全部来自 `src/copy.js` 的 `TASK_CHAIN_LINES`，
+ * L1「任务链」段落（唯一渲染入口）：只渲染标题 + 一句判据（`src/copy.js` 的 `TASK_CHAIN_CRITERIA`），
  * 本模块只负责分层归属与渲染顺序，`index.js` 只把它拼进协调者 policy 的固定位置。
  *
- * 为什么单独成段：机制（waiting_dep + `promoteDependents` 自动晋升）早就在执行层，缺的只是「什么时候
- * 建链、建完要不要等」这句判断口径。散在硬规则的一条 bullet 里时，模型读到「有先后关系时用 dependsOn」
- * 仍会「等 A 完成再派 B」——那正是这条规则要消灭的两次人工往返。
+ * 为什么压成一句（C2-3b）：机制（waiting_dep + `promoteDependents` 自动晋升）早就在执行层，提示词只需要
+ * 「什么时候建链」这一句判断口径——建链时机、失败传播、delivered≠done、同检出串行这些展开细节交给
+ * `skill({ name: 'orch-task-chain' })`，每回合都摊开讲反而稀释了判据本身。
+ * `TASK_CHAIN_LINES`（完整展开版）仍保留在 copy.js：`task_create.dependsOn` 工具描述、waiting_dep 回执、
+ * chain:"auto" 文案还在引用它，工具层手边必须有完整口径。
  *
  * 与相邻段的分工（不互相推翻）：
  * - 「交互三闸门」回答什么时候可以打断用户；「推进循环」回答回报之后必须做什么（建链属于「推进」）；
- * - 「worktree 隔离」回答要不要隔离与怎么建检出；本段只说**同一检出不并发、用 dependsOn 串行**。
+ * - 「worktree 隔离」回答要不要隔离与怎么建检出；本段只说**有依赖就建链串行**。
  */
 export function renderTaskChainPolicy() {
   return `## ${TASK_CHAIN_LINES.heading}
 
-- ${TASK_CHAIN_LINES.criteria}。
-  ${TASK_CHAIN_LINES.buildNow}。
-- ${TASK_CHAIN_LINES.notBlocking}。
-- ${TASK_CHAIN_LINES.upstreamFailed}。
-- ${TASK_CHAIN_LINES.deliveredNotDone}。
-- ${TASK_CHAIN_LINES.chainAuto}。
-- ${TASK_CHAIN_LINES.worktreeSerial}。
-- ${TASK_CHAIN_LINES.compat}。`
+${TASK_CHAIN_CRITERIA}。`
 }
 
 /**
- * L1「并行策略」段落（唯一渲染入口）：句子全部来自 `src/copy.js` 的 `PARALLEL_LINES`。
+ * L1「并行策略」段落（唯一渲染入口）：只渲染标题 + 一句判据（`src/copy.js` 的 `PARALLEL_CRITERIA`）。
  *
- * 为什么单独成段：worktree / 写域 / 任务链三段各自都对，但缺一句「没依赖就别排队」——
- * 写域段只说被拒后怎么办、任务链段只说有依赖怎么建链，合起来读就变成「默认串行、冲突才隔离」。
- * 本段把它写成一条判断顺序（先判依赖与上下文复用，再判写域是否撞车），**不新增执行层语义**。
+ * 为什么压成一句（C2-3b）：worktree / 写域 / 任务链三段各自都对，但缺一句「没依赖就别排队」——
+ * 本段只回答「三条同时满足就直接 worktree:true 并行」，优先并行的理由、串行的两种例外、合并代价与
+ * 只读/计划例外交给 `skill({ name: 'orch-parallel' })`，**不新增执行层语义**。
+ * `PARALLEL_LINES`（完整展开版）仍保留在 copy.js，供文档与其它渲染点引用。
  *
  * 与相邻段的分工（不互相推翻）：
  * - 「任务链」回答「有依赖时怎么建链」；本段回答「没依赖时**不要**建链，直接隔离并行」；
@@ -136,12 +136,7 @@ export function renderTaskChainPolicy() {
 export function renderParallelPolicy() {
   return `## ${PARALLEL_LINES.heading}
 
-- ${PARALLEL_LINES.criteria}。
-- ${PARALLEL_LINES.prefer}。
-- ${PARALLEL_LINES.serial}。
-- ${PARALLEL_LINES.cost}。
-- ${PARALLEL_LINES.exceptions}。
-- ${PARALLEL_LINES.align}。`
+${PARALLEL_CRITERIA}。`
 }
 
 /**
@@ -193,8 +188,8 @@ export const PROMPT_LAYERS = Object.freeze([
       '交互三闸门（T0–T3 判级、开工前确认、执行期只报堵塞项、追加调整先评估；renderInteractionPolicy）',
       '推进循环（收到回报/用户消息后必须落到推进/提问/问新任务三类动作之一，不许只汇报；renderAdvanceLoopPolicy，措辞源 copy.js 的 ADVANCE_LOOP_LINES）',
       '拍板流程（待拍板项一项一问、不用代号、依赖分批、计划批准四选一后再总批准核对、决策汇总；renderDecisionPolicy，措辞源 copy.js 的 DECISION_FLOW_LINES）',
-      '任务链（dependsOn 的判据/建链时机/不阻塞/失败传播/交付不算 done/同检出串行五条规则 + chain:"auto" 链式自动放行；renderTaskChainPolicy，措辞源 copy.js 的 TASK_CHAIN_LINES）',
-      '并行策略（互不依赖 + 无需复用上下文 + 同写域撞车 → 优先 worktree 隔离并行；有依赖或复用同一子会话上下文才串行；代价与只读/计划例外；renderParallelPolicy，措辞源 copy.js 的 PARALLEL_LINES）',
+      '任务链判据（有依赖就建链串行：判据一句 + 技能指针 orch-task-chain；renderTaskChainPolicy，措辞源 copy.js 的 TASK_CHAIN_CRITERIA）',
+      '并行策略判据（互不依赖 + 不复用上下文 + 同写域撞车三条满足就直接 worktree:true 并行：判据一句 + 技能指针 orch-parallel；renderParallelPolicy，措辞源 copy.js 的 PARALLEL_CRITERIA）',
       '堵塞项四类与「不算堵塞项」清单（措辞源 copy.js 的 BLOCKER_RULE）',
       '用户偏好（第 4 段，src/preferences.js）',
       '能力诊断（schedule 服务缺失时的降级说明）',

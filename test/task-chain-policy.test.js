@@ -1,11 +1,12 @@
-// 任务链（0.28.0）：把 dependsOn 从「一句话」补成协调者 L1 的五条规则。
+// 任务链（0.28.0）：dependsOn 的判断口径归协调者 L1。
 //
 // 为什么单独一个文件：`dependsOn` 的机制早就在执行层（waiting_dep + `promoteDependents` 自动晋升），
 // 但提示词里只有「有先后关系时用 dependsOn」一句——模型不知道**什么时候**建链、也不知道建完不用等，
 // 于是「等 A 完成再派 B」把一条自动链走成两次人工往返。这组用例锁三件事：
-//   1. 句子单源在 `src/copy.js` 的 `TASK_CHAIN_LINES`，L1 段与 `task_create.dependsOn` 描述逐字同源；
-//   2. 五条规则与执行层现状一一对应（不是新语义）：用 `src/deps.js` 的纯函数证明 delivered 不算 done、
-//      done 后自动晋升、失败向下游传播；
+//   1. L1 段只渲染**一句判据**（`TASK_CHAIN_CRITERIA`）+ 技能指针 `orch-task-chain`；
+//      完整展开版 `TASK_CHAIN_LINES` 仍留在 copy.js，供 `task_create.dependsOn` 描述与 waiting_dep 回执引用；
+//   2. 判据与执行层现状一致（不是新语义）：用 `src/deps.js` 的纯函数证明 delivered 不算 done、
+//      done 后自动晋升、失败向下游传播；展开细则下沉到 `skills/orch-task-chain/SKILL.md`（本文件断言两处都有）；
 //   3. 归层：任务链属 L1（协调者的派单判断），L2 brief / L3 task_detail 不许复述。
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -13,7 +14,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { createTask, getTask, openLedger } from '../src/ledger.js'
 import { dependencyState, promoteDependents } from '../src/deps.js'
 import {
-  CHAIN_AUTO_TOOL_DESC, TASK_CHAIN_LINES, TASK_CHAIN_TOOL_DESC, TASK_CHAIN_WAITING_NOTE,
+  CHAIN_AUTO_TOOL_DESC, TASK_CHAIN_CRITERIA, TASK_CHAIN_LINES, TASK_CHAIN_TOOL_DESC, TASK_CHAIN_WAITING_NOTE,
 } from '../src/copy.js'
 import { layerViolations, renderTaskChainPolicy } from '../src/prompt-layers.js'
 import { renderCoordinatorPolicy } from '../index.js'
@@ -26,7 +27,9 @@ import { sampleBrief, tempDir } from './helpers.js'
 const policy = () => renderCoordinatorPolicy({})
 const chainSection = () => renderTaskChainPolicy()
 
-/** 五条规则的句子（渲染与工具描述都必须逐字包含）。 */
+/**
+ * 完整展开版的细则句：现在只在工具描述/回执里逐字出现（L1 段已压成判据一句）。
+ */
 const RULES = [
   TASK_CHAIN_LINES.criteria,
   TASK_CHAIN_LINES.buildNow,
@@ -35,6 +38,9 @@ const RULES = [
   TASK_CHAIN_LINES.deliveredNotDone,
   TASK_CHAIN_LINES.worktreeSerial,
 ]
+
+/** 展开细则的落点：技能文件（L1 只留判据 + 指针，细节按需加载）。 */
+const SKILL = readFileSync(new URL('../skills/orch-task-chain/SKILL.md', import.meta.url), 'utf8')
 
 test('任务链段是 L1 的独立一段：排在推进循环之后、worktree 与写域之前', () => {
   const text = policy()
@@ -47,22 +53,28 @@ test('任务链段是 L1 的独立一段：排在推进循环之后、worktree �
   assert.ok(chain < text.indexOf('## 同写域并发防护'), '任务链应在写域段之前')
 })
 
-test('五条规则齐全：判据与建链时机 / 不是阻塞等待 / 失败传播 / delivered≠done / 同检出串行', () => {
+test('任务链段只留一句判据 + 技能指针：细则句不再摊在 L1（C2-3b）', () => {
   const block = chainSection()
-  // 每句都逐字来自 copy.js（改一处两处一起变，不许各写一套）。
-  for (const line of RULES) assert.ok(block.includes(line), `任务链段缺少句子：${line.slice(0, 24)}…`)
-  for (const line of RULES) assert.ok(policy().includes(line), `L1 policy 缺少句子：${line.slice(0, 24)}…`)
-  // 五组判据本身就是规则本体：缺任何一条，模型就会退回「等 A 完成再派 B」。
-  assert.match(block, /判据（什么时候该建链）：B 的输入是 A 的产物/)
-  assert.match(block, /建链时机：派 A 之后\*\*同一回合\*\*就把 B 建出来/)
-  assert.match(block, /不要等 A 完成再来建 B/)
-  assert.match(block, /不是阻塞等待：.*插件队列自动晋升.*不占你的回合/)
-  assert.match(block, /不用你 wait_agent/)
-  assert.match(block, /前置失败 → 下游自动 failed/)
-  assert.match(block, /前置「已交付待确认」（delivered）不算 done/)
-  assert.match(block, /同一 worktree 检出必须用 dependsOn 串行/)
-  // 如实标注「机制是硬的、建不建链是判断」，不改写「禁止轮询」的既有硬规则。
-  assert.match(block, /建不建链是你的判断（提示词约束）/)
+  // 改判据版：段落 = 标题 + 一句判据（逐字来自 copy.js 的 TASK_CHAIN_CRITERIA）。
+  // 原断言「五条细则句逐字出现在 L1」改为「判据句逐字出现」，因为细则已下沉到 orch-task-chain 技能，
+  // L1 每回合只保留判断口径；判据句本身仍单源在 copy.js（不是各写一套）。
+  assert.ok(block.includes(TASK_CHAIN_CRITERIA), '任务链段缺少判据句')
+  assert.ok(policy().includes(TASK_CHAIN_CRITERIA), 'L1 policy 缺少判据句')
+  assert.match(block, /^## 任务链（dependsOn：依赖完成自动开始，不占你的回合）\n\n任务链判据：/)
+  // 技能指针：判据句自己带 skill({ name: 'orch-task-chain' })，加载入口必须能对上真实技能目录。
+  assert.match(block, /详见 skill\(\{ name: 'orch-task-chain' \}\)/)
+  assert.ok(readdirSync(new URL('../skills/', import.meta.url)).includes('orch-task-chain'), '技能指针指向的技能目录必须存在')
+  // 判据三要素：B 的输入是 A 的产物 / 同一回合建 B（判据与建链时机压进一句）。
+  assert.match(block, /B 的输入是 A 的产物就是一条链/)
+  assert.match(block, /派 A 的同一回合就建 B/)
+  // 反回涨：展开版的细则句不许再回到 L1（细则只在工具描述/回执/技能里）。
+  for (const line of RULES) {
+    assert.equal(block.includes(line), false, `L1 段不该再摊开细则句：${line.slice(0, 24)}…`)
+  }
+  // 细则确实有落点：技能文件承载展开版，工具描述仍逐字同源（下面那条用例锁工具描述）。
+  for (const fragment of ['建链时机', '不是阻塞等待', '前置失败 → 下游自动 failed', '不算 done', '必须用 dependsOn 串行', 'chain: "auto"']) {
+    assert.ok(SKILL.includes(fragment), `技能文件缺少细则：${fragment}`)
+  }
 })
 
 test('task_create 的 dependsOn 描述与 L1 逐字同源（工具表里手边就有这五条）', () => {
@@ -148,22 +160,24 @@ test('与既有口径兼容：不轮询 / 能直接回答就不派任务 / 推�
   assert.match(text, /能直接回答就不派任务/)
   assert.match(text, /## 推进循环/)
   assert.match(text, /不是终态/)
-  // 任务链段自己声明与它们的关系（不推翻、也不假装是硬门禁）。
-  assert.match(text, /不推翻「禁止阻塞等待\/不轮询」「能直接回答就不派任务」「推进循环」「交付两段式」/)
-  assert.match(text, /建链属于「推进」那一类动作/)
+  // 改判据版后，L1 段只剩判据一句（「与既有口径的关系」这条细则随展开版一起下沉到技能文件），
+  // 但既有硬规则本身一条没动——这里直接锁硬规则与「不许授权人工等待」的反例。
+  assert.match(SKILL, /不推翻「禁止阻塞等待\/不轮询」「能直接回答就不派任务」「推进循环」「交付两段式」/)
+  assert.match(SKILL, /建链属于「推进」那一类动作/)
   // 反例：不允许出现「等 A 完成再派 B」这类把自动链走成人工等待的授权句式。
   for (const pattern of [/先等前置任务完成再派/, /等 A 结束后再建 B/, /为等前置可以 sleep/]) {
     assert.doesNotMatch(text, pattern, `policy 出现人工等待口径：${pattern}`)
   }
 })
 
-test('chain:"auto" 归同一个任务链段：句子单源、dependsOn 描述不被撑大、无下游不放行写清楚', () => {
+test('chain:"auto" 归同一个任务链段：细则单源、dependsOn 描述不被撑大、无下游不放行写清楚', () => {
   const block = chainSection()
-  assert.ok(block.includes(TASK_CHAIN_LINES.chainAuto), '任务链段要有 chain:"auto" 这一条')
-  assert.ok(policy().includes(TASK_CHAIN_LINES.chainAuto), 'L1 policy 要有 chain:"auto" 这一条')
-  assert.match(block, /链式自动放行/)
-  assert.match(block, /没有追问窗口/)
-  assert.match(block, /没有下游时照旧停在/)
+  // 改判据版：chain:"auto" 的展开句不再进 L1（L1 只留判据），它的落点是 task_create.chain 的工具描述
+  // 与 orch-task-chain 技能——原来「L1 段要有这一条」的断言改为锁这两处，语义（口径不被拆散/丢失）不变。
+  assert.equal(block.includes(TASK_CHAIN_LINES.chainAuto), false, 'L1 段不再摊开 chain:"auto" 的细则')
+  assert.ok(SKILL.includes('链式自动放行'), '技能文件要写 chain:"auto" 的自动放行')
+  assert.match(SKILL, /没有追问窗口/)
+  assert.match(SKILL, /没有下游时照旧停在/)
   const { parameters } = createTools({ db: {}, config: loadConfig({}) }).find(tool => tool.name === 'task_create')
   // dependsOn 的描述不多讲一个它不管的开关；chain 自己一句，且同样写清「没有下游不放行」。
   assert.equal(parameters.properties.dependsOn.description, TASK_CHAIN_TOOL_DESC)

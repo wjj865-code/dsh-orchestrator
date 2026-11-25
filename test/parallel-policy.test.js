@@ -1,17 +1,18 @@
 // 并行策略（t-c8adaeb1）：worktree / 写域 / 任务链三段各自都对，但缺一句「没依赖就别排队」。
 //
 // 用户原话：「协调者提示词现在有冲突就创建 worktree，尽量提高并行（如果不依赖、无需复用上下文的话）
-// 的提示吗？没有就加上」。这组用例锁四件事：
-//   1. 句子单源在 `src/copy.js` 的 `PARALLEL_LINES`，L1 段逐字渲染；
-//   2. 规则本体：三条判断标准同时满足才并行、优先 worktree 而不是排 dependsOn 链、只有依赖或复用上下文才串行、
-//      代价（合并/装依赖）与例外（只读与计划不必隔离、同一检出必须串行）；
-//   3. 与既有三段（worktree 隔离 / 同写域并发防护 / 任务链）口径对齐，policy 里不再暗示「默认先串行」；
+// 的提示吗？没有就加上」。C2-3b 起 L1 只渲染**一句判据**（`PARALLEL_CRITERIA`）+ 技能指针，
+// 展开细则下沉到 `skills/orch-parallel/SKILL.md`。这组用例锁四件事：
+//   1. L1 段 = 标题 + 判据一句 + `skill({ name: 'orch-parallel' })` 指针，判据单源在 copy.js；
+//   2. 判据本体：三条同时满足（互不依赖 / 不复用上下文 / 同写域撞车）就直接 worktree:true 并行；
+//   3. 展开细则（串行的两种例外、合并与装依赖代价、只读与计划例外、同检出串行）都在技能文件里，
+//      既没丢，也不许再回涨到 L1；
 //   4. 归层：并行策略属 L1，brief / task_detail 不复述；派发、队列、写域判定等行为逻辑一行未动。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { renderCoordinatorPolicy, renderWorktreePolicy, renderWriteGuardPolicy } from '../index.js'
-import { PARALLEL_LINES } from '../src/copy.js'
+import { PARALLEL_CRITERIA, PARALLEL_LINES } from '../src/copy.js'
 import { PROMPT_LAYERS, layerViolations, renderParallelPolicy } from '../src/prompt-layers.js'
 import { renderBrief } from '../src/brief.js'
 import { renderTaskDetail } from '../src/task-detail.js'
@@ -19,7 +20,7 @@ import { renderTaskDetail } from '../src/task-detail.js'
 const policy = () => renderCoordinatorPolicy({})
 const section = () => renderParallelPolicy()
 
-/** 六句规则（渲染与 L1 policy 都必须逐字包含）。 */
+/** 完整展开版的六句：现在只在技能文件里逐字出现（L1 段已压成判据一句）。 */
 const RULES = [
   PARALLEL_LINES.criteria,
   PARALLEL_LINES.prefer,
@@ -28,6 +29,9 @@ const RULES = [
   PARALLEL_LINES.exceptions,
   PARALLEL_LINES.align,
 ]
+
+/** 展开细则的落点：技能文件（L1 只留判据 + 指针，细节按需加载）。 */
+const SKILL = readFileSync(new URL('../skills/orch-parallel/SKILL.md', import.meta.url), 'utf8')
 
 test('并行策略是 L1 的独立一段：排在任务链之后、worktree 与写域之前', () => {
   const text = policy()
@@ -41,63 +45,79 @@ test('并行策略是 L1 的独立一段：排在任务链之后、worktree 与�
   assert.match(text, /## 并行策略（互不依赖、无需复用上下文时优先 worktree 隔离并行）/)
 })
 
-test('关键句齐全：worktree / 并行 / 互不依赖 / 无需复用上下文', () => {
+test('判据一句齐全：三条满足就直接 worktree:true 并行 + 技能指针', () => {
   const block = section()
+  // 改判据版（C2-3b）：段落 = 标题 + 一句判据（逐字来自 copy.js 的 PARALLEL_CRITERIA）。
+  assert.ok(block.includes(PARALLEL_CRITERIA), '并行策略段缺少判据句')
+  assert.ok(policy().includes(PARALLEL_CRITERIA), 'L1 policy 缺少判据句')
+  assert.match(block, /^## 并行策略（互不依赖、无需复用上下文时优先 worktree 隔离并行）\n\n并行判据：/)
   // 验收要求的关键词都得在（不是同义词替换后的另一套说法）。
-  for (const fragment of ['worktree: true', '并行', '互不依赖', '无需复用上下文', 'dependsOn']) {
+  for (const fragment of ['worktree:true', '并行', '互不依赖', '复用同一子会话上下文', '同写域']) {
     assert.ok(block.includes(fragment), `并行策略段缺少关键词：${fragment}`)
     assert.ok(policy().includes(fragment), `L1 policy 缺少关键词：${fragment}`)
   }
-  // 六句逐字来自 copy.js（改一处两处一起变，不许各写一套）。
-  for (const line of RULES) assert.ok(block.includes(line), `并行策略段缺少句子：${line.slice(0, 24)}…`)
-  for (const line of RULES) assert.ok(policy().includes(line), `L1 policy 缺少句子：${line.slice(0, 24)}…`)
+  // 技能指针：判据句自己带 skill({ name: 'orch-parallel' })，加载入口必须能对上真实技能目录。
+  assert.match(block, /详见 skill\(\{ name: 'orch-parallel' \}\)/)
+  assert.ok(readdirSync(new URL('../skills/', import.meta.url)).includes('orch-parallel'), '技能指针指向的技能目录必须存在')
+  // 反回涨：展开版的六句细则不许再回到 L1（细则只在技能文件里）。
+  for (const line of RULES) {
+    assert.equal(block.includes(line), false, `L1 段不该再摊开细则句：${line.slice(0, 24)}…`)
+  }
 })
 
-test('判断标准三条同时满足才并行：互不依赖 / 无需复用上下文 / 同写域撞车', () => {
+test('判断标准三条同时满足才并行：判据句一句话讲完三条（不再展开 ①②③）', () => {
   const text = section()
-  assert.match(text, /三条同时满足才并行/)
-  assert.match(text, /① \*\*互不依赖\*\*——B 的输入不是 A 的产物/)
-  assert.match(text, /② \*\*不需要复用同一子会话上下文\*\*——不是追问、续写/)
-  assert.match(text, /③ \*\*同一写域会撞车\*\*——target 相同\/互相包含，或 writeScopes 重叠/)
+  assert.match(text, /三条同时满足/)
+  assert.match(text, /互不依赖、不复用同一子会话上下文、同写域会撞车三条同时满足/)
+  // 原断言锁 ①②③ 的展开文本；改判据版后这些展开细节归技能文件，L1 只留一句，
+  // 这里改成「不许回涨」的反向断言 + 技能文件里仍有完整三条。
+  assert.doesNotMatch(text, /① \*\*互不依赖\*\*/)
+  assert.match(SKILL, /① \*\*互不依赖\*\*——B 的输入不是 A 的产物/)
+  assert.match(SKILL, /② \*\*不需要复用同一子会话上下文\*\*——不是追问、续写/)
+  assert.match(SKILL, /③ \*\*同一写域会撞车\*\*——target 相同\/互相包含，或 writeScopes 重叠/)
   // 不撞车就不必建检出（别为了并行而并行）。
-  assert.match(text, /不撞车就直接并行，不用建检出/)
+  assert.match(SKILL, /不撞车就直接并行，不用建检出/)
 })
 
-test('优先并行而不是排队：worktree 隔离并行 > 串成 dependsOn 链', () => {
+test('优先并行而不是排队：判据直指 worktree:true 并行，展开理由在技能文件', () => {
   const text = section()
-  assert.match(text, /优先并行：三条都满足时，新任务\*\*直接传 `worktree: true`\*\* 在独立检出里并行跑/)
-  // 三条反向口径：不许把无依赖任务串成链、不许把「关旧任务重派」当默认、串行不是默认姿势。
-  assert.match(text, /不要为了省事把两个互不依赖的任务串成 dependsOn 链/)
-  assert.match(text, /也不要在同写域被拒时默认「先关旧任务、再重派」/)
-  assert.match(text, /串行是\*\*有依赖\*\*时的解法，不是默认姿势/)
+  assert.match(text, /就直接 worktree:true 并行/)
+  assert.match(text, /详见 skill\(\{ name: 'orch-parallel' \}\)/)
+  // 原断言锁「优先并行」与三条反向口径的正文；现在它们归技能文件（同一份措辞，不各写一套）。
+  assert.match(SKILL, /优先并行：三条都满足时，新任务\*\*直接传 `worktree: true`\*\* 在独立检出里并行跑/)
+  assert.match(SKILL, /不要为了省事把两个互不依赖的任务串成 dependsOn 链/)
+  assert.match(SKILL, /也不要在同写域被拒时默认「先关旧任务、再重派」/)
+  assert.match(SKILL, /串行是\*\*有依赖\*\*时的解法，不是默认姿势/)
   // policy 里不再暗示「默认先串行」。
   for (const pattern of [/默认(?:先)?串行/, /默认排成(?:一条)?链/, /先串行再考虑并行/]) {
     assert.doesNotMatch(policy(), pattern, `policy 仍暗示默认串行：${pattern}`)
   }
 })
 
-test('串行只有两种情况：有依赖（dependsOn）或复用同一子会话上下文/同一检出', () => {
+test('串行只有两种情况：细则在技能文件，L1 段不再摊开', () => {
   const text = section()
-  assert.match(text, /只有这两种情况才串行/)
-  assert.match(text, /① \*\*有依赖\*\*（B 要用 A 的产物 → 建 dependsOn，见上「任务链」段）/)
-  assert.match(text, /② \*\*要复用同一子会话上下文\*\*（续写\/追问同一份活 → `task_message` 追问原会话/)
-  assert.match(text, /复用同一检出 → `worktreeMode: "continue"` 并串行/)
+  assert.match(SKILL, /只有这两种情况才串行/)
+  assert.match(SKILL, /① \*\*有依赖\*\*（B 要用 A 的产物 → 建 dependsOn，见 orch-task-chain 技能）/)
+  assert.match(SKILL, /② \*\*要复用同一子会话上下文\*\*（续写\/追问同一份活 → `task_message` 追问原会话/)
+  assert.match(SKILL, /复用同一检出 → `worktreeMode: "continue"` 并串行/)
+  // 反回涨：串行的两种例外不进 L1（L1 只判「三条满足就并行」，例外按需加载技能）。
+  assert.doesNotMatch(text, /只有这两种情况才串行/)
 })
 
 test('代价与例外写清：合并由用户决定 / 检出要先装依赖 / 只读与计划不必隔离 / 同一检出必须串行', () => {
-  const text = section()
-  // 代价两条：合并责任与检出装依赖（与 W1 的「只装不升」同口径）。
-  assert.match(text, /产物在各自分支的检出里，\*\*合并由用户决定\*\*/)
-  assert.match(text, /并行越多合并面越大/)
-  assert.match(text, /每个检出都是空目录，子会话要先装依赖/)
-  assert.match(text, /pnpm install/)
-  assert.match(text, /只装不升/)
-  assert.match(text, /并发 `git commit` 会争 `\.git` 锁/)
-  // 例外：只读/计划（批准前）任务不必隔离；同一检出永远只能一个任务写（不推翻既有硬规则）。
-  assert.match(text, /例外（不必隔离）：\*\*只读任务\*\*（`readOnly: true`）与\*\*计划阶段\*\*（`planFirst: true` 批准前）不改文件/)
-  assert.match(text, /同目录并行也不冲突，直接派/)
-  assert.match(text, /同一 worktree 检出永远只能一个任务在写/)
-  assert.match(text, /必须 dependsOn 串行/)
+  // 改判据版：这四类细则从 L1 段移到技能文件（原来逐条断言 section()，现在逐条断言 SKILL）。
+  assert.match(SKILL, /产物在各自分支的检出里，\*\*合并由用户决定\*\*/)
+  assert.match(SKILL, /并行越多合并面越大/)
+  assert.match(SKILL, /每个检出都是空目录，子会话要先装依赖/)
+  assert.match(SKILL, /pnpm install/)
+  assert.match(SKILL, /只装不升/)
+  assert.match(SKILL, /并发 `git commit` 会争 `\.git` 锁/)
+  assert.match(SKILL, /例外（不必隔离）：\*\*只读任务\*\*（`readOnly: true`）与\*\*计划阶段\*\*（`planFirst: true` 批准前）不改文件/)
+  assert.match(SKILL, /同目录并行也不冲突，直接派/)
+  assert.match(SKILL, /同一 worktree 检出永远只能一个任务在写/)
+  assert.match(SKILL, /必须 dependsOn 串行/)
+  // 反回涨：代价/例外不进每回合都在的 L1（否则又变回六条 bullet）。
+  assert.doesNotMatch(section(), /pnpm install/)
 })
 
 test('与三段口径对齐：worktree 段推荐隔离并行、写域段并行优先、任务链段指向并行策略', () => {
@@ -122,19 +142,27 @@ test('与三段口径对齐：worktree 段推荐隔离并行、写域段并行�
   assert.ok(serialStep < forceStep, 'allowConcurrent 仍是最后一条出路')
   assert.match(guard.slice(parallelStep, serialStep), /首选/)
 
-  // ③ 任务链段：同一检出不并发仍然成立，但互不依赖时直指并行策略。
+  // ③ 任务链段：L1 已压成判据一句，同检出不并发/各建检出并行的细则下沉到 orch-task-chain 技能，
+  //    技能里仍指向 orch-parallel（两段口径互指，不互相推翻）。
   const text = policy()
-  assert.match(text, /同一 worktree 检出必须用 dependsOn 串行/)
-  assert.match(text, /各建一个检出（worktree:true）\*\*并行\*\*（互不依赖、无需复用上下文时首选，见下「并行策略」段）/)
+  const chainSkill = readFileSync(new URL('../skills/orch-task-chain/SKILL.md', import.meta.url), 'utf8')
+  assert.match(chainSkill, /同一 worktree 检出必须用 dependsOn 串行/)
+  assert.match(chainSkill, /各建一个检出（worktree:true）\*\*并行\*\*（互不依赖、无需复用上下文时首选，见 orch-parallel 技能）/)
+  assert.doesNotMatch(text, /同一 worktree 检出必须用 dependsOn 串行/, 'L1 任务链段不该再摊开同检出串行细则')
 
-  // ④ 硬规则一条没变：计划批准 / 两段式交付 / 同写域判定 / 任务链失败传播。
+  // ④ 硬规则一条没变：计划批准 / 两段式交付 / 同写域判定。
   assert.match(text, /计划批准必须由用户拍板/)
   assert.match(text, /不是终态/)
   assert.match(text, /sameDirGuard=require/)
-  assert.match(text, /前置失败 → 下游自动 failed/)
+  // 任务链失败传播的执行层语义没动，但它的文案已随展开版下沉（L1 只留判据一句）：
+  // 原来断言 L1 policy 里有这句，现在断言技能文件 + dependsOn 工具描述里仍有（口径没丢）。
+  assert.equal(text.includes('前置失败 → 下游自动 failed'), false, 'L1 段不再摊开失败传播细则')
+  assert.match(chainSkill, /前置失败 → 下游自动 failed/)
   // 硬规则 bullet 也带上并行指引（派单那一刻手边就看得到）。
-  // A6（C1）：这条 bullet 压成一行指针（判据见下方两段），断言改为锁新措辞，语义等价。
-  assert.match(text, /互不依赖、无需复用上下文时首选/)
+  // C2-3b：原断言锁的是任务链展开句里的「互不依赖、无需复用上下文时首选」，该句已随展开版下沉；
+  // 硬规则侧真正手边可见的并行指引在 worktree 决策 bullet 与写域出路里（index.js），这里改锁它们。
+  assert.match(text, /并行优先/)
+  assert.match(worktree, /优先传 worktree:true 隔离并行/)
 })
 
 test('归层：并行策略属 L1，brief / task_detail 不复述', () => {
@@ -142,7 +170,7 @@ test('归层：并行策略属 L1，brief / task_detail 不复述', () => {
   assert.deepEqual(layerViolations('L1', text), [])
   const l1 = PROMPT_LAYERS.find(layer => layer.id === 'L1')
   assert.ok(l1.owns.some(item => item.includes('并行策略')), 'L1 owns 应登记并行策略')
-  assert.ok(l1.owns.some(item => item.includes('PARALLEL_LINES')), 'L1 owns 应写明措辞源')
+  assert.ok(l1.owns.some(item => item.includes('PARALLEL_CRITERIA')), 'L1 owns 应写明措辞源（判据常量）')
   // L2/L3 只给一次性参数与任务详情：并行/串行的判断归协调者。
   const brief = renderBrief({ taskId: 't-1a2b3c4d' })
   assert.equal(brief.includes('并行策略'), false, 'brief 不该复述并行策略')
