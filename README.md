@@ -2,9 +2,9 @@
 
 > **一句话定位**：给 DeepSeek Harness 加一位「协调者」——主会话只拆活、派子会话、看回报、交付产物；子会话在各自目录里把活干完，进度与结论落进持久台账，界面里有任务台。
 
-- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.35.2`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
+- npm：`@wjj865-code/dsh-orchestrator`（当前 `0.36.1`）｜仓库：<https://github.com/wjj865-code/dsh-orchestrator>｜License：MIT
 - Node `>= 22.15`｜DSH 兼容基线 **`0.2.2-rc.2` – `rc.5`**：`package.json` 的 `engines.dsh` 声明 `>=0.2.2-rc.2 <0.3.0-0`（`0.3.0` 连预览一起拒；rc.1 及更早因 `startActivation` 形状不同不声明兼容），区间外宿主**拒装 / 启动时禁用**（要越界跑只能给 profile 的 `compatibility.json` 精确豁免，见 [docs/compat.md](docs/compat.md#11-越界到底发生什么硬闸门不是-warn)）；主要在 **DeepSeek Harness Desktop** 上开发与使用，Web 同构
-- 安装：插件页「添加插件」→ 粘贴 `@wjj865-code/dsh-orchestrator@0.35.2` → **彻底退出 DSH 再启动**
+- 安装：插件页「添加插件」→ 粘贴 `@wjj865-code/dsh-orchestrator@0.36.1` → **彻底退出 DSH 再启动**
 
 **三分钟看懂**：装插件 → 打开「主会话」→ 用自然语言说需求 → 协调者拆成子任务派给子会话 → 子会话回报「已交付待确认」→ 你看面板与产物，确认或追问。
 
@@ -25,7 +25,7 @@
 
 ## 安装与升级
 
-1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.35.2`。
+1. DSH → 插件 → **添加插件**，粘贴 `@wjj865-code/dsh-orchestrator@0.36.1`。
 2. **彻底退出 DSH 再启动**（只关窗口、重开窗口都不生效）：宿主侧代码在 DSH 进程启动时加载，**刷新页面不会换版本**；装完还是旧行为就是没重启。
 3. 自检：插件页有「任务编排」；侧栏有「◈ 主会话」与「能力包」；插件全局 **12 个工具**；派一条任务并确认后，状态能从「已交付待确认」被收成「已完成」。
 4. 升级 = 装新版 + 彻底重启。旧包名 `dsh-orchestrator` 与新版不兼容，先卸载。
@@ -159,7 +159,7 @@ task_create({
 | 现象 | 处理 |
 |---|---|
 | 装完还是旧版 / 侧栏没有「主会话」 | 没有彻底重启：**刷新页面不会换版本**，彻底退出 DSH 再启动。 |
-| 插件页 / `npm i @latest` 装到旧版 | registry 镜像还没同步（几十分钟到几小时）：过一会儿重装，或显式装 `@wjj865-code/dsh-orchestrator@0.35.2`。 |
+| 插件页 / `npm i @latest` 装到旧版 | registry 镜像还没同步（几十分钟到几小时）：过一会儿重装，或显式装 `@wjj865-code/dsh-orchestrator@0.36.1`。 |
 | 权限徽标显示「Read Only / 仅可查看」 | 正常：协调者就是只读总指挥（没有写与命令工具）。子任务仍是 `workspace-write`；要切走可以 `/permission`，下次打开主会话会被拉回。 |
 | 插件加载失败 / 工具表没有 `task_*` | 看插件页报错与 `logs/`；确认是不是主会话之外发起的（`task_*` 只对协调者开放）；仍失败就彻底重启再试。 |
 | 插件装不上 / 启动后完全不加载 | 宿主版本不在 `engines.dsh`（`>=0.2.2-rc.2 <0.3.0-0`）区间：宿主会在 pnpm 之前**拒装**、或在启动时打 `disabling profile plugin …` 并禁用该行。换匹配的插件/宿主版本；确实要越界跑就按 [docs/compat.md §1.1](docs/compat.md#11-越界到底发生什么硬闸门不是-warn) 给 `compatibility.json` 精确豁免（`dsh plugin allow-version`）。 |

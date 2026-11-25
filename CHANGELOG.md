@@ -1,17 +1,43 @@
 # Changelog
 
-## 未发布 —— C3：协调者 policy 字符预算与两档 profile（0.36.0 候选）
+## 0.36.1（2026-11-25）—— 协调者 policy 瘦身 15,990 → 7,625 字符（四段下沉技能）/ policy 字符预算与两档 profile / planFirst 计划阶段放开 scratch / 两处旧口径与 approve 措辞对齐
 
-**一句话**：协调者每回合注入的 L1 提示词从此有**显式预算**与**两档档位**——`policyMaxChars`（默认 8000）超限时按固定顺序丢段、`promptProfile` 分 `full`（八段全渲染）/ `minimal`（只留不可逆闸门两段）；偏好段预算同时从 1200 字/12 条提到 2400 字/24 条，修掉「存了却有一半静默不注入」的旧 bug。
+**一句话**：0.36.1 把协调者每回合注入的 L1 提示词从 **15,990 字符压到 7,625**（−52%）——任务链、并行、worktree、同写域四段从「逐条细则摊开」改成「一句判据 + 技能指针」，细则逐字搬进三个新技能文件；同时给 L1 加**显式字符预算**（`policyMaxChars`）与 `full` / `minimal` 两档 profile，并把偏好段预算从 1200 字/12 条提到 2400 字/24 条，修掉「存了却有一半静默不注入」的旧 bug；`planFirst` 计划阶段从「全只读」放开到「仓库只读 + 临时目录可写」，并补了手工取证脚本。
 
-**改动**
-- **两个新配置键**（`src/config-fields.js` 新增 `policy` 分组 → `src/config.js` 归一化 → `src/config-schema.js` 自动投影，配置面 24 → 26 键）：`policyMaxChars`（2000–20000，默认 7000，非法值回落默认）、`promptProfile`（`full` | `minimal`，拼错回落 `full`）。
+**policy 瘦身（C1 + C2，本轮 10 个 commit 的主体）**
+- **硬规则段**（`index.js`，C1）：以 0.36.0 既有成果为机械基线（3,826 字符），再删 6 处「硬闸已保证 / 别处已有唯一所有者」的重复（团队工具逐个点名 → 一句判据、自动化参数细则 → 工具 schema、计划批准五步 → 指针、四条交付口径 → 两条、工具清单 → 一句、任务链重复 → 指针）：**7,659 → 3,302（−4,357）**；policy 总量 15,990 → 11,669。
+- **四段下沉为技能**（C2）：新增 `skills/orch-worktree`（34 行）、`skills/orch-task-chain`（16 行）、`skills/orch-parallel`（14 行）三个 SKILL.md 逐字承接原 policy 正文；`src/skill-orch-guides.js` 批量注册（复用 `skill-grill-me.js` 的 `parseSkillMarkdown`，单文件失败只 warn 跳过、不阻断其余两段），协调者预设 `cordis.patch.yml` 挂 `skill-orch-guides` 一行（worker 预设不加，与 grill-me 同口径），`package.json` 补 `exports['./skill-orch-guides']`（否则宿主按包名加载会失败）。
+- **四个判据常量**（`src/copy.js` 单源）：`WORKTREE_CRITERIA` / `TASK_CHAIN_CRITERIA` / `PARALLEL_CRITERIA` / `WRITE_GUARD_CRITERIA`（103 / 94 / 91 / 100 字符，各带技能指针）；`TASK_CHAIN_LINES` / `PARALLEL_LINES` 保留在 `copy.js`——工具描述、`waiting_dep` 回执、`chain:"auto"` 文案仍逐字引用它们。
+- **四段改判据版**（`index.js` 的 `renderTaskChainPolicy` / `renderParallelPolicy` / `renderWorktreePolicy` / `renderWriteGuardPolicy`）：任务链段 1,158 → 130、并行段 1,048 → 132、worktree 段 1,811 → 239、同写域段 744 → 216；`renderCoordinatorPolicy({})` 总量 **9,725 → 7,625（−2,100，−21.6%）**。档位行为（`worktreePolicy` / `sameDirGuard` 的实际取值）仍按配置如实渲染——判据句写的是「默认拒绝」，warn / off 档要靠这一行说明，否则提示词会与执行层行为互相矛盾。
+- **测试断言同步改判据口径**：每条都从「断言某条细则出现在 L1」改成「断言判据句 + 技能指针逐字存在 + 技能目录真实存在」，细则断言移到技能文件逐字锁住，并加「细则不许回涨到 L1」的反向断言——既不放宽成恒真、也不删覆盖。
+
+**policy 字符预算与两档 profile（C3）**
+- **两个新配置键**（`src/config-fields.js` 新增 `policy` 分组 → `src/config.js` 归一化 → `src/config-schema.js` 自动投影，配置面 24 → 26 键）：`policyMaxChars`（2000–20000，**默认 8000**，非法值回落默认；8000 按实测定——八段全量 7,625，默认配置下不触发降级）、`promptProfile`（`full` | `minimal`，拼错回落 `full`）。
 - **降级顺序**（`src/prompt-layers.js` 的 `POLICY_DROP_ORDER`，`index.js` 的 `renderCoordinatorPolicy` 执行）：超预算先丢并行判据段 → 任务链判据段 → worktree 判据段 → 写域判据段 → 推进循环段 → 三闸门段；**硬规则段与拍板流程段永不降级**（丢它们的代价是不可逆动作被绕过），每丢一段 `console.warn` 一次（进程级去重），可降级段丢完仍超预算时再提示一次「不可逆闸门不降级」。
-- **两档 profile**：`minimal` 只渲染硬规则段 + 拍板流程段（`POLICY_MINIMAL_SEGMENTS`），用于预算紧/上下文小的场景；预算对两档同时生效。
-- **偏好段上限 1200/12 → 2400/24**（`src/preferences.js` 的 `DEFAULT_MAX_CHARS` / `DEFAULT_MAX_ITEMS`、`src/config-fields.js` 的 `preferencesMaxChars` 默认值）：旧口径下后半条偏好被静默截掉、界面却显示「已保存」；`preferenceSavedHint` 补一句注入预算说明，让「超限不注入」当场可见。
-- **新增 `test/policy-budget.test.js`**：字符预算回归门（总量、minimal 档、`policyMaxChars=3000` 时三个不可逆探针仍在、八段逐段上限）。
-- **文档**：`docs/CONFIG.md` 新增 2 行（等长置换，总行数仍 1799/1800）、`docs/ARCHITECTURE.md` 的任务链/并行两条改成「L1 只渲染判据一句」的真实口径并补 C3 预算说明。
+- **两档 profile**：`minimal` 只渲染硬规则段 + 拍板流程段（`POLICY_MINIMAL_SEGMENTS`，实测 4,273 字符），用于预算紧/上下文小的场景；预算对两档同时生效。
+- **偏好段上限 1200 字/12 条 → 2400 字/24 条**（`src/preferences.js` 的 `DEFAULT_MAX_CHARS` / `DEFAULT_MAX_ITEMS`、`src/config-fields.js` 的 `preferencesMaxChars` 默认值）：旧口径下后半条偏好被静默截掉、界面却显示「已保存」；`preferenceSavedHint` 补一句注入预算说明，让「超限不注入」当场可见。
+- **新增 `test/policy-budget.test.js`**：字符预算回归门（full 档 ≤ 8000、minimal ≤ 4400、`policyMaxChars=3000` 时三个不可逆探针仍在、八段逐段上限与降级顺序、warn 去重）。
 - **只改提示词渲染**：派发、队列、写域判定、状态机与工具面一行未动。
+
+**planFirst 计划阶段放开 scratch**
+- **问题**：计划阶段（`planFirst` 且未批准）子会话连 `$TMPDIR` 都写不了，已发生 4 次计划任务因此中断返工。根因不是「/tmp 被排除」，而是 read-only 模式不授予任何写路径（`dsh-sandbox/src/roots.ts` 的 mode 门禁），额外可写路径在 read-only 下也不生效。
+- **做法**：把「沙箱模式」与「是否注册 target 可写根」**解耦**——`src/dispatch.js` 的 `sandboxModeFor` 拆成 `readOnly → read-only` / `planChildren → workspace-write`，新增 `ensurePlanReady`，`send` 加 `planPhase` 分支（漏传回落 read-only）；**批准前一行都不注册 target 可写根**，仓库物理不可写（硬门不变）。`src/plan-mode.js` 新增 `planPhaseMode`，`dispatchReadOnly` 语义收窄为「不注册可写根」。
+- **文案单源**（`src/copy.js` 的 `SCRATCH_TEXT` / `PLAN_PHASE_HINT`）：计划阶段说明、状态行、回执、并行例外全部改口径（`$TMPDIR` + 仓库不可写）；`task_detail` 权限行拆「只读 / 仓库只读（临时目录可写）」两档，`PLAN_STATE_LABEL` 与 client 常量同步。
+- **新增 `scripts/verify-plan-scratch.mjs`**（手工入口，不进 `pnpm test`、不加 `package.json` 脚本，与 `verify-access-full.mjs` 同口径）：A 逐字复刻宿主 `roots.ts` / `profiles.ts` 断言可写根；B 真跑 `/usr/bin/sandbox-exec` 验 `$TMPDIR` 与 `/tmp` 可写、仓库与 profiles / artifact-store / sessions / 台账目录 EPERM（跑在已沙箱化的会话里时整段显式 SKIP，不把「全被拒」当通过）；C 用桩跑插件真实 dispatcher 验「计划阶段只 append workspace-write、批准前不注册、批准后才注册 target」。
+
+**两处旧口径修正与 approve 措辞对齐（实现早就是新口径，属文案滞后）**
+- `index.js` 硬规则「追加消息即被视为批准」→「追加不是批准」；交互闸门「计划中的任务收到追加消息即视为批准」→「追加不能替代评估或显式计划批准」。
+- `index.js` T3 判据删「范围不确定」；`src/tools.js` 的 `planFirst` 描述同删。
+- `copy.js` / `tools.js` 原说 approve「切可写」，而 `plan-mode.js` 的 `recordApproval` 只记账、写权限在**续派投递时**授予——措辞改成「成功 = 注册 target 可写根」。
+
+**文档**
+- `docs/ARCHITECTURE.md`（L1 只渲染判据一句 + C3 预算 + planFirst 行 / P8 首段 / 四态表）、`docs/LIMITATIONS.md`（真正挡写入的是「未登记的 target 可写根」、计划阶段可写 `$TMPDIR`）、`docs/CONFIG.md`（+2 行新键）、`docs/testing.md`（P8 口径 + verify 脚本）、`README.md`（计划任务条补 scratch）——全部**等长置换**，文档总行数仍 1799/1800。
+
+**验证**（发版前在本地 `d178bfe` + 本版改动上跑）
+- `node --test test/*.test.js`：**1,494 项（1,490 pass / 3 skip / 1 fail）**，唯一失败是预存在的 `test/artifact-stage.test.js:197`（真实仓库 manifest 用例断言 `git ls-files` 清单、本机跑出空数组，与 0.35.x 各版记录的同一条既有失败一致，与本轮改动无关）。
+- `node scripts/check-docs.mjs` 1799 / 1800 行通过；`node scripts/check-client-size.mjs` 166,218 B / 167,936 B 通过；`node scripts/check-version.mjs` 三处口径一致（0.36.1）；`vite build` 通过且 `dist/client.js` 无字节变化。
+
+**发版说明**：按用户决定，本次发版**未做 `bits-code-guard` + `ponytail-review` 双审查**（明确跳过），验证口径以上述自动化检查为准；未经审查的部分不在本版承诺范围内。
 
 ## 0.35.2（2026-11-25）—— 修复 worktree exclude 时序与 CRLF 写入
 
