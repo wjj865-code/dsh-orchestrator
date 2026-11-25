@@ -71,9 +71,10 @@ test('追加调整按影响分三档：R0 直接转 / R1 先评估再确认 / R2
 test('顺序闸门：先评估、再确认、最后才通知子任务（顺序不能换）', () => {
   const text = section()
   assert.match(text, /先评估、再确认、最后才通知子任务，顺序不能换/)
-  // 陷阱写清：计划中的任务收到追加消息即视为批准，所以评估必须早于 task_message。
+  // 陷阱写清（C1 修正旧口径：追加不是批准，只转「修订中」），所以评估必须早于 task_message。
   assert.match(text, /确认后才通知子任务/)
-  assert.match(text, /计划中的任务收到追加消息即视为批准/)
+  assert.match(text, /追加不能替代评估或显式计划批准/)
+  assert.doesNotMatch(text, /追加消息即被视为批准|收到追加消息即视为批准/, `旧口径「追加即批准」不许再出现`)
 })
 
 test('T1 不是免确认挡箭牌：不可逆最低 T2，且必须拍板', () => {
@@ -171,7 +172,7 @@ test('计划批准四选一：逐项确认 / 均按推荐 / 先看计划文档 /
   assert.equal(PLAN_APPROVAL_OPTIONS_TEXT, '逐项确认 / 均按推荐 / 先看计划文档 / 放弃')
   assert.ok(text.includes(PLAN_APPROVAL_OPTIONS_TEXT), 'L1 的计划批准选项必须逐字用四选一')
   // 四步变五步：先交付 → 问批准方式（四选一）→ 逐项确认 → 均按推荐 → 其它分支。
-  assert.match(text, /严格按这五步（顺序不能换）/)
+  assert.match(text, /上述顺序不能换/)
   assert.match(text, /options 固定四项/)
   assert.match(text, /先交付/)
   assert.match(text, /先看计划文档/)

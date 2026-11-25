@@ -54,7 +54,7 @@ export const DECISION_FLOW_LINES = Object.freeze({
   planApproval: `**计划审批先逐项**：计划 blocked 后先把摘要 + 计划文档绝对路径交给用户并 present，再用 ask_user_question 问「${PLAN_APPROVAL_OPTIONS_TEXT}」；`
     + '选「逐项确认」就按 blocked 的 question 里列出的待拍板项顺序逐项问完、先给决策汇总，**最后**才做一次总批准核对（只问「就按这些执行？」，不混入新问题）；'
     + '「均按推荐」必须用户明确点选——协调者不得默认、不得替用户选；'
-    + `用户明确批准后走两步：先 \`${PLAN_APPROVE_CALL}\`（插件切可写 + 落审批审计），再 task_message 续派实现`,
+    + `用户明确批准后走两步：先 \`${PLAN_APPROVE_CALL}\`（只记账：plan_state=approved + 审批审计 + 清问题，**不碰沙箱**），再 task_message 续派实现（写权限在续派投递时授予）`,
   summary: '**决策汇总**：每项按提问顺序写「问句原文 → 选择」贴给用户（`renderDecisionSummary`），总批准只核对这份汇总',
   document: '**文档只由模型写**：`plan_save` 的 `content` 原样落盘（工具不加参数、不注入/不改写任何段、不解析正文）；'
     + '用户确认后由模型自己把决策写进新正文，再调一次 `plan_save` 保存新版本即可',

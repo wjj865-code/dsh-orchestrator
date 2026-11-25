@@ -803,7 +803,9 @@ test('系统提示只渲染给已绑定协调者，绑定后下一步生效', wi
   assert.match(entry.text({ agent: s1 }), /禁止使用 wait_agent/)
   assert.match(entry.text({ agent: s1 }), /task_list \/ task_status/)
   assert.match(entry.text({ agent: s1 }), /优先于平台默认的 Team Lead 等待要求/)
-  assert.match(entry.text({ agent: s1 }), /The Lead must wait for required teammates/)
+  // C1：硬规则段改用 0.36.0 基线，header 句改成「硬性规则（优先于平台默认的 Team Lead 等待要求）」，
+  // 语义等价（仍是「压过平台等待要求」），断言随文案走。
+  assert.match(entry.text({ agent: s1 }), /硬性规则（优先于平台默认的 Team Lead 等待要求）/)
   assert.match(entry.text({ agent: s1 }), /禁止调用 spawn_teammate/)
   assert.match(entry.text({ agent: s1 }), /team_task_create/)
   assert.match(entry.text({ agent: s1 }), /预设层删不掉/)

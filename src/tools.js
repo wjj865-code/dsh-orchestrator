@@ -1322,7 +1322,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         + '冲突只提示、不重试轰炸，也不接管官方派发/生命周期'),
       target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
       readOnly: { type: 'boolean', description: '只读任务：子会话沙箱 read-only（读正常，写文件/写 shell 被拒）；默认 false，只在明确需要时传 true' },
-      planFirst: { type: 'boolean', description: '计划模式（复杂任务 T3）：跨仓库/重构迁移/不可逆/范围不确定时先只读探索并上报计划，用户批准后再执行；与 readOnly 互斥；默认 false' },
+      planFirst: { type: 'boolean', description: '计划模式（复杂任务 T3）：跨仓库/重构迁移/不可逆时先只读探索并上报计划，用户批准后再执行；与 readOnly 互斥；默认 false' },
       access: {
         type: 'string',
         enum: ['full'],
@@ -2006,7 +2006,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
 
     // P1-B：task_stop / task_retry / task_close 并入本工具的 action（业务实现一字未改，只换入口）。
     // v0.24：新增 action:"resume"（续跑原会话），与 retry 的分工见 resumeTask 的注释。
-    wrap('task_message', '子任务动作统一入口：action:"message"（默认）给已有子任务追加消息（续派/讨论），进行中/等你确认/要授权/待确认都能续派，投递失败会重试 3 次；对计划任务只记讨论或把它转「修订中」，**不会批准计划**。action:"approve" 显式批准计划（前置：计划任务 + 已交回 blocked 报告 + 计划文档已落盘 + 子会话停在等你确认；成功切回可写并落审批审计，之后需再 task_message 续派实现）。action:"resume" 续跑 failed/orphaned（或超时完成）的任务——同一任务、同一子会话冷恢复，上下文延续；action:"stop" 停止任务（运行中/排队/等前置/待确认）；action:"retry" 重派 failed/orphaned 任务（新任务编号 + 新子会话，旧任务留审计）；action:"close" 把「已交付待确认」确认成 done。task_id 必填，message 仅 action:"message"/"resume" 可选。', objectSchema({
+    wrap('task_message', '子任务动作统一入口：action:"message"（默认）给已有子任务追加消息（续派/讨论），进行中/等你确认/要授权/待确认都能续派，投递失败会重试 3 次；对计划任务只记讨论或把它转「修订中」，**不会批准计划**。action:"approve" 显式批准计划（前置：计划任务 + 已交回 blocked 报告 + 计划文档已落盘 + 子会话停在等你确认；成功只记账（plan_state=approved + 审批审计 + 清问题），不碰沙箱，之后需再 task_message 续派实现，写权限在续派投递时授予）。action:"resume" 续跑 failed/orphaned（或超时完成）的任务——同一任务、同一子会话冷恢复，上下文延续；action:"stop" 停止任务（运行中/排队/等前置/待确认）；action:"retry" 重派 failed/orphaned 任务（新任务编号 + 新子会话，旧任务留审计）；action:"close" 把「已交付待确认」确认成 done。task_id 必填，message 仅 action:"message"/"resume" 可选。', objectSchema({
       task_id: str('任务编号'),
       action: {
         type: 'string',
