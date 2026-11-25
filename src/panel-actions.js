@@ -24,7 +24,7 @@ import { checkoutRejection, taskTargetDir } from './write-guard.js'
 import { objectiveForMessage } from './goal.js'
 // P0-4：面板**没有**批准入口（plan-approve 仍是 UNKNOWN_ENDPOINT 的反例清单），message 只记讨论/修订。
 // 已批准计划任务的写入意图走 `send(..., { planApproved:true })`（授权在 post-send），面板不再有切沙箱前置。
-import { dispatchReadOnly, isPlanTask, needsPlanWriteSwitch, planStateOf } from './plan-mode.js'
+import { dispatchReadOnly, isPlanTask, needsPlanWriteSwitch, planPhaseMode, planStateOf } from './plan-mode.js'
 import { normalizeMessageId } from './dispatch.js'
 import { PLAN_MESSAGE_NOTES } from './copy.js'
 import { retryWorktreeOf } from './worktree.js'
@@ -591,8 +591,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     try {
       // P2（审计）：没有 sendReliable 的回退也必须带全参数——少传 targetDir/readOnly/attemptKey 会绕过
       // 写域口径与幂等键（面板「追加」与工具 task_message 必须是同一条投递链）。
-      // P0-2（审计）：计划任务未批准时按只读投递，否则批准前就会注册可写根。
-      const sendArgs = [task.target, content, undefined, taskTargetDir(task) || undefined, task.id, dispatchReadOnly(task), objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined, { planApproved, attemptKey: `followup:${task.id}:${seq}` }]
+      // P0-2（审计）：计划任务未批准时按只读投递（= 不注册可写根），否则批准前就会注册可写根。
+      // planPhase：计划阶段把沙箱补成 workspace-write（$TMPDIR/scratch 可写），但仍不注册可写根。
+      const sendArgs = [task.target, content, undefined, taskTargetDir(task) || undefined, task.id, dispatchReadOnly(task), objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined, { planApproved, planPhase: planPhaseMode(task), attemptKey: `followup:${task.id}:${seq}` }]
       const sent = typeof dispatcher.sendReliable === 'function'
         ? await dispatcher.sendReliable(...sendArgs)
         : await dispatcher.send(...sendArgs)

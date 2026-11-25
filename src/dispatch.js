@@ -78,7 +78,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   // per-task 完整访问（access:'full'）：同一机制、同一条注入路径，只是模式换成 danger-full-access。
   // 只按 childId 记，绝不写全局默认/父会话，也不从配置或 brief 继承——漏传就什么都没发生。
   const fullAccessChildren = new Set()
-  // P8 计划任务：同样在派发前登记，agent/created 一到就设只读 + 置 plan mode + 装 exit_plan_mode guard。
+  // P8 计划任务：同样在派发前登记，agent/created 一到就设 workspace-write + 置 plan mode + 装 exit_plan_mode guard。
+  // 注意：计划阶段的「仓库只读」不是靠 mode，而是靠**不注册 target 可写根**（见 spawn 的 ensureWritableRoot 条件）。
   const planChildren = new Set()
   // C（主会话钉只读）配套：普通任务子会话显式钉 workspace-write。
   // 为什么必须显式写：宿主把**父会话的显式 sandbox/mode 覆盖**按 `source:'delegation'` 种进每个
@@ -163,7 +164,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   // （导出的 setSandboxMode 只是它的薄包装）。只写目标 child session，不动全局默认与父会话。
   // 投影已有同一模式时跳过：续派/重启 replay 都会保留，不需要重复 append。
   // 完整访问带 source:'delegation'（与平台把父会话覆盖种进子会话时的事件形状一致，见
-  // @deepseek-ai/dsh-subagent 的 appendDelegatedPolicyOverrides），只读保持历史形状不变。
+  // @deepseek-ai/dsh-subagent 的 appendDelegatedPolicyOverrides），计划阶段的 workspace-write 同形状
+  // （与普通任务一致），只有 read-only 保持历史形状不变。
   const SANDBOX_LABEL = { 'read-only': '只读', 'workspace-write': '可写', 'danger-full-access': '完整访问' }
   const SANDBOX_EVENT = {
     'read-only': 'subagent.read-only',
@@ -190,10 +192,14 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     }
   }
   const ensureReadOnly = (childId, sessionHint) => ensureSandboxMode(childId, 'read-only', sessionHint)
-  // 该 childId 应注入的沙箱模式（只读/计划优先；完整访问其次；普通任务钉 workspace-write；
-  // 未登记返回 undefined = 什么都不动）。
+  // 该 childId 应注入的沙箱模式（只读优先；计划阶段给可写模式但仓库不可写；完整访问其次；普通任务钉
+  // workspace-write；未登记返回 undefined = 什么都不动）。
   const sandboxModeFor = childId => {
-    if (readOnlyChildren.has(childId) || planChildren.has(childId)) return 'read-only'
+    if (readOnlyChildren.has(childId)) return 'read-only'
+    // P8 计划阶段（批准前）：**模式**给 workspace-write —— 宿主的可写面固定是
+    // workspaceRoot + 登记的可写根 + /tmp + os.tmpdir()，所以 $TMPDIR/scratch 天然可写；
+    // **授权**仍然为零（target 不注册可写根）⇒ 仓库物理不可写。两件事正交，别再合并回一个布尔。
+    if (planChildren.has(childId)) return 'workspace-write'
     if (fullAccessChildren.has(childId)) return 'danger-full-access'
     if (defaultChildren.has(childId)) return 'workspace-write'
     return undefined
@@ -351,6 +357,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     }).catch(error => onWarn(`dsh-orchestrator: 设置${label}沙箱失败：${errorText(error)}`))
   }
   const ensureReadOnlyReady = childId => ensureModeReady(childId, 'read-only')
+  // 计划阶段（批准前）用同一入口、模式换成 workspace-write：只放行 $TMPDIR/scratch，
+  // 仓库可写与否仍由「有没有注册 target 可写根」决定（本阶段一行都不注册）。
+  const ensurePlanReady = childId => ensureModeReady(childId, 'workspace-write')
   // activation 返回时子 Session 可能还没进会话表：挂一次 session/created 等同一个 childId；
   // 超时只 warn、不重试，也不阻塞派发。判同只看 id，不看 header.cwd（那正是坏的字段）。
   const resolveChildSession = childId => {
@@ -485,8 +494,10 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     const policy = serviceOf(sandboxPolicy)
     const alreadyWritable = policy?.overrideOf?.(session) === 'workspace-write'
     // P0-1（审计 2026-11-23）：平台根 == target 只说明「不需要注册可写根」，**不等于**沙箱已经可写。
-    // 计划任务批准前的沙箱是 read-only，所以 append 必须在这条捷径**之前**做——否则「批准了却写不了」
-    // （无 target 的批准任务会继承父 cwd，正是这条路径）。下面平台根分支只跳过注册。
+    // 计划阶段的沙箱从派发起就是 workspace-write（$TMPDIR 可写、仓库不可写），所以 `alreadyWritable` 通常
+    // 为 true、这段 append 只是**兜底**：升级前就在计划阶段的老会话（日志里最后一条仍是 read-only）、
+    // 或计划阶段模式注入失败的任务，靠它在这里补切可写。因此 append 必须在这条捷径**之前**做——
+    // 否则「批准了却写不了」（无 target 的批准任务会继承父 cwd，正是这条路径）。下面平台根分支只跳过注册。
     if (!alreadyWritable) {
       if (typeof session.append !== 'function') return { ok: false, code: 'WRITE_SANDBOX_APPEND_FAILED', text: '会话没有 append' }
       try {
@@ -625,6 +636,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
    *
    * 现在的口径（只按调用方给的运行期事实分流，不新增持久化字段）：
    * - `readOnly === true`（只读任务，或计划任务未批准——调用方按 `plan-mode.dispatchReadOnly` 算）→ 什么都不做；
+   *   计划阶段也走这条（模式已是 workspace-write、但没注册可写根），重放同样不许补出授权；
    * - 已登记过写入意图（即已批准计划任务的 planWrite 行）→ `retryPlanGrantImpl`（切可写 + 注册）；
    * - 其余（普通可写任务）→ 只幂等补注册可写根，**不 append 沙箱**（沙箱从派发起就是 workspace-write）。
    */
@@ -833,10 +845,11 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       if (fullAccess) ensureModeReady(activation.childId, 'danger-full-access')
       // 普通任务：激活返回后再幂等补一次（agent/created 可能早于会话入表；已有同模式会跳过）。
       if (defaultChildren.has(activation.childId)) ensureModeReady(activation.childId, 'workspace-write')
-      // P8：计划任务也走只读沙箱；plan mode 与 guard 尽量在激活返回时就装上，
+      // P8：计划阶段走 workspace-write（$TMPDIR/scratch 可写），但 target 可写根**批准前不注册**（见下方
+      // ensureWritableRoot 的条件）——仓库因此物理不可写。plan mode 与 guard 尽量在激活返回时就装上，
       // agent 还没进表时由 agent/created 那条路补（不阻塞派发）。
       if (planFirst === true) {
-        ensureReadOnlyReady(activation.childId)
+        ensurePlanReady(activation.childId)
         installExitPlanGuard(activation.childId)
         const applied = applyPlanMode(activation.childId, true)
         onEvent('subagent.plan-mode.entered', {
@@ -872,8 +885,11 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       return { id: activation.childId, name: spec.label, sessionId: activation.childId, target: activation.childId }
     },
     // access 是尾部可选参数（新参数只追加不改位置：老调用方按位置传 readOnly/objective 不受影响）。
-    // options（第 9 参，X5）：`{ planApproved?, messageId?, attemptKey? }`
+    // options（第 9 参，X5）：`{ planApproved?, planPhase?, messageId?, attemptKey? }`
     //   - planApproved：已批准计划任务的续派 → 先关 plan mode，再在 post-send 授予可写根；
+    //   - planPhase（'workspace-write' | 'read-only'，由 `plan-mode.planPhaseMode` 算）：计划阶段续派用，
+    //     只在 `readOnly===true` 时生效 —— 把沙箱补成 workspace-write（scratch 可写），**仍不注册可写根**；
+    //     漏传/传 'read-only' 就退回只读（安全方向的降级）；
     //   - messageId / attemptKey：同一逻辑投递的重放（跨重启靠 followup 行 meta.messageId）→ 只重试授予，不再投递。
     async send(target, message, signal, targetDir, taskId, readOnly, objective, access, options = {}) {
       if (readOnly !== true) {
@@ -952,7 +968,12 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
           if (pending !== undefined) pending.messageId = messageId ?? null
         }
         // 只读任务续派：resume 后按同一会话日志仍应保留 read-only；这里幂等补一次（已有则跳过）。
-        if (readOnly === true) ensureReadOnly(target)
+        // 计划阶段（opts.planPhase==='workspace-write'）：同样「不注册可写根」，但模式补成 workspace-write
+        // （$TMPDIR/scratch 可写）。漏传 planPhase 就回落到 read-only —— 安全方向的降级，不会变成仓库可写。
+        if (readOnly === true) {
+          if (opts.planPhase === 'workspace-write') ensurePlanReady(target)
+          else ensureReadOnly(target)
+        }
         // 完整访问续派同理（resume 出的新 Session 对象投影可能还没读回模式；已有则跳过）。
         if (access === 'full' && readOnly !== true) ensureModeReady(target, 'danger-full-access')
         if (readOnly !== true && !planApproved && access !== 'full') ensureModeReady(target, 'workspace-write')

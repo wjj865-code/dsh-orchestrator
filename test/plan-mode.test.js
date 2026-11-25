@@ -251,9 +251,10 @@ test('P8 task_create：planFirst 落库 + 派发透传 + 工具结果带批准�
   assert.equal(spawn[1].prompt.includes('计划阶段'), false)
 
   const detail = await tools.task_detail.execute({ task_id: task.id }, { agent: { id: task.session_id } })
-  assert.match(detail, /计划状态：计划中（子会话只读探索）/)
+  assert.match(detail, /计划状态：计划中（仓库只读探索）/)
   assert.match(detail, /【计划阶段】/)
-  assert.match(detail, /权限：只读/)
+  // 2026-11-25 起计划阶段不是纯只读：仓库不可写 + 临时目录可写（沙箱 workspace-write、target 未登记）。
+  assert.match(detail, /权限：仓库只读（临时目录可写）/)
   assert.match(detail, /task_report 报 blocked/)
   db.close()
 })
@@ -515,19 +516,19 @@ test('P8 task_retry：计划任务重派后重新进入计划阶段', async () =
   db.close()
 })
 
-test('P8 task_detail 纯渲染：批准前三态只读、批准后可写', () => {
+test('P8 task_detail 纯渲染：批准前仓库只读（可写临时目录）、批准后可写', () => {
   const base = {
     id: 't-1', title: '计划', goal: 'g', status: 'running', plan_first: true, plan_state: 'planning',
     brief: { title: '计划', goal: 'g', acceptance: ['a'], target: 'C:/work' },
   }
   const planning = renderTaskDetail(base)
-  assert.match(planning, /权限：只读/)
-  assert.match(planning, /计划状态：计划中（子会话只读探索）/)
+  assert.match(planning, /权限：仓库只读（临时目录可写）/)
+  assert.match(planning, /计划状态：计划中（仓库只读探索）/)
   assert.match(planning, /【计划阶段】/)
-  // 等拍板 / 修订中同样是只读（运行期事实优先于 access:'full'）。
+  // 等拍板 / 修订中同样是「仓库只读 + 临时目录可写」（运行期事实优先于 access:'full'）。
   for (const [state, label] of [['waiting_user', '计划待拍板（已提交计划）'], ['revising', '修订中（子会话只读改计划）']]) {
     const detail = renderTaskDetail({ ...base, plan_state: state, access: 'full', brief: { ...base.brief, access: 'full' } })
-    assert.match(detail, /权限：只读/, `${state} 应只读`)
+    assert.match(detail, /权限：仓库只读（临时目录可写）/, `${state} 应是仓库只读 + 临时可写`)
     assert.match(detail, new RegExp(`计划状态：${label}`), `${state} 状态行`)
   }
   const approved = renderTaskDetail({ ...base, plan_state: 'approved' })
@@ -646,11 +647,12 @@ function planEnv({ service = true, hookOnStart = false, ctxStyle = 'plain', pres
 
 const sandboxModeEvents = env => env.sandboxEvents.filter(item => item.event === 'sandbox/mode')
 
-test('P8 派发：计划任务设只读沙箱 + planMode.set(true) + agent 作用域 exit guard', async () => {
+test('P8 派发：计划任务设 workspace-write 沙箱（不注册可写根）+ planMode.set(true) + agent 作用域 exit guard', async () => {
   const env = planEnv()
   const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
   assert.equal(sandboxModeEvents(env).length, 1)
-  assert.deepEqual(sandboxModeEvents(env)[0].payload, { mode: 'read-only' })
+  // 2026-11-25：模式是 workspace-write（让 $TMPDIR/scratch 可写），仓库不可写由「不注册可写根」承担。
+  assert.deepEqual(sandboxModeEvents(env)[0].payload, { mode: 'workspace-write', source: 'delegation' })
   assert.deepEqual(env.planEvents, [[member.id, true]])
   assert.equal(env.guards.length, 1)
   const childAgent = env.agentsById.get(member.id)
@@ -701,7 +703,7 @@ test('P8 派发：cordis 代理读 ctx.planMode 会抛 —— 服务不可见时
   const member = await env.dispatcher.spawn({ prompt: 'p', planFirst: true })
   assert.ok(member.id)
   assert.equal(sandboxModeEvents(env).length, 1)
-  assert.deepEqual(sandboxModeEvents(env)[0].payload, { mode: 'read-only' })
+  assert.deepEqual(sandboxModeEvents(env)[0].payload, { mode: 'workspace-write', source: 'delegation' })
   assert.equal(env.planEvents.length, 0)
   assert.match(env.warnings.join('\n'), /planMode 服务不可用/)
   // exit guard 仍装上（读 ctx.tools 是已有服务，不触发代理抛错）。
@@ -799,20 +801,23 @@ test('P8 批准：planMode 服务缺失时 post-send 仍把沙箱切回可写（
   const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
   // v7 §2：批准后的沙箱切换由 send({planApproved}) 负责（先关 plan mode，再 post-send 授予）。
   await env.dispatcher.send(member.id, '执行', undefined, 'C:/target', 't-1', false, undefined, undefined, { planApproved: true })
-  assert.deepEqual(sandboxModeEvents(env).map(item => item.payload.mode), ['read-only', 'workspace-write'])
+  // 计划阶段派发时已是 workspace-write，批准只需**注册可写根**（不再 append 第二条模式事件）。
+  assert.deepEqual(sandboxModeEvents(env).map(item => item.payload.mode), ['workspace-write'])
+  assert.deepEqual(env.registrations, [[member.id, 'C:/target']])
   // 服务缺失不产生 plan off 调用，但投递/授予本身不能失败。
   assert.deepEqual(env.planEvents, [])
   assert.equal(env.guardRecords[0].disposed, true)
   assert.equal(env.dispatcher.planWriteInfo(member.id).state, 'granted')
 })
 
-test('P8 批准后恢复执行：send({planApproved}) → 沙箱切 workspace-write、plan off、释放 guard 并补可写根', async () => {
+test('P8 批准后恢复执行：send({planApproved}) → 注册 target 可写根、plan off、释放 guard', async () => {
   const env = planEnv()
   const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
   const sent = await env.dispatcher.send(member.id, '执行', undefined, 'C:/target', 't-1', false, undefined, undefined, { planApproved: true })
   assert.equal(sent, 'm')
   const modes = sandboxModeEvents(env).map(item => item.payload.mode)
-  assert.deepEqual(modes, ['read-only', 'workspace-write'])
+  // 模式在计划阶段就已是 workspace-write；批准带来的变化是**注册可写根**（下一行断言）。
+  assert.deepEqual(modes, ['workspace-write'])
   // planEvents=[true,false] 由 send 的 `applyPlanMode(target,false)` 产生（v7 §2 写死）。
   assert.deepEqual(env.planEvents, [[member.id, true], [member.id, false]])
   assert.equal(env.guardRecords[0].disposed, true)
@@ -820,14 +825,57 @@ test('P8 批准后恢复执行：send({planApproved}) → 沙箱切 workspace-wr
   assert.equal(env.dispatcher.planWriteInfo(member.id).state, 'granted')
 })
 
-test('P0-2 派发：未批准计划任务按只读续派 → 不 append 可写、registrations 仍为空', async () => {
+test('P0-2 派发：未批准计划任务按「不注册」续派 → 不 append 可写、registrations 仍为空', async () => {
   const env = planEnv()
   const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
   assert.deepEqual(env.registrations, [], '派发阶段就不注册（批准前）')
-  await env.dispatcher.send(member.id, '继续探索', undefined, 'C:/target', 't-1', true)
+  await env.dispatcher.send(member.id, '继续探索', undefined, 'C:/target', 't-1', true, undefined, undefined, { planPhase: 'workspace-write' })
   assert.deepEqual(env.registrations, [], '批准前续派同样不得注册可写根')
-  assert.deepEqual(sandboxModeEvents(env).map(item => item.payload.mode), ['read-only'], '沙箱仍只读')
+  assert.deepEqual(sandboxModeEvents(env).map(item => item.payload.mode), ['workspace-write'], '沙箱是 workspace-write（scratch 可写），但没注册任何可写根')
   assert.equal(env.dispatcher.planWriteInfo(member.id).state, 'unknown', '未批准任务不该有写入意图行')
+})
+
+// —— 六、模式与授权解耦（2026-11-25）：模式（能不能写 $TMPDIR）与授权（能不能写 target）是两件事 ——
+
+test('P8 解耦：planFirst 与 readOnly 的沙箱模式已分叉（计划阶段 workspace-write、只读任务 read-only），两者都不注册', async () => {
+  const env = planEnv()
+  const planMember = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
+  const readOnlyMember = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', readOnly: true })
+  const events = sandboxModeEvents(env)
+  assert.equal(events.length, 2, '两个子会话各一条模式事件')
+  const byId = new Map(events.map(item => [item.id, item.payload]))
+  assert.deepEqual(byId.get(planMember.id), { mode: 'workspace-write', source: 'delegation' }, '计划阶段要 workspace-write 才能写 $TMPDIR')
+  assert.deepEqual(byId.get(readOnlyMember.id), { mode: 'read-only' }, '只读任务连临时文件都写不了')
+  assert.deepEqual(env.registrations, [], '两条路径都不注册 target 可写根')
+})
+
+test('P8 解耦：未批准续派带 planPhase 只补模式、不注册，且重复续派不重复 append（幂等）', async () => {
+  const env = planEnv()
+  const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
+  const before = sandboxModeEvents(env).length
+  for (let index = 0; index < 2; index += 1) {
+    await env.dispatcher.send(member.id, '继续探索', undefined, 'C:/target', 't-1', true, undefined, undefined, { planPhase: 'workspace-write' })
+  }
+  assert.equal(sandboxModeEvents(env).length, before, '已是 workspace-write 就不再 append')
+  assert.deepEqual(env.registrations, [], '未批准 → 一次都不许注册可写根')
+})
+
+test('P8 解耦：批准前后对比 —— 批准前 registrations 为空，批准后才注册 target', async () => {
+  const env = planEnv()
+  const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
+  await env.dispatcher.send(member.id, '继续探索', undefined, 'C:/target', 't-1', true, undefined, undefined, { planPhase: 'workspace-write' })
+  assert.deepEqual(env.registrations, [], '批准前：仓库物理不可写')
+  await env.dispatcher.send(member.id, '执行', undefined, 'C:/target', 't-1', false, undefined, undefined, { planApproved: true })
+  assert.deepEqual(env.registrations, [[member.id, 'C:/target']], '批准后才把 target 登记成可写根')
+})
+
+test('P8 解耦：漏传 planPhase 的降级方向 —— 回落到 read-only，绝不变成仓库可写', async () => {
+  const env = planEnv()
+  const member = await env.dispatcher.spawn({ prompt: 'p', cwd: 'C:/target', planFirst: true })
+  // 调用方忘了带 planPhase（新字段）：模式退回只读，但注册条件同样不成立 → 仓库仍不可写。
+  await env.dispatcher.send(member.id, '继续探索', undefined, 'C:/target', 't-1', true)
+  assert.deepEqual(sandboxModeEvents(env).map(item => item.payload.mode), ['workspace-write', 'read-only'], '漏传字段 ⇒ 退回只读（安全方向）')
+  assert.deepEqual(env.registrations, [], '任何情况下批准前都不注册')
 })
 
 test('P8 批准失败：拿不到子会话时 retry grant 停在 switching（不静默假装切好了、不抛错）', async () => {

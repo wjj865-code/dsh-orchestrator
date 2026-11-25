@@ -118,19 +118,24 @@ const REPORT_SUMMARY_SHORT = '3–8 行摘要'
 const REPORT_SUMMARY = `${REPORT_SUMMARY_SHORT}（做什么、改哪些文件、怎么验证）`
 const REPORT_QUESTION = '计划文档绝对路径 + 待拍板问题清单'
 const NO_DIRECT_HUMAN = '子会话没有直接人类，批准会悬空'
+// 计划阶段「能写什么」的原子句：沙箱说明、explore 条、task_detail 权限提示都引用它，避免同一句话写两遍。
+const SCRATCH_TEXT = '临时文件可写（$TMPDIR 或指挥舱 scratch/<任务引用>/）'
 
 /**
  * 计划阶段（planFirst）的原子句：下面所有对外文案都从这里拼，别再各写一份。
  *
- * 计划模式在平台侧是**软引导**（只注入一段提示），真正拦写入的是只读沙箱；这段文案必须把
- * 「写被拒是预期行为」「计划唯一写入口是 plan_save」「出口是 task_report blocked，不是
- * exit_plan_mode」写清楚，否则模型会在计划阶段反复被沙箱拒绝、或把长计划硬塞进 500 字的
+ * 计划模式在平台侧是**软引导**（只注入一段提示），真正拦住**仓库**写入的是「未登记的 target 可写根」；
+ * 沙箱本身是 workspace-write（2026-11-25 起），所以 $TMPDIR/scratch 可写、仓库不可写。这段文案必须把
+ * 「写仓库被拒是预期行为」「临时文件可写」「计划唯一写入口是 plan_save」「出口是 task_report blocked，
+ * 不是 exit_plan_mode」写清楚，否则模型会在计划阶段反复被沙箱拒绝、或把长计划硬塞进 500 字的
  * question 里被截断。
  */
 export const PLAN_PHASE_LINES = Object.freeze({
   heading: '【计划阶段】',
-  sandbox: '沙箱 read-only（只读）——写文件/写 shell 会被拒绝，这是预期行为，不是权限故障。',
-  explore: '- 只读探索：读代码/文档、跑只读命令、验证假设；不要创建或修改文件。',
+  // scratch 是原子句：沙箱说明、explore 条、task_detail 权限提示都引用它，避免同一句话写两遍。
+  scratch: SCRATCH_TEXT,
+  sandbox: `沙箱 workspace-write，但**仓库目录不在可写根里**——写仓库会被拒绝；${SCRATCH_TEXT}。这是预期行为，不是权限故障。`,
+  explore: '- 只读探索：读代码/文档、跑只读命令、验证假设；可以写临时文件做测量/解包，**不要创建或修改仓库文件**，用完清理。',
   saveCall: 'plan_save({ task_id, content })',
   saveEntry: '计划用 plan_save、阶段报告用 artifact_save：路径固定、不接受自定义路径、禁止逃逸，也不要用 write/edit/pwsh 硬写。',
   reportCall: 'task_report 报 blocked',
@@ -157,6 +162,12 @@ export const PLAN_FIRST_DETAIL = [
   `- ${PLAN_PHASE_LINES.resume}`,
 ].join('\n')
 
+/**
+ * L3（`task_detail`）权限行下面那句「能写什么」（2026-11-25）：计划阶段不是纯只读，而是
+ * 「仓库不可写 + 临时目录可写」。与 `READ_ONLY_HINT` 分开，因为 `read_only` 任务连临时文件都写不了。
+ */
+export const PLAN_PHASE_HINT = `计划阶段：仓库目录不可写（写仓库会被拒），${SCRATCH_TEXT}；产物真源在 artifact-store（宿主私有存储），仍不可写。`
+
 /** 子会话被拒 `exit_plan_mode` 时的出口文案（dispatch 层直接返回，不改任何状态）。 */
 export const EXIT_PLAN_MODE_DENIAL = `exit_plan_mode 在编排子任务里不可用：${NO_DIRECT_HUMAN}。`
   + `计划阶段的出口是先在 plan_save 里把计划写进${planDocPathText()}，再用 ${PLAN_PHASE_LINES.reportCallFull} 上报，`
@@ -164,18 +175,18 @@ export const EXIT_PLAN_MODE_DENIAL = `exit_plan_mode 在编排子任务里不可
 
 /** 计划状态行（`task_status` 与面板同口径；六值 = 四态 + none/rejected）。 */
 export const PLAN_STATUS_LINES = Object.freeze({
-  planning: `计划：计划中｜子会话只读探索，计划用 plan_save 落盘到${PLAN_SAVE_DIR}；`
+  planning: `计划：计划中｜子会话只读探索（仓库只读、${PLAN_PHASE_LINES.scratch}），计划用 plan_save 落盘到${PLAN_SAVE_DIR}；`
     + `交回后等用户拍板，批准只能由协调者 ${PLAN_APPROVE_CALL}`,
   waiting_user: '计划：待拍板｜已收到 blocked 报告与计划文档，等用户拍板；'
     + `批准只走 ${PLAN_APPROVE_CALL}（普通 message 只记修订）`,
-  revising: '计划：修订中｜子会话仍在只读改计划；修订版 blocked 后再由用户拍板批准',
+  revising: '计划：修订中｜子会话仍在只读改计划（仓库不可写）；修订版 blocked 后再由用户拍板批准',
   approved: '计划：已批准｜沙箱已切回可写；下一步 task_message 续派实现',
   rejected: '计划：未批准｜计划阶段已结束（停止或结算时未获批准）',
   none: '计划：无进行中的计划',
 })
 
 /** `task_create` 回执里的计划模式提示（给协调者看的动作指令；路径按**任务名**说）。 */
-export const planCreateReceipt = title => `计划模式：子会话只读探索，探索完先 plan_save 把计划写入${planDocPathText(title)}（文件名=任务名加版本，自动登记为产物），`
+export const planCreateReceipt = title => `计划模式：子会话只读探索（仓库不可写、${PLAN_PHASE_LINES.scratch}），探索完先 plan_save 把计划写入${planDocPathText(title)}（文件名=任务名加版本，自动登记为产物），`
   + `再用 ${PLAN_PHASE_LINES.reportCall} 只上报 ${PLAN_PHASE_LINES.reportSummaryShort} + ${PLAN_PHASE_LINES.reportQuestion}；`
   + `你转交用户，用户明确批准后先 ${PLAN_APPROVE_CALL} 再 task_message 续派（插件不会因为普通 message 自动批准）。`
 
@@ -183,11 +194,11 @@ export const planCreateReceipt = title => `计划模式：子会话只读探索�
  * 普通 `message` 在计划任务上的回执（P0-4）：只记讨论/修订，绝不批准。
  *
  * `discussion` = `planning`（子会话还在探索，没有计划可批准）；`revising` = `waiting_user`/`revising`
- * （把消息当「修订方向」转回同一个子会话，沙箱仍是只读）。两者都由 `task_message` 与面板共用。
+ * （把消息当「修订方向」转回同一个子会话，仓库仍是只读）。两者都由 `task_message` 与面板共用。
  */
 export const PLAN_MESSAGE_NOTES = Object.freeze({
-  discussion: `普通 message 只记讨论、不会批准计划（子会话仍在只读探索）；要批准请用 ${PLAN_APPROVE_CALL}。`,
-  revising: `已按「修订」转回子会话（沙箱仍是只读）；修订版 blocked 后再由用户拍板，批准用 ${PLAN_APPROVE_CALL}。`,
+  discussion: `普通 message 只记讨论、不会批准计划（子会话仍在只读探索、仓库不可写）；要批准请用 ${PLAN_APPROVE_CALL}。`,
+  revising: `已按「修订」转回子会话（仓库仍是只读、可写临时文件）；修订版 blocked 后再由用户拍板，批准用 ${PLAN_APPROVE_CALL}。`,
 })
 
 /** `plan_save` 工具描述（模型侧唯一的入口说明；只有 content，不加参数、不做格式校验）。 */
@@ -338,7 +349,7 @@ export const PARALLEL_LINES = Object.freeze({
   cost: '代价（并行前跟用户说清楚）：① 产物在各自分支的检出里，**合并由用户决定**——并行越多合并面越大，'
     + '别把同一批文件拆成两条并行；② 每个检出都是空目录，子会话要先装依赖'
     + '（`pnpm install` / `npm install` / `uv sync`，只装不升），第一个任务会慢一点；③ 并发 `git commit` 会争 `.git` 锁',
-  exceptions: '例外（不必隔离）：**只读任务**（`readOnly: true`）与**计划阶段**（`planFirst: true` 批准前）不改文件，'
+  exceptions: '例外（不必隔离）：**只读任务**（`readOnly: true`）与**计划阶段**（`planFirst: true` 批准前）不改**仓库文件**（计划阶段只写 `$TMPDIR`/scratch 临时文件），'
     + '同目录并行也不冲突，直接派；**同一 worktree 检出永远只能一个任务在写**——'
     + '`worktreeMode:"continue"` 复用或同一条链上的任务必须 dependsOn 串行',
   align: '与三段口径的关系（一致，不互相推翻）：① 「同写域并发防护」默认**拒绝**同目录并行，'

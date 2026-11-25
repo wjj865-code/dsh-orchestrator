@@ -81,7 +81,7 @@ export const GOAL_ACTIVATION_LABEL = { armed: '自动续轮已启用', disarmed:
 // 文案必须与 src/plan-mode.js 的 PLAN_STATE_LABEL 同值（test/copy-consistency.test.js 锁）。
 export const PLAN_STATE_LABEL = {
   none: '无计划状态',
-  planning: '计划中（子会话只读探索）',
+  planning: '计划中（仓库只读探索）',
   waiting_user: '计划待拍板（已提交计划）',
   revising: '修订中（子会话只读改计划）',
   approved: '已批准执行',

@@ -5,7 +5,7 @@
 import { statSync } from 'node:fs'
 import { statusLabel } from './state.js'
 import { PLAN_FIRST_DETAIL, UNAPPROVED_PLAN_STATES, isPlanTask, planStateOf, PLAN_STATE_LABEL } from './plan-mode.js'
-import { ACCESS_FULL } from './copy.js'
+import { ACCESS_FULL, PLAN_PHASE_HINT } from './copy.js'
 import { acceptanceDetailBlock, checksOf } from './acceptance.js'
 import { worktreeDetailLines, worktreeHasCap } from './worktree-request.js'
 
@@ -92,12 +92,13 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   const readOnly = brief.readOnly === true || task.read_only === true
   const planTask = isPlanTask(task)
   const planState = planStateOf(task)
-  // 计划阶段（批准前的三态：planning / waiting_user / revising）运行期都是只读：
-  // 权限文案必须如实，否则子会话会以为自己能写；只有显式 approve 之后才可写。
+  // 计划阶段（批准前的三态：planning / waiting_user / revising）运行期是「仓库只读 + 临时目录可写」
+  // （沙箱 workspace-write，但 target 可写根不注册）。权限文案必须如实，否则子会话会以为自己能写仓库；
+  // 只有显式 approve 之后才可写。`read_only` 任务是另一档（连临时文件都写不了），两档不能合并。
   const planning = planTask && UNAPPROVED_PLAN_STATES.includes(planState)
-  const effectiveReadOnly = readOnly || planning
+  const planPhase = planning && !readOnly
   // per-task 完整访问：只读/计划阶段永远压过它（运行期事实优先），台账与 brief 任一处标了 full 都算。
-  const fullAccess = !effectiveReadOnly && (brief.access === 'full' || task.access === 'full')
+  const fullAccess = !readOnly && !planPhase && (brief.access === 'full' || task.access === 'full')
   // 版本 B《ID 出口网关》+ R1（人类友好展示）：首行是**任务名 + 引用**合一行——
   // `任务：名称（tk-xxxxxx）`。子会话第一次就同时拿到「怎么称呼它」与「怎么调工具」，
   // 给用户的回复里自然会用名称；台账内部编号（t-xxxx）仍然一个字都不出现。
@@ -105,7 +106,7 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   const ref = text(task.ref)
   const lines = [
     `任务：${title === '' ? '（未命名）' : title}（${ref === '' ? '引用未生成' : ref}）`,
-    `状态：${statusLabel(task.status)}${effectiveReadOnly ? '｜只读' : (fullAccess ? '｜完整访问' : '')}`,
+    `状态：${statusLabel(task.status)}${readOnly ? '｜只读' : (fullAccess ? '｜完整访问' : '')}`,
     `目标：${text(brief.goal ?? task.goal)}`,
   ]
   if (task.artifact_dir) lines.push(`产物目录：${task.artifact_dir}（不是工作目录；阶段文档用 artifact_save，计划用 plan_save）`)
@@ -115,12 +116,15 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
   // 工作目录最多出现一个：就是 target_dir；写提示紧跟其后（与旧 brief 同口径）。
   if (target !== '') {
     lines.push(`工作目录：${target}${targetInherited ? '（继承协调者 cwd：任务没有显式 target）' : ''}`)
-    lines.push(`权限：${effectiveReadOnly ? '只读' : '可写'}`)
+    lines.push(`权限：${readOnly ? '只读' : (planPhase ? '仓库只读（临时目录可写）' : '可写')}`)
     if (fullAccess) lines.push(`访问级别：${ACCESS_FULL.label}`)
-    lines.push(effectiveReadOnly ? READ_ONLY_HINT : (fullAccess ? FULL_ACCESS_HINT : WRITE_HINT))
-  } else if (effectiveReadOnly) {
+    lines.push(readOnly ? READ_ONLY_HINT : (planPhase ? PLAN_PHASE_HINT : (fullAccess ? FULL_ACCESS_HINT : WRITE_HINT)))
+  } else if (readOnly) {
     lines.push('权限：只读')
     lines.push(READ_ONLY_HINT)
+  } else if (planPhase) {
+    lines.push('权限：仓库只读（临时目录可写）')
+    lines.push(PLAN_PHASE_HINT)
   } else if (fullAccess) {
     lines.push(`访问级别：${ACCESS_FULL.label}`)
     lines.push(FULL_ACCESS_HINT)

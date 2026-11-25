@@ -976,7 +976,7 @@ function approvedWriteEnv(childId) {
 
 test('P0-1 审计：approved 且 target == session.header.cwd → 沙箱仍要切 workspace-write（不能只跳过注册）', async () => {
   const env = approvedWriteEnv('c-same')
-  env.modes.set('c-same', 'read-only') // 计划期的沙箱是真只读
+  env.modes.set('c-same', 'read-only') // 升级前就在计划阶段的老会话：日志里最后一条仍是 read-only
   await env.dispatcher.send('c-same', '执行', undefined, 'C:\\work', 't-same', false, undefined, undefined, { planApproved: true })
   assert.equal(env.modes.get('c-same'), 'workspace-write', '同 cwd 只是「不用注册可写根」，沙箱必须切回可写')
   assert.deepEqual(env.registrations, [], '平台根就是 target：不重复注册')

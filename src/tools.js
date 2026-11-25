@@ -54,7 +54,7 @@ import { followupGate, stopIsIdempotent } from './panel-gates.js'
 import { RESUME_HISTORY_THRESHOLD, resumeGate, resumePrompt } from './resume.js'
 import {
   approvalNote, dispatchReadOnly, isPlanTask, needsPlanWriteSwitch, planApproveGate,
-  planListMarker, planStateOf, planStatusLine, PLAN_STATE_LABEL, recordApproval,
+  planListMarker, planPhaseMode, planStateOf, planStatusLine, PLAN_STATE_LABEL, recordApproval,
 } from './plan-mode.js'
 import { MAX_PLAN_CHARS, planSavedNote } from './plan-doc.js'
 // P1-C 文案单源：计划阶段与「交付不是终态」的句子都在 src/copy.js，这里只拼装工具回执。
@@ -643,12 +643,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         exec?.signal,
         taskTargetDir(task) || undefined,
         task.id,
-        // P0-2（审计）：计划任务未批准时也按只读投递，否则批准前就会注册可写根。
+        // P0-2（审计）：计划任务未批准时也按只读投递（= 不注册可写根），否则批准前就会注册可写根。
         dispatchReadOnly(task),
         objectiveForMessage(task.goal, message),
         task.access === 'full' ? 'full' : undefined,
         // attemptKey 同一次 followup 行的逻辑投递键：重放时只重试授予，不再二次投递。
-        { planApproved, attemptKey: `followup:${task.id}:${seq}` },
+        // planPhase：计划阶段把沙箱补成 workspace-write（$TMPDIR/scratch 可写），但仍不注册可写根。
+        { planApproved, planPhase: planPhaseMode(task), attemptKey: `followup:${task.id}:${seq}` },
       )
       messageId = normalizeMessageId(sent)
     } catch (error) {
@@ -1035,11 +1036,12 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         exec?.signal,
         taskTargetDir(task) || undefined,
         task.id,
-        // P0-2（审计）：计划任务未批准时也按只读投递，否则批准前就会注册可写根。
+        // P0-2（审计）：计划任务未批准时也按只读投递（= 不注册可写根），否则批准前就会注册可写根。
         dispatchReadOnly(task),
         objectiveForMessage(task.goal, body),
         task.access === 'full' ? 'full' : undefined,
-        { planApproved, attemptKey: `resume:${task.id}:${seq}` },
+        // planPhase：计划阶段把沙箱补成 workspace-write（$TMPDIR/scratch 可写），但仍不注册可写根。
+        { planApproved, planPhase: planPhaseMode(task), attemptKey: `resume:${task.id}:${seq}` },
       )
       messageId = normalizeMessageId(sent)
     } catch (error) {

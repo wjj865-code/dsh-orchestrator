@@ -1253,7 +1253,7 @@ export function createViews({
             {/* P8/P0-4：计划阶段小标（只在批准前的三态出现；批准后正常执行、不占视觉）。 */}
             {planOpen(task)
               ? (
-                  <Badge tone="info" title="计划模式：子会话只读探索/改计划，用 task_report blocked 上报计划；批准只在协调者侧 task_message({action:'approve'})（面板不代批）">
+                  <Badge tone="info" title="计划模式：仓库只读探索/改计划（可写 $TMPDIR 临时文件），用 task_report blocked 上报计划；批准只在协调者侧 task_message({action:'approve'})（面板不代批）">
                     {PLAN_OPEN_BADGE[task.planState] ?? '计划中'}
                   </Badge>
                 )

@@ -181,18 +181,26 @@ const count = (haystack, needle) => haystack.split(needle).length - 1
 
 test('属性：10,000 组随机任务字段渲染稳定、口径唯一（计划/权限/交付不互相打架）', () => {
   const random = prng(SEED ^ 0x5bf03635)
-  const seen = { plan: 0, readOnly: 0, full: 0, plain: 0 }
+  const seen = { plan: 0, planPhase: 0, readOnly: 0, full: 0, plain: 0 }
   for (let index = 0; index < RENDER_CASES; index += 1) {
     const { task, planFirst, planState, readOnly, access } = randomTask(random)
     const text = renderTaskDetail(task)
     // 输出稳定：同样输入渲染两次逐字相同（没有随机/时间依赖）。
     assert.equal(renderTaskDetail(task), text, `第 ${index} 组渲染不稳定`)
     const planning = planFirst && UNAPPROVED_PLAN_STATES.includes(planState)
-    const effectiveReadOnly = readOnly || planning
-    // 权限口径唯一：只读（含计划阶段）时不许出现完整访问标签，反之亦然。
-    if (effectiveReadOnly) {
+    // 2026-11-25 解耦：计划阶段是「仓库只读 + 临时目录可写」，与 `read_only` 任务（纯只读）不是同一档。
+    const planPhase = planning && !readOnly
+    // 权限口径唯一：只读任务 / 计划阶段 / 完整访问 / 普通可写 四档互斥，且都不许出现对方的提示。
+    if (planPhase) {
+      assert.equal(text.includes(ACCESS_FULL.label), false, `第 ${index} 组：计划阶段却写了完整访问`)
+      assert.equal(text.includes(ACCESS_FULL.workerHint), false, `第 ${index} 组：计划阶段给了可写提示`)
+      assert.match(text, /权限：仓库只读（临时目录可写）/, `第 ${index} 组：计划阶段权限行不对`)
+      assert.ok(text.includes(PLAN_PHASE_LINES.scratch), `第 ${index} 组：计划阶段没说临时文件可写`)
+      seen.planPhase += 1
+    } else if (readOnly) {
       assert.equal(text.includes(ACCESS_FULL.label), false, `第 ${index} 组：只读任务却写了完整访问`)
       assert.equal(text.includes(ACCESS_FULL.workerHint), false, `第 ${index} 组：只读任务给了可写提示`)
+      assert.match(text, /权限：只读/, `第 ${index} 组：只读任务权限行不对`)
       seen.readOnly += 1
     } else if (access === 'full') {
       assert.equal(count(text, ACCESS_FULL.label), 1, `第 ${index} 组：完整访问标签应恰出现一次`)
@@ -221,7 +229,7 @@ test('属性：10,000 组随机任务字段渲染稳定、口径唯一（计划/
     }
   }
   // 覆盖度：随机空间确实走到了四条分支（否则断言等于没测）。
-  assert.ok(seen.plan > 0 && seen.readOnly > 0 && seen.full > 0 && seen.plain > 0, `分支覆盖不足：${JSON.stringify(seen)}`)
+  assert.ok(seen.plan > 0 && seen.planPhase > 0 && seen.readOnly > 0 && seen.full > 0 && seen.plain > 0, `分支覆盖不足：${JSON.stringify(seen)}`)
 })
 
 test('属性：计划路径文案在每处拼装里都是同一个字符串', () => {

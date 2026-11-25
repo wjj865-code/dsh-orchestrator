@@ -25,7 +25,7 @@ export const PLAN_STATES = Object.freeze(['none', 'planning', 'waiting_user', 'r
 /** 面板 / `task_status` / `task_detail` 用的计划状态文案（客户端 constants.js 必须同值）。 */
 export const PLAN_STATE_LABEL = {
   none: '无计划状态',
-  planning: '计划中（子会话只读探索）',
+  planning: '计划中（仓库只读探索）',
   waiting_user: '计划待拍板（已提交计划）',
   revising: '修订中（子会话只读改计划）',
   approved: '已批准执行',
@@ -66,14 +66,33 @@ export const planInPhase = task => isPlanTask(task) && UNAPPROVED_PLAN_STATES.in
  * 返回 true：
  * - 只读任务（台账 `read_only` 列）；
  * - **计划任务尚未批准**（plan_state 不是 approved，含 planning/waiting_user/revising/rejected/none）——
- *   这几态子会话的运行期沙箱本来就是 read-only，续派/续跑必须按只读投递；
+ *   这几态子会话**不注册 target 可写根**，续派/续跑必须按「不授权」投递；
  *   否则 `dispatch.send` 会当「可写任务」走 preflight + post-send `ensureWritableRoot`，
  *   在**批准前**就把目标目录登记成可写根（违反「批准前不注册」）。
+ *
+ * 语义（2026-11-25 解耦后）只表达「不注册可写根 + 不 preflight」这一件事；
+ * 沙箱**模式**另由 `planPhaseMode` 决定（计划阶段是 workspace-write，只为让 $TMPDIR/scratch 可写）。
  *
  * 已批准计划任务返回 false：可写由 `send({ planApproved: true })` 的 post-send 授予。
  */
 export const dispatchReadOnly = task =>
   task?.read_only === true || (isPlanTask(task) === true && planStateOf(task) !== 'approved')
+
+/**
+ * 计划阶段的**沙箱模式**（P8 解耦，2026-11-25）：与 `dispatchReadOnly` 的「不注册可写根」正交。
+ *
+ * 返回 `'workspace-write'`：计划任务且未批准（`planning`/`waiting_user`/`revising`/`rejected`/`none`）——
+ *   宿主的 workspace-write 可写面固定含 `/tmp` 与 `os.tmpdir()`，所以 scratch 可写；而 target 可写根
+ *   仍然不注册 ⇒ **仓库物理不可写**。返回值给 `dispatch.send` 的 `options.planPhase`，只在
+ *   `readOnly === true` 时生效（漏传即回落只读，是安全方向的降级）。
+ * 返回 `'read-only'`：其余（已批准计划任务 / 只读任务 / 普通任务）。
+ *
+ * 判定口径必须与 `dispatchReadOnly` 的 plan 半边**逐字对齐**（同样是 `!== 'approved'`）：
+ * 用 `planInPhase`（只含三态）会在 `plan_state='none'` 的旧行上留下「readOnly===true 但模式 read-only」
+ * 的空档——那不是安全问题，但会让这些旧计划任务继续写不了 scratch。
+ */
+export const planPhaseMode = task =>
+  isPlanTask(task) === true && planStateOf(task) !== 'approved' ? 'workspace-write' : 'read-only'
 
 /** `task_list` 行尾标记：只有未批准的三态加小标，其它状态不加字样。 */
 export function planListMarker(task) {
