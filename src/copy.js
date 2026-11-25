@@ -518,3 +518,22 @@ export const CHANGE_REVIEW_FIELDS = '影响面（哪些任务/产物/已交付�
 /** `task_report` 交付回执：交付不是结束，确认/超时才收成完成。 */
 export const deliveredReceiptNote = `\n${DELIVERY_LINES.state}：这是交付、${DELIVERY_LINES.notFinal}；`
   + `协调者可能用 task_message 追问（同一会话继续），确认或${DELIVERY_LINES.timeoutWord}后才收成完成。`
+
+/**
+ * 四个判据的原子句（一句一条判断口径 + 指向对应技能的指针），给 L1 瘦身用。
+ *
+ * 与上面的 TASK_CHAIN_LINES / PARALLEL_LINES 的关系：那两段是完整展开版（回执、工具描述、通知都引用），
+ * 这里是压缩成一句话的判据，只讲「怎么判」，细节交给对应技能，避免同一份口径在提示词里讲两遍。
+ * 目前只定义、尚未接线（渲染层改造是下一步），所以不新增任何执行层语义。
+ */
+export const WORKTREE_CRITERIA = 'worktree 判据：B 的输入是 A 的产物 → dependsOn 串行；'
+  + '互不依赖且同写域 → worktree:true 并行，详见 skill({ name: \'orch-worktree\' })'
+
+export const TASK_CHAIN_CRITERIA = '任务链判据：B 的输入是 A 的产物就是一条链（实现→验收、构建→发布、修复→回归），'
+  + '派 A 的同一回合就建 B，详见 skill({ name: \'orch-task-chain\' })'
+
+export const PARALLEL_CRITERIA = '并行判据：互不依赖、不复用同一子会话上下文、同写域会撞车三条同时满足，'
+  + '就直接 worktree:true 并行，详见 skill({ name: \'orch-parallel\' })'
+
+export const WRITE_GUARD_CRITERIA = '同写域判据：target 相同或 writeScopes 重叠即同写域，默认拒绝并发——'
+  + '先考虑 worktree:true 并行，详见 skill({ name: \'orch-parallel\' })'
