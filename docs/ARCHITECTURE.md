@@ -65,7 +65,7 @@
 
 | 参数 | 作用 |
 |---|---|
-| `planFirst` | 计划任务：**只读沙箱（硬拦）+ plan-mode（软引导）**，流程顺序固定：①子会话只读探索 → ②`plan_save` 把计划落盘到 `reports/plans/<任务名>.md`（计划阶段唯一写入口；只有 `content`，插件原样落盘、不解析/不改写；文件名=任务名，安全化与同名 `-2` 见 `src/plan-doc.js`）→ ③`blocked` 只上报摘要 + **绝对路径** + question 里逐条列出的待拍板清单 → ④协调者**先**把摘要与绝对路径回给用户并 `present` 计划文档，**再**用 `ask_user_question` 请拍板（四选一「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」）；选「逐项确认」按清单**一项一问**、答完先给决策汇总再做总批准核对（「均按推荐」必须用户明确点选）→ ⑤**计划批准必须由用户拍板、协调者不得自行批准**，批准动作只能是 `task_message({ action: 'approve' })`（切可写 + 落审计），再用 `task_message` 续派实现；普通 `message` 只记讨论/修订、不会批准。与 `readOnly` 互斥；批准顺序与失败分支见「计划阶段（P8）」 |
+| `planFirst` | 计划任务：**仓库只读沙箱（硬拦）+ 可写临时目录（`$TMPDIR`/scratch）+ plan-mode（软引导）**，流程顺序固定：①子会话只读探索 → ②`plan_save` 把计划落盘到 `reports/plans/<任务名>.md`（计划阶段唯一写入口；只有 `content`，插件原样落盘、不解析/不改写；文件名=任务名，安全化与同名 `-2` 见 `src/plan-doc.js`）→ ③`blocked` 只上报摘要 + **绝对路径** + question 里逐条列出的待拍板清单 → ④协调者**先**把摘要与绝对路径回给用户并 `present` 计划文档，**再**用 `ask_user_question` 请拍板（四选一「逐项确认 / 均按推荐 / 先看计划文档 / 放弃」）；选「逐项确认」按清单**一项一问**、答完先给决策汇总再做总批准核对（「均按推荐」必须用户明确点选）→ ⑤**计划批准必须由用户拍板、协调者不得自行批准**，批准动作只能是 `task_message({ action: 'approve' })`（切可写 + 落审计），再用 `task_message` 续派实现；普通 `message` 只记讨论/修订、不会批准。与 `readOnly` 互斥；批准顺序与失败分支见「计划阶段（P8）」 |
 | `readOnly` | 只读任务：只认显式 `true`，续派也**不会**转可写 |
 | `access: 'full'` | 这一条任务跑在 `danger-full-access`：沙箱不限制写入、`bash`/`pwsh` 解封。只接受 `'full'`，不继承、不改部署默认；与 `readOnly`/`planFirst` 互斥 |
 | `worktree` / `worktreeBase` / `worktreeBranch` / `worktreeMode` / `worktreeCleanup` | 在 `<repo>/.agents/worktrees/<taskId>` 独立检出里干活，产物在分支上、**合并由用户决定**；多活跃分支且没给基线时先返回候选让用户选 |
@@ -477,19 +477,19 @@
 `access:'full'`（只认显式 `'full'`）**复用只读的整条注入路径**，只是模式换成 `danger-full-access`：`ensureSandboxMode(childId, mode)` 在 `agent/created` 一到就 append（`source:'delegation'`），激活返回后再幂等补一次，续派/冷恢复再补；`taskOf` 只把 `tasks.access='full'` 当真。普通任务（不传 `readOnly`/`planFirst`/`access`）同样走这条入口，显式钉 `workspace-write`：宿主会把父会话的显式 `sandbox/mode` 覆盖按 `source:'delegation'` 种进每个子会话（`@deepseek-ai/dsh-subagent` 的 `appendDelegatedPolicyOverrides`），主会话钉成只读后不写回来，子任务就会跟着只读、写不了文件。都不碰默认配置、不碰父会话。视图：brief `【访问级别】完整`、`task_detail`「访问级别：完整」、`task_list`「·完整访问」、`task_status`「访问级别：完整」、通知标题「（完整访问）」、日志 `subagent.full-access` / `subagent.read-only` / `subagent.workspace-write`。
 
 ## 计划阶段（P8）
-`planFirst:true` 的任务 = **只读沙箱（硬拦）+ 平台 plan-mode 提示（软引导）**；不开 `planFirst` 的任务行为一字不改。
+`planFirst:true` 的任务 = **仓库只读沙箱（硬拦）+ 可写临时目录（`$TMPDIR`/scratch）+ 平台 plan-mode 提示（软引导）**；不开 `planFirst` 的任务行为一字不改。
 
-- **进入**：`queue.pump` 从台账透传 `plan_first` 给 `dispatcher.spawn`；派发时复用 `ensureReadOnly`（压首回合窗口），再用**子 agent 作用域**的 `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 缺失只 warn（降级为只有只读沙箱）。批准前**不注册** target 可写根。
+- **进入**：`queue.pump` 从台账透传 `plan_first` 给 `dispatcher.spawn`；派发时复用 `ensurePlanReady`（`workspace-write`，压首回合窗口），再用**子 agent 作用域**的 `agent.ctx.get('planMode')?.set(agent, true)` 置 plan mode；`planMode` 缺失只 warn（降级为只有只读沙箱）。批准前**不注册** target 可写根。
 - **计划落盘（`plan_save`）**：复用 `artifact_save` 的 `artifact-store` 宿主受限保存实现，写入 `artifact_store_dir/docs/<安全任务名>-<版本>.md`；`artifact_dir` 仅暂存/引用，不是真源。调用重放幂等、旧版本不覆盖，保存后更新 `plan_path`，批准使用最新计划。参数仍只有 `task_id`/`content`，正文原样落盘，不解析待拍板元数据。子会话只回报 **3–8 行摘要 + 文档绝对路径 + 待拍板清单**，待拍板问题由模型生成并经 `ask_user_question` 逐项提问。
 - **交付顺序（0.25.0）**：先回复计划摘要 + 计划文档**绝对路径**并 `present` 该文档 → 再 `ask_user_question`（四选一 **逐项确认 / 均按推荐 / 先看计划文档 / 放弃**；「均按推荐」必须用户明确点选）→ 用户选「先看计划文档」只展示正文/路径、不推进不催 → 选「逐项确认」按清单一项一问、答完先贴决策汇总（`renderDecisionSummary`）再做总批准核对 → 只有明确「批准」才续派实现。
 - **出口**：`plan_save` 落盘 → `task_report blocked` 上报摘要 + 路径 → 用户决定 → 协调者 `task_message` 续派，**不用** `exit_plan_mode`（子会话没有直接人类）。插件在子会话 **agent 作用域**拒绝 `exit_plan_mode`（插件根的 guard 是全局的，会误伤协调者）。
 - **批准闸门（人工 + 显式动作）**：**计划批准必须由用户拍板，协调者不得自行批准**（不得把用户沉默/含糊回应当成批准），且批准动作只能是 `task_message({ action: 'approve' })`——插件校验通过才切可写并落审计。普通 `task_message` 在计划任务上**不会批准**：`planning` 只记讨论、`waiting_user`/`revising` 转「修订中」，沙箱始终只读；用户答「调整」就把修改点原样转回同一个子会话（写明「只修订计划、不要开始实现」）并再 `blocked` 一次重新拍板。
-- **approve 前置与结果**：`plan_state='waiting_user'`（= 已收到 blocked 报告）+ `status='waiting_user'`（子会话空闲）+ `plan_path` 已落盘，三条缺一给可读拒绝（`PLAN_APPROVE_*`，不动沙箱、不写审计）；成功 = `sandbox/mode=workspace-write` + `planMode.set(agent,false)` + 释放 guard + 补 target 可写根 + `plan_state='approved'` + 审计 `accepted_kind='plan'`，**不投递消息、不改 status**（协调者紧接着 `task_message` 续派实现）。
+- **approve 前置与结果**：`plan_state='waiting_user'`（= 已收到 blocked 报告）+ `status='waiting_user'`（子会话空闲）+ `plan_path` 已落盘，三条缺一给可读拒绝（`PLAN_APPROVE_*`，不动沙箱、不写审计）；成功 = 注册 target 可写根 + `planMode.set(agent,false)` + 释放 guard + `plan_state='approved'` + 审计 `accepted_kind='plan'`（模式在计划阶段已是 `workspace-write`，批准只补授权），**不投递消息、不改 status**（协调者紧接着 `task_message` 续派实现）。
 - **四态迁移**：
 
 | `plan_state` | 进入条件 | 可用动作 |
 |---|---|---|
-| `planning` | 派发后只读探索 | `message`（只记讨论）/ `plan_save` / `task_report blocked` |
+| `planning` | 派发后只读探索（仓库不可写、临时目录可写） | `message`（只记讨论）/ `plan_save` / `task_report blocked` |
 | `waiting_user` | 子会话 `blocked` 交回计划 | **`approve`（唯一批准入口）** / `message`（转修订）/ `stop` |
 | `revising` | 用户在 `waiting_user` 上要求调整（收到 `message`） | `message`（继续修订）/ 再 `blocked` 回 `waiting_user` |
 | `approved` | 显式 `approve` 成功 | `message` 续派实现 / `stop` / `close` |

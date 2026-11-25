@@ -165,12 +165,12 @@
 
 ## 计划阶段（P8）
 
-- **plan mode 是软引导**：平台只注入一段系统提示，不拦工具、不写沙箱状态；真正挡住写入的是只读沙箱。模型仍可能反复尝试写，被拒错误会回灌给它。
+- **plan mode 是软引导**：平台只注入一段系统提示，不拦工具、不写沙箱状态；真正挡住**仓库**写入的是「未登记的 target 可写根」（计划阶段沙箱是 `workspace-write`，所以 `$TMPDIR`/scratch 可写、仓库仍不可写）。模型仍可能反复尝试写仓库，被拒错误会回灌给它。
 - **四态、审计与「没有官方审批端点」**：`plan_state` 走 `planning → waiting_user → revising → approved`，未批准进终态收口 `rejected`；审批审计复用 `accepted_by`/`accepted_at` + `accepted_kind`（`plan`），后续交付确认会把它覆盖成 `delivery`——完整审批历史以 `task.plan.approved` 日志为准（刻意不加 `plan_blocked_at` 列，「有 blocked 报告」由 `plan_state='waiting_user'` 表达）。`planMode` 是预设隔离域服务、宿主也没有对插件开放的计划审批端点，所以批准只能由插件自己的 `task_message({action:'approve'})` 承担，面板刻意没有批准入口。
 - **服务可见性**：`planMode` 挂在子会话预设作用域，插件必须走 `agent.ctx.get('planMode')`；没挂时静默降级为「只有只读沙箱」并 warn 一行，派发不受影响。`exit_plan_mode` 被拒（子会话没有直接人类），出口固定是「`plan_save` 落盘 + `task_report blocked`」。
 - **文档版本**：`plan_save`/`artifact_save` 保存新版本，批准以最新计划路径为准；没有版本对比或审批流 UI。产物目录绑定创建时主会话工作区，后续不重定位；历史路径不搬移。
-- **文档保存是宿主受限工具，不是沙箱写例外**：校验任务归属、名称与固定产物根；只读任务不能用文件工具或 shell 绕过工作区只读。
-- **切回可写的范围**：`workspace-write` 的根 = 子会话 `header.cwd` + 插件登记的 target 可写根，子会话理论上也能写插件 state 目录。可接受但不理想。
+- **文档保存是宿主受限工具，不是沙箱写例外**：校验任务归属、名称与固定产物根；只读任务不能用文件工具或 shell 绕过工作区只读；计划阶段可写 `$TMPDIR`/scratch，但写仓库同样会被拒。
+- **计划阶段的可写面无法再窄化**：`workspace-write` 的根 = 子会话 `header.cwd`（指挥舱）+ 登记的 target 可写根 + `/tmp` + `os.tmpdir()`，宿主按 mode 门禁给整套，插件没法只放行 scratch——所以计划阶段能写指挥舱 `workspace/`（含 artifacts 暂存），但产物真源 `artifact-store/` 在 workspace 之外、仍不可写。可接受但不理想。
 - **两处真相**：平台会话日志的 `plan/mode` 是运行期事实，台账 `plan_state` 是编排视图；重启/压缩后平台投影会恢复，台账靠续派/终态事件对齐，极端时序下可能短暂滞后。`planFirst` 与 `readOnly` 创建期互斥。
 
 ## worktree 隔离（P9）

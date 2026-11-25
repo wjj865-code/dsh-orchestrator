@@ -144,7 +144,7 @@
 | `access:'full'` | 只接受 `'full'`、与只读/计划互斥、不继承、可观测 | `scripts/verify-access-full.mjs`；CHANGELOG `0.14.0` |
 | 协调者读产物 | 工作区包含性 + 已登记产物并集、符号链接/`../` 拒绝、行窗口截断、审计日志 | CHANGELOG `0.15.0` |
 | 回复底部 chip | R1–R4 关联规则、6 个视觉态、点击定位、单实例 feed 与退避、历史轮次不渲染 | `docs/probes/qa-taskchip-dom.mjs`；CHANGELOG `0.16.0` |
-| P8 计划模式 | 只读 + plan-mode 软引导、`plan_save` 唯一写入口、`exit_plan_mode` 拒绝；P0-4 起批准是显式 `task_message({action:'approve'})`（前置 + 审计 + 四态） | CHANGELOG `0.17.0` / `0.33.0`；`test/plan-mode.test.js` |
+| P8 计划模式 | 仓库只读 + 可写 `$TMPDIR`/scratch（模式与授权解耦）、`plan_save` 唯一写入口、`exit_plan_mode` 拒绝；P0-4 起批准是显式 `task_message({action:'approve'})`（前置 + 审计 + 四态） | CHANGELOG `0.17.0` / `0.33.0`；`test/plan-mode.test.js`；`scripts/verify-plan-scratch.mjs` |
 | 拍板流程 vA（0.32.x 同版） | **只改提示词/文案**：L1 五条规则、批准四选一、决策汇总顺序、blocked 通知「待拍板 N 项」、回执「子会话」保留会话 id；`plan_save` 参数面未变（无结构化参数/文档 lint） | `test/decision-flow.test.js`、`test/interaction-policy.test.js`；CHANGELOG `0.32.0` |
 | P9 worktree | 结构化声明、建树 7 类失败、多分支询问、清理三档、`.agents/` exclude | CHANGELOG `0.18.x`；`test/worktree*.test.js` |
 | T1 brief 纯指引 | brief 只给编号+指引，详情走 `task_detail`；经验只留指针；越权拒绝 | CHANGELOG `0.19.0`；`test/task-detail.test.js` |
