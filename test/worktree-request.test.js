@@ -2,6 +2,7 @@
 // 本文件只测纯函数：不跑 git、不碰文件系统（物理事实由 worktree.test.js 的 fake exec 覆盖）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
 import {
   BRANCH_REQUIRED_HINT, BRANCH_TYPES, CLEANUP_HINT, DEGRADE_HINT, IMPLICIT_HINT, OFF_BUILD_HINT,
   REQUIRED_SKIP_HINT, WORKTREE_STATES, askBranchHint, branchChoiceText, branchNameProblem,
@@ -322,27 +323,41 @@ test('P9 配置：worktreePolicy 默认 auto，非法值回落；分支前缀键
   assert.equal(loadConfig({ worktreeRecentDays: 'x' }).worktreeRecentDays, 7)
 })
 
-test('P9 协调者 policy：结构化渲染当前策略 + 判断流程 + 分支命名必填 + 合并责任', async () => {
+test('P9 协调者 policy：只渲染当前配置事实 + 一句判据 + 技能指针（细则下沉技能）', async () => {
   const { renderCoordinatorPolicy, renderWorktreePolicy } = await import('../index.js')
+  const { WORKTREE_CRITERIA } = await import('../src/copy.js')
   const text = renderWorktreePolicy({ worktreePolicy: 'required', worktreeRecentDays: 14 })
+  // 标题 + 配置事实：policy / 窗口天数 / 分支类型白名单必须逐项渲染（模型据此判档，不能只留判据）。
+  assert.match(text, /^## worktree 隔离/)
   assert.match(text, /当前配置策略：required/)
-  assert.match(text, /分支命名：<type>\/<slug>（必填，由你传）/)
   assert.match(text, /最近活跃窗口：14 天/)
-  assert.match(text, /required：每个需求都用 task_create/)
-  assert.match(text, /required 只决定「默认要隔离」，不包办分支名/)
-  assert.match(text, /不传或不规范当场报错/)
-  assert.match(text, /不再有默认 orch\/<taskId>/)
   assert.match(text, /feat \| fix \| docs \| refactor \| chore \| test \| perf \| build \| ci \| style \| revert/)
-  assert.match(text, /auto：默认不隔离/)
-  assert.match(text, /off：一律不隔离/)
-  // 三条件引导 + 协调者判断 + 插件只执行。
-  assert.match(text, /A 目标是 git 仓库/)
-  assert.match(text, /ask_user_question/)
-  assert.match(text, /needsBranchChoice/)
-  assert.match(text, /合并由你决定/)
-  // 反向验证（v2 硬约束）：不解析 AGENTS.md、不跑 git。
-  assert.match(text, /不要问「怎么解析文件」/)
-  assert.match(text, /你不要跑 git/)
+  for (const type of BRANCH_TYPES) assert.ok(text.includes(type), `分支类型白名单缺项：${type}`)
+  // 判据一句（措辞单源 copy.js，不在这里另写一套）+ 技能指针。
+  assert.ok(text.includes(WORKTREE_CRITERIA), 'worktree 段缺判据句（应逐字来自 copy.js）')
+  assert.match(text, /详见 skill\(\{ name: 'orch-worktree' \}\)/)
+  assert.ok(readdirSync(new URL('../skills/', import.meta.url)).includes('orch-worktree'), '技能指针指向的技能目录必须存在')
+  // 判据要能支撑「要不要隔离」两个方向，而不是只剩「都建」。
+  assert.match(text, /dependsOn 串行/)
+  assert.match(text, /worktree:true 并行/)
+  // 配置值如实渲染（不是写死一份文案）。
+  assert.match(renderWorktreePolicy({ worktreePolicy: 'off', worktreeRecentDays: 3 }), /当前配置策略：off/)
+  assert.match(renderWorktreePolicy({ worktreeRecentDays: 3 }), /最近活跃窗口：3 天/)
+  // 改判据版（C2-3c）：判断流程 5 步 / 三档细则 / needsBranchChoice / 分支命名必填 / cleanup
+  // 全部下沉 skills/orch-worktree/SKILL.md——原断言锁 L1 正文，现在逐条锁技能文件（口径没丢）。
+  const skill = readFileSync(new URL('../skills/orch-worktree/SKILL.md', import.meta.url), 'utf8')
+  for (const fragment of [
+    '判断流程（你做判断，插件只执行）', 'A 目标是 git 仓库', 'ask_user_question', 'needsBranchChoice',
+    'required：每个需求都用 task_create', 'required 只决定「默认要隔离」，不包办分支名',
+    '不传或不规范当场报错', '不再有默认 orch/<taskId>', '合并由你决定',
+    '不要问「怎么解析文件」', '你不要跑 git', 'worktreeCleanup 默认 off',
+  ]) {
+    assert.ok(skill.includes(fragment), `技能文件缺 worktree 细则：${fragment}`)
+  }
+  // 反回涨：这些展开细则不许再回到每回合都在的 L1。
+  for (const fragment of ['判断流程', 'needsBranchChoice', 'auto：默认不隔离', 'off：一律不隔离']) {
+    assert.equal(text.includes(fragment), false, `L1 段不该再摊开细则：${fragment}`)
+  }
   const full = renderCoordinatorPolicy({})
   assert.match(full, /你是 dsh-orchestrator 的协调者/)
   assert.match(full, /当前配置策略：auto/)

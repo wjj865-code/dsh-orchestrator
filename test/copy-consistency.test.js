@@ -365,9 +365,17 @@ test('交付文案只有一处真源：W1 / 通知 / 分层常量引用同一批
   assert.ok(DELIVERED_HINT.includes(DELIVERY_LINES.closeCallWithTaskId))
   assert.ok(DELIVERED_HINT.includes(DELIVERY_LINES.timeout))
   // 文档/策略里的同一句事实：done 只是交付（两处必须是同一个词）。
+  // C2-3c：写域段的「已交付待确认（delivered）不占目录」两条 bullet 已下沉技能，L1 不再出现「已交付待确认」
+  // 这个词（硬规则里写作「进入『待确认』（delivered），**不是终态**」）。所以这里改锁两件事：
+  // ① L1 仍逐字带 copy.js 的「不是终态」；② 交付状态词与「不占目录」细则在技能文件里逐字仍在。
   const policy = renderCoordinatorPolicy({})
-  assert.ok(policy.includes(DELIVERY_LINES.state))
   assert.ok(policy.includes(DELIVERY_LINES.notFinal))
+  assert.match(policy, /进入「待确认」（delivered）/)
+  const orchWorktree = readFileSync(new URL('../skills/orch-worktree/SKILL.md', import.meta.url), 'utf8')
+  assert.ok(orchWorktree.includes(`已交付待确认（delivered，写根已释放）`), '技能文件缺 delivered 判定口径')
+  assert.ok(orchWorktree.includes(`已交付待确认（delivered）**不占目录**`), '技能文件缺 delivered 不占目录细则')
+  // 反回涨：这两条细则不许再回到每回合都在的 L1（C2-3c 已下沉）。
+  assert.equal(policy.includes('已交付待确认（delivered）'), false, 'L1 不该再摊开 delivered 细则')
 })
 
 test('完整访问文案只有一处真源：brief 行 / 详情标签 / 详情纪律 / 创建回执同源', () => {

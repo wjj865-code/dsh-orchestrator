@@ -18,6 +18,7 @@ import {
 } from '../src/write-guard.js'
 import { loadConfig } from '../src/config.js'
 import { renderCoordinatorPolicy } from '../index.js'
+import { WRITE_GUARD_CRITERIA } from '../src/copy.js'
 import { tempDir, sampleBrief, endReportedTurn } from './helpers.js'
 
 // —— 一、纯函数 ——
@@ -784,18 +785,32 @@ test('回归（集成）：仓库根任务在跑时隔离任务 resume / 追问�
 
 // —— 三、协调者 policy 与文档同口径 ——
 
-test('协调者 policy 渲染同写域防护：档位、三条出路、delivered 追问口径', () => {
+test('协调者 policy 渲染同写域防护：当前档位 + 判据一句 + 技能指针（三条出路在技能里）', () => {
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /## 同写域并发防护/)
   assert.match(policy, /sameDirGuard=require/)
-  assert.match(policy, /action: 'close'/)
-  assert.match(policy, /worktree:true/)
-  assert.match(policy, /allowConcurrent:true/)
-  assert.match(policy, /delivered/)
+  // 判据一句（措辞单源 copy.js）+ 技能指针：L1 只回答「怎么判」，出路细则按需加载。
+  assert.ok(policy.includes(WRITE_GUARD_CRITERIA), 'L1 缺同写域判据句（应逐字来自 copy.js）')
+  assert.match(policy, /详见 skill\(\{ name: 'orch-parallel' \}\)/)
+  assert.match(policy, /worktree:true 并行/)
   // 降级档位要如实渲染，不能一律写「拒绝」。
   assert.match(renderCoordinatorPolicy({ sameDirGuard: 'warn' }), /sameDirGuard=warn/)
   assert.match(renderCoordinatorPolicy({ sameDirGuard: 'warn' }), /只警告/)
   assert.match(renderCoordinatorPolicy({ sameDirGuard: 'off' }), /已关闭/)
+  // 改判据版（C2-3c）：三条出路（close/stop、worktree、allowConcurrent）、判定对象、delivered 不占目录
+  // 都下沉 skills/orch-worktree/SKILL.md——原断言锁 L1 正文，现在逐条锁技能文件（口径没丢）。
+  const skill = readFileSync(new URL('../skills/orch-worktree/SKILL.md', import.meta.url), 'utf8')
+  for (const fragment of [
+    "task_message({ action: 'close' })", "task_message({ action: 'stop' })",
+    'allowConcurrent:true', '被拒时按顺序选一条', '判定对象：同一 target 目录',
+    '已交付待确认（delivered，写根已释放）', '已交付待确认（delivered）**不占目录**',
+  ]) {
+    assert.ok(skill.includes(fragment), `技能文件缺同写域细则：${fragment}`)
+  }
+  // 反回涨：出路清单不许再回到每回合都在的 L1。
+  for (const fragment of ['allowConcurrent:true', '被拒时按顺序选一条']) {
+    assert.equal(policy.includes(fragment), false, `L1 段不该再摊开出路细则：${fragment}`)
+  }
 })
 
 test('README / docs 写明行为变更、配置字段与默认值、三条出路', () => {
