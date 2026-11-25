@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   openLedger, createTask, getTask, listTasks, transition, addMessage, addNotification,
-  setTaskAcceptance, setTaskArtifacts, setTaskLastMessage, deleteTask,
+  setTaskAcceptance, setTaskArtifacts, setTaskLastMessage, deleteTask, setTaskDeliveryPending,
 } from '../src/ledger.js'
 import { createPanelActions } from '../src/panel-actions.js'
 import { resolveMessageBody } from '../src/message-body.js'
@@ -55,6 +55,20 @@ function runningTask(db, title, extra = {}) {
   transition(db, task.id, 'running', { sessionId: `c-${task.id}`, target: `c-${task.id}` })
   return task
 }
+
+test('面板收集中关闭/删除拒绝，停止允许且保留 pending，清除后可删', async () => {
+  const { db, actions } = await setup().init()
+  const task = runningTask(db, '收集门控')
+  setTaskDeliveryPending(db, task.id, { changedFiles: ['result.txt'] })
+  assert.equal((await actions.close(task.id)).code, 'CLOSE_COLLECTING')
+  assert.equal((await actions.stop(task.id)).ok, true)
+  assert.equal(getTask(db, task.id).delivery_pending.changedFiles[0], 'result.txt')
+  assert.equal((await actions.delete(task.id)).code, 'DELETE_COLLECTING')
+  assert.equal(actions.detail(task.id).task.canDelete, false)
+  setTaskDeliveryPending(db, task.id, null)
+  assert.equal((await actions.delete(task.id)).ok, true)
+  db.close()
+})
 
 test('detail 返回 brief/消息/产物/依赖', async () => {
   const env = setup()
@@ -653,6 +667,50 @@ test('detail refs：消息正文里提到的引用解析成台账现名（含已
   addMessage(db, task.id, { kind: 'report', rendered: `再说一次 ${target.ref}` })
   assert.equal(actions.detail(task.id).refs.filter(row => row.ref === target.ref).length, 1)
   db.close()
+})
+
+test('面板 resume 复用原会话，拒绝交付收集与已确认任务', async () => {
+  const { db, actions, calls } = await setup().init()
+  const task = runningTask(db, '续跑')
+  transition(db, task.id, 'failed', { error: 'interrupted' })
+  assert.equal(actions.detail(task.id).task.canResume, true)
+  const result = await actions.resume(task.id, 'request-1')
+  assert.equal(result.ok, true)
+  assert.equal(getTask(db, task.id).status, 'running')
+  assert.equal(getTask(db, task.id).resume_count, 1)
+  assert.equal(calls.send[0].target, `c-${task.id}`)
+  assert.equal(listTasks(db).length, 1)
+  db.prepare('UPDATE tasks SET delivery_pending_json = ? WHERE id = ?').run('{}', task.id)
+  assert.equal((await actions.resume(task.id, 'request-2')).code, 'RESUME_COLLECTING')
+  db.close()
+})
+
+test('面板 resume 投递失败/不可达不改状态与轮次、不新派，失败后允许重试', async () => {
+  for (const [code, expected] of [['NOT_FOUND', 'RESUME_UNREACHABLE'], ['NETWORK_ERROR', 'RESUME_DELIVERY_FAILED']]) {
+    let fail = true
+    const { db, actions } = await setup({
+      makeDispatcher: () => ({
+        send: async () => {
+          if (fail) throw Object.assign(new Error('投递失败'), { code })
+          return 'message-id'
+        },
+      }),
+    }).init()
+    const task = runningTask(db, '投递失败续跑')
+    transition(db, task.id, 'failed', { error: '原结束原因' })
+    const before = getTask(db, task.id)
+    const rejected = await actions.resume(task.id, 'r-failed')
+    assert.equal(rejected.code, expected)
+    const after = getTask(db, task.id)
+    assert.equal(after.status, before.status)
+    assert.equal(after.error, before.error)
+    assert.equal(after.attempts, before.attempts)
+    assert.equal(after.resume_count, before.resume_count)
+    assert.equal(listTasks(db).length, 1)
+    fail = false
+    assert.equal((await actions.resume(task.id, 'r-retry')).ok, true)
+    db.close()
+  }
 })
 
 test('detail 消息投递状态：投递中是 pending（待发），成功后 delivered（已投递）', async () => {

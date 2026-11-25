@@ -10,7 +10,7 @@
  * 组件都是工厂里定义的闭包（与 views.js 同一套 React 注入，源码不 import react）。
  */
 import {
-  BOARD_COLUMNS, WEEKDAY_LABELS, DEFAULT_PLAN_HOUR, TONE_COLOR,
+  BOARD_COLUMNS, WEEKDAY_LABELS, DEFAULT_PLAN_HOUR, TONE_COLOR, STATUS_TONE,
   REVIEW_DAYS,
 } from './constants.js'
 import {
@@ -43,10 +43,7 @@ const percent = (done, total) => (total > 0 ? Math.round((done / total) * 100) :
 export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banner, SkeletonList, STATUS_LABEL }) {
   const { useState } = React
 
-  const statusTone = status => (status === 'done' ? 'good'
-    : status === 'failed' || status === 'orphaned' ? 'bad'
-      : status === 'running' ? 'info'
-        : status === 'delivered' || status === 'waiting_user' || status === 'waiting_auth' ? 'warn' : 'muted')
+  const statusTone = status => STATUS_TONE[status] ?? 'muted'
 
   const statusBadge = status => <Badge tone={statusTone(status)}>{STATUS_LABEL[status] || status || '未知'}</Badge>
 

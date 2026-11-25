@@ -69,10 +69,12 @@ test('task_create 的 dependsOn 描述与 L1 逐字同源（工具表里手边�
   const { parameters } = createTools({ db: {}, config: loadConfig({}) }).find(tool => tool.name === 'task_create')
   const description = parameters.properties.dependsOn.description
   assert.equal(description, TASK_CHAIN_TOOL_DESC, 'dependsOn 描述应直接引用 copy.js 的 TASK_CHAIN_TOOL_DESC')
-  for (const line of RULES) assert.ok(description.includes(line), `dependsOn 描述缺少规则句：${line.slice(0, 24)}…`)
+  for (const text of ['同回合建 B', '不轮询', '全部 done', 'delivered 不算 done', '下游失败', '串行', 'worktree 并行']) {
+    assert.ok(description.includes(text), `dependsOn 简述缺少契约：${text}`)
+  }
   // 只写「依赖完成才派发」会让人以为要自己等——所以这两句必须在 schema 里。
-  assert.match(description, /自动晋升/)
-  assert.match(description, /不占你的回合/)
+  assert.match(description, /队列自动派发/)
+  assert.match(description, /不轮询/)
   assert.match(description, /不算 done/)
 })
 

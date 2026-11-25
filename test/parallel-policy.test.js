@@ -133,7 +133,7 @@ test('与三段口径对齐：worktree 段推荐隔离并行、写域段并行�
   assert.match(text, /sameDirGuard=require/)
   assert.match(text, /前置失败 → 下游自动 failed/)
   // 硬规则 bullet 也带上并行指引（派单那一刻手边就看得到）。
-  assert.match(text, /两个任务\*\*互不依赖、又不需要复用同一子会话上下文\*\*时别排队串行/)
+  assert.match(text, /互不依赖、无需复用上下文时首选/)
 })
 
 test('归层：并行策略属 L1，brief / task_detail 不复述', () => {

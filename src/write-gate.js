@@ -28,11 +28,11 @@ export { WRITE_DOMAIN_DENIED, isWriteHeld }
  *   `dispatch.js` 的 `grantWritableRoot` chokepoint 再判一次写域。
  */
 export const WRITE_GRANT_ACTIONS = Object.freeze([
-  { file: 'src/tools.js', fn: 'messageTask', kind: 'followup', calls: ['decideFollowup', 'holdWriteDomain'] },
-  { file: 'src/tools.js', fn: 'resumeTask', kind: 'resume', calls: ['decideRegrant', 'holdWriteDomain'] },
+  { file: 'src/tools.js', fn: 'messageTask', kind: 'followup', calls: ['decideFollowup', 'holdTaskWrite'] },
+  { file: 'src/task-actions.js', fn: 'resumeTask', kind: 'resume', calls: ['decideRegrant', 'holdTaskWrite'] },
   { file: 'src/tools.js', fn: 'retryTask', kind: 'retry', calls: ['decideCreate'] },
   { file: 'src/tools.js', fn: 'task_create', kind: 'create', calls: ['decideCreate'], marker: "wrap('task_create'" },
-  { file: 'src/panel-actions.js', fn: 'message', kind: 'followup', calls: ['decideFollowup', 'acquireWriteHold'] },
+  { file: 'src/panel-actions.js', fn: 'message', kind: 'followup', calls: ['decideFollowup', 'holdTaskWrite'] },
   { file: 'src/panel-actions.js', fn: 'retry', kind: 'retry', calls: ['decideCreate'] },
 ])
 

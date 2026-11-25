@@ -336,13 +336,13 @@ test('P9 协调者 policy：结构化渲染当前策略 + 判断流程 + 分支�
   assert.match(text, /auto：默认不隔离/)
   assert.match(text, /off：一律不隔离/)
   // 三条件引导 + 协调者判断 + 插件只执行。
-  assert.match(text, /A 目标是 git 仓库/)
+  assert.match(text, /git 仓库 ∧ 同一需求有任务执行 ∧ 本次新需求/)
   assert.match(text, /ask_user_question/)
   assert.match(text, /needsBranchChoice/)
-  assert.match(text, /合并由你决定/)
+  assert.match(text, /合并由用户决定/)
   // 反向验证（v2 硬约束）：不解析 AGENTS.md、不跑 git。
   assert.match(text, /不要问「怎么解析文件」/)
-  assert.match(text, /你不要跑 git/)
+  assert.match(text, /不要自己跑 git/)
   const full = renderCoordinatorPolicy({})
   assert.match(full, /你是 dsh-orchestrator 的协调者/)
   assert.match(full, /当前配置策略：auto/)

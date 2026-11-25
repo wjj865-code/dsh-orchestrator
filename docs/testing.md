@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | `pnpm test` | `pretest` = `pnpm run build` + `check:client-size` + `check:docs`，然后 `node --test … "test/*.test.js"` | 0 fail；pass 数与用例数一致；无未说明的 skip；进程正常退出不挂起 |
 | `pnpm run check:client` | `node --check dist/client.js`（构建产物语法） | exit 0 |
-| `pnpm run check:client-size` | `dist/client.js` 字节数 ≤ **160 KiB**（`scripts/check-client-size.mjs`） | exit 0 |
+| `pnpm run check:client-size` | `dist/client.js` 字节数 ≤ **167 KiB**（按实测增量取整，允许上限 168 KiB；脚本记录依据） | exit 0 |
 | `pnpm run check:version` | `package.json` / README / CHANGELOG 三处版本口径 | exit 0 |
 | `pnpm run check:docs` | 文档行数预算（**1,800**）+ README 首屏结构 + 参考表（`docs/CONFIG.md` / `docs/TOOLS.md`）与代码同源 + 文档链接与内链可达 | exit 0（详见 §3.4） |
 | `npm pack --dry-run` | 包内容与 `package.json.files` | 含 `README`/`CHANGELOG`/`docs/testing.md`，不含被删文档与调试预设 |

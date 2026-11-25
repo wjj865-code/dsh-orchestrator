@@ -19,6 +19,7 @@ export const RESUME_HISTORY_THRESHOLD = 60
 /** 能不能续跑（纯函数，不碰台账）：状态能力 + done 行级白名单 + 会话/检出可用性 + 阈值提示。 */
 export function resumeGate(task, { history = 0 } = {}) {
   if (task === undefined || task === null) return { ok: false, reason: 'not_found' }
+  if (task.delivery_pending) return { ok: false, reason: 'collecting' }
   const status = String(task.status ?? '')
   // 状态级判据一律查能力表（failed / orphaned / done），别在这里再写一份状态集合。
   if (hasCap(status, 'resume') !== true || canTransition(status, 'running') !== true) return { ok: false, reason: 'state' }

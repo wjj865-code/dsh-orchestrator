@@ -45,8 +45,9 @@ try {
   writeFileSync(`${root}/03-readonly.txt`, await page.text())
   const snapshot = results.at(-1).body
   for (const task of snapshot.tasks ?? []) {
-    results.push({ check: 'task-detail', taskId: task.id, ...(await api({ endpoint: 'detail', taskId: task.id })) })
-    const artifact = task.artifacts?.find(a => a.path.includes('/docs/'))
+    const detail = await api({ endpoint: 'detail', taskId: task.id })
+    results.push({ check: 'task-detail', taskId: task.id, ...detail })
+    const artifact = detail.body.task?.artifacts?.find(a => a.path.includes('/docs/'))
     if (artifact) results.push({ check: 'document-preview', taskId: task.id, ...(await api({ endpoint: 'preview', taskId: task.id, path: artifact.path })) })
   }
   const taskButton = await page.evaluate(`(() => {const el=[...document.querySelectorAll('button,a,[role=button]')].find(e=>e.innerText.trim()==='任务' && e.getBoundingClientRect().width);if(!el)return null;const r=el.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`)
@@ -61,8 +62,23 @@ try {
       await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...card })
       await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...card })
       await sleep(800)
+      const accessibility = await page.evaluate(`(() => {
+        const dialog=document.querySelector('.orch-drawer');
+        return {role:dialog.getAttribute('role'),modal:dialog.getAttribute('aria-modal'),
+          focusInside:dialog.contains(document.activeElement),backgroundInert:document.querySelector('.orch-shell > div')?.inert};
+      })()`)
+      if (accessibility.role !== 'dialog' || accessibility.modal !== null || !accessibility.focusInside || !accessibility.backgroundInert) throw new Error('抽屉语义或焦点不符合契约')
+      results.push({check:'drawer-focus',...accessibility})
+      await page.send('Input.dispatchKeyEvent', {type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9})
+      await page.send('Input.dispatchKeyEvent', {type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9})
+      if (!(await page.evaluate(`document.querySelector('.orch-drawer').contains(document.activeElement)`))) throw new Error('Tab 焦点离开抽屉')
       await page.screenshot(`${root}/05-detail.png`)
       writeFileSync(`${root}/05-detail.txt`, await page.text())
+      await page.send('Input.dispatchKeyEvent', {type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+      await page.send('Input.dispatchKeyEvent', {type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27})
+      await waitFor(page, `document.querySelector('.orch-drawer').dataset.open === 'false'`)
+      if (!(await page.evaluate(`document.activeElement.closest('.orch-card') !== null`))) throw new Error('关闭后焦点未恢复到卡片')
+      results.push({check:'escape-close',ok:true})
     }
   }
   writeFileSync(`${root}/snapshot.json`, JSON.stringify(snapshot, null, 2))

@@ -7,11 +7,11 @@
  */
 import { ROUTE } from './constants.js'
 
-export const readSnapshot = async signal => {
+export const readSnapshot = async (signal, rev) => {
   const response = await fetch(ROUTE, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ endpoint: 'snapshot' }),
+    body: JSON.stringify({ endpoint: 'snapshot', ...(rev ? { rev } : {}) }),
     signal,
   })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -87,7 +87,7 @@ export const readPreview = async (taskId, path) => {
 
 export const panelAction = async (endpoint, taskId, extra = {}) => {
   const payload = { endpoint, taskId, ...extra }
-  if (endpoint === 'message' && (typeof payload.clientRequestId !== 'string' || payload.clientRequestId === '')) {
+  if (['message', 'resume'].includes(endpoint) && (typeof payload.clientRequestId !== 'string' || payload.clientRequestId === '')) {
     payload.clientRequestId = newRequestId()
   }
   const response = await fetch(ROUTE, {

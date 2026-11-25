@@ -282,10 +282,7 @@ export const TASK_CHAIN_LINES = Object.freeze({
  * 为什么工具描述也要写全：协调者读的是工具表，派单那一刻手边只有 schema——只写「依赖完成才派发」
  * 会让人以为要自己等，于是不会用 dependsOn。
  */
-export const TASK_CHAIN_TOOL_DESC = '前置任务编号数组（任务链；依赖就绪由插件队列自动晋升，不占你的回合）——'
-  + [TASK_CHAIN_LINES.criteria, TASK_CHAIN_LINES.buildNow, TASK_CHAIN_LINES.notBlocking,
-    TASK_CHAIN_LINES.upstreamFailed, TASK_CHAIN_LINES.deliveredNotDone, TASK_CHAIN_LINES.worktreeSerial]
-    .join('；')
+export const TASK_CHAIN_TOOL_DESC = '前置任务引用数组：B 使用 A 产物时同回合建 B，不轮询。前置全部 done 后队列自动派发；delivered 不算 done，失败/取消/丢失/不存在使下游失败。同检出用 dependsOn 串行，独立任务各建 worktree 并行。完整策略见协调者任务链段。'
 
 /** waiting_dep 创建回执的补充一句（协调者看到时不要以为要自己等）。 */
 export const TASK_CHAIN_WAITING_NOTE = `依赖完成由插件队列自动晋升（不占回合，不用轮询）：${TASK_CHAIN_LINES.notBlocking}`
@@ -298,9 +295,7 @@ export const TASK_CHAIN_WAITING_NOTE = `依赖完成由插件队列自动晋升�
  * 而 `chain` 是**另一个参数**的描述，混进去会让 dependsOn 的描述多讲一个它不管的开关。
  * L1 只讲判断口径（TASK_CHAIN_LINES.chainAuto），回执/通知/工具描述各自引用这组常量，句子仍只定义一次。
  */
-export const CHAIN_AUTO_TOOL_DESC = '链式自动放行：只接受 "auto"。带该标记的任务交付（落「已交付待确认」）时，'
-  + '若仍有 waiting_dep 的下游在等，插件直接按确认逻辑收成 done（accepted_by=chain、accepted_kind=delivery、close_reason=chain），'
-  + '下游自动晋升；没有下游时保持「已交付待确认」，不传则完全不自动放行。自动放行后不能追问（要改请 resume 续跑原会话或重新派任务）'
+export const CHAIN_AUTO_TOOL_DESC = '只接受 "auto"：交付时仍有 waiting_dep 下游则自动确认 done 并晋升；没有下游时保持 delivered。不传不自动放行；done 不能追问，需 resume 或重派。'
 
 /** task_create 回执的补充行：让协调者在建链那一刻就知道这条链不会再卡在确认上。 */
 export const CHAIN_AUTO_CREATE_NOTE = '链式自动放行：本任务交付时若仍有下游在等，插件会自动确认完成（不必再等 close）；没有下游时仍停在「已交付待确认」。'

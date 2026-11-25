@@ -105,6 +105,21 @@ export const ACTION_ERRORS = Object.freeze({
     panel: ({ label, reason }) => `未续跑任务「${label}」：${reason}`,
     tool: ({ label, reason }) => `未续跑任务「${label}」（状态、死因、续跑次数都没变）：${reason}`,
   }),
+  RESUME_COLLECTING: define({
+    http: 409,
+    panel: () => '交付收集中，暂不能续跑；请等回合结束。',
+    tool: () => '交付收集中，暂不能续跑。',
+  }),
+  CLOSE_COLLECTING: define({
+    http: 409,
+    panel: () => '交付收集中，暂不能确认完成；请等待收集结束。',
+    tool: () => '交付收集中，暂不能确认完成；请等待收集结束。',
+  }),
+  DELETE_COLLECTING: define({
+    http: 409,
+    panel: () => '交付收集中，暂不能删除；停止后仍需等待收集结束。',
+    tool: () => '交付收集中，暂不能删除；停止后仍需等待收集结束。',
+  }),
   RETRY_WRITE_CONFLICT: define({
     http: 409,
     panel: ({ label, reason }) => `未重派任务「${label}」（没有新建任务）：${reason}`,
@@ -138,7 +153,7 @@ export const ACTION_ERRORS = Object.freeze({
     tool: ({ label }) => `任务「${label}」的隔离检出已清理，原会话写不进去；请用 task_message({ action: 'retry' })（按原基线重建检出）。`,
   }),
   RESUME_UNREACHABLE: define({
-    http: 502, panel: ({ reason }) => `续跑失败：子会话不可达（不能冷恢复），未新建任务。原因：${reason}`,
+    http: 502, panel: ({ reason }) => `续跑失败：子会话不可达（不能冷恢复），未新建任务；请用「重派」新开会话。原因：${reason}`,
     tool: ({ label, reason }) => `续跑失败：任务「${label}」的子会话不可达（不能冷恢复）。**没有自动新建任务**——确认要重来请用 task_message({ action: 'retry' })。原因：${reason}`,
   }),
   RESUME_DELIVERY_FAILED: define({

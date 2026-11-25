@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { openLedger, createTask, transition, markQueued, setTaskArtifacts } from '../src/ledger.js'
+import { openLedger, createTask, transition, markQueued, setTaskArtifacts, addMessage, setTaskArtifactStage, setTaskDeliveryPending, setTaskLastMessage } from '../src/ledger.js'
 import { createHostRoute, HOST_ROUTE, HOST_ROUTE_OPTIONS } from '../src/host-route.js'
 import { createWorkbench } from '../src/workbench.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
@@ -23,6 +23,57 @@ const setup = async () => {
   const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-1', live: true }), staleMinutes: 30 })
   return { db, handler }
 }
+
+test('snapshot 内容版本覆盖阶段/摘要/存活/stale，忽略响应时钟', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief(), coordinatorSession: 's-1' })
+  transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  const initialTime = Date.now()
+  let at = initialTime, live = true
+  const handler = createHostRoute({ db, now: () => at, coordinatorStatus: () => ({ id: 's-1', live }) })
+  const read = async rev => (await handler(request({ endpoint: 'snapshot', rev }))).json()
+  const first = await read()
+  at += 10
+  assert.deepEqual(await read(first.rev), { ok: true, notModified: true, rev: first.rev })
+  setTaskArtifactStage(db, task.id, { mode: 'non-git', complete: false, files: Array(1000).fill({ source: 'large' }) })
+  const stage = await read(first.rev)
+  assert.notEqual(stage.rev, first.rev)
+  assert.equal('files' in stage.tasks[0].artifactStage, false)
+  assert.equal('artifactStoreDir' in stage.tasks[0], false)
+  assert.equal(stage.tasks[0].canResume, false)
+  setTaskDeliveryPending(db, task.id, { summary: 'done' })
+  const collecting = await read(stage.rev)
+  assert.equal(collecting.tasks[0].deliveryPending, true)
+  assert.notEqual(collecting.rev, stage.rev)
+  addMessage(db, task.id, { kind: 'report', rendered: '最新回报', meta: { summary: '最新回报' } })
+  addMessage(db, task.id, { kind: 'close', rendered: '不是执行结论' })
+  const report = await read(collecting.rev)
+  assert.equal(report.tasks[0].summary, '最新回报')
+  setTaskLastMessage(db, task.id, { at: Date.now() + 100, summary: '更新的结算' })
+  const settled = await read(report.rev)
+  assert.equal(settled.tasks[0].summary, '更新的结算')
+  live = false
+  const offline = await read(settled.rev)
+  assert.notEqual(offline.rev, settled.rev)
+  at = initialTime + 31 * 60000
+  assert.equal((await read(offline.rev)).tasks[0].stale, true)
+  db.close()
+})
+
+test('resume 路由并发同请求只投递一次，幂等键与 message 隔离', async () => {
+  const db = await openLedger(tempDir())
+  let calls = 0
+  const handler = createHostRoute({ db, panel: { resume: async () => {
+    calls += 1
+    await new Promise(resolve => setImmediate(resolve))
+    return { ok: true, status: 'running' }
+  } } })
+  const body = { endpoint: 'resume', taskId: 't-1', clientRequestId: 'r-1' }
+  const results = await Promise.all([handler(request(body)), handler(request(body))])
+  assert.equal(calls, 1)
+  assert.equal((await results[1].json()).already, true)
+  db.close()
+})
 
 test('路由声明：POST /api/orchestrator，buffered body', () => {
   assert.equal(HOST_ROUTE, '/api/orchestrator')
@@ -418,7 +469,7 @@ test('open-main 抛异常时返回 500 可读错误，且不产生 unhandledReje
 })
 
 
-test('snapshot 任务行带 artifacts（path/label/exists），旧任务按空数组', async () => {
+test('snapshot 只带产物数量，完整产物由 detail 提供', async () => {
   const { db, handler } = await setup()
   const task = createTask(db, { brief: sampleBrief({ title: '有产物' }), coordinatorSession: 's-1' })
   transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
@@ -426,12 +477,10 @@ test('snapshot 任务行带 artifacts（path/label/exists），旧任务按空�
   createTask(db, { brief: sampleBrief({ title: '旧任务' }), coordinatorSession: 's-1' })
   const body = await (await handler(request({ endpoint: 'snapshot' }))).json()
   const withArtifacts = body.tasks.find(row => row.title === '有产物')
-  assert.deepEqual(withArtifacts.artifacts, [
-    { path: 'C:/w/a.md', label: '报告', exists: true },
-    { path: 'C:/w/b.txt', label: '', exists: false },
-  ])
+  assert.equal(withArtifacts.artifactCount, 2)
+  assert.equal('artifacts' in withArtifacts, false)
   const legacy = body.tasks.find(row => row.title === '旧任务')
-  assert.deepEqual(legacy.artifacts, [])
+  assert.equal(legacy.artifactCount, 0)
   db.close()
 })
 

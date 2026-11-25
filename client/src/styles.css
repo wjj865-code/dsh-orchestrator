@@ -495,3 +495,9 @@ textarea.orch-input { height: auto; padding: 6px 8px; resize: vertical; }
 .orch-pack-notes { margin: 2px 0; padding-left: 18px; }
 
 
+.orch-card-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: .8;
+}

@@ -9,6 +9,15 @@ import {
 // 这里把判定本身钉死，client 只消费快照/detail 下发的 canFollowup / canDelete。
 const task = (status, extra = {}) => ({ id: `t-${status}`, status, target: `c-${status}`, ...extra })
 
+test('收集中关闭/删除始终拒绝，包括停止后的终态；空 pending 不误拦', () => {
+  for (const status of ['running', 'delivered', 'done', 'cancelled', 'failed', 'orphaned']) {
+    assert.equal(closeGate(task(status, { delivery_pending: {} })).reason, 'collecting')
+    assert.equal(deleteGate(task(status, { delivery_pending: {} })).reason, 'collecting')
+  }
+  assert.equal(closeGate(task('delivered', { delivery_pending: null })).ok, true)
+  assert.equal(deleteGate(task('cancelled', { delivery_pending: null })).ok, true)
+})
+
 test('续派门控：只有进行中/等你确认/要授权/待确认，且已有子会话才可续派', () => {
   for (const status of ['running', 'waiting_user', 'waiting_auth', 'delivered']) {
     assert.equal(canFollowup(task(status)), true, status)

@@ -49,7 +49,7 @@ test('堵塞项四类与 W1 同源：L1 与 W1 都逐字引用 copy.js 的 BLOCK
 test('「不算堵塞项」清单在段内：进度、能否关闭、可给默认值的细节都不打扰', () => {
   const text = section()
   assert.match(text, /不算堵塞项/)
-  for (const item of ['进度与交付汇报', '任务能否关闭', '命名/文案/顺序', '自己查得清的事实', '能回退的取舍']) {
+  for (const item of ['进度/交付/关闭', '计划可给默认的细节', '可查事实', '可回退取舍']) {
     assert.ok(text.includes(item), `「不算堵塞项」清单缺少：${item}`)
   }
 })
@@ -71,18 +71,18 @@ test('追加调整按影响分三档：R0 直接转 / R1 先评估再确认 / R2
 test('顺序闸门：先评估、再确认、最后才通知子任务（顺序不能换）', () => {
   const text = section()
   assert.match(text, /先评估、再确认、最后才通知子任务，顺序不能换/)
-  // 陷阱写清：计划中的任务收到追加消息即视为批准，所以评估必须早于 task_message。
+  // 追加不是显式批准，评估仍必须早于 task_message。
   assert.match(text, /确认后才通知子任务/)
-  assert.match(text, /计划中的任务收到追加消息即视为批准/)
+  assert.match(text, /追加不能替代评估或显式计划批准/)
 })
 
 test('T1 不是免确认挡箭牌：不可逆最低 T2，且必须拍板', () => {
   const text = section()
   assert.match(text, /T1 不是「不问就干」/)
-  assert.match(text, /不可逆动作永远不算 T1（最低 T2）/)
+  assert.match(text, /不可逆最低 T2/)
   assert.match(text, /不可逆仍必须拍板/)
   // 「你看着办」最多降一档，不能降掉不可逆的拍板。
-  assert.match(text, /至多把 T2 降一档/)
+  assert.match(text, /至多降一档/)
 })
 
 test('推进循环：五条规则都在 L1，与「少打扰 / 不催关闭」不冲突也不重复', () => {
@@ -171,7 +171,7 @@ test('计划批准四选一：逐项确认 / 均按推荐 / 先看计划文档 /
   assert.equal(PLAN_APPROVAL_OPTIONS_TEXT, '逐项确认 / 均按推荐 / 先看计划文档 / 放弃')
   assert.ok(text.includes(PLAN_APPROVAL_OPTIONS_TEXT), 'L1 的计划批准选项必须逐字用四选一')
   // 四步变五步：先交付 → 问批准方式（四选一）→ 逐项确认 → 均按推荐 → 其它分支。
-  assert.match(text, /严格按这五步（顺序不能换）/)
+  assert.match(text, /上述顺序不能换/)
   assert.match(text, /options 固定四项/)
   assert.match(text, /先交付/)
   assert.match(text, /先看计划文档/)

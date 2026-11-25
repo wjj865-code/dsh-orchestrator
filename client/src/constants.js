@@ -61,10 +61,7 @@ export const STATUS_LABEL = {
   waiting_dep: '等前置', pending: '待派发', running: '进行中', waiting_user: '等你确认', waiting_auth: '要授权',
   delivered: '待确认', done: '已完成', failed: '失败', cancelled: '已取消', orphaned: '会话丢失', missing: '缺失',
 }
-export const STATUS_TONE = {
-  waiting_dep: 'warn', pending: 'muted', running: 'info', waiting_user: 'warn', waiting_auth: 'warn',
-  delivered: 'warn', done: 'good', failed: 'bad', cancelled: 'muted', orphaned: 'bad', missing: 'bad',
-}
+export { STATUS_TONE } from '../../src/status-tone.js'
 // 消息类型与 followup 的投递状态（与 src/panel-actions.js 的 delivery 字段一一对应）。
 export const MESSAGE_KIND_LABEL = {
   brief: '任务简报', followup: '追加消息', delivery_failed: '投递失败', report: '回报', progress: '进展',

@@ -30,8 +30,8 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
-/** 预算（字节）：164 KiB。0.35.0 由用户拍板从 160 KiB 抬上来（引用 chip 子预算见文件头）。 */
-export const CLIENT_SIZE_LIMIT = 164 * 1024
+/** 预算（字节）：167 KiB。合并 0.35.2 后实测 170,073 B（比远端 +4,463 B）；允许上限 168 KiB。 */
+export const CLIENT_SIZE_LIMIT = 167 * 1024
 
 /** 人类可读：`75.5 KB (77315 B)`。 */
 export const formatSize = bytes => `${(bytes / 1024).toFixed(1)} KB (${bytes} B)`

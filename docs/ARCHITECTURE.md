@@ -538,15 +538,15 @@
 
 | endpoint | 作用 |
 |---|---|
-| `snapshot` | 只读快照（含 `handoff` 精简版、`teamBoard`、任务行 `acceptance` 摘要） |
+| `snapshot` | 只读列表投影：摘要、产物数量、阶段摘要、`canResume`、handoff/Team/验收；完整清单与路径只在 detail |
 | `open-main` | 创建/打开主会话 |
 | `main-nav` / `main-nav-ack` | 读「跳到新主会话 / 一条可读提示」的进程内待办；客户端处理完 ack（id 匹配才清） |
 | `detail` | 任务详情、消息、依赖、产物、最新回复、交接、官方板关联 |
 | `artifacts` | 产物汇总（项目/日期分组所需字段） |
 | `preview` | 预览台账里登记的文本产物（前 64 KiB） |
-| `stop` / `retry` / `message` / `delete` | 面板动作（门控见 `src/panel-gates.js`；`message` 仅可续派状态，但面板已无「追加」按钮） |
+| `stop` / `retry` / `resume` / `close` / `message` / `delete` | 共享动作门控；resume 继续原子会话，收集中/人工确认/检出清理拒绝；message 无面板按钮 |
 
-面板 2s 轮询，连续失败退避 30s；`canDelete` 由服务端判定并随 snapshot/detail 下发。
+面板可见时 2s 轮询、失败退避 30s，恢复可见立即刷新；POST 可带上次 `rev`，可见投影（排除响应 `at`）未变返回 `200 {ok:true,notModified:true,rev}`。各消费方独立缓存，详情随所选任务变化静默刷新；色调由服务端展示表同源。
 
 工作台 v1 的只读投影与窄写口同挂这一条路由：只读 `groups` / `group` / `calendar` / `automations` / `stats`（复盘页的窗口统计——交付数、确认数、平均「创建→交付」时长、失败归因（`tasks.error` 首行）、产物类型（按路径扩展名，不读文件内容）、组维度排行与消息条数；窗口 ≤62 天、缺省 7 天，只读台账既有时间戳）；写 `group-save` / `group-archive` / `plan-set` / `automation-save|toggle|delete`（`clientRequestId` 幂等 + 危险动作 `confirm:true` + 审计）。**0.33.0 起 `automation-save` 的创建分支面板不再调用**（创建改走主会话里的官方 `schedule_create`），端点保留给兼容/脚本，`toggle|delete` 仍由面板使用。**刻意没有** `task-create` / `plan-approve` / `close-all` / `task-message` / `patch-task`。
 
@@ -583,7 +583,7 @@
 ### 界面与消息块（合并自原 UI.md）
 
 - **布局与 token**：`.orch-topbar` + `.orch-metrics`（4 张指标卡）、`.orch-body`（`.orch-rail` 筛选轨 7 项 + 卡片列表 / 产物库）、`.orch-layer > .orch-scrim + .orch-drawer`；窄屏 ≤860px 筛选轨变横向条、≤640px 抽屉铺满。颜色/圆角/阴影/动效全部取宿主 `--dsw-*` / `--ds-*` token，**不写死颜色**，每处 `var()` 带兜底值；旧 bug 用过的 `--dsw-alias-color-*` 这类不存在的变量已统一成 `--dsw-alias-state-*` / `--dsw-alias-label-*`（测试有 `doesNotMatch` 守着）。
-- **交互**：hover、抽屉滑入滑出、`0fr↔1fr` 折叠、骨架 `orch-shimmer`、按钮按下反馈；二次确认用 `.orch-confirm` 两步（不用 `window.confirm`）；空态/加载/错误态齐备；`Esc` 关抽屉、`aria-expanded/pressed/hidden/label`、`:focus-visible` 焦点环；`prefers-reduced-motion: reduce` 关掉全部动画。
+- **交互**：详情用非模态 dialog（宿主仍可交互，不声明 aria-modal），面板背景 inert，Tab 限制、Esc 关闭并恢复触发点焦点；历史任务缺席快照不等于删除；不完整阶段展示逐文件原因。收集中禁止关闭/删除，允许停止但保留 pending 到收集/恢复完成；失败可重试。`prefers-reduced-motion: reduce` 关闭动画。
 - **会话头入口**：注册在 `conversation.header.leading`（单席位），仅主会话显示；视觉与面板顶栏同一套语言（透明底、图标块 `.orch-entry-mark`）。
 
 ### 回复底部关联任务 chip（官方 turnTail 槽位）

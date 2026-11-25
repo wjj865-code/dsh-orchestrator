@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openLedger, addMessage, createTask, getTask, listTasks, recentMessages, transition } from '../src/ledger.js'
+import { openLedger, addMessage, createTask, getTask, listTasks, recentMessages, transition, setTaskDeliveryPending } from '../src/ledger.js'
 import {
   CLOSE_REASONS, DELIVERED_TIMEOUT_MINUTES, closeDelivered, closeReasonLabel, createDeliveredSweeper,
   findExpiredDelivered,
@@ -10,6 +10,21 @@ import {
 import { tempDir, sampleBrief } from './helpers.js'
 
 const MINUTE = 60_000
+
+test('底层关闭包括超时/链式入口都不能绕过收集中门控', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief() })
+  transition(db, task.id, 'running')
+  transition(db, task.id, 'delivered')
+  setTaskDeliveryPending(db, task.id, {})
+  for (const reason of Object.values(CLOSE_REASONS)) {
+    assert.equal(closeDelivered({ db, taskId: task.id, reason }).reason, 'collecting')
+    assert.equal(getTask(db, task.id).status, 'delivered')
+  }
+  setTaskDeliveryPending(db, task.id, null)
+  assert.equal(closeDelivered({ db, taskId: task.id }).ok, true)
+  db.close()
+})
 
 /** 建一条 running 任务再推到 delivered（delivered_at 由 transition 写入）。 */
 const deliveredTask = async (db, { at = Date.now(), title = '交付' } = {}) => {

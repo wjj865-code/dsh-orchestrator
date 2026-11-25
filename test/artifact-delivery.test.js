@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { createArtifactDelivery } from '../src/artifact-delivery.js'
 import { createSettlementReporter } from '../src/settlement.js'
 import { createTools } from '../src/tools.js'
-import { createTask, getTask, openLedger, transition } from '../src/ledger.js'
+import { createTask, getTask, openLedger, transition, setTaskDeliveryPending } from '../src/ledger.js'
+import { closeGate, deleteGate } from '../src/panel-gates.js'
 import { tempDir, sampleBrief } from './helpers.js'
 
 test('done 请求保持目录占用；当前回合摘要保存完成后才交付和释放，重复结束幂等', async () => {
@@ -49,6 +50,7 @@ test('收集中停止不会被重新交付，失败清单可见且不重复通�
   const db = await openLedger(tempDir())
   const task = createTask(db, { brief: sampleBrief(), artifactRoot: tempDir(), targetDir: tempDir() })
   transition(db, task.id, 'running', { sessionId: 'child', target: 'child' })
+  setTaskDeliveryPending(db, task.id, { summary: 'finished', changedFiles: ['out.txt'], eventSeq: 1 })
   let finish
   const notices = []
   const delivery = createArtifactDelivery({
@@ -58,10 +60,35 @@ test('收集中停止不会被重新交付，失败清单可见且不重复通�
   })
   const pending = delivery.report({ taskId: task.id, stopReason: 'completed' })
   transition(db, task.id, 'cancelled')
+  assert.equal(getTask(db, task.id).delivery_pending.changedFiles[0], 'out.txt')
+  assert.equal(deleteGate(getTask(db, task.id)).reason, 'collecting')
+  assert.equal(closeGate(getTask(db, task.id)).reason, 'collecting')
   finish()
   await pending
   assert.equal(getTask(db, task.id).status, 'cancelled')
+  assert.equal(getTask(db, task.id).delivery_pending, null)
+  assert.equal(deleteGate(getTask(db, task.id)).ok, true)
   assert.equal(notices.length, 0)
+  db.close()
+})
+
+test('停止后重启恢复保留候选信息，恢复结束清 pending 且不重新交付', async () => {
+  const db = await openLedger(tempDir())
+  const task = createTask(db, { brief: sampleBrief(), artifactRoot: tempDir(), targetDir: tempDir() })
+  transition(db, task.id, 'running', { target: 'child', sessionId: 'child' })
+  setTaskDeliveryPending(db, task.id, { changedFiles: ['result.txt'], artifacts: [], eventSeq: 2 })
+  transition(db, task.id, 'cancelled')
+  let captured
+  const delivery = createArtifactDelivery({
+    db, settlement: createSettlementReporter({ db }), mainDir: tempDir,
+    sessionOf: () => null, workspaceChanges: () => null,
+    collect: async args => { captured = args },
+  })
+  await delivery.report({ taskId: task.id, stopReason: 'error', source: 'startup-recovery' })
+  assert.deepEqual(captured.changedFiles, ['result.txt'])
+  assert.equal(captured.interrupted, true)
+  assert.equal(getTask(db, task.id).status, 'cancelled')
+  assert.equal(getTask(db, task.id).delivery_pending, null)
   db.close()
 })
 

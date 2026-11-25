@@ -235,7 +235,7 @@ export const createClient = (req) => {
 
     // 关联任务 chip 的共享数据源：只在 chip 行订阅时轮询（见 feed.js）。
     // 卸载时停表，避免插件热替换后还留着一个自排程定时器。
-    const chipFeed = createTaskFeed({ readSnapshot: () => readSnapshot() })
+    const chipFeed = createTaskFeed({ readSnapshot })
     if (typeof ctx.effect === 'function') {
       ctx.effect(() => () => chipFeed.stop(), 'dsh-orchestrator: task chip feed')
     }

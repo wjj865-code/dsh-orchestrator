@@ -436,7 +436,7 @@ test('产物页：调用 artifacts 端点、按项目/日期分组、预览/复�
   // 空态和失败态。
   assert.match(source, /共 \$\{artifactItems\.length\} 个产物/)
   assert.match(source, /产物加载失败/)
-  assert.match(source, /还没有产物。任务 done 时会自动收集改动文件/)
+  assert.match(source, /回合结束后保存阶段清单/)
   assert.match(source, /kind === 'text'/)
   assert.match(source, /kind === 'binary'/)
   assert.match(source, /kind === 'directory'/)
@@ -2042,6 +2042,77 @@ test('面板消费 chip 的降级提示：抽屉顶部说清「为什么没跳�
   await flush()
 })
 
+test('历史详情不因有限快照缺席关闭；过期响应丢弃，确证删除才关闭', async () => {
+  const pending = []
+  const { loaded, ctx, registrations, resetHooks, hooks } = load({
+    fetch: async (_url, init) => {
+      const payload = JSON.parse(init.body)
+      if (payload.endpoint === 'detail') return new Promise(resolve => pending.push({ payload, resolve }))
+      return { ok: true, status: 200, json: async () => snapshotOf([]) }
+    },
+    globals: { setTimeout: () => 0, clearTimeout: () => {} },
+  })
+  loaded.apply(ctx)
+  const panel = registrations.find(row => row.spec.name === 'main' && row.spec.key === 'orchestrator')
+  const injected = panel.spec.inject()
+  resetHooks()
+  hooks.slots[0] = snapshotOf([])
+  const render = () => {
+    hooks.cursor = 0; hooks.effects.length = 0
+    return panel.component({ openSession: () => {}, focus: injected.focus })
+  }
+  const runEffects = () => { for (const effect of [...hooks.effects]) effect() }
+  injected.focus.request('t-old')
+  render(); runEffects()
+  render(); runEffects()
+  pending[0].resolve({ ok: true, status: 200, json: async () => ({
+    ok: true, task: taskRow('t-old', 'done'), dependencies: [], dependents: [], messages: [],
+  }) })
+  await flush()
+  assert.equal(hooks.slots[10]?.task.id, 't-old', '有效历史详情保留')
+  const tree = render()
+  const drawer = collect(tree, node => node.type === 'aside')[0]
+  assert.equal(drawer.props['data-open'], 'true')
+  assert.equal(drawer.props['aria-modal'], undefined, '不伪称宿主全局模态')
+  runEffects()
+  const oldRefresh = pending.at(-1)
+  hooks.slots[0] = snapshotOf([taskRow('t-new', 'done')])
+  const switched = render()
+  const newCard = collect(switched, node => node.type === 'article' && node.props?.className === 'orch-card')[0]
+  newCard.props.onClick({})
+  render(); runEffects()
+  const newRequest = pending.at(-1)
+  oldRefresh.resolve({ ok: true, status: 200, json: async () => ({ ok: true, task: taskRow('t-old', 'done') }) })
+  await flush()
+  assert.notEqual(hooks.slots[10]?.task?.id, 't-old', '切换后旧响应丢弃')
+  newRequest.resolve({ ok: false, status: 404, json: async () => ({ ok: false, code: 'TASK_NOT_FOUND', error: '任务已删除' }) })
+  await flush()
+  assert.equal(hooks.slots[13], null, '明确不存在后关闭')
+})
+
+test('详情阶段显示逐文件失败原因并区分文档版本与阶段清单', () => {
+  const { hooks, panel, resetHooks } = panelOf()
+  resetHooks()
+  hooks.slots[0] = snapshotOf([])
+  hooks.slots[13] = 't-stage'
+  hooks.slots[10] = { ok: true, task: {
+    ...taskRow('t-stage', 'done'), artifacts: [], brief: {},
+    artifactStage: { mode: 'non-git', complete: false, files: [
+      { source: '/work/missing.txt', status: 'missing-or-deleted', reason: 'ENOENT' },
+      { source: '/outside/doc.md', status: 'rejected', reason: 'outside-workspace' },
+      { source: '/work/changing.txt', status: 'unstable' },
+      { source: '/work/saved.txt', status: 'saved' },
+    ] },
+  }, dependencies: [], dependents: [], messages: [] }
+  const text = flattenText(panel.component({ openSession: () => {} }))
+  assert.match(text, /missing\.txt：文件缺失或已删除（ENOENT）/)
+  assert.match(text, /doc\.md：收集被拒绝（outside-workspace）/)
+  assert.match(text, /changing\.txt：复制时文件变化/)
+  assert.doesNotMatch(text, /saved\.txt：/)
+  assert.match(text, /阶段清单记录本轮捕获范围/)
+  assert.match(text, /文档版本是显式保存的文件/)
+})
+
 test('chip 订阅时序：只有「主会话 + 最新一轮」才订阅共享 feed，退订即停', () => {
   const snapshot = { tasks: [chipTask('t-1', 'running')] }
   // 非最新轮次：effect 跑了也不订阅（没有 chip 的会话一个轮询都没有）。
@@ -2250,7 +2321,9 @@ test('chip 只走官方 turnTail 槽位：不注入 DOM、不抢动作行/时钟
   assert.match(source, /id: CHIP_ID/)
   assert.match(source, /order: 20/)
   // 没有 DOM 注入/查询，也不往宿主动作行或时钟位置塞节点。
-  assert.doesNotMatch(source, /querySelector|insertAdjacentHTML|createPortal/)
+  // 查询仅允许在自有抽屉 ref 内做焦点管理，不查询/注入宿主 DOM。
+  assert.doesNotMatch(source, /document\.querySelector|insertAdjacentHTML|createPortal/)
+  assert.match(source, /drawerRef\.current\?\.querySelector/)
   assert.doesNotMatch(source, /conversation\.chat\.assistant-actions/)
 
   const { STYLE_TEXT } = load().loaded.__test

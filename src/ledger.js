@@ -825,6 +825,33 @@ export function recentMessages(db, taskId, limit = 3) {
     .map(row => ({ seq: row.seq, kind: row.kind, rendered: row.rendered, at: row.at, meta: parseMessageMeta(row.meta_json) }))
 }
 
+/** 最新回报批量投影；复用 (task_id, seq) 主键，不冷读正文。 */
+export function latestReports(db, taskIds) {
+  if (taskIds.length === 0) return new Map()
+  const rows = db.prepare(`SELECT m.task_id, m.rendered, m.meta_json, m.at
+    FROM messages m WHERE m.task_id IN (${taskIds.map(() => '?').join(',')})
+    AND m.kind = 'report' AND m.seq = (
+      SELECT max(r.seq) FROM messages r WHERE r.task_id = m.task_id AND r.kind = 'report'
+    )`).all(...taskIds)
+  return new Map(rows.map(row => [row.task_id, {
+    at: row.at, summary: parseMessageMeta(row.meta_json)?.summary ?? row.rendered,
+  }]))
+}
+
+/** 下游关系查询，保留原排序和精确 JSON 匹配。 */
+export function listDependents(db, id) {
+  return db.prepare(`${TASK_SELECT} WHERE t.depends_json LIKE ? ORDER BY t.created_at DESC, t.rowid DESC`)
+    .all(`%${JSON.stringify(id)}%`).map(taskOf).filter(task => task.depends_on.includes(id))
+}
+
+/** 产物库不解析 brief/goal/消息等无关字段。 */
+export function artifactTasks(db) {
+  return db.prepare(`SELECT id, title, status, session_id, target_dir, group_id,
+    artifacts_json, updated_at FROM tasks ORDER BY created_at DESC, rowid DESC`).all().map(row => ({
+      ...row, artifacts: parseArtifacts(row.artifacts_json),
+    }))
+}
+
 /** 窗口内是否存在「已成功投递」的同文 followup（面板 message 幂等去重）。
  *  之后的 delivery_failed 行说明这次没送到，不算成功，允许立刻重发。 */
 export function findRecentDeliveredFollowup(db, taskId, rendered, since) {

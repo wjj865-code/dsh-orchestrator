@@ -76,6 +76,7 @@ export function closeDelivered({
   const acceptedBy = acceptedByOf(by, reason)
   const task = getTask(db, String(taskId ?? ''))
   if (task === undefined) return { ok: false, reason: 'not-found' }
+  if (task.delivery_pending) return { ok: false, reason: 'collecting', task }
   // 幂等：已经 done（并发确认、超时与手工确认撞车）按成功返回，不再迁移/不再写消息。
   if (task.status === 'done') return { ok: true, task, already: true }
   if (task.status !== 'delivered') return { ok: false, reason: 'not-delivered', task }

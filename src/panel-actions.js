@@ -8,17 +8,19 @@ import { resolveLastMessage } from './last-message.js'
 import {
   addMessage, clearTaskQuestion, createTask, deleteTask, findRecentDeliveredFollowup, getTask, listTasks,
   recentMessages, setMessageDelivery, setTaskError, transition, touchTask, incrementAttempts, markReportExpected,
+  listDependents, artifactTasks,
 } from './ledger.js'
 import { dependencyState, validateDepends } from './deps.js'
 import { taskLabel } from './task-label.js'
 import { refsInText, taskRefInfo, taskRefTokenOfAny } from './task-ref.js'
+import { taskCard } from './card.js'
 import { ensureArtifactDirectory } from './artifact-store.js'
 import { statusLabel } from './state.js'
 import { panelFailure } from './action-errors.js'
 // P0-2/P0-3：面板「追加」与 task_message 同口径——判定走 write-gate 门面（共用同一份判定 + 内存占位），
 // 面板重派（retry）同样必须在建任务前判写域（以前这里完全绕过）。
 import { decideCreate, decideFollowup, decideRegrant } from './write-gate.js'
-import { acquireWriteHold, releaseWriteHold, touchWriteHold } from './write-hold.js'
+import { releaseWriteHold } from './write-hold.js'
 import { WRITE_DOMAIN_DENIED } from './action-errors.js'
 import { checkoutRejection, taskTargetDir } from './write-guard.js'
 import { objectiveForMessage } from './goal.js'
@@ -36,6 +38,8 @@ import { statusesWith } from './status-facts.js'
 import { CLOSE_REASONS, closeDelivered, closeReasonLabel } from './delivered.js'
 // P2-3 交接契约 v1：抽屉里的交接对象与 task_status / JSONL 同源（src/handoff.js 是唯一字段真源）。
 import { handoffOfTask } from './handoff.js'
+import { resumeGate } from './resume.js'
+import { resumeTask, holdTaskWrite, sendTaskMessage, createRetryTask, stopTaskSession } from './task-actions.js'
 
 // 状态集合一律从 status-facts 派生（唯一事实源）；本文件不再写本地 Set。
 const TERMINAL = new Set(TERMINAL_STATUSES)
@@ -158,13 +162,13 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       // （墓碑引用也带上）与一句可读占位，面板就能显示「（任务已删除）tk-xxxxxx」。
       return dep === undefined
         ? { id, ref: taskRefTokenOfAny(db, id), title: '', status: 'missing', deleted: true }
-        : { id, ref: dep.ref ?? null, title: dep.title, status: dep.status, error: dep.error ?? null }
+        : { id, ref: dep.ref ?? null, title: dep.title, status: dep.status, tone: taskCard(dep).tone, error: dep.error ?? null }
     })
     // 下游 = 依赖链上引用本任务的任务；失败会沿依赖链传播，面板要能看到「谁会被我拖住」。
-    const dependentTasks = listTasks(db, { active: false }).filter(item => item.depends_on.includes(task.id))
+    const dependentTasks = listDependents(db, task.id)
     const dependents = dependentTasks
       .slice(0, DETAIL_DEPENDENT_LIMIT)
-      .map(item => ({ id: item.id, ref: item.ref ?? null, title: item.title, status: item.status, error: item.error ?? null }))
+      .map(item => ({ id: item.id, ref: item.ref ?? null, title: item.title, status: item.status, tone: taskCard(item).tone, error: item.error ?? null }))
     // R3：消息正文里的 `tk-xxxxxx` 要在抽屉里显示成任务名（而不是一串引用）——这里把出现过的引用
     // 按台账现名解析一次，随详情下发。已删除任务（引用置墓碑）如实标 deleted=true，客户端据此
     // 把它原样显示并提示「引用已失效」；查不到的引用不在索引里，客户端同样原样显示。
@@ -190,6 +194,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         title: task.title,
         goal: task.goal,
         status: task.status,
+        tone: taskCard(task).tone,
         targetDir: task.target_dir ?? null,
         target: task.target ?? null,
         readOnly: task.read_only === true,
@@ -234,6 +239,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         acceptance: task.acceptance ?? null,
         // 面板按钮可见性与动作门控同源（src/panel-gates.js）：前端只读这三个字段，不抄状态表。
         canFollowup: canFollowup(task),
+        canResume: resumeGate(task).ok,
         canClose: canClose(task),
         canDelete: canDelete(task, { activeDependents }),
         count: {
@@ -283,7 +289,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
   const artifactsOf = (limit = 200) => {
     const max = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 200
     const items = []
-    for (const task of listTasks(db, { active: false })) {
+    for (const task of artifactTasks(db)) {
       for (const artifact of Array.isArray(task.artifacts) ? task.artifacts : []) {
         items.push({
           taskId: task.id,
@@ -363,12 +369,9 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       warnings.push({ code, error: reason })
       return reason
     }
-    if (task.target !== null && task.target !== undefined) {
-      try { await dispatcher.stop(task.target, task.id) } catch (error) {
-        log('ui.stop.failed', { taskId: task.id, detail: { error: warn('STOP_DISPATCH_FAILED', error) } })
-        void goalBridge?.clear?.(task.id, task.target)
-      }
-    }
+    await stopTaskSession({ task, dispatcher, goalBridge,
+      onError: error => log('ui.stop.failed', { taskId: task.id, detail: { error: warn('STOP_DISPATCH_FAILED', error) } }),
+    })
     try { queue.remove(task.id) } catch (error) {
       // 内存队列删不掉不阻断取消：任务已是 cancelled，pump 不会再派发它。
       log('ui.stop.queue.failed', { taskId: task.id, detail: { error: warn('STOP_QUEUE_FAILED', error) } })
@@ -468,23 +471,13 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     void goalBridge?.clear?.(task.id, task.session_id)
     let retried
     try {
-      retried = createTask(db, {
+      retried = createRetryTask({
+        db, task,
         artifactRoot: defaultDir(),
-        brief: task.brief,
         coordinatorSession: status.id ?? task.coordinator_session,
         targetDir: retryTarget,
-        readOnly: task.read_only === true,
-        // P8：计划任务重派后重新走计划阶段（新会话要重新探索/批准）。
-        planFirst: task.plan_first === true,
-        planState: task.plan_first === true ? 'planning' : 'none',
-        // per-task 访问级别跟着原任务走（与工具层重派同口径）。
-        access: task.access === 'full' ? 'full' : null,
         worktree: retryWorktree,
-        retryOf: task.id,
         dependsOn: depends.ids,
-        groupId: task.group_id,
-        writeScopes: task.write_scopes,
-        priority: task.priority,
         status: depState.ready ? 'pending' : 'waiting_dep',
       })
       // T1：面板重派与 task_create 同口径——brief 只留任务编号 + task_detail 指引。
@@ -569,33 +562,14 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     // guard 通过 → 先占住写域（内存 hold，owner token = panel:<requestId>），再 await 投递；
     // 失败/成功都只释放自己那一条（工具同时投递时不会互放）。
     const holdToken = `panel:${typeof requestId === 'string' && requestId !== '' ? requestId : randomUUID()}`
-    acquireWriteHold({
-      taskId: task.id,
-      ownerToken: holdToken,
-      targetDir: taskTargetDir(task),
-      writeScopes: task.write_scopes,
-      checkoutPath: task.worktree_path,
-    })
-    const heartbeat = setInterval(() => {
-      try { touchWriteHold(task.id, holdToken) } catch { /* 续期失败只影响 TTL */ }
-    }, 30_000)
-    heartbeat.unref?.()
-    let holdReleased = false
-    const releaseHold = () => {
-      if (holdReleased) return
-      holdReleased = true
-      clearInterval(heartbeat)
-      try { releaseWriteHold(task.id, holdToken) } catch { /* 释放失败只影响占位时长 */ }
-    }
+    const releaseHold = holdTaskWrite(task, holdToken)
     let messageId
     try {
       // P2（审计）：没有 sendReliable 的回退也必须带全参数——少传 targetDir/readOnly/attemptKey 会绕过
       // 写域口径与幂等键（面板「追加」与工具 task_message 必须是同一条投递链）。
       // P0-2（审计）：计划任务未批准时按只读投递，否则批准前就会注册可写根。
       const sendArgs = [task.target, content, undefined, taskTargetDir(task) || undefined, task.id, dispatchReadOnly(task), objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined, { planApproved, attemptKey: `followup:${task.id}:${seq}` }]
-      const sent = typeof dispatcher.sendReliable === 'function'
-        ? await dispatcher.sendReliable(...sendArgs)
-        : await dispatcher.send(...sendArgs)
+      const sent = await sendTaskMessage(dispatcher, ...sendArgs)
       messageId = normalizeMessageId(sent)
     } catch (error) {
       if (error?.code === WRITE_DOMAIN_DENIED) {
@@ -663,6 +637,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     if (task === undefined) return panelFailure('TASK_NOT_FOUND', { taskId })
     const gate = closeGate(task)
     if (gate.ok !== true) {
+      if (gate.reason === 'collecting') return panelFailure('CLOSE_COLLECTING')
       const statusText = statusLabel(task.status)
       return TERMINAL.has(task.status)
         ? panelFailure('CLOSE_TASK_ENDED', { label: taskLabel(task), statusLabel: statusText })
@@ -681,6 +656,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       logger,
     })
     if (outcome.ok !== true) {
+      if (outcome.reason === 'collecting') return panelFailure('CLOSE_COLLECTING')
       const latest = outcome.task ?? task
       return panelFailure('CLOSE_NOT_DELIVERED', { label: taskLabel(latest), statusLabel: statusLabel(latest.status) })
     }
@@ -697,6 +673,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     const dependents = listTasks(db, { active: true }).filter(item => item.depends_on.includes(task.id))
     const gate = deleteGate(task, { activeDependents: dependents.length })
     if (gate.ok !== true) {
+      if (gate.reason === 'collecting') return panelFailure('DELETE_COLLECTING')
       if (gate.reason === 'has_dependents') {
         const links = dependents.slice(0, 3).map(item => taskLabel(item)).join('、')
         return panelFailure('DELETE_HAS_ACTIVE_DEPENDENTS', {
@@ -713,7 +690,21 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
     return { ok: true, taskId: task.id, deleted: removed.deleted }
   }
 
-  return { detail: detailOf, detailBody, artifacts: artifactsOf, preview, stop, retry, message, close, delete: remove, short }
+  const resume = async (taskId, requestId) => {
+    const task = getTask(db, String(taskId ?? ''))
+    if (!task) return panelFailure('TASK_NOT_FOUND', { taskId })
+    const result = await resumeTask({
+      db, task, dispatcher, config, defaultDir: defaultDir(),
+      holdToken: `panel:${requestId || randomUUID()}`, log,
+    })
+    if (!result.ok) return panelFailure(result.code, {
+      label: taskLabel(task), statusLabel: statusLabel(task.status),
+      closeReason: closeReasonLabel(task.close_reason) ?? '已确认', ...result.params,
+    })
+    return { ok: true, taskId: task.id, status: 'running', warning: result.warn,
+      note: '已续跑原任务，子会话接着原上下文继续；未新建任务。' }
+  }
+  return { detail: detailOf, detailBody, artifacts: artifactsOf, preview, stop, retry, resume, message, close, delete: remove, short }
 }
 
 export { short as panelShort }

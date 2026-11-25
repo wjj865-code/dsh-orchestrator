@@ -3,7 +3,10 @@
 // snapshot / session-role / main-nav 只查台账或读进程内待办、不写台账、不 spawn；
 // open-main / adopt-session 建或切主会话；main-nav-ack 只清那条进程内待办（不写台账/settings）；
 // 其余动作端点走 panel / workbench 的既有门控。
-import { listTasks, listHistoryTasks } from './ledger.js'
+import { createHash } from 'node:crypto'
+import { listTasks, listHistoryTasks, latestReports } from './ledger.js'
+import { summarizeText } from './last-message.js'
+import { resumeGate } from './resume.js'
 import { taskCard } from './card.js'
 import { panelFailure, panelHttpStatus } from './action-errors.js'
 import { createRequestDedupe } from './request-dedupe.js'
@@ -16,7 +19,7 @@ import { handoffSnapshot } from './handoff.js'
 import { TEAM_BOARD_UNAVAILABLE } from './team-board.js'
 
 const ENDPOINTS = new Set(['snapshot', 'session-role'])
-const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'message', 'close', 'delete'])
+const ACTIONS = new Set(['detail', 'artifacts', 'preview', 'stop', 'retry', 'resume', 'message', 'close', 'delete'])
 // 工作台 v1（P11）：只读投影与窄写口。**注意这里刻意没有** task-create / plan-approve / message /
 // close-all / patch-task（设计稿 §5.3 的反例清单）：派发、计划批准、交付确认都必须走既有闸门。
 const WORKBENCH_READS = new Set(['groups', 'group', 'calendar', 'automations', 'stats'])
@@ -100,6 +103,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
       }
     }
     const tasks = [...activeTasks, ...listHistoryTasks(db, limit)]
+    const reports = latestReports(db, tasks.map(task => task.id))
     return {
       ok: true,
       at,
@@ -116,6 +120,8 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
       teamBoard: boardSnapshot(),
       tasks: tasks.map(task => {
         const card = taskCard(task)
+          const report = reports.get(task.id)
+          const latest = report && report.at >= (task.last_message?.at ?? 0) ? report : task.last_message
         return {
           id: task.id,
           // 版本 B《ID 出口网关》：面板/抽屉显示的是**任务引用**（tk-）；`id` 只作为动作键
@@ -130,9 +136,14 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
           // 只下发 id（不是敏感数据），与 mainSession.id 同源（settings.main_session_id）。
           coordinatorSession: task.coordinator_session ?? null,
           targetDir: task.target_dir ?? null,
-          artifactDir: task.artifact_dir ?? null,
-          artifactStoreDir: task.artifact_store_dir ?? null,
-          artifactStage: task.artifact_stage ?? null,
+          summary: latest?.summary ? summarizeText(latest.summary, 120) : null,
+          artifactStage: task.artifact_stage ? {
+            mode: task.artifact_stage.mode,
+            complete: task.artifact_stage.complete === true,
+            coverage: task.artifact_stage.coverage ?? null,
+            protection: task.artifact_stage.protection ?? null,
+            unarchived: task.artifact_stage.git?.unarchived === true,
+          } : null,
           deliveryPending: task.delivery_pending !== null,
           readOnly: task.read_only === true,
           // P8：计划模式（列表小标 / 抽屉概览）；非计划任务固定 false + 'none'。
@@ -155,7 +166,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
           priority: task.priority ?? 0,
           question: task.question ?? null,
           options: Array.isArray(task.options) ? task.options : [],
-          artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
+          artifactCount: card.artifactCount,
           // delivered 两段式：交付时间 / 关闭原因（供面板显示「待确认」「协调者确认/超时」）。
           deliveredAt: task.delivered_at ?? null,
           closeReason: task.close_reason ?? null,
@@ -178,6 +189,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
             },
           // 面板按钮可见性与后端门控同源（src/panel-gates.js）：前端只读这三个布尔值。
           canFollowup: canFollowup(task),
+          canResume: resumeGate(task).ok,
           canClose: canClose(task),
           canDelete: canDelete(task, { activeDependents: dependentCounts.get(task.id) ?? 0 }),
           queued: task.status === 'pending' && task.queued_at !== null && task.queued_at !== undefined,
@@ -357,6 +369,16 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
         else if (endpoint === 'preview') result = panel.preview(body?.taskId, body?.path)
         else if (endpoint === 'stop') result = await panel.stop(body?.taskId)
         else if (endpoint === 'retry') result = await panel.retry(body?.taskId)
+        else if (endpoint === 'resume') {
+          const id = body?.taskId
+          const requestId = typeof body?.clientRequestId === 'string' ? body.clientRequestId.trim().slice(0, 128) : ''
+          const execute = () => panel.resume(id, requestId)
+          if (!requestId) result = await execute()
+          else {
+            const outcome = await dedupe.run(`resume:${id}`, requestId, execute)
+            result = outcome.duplicate && outcome.result?.ok ? { ...outcome.result, already: true } : outcome.result
+          }
+        }
         else if (endpoint === 'close') result = await panel.close(body?.taskId)
         else if (endpoint === 'delete') result = await panel.delete(body?.taskId)
         else if (endpoint === 'message') {
@@ -380,7 +402,10 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
       }
     }
     if (!ENDPOINTS.has(endpoint)) return json(panelFailure('UNKNOWN_ENDPOINT'), 400)
-    return json(snapshot(), 200)
+    const value = snapshot()
+    const { at, ...projection } = value
+    const rev = createHash('sha256').update(JSON.stringify(projection)).digest('hex')
+    return json(body?.rev === rev ? { ok: true, notModified: true, rev } : { ...value, rev }, 200)
   }
 }
 

@@ -14,10 +14,18 @@ export const refSuffixOf = task => {
   const ref = String((task && task.ref) || '').trim()
   return ref !== '' ? ref : shortId(task && task.id)
 }
+export const buildTitleCounts = tasks => {
+  const counts = new Map()
+  for (const task of tasks) {
+    const title = String(task?.title ?? '').trim()
+    counts.set(title, (counts.get(title) ?? 0) + 1)
+  }
+  return counts
+}
 export const displayNameOf = (task, all) => {
   const title = String((task && task.title) || '').trim()
   if (title === '') return '任务'
-  const duplicate = all.some(other => other !== task && other.id !== task.id
+  const duplicate = all instanceof Map ? all.get(title) > 1 : all.some(other => other !== task && other.id !== task.id
     && String((other && other.title) || '').trim() === title)
   return duplicate ? `${title}（${refSuffixOf(task)}）` : title
 }
@@ -46,15 +54,14 @@ export const matchesFilter = (task, filter) => {
   if (filter === 'done') return status === 'done'
   if (filter === 'failed') return status === 'failed'
   if (filter === 'closed') return status === 'cancelled' || status === 'orphaned'
-  if (filter === 'artifacts') return Array.isArray(task === null || task === undefined ? undefined : task.artifacts)
-    && task.artifacts.length > 0
+  if (filter === 'artifacts') return (task?.artifactCount ?? task?.artifacts?.length ?? 0) > 0
   return true
 }
 
 export const matchesQuery = (task, query) => {
   const needle = String(query ?? '').trim().toLowerCase()
   if (needle === '') return true
-  return [task?.title, task?.id, task?.targetDir, task?.groupId]
+  return [task?.title, task?.id, task?.ref, refSuffixOf(task), task?.targetDir, task?.groupId]
     .some(value => String(value ?? '').toLowerCase().includes(needle))
 }
 

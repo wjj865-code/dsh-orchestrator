@@ -84,6 +84,7 @@ export const canFollowup = task => followupGate(task).ok
  */
 export function closeGate(task) {
   if (task === undefined || task === null) return { ok: false, reason: 'not_found' }
+  if (task.delivery_pending) return { ok: false, reason: 'collecting' }
   if (statusOf(task) === 'done') return { ok: true, reason: null }
   if (!CLOSABLE.has(statusOf(task))) return { ok: false, reason: 'not_delivered' }
   return { ok: true, reason: null }
@@ -99,6 +100,7 @@ export const canClose = task => closeGate(task).ok
  */
 export function deleteGate(task, { activeDependents = 0 } = {}) {
   if (task === undefined || task === null) return { ok: false, reason: 'not_found' }
+  if (task.delivery_pending) return { ok: false, reason: 'collecting' }
   const status = statusOf(task)
   if (ACTIVE.has(status)) return { ok: false, reason: 'active' }
   if (!DELETABLE.has(status)) return { ok: false, reason: 'not_terminal' }

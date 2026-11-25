@@ -1,3 +1,4 @@
+import { buildTitleCounts } from './logic.js'
 /**
  * 面板视图（P7 / T7.2 迁入）：三段式任务面板、启动器面板、会话头按钮、侧栏图标。
  *
@@ -320,17 +321,28 @@ export function createViews({
     )
   }
 
+  const TaskCard = (React.memo ?? (component => component))(({ task, render }) => render(task))
+  const useNotice = (setValue, duration) => {
+    const timer = React.useRef(null)
+    const setNotice = React.useCallback(next => {
+      clearTimeout(timer.current)
+      setValue(next)
+      timer.current = next === null ? null : setTimeout(() => setValue(null), duration)
+    }, [duration])
+    React.useEffect(() => () => clearTimeout(timer.current), [])
+    return setNotice
+  }
   const TasksPanel = ({ openSession, openArtifactPreview, focus, notice, prefillDraft, openSchedules }) => {
     // ---- 数据与状态（A3/A4/B1/G1 全部保留）----
     const [snapshot, setSnapshot] = React.useState(null)
     // 快照（轮询/刷新）和动作（打开主会话/打开会话）分开记，避免把动作错误显示成「台账暂不可用」。
     const [snapshotError, setSnapshotError] = React.useState(null)
     const [actionError, setActionError] = React.useState(null)
-    const [actionNotice, setActionNotice] = React.useState(null)
+    const [actionNotice, storeActionNotice] = React.useState(null)
     const [refreshing, setRefreshing] = React.useState(false)
     const [openingMain, setOpeningMain] = React.useState(false)
     const [openedMain, setOpenedMain] = React.useState(false)
-    const [expanded, setExpanded] = React.useState([])
+    const [confirmResume, setConfirmResume] = React.useState(null)
     const [filter, setFilter] = React.useState('all')
     const [query, setQuery] = React.useState('')
     // 右侧抽屉：detail 是数据；detailLoading/detailError 是抽屉自己的加载/错误态；
@@ -351,12 +363,21 @@ export function createViews({
     const [artifactLoading, setArtifactLoading] = React.useState(false)
     const [artifactGroup, setArtifactGroup] = React.useState('project')
     const [preview, setPreview] = React.useState(null)
-    const [copyNotice, setCopyNotice] = React.useState(null)
+    const [copyNotice, storeCopyNotice] = React.useState(null)
     const [busy, setBusy] = React.useState(null)
     // 同一 (动作, 任务) 只允许一个请求在途：双击不会发两条 stop/retry/message。
     const inFlight = React.useRef(new Set())
     // 详情请求序号：慢响应不能覆盖后点开的另一个任务。
     const detailSeq = React.useRef(0)
+    const snapshotRef = React.useRef(null)
+    const loadPending = React.useRef(null)
+    const drawerRef = React.useRef(null)
+    const backgroundRef = React.useRef(null)
+    const cardRenderer = React.useRef(null)
+    const renderCard = React.useCallback(task => cardRenderer.current(task), [])
+    const setActionNotice = useNotice(storeActionNotice, 5000)
+    const setCopyNotice = useNotice(storeCopyNotice, 3000)
+    const detailTrigger = React.useRef(null)
 
     // ---- 工作台 v1（P11）：页面状态 + 三份独立数据源（组 / 组详情 / 日历 / 自动化）----
     // 页面与选中的组记在 sessionStorage：产物预览会 `selectPanel(null)` 卸载面板，回来要复原。
@@ -393,15 +414,29 @@ export function createViews({
     }, [storage, page, groupId])
 
     const load = React.useCallback(async (signal) => {
+      if (loadPending.current) return loadPending.current
+      const pending = (async () => {
       try {
-        const next = await readSnapshot(signal)
-        setSnapshot(next)
+        const next = await readSnapshot(signal, snapshotRef.current?.rev)
+        if (signal?.aborted) return false
+        if (!next.notModified) {
+          const previous = new Map((snapshotRef.current?.tasks ?? []).map(task => [task.id, task]))
+          next.tasks = (next.tasks ?? []).map(task => {
+            const old = previous.get(task.id)
+            return old && JSON.stringify(old) === JSON.stringify(task) ? old : task
+          })
+          snapshotRef.current = next
+          setSnapshot(next)
+        }
         setSnapshotError(null)
         return true
       } catch (failure) {
         if (signal === undefined || !signal.aborted) setSnapshotError(String((failure && failure.message) || failure))
         return false
       }
+      })()
+      loadPending.current = pending
+      try { return await pending } finally { loadPending.current = null }
     }, [])
 
     const loadArtifacts = React.useCallback(async signal => {
@@ -428,15 +463,27 @@ export function createViews({
     React.useEffect(() => {
       const controller = new AbortController()
       let stopped = false
+      let ticking = false
       let timer
       // 正常 2s 轮询（POLL_MS）；连续失败退避到 30s（POLL_BACKOFF_MS），成功一次就恢复。
       const tick = async () => {
-        const ok = await load(controller.signal)
+        if (stopped || ticking) return
+        ticking = true
+        const ok = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+          ? true : await load(controller.signal)
+        ticking = false
         if (stopped || controller.signal.aborted) return
         timer = setTimeout(tick, ok ? POLL_MS : POLL_BACKOFF_MS)
       }
       void tick()
-      return () => { stopped = true; controller.abort(); clearTimeout(timer) }
+      const onVisible = () => {
+        if (document.visibilityState !== 'hidden') { clearTimeout(timer); void tick() }
+      }
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible)
+      return () => {
+        stopped = true; controller.abort(); clearTimeout(timer)
+        if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
+      }
     }, [load])
 
     // ---- 工作台数据源：组 / 组详情 / 日历 / 自动化 ----
@@ -664,27 +711,36 @@ export function createViews({
     }
 
     const toggleArtifacts = id => {
-      setExpanded(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
+      setCollapsedSections(current => current.filter(key => key !== '产物'))
+      void openDetail(id)
     }
 
     // 抽屉打开：先清旧内容再拉详情（骨架屏），并按时序丢弃过期响应。
-    const openDetail = async id => {
+    const openDetail = async (id, { silent = false } = {}) => {
       if (typeof id !== 'string' || id === '') return
+      if (!silent && typeof document !== 'undefined' && !drawerRef.current?.contains(document.activeElement)) {
+        const active = document.activeElement
+        detailTrigger.current = active?.closest?.('.orch-card')?.querySelector('button') ?? active
+      }
       const turn = ++detailSeq.current
       setDetailTaskId(id)
-      setDetail(null)
+      if (!silent) setDetail(null)
       setDetailError(null)
-      setDetailLoading(true)
-      setCopyNotice(null)
-      setConfirmStop(null)
-      setConfirmClose(null)
-      setConfirmDelete(null)
+      if (!silent) {
+        setDetailLoading(true)
+        setCopyNotice(null)
+        setConfirmStop(null)
+        setConfirmClose(null)
+        setConfirmDelete(null)
+        setConfirmResume(null)
+      }
       try {
         const body = await readDetail(id)
         if (turn !== detailSeq.current) return
         setDetail(body)
       } catch (failure) {
         if (turn !== detailSeq.current) return
+        if (failure?.code === 'TASK_NOT_FOUND') { closeDetail(); return }
         setDetailError(`详情加载失败：${String((failure && failure.message) || failure)}`)
       } finally {
         if (turn === detailSeq.current) setDetailLoading(false)
@@ -701,6 +757,7 @@ export function createViews({
       setConfirmStop(null)
       setConfirmClose(null)
       setConfirmDelete(null)
+      setConfirmResume(null)
       // 降级提示只属于这一次「chip 点击 → 抽屉」，关掉抽屉就该收走（见下面的 focusNotice）。
       setFocusNotice(null)
     }
@@ -710,11 +767,26 @@ export function createViews({
     React.useEffect(() => {
       if (!drawerOpen) return undefined
       if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined
+      const previousFocus = detailTrigger.current ?? (typeof document !== 'undefined' ? document.activeElement : null)
+      const background = backgroundRef.current
+      if (background) background.inert = true
+      const initialFocus = drawerRef.current?.querySelector('button') ?? drawerRef.current
+      initialFocus?.focus()
       const onKeyDown = event => {
         if (event !== null && typeof event === 'object' && event.key === 'Escape') closeDetail()
+        if (event.key === 'Tab' && drawerRef.current?.contains(document.activeElement)) {
+          const nodes = [...(drawerRef.current?.querySelectorAll('button:not(:disabled), input:not(:disabled), select, textarea, a[href], [tabindex="0"]') ?? [])]
+            .filter(node => node.getClientRects().length > 0)
+          const first = nodes[0], last = nodes.at(-1)
+          if (nodes.length === 0) { event.preventDefault(); drawerRef.current?.focus(); return }
+          if (event.shiftKey && (document.activeElement === first || document.activeElement === drawerRef.current)) { event.preventDefault(); last.focus() }
+          else if (!event.shiftKey && (document.activeElement === last || document.activeElement === drawerRef.current)) { event.preventDefault(); first.focus() }
+        }
       }
       window.addEventListener('keydown', onKeyDown)
       return () => {
+        if (background) background.inert = false
+        if (previousFocus?.isConnected) previousFocus.focus?.()
         try { window.removeEventListener('keydown', onKeyDown) } catch { /* 卸载期清理失败不阻断 */ }
       }
     }, [drawerOpen])
@@ -804,7 +876,6 @@ export function createViews({
     // 右侧栏链路是宿主直接读文件、不过这道校验，所以等价校验挪到前端：只允许预览台账下发给面板的产物路径。
     // 三个来源都是服务端下发的（快照卡片 / 产物库 / 详情抽屉），并起来就是「已登记」的等价集合。
     const isRegisteredArtifact = path => typeof path === 'string' && path !== '' && [
-      ...tasks.flatMap(task => Array.isArray(task.artifacts) ? task.artifacts : []),
       ...(Array.isArray(artifactData?.items) ? artifactData.items : []),
       ...(Array.isArray(detail?.task?.artifacts) ? detail.task.artifacts : []),
     ].some(item => item?.path === path)
@@ -852,8 +923,10 @@ export function createViews({
       setConfirmStop(null)
       setConfirmClose(null)
       setConfirmDelete(null)
+      setConfirmResume(null)
       try {
         const result = await panelAction(endpoint, id, extra)
+        if (endpoint === 'resume' && result?.ok) setActionNotice(result.note)
         // 幂等命中：stop 已结束 / retry 已有活跃重派 / message 重复投递 / close 已完成，都按提示处理而不是报错。
         if (result && result.already === true) {
           if (endpoint === 'message') setActionNotice('这条消息已发送过，未重复投递')
@@ -877,7 +950,7 @@ export function createViews({
         // 抽屉正开着同一个任务：动作后刷新详情（状态/消息都变了）；已删除则直接关闭。
         if (detailTaskId === id) {
           if (endpoint === 'delete') closeDetail()
-          else await openDetail(id)
+          else await openDetail(id, { silent: true })
         }
       } catch (failure) {
         const code = failure && typeof failure.code === 'string' && failure.code !== '' ? `（${failure.code}）` : ''
@@ -890,16 +963,23 @@ export function createViews({
 
     const mainSession = (snapshot && snapshot.mainSession) || { id: null, live: false }
     const tasks = Array.isArray(snapshot && snapshot.tasks) ? snapshot.tasks : []
-    const counts = countTasks(tasks)
-    const visible = tasks.filter(task => matchesFilter(task, filter) && matchesQuery(task, query))
+    const titleCounts = React.useMemo(() => buildTitleCounts(tasks), [snapshot?.tasks])
+    const counts = React.useMemo(() => countTasks(tasks), [snapshot?.tasks])
+    const visible = React.useMemo(() => tasks.filter(task => matchesFilter(task, filter) && matchesQuery(task, query)), [snapshot?.tasks, filter, query])
+    const selectedTask = tasks.find(task => task.id === detailTaskId)
+    React.useEffect(() => {
+      // 列表窗口外的历史任务仍可查详情；缺席不代表已删除。
+      if (detailTaskId && (selectedTask || detail?.task?.id === detailTaskId)) void openDetail(detailTaskId, { silent: true })
+      return () => { detailSeq.current += 1 }
+    }, [selectedTask, detailTaskId])
     const mainState = mainSession.id === null ? '主会话未创建' : mainSession.live ? '主会话在线' : '主会话已失效'
     const inboxCount = Number(snapshot && snapshot.inboxCount) || 0
     const detailTask = detail !== null && detail !== undefined && detail.task !== null && typeof detail.task === 'object'
       ? detail.task
       : null
     const drawerTitle = detailTask === null
-      ? (detailTaskId === null ? '任务详情' : `任务 ${detailTaskId}`)
-      : displayNameOf(detailTask, tasks)
+      ? '任务详情'
+      : displayNameOf(detailTask, titleCounts)
 
     // 事件处理器：卡内按钮先 stopPropagation，避免点按钮又触发卡片「打开详情」。
     const act = handler => event => {
@@ -954,6 +1034,16 @@ export function createViews({
         </button>
       )
       : null
+
+    const resumeControl = task => {
+      if (!task.canResume) return null
+      return confirmResume === task.id
+        ? <ConfirmBar question="继续原任务和原子会话，不新建任务？" label="确认续跑"
+            disabled={busy === `resume:${task.id}`} onConfirm={act(() => void runPanel('resume', task.id))}
+            onCancel={act(() => setConfirmResume(null))} />
+        : <button type="button" className="orch-btn orch-btn--sm" disabled={busy === `resume:${task.id}`}
+            onClick={act(() => setConfirmResume(task.id))}>{'续跑'}</button>
+    }
 
     // 确认交付（delivered → done）：与工具 task_message action:close 同源，服务端 closeGate 下发 canClose。
     // done 不可逆，所以与停止/删除同一套两步确认。
@@ -1143,10 +1233,10 @@ export function createViews({
             )
           : null}
         {actionNotice !== null
-          ? <Banner tone="notice" icon="check">{actionNotice}</Banner>
+          ? <div role="status" aria-live="polite"><Banner tone="notice" icon="check">{actionNotice}</Banner></div>
           : null}
         {copyNotice !== null
-          ? <Banner tone="info" icon="copy">{copyNotice}</Banner>
+          ? <div role="status" aria-live="polite"><Banner tone="info" icon="copy">{copyNotice}</Banner></div>
           : null}
         {inboxCount > 0
           ? (
@@ -1180,7 +1270,8 @@ export function createViews({
         : null,
       task.groupId ? <Chip title="分组">{`组 ${task.groupId}`}</Chip> : null,
       task.priority ? <Chip title="优先级">{`P${task.priority}`}</Chip> : null,
-      task.dependsOn && task.dependsOn.length > 0 ? <Chip title={task.dependsOn.join('、')}>{`依赖 ${task.dependsOn.length}`}</Chip> : null,
+      task.dependsOn && task.dependsOn.length > 0 ? <Chip title={`前置任务 ${task.dependsOn.length} 个`}>{`依赖 ${task.dependsOn.length}`}</Chip> : null,
+      task.deliveryPending ? <Chip tone="info">{'交付收集中'}</Chip> : null,
       task.queued ? <Chip>{'排队中'}</Chip> : null,
       task.stale ? <Chip tone="warn" title="超过 30 分钟没有新事件">{'⚠ 可能卡住'}</Chip> : null,
       task.goalState
@@ -1220,25 +1311,23 @@ export function createViews({
         ? (
             <button
               type="button" className="orch-btn orch-btn--sm"
-              aria-expanded={isExpanded}
               onClick={act(() => toggleArtifacts(task.id))}
             >
-              <Icon name="chevron" className="orch-chevron" data-open={isExpanded ? 'true' : 'false'} />
+              <Icon name="folder" />
               {`产物 ${artifactCount}`}
             </button>
           )
         : null,
     ].filter(node => node !== null && node !== undefined)
 
-    const renderTask = (task, all) => {
-      const artifacts = Array.isArray(task.artifacts) ? task.artifacts : []
-      const isExpanded = expanded.includes(task.id)
-      const displayName = displayNameOf(task, all)
+    const renderTask = task => {
+      const displayName = displayNameOf(task, titleCounts)
       const tone = TONE_COLOR[task.tone] || TONE_COLOR.muted
       return (
         <article
           key={task.id}
           className="orch-card"
+          tabIndex={0}
           data-open={detailTaskId === task.id ? 'true' : 'false'}
           data-status={task.status}
           onClick={event => {
@@ -1269,8 +1358,9 @@ export function createViews({
             <span className="orch-card-time" title="最近事件">{timeLabel(task.lastEventAt)}</span>
           </div>
           <div className="orch-card-meta">
-            {metaChips(task, artifacts.length, isExpanded)}
+            {metaChips(task, task.artifactCount ?? task.artifacts?.length ?? 0, false)}
           </div>
+          {task.summary ? <div className="orch-card-summary" title={task.summary}>{task.summary}</div> : null}
           <div className="orch-card-actions">
             <button
               key="detail"
@@ -1281,35 +1371,10 @@ export function createViews({
             {stopControl(task)}
             {closeControl(task)}
             {retryControl(task)}
+            {resumeControl(task)}
             {openControl(task.childSessionId)}
             {deleteControl(task)}
           </div>
-          {artifacts.length > 0
-            ? (
-                <div className="orch-expand" data-open={isExpanded ? 'true' : 'false'}>
-                  <div>
-                    <div className="orch-artifact-list">
-                      {artifacts.map((item, index) => {
-                        const itemTone = item.exists === false ? 'bad' : 'good'
-                        return (
-                          <DotRow key={`${item.path}:${index}`} tone={itemTone}>
-                            {/* 点路径 = 在会话右侧栏打开预览（与产物库同一个入口）；缺失的文件不给点。 */}
-                            <button
-                              type="button"
-                              className="orch-artifact-path orch-artifact-open"
-                              title={item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`}
-                              disabled={item.exists === false}
-                              onClick={act(() => void previewInSidebar(task.id, item.path))}
-                            >{`${item.path}${item.exists === false ? '（未找到）' : ''}`}</button>
-                            {item.label ? <span className="orch-muted">{item.label}</span> : null}
-                          </DotRow>
-                        )
-                      })}
-                    </div>
-                  </div>
-                </div>
-              )
-            : null}
           {task.question
             ? (
                 <div className="orch-question">
@@ -1321,6 +1386,7 @@ export function createViews({
         </article>
       )
     }
+    cardRenderer.current = renderTask
 
     // ---- 产物库（A4）：按项目/日期分组 + 预览 + 复制路径 + 打开子会话 ----
     const artifactItems = Array.isArray(artifactData && artifactData.items) ? artifactData.items : []
@@ -1357,7 +1423,7 @@ export function createViews({
           <span className="orch-artifact-path" title={item.path}>{item.path}</span>
           {item.label ? <span className="orch-muted">{item.label}</span> : null}
           {item.exists === false ? <Chip tone="bad">{'（未找到）'}</Chip> : null}
-          <Chip title="来源任务">{`${item.title || item.taskId}${item.status ? ` · ${labelOf(STATUS_LABEL, item.status)}` : ''}`}</Chip>
+          <Chip title="来源任务">{`${item.title || '未命名任务'}${item.status ? ` · ${labelOf(STATUS_LABEL, item.status)}` : ''}`}</Chip>
           <span className="orch-msg-at">{timeLabel(item.at)}</span>
           {/* 产物库这一行本身能渲染行内预览，所以右侧栏不可用时退到这里（inlineFallback）。 */}
           <button
@@ -1429,7 +1495,7 @@ export function createViews({
                 <EmptyState
                   icon="folder"
                   title="还没有产物"
-                  hint="还没有产物。任务 done 时会自动收集改动文件；也可以显式传 task_report.artifacts。"
+                  hint="还没有产物。回合结束后保存阶段清单；文档可显式交付，文件收集范围以清单为准。"
                 />
               )
             : (
@@ -1518,7 +1584,10 @@ export function createViews({
               />
             )
       }
-      return <div className="orch-list">{visible.map(task => renderTask(task, tasks))}</div>
+      return <div className="orch-list">{visible.map(task => <TaskCard key={task.id} task={task} render={renderCard}
+        name={displayNameOf(task, titleCounts)} selected={detailTaskId === task.id}
+        busy={busy?.endsWith(`:${task.id}`) ? busy : null}
+        confirm={`${confirmStop === task.id}:${confirmClose === task.id}:${confirmDelete === task.id}:${confirmResume === task.id}`} />)}</div>
     }
 
     // ---- 第三段：右侧抽屉详情 ----
@@ -1798,7 +1867,7 @@ export function createViews({
       const depRow = row => (
         <DotRow key={`${row.status}:${row.id}`} tone={toneOf(STATUS_TONE, row.status)}>
           <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }} title={row.error || row.ref || row.title}>
-            {(row.title === '' || row.title === undefined || row.title === null) ? '（任务已删除）' : row.title}
+            {(row.title === '' || row.title === undefined || row.title === null) ? '已删除的前置任务' : row.title}
           </span>
           {row.ref ? <Chip tone="muted" title={`引用 ${row.ref}`}>{row.ref}</Chip> : null}
           {statusBadge(row.status)}
@@ -1822,8 +1891,17 @@ export function createViews({
       const artifacts = Array.isArray(task.artifacts) ? task.artifacts : []
       const artifactBody = (
           <div className="orch-stack orch-stack--xs">
-            <div>{task.artifactStoreDir}</div>
-            {task.artifactStage ? <div>{`${task.artifactStage.mode} · ${task.artifactStage.complete ? '已保存' : '不完整'}${task.artifactStage.git?.unarchived ? ' · 未归档' : ''}`}</div> : null}
+            {task.deliveryPending ? <div>{'交付收集中：等待回合结束并保存阶段。'}</div> : null}
+            {task.artifactStoreDir ? <div>{'私有产物库：'}{task.artifactStoreDir}
+              <button type="button" className="orch-btn orch-btn--sm" onClick={() => void copyPath(task.artifactStoreDir)}>{'复制路径'}</button></div> : null}
+            {task.artifactStage ? <div>{`${({ git: 'Git 改动引用（非代码备份）', 'non-git': '显式文件副本', unknown: '收集范围未知' })[task.artifactStage.mode] ?? '阶段清单'} · ${task.artifactStage.complete ? '阶段已保存（不等于完整备份）' : '收集不完整'}${task.artifactStage.git?.unarchived ? ' · 未归档改动' : ''}`}
+              <div>{task.artifactStage.coverage === 'host-captured' ? '宿主记录覆盖' : '仅显式交付范围'}</div>
+              {task.artifactStage.protection === 'unprotected-full-access' ? <div>{'完整访问：不保证产物防覆盖。'}</div> : null}
+              {!task.artifactStage.complete ? <div>{`详情以阶段清单为准：${task.artifactStage.reason ?? ''}${task.artifactStage.missingSummarySeqs?.length ? '缺少宿主改动摘要；' : ''}${task.artifactStage.interrupted ? '回合中断；' : ''}${task.artifactStage.documentsOmitted || task.artifactStage.omitted ? '存在省略项；' : ''}`}</div> : null}
+              {(task.artifactStage.files ?? []).filter(file => !['saved', 'git-reference'].includes(file.status)).map((file, index) =>
+                <div key={index}>{`${file.source}：${({ rejected: '收集被拒绝', 'missing-or-deleted': '文件缺失或已删除', unstable: '复制时文件变化', unknown: '范围未知' })[file.status] ?? file.status}${file.reason ? `（${file.reason}）` : ''}`}</div>)}
+              <div>{'阶段清单记录本轮捕获范围；文档版本是显式保存的文件，不代表完整工作区备份。'}</div>
+            </div> : null}
             {artifacts.length === 0 ? <div className="orch-muted">{'还没有产物。'}</div> : null}
             {artifacts.map((item, index) => (
               <DotRow key={`${item.path}:${index}`} tone={item.exists === false ? 'bad' : 'good'}>
@@ -2075,6 +2153,7 @@ export function createViews({
 
     return (
       <div className="orch-shell">
+        <div ref={backgroundRef}>
         {topbar()}
         <div className="orch-body orch-body--workbench">
           <main className="orch-main orch-wb-shell">
@@ -2088,6 +2167,7 @@ export function createViews({
             {page === 'review' ? reviewPage() : null}
           </main>
         </div>
+        </div>
         {/* 第三段：抽屉常驻挂载，靠 data-open 触发 transform 过渡（关闭时滑出而不是瞬移）。 */}
         <div className="orch-layer">
           <div
@@ -2097,6 +2177,9 @@ export function createViews({
             onClick={closeDetail}
           />
           <aside
+            ref={drawerRef}
+            role="dialog"
+            tabIndex={-1}
             className="orch-drawer"
             data-open={drawerOpen ? 'true' : 'false'}
             aria-hidden={drawerOpen ? 'false' : 'true'}

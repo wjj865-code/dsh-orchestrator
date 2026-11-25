@@ -70,7 +70,7 @@ test('S2/S5：WRITE_GRANT_ACTIONS 覆盖六个写权限动作、approve 不登�
     'src/panel-actions.js:message',
     'src/panel-actions.js:retry',
     'src/tools.js:messageTask',
-    'src/tools.js:resumeTask',
+    'src/task-actions.js:resumeTask',
     'src/tools.js:retryTask',
     'src/tools.js:task_create',
   ]
@@ -80,7 +80,7 @@ test('S2/S5：WRITE_GRANT_ACTIONS 覆盖六个写权限动作、approve 不登�
   assert.equal(WRITE_GRANT_ACTIONS.some(entry => entry.kind === 'approve'), false)
   const anchors = {
     messageTask: 'const messageTask = async ',
-    resumeTask: 'const resumeTask = async ',
+    resumeTask: 'export async function resumeTask',
     retryTask: 'const retryTask = async ',
     message: 'const message = async (taskId',
     retry: 'const retry = async taskId',
@@ -89,13 +89,12 @@ test('S2/S5：WRITE_GRANT_ACTIONS 覆盖六个写权限动作、approve 不登�
   for (const entry of WRITE_GRANT_ACTIONS) {
     const source = read(entry.file)
     const anchor = anchors[entry.fn]
-    const body = fnBody(source, anchor, entry.fn === 'task_create' ? { arrow: true } : {})
+    const body = fnBody(source, anchor, entry.fn === 'task_create' ? { arrow: true } : entry.file === 'src/task-actions.js' ? { params: true } : {})
     for (const call of entry.calls) {
       assert.equal(body.includes(`${call}(`), true, `${entry.file} 的 ${entry.fn} 必须命中 ${call}`)
     }
-    // 占位原语可以收在同一个文件的 helper 里（`holdWriteDomain`），但它必须真的 acquire（不许只判不占）。
-    if (entry.calls.includes('holdWriteDomain')) {
-      assert.equal(fnBody(source, 'const holdWriteDomain = ', { arrow: true }).includes('acquireWriteHold('), true, `${entry.file} 的 holdWriteDomain 必须 acquireWriteHold`)
+    if (entry.calls.includes('holdTaskWrite')) {
+      assert.ok(read('src/task-actions.js').includes('acquireWriteHold('))
     }
   }
 })
@@ -163,10 +162,10 @@ test("S10'：无 token 的 releaseWriteHold 只允许 stop/close/终态；finall
     }
   }
   // 工具/面板的投递 finally 必须是双参数（带自己的 owner token）。
-  const tools = read('src/tools.js')
-  assert.equal(tools.includes('releaseWriteHold(task.id, ownerToken)'), true)
-  const panel = read('src/panel-actions.js')
-  assert.equal(panel.includes('releaseWriteHold(task.id, holdToken)'), true)
+  const shared = read('src/task-actions.js')
+  assert.equal(shared.includes('releaseWriteHold(task.id, ownerToken)'), true)
+  assert.ok(read('src/tools.js').includes('holdTaskWrite(task, holdToken'))
+  assert.ok(read('src/panel-actions.js').includes('holdTaskWrite(task, holdToken'))
 })
 
 // S12（源码文本断言，审计后删）：原用例靠 `dispatch.includes('delivered = true')` 这类文本断言，

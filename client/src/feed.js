@@ -53,7 +53,7 @@ const signatureOf = (tasks, at) => {
  * @returns {{tasks: object[], signature: string}|null} 响应不完整时 null（调用方保留上一份）。
  */
 export const normalizeFeedSnapshot = (body, at = Date.now()) => {
-  if (body === null || typeof body !== 'object' || body.ok !== true) return null
+  if (body === null || typeof body !== 'object' || body.ok !== true || !Array.isArray(body.tasks)) return null
   const tasks = (Array.isArray(body.tasks) ? body.tasks : [])
     .filter(task => task !== null && typeof task === 'object')
     .map(slimTask)
@@ -77,12 +77,18 @@ export const createTaskFeed = ({
   activeMs = CHIP_POLL_MS,
   idleMs = CHIP_IDLE_MS,
   backoffMs = POLL_BACKOFF_MS,
+  visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden',
+  visibility = typeof document === 'undefined' ? null : document,
 }) => {
   let snapshot = null
   let handle = null
   let stopped = true
   let running = false
   const listeners = new Set()
+  let cachedBody = null
+  const onVisible = () => {
+    if (!stopped && visible()) schedule(0)
+  }
 
   const emit = () => {
     for (const listener of [...listeners]) {
@@ -91,6 +97,7 @@ export const createTaskFeed = ({
   }
   const stop = () => {
     stopped = true
+    visibility?.removeEventListener?.('visibilitychange', onVisible)
     if (handle !== null) {
       clearTimer(handle)
       handle = null
@@ -109,13 +116,17 @@ export const createTaskFeed = ({
   }
   // 拉一次并落地：内容变了才发通知（身份稳定是这里的核心契约）。
   const poll = async () => {
-    if (running) return false
+    if (running || !visible()) return false
     running = true
     let next = null
     let ok = false
     const at = now()
     try {
-      next = normalizeFeedSnapshot(await readSnapshot(), at)
+      const body = await readSnapshot(undefined, cachedBody?.rev)
+      const candidate = body?.ok === true && body.notModified === true && cachedBody && body.rev === cachedBody.rev
+        ? cachedBody : body
+      next = normalizeFeedSnapshot(candidate, at)
+      if (next !== null) cachedBody = candidate
       ok = next !== null
     } catch { ok = false }
     running = false
@@ -137,6 +148,7 @@ export const createTaskFeed = ({
       listeners.add(listener)
       if (stopped) {
         stopped = false
+        visibility?.addEventListener?.('visibilitychange', onVisible)
         schedule(0)
       }
       return () => {

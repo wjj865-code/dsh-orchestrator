@@ -1,10 +1,7 @@
 // 卡片只描述数据，不关心渲染框架；阶段 2 的客户端直接复用它。
 import { statusLabel } from './state.js'
 
-const STATUS_TONE = {
-  waiting_dep: 'muted', pending: 'muted', running: 'info', waiting_user: 'warn', waiting_auth: 'warn',
-  delivered: 'warn', done: 'good', failed: 'bad', cancelled: 'muted', orphaned: 'bad',
-}
+import { STATUS_TONE } from './status-tone.js'
 
 export function taskCard(task, { summary = '', maxLength = 80 } = {}) {
   // 按 Unicode 码点截断，避免在 80 边界把 emoji 的代理对切成两半。

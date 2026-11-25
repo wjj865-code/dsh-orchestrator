@@ -21,6 +21,7 @@ import { statusLabel } from './state.js'
 import { statusesWith } from './status-facts.js'
 import { taskLabel, taskLabelWithRef } from './task-label.js'
 import { taskRefTokenOfAny } from './task-ref.js'
+import { STATUS_TONE } from './status-tone.js'
 
 /** 工作台投影的硬上限（防止一个大组/一个长窗口把面板拖死）。 */
 export const WORKBENCH_LIMITS = Object.freeze({
@@ -243,6 +244,7 @@ export function calendarWindow({ tasks = [], automations = [], from, to } = {}) 
       ref: task.ref ?? null,
       title: task.title,
       status: task.status,
+      tone: STATUS_TONE[task.status] ?? 'muted',
       groupId: task.group_id ?? null,
       plannedAt: task.planned_at,
       artifactCount: Array.isArray(task.artifacts) ? task.artifacts.length : 0,
@@ -559,6 +561,7 @@ export function createWorkbench({ db, schedule, mainSessionId, log = () => {}, n
           ref: task.ref ?? null,
           title: task.title,
           status: task.status,
+          tone: STATUS_TONE[task.status] ?? 'muted',
           statusLabel: statusLabel(task.status),
           priority: task.priority,
           plannedAt: task.planned_at,
