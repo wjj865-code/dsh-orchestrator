@@ -193,24 +193,43 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   })
   const status = typeof coordinatorStatus === 'function'
     ? coordinatorStatus
-    : () => ({ id: config?.coordinatorSession, live: true })
+    : () => ({
+      id: config?.coordinatorSession,
+      ids: config?.coordinatorSession === undefined ? [] : [config.coordinatorSession],
+      live: true,
+      anyLive: true,
+    })
   // 记忆文件目录：插件唯一写入根（$DSH_HOME/state/orchestrator）；没给就退回内联记忆块。
   const lessonStateDir = stateDir ?? config?.stateDir
+  const coordinatorIds = () => {
+    const value = status()
+    if (Array.isArray(value?.ids)) return value.ids
+    return value?.id === undefined ? [] : [value.id]
+  }
+  // 失效提示：只看「有没有任何一个协调者在线」——副协调者在跑也算可用，不该劝用户重建主会话。
   const invalidHint = () => {
     const value = status()
-    return value?.id !== undefined && value.live === false
+    const anyLive = value?.anyLive ?? value?.live
+    return coordinatorIds().length > 0 && anyLive === false
       ? '主会话已失效，请从面板「打开主会话」重建。'
       : ''
   }
-  const unbound = () => status().id === undefined
+  const unbound = () => coordinatorIds().length === 0
   const UNBOUND_HINT = '尚未打开主会话，请先从面板「打开主会话」。'
-  const MAIN_ONLY_HINT = '请从主会话操作任务（面板「打开主会话」）。'
-  // task_* 只允许主会话；task_report 属于子会话，不在这里拦。
+  const MAIN_ONLY_HINT = '请从协调者会话操作任务（面板「打开主会话」；协调者名单里的每个会话都可以）。'
+  // task_* 只允许协调者名单成员（0.36.0 多协调者：不再要求「唯一主会话」）；task_report 属于子会话，不在这里拦。
   const requireMain = exec => {
-    const current = status()
-    if (current.id === undefined) return UNBOUND_HINT
-    if (exec?.agent?.id !== current.id) return MAIN_ONLY_HINT
+    const ids = coordinatorIds()
+    if (ids.length === 0) return UNBOUND_HINT
+    const caller = exec?.agent?.id
+    if (typeof caller !== 'string' || !ids.includes(caller)) return MAIN_ONLY_HINT
     return undefined
+  }
+  // 任务归属：写**实际派活的协调者**（exec.agent.id），面板/工具拿不到 caller 时才回落主协调者。
+  const attributorOf = exec => {
+    const caller = exec?.agent?.id
+    if (typeof caller === 'string' && caller !== '') return caller
+    return coordinatorIds()[0] ?? coordinatorSession
   }
   // 写记忆的角色口径（2026-11-21，用户方向：子会话执行任务时也读到很多项目背景与已有实践，应该能写项目记忆）：
   //   1. 协调者（主会话）：全局偏好 + 任意项目的 note/lesson/decision——原行为不变；
@@ -649,7 +668,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         task.access === 'full' ? 'full' : undefined,
         // attemptKey 同一次 followup 行的逻辑投递键：重放时只重试授予，不再二次投递。
         // planPhase：计划阶段把沙箱补成 workspace-write（$TMPDIR/scratch 可写），但仍不注册可写根。
-        { planApproved, planPhase: planPhaseMode(task), attemptKey: `followup:${task.id}:${seq}` },
+        // coordinatorSession（0.36.0）：parent/默认 cwd 用任务自己的协调者；它没打开时给可读失败。
+        { planApproved, planPhase: planPhaseMode(task), attemptKey: `followup:${task.id}:${seq}`, coordinatorSession: task.coordinator_session },
       )
       messageId = normalizeMessageId(sent)
     } catch (error) {
@@ -665,6 +685,13 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         return toolFailure('MESSAGE_WRITE_CONFLICT', { label: labelFor(task), reason: error?.message ?? String(error) })
       }
       const reason = error?.message ?? String(error)
+      // 0.36.0（多协调者，用户拍板决策 3）：创建者协调者没打开 → 不投递、不改状态，回可读中文。
+      if (error?.code === 'COORDINATOR_OFFLINE') {
+        setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
+        addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
+        log('task.followup.rejected', { taskId: task.id, detail: { reason: 'coordinator-offline', callId: exec?.callId } })
+        return `未投递（任务状态不变）：${reason}`
+      }
       setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
       addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
       const current = getTask(db, task.id)
@@ -827,7 +854,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     if (task.target !== null && task.target !== undefined) {
       // 停止失败也要把任务标掉：用户要的是「停」，不是让 stop 抛错卡住。
       try {
-        await dispatcher.stop(task.target, task.id)
+        await dispatcher.stop(task.target, task.id, task.coordinator_session)
       } catch (error) {
         log('task.stop.failed', { taskId: task.id, sessionId: task.session_id, detail: { reason: error?.message ?? String(error) } })
         // dispatch.stop 的 finally 已尽力清 goal；自定义派发器/极端路径再兜一次（幂等）。
@@ -920,7 +947,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     const retried = createTask(db, {
       artifactRoot: defaultDir(),
       brief: task.brief,
-      coordinatorSession: current.id ?? coordinatorSession,
+      coordinatorSession: attributorOf(exec),
       targetDir: retryTarget,
       readOnly: task.read_only === true,
       // P8：计划任务重派后重新走一次计划阶段（新会话要重新探索/批准）。
@@ -949,7 +976,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     // P1：重派也走借条（与 task_create / 面板重派同口径）。
     const retriedBrief = compactMessage('brief', renderBriefForTask(retried))
     addMessage(db, retried.id, { kind: 'brief', rendered: retriedBrief.rendered, meta: retriedBrief.meta })
-    if (current.live === false) {
+    if ((current.anyLive ?? current.live) === false) {
       const message = invalidHint() === '' ? toolFailure('MAIN_SESSION_UNAVAILABLE') : invalidHint()
       log('task.spawn.failed', { taskId: retried.id, agentId: exec?.agent?.id, detail: { error: message, retryOf: task.id } })
       transition(db, retried.id, 'failed', { error: message })
@@ -1041,7 +1068,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         objectiveForMessage(task.goal, body),
         task.access === 'full' ? 'full' : undefined,
         // planPhase：计划阶段把沙箱补成 workspace-write（$TMPDIR/scratch 可写），但仍不注册可写根。
-        { planApproved, planPhase: planPhaseMode(task), attemptKey: `resume:${task.id}:${seq}` },
+        // coordinatorSession（0.36.0）：parent/默认 cwd 用任务自己的协调者；它没打开时给可读失败。
+        { planApproved, planPhase: planPhaseMode(task), attemptKey: `resume:${task.id}:${seq}`, coordinatorSession: task.coordinator_session },
       )
       messageId = normalizeMessageId(sent)
     } catch (error) {
@@ -1055,6 +1083,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
       addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[续跑投递失败] ${reason}` })
       log('task.resume.failed', { taskId: task.id, sessionId: task.session_id, detail: { reason, from, history } })
+      // 0.36.0：创建者协调者没打开 → 续跑不成立（不迁状态、不改死因），回可读中文。
+      if (error?.code === 'COORDINATOR_OFFLINE') return `未续跑（任务状态不变）：${reason}`
       // 不新建、不改状态：原状态与死因都留着。不可达是终局（只能换新会话）→ 专门错误码并指 retry；
       // 其余投递错误可能是暂时的，回执里留「可再试一次 resume」的口子。
       return toolFailure(isUnreachable(error) ? 'RESUME_UNREACHABLE' : 'RESUME_DELIVERY_FAILED', { label: labelFor(task), reason })
@@ -1717,7 +1747,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       const task = createTask(db, {
         artifactRoot: defaultDir(),
         brief,
-        coordinatorSession: current.id ?? coordinatorSession,
+        coordinatorSession: agentId ?? coordinatorSession,
         targetDir: effectiveTarget,
         readOnly,
         planFirst,
@@ -1790,8 +1820,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         : ''
       // 链式自动放行：建链那一刻就说清「这条链不会再卡在确认上（有下游时）」。
       const chainNote = chainAuto ? CHAIN_AUTO_CREATE_NOTE : ''
-      // 配置的协调者会话失效时直接失败：挂进队列只会永远派不出去。
-      if (current.live === false) {
+      // 所有协调者都不在线时直接失败：挂进队列只会永远派不出去（副协调者在线时照常可派）。
+      if ((current.anyLive ?? current.live) === false) {
         const message = invalidHint() === '' ? '协调者会话已失效' : invalidHint()
         log('task.spawn.failed', { taskId: task.id, agentId, detail: { error: message, callId } })
         transition(db, task.id, 'failed', { error: message })
@@ -2115,11 +2145,11 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       project: str('可选：项目绝对路径或工作区名；不传记为全局（子会话只能传自己任务的 target_dir）'),
       kind: { type: 'string', enum: ['note', 'decision', 'preference', 'lesson'], description: '类型，默认 note（子会话不能写 preference）' },
     }), async (args, exec) => {
-      const current = status()
-      if (current.id === undefined) return UNBOUND_HINT
       const callerId = exec?.agent?.id
-      // 协调者：原行为不变（全局偏好走 settings、任意项目走 memories）。
-      if (callerId === current.id) {
+      const ids = coordinatorIds()
+      if (ids.length === 0) return UNBOUND_HINT
+      // 协调者名单成员：原行为不变（全局偏好走 settings、任意项目走 memories）。0.36.0 起副协调者同样算。
+      if (typeof callerId === 'string' && ids.includes(callerId)) {
         // 写入即蒸馏：去代码块/命令日志并按事实层上限截断，避免长日志混进 brief。
         const text = distillText(args.text, MAX_FACT_CHARS)
         if (text === '') return '要记的内容不能为空。'

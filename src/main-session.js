@@ -1,18 +1,30 @@
-// 主会话：唯一协调者。创建/打开/重建/**切换协调者**都从这里走；不再由 task_create 自动绑定。
+// 主会话：协调者会话。创建/打开/重建/**加入协调者名单**/**退出名单**都从这里走；不再由 task_create 自动绑定。
 //
 // 0.25.0（B' → 宿主自压 + 插件只提醒 + 手动 adopt）：
 //   - 「主会话轮换」（超阈值自动归档旧会话、切到干净会话）**整套删除**；
-//   - 会话可以并存多个，`settings.main_session_id` 仍然是「谁是协调者」的唯一指针；
+//   - 会话可以并存多个，`settings.main_session_id` 仍然是「谁是主协调者」的唯一指针；
 //   - 换协调者只有两条路：①用户在会话头点「设为协调者」（adopt 一个已有会话）
 //     ②压力提醒卡里选「新建协调者会话」（插件代建一个空白协调者会话再切过去）。
 //     两条路都**只切指针**：旧会话不改名、不归档、不退役，用户随时可以回去看。
 //
+// 0.36.0（多协调者，用户 2026-11-26 拍板）：真源变成**有序名单** `settings.main_session_ids`
+// （见 src/coordinator-set.js / ledger.js），`main_session_id` 只是首位的镜像。
+//   - adopt = **加入名单并提升为主**（前插），旧协调者留在名单里（仍有任务入口/工具/权限）；
+//   - `dropSession` = 退出名单（删首位则下一位升主；删光等价「尚未打开主会话」，下次 open 重建）；
+//   - `open()` 只开/重建**主协调者**；首位失效重建时**原位替换**首位，名单长度不增长；
+//   - 名单上限 4（`MAX_COORDINATORS` 常量，不进配置面），满员再 adopt → `ADOPT_LIMIT`。
+//
 // C（2026-11-21，权限徽标一致性）：见 `MAIN_PERMISSION_PRESET`。协调者会话在三条路上钉只读——
 // 新建（`open` 与 `createCoordinatorSession`）、adopt、以及每次「打开主会话」复用已有会话时把
-// 用户手动切走的预设拉回。宿主没有「锁死权限选择器」的 API，能做的只有这个（如实写进 LIMITATIONS）。
+// 用户手动切走的预设拉回。**每个名单成员都钉**（index.js 的 agent/created 也会对成员补钉）。
+// 宿主没有「锁死权限选择器」的 API，能做的只有这个（如实写进 LIMITATIONS）。
 import { mkdir } from 'node:fs/promises'
 import { resolve as resolvePath } from 'node:path'
-import { getMainSessionId, getMainSessionPreset, setMainSessionId, setMainSessionPreset, setSetting } from './ledger.js'
+import {
+  addCoordinatorId, getCoordinatorIds, getMainSessionPreset, removeCoordinatorId,
+  setCoordinatorIds, setMainSessionPreset, setSetting,
+} from './ledger.js'
+import { MAX_COORDINATORS } from './coordinator-set.js'
 import { onboardingKey } from './onboarding.js'
 
 export const PRESET_ID = 'dsh-orchestrator-coordinator'
@@ -56,7 +68,9 @@ export function createMainSession({
   // 同一时刻只允许一次「换协调者」（adopt 与代建共用同一把锁）：进行中再点直接 busy。
   let mutating = false
   const liveAgent = id => resolveAgents()?.get?.(id)
-  const currentId = () => config?.coordinatorSession ?? getMainSessionId(db)
+  // 名单：配置 `coordinatorSession`（运维兜底）覆盖成单元素；否则读台账名单（首位 = 主协调者）。
+  const currentIds = () => (config?.coordinatorSession ?? getCoordinatorIds(db))
+  const currentId = () => currentIds()[0]
   // worker 预设只认 spawn provider（fork 不满足 capabilities.agentPreset）；不静默降级、不改用户配置。
   const spawnProvider = config?.spawnProvider ?? 'spawn'
 
@@ -155,20 +169,23 @@ export function createMainSession({
   /**
    * 把已有会话设为协调者（会话头「设为协调者」/ 提醒卡）。
    *
-   * 只切指针：不改名、不归档、不退役。校验（失败给可读 code，宿主路由渲染文案）：
+   * 0.36.0：**加入名单并提升为主**（不再替换指针）——旧协调者留在名单里，仍有任务入口与工具权限。
+   * 不改名、不归档、不退役。校验（失败给可读 code，宿主路由渲染文案）：
    *   `ADOPT_NO_SESSION` 会话不存在/未加载；
    *   `ADOPT_NOT_COCKPIT` 不在「指挥舱」工作区；
    *   `ADOPT_NOT_LIVE` agent 还没起（先在该会话里发一条消息再试）；
    *   `ADOPT_PRESET_LOCKED` 已用其他预设开始（宿主拒绝中途换预设：请新建空白会话并选「协调者」）；
+   *   `ADOPT_LIMIT` 名单已满（4 个），先让某个会话「退出协调者」；
    *   `ADOPT_BUSY` 另一次切换正在进行。
    *
-   * @returns {Promise<{ok:true, sessionId:string, previous:string|null, unchanged?:boolean}
-   *   | {ok:false, code:string, params?:object}>}
+   * @returns {Promise<{ok:true, sessionId:string, previous:string|null, ids:string[], primary:string,
+   *   added:boolean, promoted:boolean, unchanged?:boolean} | {ok:false, code:string, params?:object}>}
    */
   const adoptSession = async ({ sessionId, source = 'panel' } = {}) => {
     if (typeof sessionId !== 'string' || sessionId === '') return { ok: false, code: 'ADOPT_NO_SESSION' }
     const previous = currentId() ?? null
-    if (sessionId === previous) return { ok: true, sessionId, previous, unchanged: true }
+    // 已经是主协调者：什么都不用做（不再重复写台账、不再钉权限）。
+    if (sessionId === previous) return { ok: true, sessionId, previous, unchanged: true, ids: currentIds() }
     if (mutating) return { ok: false, code: 'ADOPT_BUSY' }
     mutating = true
     try {
@@ -194,8 +211,12 @@ export function createMainSession({
           }
         }
       }
+      let outcome
       try {
-        setMainSessionId(db, sessionId)
+        outcome = addCoordinatorId(db, sessionId)
+        if (outcome.limitReached === true) {
+          return { ok: false, code: 'ADOPT_LIMIT', params: { max: MAX_COORDINATORS } }
+        }
         setMainSessionPreset(db, PRESET_ID)
       } catch (error) {
         return { ok: false, code: 'ADOPT_FAILED', params: { reason: `${error?.message ?? error}` } }
@@ -208,27 +229,81 @@ export function createMainSession({
         source,
         preset,
         permission,
+        ids: outcome.ids,
+        added: outcome.added,
+        promoted: outcome.promoted,
       })
-      return { ok: true, sessionId, previous }
+      return {
+        ok: true,
+        sessionId,
+        previous,
+        ids: outcome.ids,
+        primary: outcome.ids[0],
+        added: outcome.added,
+        promoted: outcome.promoted,
+      }
     } finally {
       mutating = false
     }
   }
 
   /**
-   * 代建一个空白协调者会话并切过去（压力提醒卡里「新建协调者会话」那一项）。
+   * 让一个会话退出协调者名单（会话头/面板「本会话退出协调者」）。
    *
-   * 顺序：建工作区 → create → 切指针 → preset 标记 → onboarding=sent（跳过首次介绍/索引任务）
-   * → 改名「主会话」→ 审计。**旧会话零处置**（不改名不归档）。
+   * 只改名单：不改名、不归档、不回滚权限（它仍是只读会话）。删首位 → 下一位升主；
+   * 删光 → 两个 settings 键都清掉，等价回到「尚未打开主会话」，下一次打开会重建。
+   * @returns {Promise<{ok:true, sessionId:string, ids:string[], primary:string|null, primaryChanged:boolean}
+   *   | {ok:false, code:string, params?:object}>}
+   */
+  const dropSession = async ({ sessionId, source = 'panel' } = {}) => {
+    if (typeof sessionId !== 'string' || sessionId === '') return { ok: false, code: 'DROP_NO_SESSION' }
+    if (mutating) return { ok: false, code: 'ADOPT_BUSY' }
+    mutating = true
+    try {
+      let outcome
+      try {
+        outcome = removeCoordinatorId(db, sessionId)
+      } catch (error) {
+        return { ok: false, code: 'DROP_FAILED', params: { reason: `${error?.message ?? error}` } }
+      }
+      if (outcome.dropped !== true) return { ok: false, code: 'DROP_NOT_FOUND' }
+      if (freshMain !== undefined && freshMain.sessionId === sessionId) freshMain = undefined
+      log('main.session.dropped', {
+        sessionId,
+        source,
+        ids: outcome.ids,
+        primaryChanged: outcome.primaryChanged,
+      })
+      return {
+        ok: true,
+        sessionId,
+        ids: outcome.ids,
+        primary: outcome.ids[0] ?? null,
+        primaryChanged: outcome.primaryChanged,
+      }
+    } finally {
+      mutating = false
+    }
+  }
+
+  /**
+   * 代建一个空白协调者会话并**加入名单、提升为主**（压力提醒卡里「新建协调者会话」那一项）。
+   *
+   * 顺序：查上限 → 建工作区 → create → 加入名单（前插）→ preset 标记 → onboarding=sent（跳过首次介绍/索引任务）
+   * → 改名「主会话」→ 审计。**旧会话零处置**（留在名单里，不改名不归档）。
    * 失败处置：
-   *   - create 失败：什么都没发生（不写指针），`ADOPT_CREATE_FAILED`；
-   *   - 切指针失败：**新会话留着待重用**（不归档不删除——归档会把一个刚建好的空白会话藏进历史，
+   *   - 名单已满：`ADOPT_LIMIT`，一个会话都不建；
+   *   - create 失败：什么都没发生（不写名单），`ADOPT_CREATE_FAILED`；
+   *   - 写名单失败：**新会话留着待重用**（不归档不删除——归档会把一个刚建好的空白会话藏进历史，
    *     而且平台归档对用户是「不可见」的副作用；留着它用户可以直接点开用它）。`ADOPT_FAILED`。
-   * @returns {Promise<{ok:true, sessionId:string, previous:string|null, created:true}
+   * @returns {Promise<{ok:true, sessionId:string, previous:string|null, ids:string[], primary:string, created:true}
    *   | {ok:false, code:string, params?:object}>}
    */
   const createCoordinatorSession = async ({ source = 'pressure-reminder' } = {}) => {
     if (mutating) return { ok: false, code: 'ADOPT_BUSY' }
+    if (currentIds().length >= MAX_COORDINATORS) {
+      return { ok: false, code: 'ADOPT_LIMIT', params: { max: MAX_COORDINATORS } }
+    }
     mutating = true
     const previous = currentId() ?? null
     try {
@@ -252,18 +327,24 @@ export function createMainSession({
         log('main.adopt.create-failed', { previous, reason: 'no-session-id', source })
         return { ok: false, code: 'ADOPT_CREATE_FAILED', params: { reason: '创建协作者会话没有返回 sessionId' } }
       }
+      let outcome
       try {
-        setMainSessionId(db, sessionId)
+        outcome = addCoordinatorId(db, sessionId)
+        if (outcome.limitReached === true) {
+          // 竞态兜底：查上限与真正写名单之间被别的入口塞满了 → 名单不动，新会话留着待用。
+          log('main.adopt.pointer-failed', { previous, newId: sessionId, reason: 'limit', source })
+          return { ok: false, code: 'ADOPT_LIMIT', params: { max: MAX_COORDINATORS, sessionId } }
+        }
         setMainSessionPreset(db, createdPreset(created))
       } catch (error) {
-        // 指针没切成功：新会话留着（可见、可点开），不归档；旧协调者原样可用。
+        // 名单没写成功：新会话留着（可见、可点开），不归档；旧协调者原样可用。
         log('main.adopt.pointer-failed', {
           previous, newId: sessionId, error: `${error?.message ?? error}`, source,
         })
         return { ok: false, code: 'ADOPT_FAILED', params: { reason: `${error?.message ?? error}`, sessionId } }
       }
-      // 以下都只降级：指针已切，新会话可用。
-      // C：新建的协调者会话同样钉只读（顺序放在切指针之后：手指针失败时它还不是协调者）。
+      // 以下都只降级：名单已加，新会话可用。
+      // C：新建的协调者会话同样钉只读（顺序放在写名单之后：写名单失败时它还不是协调者）。
       const permission = pinPermission(sessionId)
       try { setSetting(db, onboardingKey(sessionId), 'sent') } catch (error) {
         log('main.adopt.onboarding.failed', { newId: sessionId, error: `${error?.message ?? error}` })
@@ -272,8 +353,8 @@ export function createMainSession({
         log('main.adopt.rename.failed', { newId: sessionId, error: `${error?.message ?? error}` })
       }
       freshMain = { sessionId, at: now() }
-      log('main.adopt.created', { previous, newId: sessionId, source, permission })
-      return { ok: true, sessionId, previous, created: true }
+      log('main.adopt.created', { previous, newId: sessionId, source, permission, ids: outcome.ids })
+      return { ok: true, sessionId, previous, ids: outcome.ids, primary: outcome.ids[0], created: true }
     } finally {
       mutating = false
     }
@@ -308,7 +389,8 @@ export function createMainSession({
     if (spawnProvider !== 'spawn') {
       return { ok: false, error: `主会话的子任务需要 spawn provider（当前 spawnProvider=${spawnProvider}）：请把 spawnProvider 改回 spawn，或改用配置覆盖的会话` }
     }
-    const id = getMainSessionId(db)
+    const ids = getCoordinatorIds(db)
+    const id = ids[0]
     const live = id === undefined ? undefined : liveAgent(id)
     // 刚创建出来的新会话还没 live（平台异步起 agent）：别再建一个，直接把同一个 id 交回去。
     if (live === undefined && id !== undefined && freshMain !== undefined
@@ -381,9 +463,17 @@ export function createMainSession({
       log('main.session.rename.failed', { sessionId, error: `${error?.message ?? error}` })
     }
     setSetting(db, onboardingKey(sessionId), 'pending')
-    setMainSessionId(db, sessionId)
+    // 0.36.0：写名单——首位是本次新建的主协调者；**其余成员原位保留**（重建不增长名单）。
+    // 之前没有名单（首次打开）→ 只有它一个。
+    setCoordinatorIds(db, [sessionId, ...ids.slice(1)])
     setMainSessionPreset(db, createdPreset(created))
-    log('main.session.created', { sessionId, agentPreset: created?.agentPreset ?? null, permission })
+    log('main.session.created', {
+      sessionId,
+      agentPreset: created?.agentPreset ?? null,
+      permission,
+      replaced: id ?? null,
+      ids: [sessionId, ...ids.slice(1)],
+    })
     notifyOpened({ sessionId, created: true }, undefined)
     return { ok: true, sessionId, created: true, agentPreset: created?.agentPreset }
   }
@@ -401,5 +491,8 @@ export function createMainSession({
     return opening
   }
 
-  return { open, currentId, guardPreset, pinPermission, adoptSession, createCoordinatorSession, isMutating: () => mutating }
+  return {
+    open, currentId, currentIds, guardPreset, pinPermission, adoptSession, dropSession,
+    createCoordinatorSession, isMutating: () => mutating,
+  }
 }

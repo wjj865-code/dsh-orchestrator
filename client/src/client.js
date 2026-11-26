@@ -21,10 +21,10 @@ import {
   chipOpenTargetOf, isLatestTurn,
   splitTaskRefs, refDisplayOf, refSegmentsOf,
   startOfMonth, plannedOnDay, planStampOnDay, groupTasksOf, nextPlannedTask, automationStateLabel,
-  monthGrid, dateKeyOf,
+  monthGrid, dateKeyOf, coordinatorSummaryOf,
 } from './logic.js'
 import {
-  readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce, adoptCoordinator,
+  readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce, adoptCoordinator, dropCoordinator,
   readGroups, readGroup, readCalendar, readAutomations, readStats,
   saveGroup, archiveGroup, setPlan, toggleAutomation, deleteAutomation,
   readMainNav, ackMainNav,
@@ -88,6 +88,8 @@ export const createClient = (req) => {
     listOf,
     timeLabel,
     shortPath,
+    // 0.36.0：面板「主会话」行的协调者摘要（名单/主协调者/本会话是否在名单里）。
+    coordinatorSummaryOf,
     countTasks,
     matchesFilter,
     matchesQuery,
@@ -324,6 +326,9 @@ export const createClient = (req) => {
         // 0.33.0 自动化创建：写进主会话输入框 + 跳官方「自动化任务」页（main 面板 key 'schedules'）。
         prefillDraft: prefillMainDraft,
         openSchedules: () => { try { ctx.layout.selectPanel('schedules') } catch { /* 官方页不可达时静默：按钮仍渲染，点了没反应好过整页报错 */ } },
+        // 0.36.0：面板「主会话」行的协调者名单需要知道「当前是哪个会话」（本会话退出）与退出动作。
+        readSessionId,
+        dropCoordinator,
       }),
     }, TasksPanel))
 
@@ -454,6 +459,7 @@ export const createClient = (req) => {
       chipTooltipOf,
       chipVisibleTitle,
       chipOpenTargetOf,
+      coordinatorSummaryOf,
       // R3：正文里的引用切段/查表（五种兜底的纯函数，test/client.test.js 直接断言）。
       splitTaskRefs,
       refDisplayOf,

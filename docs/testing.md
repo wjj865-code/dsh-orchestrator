@@ -233,7 +233,7 @@ dsh --profile verify web --no-open --port <空闲端口> --host 127.0.0.1
 | 7 | `worktree:true` + `worktreeBranch:"feat/smoke"` | 真的按传入名建出 `feat/smoke` 与检出；漏传 `worktreeBranch` 直接报错（带 type 白名单）；通知/`task_status` 标「隔离」；`git status` 无 `.agents/` |
 | 8 | 多分支仓库不给 `worktreeBase` | 任务不创建、返回候选，带基线重调后建树 |
 | 9 | 同目录并发派两条 | 默认拒绝并给三条出路；`allowConcurrent:true` 放行并标风险 |
-| 10 | 主会话上下文维护（0.25.0） | 在指挥舱新建会话选「协调者」→ 会话头点「设为协调者」后 `settings.main_session_id` 切到它、旧会话不改名不归档；压力 ≥ `contextPressureThreshold`（可先调低到 0.1 复现）时弹一次问题卡，选「继续当前会话」后同一 band 不再问 |
+| 10 | 多协调者与主会话上下文维护（0.25.0 / 0.36.0） | 在指挥舱建两个会话各选「协调者」→ 会话头「设为协调者」后 `settings.main_session_ids` = `[B,A]`、`main_session_id=B`、两侧 `session-role` 都 `isMain:true`；A 派的任务回报投 A、B 派的任务投 B。面板「主会话」行显示「协调者 2」并给「本会话退出协调者」（两步确认）；退出首位后 `main_session_id` 变下一位、该会话 5 秒内失去「任务」入口。压力 ≥ `contextPressureThreshold`（可先调低到 0.1 复现）时弹一次问题卡，选「继续当前会话」后同一 band 不再问 |
 | 11 | 配了 `checks` 的任务报 done | 全过才「待确认」并显示「验收 N/N」；有失败项即拒绝交付、任务仍「进行中」、回执给退出码与输出尾部 |
 | 12 | 关联官方板的任务被**人**确认交付 | 官方任务按 CAS 标 `complete`；超时自动完成时官方板**不变**，日志有 `team.board.skipped` |
 | 13 | 主会话权限徽标（0.25.1） | 新建主会话后输入区徽标显示「Read Only / 仅可查看」（日志 `main.session.permission-pinned`）；`/permission danger-full-access` 切走后徽标如实变「Full access」，再点「打开主会话」被拉回 `read-only`（日志再记一条 `permission-pinned`，返回 `permissionRestored`）；同批普通任务子会话 `sandbox/mode` 停在 `workspace-write`（日志 `subagent.workspace-write`），照常写文件 |

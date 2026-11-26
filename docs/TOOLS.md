@@ -58,7 +58,7 @@
 | `schedule_edit` | `id` + `action:'update'` / `'delete'`；暂停 `active:false`、恢复 `active:true`；编辑携带最新 `updatedAt` 为 `expectedUpdatedAt`（可用时） |
 
 - **Host-wide**：能看到并按 id 管理其他会话创建的任务；创建/修改/暂停/恢复/删除需用户**明确授权**，冲突 `schedule_conflict` 先重读、不强行覆盖。授权提示是模型行为约束，不是人工审批硬门禁。
-- **自动编排只支持 `target:'this_session'`**：到期唤醒唯一主会话，按已授权 prompt 调 `task_list` 核对后再 `task_create`。`new` / `new_once` 仍是原生选项，但创建普通 root 会话、**非唯一主** id 无法直接 `task_create`，不提供第二协调者/转发桥。
+- **自动编排只支持 `target:'this_session'`**：到期唤醒**创建该自动化的协调者会话**（面板会带当前会话 id；未带时回落主协调者），按已授权 prompt 调 `task_list` 核对后再 `task_create`。`new` / `new_once` 仍是原生选项，但创建普通 root 会话、**不在协调者名单**的 id 无法直接 `task_create`；目标会话退出名单后该自动化到点没人处理（面板标「目标会话已不是协调者」），不转发、不自改名单。
 - **默认 worker 不新增**自动化包；自定义 worker 即使有 schema，宿主仍返回 `subagent_session`。`access:full` 只改沙箱，**不增加工具**、不绕过委派校验或审批。
 - Host 必须运行；投递成功不等于子任务完成，崩溃可能重复投递，删除不撤回已排队消息，不承诺 exactly-once。
 

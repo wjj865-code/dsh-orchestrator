@@ -96,8 +96,8 @@
 - **压力提醒是唯一出口**：压力 ≥ `contextPressureThreshold`（默认 0.4）时弹一张 `userQuestions` 问题卡（新建协调者会话 / 继续当前会话 / 稍后再说），去重状态在 `settings.main_context_alert`（0.1 band + 0.05 滞回）。`userQuestions` 缺失或无在线客户端（`NO_PROVIDER`）只 warn 一次、不建会话、不弹第二次；压力读不到时不提醒（fail-closed）。
 - **有任务在跑时提醒会延后**：`pending` / `running` / `waiting_dep` / `waiting_user` / `waiting_auth` 任一存在就不弹卡，只记 `main.context.alert.deferred`（不写 `main_context_alert`、不占 band），任务收尾后下一次打开主会话再问；`delivered`（已交付待确认）不算在跑，照常问。代价：长期有任务在跑时提醒会一直不出现，需要换会话请手动「设为协调者」。
 - **「新建」之后的跳转是尽力而为**：服务端只建会话 + 切指针；跳转由浏览器插件每 5 秒轮询 `main-nav` 后调 `uiWorkspace.openSession`。宿主拒绝（新会话还没在客户端会话表里）最多重试 3 次（约 15 秒），仍失败就 ack 失败并在面板顶部给可读提示——**指针保持已切状态**（当前会话会失去「主会话」身份），用户从左侧会话列表打开标题「主会话」的会话即可；离线客户端在 5 分钟内回到页面会被补跳，超过 TTL（5 分钟）就不跳（避免很久以后把人拽走）。没有 `uiWorkspace.openSession` 的旧宿主/裁剪 profile 只给提示、不崩。
-- **换协调者只切指针**：adopt（会话头「设为协调者」）与代建都只写 `settings.main_session_id` / `main_session_preset`；旧会话不改名、不归档、不退役。adopt 只接受**指挥舱工作区**里的会话，已用其他预设开始（宿主拒绝换预设）会被拒并给可读原因；同一时刻只允许一次切换（`ADOPT_BUSY`）。代建 create 失败零处置；**切指针失败时新建会话留着待重用**（不归档）。
-- **多会话并存**：`main_session_id` 仍是唯一指针；通知/日报/`task_*` 只认它，其余会话的上下文增长用户看不见（观测范围目前只覆盖主会话；`readContextPressure` 已按 session 参数化，扩范围只需遍历 `sessions.list()` 的存活会话）。
+- **换协调者 = 加入名单并提升为主**（0.36.0）：adopt（会话头「设为协调者」）与代建写 `settings.main_session_ids`（首位 = 主协调者）并同步 `main_session_id` / `main_session_preset`；旧会话留在名单里，不改名、不归档、不退役。adopt 只接受**指挥舱工作区**里的会话，已用其他预设开始（宿主拒绝换预设）会被拒并给可读原因；名单上限 4 个（`ADOPT_LIMIT`），同一时刻只允许一次切换（`ADOPT_BUSY`）。代建 create 失败零处置；**写名单失败时新建会话留着待重用**（不归档）。「本会话退出协调者」（`drop-coordinator`）只删名单，删首位则下一位升主、删光等价「尚未打开主会话」。
+- **多协调者共享一份台账**：名单成员都能 `task_create` / `task_list` / `task_status`，都钉 `read-only` 只读工具面；任务的 `coordinator_session` 记**实际派活的那个**，回报投给它、它离线或退出名单时回落主协调者（日志 `notify.route.fallback`）。已知边界：**上下文压力只观测主协调者**（副协调者的上下文增长不提醒）；派它的协调者会话没打开时该任务直接 `failed`（可读提示「先打开创建者会话」），**不回落主协调者派发**；对账按名单并集读目录，不会把副协调者的任务误判丢失。
 
 ## 首次打开与仓库索引
 
@@ -110,7 +110,7 @@
 
 - 四个实际工具为 `schedule_create`/`schedule_list`/`schedule_view`/`schedule_edit`，没有单独 delete/pause/enable；仅核实 **0.2.2-rc.3** 的 RRULE/target/depth 契约，旧 `schedule_update`/`schedule_delete` 不兼容，不提供假工具或自动适配。
 - **Host-wide**：可管理其他会话创建的任务；写操作必须用户**明确授权**、确认目标与范围，日期/时间/时区不明先问；宿主提示不是对用户意图的硬验证。编辑用最新 `updatedAt` 为 `expectedUpdatedAt`，冲突先重读。
-- **本次自动编排只支持 `this_session`**：`new`/`new_once` 是普通 root 会话，**非唯一主** id 不能 `task_create`；不认领第二协调者、不转发、不篡改 `main_session_id`。
+- **本次自动编排只支持 `this_session`**：「这个会话」= **创建自动化时所在的协调者会话**（面板会带当前会话 id，服务端校验它仍是协调者名单成员；未带时回落主协调者）。`new`/`new_once` 是普通 root 会话，不在名单里，不能 `task_create`；目标会话退出名单后该自动化到点没人处理（面板标「目标会话已不是协调者」，不自动改授权），也不转发、不自改名单。
 - **默认 worker 不开放**，`access:full` 不增加工具、不绕过委派校验或审批。自定义组合可能有 schema，但宿主委托 depth 校验仍返回 `subagent_session`（冷恢复/full 也不能绕过）。
 - `coordinatorSession` 自定义组合不强行换预设：仅已有原生工具才可用。缺 Schedule 服务/定义在主会话边界给去重 warning 与能力缺失 policy，恢复后再检查；编排继续，不能模拟自动化成功。
 - Host 必须运行；回执只代表投递，不代表模型/子任务完成。崩溃可能重复投递，删除不撤回已排队消息，不承诺 exactly-once。
@@ -209,7 +209,7 @@
 
 ## UI
 - 会话内卡片仍只提供数据（`taskCard`），不渲染 UI；可见入口是侧栏「主会话」和会话头「任务」面板。
-- **任务入口依赖宿主身份信号**：显示条件 = 当前会话 id 与台账 `main_session_id` 相等。id 取不到或 `session-role` 请求失败时按「不是主会话」处理，入口**默认隐藏**；会话切换立即重判，另有 5 秒兜底轮询——刚打开主会话 1 秒内可能短暂看不到入口。
+- **任务入口依赖宿主身份信号**：显示条件 = 当前会话 id ∈ 台账 `settings.main_session_ids`（名单成员一视同仁，主/副协调者都显示「任务」）。id 取不到或 `session-role` 请求失败时按「不是协调者」处理，入口**默认隐藏**；会话切换立即重判，另有 5 秒兜底轮询——刚设为协调者 1 秒内可能短暂看不到入口。
 - 入口隐藏只是 UI 层：`main` 面板仍注册，`/api/orchestrator` 的动作端点也没有会话身份校验（owner-only 由平台 connection 负责）；真正的主会话权限仍由 `task_*` 工具的调用方校验兜底。
 - 面板是 2s 轮询、没有 SSE；任务很多时快照会变大。面板产物 ≤160 KiB 由 `check:client-size` 守着（工作台 v1 由 95 KiB 抬到 148 KiB，0.32.0 能力包面板抬到 160 KiB——子预算见脚本头部与 `docs/testing.md` G10；minify 后排查用 `CLIENT_MINIFY=0`）。
 - **删除只删台账，不删盘**：级联清 `tasks`/`messages`/`notifications`，产物文件、`memories` 都保留；平台侧子会话历史（含 P1 起作为正文真源的会话日志）也没有删除 API。删除不可恢复。

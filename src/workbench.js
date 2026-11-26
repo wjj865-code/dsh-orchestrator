@@ -401,7 +401,7 @@ export function reviewStats({ tasks = [], groups = [], messages = 0, days = 7, n
  * @param {(event: string, fields?: object) => void} [deps.log] 审计日志（只记 id 与结果，不记话术全文）
  * @param {() => number} [deps.now]
  */
-export function createWorkbench({ db, schedule, mainSessionId, log = () => {}, now = Date.now } = {}) {
+export function createWorkbench({ db, schedule, mainSessionId, coordinatorIds, log = () => {}, now = Date.now } = {}) {
   // 自动化下次触发时间的进程内缓存（`schedule_id -> ms`）：`calendar` 是同步投影，不 await 宿主；
   // 由 `automations()` 每次读宿主时刷新（打开自动化页或排期页时各拉一次）。
   const cachedFireAt = new Map()
@@ -421,6 +421,25 @@ export function createWorkbench({ db, schedule, mainSessionId, log = () => {}, n
     } catch {
       return getMainSessionId(db) ?? undefined
     }
+  }
+  // 0.36.0（用户拍板决策 4）：自动化绑**创建它的协调者**，不再是固定主协调者。
+  //   - 名单里没成员时整页不可创建（旧行为）；
+  //   - `body.sessionId` 给了但已不在名单 → AUTOMATION_TARGET_INVALID（可读）；
+  //   - 没给（旧客户端）→ 回落主协调者。
+  const coordinatorList = () => {
+    try {
+      const value = typeof coordinatorIds === 'function' ? coordinatorIds() : coordinatorIds
+      if (Array.isArray(value)) return value.filter(id => typeof id === 'string' && id !== '')
+    } catch { /* 读不到按空名单 */ }
+    const single = mainIdOf()
+    return typeof single === 'string' && single !== '' ? [single] : []
+  }
+  const isCoordinatorSession = id => typeof id === 'string' && id !== '' && coordinatorList().includes(id)
+  const targetIdOf = requested => {
+    const wanted = typeof requested === 'string' ? requested.trim() : ''
+    if (wanted !== '') return isCoordinatorSession(wanted) ? { ok: true, id: wanted } : { ok: false, code: 'AUTOMATION_TARGET_INVALID' }
+    const primary = mainIdOf()
+    return typeof primary === 'string' && primary !== '' ? { ok: true, id: primary } : { ok: false, code: 'AUTOMATION_TARGET_INVALID' }
   }
   const isAvailable = () => {
     const service = scheduleService()
@@ -471,6 +490,8 @@ export function createWorkbench({ db, schedule, mainSessionId, log = () => {}, n
       active: row.active === true,
       scheduleId: row.schedule_id,
       targetSession: row.target_session,
+      // 0.36.0（多协调者）：目标会话已不在协调者名单 → 到点没人能接（面板给可读提示，不自动改授权）。
+      targetMissing: typeof row.target_session === 'string' && row.target_session !== '' && !isCoordinatorSession(row.target_session),
       authorizedAt: row.authorized_at,
       lastFiredAt: row.last_fired_at,
       lastResult: row.last_result,
@@ -651,6 +672,8 @@ export function createWorkbench({ db, schedule, mainSessionId, log = () => {}, n
         at: now(),
         available,
         target: mainIdOf() ?? null,
+        // 0.36.0：名单与「本页默认目标」一起下发——客户端据此决定要不要把这个会话作为创建目标。
+        coordinatorIds: coordinatorList(),
         rows,
         canCreate: available && (mainIdOf() ?? '') !== '',
       }
@@ -749,8 +772,9 @@ export function createWorkbench({ db, schedule, mainSessionId, log = () => {}, n
         if (gate.reason === 'not_found') return panelFailure('AUTOMATION_NOT_FOUND', { id: body.id })
         return panelFailure('AUTOMATION_NOT_CONFIRMED')
       }
-      const mainId = mainIdOf()
-      if (typeof mainId !== 'string' || mainId === '') return panelFailure('AUTOMATION_TARGET_INVALID')
+      const target = targetIdOf(body.sessionId)
+      if (target.ok !== true) return panelFailure('AUTOMATION_TARGET_INVALID')
+      const mainId = target.id
       const kind = ['group', 'task', 'global'].includes(body.kind) ? body.kind : 'global'
       const refId = kind === 'global' ? null : text(body.refId)
       if (kind === 'group') {

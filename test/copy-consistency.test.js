@@ -241,7 +241,9 @@ test('原生自动化 policy 与文档锁住真实工具、授权及会话边界
     assert.match(text, /明确授权/)
     assert.match(text, /this_session/)
     assert.match(text, /new.*new_once/)
-    assert.match(text, /非唯一主/)
+    // 0.36.0 多协调者：口径从「非唯一主会话」改成「不在协调者名单」——四份文本必须同口径。
+    assert.match(text, /协调者名单/)
+    assert.match(text, /不在协调者名单|不在名单里|非名单成员/)
     assert.match(text, /(?:默认|default) worker 不(?:开放|新增)/)
     assert.match(text, /full.*不增加工具/)
     assert.match(text, /expectedUpdatedAt/)

@@ -7,7 +7,7 @@ import { listTasks, listHistoryTasks } from './ledger.js'
 import { taskCard } from './card.js'
 import { panelFailure, panelHttpStatus } from './action-errors.js'
 import { createRequestDedupe } from './request-dedupe.js'
-import { isMainSession } from './session-role.js'
+import { isCoordinator } from './session-role.js'
 import { ACTIVE_STATUSES, canClose, canDelete, canFollowup, canSetPlan } from './panel-gates.js'
 import { statusesWith } from './status-facts.js'
 // P2-3 交接契约 v1：snapshot 只下发精简版（谁/何时确认 + 验收是否通过），完整证据在 detail 端点。
@@ -48,7 +48,7 @@ const json = (value, status) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json' },
 })
 
-export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession, mainNav, contextSnapshot, panel, workbench, teamBoard, packs, staleMinutes = 30, limit = 200, now = Date.now }) {
+export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession, dropCoordinator, mainNav, contextSnapshot, panel, workbench, teamBoard, packs, staleMinutes = 30, limit = 200, now = Date.now }) {
   // message 请求级幂等：按 (taskId, clientRequestId) 去重，只在进程内（重启失效，见 request-dedupe.js）。
   const dedupe = createRequestDedupe({ max: 200 })
   // 工作台写动作的请求级幂等（同一个 endpoint + 目标 id + clientRequestId 只执行一次）。
@@ -100,12 +100,21 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
       }
     }
     const tasks = [...activeTasks, ...listHistoryTasks(db, limit)]
+    // 0.36.0 多协调者：`mainSession.id` 仍是**主协调者**（面板「主会话在线/已失效」沿用它），
+    // 另下发整份名单与每个成员的在线状态，供面板渲染「协调者 N」与「本会话退出」。
+    const ids = Array.isArray(status.ids) ? status.ids : (status.id === undefined ? [] : [status.id])
+    const coordinators = Array.isArray(status.coordinators)
+      ? status.coordinators
+      : ids.map((id, index) => ({ id, primary: index === 0, live: null }))
     return {
       ok: true,
       at,
       mainSession: {
         id: status.id ?? null,
+        ids,
         live: status.live === true,
+        anyLive: status.anyLive === true || status.live === true,
+        coordinators,
         // 观测字段（诊断用；客户端不渲染成常驻元素）。
         context,
       },
@@ -220,7 +229,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
       return json(panelFailure('OPEN_MAIN_FAILED', { reason: result?.error ?? '创建主会话失败' }), 500)
     }
     if (endpoint === 'adopt-session') {
-      // 0.25.0：把已有会话设为协调者（只切指针；不改名、不归档、不退役旧会话）。
+      // 0.36.0：把已有会话设为协调者 = **加入名单并提升为主**（旧协调者留在名单里，不改名、不归档）。
       if (typeof adoptSession !== 'function') return json(panelFailure('ADOPT_UNAVAILABLE'), 500)
       const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
       if (sessionId === '') return json(panelFailure('ADOPT_NO_SESSION'), 409)
@@ -231,17 +240,49 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
         return json(panelFailure('ADOPT_FAILED', { reason: error?.message ?? error }), 500)
       }
       if (result?.ok === true) {
-        return json({ ok: true, sessionId: result.sessionId, previous: result.previous ?? null, unchanged: result.unchanged === true }, 200)
+        return json({
+          ok: true,
+          sessionId: result.sessionId,
+          previous: result.previous ?? null,
+          unchanged: result.unchanged === true,
+          added: result.added === true,
+          promoted: result.promoted === true,
+          ids: Array.isArray(result.ids) ? result.ids : [],
+          primary: result.primary ?? null,
+        }, 200)
       }
       return json(panelFailure(result?.code ?? 'ADOPT_FAILED', result?.params ?? {}), panelHttpStatus({ code: result?.code ?? 'ADOPT_FAILED' }))
     }
+    if (endpoint === 'drop-coordinator') {
+      // 0.36.0：面板「本会话退出协调者」→ 只改名单（删首位则下一位升主；删光等价「尚未打开主会话」）。
+      if (typeof dropCoordinator !== 'function') return json(panelFailure('DROP_UNAVAILABLE'), 500)
+      const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
+      if (sessionId === '') return json(panelFailure('DROP_NO_SESSION'), 409)
+      let result
+      try {
+        result = await dropCoordinator({ sessionId })
+      } catch (error) {
+        return json(panelFailure('DROP_FAILED', { reason: error?.message ?? error }), 500)
+      }
+      if (result?.ok === true) {
+        return json({
+          ok: true,
+          sessionId: result.sessionId,
+          ids: Array.isArray(result.ids) ? result.ids : [],
+          primary: result.primary ?? null,
+          primaryChanged: result.primaryChanged === true,
+        }, 200)
+      }
+      return json(panelFailure(result?.code ?? 'DROP_FAILED', result?.params ?? {}), panelHttpStatus({ code: result?.code ?? 'DROP_FAILED' }))
+    }
     if (endpoint === 'session-role') {
-      // 客户端面板闸门：只回答「这个会话是不是主会话」，不写台账、不建会话。
-      // 信号与 task_* 工具同源（coordinatorStatus → settings.main_session_id）；
-      // 任何一侧缺失都按 false 回答，客户端据此默认隐藏任务入口（见 src/session-role.js）。
+      // 客户端面板闸门：只回答「这个会话是不是协调者」，不写台账、不建会话。
+      // 0.36.0：判定 = 会话 ∈ 协调者名单（主/副协调者一视同仁）；响应形状保持 `{ ok, isMain }`，
+      // 客户端 gate.js 的三角色语义不变（因此客户端侧零改动就能让所有协调者看到「任务」入口）。
       const status = coordinatorStatus?.() ?? {}
+      const ids = Array.isArray(status.ids) ? status.ids : (status.id === undefined ? [] : [status.id])
       const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
-      return json({ ok: true, isMain: isMainSession(sessionId, status.id) }, 200)
+      return json({ ok: true, isMain: isCoordinator(sessionId, ids), coordinatorCount: ids.length }, 200)
     }
     if (endpoint === 'main-nav') {
       // t-a79e12d8：只读轮询「要不要跳到新主会话 / 有没有一条可读提示」。

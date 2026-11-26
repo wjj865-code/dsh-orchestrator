@@ -364,7 +364,7 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       return reason
     }
     if (task.target !== null && task.target !== undefined) {
-      try { await dispatcher.stop(task.target, task.id) } catch (error) {
+      try { await dispatcher.stop(task.target, task.id, task.coordinator_session) } catch (error) {
         log('ui.stop.failed', { taskId: task.id, detail: { error: warn('STOP_DISPATCH_FAILED', error) } })
         void goalBridge?.clear?.(task.id, task.target)
       }
@@ -471,7 +471,12 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       retried = createTask(db, {
         artifactRoot: defaultDir(),
         brief: task.brief,
-        coordinatorSession: status.id ?? task.coordinator_session,
+        // 0.36.0：重派沿用原任务的协调者归属（同一次需求的延续）；创建者已不在名单时才回落主协调者。
+        coordinatorSession: (() => {
+          const owner = task.coordinator_session
+          const ids = Array.isArray(status.ids) ? status.ids : []
+          return typeof owner === 'string' && ids.includes(owner) ? owner : (status.id ?? owner)
+        })(),
         targetDir: retryTarget,
         readOnly: task.read_only === true,
         // P8：计划任务重派后重新走计划阶段（新会话要重新探索/批准）。
@@ -593,7 +598,8 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
       // 写域口径与幂等键（面板「追加」与工具 task_message 必须是同一条投递链）。
       // P0-2（审计）：计划任务未批准时按只读投递（= 不注册可写根），否则批准前就会注册可写根。
       // planPhase：计划阶段把沙箱补成 workspace-write（$TMPDIR/scratch 可写），但仍不注册可写根。
-      const sendArgs = [task.target, content, undefined, taskTargetDir(task) || undefined, task.id, dispatchReadOnly(task), objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined, { planApproved, planPhase: planPhaseMode(task), attemptKey: `followup:${task.id}:${seq}` }]
+      // coordinatorSession（0.36.0）：parent/默认 cwd 用任务自己的协调者；它没打开时给可读失败。
+      const sendArgs = [task.target, content, undefined, taskTargetDir(task) || undefined, task.id, dispatchReadOnly(task), objectiveForMessage(task.goal, content), task.access === 'full' ? 'full' : undefined, { planApproved, planPhase: planPhaseMode(task), attemptKey: `followup:${task.id}:${seq}`, coordinatorSession: task.coordinator_session }]
       const sent = typeof dispatcher.sendReliable === 'function'
         ? await dispatcher.sendReliable(...sendArgs)
         : await dispatcher.send(...sendArgs)
@@ -606,6 +612,13 @@ export function createPanelActions({ db, dispatcher, queue, config, coordinatorS
         return panelFailure('MESSAGE_WRITE_CONFLICT', { label: taskLabel(task), reason: error?.message ?? String(error) })
       }
       const reason = error?.message ?? String(error)
+      // 0.36.0（多协调者，用户拍板决策 3）：创建者协调者没打开 → 明确 409 码，不改任务状态。
+      if (error?.code === 'COORDINATOR_OFFLINE') {
+        setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
+        addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
+        log('ui.message.failed', { taskId: task.id, detail: { reason: 'coordinator-offline' } })
+        return panelFailure('TASK_DISPATCH_COORDINATOR_OFFLINE', { sessionId: task.coordinator_session })
+      }
       setMessageDelivery(db, task.id, seq, 'failed', { error: reason })
       addMessage(db, task.id, { kind: 'delivery_failed', rendered: `[投递失败] ${reason}` })
       const latest = getTask(db, task.id)

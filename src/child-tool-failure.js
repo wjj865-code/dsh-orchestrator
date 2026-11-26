@@ -195,7 +195,8 @@ const FOLLOWUP_STATUSES = new Set(statusesWith('followup'))
  * @param {object} [options.logger] 结构化日志（`src/log.js`）
  * @param {object} [options.notifier] 通知器（用 `summary` 合并上报，与看门狗同一调用形状）
  * @param {(agentId:string)=>object|undefined} [options.taskOfAgent] 子会话 id → 任务（index 注入 `workerTaskOf`）
- * @param {()=>string|undefined} [options.coordinatorId] 当前协调者会话 id（排除它自身的调用）
+ * @param {()=>string|undefined} [options.coordinatorId] 兼容旧装配：单个协调者会话 id（排除它自身的调用）
+ * @param {()=>string[]} [options.coordinatorIds] 0.36.0 多协调者：协调者名单（排除其中**每个**成员的调用）
  * @param {(task:object)=>string} [options.labelFor] 任务显示名
  * @param {()=>number} [options.now] 时钟（测试注入）
  * @param {number} [options.dedupeMs] 去重窗口（默认 {@link toolFailureDedupeMs}）
@@ -207,12 +208,29 @@ export function createChildToolFailureWatcher({
   notifier,
   taskOfAgent,
   coordinatorId,
+  coordinatorIds,
   labelFor,
   now = Date.now,
   dedupeMs = toolFailureDedupeMs(),
   maxSeen = TOOL_FAILURE_SEEN_MAX,
   onWarn = () => {},
 } = {}) {
+  // 协调者名单（任一口径给到都算）：名单里的会话是**协调者**，它们自己的工具失败不进编排面。
+  const coordinatorSet = () => {
+    const out = new Set()
+    if (typeof coordinatorIds === 'function') {
+      try {
+        for (const id of coordinatorIds() ?? []) if (typeof id === 'string' && id !== '') out.add(id)
+      } catch { /* 读不到按空名单 */ }
+    }
+    if (typeof coordinatorId === 'function') {
+      try {
+        const single = coordinatorId()
+        if (typeof single === 'string' && single !== '') out.add(single)
+      } catch { /* 同上 */ }
+    }
+    return out
+  }
   // 去重表：`taskId\0tool\0code` → { at, suppressed }。只在内存（进程重启后允许再报一次，与看门狗同口径）。
   const seen = new Map()
 
@@ -275,8 +293,7 @@ export function createChildToolFailureWatcher({
     try {
       const agentId = exec?.agent?.id
       if (typeof agentId !== 'string' || agentId === '') return undefined
-      const coordinator = typeof coordinatorId === 'function' ? coordinatorId() : undefined
-      if (coordinator !== undefined && agentId === coordinator) return undefined
+      if (coordinatorSet().has(agentId)) return undefined
       const task = typeof taskOfAgent === 'function' ? taskOfAgent(agentId) : undefined
       if (task === undefined || task === null) return undefined
       const hit = classifyToolFailure(exec, result)

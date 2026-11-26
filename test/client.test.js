@@ -2640,3 +2640,39 @@ test('R3 抽屉覆盖：最新回复与消息正文里的 tk- 引用都渲染成
   assert.equal((source.match(/<RefText /g) ?? []).length, 2, '抽屉「最新回复」与「消息」两处都要覆盖')
 })
 
+// ---------------------------------------------------------------------------
+// 0.36.0 多协调者（用户 2026-11-26 拍板）：面板「协调者 N / 本会话退出」与自动化绑本会话。
+// ---------------------------------------------------------------------------
+
+test('0.36.0 多协调者：coordinatorSummaryOf 判名单长度/主协调者/本会话与「可退出」', () => {
+  const { loaded } = load()
+  const { coordinatorSummaryOf } = loaded.__test
+  // 两名成员：当前会话是次位 → 在名单里、可退出、主协调者是首位。
+  assert.deepEqual(
+    coordinatorSummaryOf({ mainSession: { id: 's-a', ids: ['s-a', 's-b'] } }, 's-b'),
+    { count: 2, ids: ['s-a', 's-b'], primary: 's-a', selfIndex: 1, isSelf: true, canLeave: true },
+  )
+  // 只剩一个成员 → 不给「退出」（避免一键清空名单）。
+  assert.equal(coordinatorSummaryOf({ mainSession: { id: 's-a', ids: ['s-a'] } }, 's-a').canLeave, false)
+  // 当前会话不是成员 → 不给退出入口。
+  assert.equal(coordinatorSummaryOf({ mainSession: { id: 's-a', ids: ['s-a', 's-b'] } }, 's-x').isSelf, false)
+  // 旧快照（只有 id）→ 单元素名单；快照缺失 → 空摘要（fail-closed）。
+  assert.deepEqual(coordinatorSummaryOf({ mainSession: { id: 's-a' } }, 's-a').ids, ['s-a'])
+  assert.deepEqual(coordinatorSummaryOf(null, 's-a'), { count: 0, ids: [], primary: null, selfIndex: -1, isSelf: false, canLeave: false })
+})
+
+test('0.36.0 多协调者：面板有「协调者 N」与「退出协调者」，自动化入口优先绑当前协调者会话', () => {
+  // 名单摘要进面板（状态行追加「 · 协调者 N」）。
+  assert.match(source, /coordinatorSummaryOf/)
+  assert.match(source, /协调者/)
+  // 退出入口：两步确认 + 走 drop-coordinator 端点；只剩一个成员/不是成员时不渲染。
+  assert.match(source, /退出协调者/)
+  assert.match(source, /drop-coordinator/)
+  assert.match(source, /canLeave/)
+  assert.match(source, /确认退出协调者？/)
+  // 自动化：当前会话是协调者就绑它（不再一律 open-main）。
+  assert.match(source, /self\.isSelf/)
+  assert.match(source, /schedule_create/)
+})
+
+

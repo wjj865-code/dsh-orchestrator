@@ -4,13 +4,13 @@
 
 ## 角色
 
-- **协调者**：唯一主会话，固定入口；只拆任务、派子会话、看回报、交付产物。能**只读**看**单个文件**（`read` 与 `read_workspace`；`glob`/`grep` 已移除，检索类工作派只读任务），但**不写文件、不执行命令**（预设不挂 `write`/`edit`/`bash`/`pwsh`，权限钉 `read-only`）。
+- **协调者**：名单里的会话（0.36.0 起可多个，首位 = 主协调者），固定入口；只拆任务、派子会话、看回报、交付产物。能**只读**看**单个文件**（`read` 与 `read_workspace`；`glob`/`grep` 已移除，检索类工作派只读任务），但**不写文件、不执行命令**（预设不挂 `write`/`edit`/`bash`/`pwsh`，权限钉 `read-only`）。
 - **子任务**：独立 DSH 子会话，直连 `ctx.subagents.startActivation`，不占 Team 名册；另有四个专属插件工具：`task_report`（回报）、`task_detail`（只读创建详情）、`plan_save`（计划落盘）、`artifact_save`（阶段文档）。
-- **客户端**：侧栏「主会话」入口（始终可见）+ 会话头「任务」面板（仅主会话可见）；只读快照 + 面板动作。
+- **客户端**：侧栏「主会话」入口（始终可见，打开名单首位）+ 会话头「任务」面板（名单成员都可见）；只读快照 + 面板动作 + 协调者名单（「协调者 N」/「本会话退出协调者」）。
 
 ## 主会话
 
-解析顺序：`config.coordinatorSession`（显式覆盖，不写台账）→ 台账 `settings.main_session_id` → 未打开（`task_*` 返回「尚未打开主会话」）。`open-main` 确保「指挥舱」工作区存在，用协调者预设创建会话、`rename` 成「主会话」、写指针，再跳到该会话。复用判定以台账 `settings.main_session_preset` 为准；UI 空白会话可能被 rebind 成默认预设，插件在 `agent/created` 与复用前调 `agentPresets.select` 拉回，失败只记日志并由 guard 兜底。
+解析顺序：`config.coordinatorSession`（显式覆盖，不写台账，等价「名单只有这一个」）→ 台账 `settings.main_session_ids`（0.36.0 起的真源：有序名单，`[0]` = 主协调者）→ 回落老的 `settings.main_session_id`（存量单协调者零迁移）→ 未打开（`task_*` 返回「尚未打开主会话」）。名单上限 4 个（`src/coordinator-set.js` 的 `MAX_COORDINATORS` 常量，不进配置面）；写入永远同步 `main_session_id = ids[0]`，启动时自愈脏名单/漂移镜像（`main.session.ids-sanitized` / `ids-repaired`）。`open-main` 确保「指挥舱」工作区存在，用协调者预设创建会话、`rename` 成「主会话」、写名单首位；首位失效重建时**原位替换首位**（其余成员保留、名单不增长）。复用判定以台账 `settings.main_session_preset` 为准；UI 空白会话可能被 rebind 成默认预设，插件在 `agent/created` 与复用前调 `agentPresets.select` 拉回，失败只记日志并由 guard 兜底。
 
 **权限（C：徽标 = 实际工具面）**：协调者会话的 `permission preset` 显式钉成宿主出厂预设 `read-only`（沙箱 `read-only` + 审批 `ask`，`src/main-session.js` 的 `MAIN_PERMISSION_PRESET` / `pinPermission`）。0.26.0 起协调者预设挂着**只读**工具（`read`；`glob`/`grep` 已在 t-4f7ce108 随 `tool-fs-search` 行一起移除）与技能加载器（`skill`），但**没有任何写工具**（预设没挂 `write`/`edit`/`bash`/`pwsh`，`tool-fs` 行只开 `read`），所以徽标「Read Only / 仅可查看」与工具面一致；宿主给新会话的默认预设是 `workspace-write`，不钉的话徽标会显示「工作区写入」。写路径只有宿主公开的 `ctx.permissionPresets.set(session,'read-only')`（追加 `permission/preset` + `sandbox/mode` + `approval/policy` 三条事件，`permissions` 投影 = 徽标数据源随之变）。覆盖四条路：open 新建、代建、adopt、复用已有主会话时把用户切走的预设拉回（`main.session.permission-pinned`）。**这不是锁**：宿主没有锁权限选择器的 API，`/permission` 与输入区选择器仍可切（宿主的 `locked` 只针对 agent 预设 `agentPresets.select`），漂移一律在下次观察点拉回。失败只记 `main.session.permission-pin-failed`，不挡打开；宿主没有 `permissionPresets` 服务时整段降级（老宿主/裁剪 profile）。
 
@@ -24,26 +24,26 @@
 - `cordis.patch.yml` 只在 coordinator plugins 挂原生 `schedule_create` / `schedule_list` / `schedule_view` / `schedule_edit`，预设自有工具不进入 `createTools`，也不受 `restrict` 的 deny/keep 影响。worker 不新增自动化挂载。
 - **工具面**：`createTools` 返回 12 个（协调者可见 8；worker 专属 4 个，另共用 `context`/受限 `memory_note`）。协调者另挂宿主只读 `read`、`skill`、`present`、`schedule_*`，不计入全局工具数；不挂 `tool-fs-search`。旧入口并入 `task_message.action`、`task_list.view`、`context.mode`；旧名不注册，迁移提示来自 `src/tool-migrations.js`。
 - 缺能力诊断只针对唯一主会话：检查 `tools.get(name, agent)` 的可见定义与 `ctx.schedule`，缺失去重 warn + policy 提示；不改运行回合工具表，也不模拟自动化。
-- 只支持 `target:this_session`：Host 到期投递消息到唯一主会话，再由模型走 `task_create`。`new`/`new_once` 创建普通 root 会话，不是委托 worker、也不是第二协调者；**非唯一主** id 被 `requireMain` 拒绝。**默认 worker 不新增**挂载；`access:full` 不增加工具、不解除 `subagent_session`。沿用 Host-wide 管理、用户**明确授权**、RRULE 与 `expectedUpdatedAt` 冲突保护；用法见 [TOOLS 原生自动化工具](TOOLS.md#原生自动化工具)，边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。
+- 只支持 `target:this_session`：Host 到期投递消息到**创建该自动化的协调者会话**（面板带当前会话 id，服务端校验它仍是名单成员；未带时回落主协调者），再由模型走 `task_create`。`new`/`new_once` 创建普通 root 会话，不是委托 worker、也不是协调者；**非名单成员**被 `requireMain` 拒绝。自动化本页的「创建」入口在协调者会话里走官方 `schedule_create`（0.33.0 起面板不自己建）。**默认 worker 不新增**挂载；`access:full` 不增加工具、不解除 `subagent_session`。沿用 Host-wide 管理、用户**明确授权**、RRULE 与 `expectedUpdatedAt` 冲突保护；用法见 [TOOLS 原生自动化工具](TOOLS.md#原生自动化工具)，边界见 [LIMITATIONS](LIMITATIONS.md#原生自动化)。
 
 ### 入口可见性（U1）
 
-- **会话头「任务」入口只在主会话显示**：`client/src/gate.js` 取当前会话 id → POST `session-role` → `src/session-role.js` 的 `isMainSession`（与 `task_*`、通知投递同源：台账 `main_session_id`）。
+- **会话头「任务」入口对**协调者名单**的每个成员显示**（0.36.0；名单首位是主协调者）：`client/src/gate.js` 取当前会话 id → POST `session-role` → `src/session-role.js` 的 `isCoordinator`（与 `task_*`、通知投递同源：`settings.main_session_ids`，配置 `coordinatorSession` 覆盖成单元素）。
 - 降级 fail-closed：没有会话 id、路由不可用、HTTP/JSON 失败、`ok:false` 一律隐藏；失败不缓存，换会话立即重判，另有 5 秒兜底轮询；同会话的明确答案缓存。
 - 侧栏「◈ 主会话」始终可见、不参与判定（它是首次创建主会话的引导入口）；面板主体仍注册为 `main` 槽位，入口隐藏不等于面板消失。
 
 ## 主会话上下文维护（0.25.0：宿主自压 + 插件只提醒 + 手动 adopt）
 
-主会话是唯一协调者。**「轮换」整套已删除**（不再自动归档旧会话、不再自己换人）：上下文过长由宿主 `compaction-basic` 在每个 agent 预设的 isolate 组里自动压缩（阈值是宿主的 `thresholdRatio`，默认 0.8），插件只做观测与提醒。
+主协调者是名单首位；名单里的每个会话都是协调者（0.36.0，最多 4 个）。**「轮换」整套已删除**（不再自动归档旧会话、不再自己换人）：上下文过长由宿主 `compaction-basic` 在每个 agent 预设的 isolate 组里自动压缩（阈值是宿主的 `thresholdRatio`，默认 0.8），插件只做观测与提醒。
 
 - **模块**：`src/main-context.js`（观测 `readContextPressure` / `readLogSize` / `readCompactionStats`、只读探测 `probeCompaction`、提醒判定 `decideAlert`、问题卡与代建衔接 `createContextObserver`、老键清理 `cleanupLegacyRotation`）、`src/main-session.js`（`adoptSession` / `createCoordinatorSession`）、`src/main-nav.js`（进程内导航/提示待办 `createMainNav` + 代建结果翻译 `planCoordinatorNav`）、`client/src/nav.js`（轮询执行跳转 `createMainNavPoller`）、`index.js`（装配 + `onOpened` 旁路）、`src/host-route.js`（`adopt-session` / `main-nav` / `main-nav-ack` 端点 + `snapshot.mainSession.context`）。
 - **观测**（只在「打开主会话」时算一次，异步不阻塞）：压力 = `tokenMeter.contextPressure(session)` 的 `pressureTokens/contextWindow`；日志体积 = `sessionPersistence.locate` + `stat`；压缩次数 = `sessionQuery.observeSession()` 里 `compaction/start` 的 `turn`（`null` = 手动 `/compact`，数字 = 宿主自动）。
 - **提醒**（唯一出口：宿主 `userQuestions` 问题卡）：压力 ≥ `contextPressureThreshold`（默认 0.4，可配）时弹一次；选项「新建协调者会话 / 继续当前会话 / 稍后再说」。去重：settings `main_context_alert = { at, ratio, band, state }`，同一 band（0.1 步长）只问一次，压力回落到 `阈值 − 0.05` 才重新武装。`userQuestions` 缺失或 `NO_PROVIDER` 只 warn 一次、不建会话。
 - **有在跑的任务就延后**（t-a79e12d8）：`decideAlert` 该 `ask` 时若 `activeTasks` 里还有 `DEFERRED_TASK_STATUSES`（`statusesWith('active')` 去掉 `delivered`：pending / running / waiting_dep / waiting_user / waiting_auth）就改成 `defer`。`remind` 只写一条 `main.context.alert.deferred`（按 band + 任务集合去重），**不写 `main_context_alert`、不占 band**——任务收尾后下一次 open 仍会问（同一 band 也问）。`delivered` 不算在跑（子会话已结束，换主会话不丢回报）。
-- **换协调者**（只切指针，旧会话零处置）：①会话头「设为协调者」→ `adopt-session` → `adoptSession`（校验：会话存在 / 在指挥舱工作区 / agent 已加载 / 预设为协调者或可拉回，否则 `ADOPT_*` 可读错误）；②问题卡选「新建」→ `createCoordinatorSession`（create → 切指针 → `onboarding=sent` → 改名「主会话」→ 审计 `main.adopt.created`；create 失败零处置，切指针失败**新会话留着待重用**、不归档）。同一时刻只允许一次切换（`ADOPT_BUSY`）。
+- **换协调者 = 加入名单并提升为主**（旧会话零处置但**仍在名单里**）：①会话头「设为协调者」→ `adopt-session` → `adoptSession`（校验：会话存在 / 在指挥舱工作区 / agent 已加载 / 预设为协调者或可拉回，否则 `ADOPT_*` 可读错误；名单满 4 个 → `ADOPT_LIMIT`；已在名单只提升不重复）；②问题卡选「新建」→ `createCoordinatorSession`（create → 前插名单 → `onboarding=sent` → 改名「主会话」→ 审计 `main.adopt.created`；create 失败零处置，写名单失败**新会话留着待重用**、不归档）。③面板「本会话退出协调者」→ `drop-coordinator` → `dropSession`（删首位下一位升主、删光等价未打开）。同一时刻只允许一次名单变更（`ADOPT_BUSY`）。
 - **跳转（客户端能力，服务端不假装能导航）**：`planCoordinatorNav(代建结果)` → 成功一条 `{kind:'navigate', sessionId}`、失败一条 `{kind:'notice', text}`，写进 `createMainNav` 的**进程内单条待办**（TTL 5 分钟，不写台账/settings）。浏览器 `client/src/nav.js` 每 5s 拉 `main-nav`：`navigate` → `uiWorkspace.openSession(sessionId)` 成功后 `main-nav-ack`（id 匹配才清，多客户端先到先得）；宿主拒绝（`sessions.retain: unknown session`，新会话广播未到）最多试 3 次，仍失败 → ack `ok:false`（审计 `main.nav.navigate-failed`，指针保持不动）+ 切面板顶部可读提示「请从左侧会话列表打开『主会话』」；没有 `openSession` 的旧宿主同样降级为提示、不崩。没有 `mainNav` 装配时两个端点分别回 `{ok:true, nav:null}` / `{ok:true, cleared:false}`。
-- **settings**：`main_session_id`（唯一指针）、`main_session_preset`、`main_onboarding:<id>` 语义不变；新增 `main_context_alert`（提醒去重）、`main_log_hint_shown`（16 MiB 一次性提示）；老键 `main_session_created_at` / `main_rotation_*` 在启动时一次性清掉（`main.rotation.legacy-cleaned`）。
-- **日志**：`main.context.observed` / `alert.asked|deferred|snoozed|declined|resolved|cleared|create-failed` / `main.nav.pending|consumed|navigate-failed|expired` / `main.adopt.created|pointer-failed` / `main.session.adopted` / `host.capabilities.compaction`（只读探测结果）。
+- **settings**：`main_session_ids`（0.36.0 真源：有序名单，首位 = 主协调者）、`main_session_id`（首位镜像，降级/旧读者兼容）、`main_session_preset`、`main_onboarding:<id>` 语义不变；新增 `main_context_alert`（提醒去重）、`main_log_hint_shown`（16 MiB 一次性提示）。老键 `main_session_created_at` / `main_rotation_*` 在启动时一次性清掉（`main.rotation.legacy-cleaned`）。
+- **日志**：`main.context.observed` / `alert.asked|deferred|snoozed|declined|resolved|cleared|create-failed` / `main.nav.pending|consumed|navigate-failed|expired` / `main.adopt.created|pointer-failed` / `main.session.adopted|dropped|ids-sanitized|ids-repaired` / `notify.route.fallback` / `host.capabilities.compaction`（只读探测结果）。
 - **插件不压缩**：不调用 `compactNow`、不写宿主阈值/预设行内 config、不重试；`/compact` 手动路径照旧。
 
 ## 队列与并发
@@ -84,13 +84,13 @@
 | blocked | interrupt | 立即投递，可带 `question` / `options` |
 | needs_auth | interrupt | 立即投递，可带 `question` / `options` |
 
-- 通知走 `agent.steer` 直插协调者，不经过 Team 的 `sendMessage`；每次投递写 `notifications` 行（`delivered`/`failed`/`skipped`，合并后续行 `merged_into` 指向首条）。
+- 通知走 `agent.steer` 直插**任务的协调者**（0.36.0：投给派它的那个协调者会话；它已不在名单或不在线时回落主协调者，日志 `notify.route.fallback`；汇总/系统类通知固定投主协调者），不经过 Team 的 `sendMessage`；每次投递写 `notifications` 行（`delivered`/`failed`/`skipped`，合并后续行 `merged_into` 指向首条）。
 - **progress 为什么必须送达**：它是「任务还在跑」的协调信号，不是终态——协调者据此决定 `task_message` 追问同一子会话（或 `resume`），而不是重派新任务。silent 时代「追问 → 子会话先报部分结论 → 继续跑」这条最需要被看见的路径对主会话永久不可见（实测 t-1f70bedb：8 次追问后的 progress 零通知，只剩 15 分钟看门狗）。
 - **追问必达**（`tasks.report_expected_at`）：`task_message` / `resume` 投递成功后置位（面板「追加」同口径，`src/panel-actions.js`）；下一份回报带 `answeredFollowup` → progress 跳过水位与合并窗口立刻投递。回报一到就清标记——必达只对**第一条**生效，长任务不会因为一次追问变成每条 progress 都即时唤醒。
 - **节流不刷屏**：同任务 60 秒水位内只留最新一条、到点补投（尾沿保留最后状态）；合并窗口内同一任务的第二条 progress 覆盖第一条，被同窗口的 `done`/`blocked` 取代的直接撤掉（一条消息里不重复列同一任务）。被压住/覆盖/取代的写 `notifications` 行（`skipped` + `reason: progress_watermark | progress_merged | progress_superseded`）——**每条 progress 都有审计行**，排查「主会话为什么没收到」不用再猜。水位在进程内，重启后重置（重启后的第一条 progress 立即送）。
 - `task_list({view:'inbox'})` 汇总待决、失败/丢失、长时间没动静；问题/选项来自台账 `question` / `question_options_json`，`progress`/`done`/`task_message` 会清掉旧问题。
 - **卡住提醒**：连续 3 次 progress 且距上次提醒超过 `staleMinutes` 推一次「可能卡住」（与上面的送达并列，不互相替代）。
-- 日报：`digestAt`（HH:MM）开启后在主会话上维护一条每日 `schedule`，到点提示协调者汇总；主会话重建/时区变化会重建，配置为空会删除。
+- 日报：`digestAt`（HH:MM）开启后在**主协调者**上维护一条每日 `schedule`（只有一个、跟名单首位），到点提示协调者汇总；主协调者变化/重建/时区变化会重建，配置为空会删除。
 
 ## 两段式终态（D1：交付 → 确认）
 

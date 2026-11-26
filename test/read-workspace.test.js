@@ -289,7 +289,7 @@ async function toolFixture() {
 test('read_workspace 只对主会话开放：子会话与未绑定都拿不到内容', async () => {
   const { db, tools } = await toolFixture()
   const asChild = await tools.read_workspace.execute({ path: 'reports/plan.md' }, { agent: { id: 'child-1' } })
-  assert.match(asChild, /请从主会话操作/)
+  assert.match(asChild, /请从协调者会话操作任务/)
   assert.doesNotMatch(asChild, /# 计划/)
   const unbound = await tools.read_workspace.execute({ path: 'reports/plan.md' }, { agent: { id: 's-1' } })
   assert.match(unbound, /# 计划/) // 已绑定主会话：正常读到

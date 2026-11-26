@@ -6,7 +6,7 @@
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `coordinatorSession` | — | 显式覆盖主会话；不配则读 `settings.main_session_id`（**页面只读**：运维兜底通道，仅手改 profile YAML；填错会让协调者指向不存在的会话） |
+| `coordinatorSession` | — | 显式覆盖协调者名单（覆盖成单个会话）；不配则读 `settings.main_session_ids`（名单，首位是主协调者；缺失时回落 `settings.main_session_id`）。**页面只读**：运维兜底通道，仅手改 profile YAML；填错会让协调者指向不存在的会话 |
 | `spawnProvider` | `spawn` | 本地 fresh 子会话 provider（只支持 `spawn`） |
 | `workerPreset` | `dsh-orchestrator-worker` | 子会话预设；调试可切 `orch-debug`（生成器与说明已移出主包，见 [tools/debug-preset/README.md](../tools/debug-preset/README.md)，不随 npm 包发货） |
 | `staleMinutes` | `30` | 多久无动静标陈旧 / 卡住提醒间隔 |

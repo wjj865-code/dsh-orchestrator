@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setTaskArtifacts, setTaskLastMessage, setTaskAcceptance, markReportExpected, clearReportExpected } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setCoordinatorIds, getCoordinatorIds, addCoordinatorId, removeCoordinatorId, setTaskArtifacts, setTaskLastMessage, setTaskAcceptance, markReportExpected, clearReportExpected } from '../src/ledger.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -358,6 +358,52 @@ test('main_session_id 读写', async () => {
   assert.equal(getMainSessionId(db), undefined)
   setMainSessionId(db, 'session-main')
   assert.equal(getMainSessionId(db), 'session-main')
+  db.close()
+})
+
+test('多协调者名单：读侧三级回落、写侧同步 main_session_id、加入/删除与上限', async () => {
+  const db = await openLedger(tempDir())
+  // 1) 两个键都不存在 → 空名单（未绑定）
+  assert.deepEqual(getCoordinatorIds(db), [])
+
+  // 2) 存量单协调者：只有 main_session_id → 回落成单元素名单（读路径不写库）
+  setMainSessionId(db, 's-old')
+  assert.deepEqual(getCoordinatorIds(db), ['s-old'])
+  assert.equal(getSetting(db, 'main_session_ids'), undefined, '读路径不写库')
+
+  // 3) 配置覆盖（运维通道）优先，且不落库
+  assert.deepEqual(getCoordinatorIds(db, 's-pinned'), ['s-pinned'])
+  assert.deepEqual(getCoordinatorIds(db, '   '), ['s-old'], '空白覆盖不生效')
+
+  // 4) 写名单：同步 main_session_id = 首位
+  assert.deepEqual(setCoordinatorIds(db, ['s-b', 's-a', 's-b']), ['s-b', 's-a'], '去重保序')
+  assert.equal(getSetting(db, 'main_session_ids'), '["s-b","s-a"]')
+  assert.equal(getMainSessionId(db), 's-b')
+  assert.deepEqual(getCoordinatorIds(db), ['s-b', 's-a'])
+
+  // 5) 加入：新成员前插为主；已在名单只提升；满 4 个后拒绝新增（不写库）
+  const added = addCoordinatorId(db, 's-c')
+  assert.equal(added.added, true)
+  assert.deepEqual(added.ids, ['s-c', 's-b', 's-a'])
+  assert.equal(getMainSessionId(db), 's-c')
+  const promoted = addCoordinatorId(db, 's-a')
+  assert.equal(promoted.promoted, true)
+  assert.deepEqual(promoted.ids, ['s-a', 's-c', 's-b'])
+  addCoordinatorId(db, 's-d')
+  const full = addCoordinatorId(db, 's-e')
+  assert.equal(full.limitReached, true)
+  assert.deepEqual(getCoordinatorIds(db), ['s-d', 's-a', 's-c', 's-b'], '满员时名单原样不动')
+
+  // 6) 删除：删首位下一位升主；删光两个键都清
+  const dropped = removeCoordinatorId(db, 's-d')
+  assert.equal(dropped.dropped, true)
+  assert.equal(dropped.primaryChanged, true)
+  assert.equal(getMainSessionId(db), 's-a')
+  const missing = removeCoordinatorId(db, 's-zz')
+  assert.equal(missing.dropped, false)
+  for (const id of ['s-a', 's-c', 's-b']) removeCoordinatorId(db, id)
+  assert.deepEqual(getCoordinatorIds(db), [])
+  assert.equal(getMainSessionId(db), undefined, '空名单清掉镜像键')
   db.close()
 })
 

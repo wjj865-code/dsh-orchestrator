@@ -169,6 +169,8 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
             // P8：计划任务在派发时就进只读沙箱 + plan mode（见 dispatch.spawn）。
             planFirst: task.plan_first === true,
             goal: task.goal,
+            // 0.36.0 多协调者：parent 必须是派这条任务的协调者；它没打开 → 可读失败（不回落主协调者）。
+            coordinatorSession: task.coordinator_session,
           })
         } catch (error) {
           if (retryable(error)) {
@@ -188,7 +190,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
           }
           remove(id)
           const reason = error?.message ?? String(error)
-          const message = /^未找到协调者会话|^协调者会话尚未就绪/.test(reason) ? reason : `子会话创建失败：${reason}`
+          const message = /^未找到协调者会话|^协调者会话尚未就绪|^创建这条任务的协调者会话/.test(reason) ? reason : `子会话创建失败：${reason}`
           const stack = typeof error?.stack === 'string' ? error.stack.split('\n').slice(0, 3).join(' | ') : null
           log('task.spawn.failed', { taskId: id, detail: { error: reason, ...(stack === null ? {} : { stack }) } })
           try {
@@ -229,7 +231,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
         if (current === undefined || current.status !== 'pending') {
           remove(id)
           try {
-            await dispatcher.stop(target)
+            await dispatcher.stop(target, id, task.coordinator_session)
           } catch (error) {
             log('task.spawn.discarded', { taskId: id, detail: { target, disposeError: error?.message ?? String(error) } })
             continue
@@ -253,7 +255,7 @@ export function createQueue({ db, dispatcher, config = {}, logger, notifier, wor
           // 这时任务 session_id 还是空的，孤儿对账筛不到它，所以这里必须自己收。
           remove(id)
           try {
-            await dispatcher.stop(target)
+            await dispatcher.stop(target, id, task.coordinator_session)
           } catch (stopError) {
             log('task.spawn.stop-failed', {
               taskId: id,

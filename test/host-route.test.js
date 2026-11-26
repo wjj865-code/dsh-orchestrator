@@ -37,7 +37,14 @@ test('snapshot 返回任务安全字段与协调者状态', async () => {
   assert.equal(response.status, 200)
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.deepEqual(body.mainSession, { id: 's-1', live: true, context: null }, '主会话状态（0.25.0 增加只读 context 观测槽）')
+  assert.deepEqual(body.mainSession, {
+    id: 's-1',
+    ids: ['s-1'],
+    live: true,
+    anyLive: true,
+    coordinators: [{ id: 's-1', primary: true, live: null }],
+    context: null,
+  }, '主会话状态（0.36.0 增加 ids/anyLive/coordinators；0.25.0 的只读 context 观测槽保留）')
   assert.equal(body.tasks.length, 1)
   const row = body.tasks[0]
   assert.equal(row.id, task.id)
@@ -252,37 +259,120 @@ test('未打开主会话：mainSession.id 为 null (JSON null)', async () => {
   db.close()
 })
 
-test('session-role：任务入口判定——只在当前会话就是主会话时 isMain=true', async () => {
+test('session-role：任务入口判定——当前会话在协调者名单里 isMain=true（副协调者也 true）', async () => {
   const db = await openLedger(tempDir())
-  const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-main', live: true }) })
+  const handler = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-main', ids: ['s-main', 's-side'], live: true }) })
   const main = await handler(request({ endpoint: 'session-role', sessionId: 's-main' }))
   assert.equal(main.status, 200)
-  assert.deepEqual(await main.json(), { ok: true, isMain: true })
+  assert.deepEqual(await main.json(), { ok: true, isMain: true, coordinatorCount: 2 })
+  const side = await handler(request({ endpoint: 'session-role', sessionId: 's-side' }))
+  assert.deepEqual(await side.json(), { ok: true, isMain: true, coordinatorCount: 2 }, '副协调者同样拿到入口')
   const child = await handler(request({ endpoint: 'session-role', sessionId: 'c-child' }))
-  assert.deepEqual(await child.json(), { ok: true, isMain: false })
-  // 语义：只要不是主会话（含子会话、空 body、空串）都隐藏任务入口。
+  assert.deepEqual(await child.json(), { ok: true, isMain: false, coordinatorCount: 2 })
+  // 语义：不在名单里（含子会话、空 body、空串）都隐藏任务入口。
   assert.equal((await (await handler(request({ endpoint: 'session-role' }))).json()).isMain, false)
   assert.equal((await (await handler(request({ endpoint: 'session-role', sessionId: '' }))).json()).isMain, false)
   assert.equal((await (await handler(request({ endpoint: 'session-role', sessionId: 42 }))).json()).isMain, false)
   db.close()
 })
 
-test('session-role：主会话未打开 / coordinatorStatus 缺失时降级为 false（默认隐藏）', async () => {
+test('session-role：只有单值 id 的旧装配也按单元素名单判定；未打开 / coordinatorStatus 缺失时降级为 false', async () => {
   const db = await openLedger(tempDir())
+  const legacy = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-main', live: true }) })
+  assert.deepEqual(
+    await (await legacy(request({ endpoint: 'session-role', sessionId: 's-main' }))).json(),
+    { ok: true, isMain: true, coordinatorCount: 1 },
+    '兼容旧装配：只有 id 时名单 = [id]',
+  )
   const noMain = createHostRoute({ db, coordinatorStatus: () => ({ id: undefined, live: false }) })
   assert.deepEqual(
     await (await noMain(request({ endpoint: 'session-role', sessionId: 's-main' }))).json(),
-    { ok: true, isMain: false },
+    { ok: true, isMain: false, coordinatorCount: 0 },
   )
   const noStatus = createHostRoute({ db })
   assert.deepEqual(
     await (await noStatus(request({ endpoint: 'session-role', sessionId: 's-main' }))).json(),
-    { ok: true, isMain: false },
+    { ok: true, isMain: false, coordinatorCount: 0 },
   )
   db.close()
 })
 
 // t-a79e12d8：客户端只能通过轮询拿到「要不要跳到新主会话」这条待办（服务端不假装能导航）。
+test('adopt-session：回传 ids/primary/added（多协调者加入语义）；空 sessionId 409', async () => {
+  const db = await openLedger(tempDir())
+  const calls = []
+  const handler = createHostRoute({
+    db,
+    coordinatorStatus: () => ({ id: 's-main', ids: ['s-main', 's-side'], live: true }),
+    adoptSession: async ({ sessionId }) => {
+      calls.push(sessionId)
+      return { ok: true, sessionId, previous: 's-main', ids: [sessionId, 's-main'], primary: sessionId, added: true, promoted: false }
+    },
+  })
+  const response = await handler(request({ endpoint: 'adopt-session', sessionId: ' s-side ' }))
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    sessionId: 's-side',
+    previous: 's-main',
+    unchanged: false,
+    added: true,
+    promoted: false,
+    ids: ['s-side', 's-main'],
+    primary: 's-side',
+  })
+  assert.deepEqual(calls, ['s-side'], 'sessionId 先 trim 再交给服务端')
+  const empty = await handler(request({ endpoint: 'adopt-session', sessionId: '   ' }))
+  assert.equal(empty.status, 409)
+  assert.equal((await empty.json()).code, 'ADOPT_NO_SESSION')
+  db.close()
+})
+
+test('adopt-session：名单已满 → 409 ADOPT_LIMIT（可读文案带 max）', async () => {
+  const db = await openLedger(tempDir())
+  const handler = createHostRoute({
+    db,
+    coordinatorStatus: () => ({ id: 's-1', ids: ['s-1', 's-2', 's-3', 's-4'], live: true }),
+    adoptSession: async () => ({ ok: false, code: 'ADOPT_LIMIT', params: { max: 4 } }),
+  })
+  const response = await handler(request({ endpoint: 'adopt-session', sessionId: 's-9' }))
+  assert.equal(response.status, 409)
+  const body = await response.json()
+  assert.equal(body.code, 'ADOPT_LIMIT')
+  assert.match(body.error, /最多 4 个/)
+  db.close()
+})
+
+test('drop-coordinator：删名单成功回 ids/primary；空 sessionId / 不在名单 / 未装配各自可读；台账零写入', async () => {
+  const db = await openLedger(tempDir())
+  const before = counts(db)
+  const handler = createHostRoute({
+    db,
+    coordinatorStatus: () => ({ id: 's-a', ids: ['s-a', 's-b'], live: true }),
+    dropCoordinator: async ({ sessionId }) => (sessionId === 's-a'
+      ? { ok: true, sessionId, ids: ['s-b'], primary: 's-b', primaryChanged: true }
+      : { ok: false, code: 'DROP_NOT_FOUND' }),
+  })
+  const ok = await handler(request({ endpoint: 'drop-coordinator', sessionId: 's-a' }))
+  assert.equal(ok.status, 200)
+  assert.deepEqual(await ok.json(), { ok: true, sessionId: 's-a', ids: ['s-b'], primary: 's-b', primaryChanged: true })
+
+  const blank = await handler(request({ endpoint: 'drop-coordinator', sessionId: '  ' }))
+  assert.equal(blank.status, 409)
+  assert.equal((await blank.json()).code, 'DROP_NO_SESSION')
+
+  const missing = await handler(request({ endpoint: 'drop-coordinator', sessionId: 's-zz' }))
+  assert.equal(missing.status, 409)
+  assert.equal((await missing.json()).code, 'DROP_NOT_FOUND')
+
+  const unbound = createHostRoute({ db, coordinatorStatus: () => ({ id: 's-a', ids: ['s-a'], live: true }) })
+  const unavailable = await unbound(request({ endpoint: 'drop-coordinator', sessionId: 's-a' }))
+  assert.equal(unavailable.status, 500)
+  assert.equal((await unavailable.json()).code, 'DROP_UNAVAILABLE')
+  assert.deepEqual(counts(db), before, '路由层只调注入的服务，自己不写台账')
+  db.close()
+})
+
 test('main-nav / main-nav-ack：读待办、ack 要 id 匹配、未装配时降级为 null/false 且不写台账', async () => {
   const db = await openLedger(tempDir())
   const pending = new Map()
@@ -371,7 +461,14 @@ test('snapshot 带 mainSession 与 targetDir；open-main 只建主会话', async
   })
   const before = counts(db)
   const snapshot = await (await handler(request({ endpoint: 'snapshot' }))).json()
-  assert.deepEqual(snapshot.mainSession, { id: 's', live: true, context: null })
+  assert.deepEqual(snapshot.mainSession, {
+    id: 's',
+    ids: ['s'],
+    live: true,
+    anyLive: true,
+    coordinators: [{ id: 's', primary: true, live: null }],
+    context: null,
+  })
   assert.equal(snapshot.tasks[0].targetDir, 'C:/work')
   assert.deepEqual(counts(db), before, 'snapshot 不应写库')
   const opened = await handler(request({ endpoint: 'open-main' }))

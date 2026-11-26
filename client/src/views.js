@@ -32,7 +32,7 @@ export function createViews({
   FILTERS, METRICS, POLL_MS, POLL_BACKOFF_MS,
   STATUS_LABEL, STATUS_TONE, MESSAGE_KIND_LABEL, DELIVERY_LABEL, DELIVERY_TONE,
   GOAL_PHASE_LABEL, GOAL_ACTIVATION_LABEL, PLAN_STATE_LABEL, WORKTREE_STATE_LABEL, WORKTREE_SOURCE_LABEL, TONE_COLOR,
-  displayNameOf, textOf, listOf, timeLabel, shortPath,
+  displayNameOf, textOf, listOf, timeLabel, shortPath, coordinatorSummaryOf,
   countTasks, matchesFilter, matchesQuery, groupArtifacts,
   readSnapshot, readArtifacts, readDetail, readPreview, panelAction, openMainOnce,
   selectTaskChips, chipViewOf, chipTooltipOf, chipVisibleTitle, chipOpenTargetOf, isLatestTurn,
@@ -320,7 +320,7 @@ export function createViews({
     )
   }
 
-  const TasksPanel = ({ openSession, openArtifactPreview, focus, notice, prefillDraft, openSchedules }) => {
+  const TasksPanel = ({ openSession, openArtifactPreview, focus, notice, prefillDraft, openSchedules, readSessionId, dropCoordinator }) => {
     // ---- 数据与状态（A3/A4/B1/G1 全部保留）----
     const [snapshot, setSnapshot] = React.useState(null)
     // 快照（轮询/刷新）和动作（打开主会话/打开会话）分开记，避免把动作错误显示成「台账暂不可用」。
@@ -346,6 +346,8 @@ export function createViews({
     const [confirmClose, setConfirmClose] = React.useState(null)
     // 删除同样要二次确认：停止还能救回来，删除是台账级联清理（不可恢复）。
     const [confirmDelete, setConfirmDelete] = React.useState(null)
+    // 0.36.0：本会话退出协调者名单也要两步确认（只改名单，不动台账/任务）。
+    const [confirmLeave, setConfirmLeave] = React.useState(false)
     const [artifactData, setArtifactData] = React.useState(null)
     const [artifactError, setArtifactError] = React.useState(null)
     const [artifactLoading, setArtifactLoading] = React.useState(false)
@@ -576,19 +578,25 @@ export function createViews({
         setActionNotice(plannedAt === null ? '已清除排期' : '已排期（只改计划日，不改任务状态）')
       },
     )
-    // 自动化创建（0.33.0）：对齐 DSH 官方「在会话中创建」——面板不再自己建任务。
-    // 流程：open-main（已存在且 live 就复用）→ 打开唯一主会话 → 把提示词写进该会话的输入框
+    // 自动化创建（0.33.0 起对齐 DSH 官方「在会话中创建」）：面板不自己建任务。
+    // 流程：确定目标协调者会话 → 打开它 → 把提示词写进它的输入框
     // （conversation.input.requestDraftInitialization，官方会话创建用的同一入口）→ 用户补一句后发送，
-    // 由主会话里的协调者调官方 schedule_create 创建，默认绑定主会话。
+    // 由该协调者调官方 schedule_create 创建（target:this_session = 该协调者）。
+    // 0.36.0（用户拍板决策 4）：**绑创建它的协调者**——当前会话就是名单成员时用它；否则打开主协调者。
     // prefillDraft 由 client.js 注入（返回是否写入成功）；注入缺失时只打开会话并如实提示。
     const createAutomationEntry = async () => {
       if (wbBusy) return
       setWbBusy(true)
       try {
-        const body = await openMainOnce()
-        const sessionId = body?.sessionId
-        if (typeof sessionId !== 'string' || sessionId === '') throw new Error('宿主没返回主会话编号')
-        // 刚建出来的主会话可能还没进客户端会话目录 → 宿主 retain 会同步抛 unknown session。
+        const currentId = typeof readSessionId === 'function' ? readSessionId() : undefined
+        const self = coordinatorSummaryOf(snapshot, currentId)
+        let sessionId = self.isSelf ? currentId : undefined
+        if (typeof sessionId !== 'string' || sessionId === '') {
+          const body = await openMainOnce()
+          sessionId = body?.sessionId
+        }
+        if (typeof sessionId !== 'string' || sessionId === '') throw new Error('宿主没返回协调者会话编号')
+        // 刚建出来的会话可能还没进客户端会话目录 → 宿主 retain 会同步抛 unknown session。
         // 与开包会话同一条等待/重试（open-session.js），不在这里另写一套。
         const opened = await openSessionWhenReady(openSession, sessionId)
         if (opened.ok !== true) throw new Error(opened.reason === '' ? '宿主不接受这个会话' : opened.reason)
@@ -598,11 +606,11 @@ export function createViews({
           prefilled = typeof prefillDraft === 'function' ? prefillDraft(sessionId, AUTOMATION_CREATE_PROMPT) === true : false
         } catch { prefilled = false }
         setActionNotice(prefilled
-          ? '已打开主会话并预填提示词：补一句「做什么、什么时候」后发送，协调者会用官方 schedule_create 创建（默认绑定本会话）'
-          : '主会话已打开。提示词没能自动预填，请直接说明要创建什么自动化（到期只投本会话）')
+          ? '已打开协调者会话并预填提示词：补一句「做什么、什么时候」后发送，协调者会用官方 schedule_create 创建（到期投给这个会话）'
+          : '协调者会话已打开。提示词没能自动预填，请直接说明要创建什么自动化（到期只投这个会话）')
       } catch (failure) {
         setActionNotice(null)
-        setActionError(`打开主会话失败：${String((failure && failure.message) || failure)}`)
+        setActionError(`打开协调者会话失败：${String((failure && failure.message) || failure)}`)
       } finally {
         setWbBusy(false)
       }
@@ -660,6 +668,25 @@ export function createViews({
         setActionError(`打开主会话失败：${String((failure && failure.message) || failure)}`)
       } finally {
         setOpeningMain(false)
+      }
+    }
+
+    // 0.36.0：本会话退出协调者名单（面板「主会话」行的两步确认按钮）。
+    // 只改名单：台账/任务/历史都不动；删首位时服务端会让下一位升主。
+    const leaveCoordinator = async () => {
+      const sessionId = typeof readSessionId === 'function' ? readSessionId() : undefined
+      if (typeof sessionId !== 'string' || sessionId === '') {
+        setActionError('读不到当前会话，无法退出协调者：刷新后重试。')
+        return
+      }
+      try {
+        await dropCoordinator(sessionId)
+        setConfirmLeave(false)
+        setActionError(null)
+        setActionNotice('本会话已退出协调者名单（任务与台账不受影响，仍可从左侧会话列表打开）')
+        await refresh()
+      } catch (failure) {
+        setActionError(`退出协调者失败：${String((failure && failure.message) || failure)}`)
       }
     }
 
@@ -888,11 +915,16 @@ export function createViews({
       }
     }
 
+    // 0.36.0 多协调者：名单摘要（本会话是不是成员、能不能退出）——判据与服务端 session-role 同源。
+    const coordinators = coordinatorSummaryOf(snapshot, typeof readSessionId === 'function' ? readSessionId() : undefined)
     const mainSession = (snapshot && snapshot.mainSession) || { id: null, live: false }
     const tasks = Array.isArray(snapshot && snapshot.tasks) ? snapshot.tasks : []
     const counts = countTasks(tasks)
     const visible = tasks.filter(task => matchesFilter(task, filter) && matchesQuery(task, query))
-    const mainState = mainSession.id === null ? '主会话未创建' : mainSession.live ? '主会话在线' : '主会话已失效'
+    const mainState = mainSession.id === null
+      ? '主会话未创建'
+      : (mainSession.live ? '主会话在线' : '主会话已失效')
+      + (coordinators.count > 1 ? ` · 协调者 ${coordinators.count}` : '')
     const inboxCount = Number(snapshot && snapshot.inboxCount) || 0
     const detailTask = detail !== null && detail !== undefined && detail.task !== null && typeof detail.task === 'object'
       ? detail.task
@@ -1039,6 +1071,27 @@ export function createViews({
           ><span className="orch-status-dot" />{mainState}</span>
         </div>
         <div className="orch-topbar-actions">
+          {/* 0.36.0：本会话在协调者名单里、且名单 > 1 时给「退出协调者」（两步确认）；
+              只剩一个成员时不给——一键把名单清空只会让用户找不到协调者。 */}
+          {coordinators.canLeave && typeof dropCoordinator === 'function'
+            ? (confirmLeave
+              ? (
+                <ConfirmBar
+                  question={'确认退出协调者？'}
+                  label={'确认退出'}
+                  onConfirm={act(() => void leaveCoordinator())}
+                  onCancel={act(() => setConfirmLeave(false))}
+                />
+              )
+              : (
+                <button
+                  type="button"
+                  className="orch-btn orch-btn--ghost orch-btn--sm"
+                  title="从协调者名单里移除本会话（台账/任务不受影响；删首位时下一位升主）"
+                  onClick={act(() => setConfirmLeave(true))}
+                >{'退出协调者'}</button>
+              ))
+            : null}
           <label className="orch-search" title="按标题 / 引用 / 目录搜索">
             <Icon name="search" size={13} />
             <input

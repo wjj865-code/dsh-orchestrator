@@ -28,21 +28,32 @@ const REASON_GONE = '子会话在目录里查不到（可能已被删除）'
 const needsCheck = task => task.session_id !== null && task.session_id !== undefined
   && (LIVENESS_STATUSES.has(task.status) || CATALOG_STATUSES.has(task.status))
 
-export async function reconcileOrphans({ db, dispatcher, coordinatorSessionId, isLive, logger, onWarn = () => {} }) {
+export async function reconcileOrphans({ db, dispatcher, coordinatorSessionId, coordinatorIds, isLive, logger, onWarn = () => {} }) {
   const active = listTasks(db).filter(needsCheck)
   if (active.length === 0) return { count: 0, ids: [], tasks: [], skipped: 'nothing-active' }
-  if (coordinatorSessionId === undefined) {
+  // 0.36.0 多协调者：catalog 必须按**整份名单**求并集——副协调者派出的子会话不在主协调者的目录里，
+  // 只查主协调者会把它们全误判成 orphaned。兼容旧调用方（只传单个 coordinatorSessionId）。
+  const owners = Array.isArray(coordinatorIds)
+    ? coordinatorIds.filter(id => typeof id === 'string' && id !== '')
+    : (coordinatorSessionId === undefined ? [] : [coordinatorSessionId])
+  if (owners.length === 0) {
     onWarn('dsh-orchestrator: 未绑定协调者会话，跳过子会话可达性对账')
     return { count: 0, ids: [], tasks: [], skipped: 'no-coordinator' }
   }
 
-  let known
-  try {
-    known = new Set((await dispatcher.catalog() ?? []).map(entry => String(entry.id)))
-  } catch (error) {
-    known = undefined
-    onWarn(`dsh-orchestrator: 子会话目录读取失败，跳过 catalog 对账：${error?.message ?? error}`)
+  let known = new Set()
+  let catalogOk = false
+  for (const owner of owners) {
+    try {
+      const entries = await dispatcher.catalog(owner) ?? []
+      for (const entry of entries) known.add(String(entry.id))
+      catalogOk = true
+    } catch (error) {
+      // 单个协调者的目录读不到只降级这一份：其余协调者的并集照用，全部失败才跳过 catalog 判定。
+      onWarn(`dsh-orchestrator: 子会话目录读取失败（协调者 ${owner}），继续按其余协调者对账：${error?.message ?? error}`)
+    }
   }
+  if (!catalogOk) known = undefined
 
   const candidates = []
   for (const task of active) {
@@ -195,9 +206,9 @@ export function createStartupReconciler({
     return flushing
   }
 
-  const reconcile = async ({ coordinatorSessionId } = {}) => {
+  const reconcile = async ({ coordinatorSessionId, coordinatorIds } = {}) => {
     const result = await reconcileOrphans({
-      db, dispatcher, coordinatorSessionId, isLive, logger, onWarn,
+      db, dispatcher, coordinatorSessionId, coordinatorIds, isLive, logger, onWarn,
     })
     if (Array.isArray(result.tasks) && result.tasks.length > 0) {
       const known = new Set(pending.map(task => task.id))

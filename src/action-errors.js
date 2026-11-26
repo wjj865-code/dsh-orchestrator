@@ -289,10 +289,25 @@ export const ACTION_ERRORS = Object.freeze({
       + `请新建一个空白会话并选「协调者」预设，再设为协调者。${reason === undefined ? '' : `（${reason}）`}`,
   }),
   ADOPT_BUSY: define({ http: 409, panel: () => '另一次「设为协调者」正在进行，请稍后再试。' }),
+  ADOPT_LIMIT: define({
+    http: 409,
+    panel: ({ max }) => `协调者名单已满（最多 ${max ?? 4} 个）：先在面板「主会话」里让一个会话退出协调者，再设这个。`,
+  }),
   ADOPT_FAILED: define({ http: 500, panel: ({ reason }) => `切换协调者失败：${reason ?? '未知原因'}` }),
   ADOPT_CREATE_FAILED: define({
     http: 502,
     panel: ({ reason }) => `新建协调者会话失败（原协调者保持不变）：${reason ?? '未知原因'}`,
+  }),
+  // drop（0.36.0）：让一个会话退出协调者名单（面板「本会话退出协调者」）。
+  DROP_UNAVAILABLE: define({ http: 500, panel: () => '缺少「退出协调者」实现（插件装配不完整）' }),
+  DROP_NO_SESSION: define({ http: 409, panel: () => '没有指定要退出的会话：请刷新面板后重试。' }),
+  DROP_NOT_FOUND: define({ http: 409, panel: () => '这个会话已经不在协调者名单里了：刷新面板即可。' }),
+  DROP_FAILED: define({ http: 500, panel: ({ reason }) => `退出协调者失败：${reason ?? '未知原因'}` }),
+  // 派发/投递目标（任务创建者）当时没打开（0.36.0 多协调者，用户拍板：直接失败，不回落主协调者）。
+  TASK_DISPATCH_COORDINATOR_OFFLINE: define({
+    http: 409,
+    panel: ({ sessionId }) => `创建这条任务的协调者会话（${sessionId ?? '未知'}）当前没打开：`
+      + '请先在左侧会话列表打开它，或把任务重派给当前协调者。',
   }),
   UNKNOWN_ENDPOINT: define({ http: 400, panel: () => 'unknown-endpoint' }),
   // 非阻断警告：stop 已成功，但收子会话/队列/写权限释放失败（只在面板 warnings 里出现）

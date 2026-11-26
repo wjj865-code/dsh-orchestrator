@@ -5,7 +5,7 @@ import { createHostCapabilities } from './src/host-capabilities.js'
 import { Config, unwrapVolatile } from './src/config-schema.js'
 import {
   openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts,
-  getTask, listTasks, setTransitionObserver,
+  getTask, listTasks, setTransitionObserver, getCoordinatorIds, setCoordinatorIds, getSetting,
 } from './src/ledger.js'
 import { createArtifactDelivery } from './src/artifact-delivery.js'
 import { artifactProtection } from './src/artifact-protection.js'
@@ -15,6 +15,7 @@ import { createBodySource } from './src/session-body.js'
 import { createDeliveredSweeper } from './src/delivered.js'
 import { taskLabel } from './src/task-label.js'
 import { createMainSession } from './src/main-session.js'
+import { parseCoordinatorIds, serializeCoordinatorIds } from './src/coordinator-set.js'
 import { createOnboarding } from './src/onboarding.js'
 import { createDispatcher } from './src/dispatch.js'
 // P0-2 写域 chokepoint：派发层（spawn/send/queue preflight）注入同一个判定闭包（唯一判定在 write-gate）。
@@ -83,7 +84,7 @@ const WAIT_AGENT_DENIAL = '协调者禁止阻塞等待：不要调用 wait_agent
 export const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性规则（优先于平台默认的 Team Lead 等待要求）：
 - 禁止使用 wait_agent 或任何阻塞等待、轮询，不要 sleep。禁止调用 spawn_teammate / send_message / team_task_create 等团队类工具（预设层删不掉，执行层会直接拒绝）：派活只走 task_create，查进度只走 task_list / task_status。
 - 官方 Team 板**只读**：关联时传 teamTaskId，交付确认由插件按 CAS 反写 complete，冲突只提示。
-- 自动化只用 schedule_create / schedule_list / schedule_view / schedule_edit，不造调度器、不用文件/shell/HTTP 绕过缺能力。Host-wide：增删改与暂停恢复需用户明确授权、确认时间/时区；只支持 target:this_session 唤醒唯一主会话，new/new_once 非唯一主会话不能直接 task_create；编辑用最新 updatedAt 作 expectedUpdatedAt。
+- 自动化只用 schedule_create / schedule_list / schedule_view / schedule_edit，不造调度器、不用文件/shell/HTTP 绕过缺能力。Host-wide：增删改与暂停恢复需用户明确授权、确认时间/时区；只支持 target:this_session 投给创建它的协调者（须仍在名单），new/new_once 不能直接 task_create；编辑用最新 updatedAt 作 expectedUpdatedAt。
 - 默认 worker 不开放自动化（subagent_session）；access:full 只改沙箱，不增加工具、不绕过委派校验或审批；缺能力如实报告。
 - 派发前 context({ mode:'history', query, project }) 查经验（省略 project 只查 global）；项目背景用 mode:'project'；长期决策用 memory_note。
 - **能直接回答就不派任务**：记忆/已知结论能答就直接回；新鲜取证、写文件或跨仓库证据才派发。判级见下「## 交互三闸门」。
@@ -104,6 +105,7 @@ export const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性
 - 需要看“待你决定/失败/长时间没动静”用 task_list({ view: 'inbox' })。
 - 12 个工具、你能用 8 个（worker 专属的 task_report / task_detail / plan_save / artifact_save 会被拒）；原生 read/skill/present/ask_user_question/schedule_* 可用，没有 write/edit/bash/pwsh；旧 task_stop / task_retry / task_close / task_inbox 已并入 task_message 的 action 等。
 - 数量/重复/冲突/状态先 task_list / task_status 取证。收到子任务通知再行动；本回合无事立即结束，通知会开启新回合。
+- 协调者可多个（≤4，首位=主协调者）：名单成员都能 task_list/task_create；回报投给派它的协调者，创建者离线/退出时回落主协调者。
 - 以上规则优先于平台 team policy 的 “The Lead must wait for required teammates” 等默认等待要求。`
 
 /**
@@ -300,6 +302,31 @@ export async function apply(ctx, rawConfig = {}) {
   // 0.25.0：轮换删除后，老 profile 里残留的 main_rotation_* / main_session_created_at 一次性清掉
   // （marker 必须清：留着的话回滚旧版本会按它「补完轮换」去归档一个毫不相干的会话）。
   cleanupLegacyRotation({ db, log: (event, fields) => logger.log(event, fields) })
+  // 0.36.0 多协调者：名单与镜像键自愈（幂等、只写 settings、绝不建会话/改会话）。
+  //   - 名单里有非法项/重复/超上限 → 清洗后重写（`main.session.ids-sanitized`）；
+  //   - 名单存在但 `main_session_id` 不是首位（手改/降级残留）→ 以名单为准修复（`main.session.ids-repaired`）。
+  // 名单缺失时什么都不做：读路径会回落老的 `main_session_id`（存量单协调者零迁移）。
+  try {
+    const rawList = getSetting(db, 'main_session_ids')
+    if (rawList !== undefined) {
+      const mirrorBefore = getMainSessionId(db)
+      const parsed = parseCoordinatorIds(rawList)
+      const expected = parsed[0]
+      if (serializeCoordinatorIds(parsed) !== rawList) {
+        setCoordinatorIds(db, parsed)
+        logger.log('main.session.ids-sanitized', { detail: { ids: parsed, raw: String(rawList).slice(0, 200) } })
+      }
+      const mirrorDirty = expected === undefined
+        ? mirrorBefore !== undefined && mirrorBefore !== ''
+        : mirrorBefore !== expected
+      if (mirrorDirty) {
+        setCoordinatorIds(db, parsed)
+        logger.log('main.session.ids-repaired', { detail: { mirror: mirrorBefore ?? null, primary: expected ?? null, ids: parsed } })
+      }
+    }
+  } catch (error) {
+    warnings(`dsh-orchestrator: 协调者名单自愈失败（不影响加载）：${error?.message ?? error}`)
+  }
   // 0.25.1：旧版 `memory_note(kind:'preference', 不传 project)` 写在 memories 的死数据一次性搬进 settings
   // （渲染侧只读 settings，那几条以前永不生效）。幂等标记在 settings；失败不阻断加载、下次启动重试。
   try {
@@ -454,15 +481,30 @@ export async function apply(ctx, rawConfig = {}) {
   const restrictedAgents = new WeakSet()
   const pendingRestrictions = new WeakSet()
 
-  const resolvedCoordinatorId = () => config.coordinatorSession ?? getMainSessionId(db)
+  // 0.36.0 多协调者：名单是唯一真源（首位 = 主协调者）。配置 `coordinatorSession` 覆盖成单元素。
+  const resolvedCoordinatorIds = () => getCoordinatorIds(db, config.coordinatorSession)
+  const resolvedCoordinatorId = () => resolvedCoordinatorIds()[0]
   const isChildLive = sessionId => host.agents()?.get?.(sessionId) !== undefined
   const resolveCoordinator = () => {
     const id = resolvedCoordinatorId()
     return id === undefined ? undefined : host.agents()?.get?.(id)
   }
+  /** 按会话 id 取活着的协调者 agent（0.36.0：通知/派发可能指向名单里的任意一个）。 */
+  const coordinatorAgentOf = id => (typeof id === 'string' && id !== '' ? host.agents()?.get?.(id) : undefined)
+  // status 的两条 live 口径要分清：
+  //   - `live`：**主协调者**是否在线（面板「主会话在线/已失效」用它，语义与旧版一致）；
+  //   - `anyLive`：名单里**任意**一个在线（task_* 的失效提示用它——副协调者在跑也算可用）。
   const coordinatorStatus = () => {
-    const id = resolvedCoordinatorId()
-    return { id, live: id !== undefined && resolveCoordinator() !== undefined }
+    const ids = resolvedCoordinatorIds()
+    const agents = host.agents()
+    const liveIds = ids.filter(id => agents?.get?.(id) !== undefined)
+    return {
+      id: ids[0],
+      ids,
+      live: ids.length > 0 && liveIds.includes(ids[0]),
+      anyLive: liveIds.length > 0,
+      coordinators: ids.map((id, index) => ({ id, primary: index === 0, live: liveIds.includes(id) })),
+    }
   }
 
   // P2-4（D6）：官方 Team 板只读视图 + 可选反写。三件事都只碰 `agentTeams` 的只读方法
@@ -536,7 +578,7 @@ export async function apply(ctx, rawConfig = {}) {
   // 只检查定义/服务，不执行自动化；回合边界重查，晚加载或恢复后不永久缓存 unavailable。
   const scheduleCapability = new WeakMap()
   const checkScheduleCapability = agent => {
-    if (agent === undefined || agent.id !== resolvedCoordinatorId()) return ''
+    if (agent === undefined || !resolvedCoordinatorIds().includes(agent.id)) return ''
     const missing = []
     try {
       // schedule 不在 inject 里：读 `ctx.schedule` 属性必抛 cordis 的 inject 错，
@@ -697,8 +739,8 @@ export async function apply(ctx, rawConfig = {}) {
     void ensureDigestFor(current.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
   }
   ctx.on?.('agent/created', ({ agent }) => {
-    const id = resolvedCoordinatorId()
-    if (agent !== undefined && id !== undefined && agent.id === id) {
+    const ids = resolvedCoordinatorIds()
+    if (agent !== undefined && ids.includes(agent.id)) {
       scheduleRestriction(agent)
       // UI 可能 rebind default；待欢迎会话由onboarding先等待预设恢复再启动。
       void onboarding.start(agent.id)
@@ -706,21 +748,25 @@ export async function apply(ctx, rawConfig = {}) {
         .catch(error => warnings(`dsh-orchestrator: 首次介绍启动失败：${error?.message ?? error}`))
       void mainSession.guardPreset?.(agent).catch(error => warnings(`dsh-orchestrator: 主会话预设守护失败：${error?.message ?? error}`))
       // C：协调者权限预设钉只读（新建/代建时已钉；这里兜住重启恢复、adopt 前晚加载、以及升级前
-      // 建的旧主会话——徽标与协调者实际工具面保持一致）。服务缺失/失败只记日志，不影响加载。
+      // 建的旧主会话——徽标与协调者实际工具面保持一致）。0.36.0：名单里**每个**成员都补钉。
+      // 服务缺失/失败只记日志，不影响加载。
       try { mainSession.pinPermission?.(agent.id, agent.session) } catch (error) {
         warnings(`dsh-orchestrator: 主会话权限钉只读失败：${error?.message ?? error}`)
       }
+      // 日报只跟**主协调者**：副协调者加载时不重建日报（避免每个都挂一条）。
+      if (agent.id === ids[0]) {
+        void ensureDigestFor(agent.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
+      }
       // 协调者可能比插件晚加载：队列在等它，加载后立刻补跑，并对一次子会话目录。
-      void ensureDigestFor(agent.id).catch(error => warnings(`dsh-orchestrator: 日报 schedule 初始化失败：${error?.message ?? error}`))
       queue?.pump()
-      // 协调者晚加载：再对一次账，并补发启动时没送出去的孤儿汇总。
-      reconciler?.reconcile({ coordinatorSessionId: id })
+      // 协调者晚加载：再对一次账（按整份名单并集），并补发启动时没送出去的孤儿汇总。
+      reconciler?.reconcile({ coordinatorIds: ids })
         .then(() => queue?.pump())
         .catch(error => warnings(`dsh-orchestrator: 重启对账失败：${error?.message ?? error}`))
     }
   })
   ctx.on?.('agent/status', ({ agent, status }) => {
-    if (agent === undefined || status !== 'idle' || agent.id !== resolvedCoordinatorId()) return
+    if (agent === undefined || status !== 'idle' || !resolvedCoordinatorIds().includes(agent.id)) return
     checkScheduleCapability(agent)
     if (pendingRestrictions.has(agent)) {
       pendingRestrictions.delete(agent)
@@ -745,8 +791,7 @@ export async function apply(ctx, rawConfig = {}) {
     const migration = legacyToolHint(toolName)
     if (migration !== undefined) return migration
     if (!COORDINATOR_DENY.includes(toolName)) return undefined
-    const id = resolvedCoordinatorId()
-    if (id === undefined || exec.agent?.id !== id) return undefined
+    if (exec?.agent?.id === undefined || !resolvedCoordinatorIds().includes(exec.agent.id)) return undefined
     return toolName === 'wait_agent' ? WAIT_AGENT_DENIAL : DENY_HINT(toolName)
   })
 
@@ -771,8 +816,8 @@ export async function apply(ctx, rawConfig = {}) {
     order: 130,
     interpolate: false,
     text: context => {
-      const id = resolvedCoordinatorId()
-      if (id === undefined || context?.agent?.id !== id) return ''
+      const agentId = context?.agent?.id
+      if (agentId === undefined || !resolvedCoordinatorIds().includes(agentId)) return ''
       const capability = checkScheduleCapability(context.agent)
       // L1 四段拼接：硬规则 + worktree 策略 + 写域策略（renderCoordinatorPolicy）→ 偏好 → 能力诊断。
       // 偏好放**末尾**：阅读顺序即优先级顺序（低于硬规则），且可单独开关/单测/回滚。
@@ -795,7 +840,7 @@ export async function apply(ctx, rawConfig = {}) {
     interpolate: false,
     text: context => {
       const agentId = context?.agent?.id
-      if (agentId === undefined || agentId === resolvedCoordinatorId()) return ''
+      if (agentId === undefined || resolvedCoordinatorIds().includes(agentId)) return ''
       const task = workerTaskOf(agentId)
       if (task === undefined) return ''
       return renderWorkerPolicy({ worktreeState: task.worktree_state })
@@ -818,6 +863,8 @@ export async function apply(ctx, rawConfig = {}) {
   const dispatcher = createDispatcher({
     subagents: host.subagents(),
     getAgent: resolveCoordinator,
+    // 0.36.0：派发/投递的 parent 按**任务的协调者**取（名单成员各自派各自的任务）。
+    agentById: coordinatorAgentOf,
     provider: config.spawnProvider,
     // 子会话预设（dispatch 里落到启动 spec 的 agentPreset）：默认 worker，调试时可指 orch-debug。
     workerPreset: config.workerPreset,
@@ -875,9 +922,17 @@ export async function apply(ctx, rawConfig = {}) {
       ...fields,
       detail: { ...(fields.detail ?? {}), coordinatorId: resolvedCoordinatorId() ?? null },
     }),
-    send: (text, items) => {
-      const id = resolvedCoordinatorId()
-      if (id === undefined) {
+    // 0.36.0（多协调者，用户拍板决策 1）：单任务通知投给**派它的那个协调者**。
+    // 这里只按台账给出「任务的协调者」；它是否仍在名单/是否在线由 send 兜（离线回落主协调者 + 审计）。
+    targetOf: item => {
+      const taskId = item?.taskId
+      if (typeof taskId !== 'string' || taskId === '') return undefined
+      const owner = getTask(db, taskId)?.coordinator_session
+      return typeof owner === 'string' && owner !== '' ? owner : undefined
+    },
+    send: (text, items, target) => {
+      const ids = resolvedCoordinatorIds()
+      if (ids.length === 0) {
         warnings('dsh-orchestrator: 尚未打开主会话，通知已跳过')
         return { skipped: true, reason: '尚未打开主会话，无法投递通知。' }
       }
@@ -887,16 +942,37 @@ export async function apply(ctx, rawConfig = {}) {
         warnings('dsh-orchestrator: 通知缺少发送方 agent，已跳过投递')
         return { skipped: true, reason: '通知缺少发送方 agent。' }
       }
-      const coordinator = resolveCoordinator()
-      if (coordinator === undefined) {
+      // 目标解析：任务的创建者（显式 target）→ 仍在名单且在线就用它；
+      // 否则回落主协调者并留一条 `notify.route.fallback` 审计（reason: not-coordinator | not-live）。
+      const primary = ids[0]
+      const wanted = typeof target === 'string' && target.trim() !== '' ? target.trim() : undefined
+      let targetId = wanted !== undefined && ids.includes(wanted) ? wanted : primary
+      let fallback = wanted === undefined ? null : (targetId === wanted ? null : 'not-coordinator')
+      let injected = coordinatorAgentOf(targetId)
+      if (injected === undefined && targetId !== primary) {
+        fallback ??= 'not-live'
+        targetId = primary
+        injected = coordinatorAgentOf(primary)
+      }
+      if (fallback !== null) {
+        logger.log('notify.route.fallback', {
+          detail: {
+            wanted: wanted ?? null,
+            fallback: targetId,
+            reason: fallback,
+            taskIds: items.map(item => item.taskId ?? null),
+          },
+        })
+      }
+      if (injected === undefined) {
         warnings(`dsh-orchestrator: ${COORDINATOR_INVALID_HINT}`)
         return { skipped: true, reason: COORDINATOR_INVALID_HINT }
       }
       // 直接对协调者会话 steer：与 TeamService 给 lead 投递时内部做的事同构，
       // 但不要求发送方此刻还在 roster，所以 5 秒合并窗口后仍能送达。
       // 注入失败不在这里吞掉：交给 notifier 记 failed + reason，而不是 skipped。
-      // 系统通知（例如任务派发失败）没有子会话 sender，用主会话自身的 id 作为来源。
-      injectNotification(coordinator, { text, senderId: sender === undefined ? id : sender.id })
+      // 系统通知（例如任务派发失败）没有子会话 sender，用目标协调者自身的 id 作为来源。
+      injectNotification(injected, { text, senderId: sender === undefined ? targetId : sender.id })
       return true
     },
   })
@@ -910,7 +986,8 @@ export async function apply(ctx, rawConfig = {}) {
     // 归属：派发被接受时的「子会话 id → 任务」映射 + 台账 session_id 兜底（index.js 上方的 workerTaskOf）。
     taskOfAgent: workerTaskOf,
     // 协调者自己的工具调用（例如只读 read 被沙箱拒）不进编排面：与 guard、W1 注入同一条判据。
-    coordinatorId: resolvedCoordinatorId,
+    // 0.36.0：名单里**每个**成员都要排除（副协调者也是协调者）。
+    coordinatorIds: resolvedCoordinatorIds,
     labelFor: task => taskLabel(task, { all: listTasks(db) }),
     onWarn: warnings,
   })
@@ -1009,7 +1086,7 @@ export async function apply(ctx, rawConfig = {}) {
 
   // 启动对账（S2）：running 无活跃子会话 / catalog 查不到 → orphaned，并汇总上报一次；
   // 此时协调者可能还没加载，汇总会保留到 agent/created 再补发。
-  await reconciler.reconcile({ coordinatorSessionId: resolvedCoordinatorId() })
+  await reconciler.reconcile({ coordinatorIds: resolvedCoordinatorIds() })
   for (const task of listTasks(db)) {
     if (task.delivery_pending && !isChildLive(task.session_id)) {
       await reportSettle({ taskId: task.id, sessionId: task.session_id, stopReason: 'error', source: 'startup-recovery' })
@@ -1106,12 +1183,13 @@ export async function apply(ctx, rawConfig = {}) {
   })
 
   // 工作台 v1（P11）：组 / 排期（L1）/ 自动化（L2，宿主 ctx.schedule 的桥）。
-  // 自动化的投递目标强制 = 唯一主会话（resolvedCoordinatorId），不接受别的会话：
-  // 只有唯一主会话能直接 task_create（见 docs/TOOLS.md「原生自动化工具」）。
+  // 0.36.0（用户拍板决策 4）：自动化**绑创建它的协调者**——面板传 sessionId（必须仍是名单成员），
+  // 未传时回落主协调者（兼容旧客户端）。日报仍只维护一条、跟主协调者（见 ensureDigestFor）。
   const workbench = createWorkbench({
     db,
     schedule: () => service('schedule'),
     mainSessionId: () => resolvedCoordinatorId(),
+    coordinatorIds: () => resolvedCoordinatorIds(),
     log: (event, fields) => logger.log(event, fields),
   })
 
@@ -1132,13 +1210,24 @@ export async function apply(ctx, rawConfig = {}) {
       contextSnapshot: () => contextObserver.snapshot(),
       // t-a79e12d8：客户端轮询「跳到新主会话 / 一条可读提示」的进程内待办（读 + ack，不碰台账）。
       mainNav,
-      // 0.25.0：会话头「设为协调者」→ 只切指针（不改名、不归档旧会话）+ 重建日报 + 清提醒。
+      // 0.36.0：会话头「设为协调者」= **加入名单并提升为主**（旧协调者留在名单里，仍可派活/收回报）
+      // + 重建日报（跟新的主协调者）+ 清压力提醒。
       adoptSession: async ({ sessionId }) => {
         const result = await mainSession.adoptSession({ sessionId, source: 'panel' })
         if (result?.ok === true && result.unchanged !== true) {
           contextObserver.clearAlert({ reason: 'adopted' })
           try { await ensureDigestFor(result.sessionId) } catch (error) {
             warnings(`dsh-orchestrator: 新协调者会话的日报重建失败：${error?.message ?? error}`)
+          }
+        }
+        return result
+      },
+      // 0.36.0：面板「本会话退出协调者」→ 只改名单；删首位则下一位升主，日报随之重建。
+      dropCoordinator: async ({ sessionId }) => {
+        const result = await mainSession.dropSession({ sessionId, source: 'panel' })
+        if (result?.ok === true && result.primaryChanged === true && typeof result.primary === 'string') {
+          try { await ensureDigestFor(result.primary) } catch (error) {
+            warnings(`dsh-orchestrator: 新主协调者的日报重建失败：${error?.message ?? error}`)
           }
         }
         return result

@@ -678,14 +678,14 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
               data-orch-create-automation=""
               disabled={!creatable || busy}
               onClick={onCreate}
-              title="打开主会话并预填提示词：由协调者用官方 schedule_create 创建，默认绑定主会话"
+              title="打开协调者会话（当前会话是协调者就用它，否则用主协调者）并预填提示词：由协调者用官方 schedule_create 创建，到期投给这个会话"
             >
               <Icon name="plus" size={12} />
               {'创建自动化'}
             </button>
           </header>
           {rows.length === 0
-            ? <EmptyState icon="bolt" title="还没有自动化" hint="点右上「创建自动化」：打开主会话写好要做什么、什么时候，协调者用官方 schedule_create 建（到期只投本会话、先核对再派单）。" />
+            ? <EmptyState icon="bolt" title="还没有自动化" hint="点右上「创建自动化」：在协调者会话里写好要做什么、什么时候，协调者用官方 schedule_create 建（到期只投该会话、先核对再派单）。" />
             : (
                 <ul className="orch-wb-autolist">
                   {rows.map(row => (
@@ -695,6 +695,7 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
                           {row.title}
                           <Badge tone={row.active ? 'info' : 'muted'}>{row.active ? '启用' : '已暂停'}</Badge>
                           {row.hostMissing ? <Badge tone="bad">{'宿主侧已不存在'}</Badge> : null}
+                          {row.targetMissing ? <Badge tone="warn" title="这条自动化绑定的会话已不在协调者名单：到点不会被处理，请改指当前协调者或删除">{'目标会话已不是协调者'}</Badge> : null}
                         </div>
                         <div className="orch-wb-autometa">
                           <span>{row.kind === 'group' ? `组 ${row.refId ?? ''}` : row.kind === 'task' ? `任务 ${row.refLabel || row.refId || ''}` : '全部任务'}</span>

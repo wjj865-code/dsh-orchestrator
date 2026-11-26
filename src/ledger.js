@@ -11,6 +11,11 @@ import { migrateLegacyTaskDone } from './memory.js'
 // 版本 B《ID 出口网关》：引用 token 的生成/回填/墓碑（本模块只单向依赖它，它不 import 本模块）。
 import { backfillTaskRefs, ensureTaskRef, retireTaskRef } from './task-ref.js'
 import { ensureArtifactDirectory } from './artifact-store.js'
+// 多协调者名单（0.36.0）：纯函数在 src/coordinator-set.js，这里只做 settings 读写。
+import {
+  addCoordinatorId as addCoordinatorIdOf, coordinatorIdOf, normalizeCoordinatorIds,
+  parseCoordinatorIds, removeCoordinatorId as removeCoordinatorIdOf, serializeCoordinatorIds,
+} from './coordinator-set.js'
 const artifactStoreRoots = new WeakMap()
 export const artifactStoreRootOf = db => artifactStoreRoots.get(db)
 
@@ -898,8 +903,11 @@ export function rebindSetting(db, key, expected, next) {
   return Number(result.changes) > 0
 }
 
-/** 主会话 settings 键：唯一协调者会话，不再靠首次 task_create 自动绑定。 */
+/** 主会话 settings 键：名单首位（主协调者）的镜像；0.36.0 起真源是下面的名单键。 */
 export const MAIN_SESSION_KEY = 'main_session_id'
+
+/** 协调者名单：有序 JSON 数组，`[0]` = 主协调者。多协调者的**真源**（0.36.0）。 */
+export const MAIN_SESSION_IDS_KEY = 'main_session_ids'
 
 export function getMainSessionId(db) {
   return getSetting(db, MAIN_SESSION_KEY)
@@ -907,6 +915,61 @@ export function getMainSessionId(db) {
 
 export function setMainSessionId(db, sessionId) {
   return setSetting(db, MAIN_SESSION_KEY, sessionId)
+}
+
+/**
+ * 读协调者名单（有序，首位 = 主协调者）。
+ *
+ * 三级回落，读路径**从不写库**：
+ *   1. `override`（配置 `coordinatorSession` 运维通道）给了 → `[override]`（覆盖整份名单，不落库）；
+ *   2. `settings.main_session_ids` 有成员 → 用它（去重/截断在上限内）；
+ *   3. 否则回落老的 `settings.main_session_id`（存量单协调者设置零迁移即可工作）。
+ * @param {object} db
+ * @param {unknown} [override] 配置覆盖（非空字符串才生效）
+ * @returns {string[]}
+ */
+export function getCoordinatorIds(db, override) {
+  const pinned = coordinatorIdOf(override)
+  if (pinned !== undefined) return [pinned]
+  const list = parseCoordinatorIds(getSetting(db, MAIN_SESSION_IDS_KEY))
+  if (list.length > 0) return list
+  const single = coordinatorIdOf(getSetting(db, MAIN_SESSION_KEY))
+  return single === undefined ? [] : [single]
+}
+
+/**
+ * 写协调者名单：同时同步 `main_session_id = ids[0]`（降级回旧版本时仍指向有效主会话）。
+ * 空名单 → 两个键都清掉（等价「尚未打开主会话」，下一次 open 会重建）。
+ * @param {object} db
+ * @param {unknown} ids
+ * @returns {string[]} 落库后的名单（已归一/截断）
+ */
+export function setCoordinatorIds(db, ids) {
+  const list = normalizeCoordinatorIds(ids)
+  setSetting(db, MAIN_SESSION_IDS_KEY, serializeCoordinatorIds(list))
+  if (list.length === 0) deleteSetting(db, MAIN_SESSION_KEY)
+  else setSetting(db, MAIN_SESSION_KEY, list[0])
+  return list
+}
+
+/**
+ * 加入名单并提升为主（前插）。名单满且不是成员时**不写库**，原样返回（调用方给 ADOPT_LIMIT）。
+ * @returns {{ids: string[], added: boolean, promoted: boolean, unchanged: boolean, limitReached: boolean}}
+ */
+export function addCoordinatorId(db, sessionId) {
+  const outcome = addCoordinatorIdOf(getCoordinatorIds(db), sessionId)
+  if (outcome.added === true || outcome.promoted === true) setCoordinatorIds(db, outcome.ids)
+  return outcome
+}
+
+/**
+ * 从名单删除（删首位则下一位升主）。不存在时不动库。
+ * @returns {{ids: string[], dropped: boolean, primaryChanged: boolean}}
+ */
+export function removeCoordinatorId(db, sessionId) {
+  const outcome = removeCoordinatorIdOf(getCoordinatorIds(db), sessionId)
+  if (outcome.dropped === true) setCoordinatorIds(db, outcome.ids)
+  return outcome
 }
 
 /** 主会话创建时用的预设：复用判断以台账为准，不依赖平台读回（真机会漂移）。 */

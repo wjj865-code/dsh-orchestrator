@@ -1602,7 +1602,14 @@ test('注册 /api/orchestrator 只读路由：POST + buffered + snapshot', withH
   assert.equal(response.status, 200)
   const body = await response.json()
   assert.equal(body.ok, true)
-  assert.deepEqual(body.mainSession, { id: 's-1', live: true, context: null })
+  assert.deepEqual(body.mainSession, {
+    id: 's-1',
+    ids: ['s-1'],
+    live: true,
+    anyLive: true,
+    coordinators: [{ id: 's-1', primary: true, live: true }],
+    context: null,
+  })
   // P2-4（D6）：没装 agentTeams 板 API 时快照里是稳定降级形状（面板隐藏该分区，不影响现有流程）。
   assert.equal(body.teamBoard.enabled, false)
   assert.deepEqual(body.teamBoard.rows, [])
@@ -2102,6 +2109,147 @@ test('子会话工具失败监听：伪造 tools/result → 日志/通知各一�
   assert.equal(coordinator.injected.length, 1)
 
   db.close()
+  await f.disposers.at(-1)?.()
+}))
+
+// ---------------------------------------------------------------------------
+// 0.36.0 多协调者装配（用户 2026-11-26 拍板）：名单真源、成员权限、回报归属、非成员拒绝。
+// ---------------------------------------------------------------------------
+
+/** 每次 spawn 给不同 childId：两条任务各自可 task_report（member 映射与台账 session_id 都对得上）。 */
+const multiChildSubagents = () => {
+  const children = []
+  return {
+    children,
+    async startActivation(spec) {
+      children.push(spec.childId)
+      return { childId: spec.childId, messageId: `msg-${children.length}`, result: new Promise(() => {}), dispose: async () => {} }
+    },
+    async sendMessage() {},
+    async interruptByParent() {},
+    async listChildren() { return [] },
+  }
+}
+
+test('多协调者：启动自愈名单（去重/镜像修复），两个成员都能派活，非成员被拒且归属各记各的', withHome(async home => {
+  const { openLedger, setSetting } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  // 预置一份脏名单：重复项 + 镜像与首位不一致（手改/降级残留）。
+  setSetting(ledger, 'main_session_ids', '["s-2","s-2","s-1"]')
+  setSetting(ledger, 'main_session_id', 's-9')
+  ledger.close()
+
+  const s1 = makeAgent('s-1')
+  const s2 = makeAgent('s-2')
+  const other = makeAgent('s-3')
+  const f = fakeCtx({ agents: [s1, s2, other], subagents: multiChildSubagents() })
+  await apply(f.ctx, {})
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+
+  // 自愈：名单去重保序、镜像修复成首位；日志也留痕。
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const read = key => db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value
+  assert.equal(read('main_session_ids'), '["s-2","s-1"]')
+  assert.equal(read('main_session_id'), 's-2', '镜像必须等于名单首位')
+  const logs = readdirSync(join(home, 'state', 'orchestrator', 'logs'))
+    .flatMap(file => readFileSync(join(home, 'state', 'orchestrator', 'logs', file), 'utf8').split('\n'))
+  assert.ok(logs.some(line => line.includes('main.session.ids-sanitized')), '清洗要留审计')
+  assert.ok(logs.some(line => line.includes('main.session.ids-repaired')), '镜像修复要留审计')
+
+  // 两位成员都能派活（副协调者 s-1 同样放行）；allowConcurrent 只为绕开「同目录串行」这条与本题无关的门控。
+  const createdByS1 = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'], allowConcurrent: true }, { agent: s1 })
+  assert.match(createdByS1, /甲/)
+  const createdByS2 = await byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'], allowConcurrent: true }, { agent: s2 })
+  assert.match(createdByS2, /乙/)
+  // 非成员被拒（task_create 只对协调者名单开放）。
+  const denied = await byName.task_create.execute({ title: '丙', goal: 'g', acceptance: ['a'], allowConcurrent: true }, { agent: other })
+  assert.match(denied, /请从协调者会话操作任务/)
+
+  const rows = db.prepare('SELECT title, coordinator_session FROM tasks ORDER BY created_at').all()
+  assert.deepEqual(rows.map(row => [row.title, row.coordinator_session]), [['甲', 's-1'], ['乙', 's-2']], '归属 = 实际派活的协调者')
+  db.close()
+  await f.disposers.at(-1)?.()
+}))
+
+test('多协调者：副协调者的消息也投给派它的那个协调者；L1/白名单/guard 对成员一律生效', withHome(async home => {
+  const s1 = makeAgent('s-1')
+  const s2 = makeAgent('s-2')
+  const other = makeAgent('s-3')
+  const { openLedger, setSetting } = await import('../src/ledger.js')
+  const ledger = await openLedger(join(home, 'state', 'orchestrator'))
+  setSetting(ledger, 'main_session_ids', '["s-1","s-2"]')
+  ledger.close()
+
+  const f = fakeCtx({ agents: [s1, s2, other], subagents: multiChildSubagents() })
+  await apply(f.ctx, {})
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  const entry = f.promptContexts.find(item => item.name === 'orchestrator:coordinator-policy')
+  const worker = f.promptContexts.find(item => item.name === 'orchestrator:worker-policy')
+  assert.match(entry.text({ agent: s2 }), /协调者可以是多个/, 'L1 对副协调者同样注入')
+  assert.equal(worker.text({ agent: s2 }), '', '成员永远不拿 W1')
+
+  // guard：副协调者调 wait_agent 同样被硬拦（名单成员判定）。
+  const guard = f.guards[0]
+  assert.match(guard({ name: 'wait_agent', agent: s2 }), /协调者禁止阻塞等待/)
+  assert.equal(guard({ name: 'wait_agent', agent: other }), undefined, '非成员不受协调者 guard 约束')
+
+  // agent/created：副协调者也装白名单（与主协调者同一套 restrict）。
+  const before = s2.restrictions.length
+  f.listeners.get('agent/created')({ agent: s2 })
+  await wait(10)
+  assert.ok(s2.restrictions.length > before, '副协调者加载时也要装协调者工具白名单')
+
+  // 回报归属：s1 派的任务由 s2 收不到；s2 派的任务投给 s2。
+  const childIds = []
+  const createdS1 = await byName.task_create.execute({ title: '甲', goal: 'g', acceptance: ['a'], allowConcurrent: true }, { agent: s1 })
+  assert.match(createdS1, /甲/)
+  const createdS2 = await byName.task_create.execute({ title: '乙', goal: 'g', acceptance: ['a'], allowConcurrent: true }, { agent: s2 })
+  assert.match(createdS2, /乙/)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  for (const row of db.prepare('SELECT id, title, session_id FROM tasks').all()) {
+    if (row.session_id !== null) childIds.push({ ...row })
+  }
+  db.close()
+  const childOf = title => childIds.find(row => row.title === title)
+  const taskA = childOf('甲')
+  const taskB = childOf('乙')
+  assert.ok(taskA !== undefined && taskB !== undefined, '两条任务都派发成功（有子会话）')
+  await byName.task_report.execute({ task_id: taskA.id, status: 'progress', summary: '甲在跑' }, { agent: { id: taskA.session_id } })
+  await byName.task_report.execute({ task_id: taskB.id, status: 'progress', summary: '乙在跑' }, { agent: { id: taskB.session_id } })
+  await waitUntil(() => s1.injected.length > 0 && s2.injected.length > 0, { label: '两边各自收到自己的 progress' })
+  assert.ok(s1.injected.some(message => /甲/.test(message.content[0].text)))
+  assert.equal(s1.injected.some(message => /乙/.test(message.content[0].text)), false, '不能串到别的协调者')
+  assert.ok(s2.injected.some(message => /乙/.test(message.content[0].text)))
+  assert.equal(s2.injected.some(message => /甲/.test(message.content[0].text)), false)
+  await f.disposers.at(-1)?.()
+}))
+
+test('多协调者：创建者已不在名单 → 通知回落主协调者，并留 notify.route.fallback 审计', withHome(async home => {
+  const { openLedger, setSetting } = await import('../src/ledger.js')
+  const seed = await openLedger(join(home, 'state', 'orchestrator'))
+  setSetting(seed, 'main_session_ids', '["s-1"]')
+  seed.close()
+  const primary = makeAgent('s-1')
+  const f = fakeCtx({ agents: [primary], subagents: multiChildSubagents() })
+  await apply(f.ctx, {})
+  const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
+  // 先正常派一条（走 task_create，拿到台账真行与子会话 id），再把归属改成「已退出名单的会话」，
+  // 模拟用户移除协调者之后那条在跑的任务。
+  const created = await byName.task_create.execute({ title: '孤儿归属', goal: 'g', acceptance: ['a'] }, { agent: primary })
+  assert.match(created, /孤儿归属/)
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(join(home, 'state', 'orchestrator', 'tasks.sqlite'))
+  const row = db.prepare('SELECT id, session_id FROM tasks ORDER BY created_at DESC').get()
+  db.prepare('UPDATE tasks SET coordinator_session = ? WHERE id = ?').run('s-gone', row.id)
+  db.close()
+
+  await byName.task_report.execute({ task_id: row.id, status: 'progress', summary: '还在跑' }, { agent: { id: row.session_id } })
+  await waitUntil(() => primary.injected.some(message => /还在跑/.test(message.content[0].text)), { label: '回落主协调者收到通知' })
+  const logs = readdirSync(join(home, 'state', 'orchestrator', 'logs'))
+    .flatMap(file => readFileSync(join(home, 'state', 'orchestrator', 'logs', file), 'utf8').split('\n'))
+  assert.ok(logs.some(line => line.includes('notify.route.fallback') && line.includes('not-coordinator')), '回落要有审计')
   await f.disposers.at(-1)?.()
 }))
 

@@ -1085,3 +1085,89 @@ test('G1：stop 清目标；dispose 抛错也在 finally 里清', async () => {
   await dispatcher.stop('c-old', 't-2')
   assert.deepEqual(cleared, [['t-1', member.id], ['t-2', 'c-old']])
 })
+
+// ---------------------------------------------------------------------------
+// 0.36.0 多协调者：派发/投递/停止/目录都按**任务自己的协调者**，不再只有唯一主会话。
+// 用户拍板（决策 3）：创建者没打开 → 任务**直接失败**（可读提示），不回落主协调者派发。
+// ---------------------------------------------------------------------------
+
+const coordinatorAgent = id => ({ id, session: { id, header: { cwd: `C:/${id}` } } })
+
+test('多协调者：spawn 用任务 coordinator_session 的 agent 作 parent（不是主协调者）', async () => {
+  const subagents = fakeSubagents()
+  const primary = coordinatorAgent('s-main')
+  const secondary = coordinatorAgent('s-side')
+  const dispatcher = createSubagentDispatcher({
+    subagents,
+    getAgent: () => primary,
+    agentById: id => (id === 's-side' ? secondary : id === 's-main' ? primary : undefined),
+    sessionWaitMs: 0,
+  })
+  const member = await dispatcher.spawn({ prompt: 'p', readOnly: true, cwd: 'C:/t', coordinatorSession: 's-side' })
+  const start = subagents.calls.find(call => call[0] === 'start')
+  assert.equal(start[1].parent, secondary, 'parent 必须是派这条任务的协调者')
+  assert.equal(start[1].cwd, 'C:/t')
+  assert.equal(typeof member.id, 'string')
+})
+
+test('多协调者：创建者协调者没打开 → COORDINATOR_OFFLINE 可读错误，且一个子会话都不起', async () => {
+  const subagents = fakeSubagents()
+  const dispatcher = createSubagentDispatcher({
+    subagents,
+    getAgent: () => coordinatorAgent('s-main'),
+    agentById: () => undefined,
+    sessionWaitMs: 0,
+  })
+  await assert.rejects(
+    () => dispatcher.spawn({ prompt: 'p', coordinatorSession: 's-gone' }),
+    error => error?.code === 'COORDINATOR_OFFLINE'
+      && /s-gone/.test(error.message)
+      && /没打开/.test(error.message)
+      && /重派给当前协调者/.test(error.message),
+  )
+  assert.equal(subagents.calls.filter(call => call[0] === 'start').length, 0, '不回落主协调者派发')
+})
+
+test('多协调者：send 用任务协调者的 agent 发消息；创建者离线时同一可读错误、不投递', async () => {
+  const subagents = fakeSubagents()
+  const secondary = coordinatorAgent('s-side')
+  const dispatcher = createSubagentDispatcher({
+    subagents,
+    getAgent: () => coordinatorAgent('s-main'),
+    agentById: id => (id === 's-side' ? secondary : undefined),
+    sessionWaitMs: 0,
+  })
+  await dispatcher.send('c1', 'hi', undefined, undefined, 't-1', true, undefined, undefined, { coordinatorSession: 's-side' })
+  const sent = subagents.calls.find(call => call[0] === 'send')
+  assert.equal(sent[1], secondary, 'sender 必须是任务的协调者')
+
+  const offline = fakeSubagents()
+  const dispatcher2 = createSubagentDispatcher({ subagents: offline, getAgent: () => coordinatorAgent('s-main'), agentById: () => undefined, sessionWaitMs: 0 })
+  await assert.rejects(
+    () => dispatcher2.send('c1', 'hi', undefined, undefined, 't-1', true, undefined, undefined, { coordinatorSession: 's-gone' }),
+    error => error?.code === 'COORDINATOR_OFFLINE',
+  )
+  assert.equal(offline.calls.filter(call => call[0] === 'send').length, 0)
+})
+
+test('多协调者：catalog 可按协调者取；stop 的创建者离线时退回主协调者做 interrupt parent（清理不失败）', async () => {
+  const subagents = fakeSubagents()
+  const dispatcher = createSubagentDispatcher({
+    subagents,
+    getAgent: () => coordinatorAgent('s-main'),
+    agentById: id => (id === 's-side' ? coordinatorAgent('s-side') : undefined),
+    sessionWaitMs: 0,
+  })
+  await dispatcher.catalog('s-side')
+  assert.deepEqual(subagents.calls.at(-1), ['listChildren', 's-side', undefined])
+  await dispatcher.catalog()
+  assert.deepEqual(subagents.calls.at(-1), ['listChildren', 's-main', undefined])
+
+  await dispatcher.stop('c-old', 't-1', 's-gone')
+  assert.deepEqual(
+    subagents.calls.at(-1),
+    ['interruptByParent', 'c-old', 's-main', 'continuable'],
+    '停止是清理动作：创建者没打开时退回主协调者，不能因此失败',
+  )
+})
+

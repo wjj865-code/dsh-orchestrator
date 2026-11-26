@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openLedger, createTask, getSetting, getMainSessionId, setMainSessionId, getMainSessionPreset, setMainSessionPreset, setSetting } from '../src/ledger.js'
+import { openLedger, createTask, getSetting, getMainSessionId, setMainSessionId, getMainSessionPreset, setMainSessionPreset, setSetting, getCoordinatorIds, setCoordinatorIds } from '../src/ledger.js'
 import { createMainSession, PRESET_ID } from '../src/main-session.js'
 import { onboardingKey } from '../src/onboarding.js'
 
@@ -96,6 +96,20 @@ test('主会话失效时重建；创建失败不写台账', async () => {
   assert.equal(result.ok, false)
   assert.match(result.error, /boom/)
   assert.equal(getMainSessionId(db), undefined)
+  db.close()
+})
+
+test('0.36.0：首位（主协调者）失效时原位替换，其余名单成员原样保留、名单长度不变', async () => {
+  const db = await ledger()
+  setCoordinatorIds(db, ['session-dead', 'session-b', 'session-c'])
+  const f = fake({ live: ['session-b'] })
+  const main = createMainSession({ db, config: {}, agents: f.agents, sessionController: f.sessionController, workspacePath: 'C:/ws' })
+  const result = await main.open()
+  assert.equal(result.ok, true)
+  assert.equal(result.sessionId, 'session-main-new')
+  assert.deepEqual(getCoordinatorIds(db), ['session-main-new', 'session-b', 'session-c'], '原位替换首位，不增长名单')
+  assert.equal(getMainSessionId(db), 'session-main-new')
+  assert.equal(f.created.length, 1)
   db.close()
 })
 
@@ -452,7 +466,7 @@ const adoptMain = (db, f, extras = {}) => createMainSession({
   ...extras,
 })
 
-test('adopt：只切指针（旧会话不改名不归档）+ 记审计 + 台账 preset 标记', async () => {
+test('adopt：加入名单并提升为主（旧会话留在名单）+ 记审计 + 台账 preset 标记', async () => {
   const db = await ledger()
   const f = adoptFake({ live: ['session-old', 'session-new-target'] })
   setMainSessionId(db, 'session-old')
@@ -460,8 +474,17 @@ test('adopt：只切指针（旧会话不改名不归档）+ 记审计 + 台账 
   const logs = []
   const main = adoptMain(db, f, { log: (event, detail) => logs.push([event, detail]) })
   const result = await main.adoptSession({ sessionId: 'session-new-target' })
-  assert.deepEqual(result, { ok: true, sessionId: 'session-new-target', previous: 'session-old' })
+  assert.deepEqual(result, {
+    ok: true,
+    sessionId: 'session-new-target',
+    previous: 'session-old',
+    ids: ['session-new-target', 'session-old'],
+    primary: 'session-new-target',
+    added: true,
+    promoted: false,
+  })
   assert.equal(getMainSessionId(db), 'session-new-target')
+  assert.deepEqual(getCoordinatorIds(db), ['session-new-target', 'session-old'], '旧协调者留在名单里')
   assert.equal(getMainSessionPreset(db), PRESET_ID)
   assert.deepEqual(f.renamed, [], '旧会话不改名')
   assert.deepEqual(f.created, [], 'adopt 不建会话')
@@ -469,6 +492,67 @@ test('adopt：只切指针（旧会话不改名不归档）+ 记审计 + 台账 
   assert.ok(adopted, '要写 main.session.adopted 审计')
   assert.equal(adopted[1].previous, 'session-old')
   assert.equal(adopted[1].sessionId, 'session-new-target')
+  db.close()
+})
+
+test('adopt：已在名单里的会话再设一次只提升为主，不重复占名额', async () => {
+  const db = await ledger()
+  const f = adoptFake({ live: ['s-a', 's-b'] })
+  setCoordinatorIds(db, ['s-a', 's-b'])
+  const main = adoptMain(db, f)
+  const result = await main.adoptSession({ sessionId: 's-b' })
+  assert.equal(result.ok, true)
+  assert.equal(result.added, false)
+  assert.equal(result.promoted, true)
+  assert.deepEqual(result.ids, ['s-b', 's-a'])
+  assert.equal(getMainSessionId(db), 's-b')
+  db.close()
+})
+
+test('adopt：名单已满 4 个 → ADOPT_LIMIT，名单与指针都不动', async () => {
+  const db = await ledger()
+  setCoordinatorIds(db, ['s-1', 's-2', 's-3', 's-4'])
+  const f = adoptFake({ live: ['s-1', 's-9'] })
+  const main = adoptMain(db, f)
+  const result = await main.adoptSession({ sessionId: 's-9' })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'ADOPT_LIMIT')
+  assert.equal(result.params.max, 4)
+  assert.deepEqual(getCoordinatorIds(db), ['s-1', 's-2', 's-3', 's-4'])
+  assert.equal(getMainSessionId(db), 's-1')
+  db.close()
+})
+
+test('dropSession：删次位不动主；删首位下一位升主；删不存在给 DROP_NOT_FOUND；删光清两个键', async () => {
+  const db = await ledger()
+  const f = adoptFake({ live: ['s-a', 's-b'] })
+  const logs = []
+  const main = adoptMain(db, f, { log: (event, detail) => logs.push([event, detail]) })
+
+  setCoordinatorIds(db, ['s-a', 's-b'])
+  const secondary = await main.dropSession({ sessionId: 's-b' })
+  assert.equal(secondary.ok, true)
+  assert.deepEqual(secondary.ids, ['s-a'])
+  assert.equal(secondary.primaryChanged, false)
+  assert.equal(getMainSessionId(db), 's-a')
+
+  setCoordinatorIds(db, ['s-a', 's-b'])
+  const primary = await main.dropSession({ sessionId: 's-a' })
+  assert.equal(primary.ok, true)
+  assert.deepEqual(primary.ids, ['s-b'])
+  assert.equal(primary.primary, 's-b')
+  assert.equal(primary.primaryChanged, true)
+  assert.equal(getMainSessionId(db), 's-b', '下一位升主（main_session_id 同步）')
+
+  const missing = await main.dropSession({ sessionId: 's-zz' })
+  assert.deepEqual([missing.ok, missing.code], [false, 'DROP_NOT_FOUND'])
+
+  const empty = await main.dropSession({ sessionId: 's-b' })
+  assert.deepEqual(empty.ids, [])
+  assert.equal(empty.primary, null)
+  assert.equal(getMainSessionId(db), undefined, '删光等价「尚未打开主会话」')
+  const droppedLogs = logs.filter(([event]) => event === 'main.session.dropped')
+  assert.equal(droppedLogs.length, 3)
   db.close()
 })
 

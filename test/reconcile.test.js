@@ -96,6 +96,47 @@ test('未绑定协调者：跳过对账', async () => {
   db.close()
 })
 
+test('0.36.0 多协调者：catalog 按名单并集——副协调者派出的子会话不误判 orphaned', async () => {
+  const { db, running } = await setup()
+  const byMain = running('主派', 'c-main')
+  const bySide = running('副派', 'c-side')
+  const gone = running('真丢了', 'c-gone')
+  const catalogs = { 's-main': [{ id: 'c-main' }], 's-side': [{ id: 'c-side' }] }
+  const dispatcher = {
+    catalog: async id => {
+      if (catalogs[id] === undefined) throw new Error(`unknown ${id}`)
+      return catalogs[id]
+    },
+  }
+  const result = await reconcileOrphans({
+    db, dispatcher, coordinatorIds: ['s-main', 's-side', 's-dead'], isLive: () => true,
+  })
+  assert.deepEqual(result.ids, [gone.id], '只把两份目录都没有的标 orphaned')
+  assert.equal(getTask(db, byMain.id).status, 'running')
+  assert.equal(getTask(db, bySide.id).status, 'running')
+  assert.equal(getTask(db, gone.id).status, 'orphaned')
+  db.close()
+})
+
+test('0.36.0 多协调者：单个协调者目录读不到只降级这一份，其余并集照用', async () => {
+  const { db, running } = await setup()
+  const bySide = running('副派', 'c-side')
+  const warnings = []
+  const dispatcher = {
+    catalog: async id => {
+      if (id === 's-main') throw new Error('目录挂了')
+      return [{ id: 'c-side' }]
+    },
+  }
+  const result = await reconcileOrphans({
+    db, dispatcher, coordinatorIds: ['s-main', 's-side'], isLive: () => true, onWarn: message => warnings.push(message),
+  })
+  assert.deepEqual(result.ids, [])
+  assert.equal(getTask(db, bySide.id).status, 'running')
+  assert.ok(warnings.some(message => /继续按其余协调者对账/.test(message)))
+  db.close()
+})
+
 test('没有活跃任务时不读 catalog', async () => {
   const { db } = await setup()
   let called = false

@@ -297,9 +297,21 @@ export function createNotifier({
   record = () => {},
   mergeWindowMs = notifyMergeWindowMs(),
   progressWatermarkMs = notifyProgressWatermarkMs(),
+  // 0.36.0（多协调者，用户拍板决策 1）：单任务通知按 item 决定投给哪个协调者会话；
+  // 返回 `undefined` 表示「投主协调者」（index.js 的 send 负责解析）。汇总/系统类通知固定投主协调者。
+  targetOf = () => undefined,
   onWarn = () => {},
   onEvent = () => {},
 }) {
+  // 目标归一：只认非空字符串；targetOf 自身抛错不能让通知丢——按「主协调者」处理。
+  const routeOf = item => {
+    try {
+      const value = typeof targetOf === 'function' ? targetOf(item) : undefined
+      return typeof value === 'string' && value !== '' ? value : undefined
+    } catch {
+      return undefined
+    }
+  }
   let buffer = []
   let timer = null
   // 同任务 progress 水位（进程内）：taskId → 最近一次尝试投递的时刻。
@@ -366,10 +378,11 @@ export function createNotifier({
 
   // send 可以是同步注入（index.js 直接 steer 协调者），也可以是异步通道（测试/其他实现）。
   // 返回投递结果（同步 send 同步返回，异步 send 返回 Promise），汇总上报靠它决定要不要保留待发。
-  const deliver = (text, items) => {
+  // 第三个参数 target 是协调者会话 id（0.36.0）；`undefined` = 主协调者。
+  const deliver = (text, items, target) => {
     let result
     try {
-      result = send(text, items)
+      result = send(text, items, target)
     } catch (error) {
       const reason = error?.message ?? String(error)
       recordFailed(items, error)
@@ -492,13 +505,8 @@ export function createNotifier({
     scheduleProgressRelease()
   }
 
-  const flush = () => {
-    // 尾沿补投/卸载路径会先 bufferize 再立刻 flush：这里把刚排上的合并定时器收掉，不留悬空定时器。
-    if (timer !== null) clearTimeout(timer)
-    timer = null
-    const batch = buffer
-    buffer = []
-    if (batch.length === 0) return undefined
+  /** 投一批（目标已一致）：渲染文案 → 记水位 → 投递 → 失败撤回水位。 */
+  const flushGroup = batch => {
     const label = status => DONE_LABEL[status] ?? '完成'
     const labelOfItem = item => (isProgress(item) ? progressLabel(item) : label(item.status))
     // progress 没有产物交付/隔离/问题语义，只报「还在跑 + 到哪了」，别把中间文件写成交付候选。
@@ -525,9 +533,34 @@ export function createNotifier({
       }
       return outcome
     }
-    const result = deliver(text, batch)
+    const result = deliver(text, batch, routeOf(batch[0]))
     if (result !== null && typeof result?.then === 'function') return result.then(settleWatermark)
     return settleWatermark(result)
+  }
+
+  const flush = () => {
+    // 尾沿补投/卸载路径会先 bufferize 再立刻 flush：这里把刚排上的合并定时器收掉，不留悬空定时器。
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+    const batch = buffer
+    buffer = []
+    if (batch.length === 0) return undefined
+    // 0.36.0：一批里可能混着不同协调者的任务——按目标分组，每组一条渲染、分别投递
+    // （合并窗口/水位仍按任务算；单个目标时走原路径，返回形状与旧版完全一致）。
+    const groups = new Map()
+    for (const item of batch) {
+      const key = routeOf(item) ?? ''
+      const list = groups.get(key)
+      if (list === undefined) groups.set(key, [item])
+      else list.push(item)
+    }
+    if (groups.size <= 1) return flushGroup(batch)
+    const outcomes = [...groups.values()].map(group => flushGroup(group))
+    const aggregate = list => ({ delivered: list.every(outcome => outcome?.delivered === true) })
+    if (outcomes.some(outcome => outcome !== null && typeof outcome?.then === 'function')) {
+      return Promise.all(outcomes).then(aggregate)
+    }
+    return aggregate(outcomes)
   }
 
   return {
@@ -536,7 +569,7 @@ export function createNotifier({
       if (level === 'silent') return
       if (level === 'interrupt') {
         // 打断级（blocked / needs_auth）：问题必须当场回答 → 文案末尾直接带推进循环的动作指令。
-        void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item)}${advanceHint([item])}`, [item])
+        void deliver(`任务「${nameOf(item)}」需要你：${item.summary}${questionBlock(item)}${worktreeBlock(item)}${artifactBlock(item)}${advanceHint([item])}`, [item], routeOf(item))
         return
       }
       if (level === 'coalesce') {
@@ -547,13 +580,14 @@ export function createNotifier({
     },
     /**
      * 汇总通知（启动对账等）：多条任务共用一条文案、只投递一次，notifications 仍按任务逐条落库。
+     * 0.36.0：汇总文案是跨任务的，固定投**主协调者**（拆给每个协调者会重复推同一段话）。
      * 返回 { delivered, reason }（异步通道返回 Promise）；调用方据此决定是否保留待发。
      */
     summary(items, text) {
       const list = (Array.isArray(items) ? items : []).filter(item => item !== null && typeof item === 'object')
       const body = typeof text === 'string' ? text : ''
       if (list.length === 0 || body.trim() === '') return { delivered: false, reason: 'empty' }
-      return deliver(body, list)
+      return deliver(body, list, undefined)
     },
     async drain() {
       if (timer !== null) clearTimeout(timer)

@@ -57,9 +57,35 @@ export function sameDirectory(left, right) {
   }
 }
 
-export function createSubagentDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000, goalBridge, writableRootJudge, artifactDirectoryOf, artifactProtectionJudge }) {
+export function createSubagentDispatcher({ subagents, agent, getAgent, agentById, provider = 'spawn', workerPreset, retryDelaysMs = [1000, 2000, 4000], onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs = 5000, goalBridge, writableRootJudge, artifactDirectoryOf, artifactProtectionJudge }) {
   const currentAgent = () => getAgent === undefined ? agent : getAgent()
-  const requireAgent = () => {
+  // 0.36.0（多协调者）：派发的 parent 必须是**任务自己的协调者**（task.coordinator_session）。
+  // 之前只有唯一主会话，所以 `getAgent()` 一个就够；现在按 id 取，取不到就是「创建者没打开」。
+  const agentOf = id => {
+    if (typeof id !== 'string' || id === '') return undefined
+    try {
+      const found = typeof agentById === 'function' ? agentById(id) : undefined
+      if (found !== undefined) return found
+    } catch { /* 取不到按离线处理 */ }
+    try { return (typeof agents === 'function' ? agents() : agents)?.get?.(id) } catch { return undefined }
+  }
+  /** 创建者协调者会话没打开：**直接失败**（用户拍板：不回落主协调者派发），文案给可读出路。 */
+  const coordinatorOffline = id => {
+    const error = new Error(`创建这条任务的协调者会话（${id}）当前没打开：请先在左侧会话列表打开它，或把任务重派给当前协调者。`)
+    error.code = 'COORDINATOR_OFFLINE'
+    return error
+  }
+  /**
+   * 取派发/投递/停止要用的 parent agent。
+   * @param {string} [coordinatorSessionId] 任务台账里的 coordinator_session；缺省回落当前主协调者（兼容旧调用方）
+   */
+  const requireAgent = coordinatorSessionId => {
+    const wanted = typeof coordinatorSessionId === 'string' && coordinatorSessionId !== '' ? coordinatorSessionId : undefined
+    if (wanted !== undefined) {
+      const found = agentOf(wanted)
+      if (found === undefined) throw coordinatorOffline(wanted)
+      return found
+    }
     const current = currentAgent()
     if (current === undefined) throw new Error('未找到协调者会话：请配置 coordinatorSession（协调者会话 id），并确保该会话已加载')
     return current
@@ -68,8 +94,8 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
   const listChildren = (parentId, signal) => typeof subagents.listDescendants === 'function'
     ? subagents.listDescendants(parentId, signal)
     : subagents.listChildren(parentId, signal)
-  const parentSessionId = () => {
-    const current = requireAgent()
+  const parentSessionId = coordinatorSessionId => {
+    const current = requireAgent(coordinatorSessionId)
     return current.session?.id ?? current.id
   }
   const live = new Map()
@@ -765,8 +791,9 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
     slug(title) {
       return slugify(title)
     },
-    async spawn({ name, label, prompt, signal, taskId, cwd, readOnly, planFirst, access, goal }) {
-      const parent = requireAgent()
+    async spawn({ name, label, prompt, signal, taskId, cwd, readOnly, planFirst, access, goal, coordinatorSession }) {
+      // 0.36.0：parent = 派这条任务的协调者（创建者）；它没打开 → 直接可读失败（不回落主协调者）。
+      const parent = requireAgent(coordinatorSession)
       // agent 已创建但 session 还没挂上时，平台 startActivation 会在 parent.session 上取 .id 抛 TypeError；
       // 这里先给可读错误，并由 queue 当成可重试（等会话就绪）。
       if (parent?.session === undefined || parent.session === null) {
@@ -885,18 +912,24 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       return { id: activation.childId, name: spec.label, sessionId: activation.childId, target: activation.childId }
     },
     // access 是尾部可选参数（新参数只追加不改位置：老调用方按位置传 readOnly/objective 不受影响）。
-    // options（第 9 参，X5）：`{ planApproved?, planPhase?, messageId?, attemptKey? }`
+    // options（第 9 参，X5）：`{ planApproved?, planPhase?, messageId?, attemptKey?, coordinatorSession? }`
     //   - planApproved：已批准计划任务的续派 → 先关 plan mode，再在 post-send 授予可写根；
     //   - planPhase（'workspace-write' | 'read-only'，由 `plan-mode.planPhaseMode` 算）：计划阶段续派用，
     //     只在 `readOnly===true` 时生效 —— 把沙箱补成 workspace-write（scratch 可写），**仍不注册可写根**；
     //     漏传/传 'read-only' 就退回只读（安全方向的降级）；
-    //   - messageId / attemptKey：同一逻辑投递的重放（跨重启靠 followup 行 meta.messageId）→ 只重试授予，不再投递。
+    //   - messageId / attemptKey：同一逻辑投递的重放（跨重启靠 followup 行 meta.messageId）→ 只重试授予，不再投递；
+    //   - coordinatorSession（0.36.0）：任务台账里的 coordinator_session —— parent/默认 cwd 按它取，
+    //     创建者没打开时给可读失败（不静默用主协调者顶替）。
     async send(target, message, signal, targetDir, taskId, readOnly, objective, access, options = {}) {
+      const opts = options ?? {}
+      const coordinatorSession = typeof opts.coordinatorSession === 'string' && opts.coordinatorSession !== ''
+        ? opts.coordinatorSession
+        : undefined
+      const parentFor = () => requireAgent(coordinatorSession)
       if (readOnly !== true) {
-        const protection = artifactProtectionJudge?.({ taskId, session: childSessionOf(target) ?? requireAgent().session, target: targetDir, access })
+        const protection = artifactProtectionJudge?.({ taskId, session: childSessionOf(target) ?? parentFor().session, target: targetDir, access })
         if (protection?.ok === false) throw writeDomainError(protection.reason)
       }
-      const opts = options ?? {}
       // 0) 幂等：已有一条「同一次投递」的记录 → 只按运行期事实补授予并返回原 messageId，绝不二次 sendMessage。
       //    只读/计划未批准的任务在这里**不授予**（P0-3）：否则重放一次就能绕过「批准前不切可写」。
       if (typeof opts.messageId === 'string' && opts.messageId !== '') {
@@ -908,7 +941,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         await replayGrant(target, { taskId, targetDir, readOnly, messageId })
         return messageId
       }
-      const parent = requireAgent()
+      const parent = parentFor()
       // 1) 投递前 preflight：写域判定被拒 → 消息**不外发**（投递之后注册失败只能 warn，无法回滚）。
       // 无 target 的任务按「父会话 cwd」归一：否则两条无 target 的任务会同时从同一个 cwd 写。
       if (readOnly !== true) {
@@ -1064,7 +1097,7 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       return planWriteInfoOf(target)
     },
     /** 有本地 activation 直接 dispose（提前取消）；没有（重启后）走 interrupt。两种都释放可写根。 */
-    async stop(target, taskId) {
+    async stop(target, taskId, coordinatorSession) {
       try {
         const activation = live.get(target)
         if (activation !== undefined) {
@@ -1076,7 +1109,14 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
         // 工具层 stop（task_message action:stop）是用户动作，按平台 interruptByUser 的写法传 { kind: 'user' }；裸 agent 不在契约里。
         // rc.1：interruptByParent(childId, parentSessionId, mode)。
         if (typeof subagents.interrupt === 'function') return subagents.interrupt(target, { kind: 'user' })
-        return subagents.interruptByParent(target, parentSessionId(), 'continuable')
+        // 停止是清理动作：创建者没打开时**不能因此失败**（子会话照样要被中断），退回当前主协调者作 parent。
+        let parentId
+        try {
+          parentId = parentSessionId(coordinatorSession)
+        } catch {
+          parentId = parentSessionId()
+        }
+        return subagents.interruptByParent(target, parentId, 'continuable')
       } finally {
         releaseWritableRoot(target)
         releasePlan(target)
@@ -1095,14 +1135,15 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
       releaseWritableRoot(target)
       releasePlan(target)
     },
-    members() {
-      return listChildren(parentSessionId()).catch(error => {
+    members(coordinatorSessionId) {
+      return listChildren(parentSessionId(coordinatorSessionId)).catch(error => {
         onWarn(`子会话目录读取失败：${errorText(error)}`)
         return []
       })
     },
-    catalog() {
-      return listChildren(parentSessionId())
+    /** 子会话目录：0.36.0 起可按协调者会话取（对账要按名单并集，见 src/reconcile.js）。 */
+    catalog(coordinatorSessionId) {
+      return listChildren(parentSessionId(coordinatorSessionId))
     },
     has(target) {
       return live.has(target)
@@ -1111,6 +1152,6 @@ export function createSubagentDispatcher({ subagents, agent, getAgent, provider 
 }
 
 // 派发后端只剩 subagent：`backend` 键已随 P1-A 删除（P0-1 已删 team 实现），这里不再有分派。
-export function createDispatcher({ subagents, agent, getAgent, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge, artifactDirectoryOf, artifactProtectionJudge }) {
-  return createSubagentDispatcher({ subagents, agent, getAgent, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge, artifactDirectoryOf, artifactProtectionJudge })
+export function createDispatcher({ subagents, agent, getAgent, agentById, provider = 'spawn', workerPreset, retryDelaysMs, onWarn = noop, onEvent = noop, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge, artifactDirectoryOf, artifactProtectionJudge }) {
+  return createSubagentDispatcher({ subagents, agent, getAgent, agentById, provider, workerPreset, retryDelaysMs, onWarn, onEvent, agents, sessions, sandboxPolicy, onSessionCreated, onAgentCreated, sessionWaitMs, goalBridge, writableRootJudge, artifactDirectoryOf, artifactProtectionJudge })
 }

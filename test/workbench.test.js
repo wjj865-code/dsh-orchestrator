@@ -539,3 +539,50 @@ test('createWorkbench.stats：窗口内交付/确认/失败与 messages 计数�
   assert.equal(bench.stats({ days: 1000 }).days, 62)
   db.close()
 })
+
+test('0.36.0 多协调者：自动化绑创建它的协调者（sessionId 必须仍在名单），未传回落主协调者；目标失效可读提示', async () => {
+  const db = await openLedger(tempDir())
+  makeTask(db, { group: 'gzh', status: 'running' })
+  const schedule = fakeSchedule()
+  const list = ['s-main', 's-side']
+  const bench = createWorkbench({
+    db,
+    schedule: () => schedule,
+    mainSessionId: () => list[0],
+    coordinatorIds: () => [...list],
+  })
+  // 副协调者创建 → 宿主 schedule 与镜像都指向它（不是固定主协调者）。
+  const created = await bench.saveAutomation({
+    kind: 'group', refId: 'gzh', title: '副协调者早班', timing: { kind: 'daily', time: '10:00' }, confirm: true, sessionId: 's-side',
+  })
+  assert.equal(created.ok, true)
+  assert.equal(created.automation.targetSession, 's-side')
+  assert.equal(created.automation.targetMissing, false)
+  const createCall = schedule.calls.find(call => call.op === 'create')
+  assert.deepEqual(createCall.request.target, { kind: 'session', sessionId: 's-side' })
+
+  // 不在名单的 sessionId → 可读拒绝，不建 schedule。
+  const invalid = await bench.saveAutomation({
+    kind: 'group', refId: 'gzh', title: 'x', timing: { kind: 'daily', time: '10:00' }, confirm: true, sessionId: 's-zz',
+  })
+  assert.equal(invalid.ok, false)
+  assert.equal(invalid.code, 'AUTOMATION_TARGET_INVALID')
+
+  // 未传 sessionId（旧客户端）→ 回落主协调者。
+  const fallback = await bench.saveAutomation({
+    kind: 'group', refId: 'gzh', title: '老客户端', timing: { kind: 'daily', time: '10:00' }, confirm: true,
+  })
+  assert.equal(fallback.ok, true)
+  assert.equal(fallback.automation.targetSession, 's-main')
+
+  // 目标会话退出名单 → 列表里该行标 targetMissing（其余行不受影响）。
+  list.splice(1, 1)
+  const listed = await bench.automations()
+  assert.deepEqual(listed.coordinatorIds, ['s-main'])
+  const side = listed.rows.find(row => row.targetSession === 's-side')
+  const main = listed.rows.find(row => row.targetSession === 's-main')
+  assert.equal(side.targetMissing, true, '目标已不是协调者 → 到点没人处理，面板要提示')
+  assert.equal(main.targetMissing, false)
+  db.close()
+})
+

@@ -57,7 +57,7 @@ function fakeNotifier() {
 
 async function setup(options = {}) {
   const db = await openLedger(tempDir())
-  const dispatcher = fakeDispatcher(options)
+  const dispatcher = options.dispatcher ?? fakeDispatcher(options)
   const notifier = fakeNotifier()
   const config = { staleMinutes: 30, maxQueue: 50, coordinatorSession: 's-1', sameDirGuard: 'off', ...(options.config ?? {}) }
   const queue = createQueue({ db, dispatcher, config })
@@ -67,7 +67,7 @@ async function setup(options = {}) {
     queue,
     notifier,
     config,
-    coordinatorStatus: () => ({ id: 's-1', live: true }),
+    coordinatorStatus: options.coordinatorStatus ?? (() => ({ id: 's-1', live: true })),
     workspaces: options.workspaces,
     defaultCwd: options.defaultCwd ?? tempDir(),
     sessionQuery: options.sessionQuery,
@@ -2376,3 +2376,63 @@ test('P0 worktree 记忆归一：done 的 projectKey 取 brief.target（不用�
   assert.deepEqual(second, [projectKeyOf(target)])
   db.close()
 })
+
+// ---------------------------------------------------------------------------
+// 0.36.0 多协调者（用户 2026-11-26 拍板）：要求 task_* 对名单成员一视同仁、归属记实际派活的协调者、
+// 追问/续跑把任务的协调者交给派发层（创建者离线时给可读失败，不回落主协调者）。
+// ---------------------------------------------------------------------------
+
+const twoCoordinators = () => ({
+  id: 's-1',
+  ids: ['s-1', 's-2'],
+  live: true,
+  anyLive: true,
+  coordinators: [{ id: 's-1', primary: true, live: true }, { id: 's-2', primary: false, live: true }],
+})
+
+test('多协调者：副协调者也能 task_create，归属记实际派活者；非成员被拒（名单成员判定）', async () => {
+  const { db, tools } = await setup({ coordinatorStatus: twoCoordinators })
+  const mine = await call(tools, 'task_create', { ...sampleBrief({ title: '副协调者的活' }), allowConcurrent: true }, { agent: { id: 's-2' } })
+  assert.match(mine, /副协调者的活/)
+  const denied = await call(tools, 'task_create', { title: '外人', goal: 'g', acceptance: ['a'] }, { agent: { id: 's-9' } })
+  assert.match(denied, /请从协调者会话操作任务/)
+  const tasks = listTasks(db)
+  assert.equal(tasks.length, 1, '非成员那一次没有建任务')
+  assert.equal(tasks[0].coordinator_session, 's-2', '归属 = 实际派活的协调者，不是主协调者')
+  db.close()
+})
+
+test('多协调者：memory_note 对副协调者同样放行（全局偏好）；非成员仍走子会话护栏被拒', async () => {
+  const { db, tools } = await setup({ coordinatorStatus: twoCoordinators })
+  const saved = await call(tools, 'memory_note', { text: '发布前必须问用户', kind: 'preference' }, { agent: { id: 's-2' } })
+  assert.match(saved, /已记住|偏好/)
+  assert.ok(loadPreferences(db).some(entry => entry.rule === '发布前必须问用户'), '副协调者写的全局偏好要生效')
+  const rejected = await call(tools, 'memory_note', { text: '外人的话', kind: 'note' }, { agent: { id: 's-9' } })
+  assert.match(rejected, /拒绝/)
+  db.close()
+})
+
+test('多协调者：追问把任务协调者传给派发层；创建者离线时给可读中文、任务状态不变', async () => {
+  const sends = []
+  const dispatcher = {
+    ...fakeDispatcher(),
+    async sendReliable(target, message, signal, targetDir, taskId, readOnly, objective, access, options) {
+      sends.push({ target, taskId, options })
+      const error = new Error('创建这条任务的协调者会话（s-2）当前没打开：请先在左侧会话列表打开它，或把任务重派给当前协调者。')
+      error.code = 'COORDINATOR_OFFLINE'
+      throw error
+    },
+  }
+  const { db, tools } = await setup({ coordinatorStatus: twoCoordinators, dispatcher })
+  const target = tempDir()
+  const task = createTask(db, { brief: { ...sampleBrief({ title: '甲' }), target }, coordinatorSession: 's-2' })
+  transition(db, task.id, 'running', { sessionId: 'c-1', target: 'c-1' })
+  const text = await call(tools, 'task_message', { task_id: task.id, action: 'message', message: '再改一版' }, { agent: { id: 's-1' } })
+  assert.match(text, /未投递（任务状态不变）/)
+  assert.match(text, /创建这条任务的协调者会话（s-2）当前没打开/)
+  assert.equal(sends.length, 1)
+  assert.equal(sends[0].options.coordinatorSession, 's-2', '派发层必须拿到任务自己的协调者')
+  assert.equal(getTask(db, task.id).status, 'running', '创建者离线不改任务状态（等用户打开会话再追问/续跑）')
+  db.close()
+})
+

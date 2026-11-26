@@ -24,6 +24,33 @@ export const displayNameOf = (task, all) => {
 export const textOf = value => typeof value === 'string' ? value.trim() : ''
 export const listOf = value => (Array.isArray(value) ? value.map(item => textOf(item)).filter(Boolean) : [])
 
+/**
+ * 0.36.0 多协调者：快照 → 面板「主会话」行要用的只读摘要。
+ *
+ * 判据（与服务端 session-role 同源，都是「会话 ∈ 名单」）：
+ *   - `count`   名单长度（面板显示「协调者 N」）；
+ *   - `primary` 首位（主协调者，「打开主会话」打开的就是它）；
+ *   - `self`    当前会话在名单里的位置（-1 = 不是协调者）；
+ *   - `canLeave` 名单 > 1 且当前会话在名单里 → 显示「本会话退出」（只剩一个时不给，避免一键把协调者清空）。
+ * 快照缺失/形状异常一律降级成空摘要（面板不渲染特权入口，与 gate 的 fail-closed 同口径）。
+ */
+export const coordinatorSummaryOf = (snapshot, currentSessionId) => {
+  const main = snapshot !== null && typeof snapshot === 'object' ? snapshot.mainSession : undefined
+  const ids = Array.isArray(main?.ids)
+    ? main.ids.map(item => textOf(item)).filter(Boolean)
+    : (textOf(main?.id) === '' ? [] : [textOf(main?.id)])
+  const self = textOf(currentSessionId)
+  const index = self === '' ? -1 : ids.indexOf(self)
+  return {
+    count: ids.length,
+    ids,
+    primary: ids[0] ?? null,
+    selfIndex: index,
+    isSelf: index >= 0,
+    canLeave: index >= 0 && ids.length > 1,
+  }
+}
+
 // 三段式里的纯逻辑：计数 / 筛选 / 搜索 / 产物分组都提到组件外，便于单测直接断言。
 export const countTasks = tasks => {
   const counts = { all: 0, active: 0, waiting: 0, done: 0, failed: 0, closed: 0, artifacts: 0 }
