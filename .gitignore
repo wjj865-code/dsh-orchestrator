@@ -3,3 +3,5 @@ node_modules/
 *.sqlite-wal
 *.sqlite-shm
 coverage/
+# 任务产物（验收与发版证据留档）不入库，见 docs/CONTRIBUTING.md「发版前清仓库」
+reports/
