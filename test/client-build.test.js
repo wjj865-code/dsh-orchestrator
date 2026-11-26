@@ -151,7 +151,7 @@ test('产物不是空壳：UI、样式表与 __test 出口都真的打进了 dis
   const { loaded } = loadArtifact()
   assert.deepEqual(Object.keys(loaded.__test).sort(), [
     'STYLE_TEXT', 'TONE_COLOR', 'WORKBENCH_PAGES', 'artifactDate', 'artifactProject', 'automationStateLabel',
-    'chipOpenTargetOf', 'chipStateOf', 'chipTooltipOf', 'chipViewOf', 'chipVisibleTitle', 'countTasks',
+    'chipOpenTargetOf', 'chipStateOf', 'chipTooltipOf', 'chipViewOf', 'chipVisibleTitle', 'coordinatorSummaryOf', 'countTasks',
     'createFocusRequest', 'createMainNavPoller', 'createMainViewGate', 'createNavNotice', 'createTaskFeed',
     'createWorkbench', 'dateKeyOf',
     'fileAddressOf', 'fileAddressProblem', 'groupArtifacts', 'groupTasksOf', 'isLatestTurn', 'matchesFilter',

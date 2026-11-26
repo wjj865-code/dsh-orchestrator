@@ -2647,9 +2647,12 @@ test('R3 抽屉覆盖：最新回复与消息正文里的 tk- 引用都渲染成
 test('0.36.0 多协调者：coordinatorSummaryOf 判名单长度/主协调者/本会话与「可退出」', () => {
   const { loaded } = load()
   const { coordinatorSummaryOf } = loaded.__test
+  // 产物跑在 vm 的独立 realm 里：它返回的对象/数组原型与测试侧不同，deepEqual 会因原型身份不同而报
+  // 「same structure but not reference-equal」。这里只把它摊平成本 realm 的普通值，断言口径不变。
+  const plain = value => JSON.parse(JSON.stringify(value))
   // 两名成员：当前会话是次位 → 在名单里、可退出、主协调者是首位。
   assert.deepEqual(
-    coordinatorSummaryOf({ mainSession: { id: 's-a', ids: ['s-a', 's-b'] } }, 's-b'),
+    plain(coordinatorSummaryOf({ mainSession: { id: 's-a', ids: ['s-a', 's-b'] } }, 's-b')),
     { count: 2, ids: ['s-a', 's-b'], primary: 's-a', selfIndex: 1, isSelf: true, canLeave: true },
   )
   // 只剩一个成员 → 不给「退出」（避免一键清空名单）。
@@ -2657,8 +2660,8 @@ test('0.36.0 多协调者：coordinatorSummaryOf 判名单长度/主协调者/�
   // 当前会话不是成员 → 不给退出入口。
   assert.equal(coordinatorSummaryOf({ mainSession: { id: 's-a', ids: ['s-a', 's-b'] } }, 's-x').isSelf, false)
   // 旧快照（只有 id）→ 单元素名单；快照缺失 → 空摘要（fail-closed）。
-  assert.deepEqual(coordinatorSummaryOf({ mainSession: { id: 's-a' } }, 's-a').ids, ['s-a'])
-  assert.deepEqual(coordinatorSummaryOf(null, 's-a'), { count: 0, ids: [], primary: null, selfIndex: -1, isSelf: false, canLeave: false })
+  assert.deepEqual(plain(coordinatorSummaryOf({ mainSession: { id: 's-a' } }, 's-a').ids), ['s-a'])
+  assert.deepEqual(plain(coordinatorSummaryOf(null, 's-a')), { count: 0, ids: [], primary: null, selfIndex: -1, isSelf: false, canLeave: false })
 })
 
 test('0.36.0 多协调者：面板有「协调者 N」与「退出协调者」，自动化入口优先绑当前协调者会话', () => {

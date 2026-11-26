@@ -36,19 +36,12 @@ export const listOf = value => (Array.isArray(value) ? value.map(item => textOf(
  */
 export const coordinatorSummaryOf = (snapshot, currentSessionId) => {
   const main = snapshot !== null && typeof snapshot === 'object' ? snapshot.mainSession : undefined
-  const ids = Array.isArray(main?.ids)
-    ? main.ids.map(item => textOf(item)).filter(Boolean)
-    : (textOf(main?.id) === '' ? [] : [textOf(main?.id)])
+  const id = textOf(main?.id)
+  const ids = Array.isArray(main?.ids) ? listOf(main.ids) : (id === '' ? [] : [id])
   const self = textOf(currentSessionId)
   const index = self === '' ? -1 : ids.indexOf(self)
-  return {
-    count: ids.length,
-    ids,
-    primary: ids[0] ?? null,
-    selfIndex: index,
-    isSelf: index >= 0,
-    canLeave: index >= 0 && ids.length > 1,
-  }
+  const isSelf = index >= 0
+  return { count: ids.length, ids, primary: ids[0] ?? null, selfIndex: index, isSelf, canLeave: isSelf && ids.length > 1 }
 }
 
 // 三段式里的纯逻辑：计数 / 筛选 / 搜索 / 产物分组都提到组件外，便于单测直接断言。

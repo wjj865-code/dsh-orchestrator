@@ -25,7 +25,12 @@
 
 **验证**（rebase 到 v0.36.1 后本机全量门禁）
 
-- 待填：`pnpm test` / `check:docs` / `check:client-size` / `check:version` 逐项结果与本版 policy 字符占用。
+- `pnpm test`（含 `vite build` + `check:client-size` + `check:docs`）：**exit 0**，1,532 项（1,527 pass / 5 skip / **0 fail**）。
+- `node scripts/check-docs.mjs` 1,799 / 1,800 行；`node scripts/check-version.mjs` 三处口径一致（0.36.2）；`node --check dist/client.js`（`check:client`）通过。
+- 客户端产物：`dist/client.js` **167,848 B / 167,936 B（余 88 B）**、`dist/client.js.map` 457,188 B；同环境对照构建 0.36.1 源码 = 166,218 B（与仓库既有产物同尺寸）。
+- L1 policy 字符占用（码点口径，与 `policyMaxChars` 同口径）：硬规则段 **3,389 / 3,400**（逐段上限）、L1 总量 **7,712 / 8,000**（默认预算）——本版 rebase 后**没有抬预算、没有改逐段上限**。
+- 体积收尾（用户 2026-11-26 拍板「压文案、不抬预算」）：本特性新增的 10 处 UI 提示文案共压 79 个汉字（约 −235 B），另复用 `listOf` / 抽 `sessionIdNow()` 去掉重复表达式（约 −76 B），客户端从 168,159 B 回到预算内（167,848 B）；164 KiB 预算未动，行为未改。
+- 修掉两处上一轮从未执行过的测试：`test/client.test.js` 的 `__test` 断言跑在 `vm` 独立 realm（deepEqual 改摊平后比较，口径不变）、`test/client-build.test.js` 的 `__test` 出口清单补 `coordinatorSummaryOf`。
 
 ## 0.36.1（2026-11-25）—— 协调者 policy 瘦身 15,990 → 7,625 字符（四段下沉技能）/ policy 字符预算与两档 profile / planFirst 计划阶段放开 scratch / 两处旧口径与 approve 措辞对齐
 

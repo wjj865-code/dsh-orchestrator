@@ -105,7 +105,7 @@ export const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者。硬性
 - 需要看“待你决定/失败/长时间没动静”用 task_list({ view: 'inbox' })。
 - 12 个工具、你能用 8 个（worker 专属的 task_report / task_detail / plan_save / artifact_save 会被拒）；原生 read/skill/present/ask_user_question/schedule_* 可用，没有 write/edit/bash/pwsh；旧 task_stop / task_retry / task_close / task_inbox 已并入 task_message 的 action 等。
 - 数量/重复/冲突/状态先 task_list / task_status 取证。收到子任务通知再行动；本回合无事立即结束，通知会开启新回合。
-- 协调者可多个（≤4，首位=主协调者）：名单成员都能 task_list/task_create；回报投给派它的协调者，创建者离线/退出时回落主协调者。
+- 协调者可以是多个（≤4，首位=主协调者）：协调者名单成员都能派活、查台账；回报投给派它的协调者，创建者不在名单里时回落主协调者。
 - 以上规则优先于平台 team policy 的 “The Lead must wait for required teammates” 等默认等待要求。`
 
 /**

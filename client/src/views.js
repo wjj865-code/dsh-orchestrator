@@ -348,6 +348,8 @@ export function createViews({
     const [confirmDelete, setConfirmDelete] = React.useState(null)
     // 0.36.0：本会话退出协调者名单也要两步确认（只改名单，不动台账/任务）。
     const [confirmLeave, setConfirmLeave] = React.useState(false)
+    // 当前会话 id（0.36.0 列出「本会话是否协调者」需要）：宿主没注入 readSessionId 时按未知处理。
+    const sessionIdNow = () => (typeof readSessionId === 'function' ? readSessionId() : undefined)
     const [artifactData, setArtifactData] = React.useState(null)
     const [artifactError, setArtifactError] = React.useState(null)
     const [artifactLoading, setArtifactLoading] = React.useState(false)
@@ -588,14 +590,14 @@ export function createViews({
       if (wbBusy) return
       setWbBusy(true)
       try {
-        const currentId = typeof readSessionId === 'function' ? readSessionId() : undefined
+        const currentId = sessionIdNow()
         const self = coordinatorSummaryOf(snapshot, currentId)
         let sessionId = self.isSelf ? currentId : undefined
         if (typeof sessionId !== 'string' || sessionId === '') {
           const body = await openMainOnce()
           sessionId = body?.sessionId
         }
-        if (typeof sessionId !== 'string' || sessionId === '') throw new Error('宿主没返回协调者会话编号')
+        if (typeof sessionId !== 'string' || sessionId === '') throw new Error('宿主没返回会话编号')
         // 刚建出来的会话可能还没进客户端会话目录 → 宿主 retain 会同步抛 unknown session。
         // 与开包会话同一条等待/重试（open-session.js），不在这里另写一套。
         const opened = await openSessionWhenReady(openSession, sessionId)
@@ -606,11 +608,11 @@ export function createViews({
           prefilled = typeof prefillDraft === 'function' ? prefillDraft(sessionId, AUTOMATION_CREATE_PROMPT) === true : false
         } catch { prefilled = false }
         setActionNotice(prefilled
-          ? '已打开协调者会话并预填提示词：补一句「做什么、什么时候」后发送，协调者会用官方 schedule_create 创建（到期投给这个会话）'
-          : '协调者会话已打开。提示词没能自动预填，请直接说明要创建什么自动化（到期只投这个会话）')
+          ? '已打开协调者会话并预填提示词：补一句「做什么、什么时候」后发送，协调者会用官方 schedule_create 创建（到期投给该会话）'
+          : '协调者会话已打开。提示词没能自动预填，请直接说明要创建什么自动化（到期只投该会话）')
       } catch (failure) {
         setActionNotice(null)
-        setActionError(`打开协调者会话失败：${String((failure && failure.message) || failure)}`)
+        setActionError(`打开会话失败：${String((failure && failure.message) || failure)}`)
       } finally {
         setWbBusy(false)
       }
@@ -674,16 +676,13 @@ export function createViews({
     // 0.36.0：本会话退出协调者名单（面板「主会话」行的两步确认按钮）。
     // 只改名单：台账/任务/历史都不动；删首位时服务端会让下一位升主。
     const leaveCoordinator = async () => {
-      const sessionId = typeof readSessionId === 'function' ? readSessionId() : undefined
-      if (typeof sessionId !== 'string' || sessionId === '') {
-        setActionError('读不到当前会话，无法退出协调者：刷新后重试。')
-        return
-      }
+      const sessionId = sessionIdNow()
+      if (typeof sessionId !== 'string' || sessionId === '') return setActionError('读不到当前会话：刷新后重试。')
       try {
         await dropCoordinator(sessionId)
         setConfirmLeave(false)
         setActionError(null)
-        setActionNotice('本会话已退出协调者名单（任务与台账不受影响，仍可从左侧会话列表打开）')
+        setActionNotice('本会话已退出协调者名单（任务与台账不受影响）')
         await refresh()
       } catch (failure) {
         setActionError(`退出协调者失败：${String((failure && failure.message) || failure)}`)
@@ -916,7 +915,7 @@ export function createViews({
     }
 
     // 0.36.0 多协调者：名单摘要（本会话是不是成员、能不能退出）——判据与服务端 session-role 同源。
-    const coordinators = coordinatorSummaryOf(snapshot, typeof readSessionId === 'function' ? readSessionId() : undefined)
+    const coordinators = coordinatorSummaryOf(snapshot, sessionIdNow())
     const mainSession = (snapshot && snapshot.mainSession) || { id: null, live: false }
     const tasks = Array.isArray(snapshot && snapshot.tasks) ? snapshot.tasks : []
     const counts = countTasks(tasks)
@@ -1087,7 +1086,7 @@ export function createViews({
                 <button
                   type="button"
                   className="orch-btn orch-btn--ghost orch-btn--sm"
-                  title="从协调者名单里移除本会话（台账/任务不受影响；删首位时下一位升主）"
+                  title="从协调者名单移除本会话（不影响台账；删首位则下一位升主）"
                   onClick={act(() => setConfirmLeave(true))}
                 >{'退出协调者'}</button>
               ))
