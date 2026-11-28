@@ -1322,17 +1322,15 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
   }
 
   return [
-    wrap('task_create', '创建一个子任务：建台账、检查活跃上限、渲染 brief 派生一个子会话。description 由你写清目标与验收；可用 checks 配机器可判定验收（交付前自动执行）。复杂任务先传 planFirst 走计划闸门。', objectSchema({
+    wrap('task_create', '创建子任务：目标与验收必填；其余执行参数按需。', objectSchema({
       title: str('一句话任务名，卡片上显示'),
       goal: str('要达成的目标，一两句话'),
       constraints: strList('约束，可空'),
       acceptance: strList('验收标准，至少一条'),
       checks: {
         type: 'array',
-        description: '可选：机器可判定验收（交付前由插件执行，失败即拒绝交付、任务保持进行中）。1–5 条；'
-          + '每条 { name?, command: argv 数组（如 ["node","--test"]）, timeoutMs?（1000–600000，默认 120000）, skipIfMissing? }。'
-          + '命令在任务 target / worktree 目录里按 argv 直接执行（不经 shell 拼串；Windows 上无扩展名的 pnpm/npm 按 PATH+PATHEXT 找到 .cmd，'
-          + '由 ComSpec 执行且参数逐项转义）；task_report 没有任何参数能覆盖它',
+        description: '可选：机器可判定验收，交付前在任务 target / worktree 目录按 argv 执行；失败即拒绝交付、任务保持进行中。'
+          + '1–5 条；task_report 不能覆盖。',
         items: {
           type: 'object',
           additionalProperties: false,
@@ -1341,25 +1339,24 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
             command: {
               type: 'array',
               items: { type: 'string' },
-              description: 'argv 数组：第 1 项是命令、其余是参数（每项 ≤2000 字符，最多 16 项）。不接受 shell 字符串',
+              description: 'argv 数组：第 1 项是命令、其余是参数（每项 ≤2000 字符，最多 16 项）',
             },
-            timeoutMs: { type: 'number', description: '超时毫秒（1000–600000，默认 120000）；超时先 SIGTERM、5 秒后 SIGKILL' },
-            skipIfMissing: { type: 'boolean', description: '命令不存在（ENOENT）时跳过这条而不是判失败（防「机器上没装 pnpm」卡死交付）' },
+            timeoutMs: { type: 'number', description: '超时毫秒（1000–600000，默认 120000）' },
+            skipIfMissing: { type: 'boolean', description: '命令不存在（ENOENT）时跳过而不是判失败' },
           },
         },
       },
       refs: strList('背景资料，如文件路径，可空'),
       user_verbatim: str('用户原话，可空'),
-      teamTaskId: str('可选：关联官方 Team 板上的任务 id（如 task-3，只在官方 Agent Teams 开启时可用）。'
-        + '只读校验任务存在并记下当前 revision；确认交付时按 CAS（expectedRevision）把该官方任务标 complete，'
-        + '冲突只提示、不重试轰炸，也不接管官方派发/生命周期'),
+      teamTaskId: str('可选：关联官方 Team 板任务 id（仅团队开启时）。只读校验并记下 revision；'
+        + '确认交付时按 CAS 标 complete，冲突只提示'),
       target: str('目标目录：可空；给了必须是已存在的绝对路径，子会话在该目录运行'),
       readOnly: { type: 'boolean', description: '只读任务：子会话沙箱 read-only（读正常，写文件/写 shell 被拒）；默认 false，只在明确需要时传 true' },
-      planFirst: { type: 'boolean', description: '计划模式（复杂任务 T3）：跨仓库/重构迁移/不可逆时先只读探索并上报计划，用户批准后再执行；与 readOnly 互斥；默认 false' },
+      planFirst: { type: 'boolean', description: '计划模式：先只读探索并交回计划，用户批准后才执行；与 readOnly 互斥；默认 false' },
       access: {
         type: 'string',
         enum: ['full'],
-        description: 'per-task 访问级别：只接受 "full"（子会话沙箱 danger-full-access：构建/发版类任务要写仓库外或跑不受沙箱限制的 bash 时用）；不传=沿用当前会话策略、完全不动沙箱（默认）；与 readOnly/planFirst 互斥',
+        description: '只接受 "full"（danger-full-access）；不传沿用会话策略；与 readOnly/planFirst 互斥',
       },
       dependsOn: strList(TASK_CHAIN_TOOL_DESC),
       chain: {
@@ -1370,20 +1367,18 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       group: str('可选分组名，如“登录改造”；面板按组汇总进度'),
       goalRounds: {
         type: 'number',
-        description: '可选：续跑轮次预算（0–50，默认 0 = 不续跑，与旧行为一致）。>0 时把平台 goal 以 '
-          + 'maxGoalRounds=N 保持 armed，由宿主 goal 轮次驱动在回合结束后自动续轮（插件不注入消息、不模拟续跑）；'
-          + '轮次与进度看 task_status 的「目标轮次」。计划模式（planFirst）不接受本参数',
+        description: '续跑轮次预算 0–50（默认 0 = 不续跑）。>0 时平台 goal 以 maxGoalRounds=N 保持 armed，由宿主轮次驱动；'
+          + '与 planFirst 互斥。进度看 task_status 的「目标轮次」',
       },
       writeScopes: strList('可选写域（目录/文件路径）；与活跃未隔离任务重叠时按配置 sameDirGuard 拒绝或警告（不是文件锁）'),
       priority: { type: 'number', description: '优先级，-10..10，默认 0；高的先派发' },
-      allowConcurrent: { type: 'boolean', description: '显式放行同写域并发：默认不传时，目标目录（或写域）与活跃未隔离任务冲突会被拒绝；只在用户明确要求并发写同一目录时传 true，放行后返回里会标注并发风险' },
-      worktree: { type: 'boolean', description: '在目标仓库里新建 git worktree 隔离执行：true=建、false=不建；不传时按配置 worktreePolicy 兜底（required 自动建）；字符串 "true" 不生效；与 readOnly/planFirst 互斥' },
-      worktreeBase: str('隔离基线：分支名或 commit-ish（缺省 "default"=仓库默认分支）；仓库近 N 天有 ≥2 个活跃分支时先问用户，指定后再派'),
-      worktreeBranch: str('新分支名，**必填**（非要建检出时）：约定式命名 `<type>/<slug>`（如 `fix/mirror-poll-cache`）；'
-        + 'type 白名单 feat|fix|docs|refactor|chore|test|perf|build|ci|style|revert，slug 为小写 ASCII kebab（1–40 字符）。'
-        + '没传或不规范直接报错；`worktreeMode:"continue"` 复用检出时不需要。插件不猜名字、不改名、已存在会报错'),
-      worktreeMode: str('"new"（默认：新建检出）或 "continue"（复用同 group/dependsOn 的已有检出）'),
-      worktreeCleanup: str('终态后清理档位："off"（默认，检出+分支都保留）｜"checkout-only"（只删检出）｜"full"（连分支一起删）'),
+      allowConcurrent: { type: 'boolean', description: '显式放行同写域并发；放行后返回会标注风险' },
+      worktree: { type: 'boolean', description: '在目标仓库新建 git worktree 隔离执行；不传按 worktreePolicy 兜底（required 自动建）；与 readOnly/planFirst 互斥' },
+      worktreeBase: str('隔离基线：分支名或 commit-ish（缺省 "default"=默认分支）；近 N 天有 ≥2 个活跃分支时返回 needsBranchChoice，先问用户'),
+      worktreeBranch: str('新建检出的分支名（必填）：`<type>/<slug>`，type 取 feat|fix|docs|refactor|chore|test|perf|build|ci|style|revert，'
+        + 'slug 为小写 ASCII kebab（1–40 字符）。缺省/不规范/已存在都直接报错；`worktreeMode:"continue"` 复用不需要'),
+      worktreeMode: str('"new"（默认，新建检出）或 "continue"（复用同 group/dependsOn 的已有检出）'),
+      worktreeCleanup: str('终态后清理："off"（默认，检出+分支都保留）｜"checkout-only"（只删检出）｜"full"（连分支一起删）'),
     }), async (args, exec) => {
       const denied = requireMain(exec)
       if (denied !== undefined) return denied
@@ -2043,7 +2038,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
 
     // P1-B：task_stop / task_retry / task_close 并入本工具的 action（业务实现一字未改，只换入口）。
     // v0.24：新增 action:"resume"（续跑原会话），与 retry 的分工见 resumeTask 的注释。
-    wrap('task_message', '子任务动作统一入口：action:"message"（默认）给已有子任务追加消息（续派/讨论），进行中/等你确认/要授权/待确认都能续派，投递失败会重试 3 次；对计划任务只记讨论或把它转「修订中」，**不会批准计划**。action:"approve" 显式批准计划（前置：计划任务 + 已交回 blocked 报告 + 计划文档已落盘 + 子会话停在等你确认；成功只记账（plan_state=approved + 审批审计 + 清问题），不碰沙箱，之后需再 task_message 续派实现，写权限在续派投递时授予）。action:"resume" 续跑 failed/orphaned（或超时完成）的任务——同一任务、同一子会话冷恢复，上下文延续；action:"stop" 停止任务（运行中/排队/等前置/待确认）；action:"retry" 重派 failed/orphaned 任务（新任务编号 + 新子会话，旧任务留审计）；action:"close" 把「已交付待确认」确认成 done。task_id 必填，message 仅 action:"message"/"resume" 可选。', objectSchema({
+    wrap('task_message', '子任务动作统一入口；每个 action 的语义、前置与副作用见 action 字段。task_id 必填，message 仅 message/resume 可选。', objectSchema({
       task_id: str('任务编号'),
       action: {
         type: 'string',
@@ -2121,7 +2116,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     // project 白名单加 docs/ARCHITECTURE.md。行为变更见 CHANGELOG。
     // 「读」对协调者与子会话都开放（同一条实现、同参数逐字同输出）；「写」只在 memory_note：
     // 协调者写任意项目与全局偏好，子会话只写自己任务目录的项目记忆（见下面的护栏）。
-    wrap('context', '读上下文（只读，不开放任意文件读取；协调者与子会话都可用）：mode:"history"（默认）查历史——本插件记忆（首行打印【检索范围】；不传 project 只查 global 跨项目记忆，要查本项目请显式传 target_dir 或工作区名）、历史任务、平台历史会话，新任务开始前用它补上下文，结果只作参考不作状态断言；mode:"project" 读项目背景——README/AGENTS/docs/ARCHITECTURE.md/package 等白名单文件、顶层结构、最近任务、相关记忆；mode:"workspaces" 返回已登记工作区与持久化仓库采样索引（不扫描全盘）。', objectSchema({
+    wrap('context', '读上下文（只读，不开放任意文件读取；协调者与子会话都可用）：按 mode 取历史、项目背景或工作区索引。', objectSchema({
       mode: { type: 'string', enum: CONTEXT_MODES, description: '读哪一类：history（默认，历史检索，吸收原 history_search）｜project（项目背景，吸收原 project_context）｜workspaces（已登记工作区 + 仓库索引）' },
       query: str('history：检索关键词（任务名/目标/决策/文件名）；project：用于推断项目与匹配记忆的关键词'),
       project: str('history：项目绝对路径、工作区名，或字符串数组（合并 ≤2 个项目键）/ "all"（全部项目）；不传只查 global（跨项目记忆），要查本项目必须显式传 target_dir 或工作区名'),
@@ -2147,8 +2142,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     // （note/lesson/decision，单任务 ≤3 条、去重、来源留痕），preference 与全局/跨项目记忆仍只属协调者。
     wrap('memory_note', '记住一条跨任务有效的决策/经验，或一条偏好。协调者（主会话）可写任意项目与全局偏好：kind:preference 不传 project 时写进协调者偏好（每回合注入提示词，立即生效）。任务子会话只能写自己任务 target_dir 的项目记忆（note/lesson/decision，project 强制为本任务目录、单任务最多 3 条、重复内容幂等；写 preference 与全局/跨项目记忆会被拒并给替代路径）。其余写进 memories 事实层（供 context({ mode: "history" }) 与 task_detail 注入）。只收原子事实，长日志/verbatim 会被蒸馏丢弃。', objectSchema({
       text: str('要记住的内容，一两句话'),
-      project: str('可选：项目绝对路径或工作区名；不传记为全局（子会话只能传自己任务的 target_dir）'),
-      kind: { type: 'string', enum: ['note', 'decision', 'preference', 'lesson'], description: '类型，默认 note（子会话不能写 preference）' },
+      project: str('可选：项目绝对路径或工作区名；不传记为全局'),
+      kind: { type: 'string', enum: ['note', 'decision', 'preference', 'lesson'], description: '类型，默认 note' },
     }), async (args, exec) => {
       const callerId = exec?.agent?.id
       const ids = coordinatorIds()
@@ -2279,7 +2274,7 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         properties: {
           tool: { type: 'string', description: '失败的宿主工具名，如 pwsh / write / grep' },
           code: { type: 'string', description: '宿主错误码或命令失败标识，如 COMMAND_PERMISSION_DENIED' },
-          category: { type: 'string', description: '分类，如 git_index_locked / git_index_write_denied / environment' },
+          category: { type: 'string', description: '分类：git_index_locked（File exists/共享冲突）｜git_index_write_denied（Permission denied/ACL）｜environment' },
           message: { type: 'string', description: '证据首行（会脱敏家目录、截 240 字）' },
           exit_code: { type: 'number', description: '命令退出码；退出码 0 也可能是权限失败' },
           retryable: { type: 'boolean', description: '是否可重试（并发锁 true；ACL/权限拒绝 false）' },

@@ -132,12 +132,10 @@ test('W1 段落固定六句 + 条件一句：句子逐字来自 copy.js', () => 
     }
     assert.ok(plain.includes(line), `W1 缺少 ${key} 的句子`)
   }
-  // 「收尾沉淀项目经验」这一句的边界逐字在 W1 里（写自己任务的项目记忆、不写 preference/全局/日志）。
+  // W1 只说「要沉淀」；可写种类、project 归属、单任务上限归 memory_note schema。
   assert.ok(plain.includes(WORKER_MEMORY_HINT), 'W1 应有项目经验沉淀引导')
-  assert.match(WORKER_MEMORY_HINT, /有值得复用的项目经验就用 memory_note 写一条 note\/lesson\/decision/)
-  assert.match(WORKER_MEMORY_HINT, /project 只能是你自己任务的 target_dir/)
-  assert.match(WORKER_MEMORY_HINT, /单任务最多 3 条/)
-  assert.match(WORKER_MEMORY_HINT, /不写 preference、不写全局\/跨项目记忆，也不写日志/)
+  assert.match(WORKER_MEMORY_HINT, /有值得复用的项目经验就用 memory_note 写一条/)
+  assert.match(WORKER_MEMORY_HINT, /写入边界见工具参数/)
   // 2026-11-23（用户原话「权限/环境失败必须写进回报」）：「先自纠一次、仍失败就写结构化 failure」这一句在 W1。
   assert.ok(plain.includes(WORKER_PERMISSION_HINT), 'W1 应有权限/环境失败的回报要求')
   assert.equal(WORKER_POLICY_LINES.permission, WORKER_PERMISSION_HINT)
@@ -169,7 +167,7 @@ test('W1 拥有执行中上报 / 权限·环境失败回报 / 交付回报 / 装
     `完成后用 task_report 回报（progress / done / blocked / needs_auth）`,
     `本任务在独立检出里跑，检出目录没有依赖`,
     `需要历史经验/项目背景时主动调 context`,
-    `有值得复用的项目经验时用 memory_note 写一条 note/lesson/decision，不写 preference/全局`,
+    '收尾有值得复用的项目经验就用 memory_note 写一条',
     `能自己用窄一级的 sandbox_permissions + justification 重试一次就重试一次`,
   ]) {
     assert.notDeepEqual(layerViolations('L2', leaked), [], `L2 不该复述 W1 的口径：${leaked.slice(0, 24)}…`)

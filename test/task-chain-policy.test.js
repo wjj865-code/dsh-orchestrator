@@ -4,7 +4,7 @@
 // 但提示词里只有「有先后关系时用 dependsOn」一句——模型不知道**什么时候**建链、也不知道建完不用等，
 // 于是「等 A 完成再派 B」把一条自动链走成两次人工往返。这组用例锁三件事：
 //   1. L1 段只渲染**一句判据**（`TASK_CHAIN_CRITERIA`）+ 技能指针 `orch-task-chain`；
-//      完整展开版 `TASK_CHAIN_LINES` 仍留在 copy.js，供 `task_create.dependsOn` 描述与 waiting_dep 回执引用；
+//      `task_create.dependsOn` 也只留判据 + 自动晋升事实，五条细则不再常驻 schema；
 //   2. 判据与执行层现状一致（不是新语义）：用 `src/deps.js` 的纯函数证明 delivered 不算 done、
 //      done 后自动晋升、失败向下游传播；展开细则下沉到 `skills/orch-task-chain/SKILL.md`（本文件断言两处都有）；
 //   3. 归层：任务链属 L1（协调者的派单判断），L2 brief / L3 task_detail 不许复述。
@@ -77,20 +77,33 @@ test('任务链段只留一句判据 + 技能指针：细则句不再摊在 L1�
   }
 })
 
-test('task_create 的 dependsOn 描述与 L1 逐字同源（工具表里手边就有这五条）', () => {
+test('task_create 的 dependsOn 描述只留判据 + 自动晋升事实 + 技能指针（细则不常驻 schema）', () => {
   const { parameters } = createTools({ db: {}, config: loadConfig({}) }).find(tool => tool.name === 'task_create')
   const description = parameters.properties.dependsOn.description
   assert.equal(description, TASK_CHAIN_TOOL_DESC, 'dependsOn 描述应直接引用 copy.js 的 TASK_CHAIN_TOOL_DESC')
-  for (const line of RULES) assert.ok(description.includes(line), `dependsOn 描述缺少规则句：${line.slice(0, 24)}…`)
   // 只写「依赖完成才派发」会让人以为要自己等——所以这两句必须在 schema 里。
   assert.match(description, /自动晋升/)
   assert.match(description, /不占你的回合/)
   assert.match(description, /不算 done/)
+  assert.match(description, /skill\(\{ name: 'orch-task-chain' \}\)/)
+  // 判据归 L1/skill；schema 只留参数契约，不再重抄「什么时候建链」。
+  assert.doesNotMatch(description, /B 的输入是 A 的产物时建链/)
+  // 反回涨：五条细则的完整展开版在技能文件里，schema 只留判断口径。
+  for (const line of RULES) assert.equal(description.includes(line), false, `schema 不该再摊开细则：${line.slice(0, 24)}…`)
+  assert.ok([...description].length <= 180, `dependsOn 描述回涨到 ${[...description].length} 字`)
+})
+
+test('task_create 入参 schema 总量不超预算（细节留给 description 的必要契约）', () => {
+  const { parameters } = createTools({ db: {}, config: loadConfig({}) }).find(tool => tool.name === 'task_create')
+  const size = [...JSON.stringify(parameters)].length
+  assert.ok(size <= 3500, `task_create schema 回涨到 ${size} 字符`)
 })
 
 test('waiting_dep 创建回执写明「自动晋升、不占回合」', () => {
-  assert.ok(TASK_CHAIN_WAITING_NOTE.includes(TASK_CHAIN_LINES.notBlocking), '回执补充句与 L1 同源')
   assert.match(TASK_CHAIN_WAITING_NOTE, /自动晋升/)
+  assert.match(TASK_CHAIN_WAITING_NOTE, /不占回合/)
+  assert.match(TASK_CHAIN_WAITING_NOTE, /不用轮询/)
+  assert.equal(TASK_CHAIN_WAITING_NOTE.includes(TASK_CHAIN_LINES.notBlocking), false, '回执只留一句结论，不搬展开版')
   // 静态断言：回执真的用上了这句（不是只在 copy.js 里躺着）。
   const toolsSource = readFileSync(new URL('../src/tools.js', import.meta.url), 'utf8')
   assert.match(toolsSource, /TASK_CHAIN_WAITING_NOTE/)

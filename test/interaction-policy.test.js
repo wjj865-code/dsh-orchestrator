@@ -96,22 +96,21 @@ test('推进循环：五条规则都在 L1，与「少打扰 / 不催关闭」�
   // 规则 1：三类动作 + 禁止只输出汇报文字。
   assert.match(text, /禁止只输出汇报文字/)
   assert.match(text, /1\. 推进：按已批准的计划 task_message 续派\/追问同一个子会话/)
-  assert.match(text, /2\. 提问：ask_user_question（结构化、2–4 个选项、每项带你的建议/)
+  assert.match(text, /2\. 提问：ask_user_question/)
   assert.match(text, /3\. 问新任务：仅当「没有活跃任务、也没有待确认任务」时/)
-  // 规则 2：已批准计划必须立即续派，不许只回确认文字；批准本身是显式动作（P0-4）。
+  // 规则 2：已批准计划必须立即续派，不许只回确认文字。
   assert.match(text, /已批准的计划任务（plan_state=approved）：用户批准后立即 task_message 续派实现，不要只回一句确认/)
-  assert.match(text, /批准本身是显式动作（task_message\(\{ action: "approve" \}\)）/)
-  // 规则 3：卡点必须结构化提问，不能拖、不能自批。
-  assert.match(text, /卡点（B1–B4）与需要用户拍板的事：必须用 ask_user_question 推进，不能拖着不问，也不能自己代批/)
+  // 规则 3：卡点口径只在三闸门里说一次，推进循环不再重抄。
+  assert.doesNotMatch(text, /卡点（B1–B4）与需要用户拍板的事/)
   // 规则 4：全部完成先问新任务；只问一次；不许宣称「已全部完成」然后静默。
-  assert.match(text, /全部任务完成（无活跃、无待确认）：先问「还有新任务吗」/)
+  assert.match(text, /问新任务：仅当「没有活跃任务、也没有待确认任务」时，用 ask_user_question 问「还有新任务吗」/)
   assert.match(text, /同一事件只问一次，用户不答不重复轰炸/)
   assert.match(text, /不许宣称「已全部完成」然后静默/)
-  // 规则 5：与既有口径的边界——不催关闭仍在，问新任务 ≠ 问能否关闭，T0 直答不违反。
+  // 规则 5：与既有口径的边界——不催关闭仍在；问新任务/T0 直答不在这里重抄。
   assert.match(text, /任务能否关闭/, '「不算堵塞项」清单仍在（不催关闭不变）')
-  assert.match(text, /「问是否有新任务」与「问任务能否关闭」是两件事/)
-  assert.match(text, /交付仍默认保持待确认、不主动问能否关闭/)
-  assert.match(text, /T0 直答不违反这条/)
+  assert.match(text, /保持待确认、不要主动/)
+  assert.doesNotMatch(text, /「问是否有新任务」与「问任务能否关闭」是两件事/)
+  assert.doesNotMatch(text, /T0 直答不违反这条/)
   // 不重复：堵塞项四类只在三闸门里逐字出现一次（推进循环只写 B1–B4 代号，不重抄 BLOCKER_RULE）。
   assert.equal(text.split(BLOCKER_RULE).length - 1, 1, 'BLOCKER_RULE 只该出现一次')
   // 如实标注软门禁：没有任何执行层拦截，措辞不得暗示是硬门禁。
@@ -147,10 +146,8 @@ test('拍板流程：五条规则都在 L1（一项一问 / 不合成总批准 /
   assert.match(text, /不得\*\*把多项塞进一个选项组，也\*\*不得\*\*只问一个「总体确认」/)
   assert.match(text, /每问独立 options/)
   // 规则 2：用问题原文，不用代号。
-  assert.match(text, /\*\*用问题原文\*\*/)
   assert.match(text, /不出现 D1\/D2、A\/B\/C 这类代号/)
   // 规则 3：依赖分批，独立项可同批连续问（仍是每项一问）。
-  assert.match(text, /\*\*依赖分批\*\*/)
   assert.match(text, /按依赖顺序分批/)
   assert.match(text, /同一批里连续问多个/)
   // 规则 4：计划审批先逐项确认（或均按推荐），最后才总批准核对。
@@ -162,7 +159,6 @@ test('拍板流程：五条规则都在 L1（一项一问 / 不合成总批准 /
   assert.match(text, /\*\*文档只由模型写\*\*/)
   assert.match(text, /\*\*软门禁\*\*/)
   assert.match(text, /工具层不做格式校验/)
-  assert.match(text, /不注入\/不改写任何段/)
   // 决策汇总函数名（回答后、总批准前贴给用户的那一步）。
   assert.match(text, /renderDecisionSummary/)
 })

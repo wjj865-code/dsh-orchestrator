@@ -12,7 +12,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { renderCoordinatorPolicy, renderWorktreePolicy, renderWriteGuardPolicy } from '../index.js'
-import { PARALLEL_CRITERIA, PARALLEL_LINES, WORKTREE_CRITERIA, WRITE_GUARD_CRITERIA } from '../src/copy.js'
+import { PARALLEL_CRITERIA, PARALLEL_LINES } from '../src/copy.js'
 import { PROMPT_LAYERS, layerViolations, renderParallelPolicy } from '../src/prompt-layers.js'
 import { renderBrief } from '../src/brief.js'
 import { renderTaskDetail } from '../src/task-detail.js'
@@ -120,13 +120,15 @@ test('代价与例外写清：合并由用户决定 / 检出要先装依赖 / �
   assert.doesNotMatch(section(), /pnpm install/)
 })
 
-test('与三段口径对齐：worktree 段推荐隔离并行、写域段并行优先、任务链段指向并行策略', () => {
-  // ① worktree 隔离段：判据句自己就写着「互不依赖且同写域 → worktree:true 并行」，指针指向 orch-worktree。
-  //    改判据版（C2-3c）：auto 档「优先传 worktree:true 隔离并行」的展开句下沉技能，L1 只留判据一句。
+test('与三段口径对齐：worktree/写域段只留配置与技能指针，判据归任务链/并行两段', () => {
+  // ① worktree 隔离段：L1 只留当前配置 + 技能指针。判据与分支细节分别归
+  //    任务链/并行两段、task_create schema、orch-worktree 技能，不在本段重抄。
   const worktree = renderWorktreePolicy({})
-  assert.ok(worktree.includes(WORKTREE_CRITERIA), 'worktree 段缺判据句')
-  assert.match(worktree, /互不依赖且同写域 → worktree:true 并行/)
-  assert.match(worktree, /详见 skill\(\{ name: 'orch-worktree' \}\)/)
+  assert.match(worktree, /当前配置策略：auto/)
+  assert.match(worktree, /skill\(\{ name: 'orch-worktree' \}\)/)
+  assert.doesNotMatch(worktree, /B 的输入是 A 的产物/, 'worktree 段不该重抄任务链判据')
+  assert.doesNotMatch(worktree, /互不依赖且同写域/, 'worktree 段不该重抄并行判据')
+  assert.doesNotMatch(worktree, /feat \| fix \| docs/, '分支白名单归 task_create.worktreeBranch schema')
   const worktreeSkill = readFileSync(new URL('../skills/orch-worktree/SKILL.md', import.meta.url), 'utf8')
   assert.match(worktreeSkill, /同一写域要和另一个活跃任务并行/)
   assert.match(worktreeSkill, /优先传 worktree:true 隔离并行/)
@@ -136,11 +138,13 @@ test('与三段口径对齐：worktree 段推荐隔离并行、写域段并行�
   // 反回涨：展开句不许再回到 L1。
   assert.equal(worktree.includes('同一写域要和另一个活跃任务并行'), false, 'L1 worktree 段不该再摊开细则')
 
-  // ② 同写域并发防护：L1 只留「默认拒绝 → 先考虑并行」的判据，三条出路的先后顺序在技能文件里锁。
+  // ② 同写域并发防护：L1 只留档位行为 + 技能指针；判定对象与出路顺序在技能里锁。
   const guard = renderWriteGuardPolicy({})
-  assert.ok(guard.includes(WRITE_GUARD_CRITERIA), '写域段缺判据句')
-  assert.match(guard, /先考虑 worktree:true 并行/)
-  assert.match(guard, /详见 skill\(\{ name: 'orch-parallel' \}\)/)
+  assert.match(guard, /sameDirGuard=require/)
+  assert.match(guard, /同写域冲突直接拒绝/)
+  assert.match(guard, /skill\(\{ name: 'orch-worktree' \}\)/)
+  assert.doesNotMatch(guard, /target 相同或 writeScopes 重叠/, '同写域定义归 schema/技能')
+  assert.doesNotMatch(guard, /先考虑 worktree:true 并行/, '并行优先判据归并行段')
   const guardSkill = readFileSync(new URL('../skills/orch-worktree/SKILL.md', import.meta.url), 'utf8')
   const blocked = guardSkill.indexOf('被拒时按顺序选一条')
   assert.ok(blocked > 0, '技能文件缺少「被拒时按顺序选一条」')
@@ -170,13 +174,8 @@ test('与三段口径对齐：worktree 段推荐隔离并行、写域段并行�
   // 原来断言 L1 policy 里有这句，现在断言技能文件 + dependsOn 工具描述里仍有（口径没丢）。
   assert.equal(text.includes('前置失败 → 下游自动 failed'), false, 'L1 段不再摊开失败传播细则')
   assert.match(chainSkill, /前置失败 → 下游自动 failed/)
-  // 硬规则 bullet 也带上并行指引（派单那一刻手边就看得到）。
-  // C2-3b：原断言锁的是任务链展开句里的「互不依赖、无需复用上下文时首选」，该句已随展开版下沉；
-  // 硬规则侧真正手边可见的并行指引在 worktree / 写域两段的判据句里（index.js），这里改锁它们。
-  // C2-3c：worktree 段的「优先传 worktree:true 隔离并行」展开句也下沉技能，L1 改由判据句承担同一指引；
-  // 原断言的「并行优先」四字来自 worktree 判断流程第 3 步（已下沉），L1 手边可见的同类指引是硬规则 bullet。
-  assert.match(text, /没依赖优先 worktree 并行/)
-  assert.match(worktree, /互不依赖且同写域 → worktree:true 并行/)
+  // 硬规则 bullet 也带并行指引（派单那一刻手边就看得到）；只锁语义，不锁旧句式。
+  assert.match(text, /无依赖 worktree 并行/)
   assert.match(worktreeSkill, /优先传 worktree:true 隔离并行/)
 })
 

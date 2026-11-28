@@ -323,23 +323,20 @@ test('P9 配置：worktreePolicy 默认 auto，非法值回落；分支前缀键
   assert.equal(loadConfig({ worktreeRecentDays: 'x' }).worktreeRecentDays, 7)
 })
 
-test('P9 协调者 policy：只渲染当前配置事实 + 一句判据 + 技能指针（细则下沉技能）', async () => {
+test('P9 协调者 policy：只渲染当前配置事实 + 技能指针（判据/白名单/细则各自归位）', async () => {
   const { renderCoordinatorPolicy, renderWorktreePolicy } = await import('../index.js')
-  const { WORKTREE_CRITERIA } = await import('../src/copy.js')
   const text = renderWorktreePolicy({ worktreePolicy: 'required', worktreeRecentDays: 14 })
-  // 标题 + 配置事实：policy / 窗口天数 / 分支类型白名单必须逐项渲染（模型据此判档，不能只留判据）。
+  // 标题 + 配置事实：policy / 窗口天数。分支白名单归 task_create schema，不在 L1 重抄。
   assert.match(text, /^## worktree 隔离/)
   assert.match(text, /当前配置策略：required/)
   assert.match(text, /最近活跃窗口：14 天/)
-  assert.match(text, /feat \| fix \| docs \| refactor \| chore \| test \| perf \| build \| ci \| style \| revert/)
-  for (const type of BRANCH_TYPES) assert.ok(text.includes(type), `分支类型白名单缺项：${type}`)
-  // 判据一句（措辞单源 copy.js，不在这里另写一套）+ 技能指针。
-  assert.ok(text.includes(WORKTREE_CRITERIA), 'worktree 段缺判据句（应逐字来自 copy.js）')
-  assert.match(text, /详见 skill\(\{ name: 'orch-worktree' \}\)/)
+  assert.doesNotMatch(text, /feat \| fix \| docs/, '分支白名单不该回涨到 L1')
+  // 技能指针；判据归相邻的任务链/并行两段。
+  assert.match(text, /skill\(\{ name: 'orch-worktree' \}\)/)
   assert.ok(readdirSync(new URL('../skills/', import.meta.url)).includes('orch-worktree'), '技能指针指向的技能目录必须存在')
-  // 判据要能支撑「要不要隔离」两个方向，而不是只剩「都建」。
-  assert.match(text, /dependsOn 串行/)
-  assert.match(text, /worktree:true 并行/)
+  // 判据不在这段重抄——两个方向由任务链/并行两段各说一次。
+  assert.doesNotMatch(text, /dependsOn 串行/)
+  assert.doesNotMatch(text, /worktree:true 并行/)
   // 配置值如实渲染（不是写死一份文案）。
   assert.match(renderWorktreePolicy({ worktreePolicy: 'off', worktreeRecentDays: 3 }), /当前配置策略：off/)
   assert.match(renderWorktreePolicy({ worktreeRecentDays: 3 }), /最近活跃窗口：3 天/)

@@ -18,7 +18,6 @@ import {
 } from '../src/write-guard.js'
 import { loadConfig } from '../src/config.js'
 import { renderCoordinatorPolicy } from '../index.js'
-import { WRITE_GUARD_CRITERIA } from '../src/copy.js'
 import { tempDir, sampleBrief, endReportedTurn } from './helpers.js'
 
 // —— 一、纯函数 ——
@@ -785,14 +784,14 @@ test('回归（集成）：仓库根任务在跑时隔离任务 resume / 追问�
 
 // —— 三、协调者 policy 与文档同口径 ——
 
-test('协调者 policy 渲染同写域防护：当前档位 + 判据一句 + 技能指针（三条出路在技能里）', () => {
+test('协调者 policy 渲染同写域防护：当前档位 + 档位行为 + 技能指针（判据与出路各自归位）', () => {
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /## 同写域并发防护/)
   assert.match(policy, /sameDirGuard=require/)
-  // 判据一句（措辞单源 copy.js）+ 技能指针：L1 只回答「怎么判」，出路细则按需加载。
-  assert.ok(policy.includes(WRITE_GUARD_CRITERIA), 'L1 缺同写域判据句（应逐字来自 copy.js）')
-  assert.match(policy, /详见 skill\(\{ name: 'orch-parallel' \}\)/)
-  assert.match(policy, /worktree:true 并行/)
+  // L1 只留档位行为 + 指针；同写域定义归 task_create schema，判据/出路归技能。
+  assert.match(policy, /同写域冲突直接拒绝/)
+  assert.match(policy, /skill\(\{ name: 'orch-worktree' \}\)/)
+  assert.doesNotMatch(policy, /target 相同或 writeScopes 重叠/, '同写域定义不该回涨到 L1')
   // 降级档位要如实渲染，不能一律写「拒绝」。
   assert.match(renderCoordinatorPolicy({ sameDirGuard: 'warn' }), /sameDirGuard=warn/)
   assert.match(renderCoordinatorPolicy({ sameDirGuard: 'warn' }), /只警告/)

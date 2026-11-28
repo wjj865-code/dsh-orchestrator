@@ -801,13 +801,12 @@ test('系统提示只渲染给已绑定协调者，绑定后下一步生效', wi
   assert.equal(entry.text({ agent: other }), '')
   assert.match(entry.text({ agent: s1 }), /禁止使用 wait_agent/)
   assert.match(entry.text({ agent: s1 }), /task_list \/ task_status/)
-  assert.match(entry.text({ agent: s1 }), /优先于平台默认的 Team Lead 等待要求/)
-  // C1：硬规则段改用 0.36.0 基线，header 句改成「硬性规则（优先于平台默认的 Team Lead 等待要求）」，
-  // 语义等价（仍是「压过平台等待要求」），断言随文案走。
-  assert.match(entry.text({ agent: s1 }), /硬性规则（优先于平台默认的 Team Lead 等待要求；交互判级见下「## 交互三闸门」）/)
-  assert.match(entry.text({ agent: s1 }), /禁止 spawn_teammate/)
+  // 只锁语义：硬规则压过平台等待要求；具体措辞可压缩，不把提示词绑死在旧句式上。
+  assert.match(entry.text({ agent: s1 }), /硬性规则优先于平台 Team Lead/)
+  assert.match(entry.text({ agent: s1 }), /## 交互三闸门/)
+  assert.match(entry.text({ agent: s1 }), /团队工具.*spawn_teammate.*执行层会拒绝/)
   assert.match(entry.text({ agent: s1 }), /team_task_\*/)
-  assert.match(entry.text({ agent: s1 }), /预设层删不掉/)
+  assert.match(entry.text({ agent: s1 }), /执行层会拒绝/)
   assert.equal(entry.text({ agent: other }), '')
   // 协调者与无关会话都拿不到 W1（只命中任务子会话）。
   assert.equal(worker.text({ agent: s1 }), '')
@@ -830,11 +829,10 @@ test('任务子会话拿到 worker policy；协调者/无关会话/孙会话拿�
   // 派发被接受时 index.js 记下 id 映射：首回合即可注入（不必等台账 session_id 回写）。
   const policy = worker.text({ agent: { id: 'm-1' } })
   assert.match(policy, /## 回报与确认/)
-  assert.match(policy, /task_report 回报（progress \/ done \/ blocked \/ needs_auth）/)
+  assert.match(policy, /完成后用 task_report 回报：/)
   assert.match(policy, /主动调 context/)
   // 0.29.x：子会话也能沉淀项目经验（写自己任务 target_dir 的 note/lesson/decision，不写 preference/全局）。
-  assert.match(policy, /有值得复用的项目经验就用 memory_note 写一条 note\/lesson\/decision/)
-  assert.match(policy, /不写 preference、不写全局\/跨项目记忆/)
+  assert.match(policy, /有值得复用的项目经验就用 memory_note 写一条/)
   // 协调者自己永远不拿 W1；无关会话与孙会话（不在 tasks.session_id 里）也不拿。
   assert.equal(worker.text({ agent: coordinator }), '')
   assert.equal(worker.text({ agent: { id: 'grandchild-1' } }), '')
@@ -2196,7 +2194,7 @@ test('多协调者：副协调者的消息也投给派它的那个协调者；L1
   const byName = Object.fromEntries(f.registered.map(tool => [tool.name, tool]))
   const entry = f.promptContexts.find(item => item.name === 'orchestrator:coordinator-policy')
   const worker = f.promptContexts.find(item => item.name === 'orchestrator:worker-policy')
-  assert.match(entry.text({ agent: s2 }), /协调者可以是多个/, 'L1 对副协调者同样注入')
+  assert.match(entry.text({ agent: s2 }), /你是 dsh-orchestrator 的协调者/, 'L1 对副协调者同样注入')
   assert.equal(worker.text({ agent: s2 }), '', '成员永远不拿 W1')
 
   // guard：副协调者调 wait_agent 同样被硬拦（名单成员判定）。

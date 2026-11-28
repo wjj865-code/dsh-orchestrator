@@ -202,22 +202,15 @@ export const planSavedNextStep = `下一步用 ${PLAN_PHASE_LINES.reportCall}：
  */
 export const ADVANCE_LOOP_LINES = Object.freeze({
   heading: '推进循环（报告之后必须推进，不许只汇报）',
-  rule: '收到任何任务回报（progress / done / delivered / blocked / needs_auth）或用户消息后，必须落到下面三类动作之一；'
-    + '**禁止只输出汇报文字（「X 完成了」/「进展如下」）——那不算响应**：',
+  rule: '收到任何任务回报或用户消息后，必须落到下面三类动作之一；'
+    + '**禁止只输出汇报文字，那不算响应**：',
   advance: '推进：按已批准的计划 task_message 续派/追问同一个子会话（复用上下文），或任务已授权时 task_create 继续做',
-  ask: '提问：ask_user_question（结构化、2–4 个选项、每项带你的建议）；**待拍板项一项一问**'
-    + '（每问独立 options、不合成一个总体确认，见下「拍板流程」段），其余待决可合成一条清单一次问完',
-  askNewTask: '问新任务：仅当「没有活跃任务、也没有待确认任务」时，用 ask_user_question 问「还有新任务吗」；用户明确说没有之后才可以静默',
+  ask: '提问：ask_user_question；待拍板项按「拍板流程」逐项问，其余待决合成一条清单',
+  askNewTask: '问新任务：仅当「没有活跃任务、也没有待确认任务」时，用 ask_user_question 问「还有新任务吗」；'
+    + '用户明确说没有才静默；同一事件只问一次，用户不答不重复轰炸，也不许宣称「已全部完成」然后静默',
   approvedPlan: '已批准的计划任务（plan_state=approved）：用户批准后立即 task_message 续派实现，不要只回一句确认；'
-    + `批准本身是显式动作（${PLAN_APPROVE_CALL}），计划需要调整或遇到卡点就 ask_user_question 请用户拍板，不自己改范围`,
-  blockers: '卡点（B1–B4）与需要用户拍板的事：必须用 ask_user_question 推进，不能拖着不问，也不能自己代批',
-  allDone: '全部任务完成（无活跃、无待确认）：先问「还有新任务吗」；用户明确说没有才静默；'
-    + '同一事件只问一次，用户不答不重复轰炸，但也不许宣称「已全部完成」然后静默',
-  distinct: '「问是否有新任务」与「问任务能否关闭」是两件事：交付仍默认保持待确认、不主动问能否关闭；'
-    + '问新任务只在没有活跃任务且没有待确认任务时问一次',
-  directAnswer: 'T0 直答不违反这条：用户问的是事实或看法、答案已在你手里时，直接回答就是本轮的「动作」，'
-    + '不必为凑动作去派任务（硬规则「能直接回答就不派任务」仍优先）',
-  soft: '这段是提示词约束（软门禁），不是执行层拦截：仍然可能只汇报、不推进；出现时按本段纠正并继续，不要假装它是硬拦截',
+    + '要调整或遇卡点就按拍板流程处理，不自己改范围',
+  soft: '这是提示词约束（软门禁），不是执行层拦截；只汇报不推进时按本段纠正并继续',
 })
 
 /** 通知尾部的动作指令（done / delivered / blocked / needs_auth 的通知末尾各贴一次）。 */
@@ -273,13 +266,11 @@ export const TASK_CHAIN_LINES = Object.freeze({
  * 为什么工具描述也要写全：协调者读的是工具表，派单那一刻手边只有 schema——只写「依赖完成才派发」
  * 会让人以为要自己等，于是不会用 dependsOn。
  */
-export const TASK_CHAIN_TOOL_DESC = '前置任务编号数组（任务链；依赖就绪由插件队列自动晋升，不占你的回合）——'
-  + [TASK_CHAIN_LINES.criteria, TASK_CHAIN_LINES.buildNow, TASK_CHAIN_LINES.notBlocking,
-    TASK_CHAIN_LINES.upstreamFailed, TASK_CHAIN_LINES.deliveredNotDone, TASK_CHAIN_LINES.worktreeSerial]
-    .join('；')
+export const TASK_CHAIN_TOOL_DESC = '前置任务编号或 tk- 引用数组。前置全部 done 后由插件队列自动晋升，'
+  + '不占你的回合、不用轮询；delivered 不算 done。建链判据见 skill({ name: \'orch-task-chain\' })'
 
 /** waiting_dep 创建回执的补充一句（协调者看到时不要以为要自己等）。 */
-export const TASK_CHAIN_WAITING_NOTE = `依赖完成由插件队列自动晋升（不占回合，不用轮询）：${TASK_CHAIN_LINES.notBlocking}`
+export const TASK_CHAIN_WAITING_NOTE = '依赖完成由插件队列自动晋升（不占回合、不用轮询）；本回合没有别的事就结束，到点自动派发'
 
 /**
  * 链式自动放行（`task_create.chain`）的四句文案：工具描述 / 创建回执 / 交付回执 / 通知。
@@ -372,8 +363,7 @@ export const DELIVERED_HINT = `默认保持待确认（别急着关闭）：要�
  * 转述/重派；读成「要它回话」就会原地等。唯一的动作是**追问同一子会话**（复用已有上下文），
  * 这也正是「不设显式终态、靠 resume/追问继续」这条方向在日常回合里的入口。
  */
-export const PROGRESS_NOTICE_HINT = 'progress 只是进度信号、不是终态：任务还在跑，'
-  + '要结论就 task_message 追问同一子会话（复用已有上下文），别为此重派任务'
+export const PROGRESS_NOTICE_HINT = 'progress 只是进度信号、不是终态：要结论就 task_message 追问同一子会话，别为此重派任务'
 
 /**
  * 堵塞项四类（L1 交互闸门与 W1 执行期上报的 `BLOCKED_HINT` 共用，措辞只此一处）。
@@ -396,10 +386,9 @@ export const BLOCKER_RULE = '已确认的验收/范围/方案不可达、需要�
 /** 交付 summary 的三要素（W1 的交付口径引用；brief / task_detail 都不再各写一份）。 */
 export const SUMMARY_FIELDS = '改了什么、改了哪些文件、怎么验证的'
 
-/** 开工先读详情（W1 唯一措辞）：brief 只留一行指针，字段清单在这里讲一次。 */
+/** 开工先读详情（W1 唯一措辞）：brief 只留一行指针，字段清单归 task_detail schema。 */
 export const WORKER_DETAIL_HINT = '开工前先调 task_detail（参数 task_id 就是任务引用 tk-xxxxxx）：'
-  + '目标全文、验收标准、约束、背景资料、用户原话、工作目录与权限、前置任务、经验文件、已有产物都以台账为准；'
-  + 'brief 只是指针，不要凭它猜任务内容。'
+  + '详情以台账为准，brief 只是指针。'
 
 /**
  * 执行期上报（W1 唯一措辞）。
@@ -409,19 +398,17 @@ export const WORKER_DETAIL_HINT = '开工前先调 task_detail（参数 task_id 
  * 所以「问用户」始终由协调者做：子会话只负责把问题与选项交回去（blocked + question/options）。
  */
 export const BLOCKED_HINT = `执行中只把**堵塞项**交给用户拍板：${BLOCKER_RULE}；`
-  + '用 task_report 的 blocked 上报「问题 + 选项建议」，由协调者用 ask_user_question 向用户确认后经 task_message 续派再继续；'
-  + 'blocked 的 question 里有多条待拍板项时，以「待拍板：」开头逐条列（一条一行、以「- 」开头、用问句原文、不编号）——通知据此点数，协调者据此逐项提问；'
-  + '不要自行假设用户意图、不要阻塞等待、也不要等不到回复就跳过。blocked 只是上报，不等于已获授权。'
-  + '协调者转来的方向调整以追加消息为准：先按新方向评估影响面，超出原验收标准或范围就先 blocked 要新范围，不要自行扩大范围。'
+  + '用 task_report 的 blocked 交回「问题 + 选项建议」，协调者转问用户后再经 task_message 续派。'
+  + '多条待拍板项在 question 里以「待拍板：」开头、每条「- 」一行、用问句原文（通知据此计数）。'
+  + '不要假设意图或阻塞等待；blocked 不等于授权，转来的新方向超出原范围就先 blocked 要范围。'
 
 /** 交付与确认（W1 唯一措辞；`done` 会清空 question/options 是平台事实）。 */
-export const CONFIRM_HINT = `完成后用 task_report 回报（progress / done / blocked / needs_auth）：`
-  + `把 summary 写成「结论 + ${SUMMARY_FIELDS}」，并带上待确认要点；`
-  + 'done 会清空 question/options，所以要点必须在 summary 里；'
-  + 'done 先记录交付请求，回合结束保存最终快照后才交付；回报后不要继续修改文件。阶段文档用 artifact_save；checkpoint:true 保存阶段，changedFiles 补充宿主未捕获文件。'
+export const CONFIRM_HINT = '完成后用 task_report 回报：'
+  + `summary 写「结论 + ${SUMMARY_FIELDS}」并带待确认要点，done 会清空 question/options。`
   + `报 done 只是「交付」：任务停在「${DELIVERY_LINES.state}」，由协调者/用户确认或${DELIVERY_LINES.timeout}；`
-  + '收到追问就在同一个会话里继续，不要自行宣告任务结束；'
-  + '子会话直接调 ask_user_question 会被平台拒（DELEGATED_CALLER）：交付后协调者不会为「能不能关闭」来问你。'
+  + '收到追问就在同一个会话继续，不要自行宣告任务结束。'
+  + '阶段文档用 artifact_save。'
+  + '子会话直接调 ask_user_question 会被平台拒（DELEGATED_CALLER）。'
 
 /**
  * 权限 / 环境失败必须写进回报（W1 唯一措辞，2026-11-23 用户原话：「权限/环境失败必须写进回报」）。
@@ -431,13 +418,13 @@ export const CONFIRM_HINT = `完成后用 task_report 回报（progress / done /
  * 配套事实（不在句子里重复讲）：插件侧另有一条 `tools/result` 观察者（`src/child-tool-failure.js`）
  * 会把 denied 类失败自己报给协调者；本句管的是**外部子会话**与「插件没识别出来」的那部分。
  */
-export const WORKER_PERMISSION_HINT = '遇到权限/沙箱/审批拒绝或环境失败（命令找不到、依赖缺失、沙箱/runner 起不来）不要只当普通报错：'
+export const WORKER_PERMISSION_HINT = '遇到权限/沙箱/审批拒绝或环境失败不要只当普通报错：'
   + '能自己用窄一级的 sandbox_permissions + justification 重试一次就重试一次；'
-  + 'git 的 .git/index.lock 要分开看：File exists/共享冲突是并发锁，等 writer 结束并确认后再清残留；'
-  + 'Permission denied 更像 ACL/受限令牌，不要重试或盲删；只读 git 查询用 GIT_OPTIONAL_LOCKS=0，写操作串行。'
-  + '仍不行就用 task_report 的 failure 传结构化证据（tool/code/category/message/exit_code/retryable/action），'
-  + 'summary 只写一句后果；交付 done 时同样必须带。不要放 token、密钥或整段日志——'
-  + '协调者据此决定回喂正确姿势还是改派，别让失败只留在你的上下文里。'
+  + '仍不行就用 task_report 的 failure 传结构化证据，'
+  + 'summary 只写一句后果；交付 done 时同样必须带。'
+  + 'git index.lock 的并发锁与 ACL 拒绝按 failure.category / retryable 区分；'
+  + '只读查询用 GIT_OPTIONAL_LOCKS=0，写操作串行。'
+  + '不要放 token、密钥或整段日志。'
 
 /**
  * worktree 检出依赖（W1 的条件句，只在任务的 `worktree_state` 属于真隔离时渲染）。
@@ -445,7 +432,7 @@ export const WORKER_PERMISSION_HINT = '遇到权限/沙箱/审批拒绝或环境
  * 检出是全新目录，node_modules/虚拟环境这类依赖不在库里 → 子会话常因依赖缺失跑不了测试/构建。
  * 只说「可以装、只装不升」：不授权改依赖版本，也不放宽任何推送前审查/人工确认门禁。
  */
-export const WORKTREE_INSTALL_HINT = '本任务在独立检出里跑，检出目录没有依赖：可执行安装命令（pnpm install / npm install / uv sync 等），'
+export const WORKTREE_INSTALL_HINT = '本任务在独立检出里跑，检出目录没有依赖：可 pnpm install / npm install / uv sync 等，'
   + '只安装不升级（不改依赖声明与版本）。'
 
 /**
@@ -454,8 +441,8 @@ export const WORKTREE_INSTALL_HINT = '本任务在独立检出里跑，检出目
  * 配套事实（不在本句里重复讲）：`context` 只读且子会话可用（worker 预设 keep 声明它出生即可用）；
  * 写记忆的能力与边界归下一句 `WORKER_MEMORY_HINT`（这里只讲「查」，不讲「写」）。
  */
-export const WORKER_CONTEXT_HINT = '需要历史经验/项目背景时主动调 context（mode 取 history / project / workspaces，只读）：'
-  + '查本项目经验要显式传 project:<你的 target_dir 或工作区名>（不传只查 global 跨项目记忆），不要等协调者注入。'
+export const WORKER_CONTEXT_HINT = '需要历史经验/项目背景时主动调 context（只读；mode / project 的查询范围见工具参数），'
+  + '不要等协调者注入。'
 
 /**
  * 子会话「沉淀项目经验」的引导（W1 唯一措辞，2026-11-21 用户方向：子会话也该能写记忆）。
@@ -465,9 +452,8 @@ export const WORKER_CONTEXT_HINT = '需要历史经验/项目背景时主动调 
  * - 不写全局/跨项目记忆，不写日志（完成记录由协调者按 `task_report` 的 summary 沉淀）；
  * - `project` 只能是自己任务的 `target_dir`，单任务最多 3 条。
  */
-export const WORKER_MEMORY_HINT = '任务收尾时：有值得复用的项目经验就用 memory_note 写一条 note/lesson/decision'
-  + '（project 只能是你自己任务的 target_dir，单任务最多 3 条，重复内容不会重复写入）；'
-  + '不写 preference、不写全局/跨项目记忆，也不写日志——完成记录由协调者按 task_report 的 summary 沉淀。'
+export const WORKER_MEMORY_HINT = '收尾有值得复用的项目经验就用 memory_note 写一条（写入边界见工具参数）；'
+  + '完成记录由协调者按 summary 沉淀。'
 
 /** W1 段标题（渲染入口在 `src/prompt-layers.js` 的 `renderWorkerPolicy`）。 */
 export const WORKER_POLICY_HEADING = '回报与确认（任务子会话每回合都在，不必等 brief 再说）'
@@ -534,14 +520,8 @@ export const deliveredReceiptNote = `\n${DELIVERY_LINES.state}：这是交付、
  * 这里是压缩成一句话的判据，只讲「怎么判」，细节交给对应技能，避免同一份口径在提示词里讲两遍。
  * 目前只定义、尚未接线（渲染层改造是下一步），所以不新增任何执行层语义。
  */
-export const WORKTREE_CRITERIA = 'worktree 判据：B 的输入是 A 的产物 → dependsOn 串行；'
-  + '互不依赖且同写域 → worktree:true 并行，详见 skill({ name: \'orch-worktree\' })'
-
 export const TASK_CHAIN_CRITERIA = '任务链判据：B 的输入是 A 的产物就是一条链（实现→验收、构建→发布、修复→回归），'
   + '派 A 的同一回合就建 B，详见 skill({ name: \'orch-task-chain\' })'
 
 export const PARALLEL_CRITERIA = '并行判据：互不依赖、不复用同一子会话上下文、同写域会撞车三条同时满足，'
   + '就直接 worktree:true 并行，详见 skill({ name: \'orch-parallel\' })'
-
-export const WRITE_GUARD_CRITERIA = '同写域判据：target 相同或 writeScopes 重叠即同写域，默认拒绝并发——'
-  + '先考虑 worktree:true 并行，详见 skill({ name: \'orch-parallel\' })'
