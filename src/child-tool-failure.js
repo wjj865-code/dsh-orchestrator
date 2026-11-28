@@ -22,7 +22,8 @@
 // `workerTaskOf`（派发映射 + 台账 session_id 兜底）归到任务；协调者自己的调用、包会话/普通 root 会话一律丢弃。
 //
 // 三档告警（与计划一致）：① 日志总是写（env 类只到这一档）；② 只有 denied 且任务还在 `followup` 状态集合
-// 才走 notifier（10 分钟 `(taskId, tool, code)` 去重，被压住的留 `suppressed` 审计行）；③ 台账字段**不做**。
+// 才走 notifier（10 分钟 `(taskId, tool, category)` 去重，被压住的留 `suppressed` 审计行）；
+// ③ 台账只落「最近一次结构化快照」（denied/env 都写，不迁状态、不改活跃时间）。
 // 盲区：外部子会话（codex/claude code/ACP/DSH SDK）的工具事件不在本进程，见 docs/LIMITATIONS.md。
 import { statusesWith } from './status-facts.js'
 import { toolFailureNotice } from './copy.js'
@@ -69,11 +70,26 @@ export const INTERRUPT_CODES = new Set(['APPROVAL_CANCELLED', 'SANDBOX_ESCALATIO
 /** 只有命令行工具才有「渲染正文里的 stderr」；文本通道限定在它们上面，避免 read/grep 的正文误命中。 */
 export const SHELL_TOOLS = new Set(['pwsh', 'bash'])
 
-/** 权限词只收强特征；**不含** `index.lock` / `File exists`（那是 git 并发冲突，不是权限）。 */
+/** 权限词只收强特征；`index.lock` 由下面的专用分类先判，避免把 ACL 与并发锁混成一种。 */
 const PERMISSION_TEXT = /permission denied|access is denied|operation not permitted|\bEACCES\b|\bEPERM\b|拒绝访问|无权限|权限不足/i
 
 /** 环境词：命令/依赖/路径不存在（中文 Windows 的「找不到路径」也在此列）。 */
 const ENV_TEXT = /command not found|is not recognized as an internal or external command|\bENOENT\b|no such file or directory|找不到路径|无法识别/i
+
+/** git index 锁相关证据：并发锁、共享冲突、ACL/受限令牌拒绝分开判断。 */
+const GIT_INDEX_TEXT = /index\.lock/i
+const GIT_LOCK_EXISTS_TEXT = /index\.lock[^\n]*(?:file exists|already exists)|(?:file exists|already exists)[^\n]*index\.lock/i
+const GIT_LOCK_BUSY_TEXT = /index\.lock[^\n]*(?:being used by another process|sharing violation|\bEBUSY\b)|(?:being used by another process|sharing violation|\bEBUSY\b)[^\n]*index\.lock/i
+
+/** 给协调者/日志用的建议动作；不是自动重试器，只表达下一步该怎么查。 */
+export const FAILURE_ACTIONS = Object.freeze({
+  ESCALATE_SANDBOX: 'escalate_sandbox',
+  REQUEST_APPROVAL: 'request_approval',
+  INSPECT_ACL: 'inspect_acl_or_sandbox',
+  WAIT_FOR_GIT_WRITER: 'wait_for_git_writer',
+  FIX_ENVIRONMENT: 'fix_environment',
+  REPORT_ONLY: 'report_only',
+})
 
 /** 家目录脱敏：`C:\Users\<名>` / `C:/Users/<名>` / `/Users/<名>` / `/home/<名>` → `~`（通知会进协调者上下文）。 */
 const HOME_PATH = /(?:[A-Za-z]:[\\/]Users[\\/]|\/Users\/|\/home\/)[^\\/\s"'`]+/gi
@@ -119,9 +135,79 @@ const exitCodeOf = value => (typeof value?.exitCode === 'number' ? value.exitCod
 const sandboxModeOf = value => (typeof value?.sandbox?.mode === 'string' ? value.sandbox.mode : undefined)
 
 /**
+ * 把一次 denied/env 命中细化为可编排的类别。
+ *
+ * 关键区分：`index.lock` 出现 `File exists`/共享冲突是并发锁（可等待/确认后清理）；
+ * 同一路径出现 `Permission denied` 更常见于 ACL / 受限令牌，盲目重试或删锁都不解决问题。
+ */
+function failureMeta({ code, text }) {
+  if (code === 'FS_SANDBOX_DENIED' || code === 'SANDBOX_DENIED') {
+    return { category: 'sandbox_denied', retryable: false, action: FAILURE_ACTIONS.ESCALATE_SANDBOX }
+  }
+  if (code === 'APPROVAL_REJECTED' || code === 'APPROVAL_UNAVAILABLE') {
+    return { category: code === 'APPROVAL_REJECTED' ? 'approval_rejected' : 'approval_unavailable', retryable: false, action: FAILURE_ACTIONS.REQUEST_APPROVAL }
+  }
+  if (code === 'SANDBOX_ESCALATION_REJECTED' || code === 'SANDBOX_ESCALATION_UNAVAILABLE') {
+    return {
+      category: code === 'SANDBOX_ESCALATION_REJECTED' ? 'escalation_rejected' : 'escalation_unavailable',
+      retryable: false,
+      action: FAILURE_ACTIONS.REPORT_ONLY,
+    }
+  }
+  if (code === 'TOOL_TEXT_ENV' || code === 'COMMAND_ENV_FAILED' || ENV_CODES.has(code) || code === 'SANDBOX_RUNNER_FAILED') {
+    return { category: 'environment', retryable: false, action: FAILURE_ACTIONS.FIX_ENVIRONMENT }
+  }
+  if (GIT_INDEX_TEXT.test(text)) {
+    if (GIT_LOCK_EXISTS_TEXT.test(text) || GIT_LOCK_BUSY_TEXT.test(text)) {
+      return {
+        code: 'GIT_INDEX_LOCKED',
+        category: 'git_index_locked',
+        retryable: true,
+        action: FAILURE_ACTIONS.WAIT_FOR_GIT_WRITER,
+      }
+    }
+    if (PERMISSION_TEXT.test(text)) {
+      return { category: 'git_index_write_denied', retryable: false, action: FAILURE_ACTIONS.INSPECT_ACL }
+    }
+  }
+  if (PERMISSION_TEXT.test(text)) {
+    return { category: 'filesystem_permission_denied', retryable: false, action: FAILURE_ACTIONS.INSPECT_ACL }
+  }
+  return { category: 'unknown_denied', retryable: false, action: FAILURE_ACTIONS.REPORT_ONLY }
+}
+
+const deniedHit = ({ code, tool, text, exitCode, sandboxMode }) => {
+  const meta = failureMeta({ code, text })
+  const pattern = meta.category.startsWith('git_index_') ? GIT_INDEX_TEXT : PERMISSION_TEXT
+  return {
+    kind: 'denied',
+    code: meta.code ?? code,
+    category: meta.category,
+    retryable: meta.retryable,
+    action: meta.action,
+    tool,
+    ...(exitCode === undefined ? {} : { exitCode }),
+    ...(sandboxMode === undefined ? {} : { sandboxMode }),
+    head: failureHead(text, pattern),
+  }
+}
+
+const envHit = ({ code, tool, text, exitCode, sandboxMode }) => ({
+  kind: 'env',
+  code,
+  category: 'environment',
+  retryable: false,
+  action: FAILURE_ACTIONS.FIX_ENVIRONMENT,
+  tool,
+  ...(exitCode === undefined ? {} : { exitCode }),
+  ...(sandboxMode === undefined ? {} : { sandboxMode }),
+  head: failureHead(text, ENV_TEXT),
+})
+
+/**
  * 判定一次工具调用是否属于「权限 / 环境」失败。
  *
- * @returns `{ kind:'denied'|'env', code, tool, exitCode?, sandboxMode?, head }`，或 `undefined`（不是本功能范围）
+ * @returns `{ kind:'denied'|'env', code, category, retryable, action, tool, exitCode?, sandboxMode?, head }`，或 `undefined`（不是本功能范围）
  */
 export function classifyToolFailure(exec, result) {
   const tool = typeof exec?.name === 'string' ? exec.name : ''
@@ -133,19 +219,21 @@ export function classifyToolFailure(exec, result) {
       if (INTERRUPT_CODES.has(code)) return undefined
       if (DENIED_CODES.has(code)) {
         const text = textBlocksOf(result.content).slice(0, TOOL_FAILURE_TEXT_SCAN_MAX)
-        return { kind: 'denied', code, tool, head: failureHead(text, PERMISSION_TEXT) }
+        return deniedHit({ code, tool, text })
       }
       if (ENV_CODES.has(code)) {
         const text = textBlocksOf(result.content).slice(0, TOOL_FAILURE_TEXT_SCAN_MAX)
-        return { kind: 'env', code, tool, head: failureHead(text, ENV_TEXT) }
+        return envHit({ code, tool, text })
       }
       // FS_NOT_FOUND / SEARCH_FAILED / FS_NOT_TEXT / WEB_* …：工具自身失败，不是权限/环境问题。
       return undefined
     }
     // 没有结构化身份（guard 以字符串拒绝等）：只能看正文。
     const text = textBlocksOf(result.content).slice(0, TOOL_FAILURE_TEXT_SCAN_MAX)
-    if (PERMISSION_TEXT.test(text)) return { kind: 'denied', code: 'GUARD_TEXT_DENIED', tool, head: failureHead(text, PERMISSION_TEXT) }
-    if (ENV_TEXT.test(text)) return { kind: 'env', code: 'TOOL_TEXT_ENV', tool, head: failureHead(text, ENV_TEXT) }
+    if (PERMISSION_TEXT.test(text) || (GIT_INDEX_TEXT.test(text) && (GIT_LOCK_EXISTS_TEXT.test(text) || GIT_LOCK_BUSY_TEXT.test(text)))) {
+      return deniedHit({ code: 'GUARD_TEXT_DENIED', tool, text })
+    }
+    if (ENV_TEXT.test(text)) return envHit({ code: 'TOOL_TEXT_ENV', tool, text })
     return undefined
   }
 
@@ -161,26 +249,43 @@ export function classifyToolFailure(exec, result) {
 
   // 宿主自己认账的 denied（样本 A）——比文本更可信。
   if (value.sandbox?.denied === true) {
-    return {
-      kind: 'denied',
+    return deniedHit({
       code: 'SANDBOX_DENIED',
       tool,
+      text: stderr,
       exitCode: exitCodeOf(value),
       sandboxMode: sandboxModeOf(value),
-      head: failureHead(stderr, PERMISSION_TEXT),
-    }
+    })
   }
   // runner 起不来 = 命令没跑，是沙箱问题（env 档，只写日志）。
   if (value.sandbox?.runnerFailed === true) {
-    return { kind: 'env', code: 'SANDBOX_RUNNER_FAILED', tool, exitCode: exitCodeOf(value), sandboxMode: sandboxModeOf(value), head: failureHead(stderr, ENV_TEXT) }
+    return envHit({
+      code: 'SANDBOX_RUNNER_FAILED',
+      tool,
+      text: stderr,
+      exitCode: exitCodeOf(value),
+      sandboxMode: sandboxModeOf(value),
+    })
   }
   if (!SHELL_TOOLS.has(tool) || stderr === '') return undefined
   // 文本兜底（样本 B：无沙箱标记、退出码 0，只有 stderr 认得出来）。**不看退出码。**
-  if (PERMISSION_TEXT.test(stderr)) {
-    return { kind: 'denied', code: 'COMMAND_PERMISSION_DENIED', tool, exitCode: exitCodeOf(value), sandboxMode: sandboxModeOf(value), head: failureHead(stderr, PERMISSION_TEXT) }
+  if (PERMISSION_TEXT.test(stderr) || (GIT_INDEX_TEXT.test(stderr) && (GIT_LOCK_EXISTS_TEXT.test(stderr) || GIT_LOCK_BUSY_TEXT.test(stderr)))) {
+    return deniedHit({
+      code: 'COMMAND_PERMISSION_DENIED',
+      tool,
+      text: stderr,
+      exitCode: exitCodeOf(value),
+      sandboxMode: sandboxModeOf(value),
+    })
   }
   if (ENV_TEXT.test(stderr)) {
-    return { kind: 'env', code: 'COMMAND_ENV_FAILED', tool, exitCode: exitCodeOf(value), sandboxMode: sandboxModeOf(value), head: failureHead(stderr, ENV_TEXT) }
+    return envHit({
+      code: 'COMMAND_ENV_FAILED',
+      tool,
+      text: stderr,
+      exitCode: exitCodeOf(value),
+      sandboxMode: sandboxModeOf(value),
+    })
   }
   return undefined
 }
@@ -198,6 +303,7 @@ const FOLLOWUP_STATUSES = new Set(statusesWith('followup'))
  * @param {()=>string|undefined} [options.coordinatorId] 兼容旧装配：单个协调者会话 id（排除它自身的调用）
  * @param {()=>string[]} [options.coordinatorIds] 0.36.0 多协调者：协调者名单（排除其中**每个**成员的调用）
  * @param {(task:object)=>string} [options.labelFor] 任务显示名
+ * @param {(task:object, hit:object)=>void} [options.recordFailure] 持久化最近一次失败（index 注入台账 setter）
  * @param {()=>number} [options.now] 时钟（测试注入）
  * @param {number} [options.dedupeMs] 去重窗口（默认 {@link toolFailureDedupeMs}）
  * @param {number} [options.maxSeen] 去重表软上限
@@ -210,6 +316,7 @@ export function createChildToolFailureWatcher({
   coordinatorId,
   coordinatorIds,
   labelFor,
+  recordFailure,
   now = Date.now,
   dedupeMs = toolFailureDedupeMs(),
   maxSeen = TOOL_FAILURE_SEEN_MAX,
@@ -231,7 +338,7 @@ export function createChildToolFailureWatcher({
     }
     return out
   }
-  // 去重表：`taskId\0tool\0code` → { at, suppressed }。只在内存（进程重启后允许再报一次，与看门狗同口径）。
+  // 去重表：`taskId\0tool\0category` → { at, suppressed }。只在内存（进程重启后允许再报一次，与看门狗同口径）。
   const seen = new Map()
 
   const log = (event, fields) => {
@@ -255,6 +362,9 @@ export function createChildToolFailureWatcher({
       code: hit.code,
       mode: hit.sandboxMode,
       head: hit.head,
+      category: hit.category,
+      retryable: hit.retryable,
+      action: hit.action,
     })
     // system:true 让 index 的 send 接受「没有子会话 sender」的系统通知（与看门狗/启动对账一致）。
     const item = {
@@ -285,6 +395,20 @@ export function createChildToolFailureWatcher({
     }
   }
 
+  // 持久化失败只留日志：观察者绝不能因为台账写不进去就吞掉判定/通知。
+  const persist = (task, hit) => {
+    if (typeof recordFailure !== 'function') return
+    try {
+      recordFailure(task, hit)
+    } catch (error) {
+      log('subagent.tool.failure.persist.failed', {
+        taskId: task.id,
+        detail: { tool: hit.tool, code: hit.code, reason: error?.message ?? String(error) },
+      })
+      try { onWarn(`dsh-orchestrator: 子会话工具失败落库失败（已跳过）：${error?.message ?? error}`) } catch { /* 告警失败也不外溢 */ }
+    }
+  }
+
   /**
    * 处理一条 `tools/result`。返回判定结果（空 = 不在范围内），供测试与排障用。
    * 任何内部异常都只 warn 一次并吞掉：观察者绝不能反过来打断工具链路。
@@ -306,24 +430,29 @@ export function createChildToolFailureWatcher({
           tool: hit.tool,
           kind: hit.kind,
           code: hit.code,
+          category: hit.category,
+          retryable: hit.retryable,
+          action: hit.action,
           exitCode: hit.exitCode ?? null,
           sandboxMode: hit.sandboxMode ?? null,
           taskStatus: task.status ?? null,
           head: hit.head,
         },
       })
+      // denied 与 env 都落最近一次快照；与通知/去重解耦。
+      persist(task, hit)
       // 档 2 只给 denied，且只给还在等人/还在跑的任务：env 类与终态迟到事件都停在档 1。
       if (hit.kind !== 'denied') return hit
       if (!FOLLOWUP_STATUSES.has(task.status)) return hit
       const at = now()
-      const key = `${task.id}\u0000${hit.tool}\u0000${hit.code}`
+      const key = `${task.id}\u0000${hit.tool}\u0000${hit.category ?? hit.code}`
       const previous = seen.get(key)
       if (previous !== undefined && at - previous.at < dedupeMs) {
         previous.suppressed += 1
         log('subagent.tool.failure.suppressed', {
           taskId: task.id,
           sessionId: agentId,
-          detail: { tool: hit.tool, code: hit.code, repeat: previous.suppressed },
+          detail: { tool: hit.tool, code: hit.code, category: hit.category, repeat: previous.suppressed },
         })
         return hit
       }

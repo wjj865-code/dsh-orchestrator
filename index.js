@@ -4,7 +4,7 @@ import { loadConfig, DEFAULT_WORKER_PRESET } from './src/config.js'
 import { createHostCapabilities } from './src/host-capabilities.js'
 import { Config, unwrapVolatile } from './src/config-schema.js'
 import {
-  openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts,
+  openLedger, addNotification, getMainSessionId, failStalePending, findTaskBySession, setTaskArtifacts, setTaskLastFailure,
   getTask, listTasks, setTransitionObserver, getCoordinatorIds, setCoordinatorIds, getSetting,
 } from './src/ledger.js'
 import { createArtifactDelivery } from './src/artifact-delivery.js'
@@ -85,7 +85,7 @@ export const COORDINATOR_POLICY = `你是 dsh-orchestrator 的协调者，只做
 
 ### 工具边界
 - 派活只走 task_create；查进度只走 task_list / task_status。禁止使用 wait_agent、任何阻塞等待；不要 sleep、不要轮询；禁止 spawn_teammate / send_message / team_task_* 等团队工具（预设层删不掉，执行层会直接拒绝）。
-- **看文件用原生 read**（只读，已挂），不枚举目录；不挂 glob/grep——批量检索/枚举派 readOnly:true。凭据（.credentials.yaml、.env、SSH key、token）不读、不转述、不写进产物。
+- **看文件用原生 read；批量定位用 glob/grep**（只读，已挂；grep 由随包 ripgrep 执行，不要改用 shell rg）。先用 glob 找路径、grep 找命中行，再用 read 看命中附近的小范围，不要整文件灌入。凭据（.credentials.yaml、.env、SSH key、token）不搜索、不读取、不转述、不写进产物。
 - 官方 Team 板**只读**：关联时传 teamTaskId；交付确认由插件按 CAS 反写 complete，冲突只提示。
 - 自动化只用 schedule_create / schedule_list / schedule_view / schedule_edit。Host-wide：增删改与暂停恢复需用户明确授权并确认时间/时区；只支持 target:this_session（创建者不在协调者名单时不可投递），new/new_once 不能直接 task_create；编辑用最新 updatedAt 作 expectedUpdatedAt。默认 worker 不开放自动化（subagent_session）。
 - access:'full' 只改沙箱，不增加工具、不绕过委派校验或审批；与 readOnly/planFirst 互斥、仅本任务生效、不传孙任务。缺能力如实报告。
@@ -252,9 +252,9 @@ export function renderCoordinatorPolicy(config = {}) {
 // 协调者只做协调：这些是**编排正确性**上不该由协调者做的事（派队友/团队板会绕过 task_create 的台账与
 // 依赖编排；插件管理与密钥/IM 属于宿主运维面）。
 //
-// 0.26.0（t-48e8ce06）起这里**不再**是「协调者能调什么」的完整清单；t-4f7ce108 起协调者的只读工具面
-// 收窄成**只有 read**（glob/grep 随 tool-fs-search 行一起从预设移除：协调者一有搜索就会自行调研、
-// 绕过派发）。写与执行不靠名单——协调者预设没挂 tool-bash/tool-pwsh，tool-fs 只开 read，写路径另有
+// 0.26.0（t-48e8ce06）起这里**不再**是「协调者能调什么」的完整清单；当前只读工具面是 read + glob/grep
+// （tool-fs-search）。搜索只用于定位，不扩大写权限，也不替代 task_create。写与执行不靠名单——协调者预设
+// 没挂 tool-bash/tool-pwsh，tool-fs 只开 read，写路径另有
 // 钉死的 read-only 权限预设（沙箱写全拒）兜底。角色专属的三个子会话工具（task_report / task_detail /
 // plan_save）从这份名单移出，改由协调者预设的 preset-tools deny 遮掉（工具表里看不到），
 // 执行层各自再校验归属。
@@ -772,10 +772,9 @@ export async function apply(ctx, rawConfig = {}) {
   // guard 在绑定后对后续调用立即生效，连 task_create 当回合的 wait_agent 也能拒绝。
   // 预设层删不掉 agent-scope 自注册的团队工具（ToolsService 无移除 API、restrict 遮不到 own），
   // 所以执行层对主会话硬拦整个 COORDINATOR_DENY 名单；agent-scope 工具只剩这一道硬闸。
-  // 名单只覆盖「编排正确性」（派队友/团队板/插件/密钥/IM）：读写工具不在这里，读由原生 read
-  // 与 read_workspace 提供（glob/grep 已随 tool-fs-search 行从预设移除：搜索类工作走 task_create），
-  // 写没有工具（预设没挂 tool-bash/tool-pwsh，tool-fs 只开 read）。
-  const DENY_HINT = toolName => `${toolName} 是协调者禁止的工具：协调者只做协调（派活走 task_create，查进度 task_list / task_status），不派队友、不操作团队任务板、不管理插件或密钥、不发 IM。看文件用 read（只读），看产物正文用 read_workspace，交付用 present。`
+  // 名单只覆盖「编排正确性」（派队友/团队板/插件/密钥/IM）：读写工具不在这里，读由原生 read、
+  // glob/grep 与 read_workspace 提供，写没有工具（预设没挂 tool-bash/tool-pwsh，tool-fs 只开 read）。
+  const DENY_HINT = toolName => `${toolName} 是协调者禁止的工具：协调者只做协调（派活走 task_create，查进度 task_list / task_status），不派队友、不操作团队任务板、不管理插件或密钥、不发 IM。看文件用 read（只读），批量定位用 glob/grep，看产物正文用 read_workspace，交付用 present。`
   const guardDisposer = ctx.tools?.guard?.(exec => {
     const toolName = exec?.name
     if (typeof toolName !== 'string') return undefined
@@ -983,6 +982,8 @@ export async function apply(ctx, rawConfig = {}) {
     // 0.36.0：名单里**每个**成员都要排除（副协调者也是协调者）。
     coordinatorIds: resolvedCoordinatorIds,
     labelFor: task => taskLabel(task, { all: listTasks(db) }),
+    // 结构化失败只落任务行（最近一次），不改状态/活跃时间；写入异常由 watcher 自己 warn 吞掉。
+    recordFailure: (task, hit) => setTaskLastFailure(db, task.id, hit),
     onWarn: warnings,
   })
   const toolFailureDisposer = typeof ctx.on === 'function'

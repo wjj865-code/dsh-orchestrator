@@ -2162,6 +2162,49 @@ test('task_report schema 没有命令字段：验收命令只能来自协调者�
   db.close()
 })
 
+test('task_report.failure：结构化落库；不可用结构拒绝且不迁移状态/不覆盖旧快照', async () => {
+  const { db, tools } = await setup()
+  await call(tools, 'task_create', sampleBrief({ title: '失败回报' }))
+  const task = listTasks(db).find(item => item.title === '失败回报')
+  const worker = { agent: { id: task.session_id } }
+  const ok = await call(tools, 'task_report', {
+    task_id: task.id,
+    status: 'progress',
+    summary: 'git add 被拒，先继续只读排查',
+    failure: {
+      tool: 'pwsh',
+      code: 'COMMAND_PERMISSION_DENIED',
+      category: 'git_index_write_denied',
+      message: "git : fatal: Unable to create 'C:/Users/72489/x/.git/index.lock': Permission denied",
+      exit_code: 0,
+      retryable: false,
+      action: 'inspect_acl_or_sandbox',
+    },
+  }, worker)
+  assert.match(ok, /progress 回报/)
+  const saved = getTask(db, task.id)
+  assert.equal(saved.last_failure.tool, 'pwsh')
+  assert.equal(saved.last_failure.category, 'git_index_write_denied')
+  assert.equal(saved.last_failure.exit_code, 0)
+  assert.equal(saved.last_failure.head.includes('72489'), false)
+
+  const messagesBefore = db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n
+  const bad = await call(tools, 'task_report', {
+    task_id: task.id,
+    status: 'blocked',
+    summary: '这次结构坏了',
+    failure: { retryable: true },
+  }, worker)
+  assert.match(bad, /failure 结构不可用/)
+  const unchanged = getTask(db, task.id)
+  assert.equal(unchanged.status, saved.status, '坏结构不能迁移任务状态')
+  assert.equal(unchanged.question, saved.question)
+  assert.equal(unchanged.last_failure.code, saved.last_failure.code, '坏结构不能覆盖已有快照')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM messages WHERE task_id = ?').get(task.id).n, messagesBefore,
+    '坏结构不能落回报消息')
+  db.close()
+})
+
 // —— P2-4（D6）：官方 Team 板只读关联 ——
 // task_create 只做**只读**校验并把官方任务 id/revision 记进台账；反写发生在确认交付时（见 team-board/delivered 测试）。
 

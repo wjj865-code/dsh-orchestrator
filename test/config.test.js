@@ -206,7 +206,7 @@ function presetPlugins(source, presetId) {
     if (rowMatch !== null) rows.push({ id: rowMatch[1], lines: [line] })
     else if (rows.length > 0) rows[rows.length - 1].lines.push(line)
   }
-  return { rows, text: body.join('\n') }
+  return { rows, text: body.join('\n'), header: lines.slice(start, keyIndex).join('\n') }
 }
 
 test('worker 预设挂 tool-goal：子会话才有 get_goal 可读自己的任务目标', () => {
@@ -272,7 +272,7 @@ test('协调者预设挂 present 交付工具：主会话可交付子会话产�
   assert.equal((source.match(/id: present/g) ?? []).length, 2, '整份补丁应有协调者、worker 两行 present')
 })
 
-test('协调者只读工具面：只开 read，不挂 tool-fs-search（glob/grep 已移除），写工具不挂', () => {
+test('协调者只读工具面：read + tool-fs-search 的 glob/grep，写/执行工具不挂', () => {
   const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   const coordinator = presetPlugins(source, 'dsh-orchestrator-coordinator')
   const worker = presetPlugins(source, 'dsh-orchestrator-worker')
@@ -284,25 +284,31 @@ test('协调者只读工具面：只开 read，不挂 tool-fs-search（glob/grep
   for (const [key, value] of [['read', 'true'], ['write', 'false'], ['edit', 'false'], ['applyPatch', 'false'], ['readImage', 'false']]) {
     assert.match(fsText, new RegExp(`^\\s+${key}: ${value}\\s*$`, 'm'), `tool-fs.${key} 应为 ${value}`)
   }
-  // t-4f7ce108：tool-fs-search 整行移除。该包没有「只关 grep、保留 glob」的开关（Config 只有
-  // sampleOverCapGlobResults 与各 max* 上限，apply() 无条件注册两个工具），而 preset-tools 的 deny
-  // 只作用于已注册的全局工具、遮不到预设自有行 —— 所以协调者拿不到 glob/grep，检索类工作派任务。
-  assert.equal(coordinator.rows.some(row => row.id === 'tool-fs-search'), false,
-    '协调者预设不得挂 tool-fs-search（glob/grep 会让主会话自行搜索、绕过派发）')
-  assert.equal(/name:\s*'@deepseek-ai\/dsh-tool-fs-search'/.test(coordinator.text), false,
-    '协调者预设不许再注册 tool-fs-search（注释里的移除原因不算）')
+  // 协调者需要自己批量定位，避免用 read 整文件载入撑爆上下文；该包注册 glob + grep，不能只开一个。
+  const searchRows = coordinator.rows.filter(row => row.id === 'tool-fs-search')
+  assert.equal(searchRows.length, 1, '协调者预设应恰好一行 tool-fs-search')
+  const searchText = searchRows[0].lines.join('\n')
+  assert.match(searchText, /name:\s*'@deepseek-ai\/dsh-tool-fs-search'/)
+  for (const [key, value] of [
+    ['sampleOverCapGlobResults', 'false'],
+    ['globMaxResults', '60'],
+    ['grepMaxMatches', '120'],
+    ['grepMaxLineBytes', '400'],
+    ['searchMetaMaxBytes', '32768'],
+    ['timeoutMs', '30000'],
+  ]) {
+    assert.match(searchText, new RegExp(`^\\s+${key}: ${value}\\s*$`, 'm'), `tool-fs-search.${key} 应为 ${value}`)
+  }
   // 写/执行类工具**不挂行**：bash/pwsh 只有 worker 挂，协调者只在只读层收口。
   for (const rowId of ['tool-bash', 'tool-pwsh']) {
     assert.equal(coordinator.rows.some(row => row.id === rowId), false, `协调者预设不应挂 ${rowId}`)
   }
   assert.equal(worker.rows.some(row => row.id === 'tool-fs'), true, 'worker 仍挂 tool-fs（可写）')
   assert.equal(worker.rows.some(row => row.id === 'tool-fs-search'), true, 'worker 仍挂 tool-fs-search（子会话要能检索）')
-  // 预设描述与 persona 也不许再写「协调者能 glob/grep」（注释行可以有，那是移除原因的说明）。
-  const coordinatorText = coordinator.text
-  for (const line of coordinatorText.split('\n')) {
-    if (!/^\s*(description|prefix):/.test(line)) continue
-    assert.doesNotMatch(line, /glob|grep/, `协调者预设文案不许再暗示能搜索：${line.trim()}`)
-  }
+  // 预设描述与 persona 必须明确只读检索面，别让模型以为「搜索等于派发」。
+  assert.match(coordinator.header, /^\s*description:.*glob\/grep/m, '预设 description 应说明 glob/grep')
+  const personaLine = coordinator.text.split('\n').find(line => /^\s*prefix:/.test(line))
+  assert.match(personaLine, /glob|grep/, 'persona 应说明 glob/grep')
 })
 
 test('协调者挂 grill-me + 本地技能发现：skill-filesystem / skill-grill-me / tool-skill 各一行，worker 看不到 grill-me', () => {
@@ -337,7 +343,7 @@ test('协调者挂 grill-me + 本地技能发现：skill-filesystem / skill-gril
   // 两行 skill-filesystem：协调者 + worker 各一行（重复行会让 loader 报重复 id）。
   assert.equal((source.match(/id: skill-filesystem/g) ?? []).length, 2, '整份补丁应有协调者、worker 两行 skill-filesystem')
   // 只加技能**来源**、不加工具：协调者的写/执行工具面照旧是空的（技能发现不是工具面变更）。
-  for (const rowId of ['tool-bash', 'tool-pwsh', 'tool-fs-search', 'tool-web', 'tool-todo']) {
+  for (const rowId of ['tool-bash', 'tool-pwsh', 'tool-web', 'tool-todo']) {
     assert.equal(coordinator.rows.some(row => row.id === rowId), false, `技能发现不应给协调者带来 ${rowId}`)
   }
 })

@@ -14,6 +14,7 @@ import { canTransition, statusLabel } from './state.js'
 import { statusesWith } from './status-facts.js'
 import { dependencyState, promoteDependents, upstreamBrief, validateDepends } from './deps.js'
 import { renderTaskDetail } from './task-detail.js'
+import { failureRecordLines, normalizeFailureRecord } from './failure-record.js'
 import {
   GLOBAL_PROJECT, LESSON_KIND, MAX_FACT_CHARS, MAX_WORKER_MEMORIES_PER_TASK, MEMORY_FACT_KINDS,
   MEMORY_SOURCE_WORKER, TASK_LOG_KIND, addMemory, buildLessonBlock, buildMemoryBlock, countWorkerMemories,
@@ -21,7 +22,7 @@ import {
 } from './memory.js'
 import {
   addMessage, createTask, findTaskBySession, getTask, lastSentMessageId, listTasks, recentMessages, setMessageDelivery,
-  setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskWorktree, touchTask, transition, incrementAttempts,
+  setTaskAcceptance, setTaskArtifacts, setTaskError, setTaskLastFailure, setTaskWorktree, touchTask, transition, incrementAttempts,
   setTaskQuestion, clearTaskQuestion, recordProgress, mergeArtifacts, MAX_TASK_ARTIFACTS,
   countTaskMessages, incrementResumeCount, markReportExpected, clearReportExpected, setTaskPlanPath, setPlanState, setTaskDeliveryPending,
 } from './ledger.js'
@@ -1993,6 +1994,10 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
         lines.push(`重派自：${source === undefined ? '已不存在的任务' : taskLabelWithRef(source)}`)
       }
       if (task.error !== null && task.error !== undefined) lines.push(`原因：${task.error}`)
+      // 结构化失败：watcher 判定或子会话 task_report.failure 自报；只读展示，不改状态。
+      if (task.last_failure !== null && task.last_failure !== undefined) {
+        lines.push(...failureRecordLines(task.last_failure))
+      }
       // P6/T6.2：产物区块（错过通知时的兜底回流路径）。与通知同一口径（artifactLines 共用）：
       // 只列 present 能接住的普通文件，目录 / 符号链接 / 已不存在只计数不进清单；带交付指令。
       lines.push(...artifactLines({ artifacts: task.artifacts }, { counts: true }))
@@ -2070,8 +2075,8 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
     }),
 
     // 受控读（协调者读产物）：平台的文件工具没有读路径白名单（沙箱只管写、cwd 不是边界、
-    // glob 直接 ripgrep 全树枚举），所以产物侧自建一条边界由插件算的入口；协调者预设的原生工具
-    // 只剩 read（t-4f7ce108 起 glob/grep 不挂），也仍是全盘可读、没有产物边界。
+    // glob 直接 ripgrep 全树枚举），所以产物侧自建一条边界由插件算的入口；协调者预设的 read/glob/grep
+    // 仍是全盘可读、没有产物边界。
     // 边界 = **主会话工作区包含性 OR 已登记产物**（审计 §2.1 方案 C）：子会话按契约把产物写在
     // target 目录内，而 target 通常不在工作区里；把台账 artifacts 当第二判据，读取面仍然只有
     // 「工作区 + 已登记集合」，不必为看一眼产物新派任务，也不把整个 target 仓库暴露出来。
@@ -2266,6 +2271,21 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
           },
         },
       },
+      failure: {
+        type: 'object',
+        description: '可选：遇到权限/沙箱/锁/环境失败时填写；至少给 tool/code/category/message/exit_code 之一，'
+          + '不要放 token、密钥或整段日志。summary 仍用一句话写后果。',
+        additionalProperties: false,
+        properties: {
+          tool: { type: 'string', description: '失败的宿主工具名，如 pwsh / write / grep' },
+          code: { type: 'string', description: '宿主错误码或命令失败标识，如 COMMAND_PERMISSION_DENIED' },
+          category: { type: 'string', description: '分类，如 git_index_locked / git_index_write_denied / environment' },
+          message: { type: 'string', description: '证据首行（会脱敏家目录、截 240 字）' },
+          exit_code: { type: 'number', description: '命令退出码；退出码 0 也可能是权限失败' },
+          retryable: { type: 'boolean', description: '是否可重试（并发锁 true；ACL/权限拒绝 false）' },
+          action: { type: 'string', description: '建议动作：escalate_sandbox / request_approval / inspect_acl_or_sandbox / wait_for_git_writer / fix_environment / report_only' },
+        },
+      },
     }), async (args, exec) => {
       const found = findTaskInput(args.task_id)
       if (found.ok !== true) return found.message
@@ -2277,6 +2297,14 @@ export function createTools({ db, dispatcher, queue, notifier, config, coordinat
       if (reporter !== undefined && task.session_id !== null && task.session_id !== undefined
         && String(reporterId) !== String(task.session_id)) {
         return `回报被拒绝：任务「${labelFor(task)}」属于子会话 ${task.target ?? task.session_id}，当前回报方不是它。`
+      }
+      if (args.failure !== undefined && args.failure !== null) {
+        const record = normalizeFailureRecord(args.failure)
+        if (record === null) {
+          return 'failure 结构不可用：至少提供 tool / code / category / message / exit_code 之一'
+            + '（不要放整段日志或凭据）；本次回报未记录，任务状态未变。'
+        }
+        setTaskLastFailure(db, task.id, record)
       }
       if (args.workspace_index !== undefined) {
         if (args.status !== 'done' || String(reporterId) !== String(task.session_id) || !reporterId) return '索引回报被拒：仅任务自己的子会话 done 可持久化。'

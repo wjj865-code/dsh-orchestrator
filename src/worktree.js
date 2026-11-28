@@ -83,7 +83,9 @@ export function runGit(args, { cwd, signal, timeout = GIT_TIMEOUT_MS } = {}) {
     }
     const base = { stdout: '', stderr: '', exitCode: null, spawnError: null, killed: false }
     try {
-      execFile('git', args, { cwd, signal, timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+      // 只关可选锁（status/diff 的 index 刷新），不关 commit/add 等写操作必需的锁。
+      const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+      execFile('git', args, { cwd, env, signal, timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
         const output = { ...base, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') }
         if (error === null || error === undefined) {
           finish({ ...output, ok: true, exitCode: 0 })

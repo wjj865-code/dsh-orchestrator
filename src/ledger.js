@@ -7,6 +7,7 @@ import { ACTIVE_STATUSES, nextStatus } from './state.js'
 import { statusesWith } from './status-facts.js'
 // 从叶子模块取（worktree-facts 不 import 任何东西）：避免 ledger → worktree-request → worktree → ledger 的环。
 import { nextWorktreeState } from './worktree-facts.js'
+import { normalizeFailureRecord, parseFailureRecord } from './failure-record.js'
 import { migrateLegacyTaskDone } from './memory.js'
 // 版本 B《ID 出口网关》：引用 token 的生成/回填/墓碑（本模块只单向依赖它，它不 import 本模块）。
 import { backfillTaskRefs, ensureTaskRef, retireTaskRef } from './task-ref.js'
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   delivered_at INTEGER, close_reason TEXT, acceptance_json TEXT,
   accepted_by TEXT, accepted_at INTEGER, accepted_kind TEXT,
   resume_count INTEGER NOT NULL DEFAULT 0, last_stop_reason TEXT,
-  team_task_id TEXT, team_task_revision INTEGER
+  team_task_id TEXT, team_task_revision INTEGER, last_failure_json TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -160,6 +161,9 @@ export async function openLedger(stateDir) {
     // 旧库/存量行都是 NULL = 没关联官方任务，确认时不做任何反写。
     if (!taskColumns.includes('team_task_id')) db.exec('ALTER TABLE tasks ADD COLUMN team_task_id TEXT')
     if (!taskColumns.includes('team_task_revision')) db.exec('ALTER TABLE tasks ADD COLUMN team_task_revision INTEGER')
+    // 子会话工具失败的结构化快照（最近一次）：只写这一列，不参与状态机、不伪造活跃时间。
+    // 旧库/存量行 NULL = 没有记录；坏 JSON 读取侧按 null 处理（见 src/failure-record.js）。
+    if (!taskColumns.includes('last_failure_json')) db.exec('ALTER TABLE tasks ADD COLUMN last_failure_json TEXT')
     // v0.24 resume：resume_count 数「收尾后被冷恢复」的次数（与 activation 轮数 attempts 分开，度量里要
     // 能单独算复用率）；last_stop_reason 记最近一次结算的 stopReason（旧库存量行都是 NULL）。
     if (!taskColumns.includes('resume_count')) db.exec('ALTER TABLE tasks ADD COLUMN resume_count INTEGER NOT NULL DEFAULT 0')
@@ -302,6 +306,8 @@ const taskOf = row => row === undefined ? undefined : ({
   // v0.24 resume：续跑次数（收尾后被冷恢复的次数）与最近一次结算原因（failed/orphaned 的 stopReason）。
   resume_count: Number.isFinite(row.resume_count) ? row.resume_count : 0,
   last_stop_reason: typeof row.last_stop_reason === 'string' && row.last_stop_reason !== '' ? row.last_stop_reason : null,
+  // 子会话工具失败（最近一次）：watcher 判定的 denied/env 或 task_report.failure 自报；没记录/坏 JSON = null。
+  last_failure: parseFailureRecord(row.last_failure_json),
   // 工作台 v1（P11）L1：计划日（毫秒）。旧行/旧库 NULL = 未排期；0/负数当未排期。
   planned_at: Number.isFinite(row.planned_at) && row.planned_at > 0 ? row.planned_at : null,
   // 版本 B《ID 出口网关》：**出口层唯一可读引用**（tk-xxxxxx）。由读取 SQL LEFT JOIN task_refs 带来；
@@ -630,6 +636,19 @@ export function setTaskLastMessage(db, id, record) {
   const now = Date.now()
   db.prepare('UPDATE tasks SET last_message_json = ?, updated_at = ?, last_event_at = ? WHERE id = ?')
     .run(JSON.stringify(record), now, now, id)
+  return getTask(db, id)
+}
+
+/**
+ * 记录最近一次子会话工具失败（结构化快照）。
+ *
+ * 只写 `last_failure_json`，**不动** `status` / `updated_at` / `last_event_at`：
+ * 这是观测字段，不能让一次工具失败伪造出「任务刚有进展」。不可用结构直接忽略。
+ */
+export function setTaskLastFailure(db, id, failure) {
+  const record = normalizeFailureRecord(failure)
+  if (record === null) return getTask(db, id)
+  db.prepare('UPDATE tasks SET last_failure_json = ? WHERE id = ?').run(JSON.stringify(record), id)
   return getTask(db, id)
 }
 

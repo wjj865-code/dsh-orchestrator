@@ -11,7 +11,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  DENIED_CODES, ENV_CODES, INTERRUPT_CODES, TOOL_FAILURE_DEDUPE_MS, TOOL_FAILURE_HEAD_MAX,
+  DENIED_CODES, ENV_CODES, FAILURE_ACTIONS, INTERRUPT_CODES, TOOL_FAILURE_DEDUPE_MS, TOOL_FAILURE_HEAD_MAX,
   classifyToolFailure, createChildToolFailureWatcher, failureHead, redactHomePath, toolFailureDedupeMs,
 } from '../src/child-tool-failure.js'
 import { toolFailureNotice } from '../src/copy.js'
@@ -131,10 +131,13 @@ test('真实样本 A（seq 816）：sandbox.denied → denied/SANDBOX_DENIED，�
   assert.match(hit.head, /Permission denied/)
 })
 
-test('真实样本 B（seq 824）：退出码 0、无沙箱标记，只有 stderr 认得出来 → denied/COMMAND_PERMISSION_DENIED', () => {
+test('真实样本 B（seq 824）：Permission denied 归为 git_index_write_denied，不按并发锁重试', () => {
   const hit = classifyToolFailure(sampleBExec(), sampleBResult())
   assert.equal(hit.kind, 'denied')
   assert.equal(hit.code, 'COMMAND_PERMISSION_DENIED')
+  assert.equal(hit.category, 'git_index_write_denied')
+  assert.equal(hit.retryable, false, 'Permission denied 更像 ACL/受限令牌，不能按并发锁重试')
+  assert.equal(hit.action, FAILURE_ACTIONS.INSPECT_ACL)
   // 真机退出码是 0：任何「exitCode !== 0」的前置条件都会把这条漏掉（这条断言就是那个回归）。
   assert.equal(hit.exitCode, 0)
   assert.equal(hit.sandboxMode, undefined)
@@ -142,6 +145,23 @@ test('真实样本 B（seq 824）：退出码 0、无沙箱标记，只有 stder
   // 证据首行脱敏：家目录换成 ~，用户名不出现。
   assert.ok(hit.head.includes('~/Documents/dsh-orchestrator/.git/index.lock'), hit.head)
   assert.equal(hit.head.includes('72489'), false, '通知/日志里的家目录必须脱敏')
+})
+
+test('git 并发锁：index.lock File exists → GIT_INDEX_LOCKED，可等待/确认后清理', () => {
+  const stderr = [
+    "fatal: Unable to create 'C:/work/repo/.git/index.lock': File exists.",
+    '',
+    'Another git process seems to be running in this repository, e.g.',
+    "an editor opened by 'git commit'. Please make sure all processes",
+    'are terminated then try again.',
+  ].join('\n')
+  const hit = classifyToolFailure(execOf('pwsh', 'm-a'), shellResult({ exitCode: 128, stderr }))
+  assert.equal(hit.kind, 'denied')
+  assert.equal(hit.code, 'GIT_INDEX_LOCKED')
+  assert.equal(hit.category, 'git_index_locked')
+  assert.equal(hit.retryable, true)
+  assert.equal(hit.action, FAILURE_ACTIONS.WAIT_FOR_GIT_WRITER)
+  assert.match(hit.head, /index\.lock/)
 })
 
 // ---- 判定矩阵（#3–#13） ------------------------------------------------------------
@@ -252,20 +272,22 @@ const TASK = {
 function runtime({ now = () => 1_000, task = TASK, coordinatorId = () => 's-1' } = {}) {
   const logs = []
   const notices = []
+  const records = []
   const watcher = createChildToolFailureWatcher({
     logger: { log(event, fields) { logs.push({ event, fields }) } },
     notifier: { summary(items, text) { notices.push({ items, text }); return { delivered: true } } },
     taskOfAgent: agentId => (agentId === 'm-b' ? task : undefined),
     coordinatorId,
     labelFor: item => item.title,
+    recordFailure: (item, hit) => records.push({ task: item, hit }),
     now,
     onWarn: () => {},
   })
   const events = name => logs.filter(entry => entry.event === name)
-  return { logs, notices, watcher, events }
+  return { logs, notices, records, watcher, events }
 }
 
-test('去重：同 (taskId, tool, code) 10 分钟内只通知一次，被压住的留 suppressed 审计行', () => {
+test('去重：同 (taskId, tool, category) 10 分钟内只通知一次，被压住的留 suppressed 审计行', () => {
   let clock = 1_000
   const r = runtime({ now: () => clock })
   for (let index = 0; index < 3; index += 1) r.watcher.handle(sampleBExec(), sampleBResult())
@@ -310,11 +332,14 @@ test('env 类只写日志、不发通知；终态任务的迟到事件也只写�
   assert.equal(r.events('subagent.tool.failure').length, 1)
   assert.equal(r.events('subagent.tool.failure')[0].fields.detail.kind, 'env')
   assert.equal(r.notices.length, 0, 'env 不进通知档')
+  assert.equal(r.records.length, 1, 'env 也要落最近一次结构化失败')
+  assert.equal(r.records[0].hit.category, 'environment')
 
   const done = runtime({ task: { ...TASK, status: 'done' } })
   done.watcher.handle(sampleBExec(), sampleBResult())
   assert.equal(done.events('subagent.tool.failure').length, 1, '终态任务的失败仍留日志')
   assert.equal(done.notices.length, 0, '终态任务不再打扰协调者')
+  assert.equal(done.records.length, 1, '终态迟到失败同样保留观测快照')
 })
 
 test('归属过滤：协调者自身调用与非任务子会话都不进日志/通知', () => {
@@ -324,6 +349,28 @@ test('归属过滤：协调者自身调用与非任务子会话都不进日志/�
   r.watcher.handle({ name: 'pwsh' }, sampleBResult())            // 没有 agent
   assert.equal(r.logs.length, 0)
   assert.equal(r.notices.length, 0)
+  assert.equal(r.records.length, 0)
+})
+
+test('落库异常不外溢：persist 失败只 warn，判定与通知照常', () => {
+  const warnings = []
+  const notices = []
+  const events = []
+  const watcher = createChildToolFailureWatcher({
+    logger: { log(event, fields) { events.push({ event, fields }) } },
+    notifier: { summary(items, text) { notices.push({ items, text }); return { delivered: true } } },
+    taskOfAgent: () => TASK,
+    coordinatorId: () => undefined,
+    labelFor: () => 'x',
+    recordFailure: () => { throw new Error('db boom') },
+    onWarn: message => warnings.push(message),
+  })
+  const hit = watcher.handle(sampleBExec(), sampleBResult())
+  assert.equal(hit.kind, 'denied')
+  assert.equal(notices.length, 1, '落库失败不能吞掉通知')
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /落库失败/)
+  assert.equal(events.filter(entry => entry.event === 'subagent.tool.failure.persist.failed').length, 1)
 })
 
 test('通知文案：任务名 + tk- 引用 + code + 工具名，不出现台账内部编号', () => {

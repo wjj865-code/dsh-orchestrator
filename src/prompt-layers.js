@@ -217,7 +217,7 @@ export const PROMPT_LAYERS = Object.freeze([
     carrier: 'ctx.systemPrompt.context().text（index.js，每回合重渲染）',
     audience: 'coordinator',
     owns: Object.freeze([
-      '工具可用与禁用（能用 task_* 7 个 + 原生 read 只读 + skill/present/schedule；禁用 wait_agent 与团队工具；不挂 glob/grep——检索类工作派任务）',
+      '工具可用与禁用（能用 task_* 7 个 + 原生只读 read/glob/grep + skill/present/schedule；禁用 wait_agent 与团队工具；搜索只用于定位，不替代派发）',
       '复杂需求开工前用 grill-me 技能拷问（多轮前沿提问、每问带推荐、决策归用户、grill ≠ 批准）',
       '技能加载用于判断派活（只读不执行：按需 1–2 个、能直接回答的不加载、读到的写进 task_create）',
       '能直接回答就不委派（只有新鲜取证/写文件/跨仓库证据才 task_create）',

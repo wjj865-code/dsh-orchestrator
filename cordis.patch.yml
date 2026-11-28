@@ -6,13 +6,13 @@
       config:
         id: dsh-orchestrator-coordinator
         name: 协调者
-        description: 协调与原生自动化管理：拆任务、派子会话、看回报、交付产物；可只读看单个文件（read），不搜索、不写文件、不执行命令。
+        description: 协调与原生自动化管理：拆任务、派子会话、看回报、交付产物；可只读看文件并用 glob/grep 批量检索，不写文件、不执行命令。
         order: 80
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报，用 present 交付子会话产物；可以只读看单个文件（read），但不搜索、不枚举目录，也不写文件、不执行命令。
+              prefix: 你是 dsh-orchestrator 的协调者，只做协调：拆任务、派子会话、看回报，用 present 交付子会话产物；可以只读看文件（read），用 glob/grep 批量检索（grep 走随包 ripgrep），先定位再用 read 看命中上下文；不写文件、不执行命令。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
@@ -25,11 +25,10 @@
             name: '@deepseek-ai/dsh-tool-schedule'
           # B（0.26.0）：协调者只读工具面。tool-fs 只开 read —— write / edit / apply_patch / read_image
           # 全部关掉，协调者工具表里**没有写工具**；写仍由钉死的 read-only 权限预设（沙箱写全拒）兜底。
-          # t-4f7ce108：**不挂 tool-fs-search**。该包（@deepseek-ai/dsh-tool-fs-search）的 Config 只有
-          # sampleOverCapGlobResults 与各 max* 上限，glob/grep 在 apply() 里**无条件一起注册**，没有按工具
-          # 开关；而 preset-tools 的 deny 只作用于「已注册的全局工具」（restrict 遮不到预设自有行），
-          # 遮不住它。所以只能整行移除：协调者拿到 read，没有 glob/grep——否则主会话会自己搜索文件、
-          # 绕过派发自行调研（用户原话）。检索/枚举类工作走 task_create 派只读任务。
+          # 本次：协调者需要自己批量定位（避免用 read 整文件载入撑爆上下文），重新挂 tool-fs-search。
+          # 该包的 glob/grep 在 apply() 里一起注册，不能只开一个；这里接受两个工具，用保守上限控制返回量。
+          # 搜索是只读的：不扩大写权限，也不替代 task_create；先 glob 找路径、grep 找命中行，再用 read 看局部。
+          # 凭据类文件（.env / .credentials.yaml / SSH key / token）不要搜索、不要转述。
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
             config:
@@ -38,6 +37,15 @@
               write: false
               edit: false
               applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+              globMaxResults: 60
+              grepMaxMatches: 120
+              grepMaxLineBytes: 400
+              searchMetaMaxBytes: 32768
+              timeoutMs: 30000
           # A（0.26.0）：grill-me 技能。注册模块读包内 skills/grill-me/SKILL.md，注册进**本预设作用域**
           # （只对协调者可见；worker 预设不挂这个模块，子会话看不到）。tool-skill 提供模型面 skill({name})
           # 与技能目录（目录随会话注入、只含 name+description，正文按需加载）—— 它和下面的

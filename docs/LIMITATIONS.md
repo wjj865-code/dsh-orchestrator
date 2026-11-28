@@ -76,7 +76,7 @@
 ## 主会话与工具面
 
 - `spawn_teammate`/`send_message`/`list_agents`/`interrupt_agent`/`wait_agent`/`team_task_*` 是 **agent scope 自注册**的团队工具，`restrict` 遮不到；执行层 `guard` 硬拦协调者，但工具表里仍可能看到残留。
-- **协调者的 deny 名单只剩「编排正确性」**（0.26.0）：`read`/`skill` 由预设行自己挂（t-4f7ce108 起协调者的原生只读工具只剩 `read`，`glob`/`grep` 已随 `tool-fs-search` 行移除），`write`/`edit`/`bash`/`pwsh` 不挂；`task_report`/`task_detail`/`plan_save` 改由预设 `preset-tools` 的 `deny` 遮掉（工具表里看不到），执行层仍按任务归属拒绝越权调用。只读工具的读取面风险见「协调者读文件」。
+- **协调者的 deny 名单只剩「编排正确性」**（0.26.0）：`read`/`glob`/`grep`/`skill` 由预设行自己挂（搜索只用于定位，不替代派发），`write`/`edit`/`bash`/`pwsh` 不挂；`task_report`/`task_detail`/`plan_save` 改由预设 `preset-tools` 的 `deny` 遮掉（工具表里看不到），执行层仍按任务归属拒绝越权调用。只读工具的读取面风险见「协调者读文件」。
 - `config.coordinatorSession` 覆盖的会话没有预设保证，运行期 `restrict` 挂在回合边界：绑定当回合仍是全工具表，下一回合才收窄。同一回合并行发出、且在 guard 判定前就开始执行的 `wait_agent` 不承诺拦住。
 - `run_code` / PTC：平台禁止 `restrict` 指名 PTC 保留传输 `run_code`；profile 配了 PTC executor 时协调者可能经它间接调用被 deny 的工具（desktop 默认没有）。
 - **`workerPreset` 只在派发时生效**：续派/冷恢复沿用会话创建时的 `agentPreset`，改配置不切换已有子会话；值非法时静默回落 `dsh-orchestrator-worker`（日志一行 warn）。
@@ -123,7 +123,7 @@
 - worker 不强制 chdir：`danger-full-access` 下模型给目标目录外的绝对路径仍可能写成功；硬约束只能调回 `workspace-write`。
 - 升级 DSH 后必须重跑 `docs/probes/*` 契约探针（平台入参形状变过 rc.1 → rc.3）。
 - **per-task 完整访问（`access:'full'`）**：等于本会话 `sandbox/mode = danger-full-access`，`fs`/`pwsh`/`bash` 全部解封——**写权限等于模型能改的一切**，没有额外护栏。首回合窗口同样存在。平台在派发时把父会话自己的沙箱覆盖按 `source:'delegation'` 种进子会话：父会话是 `danger-full-access` 时**所有**子任务默认完整访问（不是插件给的，`access` 只能往上设）。Windows 下只解除沙箱，**不解除平台审批/权限预设**，也不改 `chdir`。
-- **子会话工具失败监听的三条边界**：① 外部子会话（codex / claude code / ACP / DSH-SDK 独立进程）的工具事件不在本进程，插件收不到，只能靠子会话自报（W1 已要求权限/环境失败写进 summary）；② 判定靠 stderr 文本兜底，模型自己往 stderr 打「Permission denied」会被判 denied——通知写「疑似」，插件不改任务状态、不自动重派；③ 去重表只在内存，`(taskId, tool, code)` 的 10 分钟窗口不落库，插件重启后同一失败允许再报一次（窗口是固定常量，没有配置键）。
+- **子会话工具失败监听的三条边界**：① 外部子会话（codex / claude code / ACP / DSH-SDK 独立进程）的工具事件不在本进程，插件收不到，只能靠子会话自报（W1 要求权限/环境失败用 `task_report.failure` 结构化上报）；② 判定靠 stderr 文本兜底，模型自己往 stderr 打「Permission denied」会被判 denied——通知写「疑似」，插件不改任务状态、不自动重派；③ 去重表只在内存，`(taskId, tool, category)` 的 10 分钟窗口不落库，插件重启后同一失败允许再报一次（窗口是固定常量，没有配置键）；任务行只保留最近一次结构化快照，不存历史。
 
 ## 协调者读产物（`read_workspace`）
 
@@ -138,7 +138,7 @@
 ## 协调者读文件（read）
 
 - **读取面是整台机器**：协调者预设挂 `tool-fs`（只开 `read`），它没有产物边界——`read_workspace` 的「工作区 ∪ 已登记产物」约束只属于 `read_workspace`。能读到 `~/.dsh/.credentials.yaml`、`.env`、SSH key、token 文件等；插件**只靠提示词**要求「不读凭据、不转述」，没有路径黑名单、没有执行层拦截。
-- **没有 `glob`/`grep`（t-4f7ce108 起）**：0.26.0 曾挂 `tool-fs-search`；该包没有「只关 grep」的开关（`Config` 只有采样与上限字段，`glob`/`grep` 在 `apply()` 里无条件一起注册），`preset-tools` 的 `deny` 只作用于已注册的全局工具、遮不到预设自有行，所以整行移除。副作用是**协调者不能自己检索/枚举目录**：需要跨文件找证据、批量 grep 或列目录时，只能派一条只读任务（`readOnly:true`）让子会话把结果带回来——这是有意的取舍（搜索会让主会话绕过派发自行调研），代价是多一次派发往返。
+- **协调者搜索是只读定位，但没有产物/凭据边界**：`tool-fs-search` 同时注册 `glob`/`grep`（grep 走随包 ripgrep，不能只开一个），返回上限由插件配置收紧（60 路径 / 120 命中 / 单行 400 B）。它能看全盘、能匹配 `.env` 等凭据文件，所以提示词明确要求先定位再用 `read` 看局部，凭据不搜索、不读取、不转述；搜索不扩大写权限，也不替代 `task_create`。
 - **IM / 外发风险叠加**：读进上下文的正文可能随「最终助手文字」同步到外部且不可撤回（与 `read_workspace` 同一条风险）。涉密文件不要读进主会话。
 - **写仍然没有工具**：`tool-fs` 的 `write` / `edit` / `applyPatch` / `readImage` 全部关掉，`bash` / `pwsh` 也没挂；写路径只由钉死的 `read-only` 权限预设（沙箱写全拒）兜底，两处都**不是**「审批门禁」。
 - **`working_directory` 不给协调者**：这个宿主全局工具改的是会话 cwd，而协调者 cwd 是指挥锚（子会话未给 `target` 时继承它、工作区/写域判定与记忆项目键推断都以它为准）。它被预设 `preset-tools` 的 `deny` 与 `COORDINATOR_DENY` 两处遮掉，工具表里看不到、硬调被拒。所以**协调者不能切目录**：相对路径读文件会落在主会话默认 cwd（`<state>/workspace`）下，跨目录一律写绝对路径；真要换目录属于用户/子任务侧的事（`task_create` 的 `target` 决定子会话 cwd）。
@@ -180,7 +180,7 @@
 - **`needsBranchChoice` 多一次往返**：仓库近 N 天 ≥2 个活跃分支且没给 `worktreeBase` 时**不建任务**、只返回候选；任务不落库、不占并发位。
 - **检出目录占磁盘**：默认 `worktreeCleanup:'off'` 全保留，长期会堆积（`.agents/worktrees/<taskId>`）；推荐 `checkout-only`。
 - **宿主依赖 git**：没装 git/不在 PATH 时建树失败 → 任务 `failed`（`GIT_MISSING`），不自动降级。`.git/info/exclude` 不可写时只 warn，`.agents/` 可能出现在 `git status`。
-- **并发**：同一仓库多个任务各自独立检出、互不干扰；并发 `git commit` 会争 `.git` 锁。**同一检出上不会并发**：`worktreeMode:'continue'` 复用前会按 `worktree_path` 查活跃占用（pending/waiting_dep/running/waiting_*/delivered 都算），被占就拒绝并给两条路——把占用任务设为 `dependsOn` 前置串行，或改 `worktreeMode:'new'` 新建检出。
+- **并发**：同一仓库多个任务各自独立检出、互不干扰；并发 `git commit` 会争 `.git` 锁，只读查询应带 `GIT_OPTIONAL_LOCKS=0`，写操作按 common dir 串行；确认无 git 进程/句柄才清残留锁，ACL 拒绝不要删锁。**同一检出上不会并发**：`worktreeMode:'continue'` 复用前会按 `worktree_path` 查活跃占用（pending/waiting_dep/running/waiting_*/delivered 都算），被占就拒绝并给两条路——把占用任务设为 `dependsOn` 前置串行，或改 `worktreeMode:'new'` 新建检出。
 - **Windows 长路径**：检出用 `<repo>/.agents/worktrees/<taskId>` 固定短路径，分支名不进路径；仍建议真机先验一次。
 
 ## 通知与生命周期

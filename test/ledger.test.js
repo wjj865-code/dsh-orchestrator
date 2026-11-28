@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setCoordinatorIds, getCoordinatorIds, addCoordinatorId, removeCoordinatorId, setTaskArtifacts, setTaskLastMessage, setTaskAcceptance, markReportExpected, clearReportExpected } from '../src/ledger.js'
+import { openLedger, createTask, getTask, listTasks, listHistoryTasks, listPendingQueue, countPending, transition, touchTask, addMessage, setMessageDelivery, addNotification, deleteTask, getSetting, setSetting, bindSettingOnce, rebindSetting, getMainSessionId, setMainSessionId, setCoordinatorIds, getCoordinatorIds, addCoordinatorId, removeCoordinatorId, setTaskArtifacts, setTaskLastMessage, setTaskLastFailure, setTaskAcceptance, markReportExpected, clearReportExpected } from '../src/ledger.js'
 import { tempDir, sampleBrief, markDone } from './helpers.js'
 
 test('建表、WAL 与幂等打开', async () => {
@@ -528,6 +528,55 @@ test('B1 last_message_json：旧库自动补列、坏 JSON 当没有、同正文
   assert.equal(replaced.last_message.digest, 'def456')
   // 空记录不覆盖
   assert.equal(setTaskLastMessage(db, task.id, null).last_message.text, '新正文')
+  db.close()
+})
+
+test('last_failure_json：结构化快照只写镜像列、坏 JSON 当没有、旧库自动补列', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const legacyDir = mkdtempSync(join(tmpdir(), 'orch-ledger-lf-legacy-'))
+  const legacy = new DatabaseSync(join(legacyDir, 'tasks.sqlite'))
+  legacy.exec(`CREATE TABLE tasks (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, goal TEXT NOT NULL, brief_json TEXT NOT NULL,
+    status TEXT NOT NULL, session_id TEXT, target TEXT, coordinator_session TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    last_event_at INTEGER NOT NULL, error TEXT, queued_at INTEGER)`)
+  legacy.prepare('INSERT INTO tasks (id,title,goal,brief_json,status,coordinator_session,created_at,updated_at,last_event_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('t-old', 'old', 'g', '{}', 'done', 's-1', 1, 1, 1)
+  legacy.close()
+  const db = await openLedger(legacyDir)
+  assert.ok(db.prepare('PRAGMA table_info(tasks)').all().map(row => row.name).includes('last_failure_json'))
+  assert.equal(getTask(db, 't-old').last_failure, null)
+
+  const task = createTask(db, { brief: sampleBrief({ title: '失败快照' }), coordinatorSession: 's-1' })
+  const before = getTask(db, task.id)
+  const after = setTaskLastFailure(db, task.id, {
+    kind: 'denied',
+    tool: 'pwsh',
+    code: 'COMMAND_PERMISSION_DENIED',
+    category: 'git_index_write_denied',
+    retryable: false,
+    action: 'inspect_acl_or_sandbox',
+    head: "git : fatal: Unable to create 'C:/Users/72489/x/.git/index.lock': Permission denied",
+    exitCode: 0,
+  })
+  assert.equal(after.last_failure.kind, 'denied')
+  assert.equal(after.last_failure.tool, 'pwsh')
+  assert.equal(after.last_failure.category, 'git_index_write_denied')
+  assert.equal(after.last_failure.exit_code, 0)
+  assert.equal(after.last_failure.retryable, false)
+  assert.equal(typeof after.last_failure.observed_at, 'number')
+  assert.equal(after.last_failure.head.includes('72489'), false, '落库也要脱敏家目录')
+  // 观测字段不能伪造任务活跃时间或状态。
+  assert.equal(after.status, before.status)
+  assert.equal(after.updated_at, before.updated_at)
+  assert.equal(after.last_event_at, before.last_event_at)
+
+  assert.doesNotThrow(() => setTaskLastFailure(db, task.id, {}))
+  assert.equal(getTask(db, task.id).last_failure.category, 'git_index_write_denied', '不可用结构不能覆盖已有快照')
+  db.prepare('UPDATE tasks SET last_failure_json = ? WHERE id = ?').run('not-json', task.id)
+  assert.equal(getTask(db, task.id).last_failure, null)
+  db.prepare('UPDATE tasks SET last_failure_json = ? WHERE id = ?').run('{"retryable":true}', task.id)
+  assert.equal(getTask(db, task.id).last_failure, null)
   db.close()
 })
 

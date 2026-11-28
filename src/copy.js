@@ -433,7 +433,10 @@ export const CONFIRM_HINT = `完成后用 task_report 回报（progress / done /
  */
 export const WORKER_PERMISSION_HINT = '遇到权限/沙箱/审批拒绝或环境失败（命令找不到、依赖缺失、沙箱/runner 起不来）不要只当普通报错：'
   + '能自己用窄一级的 sandbox_permissions + justification 重试一次就重试一次；'
-  + '仍不行就在 task_report 的 summary 里写明「哪条命令、什么 code/提示、试过什么」，交付 done 时同样必须写——'
+  + 'git 的 .git/index.lock 要分开看：File exists/共享冲突是并发锁，等 writer 结束并确认后再清残留；'
+  + 'Permission denied 更像 ACL/受限令牌，不要重试或盲删；只读 git 查询用 GIT_OPTIONAL_LOCKS=0，写操作串行。'
+  + '仍不行就用 task_report 的 failure 传结构化证据（tool/code/category/message/exit_code/retryable/action），'
+  + 'summary 只写一句后果；交付 done 时同样必须带。不要放 token、密钥或整段日志——'
   + '协调者据此决定回喂正确姿势还是改派，别让失败只留在你的上下文里。'
 
 /**
@@ -487,15 +490,29 @@ export const WORKER_POLICY_LINES = Object.freeze({
  * 一行动作（协调者现在能做什么）。只用引用，不写台账内部编号（ID 出口网关版本 B）。
  * `head` 由 `src/child-tool-failure.js` 的 `failureHead` 截断并脱敏后再传进来，这里不再二次处理。
  */
-export function toolFailureNotice({ label, ref, tool, code, mode, head } = {}) {
+const FAILURE_ACTION_TEXT = Object.freeze({
+  escalate_sandbox: '判断是否升级 sandbox_permissions、改派或回落；不要原样重试同一条命令。',
+  request_approval: '需要用户或审批通道明确授权；不要自行绕过审批。',
+  inspect_acl_or_sandbox: '先核对 ACL、受限令牌与目标路径；ACL/沙箱拒绝不要靠删锁或原样重试解决。',
+  wait_for_git_writer: '先确认是否有仍在运行的 git 进程；等它结束后再确认是否为残留锁，确认无 writer 才清理 index.lock。',
+  fix_environment: '先修环境（安装命令/依赖或沙箱后端），再重试。',
+  report_only: '作为阻塞项回报，不要原样重试。',
+})
+
+export function toolFailureNotice({ label, ref, tool, code, mode, head, category, retryable, action } = {}) {
   const name = typeof label === 'string' && label !== '' ? label : '任务'
   const reference = typeof ref === 'string' && ref !== '' ? `（${ref}）` : ''
   const modeText = typeof mode === 'string' && mode !== '' ? `（${mode}）` : ''
+  const meta = [
+    typeof category === 'string' && category !== '' ? `category=${category}` : '',
+    retryable === true ? 'retryable=yes' : retryable === false ? 'retryable=no' : '',
+  ].filter(Boolean).join('｜')
+  const metaText = meta === '' ? '' : `｜${meta}`
   const headText = typeof head === 'string' && head !== '' ? `：${head}` : ''
-  return `子会话被权限/沙箱拒绝（疑似）：${tool ?? '工具'} → ${code ?? 'UNKNOWN'}${modeText}\n`
+  const actionText = FAILURE_ACTION_TEXT[action] ?? '判断是缺 sandbox_permissions（同回合升级一次）、该给 access:\'full\'、还是改派/回落——不要只当普通报错，也不要让它重试同一条命令。'
+  return `子会话被权限/沙箱拒绝（疑似）：${tool ?? '工具'} → ${code ?? 'UNKNOWN'}${modeText}${metaText}\n`
     + `任务「${name}」${reference}${headText}\n`
-    + '处理：判断是缺 sandbox_permissions（同回合升级一次）、该给 access:\'full\'、还是改派/回落——'
-    + '不要只当普通报错，也不要让它重试同一条命令。'
+    + `处理：${actionText}`
 }
 
 /**

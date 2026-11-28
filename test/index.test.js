@@ -27,8 +27,7 @@ async function readTaskRow(dbPath, sql, ...params) {
 // （个别用例要「窗口没到」时再自己临时改大，用完还原。）
 process.env.DSH_ORCH_NOTIFY_MERGE_MS = '5'
 
-// 0.26.0：协调者的 deny 名单只剩「编排正确性」项（read/skill 等预设自有工具都不在名单里；
-// t-4f7ce108 起 glob/grep 随 tool-fs-search 行一起从预设移除），
+// 0.26.0：协调者的 deny 名单只剩「编排正确性」项（read/glob/grep/skill 等只读工具都不在名单里），
 // 所以替身默认带上这些项，否则 restrict 会算成空集合（= 不装白名单），断言就失去意义。
 const DENY_FIXTURE = [...COORDINATOR_DENY, 'read', 'write', 'bash', 'skill', 'task_report', 'task_detail', 'plan_save', 'ask_user', 'show_view']
 
@@ -573,8 +572,8 @@ test('协调者工具面：只读工具与 skill 不再被遮，名单只剩编�
   assert.equal(agent.restrictions.length, 1)
   const deny = agent.restrictions[0].deny
   // 0.26.0（t-48e8ce06）：read 已挂给协调者、skill 用来加载 grill-me，都不再遮。
-  // t-4f7ce108：glob/grep 已从预设移除，它们本来也不在执行层名单里（工具表里就没有它们）。
-  for (const name of ['read', 'skill', 'write', 'bash']) {
+  // 协调者的只读检索面由 tool-fs-search 提供；搜索不在执行层 deny 名单里。
+  for (const name of ['read', 'glob', 'grep', 'skill', 'write', 'bash']) {
     assert.equal(deny.includes(name), false, `${name} 不再进协调者 deny 名单`)
   }
   // 编排正确性项保留：派队友/团队板/插件/密钥/IM 执行层一律拒绝。
@@ -2086,12 +2085,23 @@ test('子会话工具失败监听：伪造 tools/result → 日志/通知各一�
   assert.equal(failure.sessionId, childId)
   assert.equal(failure.detail.kind, 'denied')
   assert.equal(failure.detail.code, 'COMMAND_PERMISSION_DENIED')
+  assert.equal(failure.detail.category, 'git_index_write_denied')
+  assert.equal(failure.detail.retryable, false)
+  assert.equal(failure.detail.action, 'inspect_acl_or_sandbox')
   assert.equal(failure.detail.exitCode, 0)
   assert.equal(noticeCount(), 1, 'denied 类要有一条通知')
+  const saved = db.prepare('SELECT last_failure_json FROM tasks WHERE title = ?').get('失败监听')
+  const lastFailure = JSON.parse(saved.last_failure_json)
+  assert.equal(lastFailure.tool, 'pwsh')
+  assert.equal(lastFailure.category, 'git_index_write_denied')
+  assert.equal(lastFailure.exit_code, 0)
+  assert.equal(lastFailure.head.includes('72489'), false, '落库快照也要脱敏家目录')
   assert.equal(coordinator.injected.length, 1)
   const notice = coordinator.injected[0].content[0].text
   assert.ok(notice.includes(taskRef), '通知要用任务引用（tk-）')
   assert.match(notice, /COMMAND_PERMISSION_DENIED/)
+  assert.match(notice, /category=git_index_write_denied/)
+  assert.match(notice, /ACL/)
   assert.equal(/t-[0-9a-f]{8}/.test(notice), false, '通知不许出现台账内部编号')
   assert.equal(notice.includes('72489'), false, '通知里的家目录已脱敏')
 
@@ -2099,7 +2109,7 @@ test('子会话工具失败监听：伪造 tools/result → 日志/通知各一�
   emit(exec, result)
   assert.equal(failures().length, 2)
   assert.equal(logRows().filter(row => row.event === 'subagent.tool.failure.suppressed').length, 1)
-  assert.equal(noticeCount(), 1, '同 (taskId, tool, code) 10 分钟内只通知一次')
+  assert.equal(noticeCount(), 1, '同 (taskId, tool, category) 10 分钟内只通知一次')
 
   // 协调者自身的调用、非任务会话（能力包/普通 root 会话）都不进编排面。
   emit({ ...exec, agent: { id: 's-1' } }, result)

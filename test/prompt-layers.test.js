@@ -51,10 +51,10 @@ test('L1 承担全部协调者规则（每回合重渲染的那一层）', () =>
   }
   // 0.26.0：grill-me 的调用形状在 L1。
   assert.match(policy, /skill\(\{ name: 'grill-me' \}\)/, 'L1 应给出加载 grill-me 的调用形状')
-  // t-4f7ce108：协调者的原生只读工具只剩 read —— glob/grep 从预设移除，检索类工作派任务。
-  assert.match(policy, /看文件用原生 read/, 'L1 应说明只读工具面只有 read')
-  assert.doesNotMatch(policy, /看文件用原生 read \/ glob/, 'L1 不许再暗示协调者能搜索')
-  assert.doesNotMatch(policy, /read \/ glob \/ grep/, 'L1 不许再暗示协调者能搜索')
+  // 协调者的原生只读工具面是 read + glob/grep：搜索只用于定位，不替代派发。
+  assert.match(policy, /看文件用原生 read；批量定位用 glob\/grep/, 'L1 应说明只读检索面')
+  assert.match(policy, /先用 glob 找路径、grep 找命中行/, 'L1 应说明先定位再看局部')
+  assert.doesNotMatch(policy, /不挂 glob\/grep/, 'L1 不该再声称没有搜索工具')
   // 策略段也在 L1（结构化配置渲染）。
   assert.match(policy, /## worktree 隔离/)
   assert.match(policy, /## 同写域并发防护/)
@@ -138,13 +138,14 @@ test('W1 段落固定六句 + 条件一句：句子逐字来自 copy.js', () => 
   assert.match(WORKER_MEMORY_HINT, /project 只能是你自己任务的 target_dir/)
   assert.match(WORKER_MEMORY_HINT, /单任务最多 3 条/)
   assert.match(WORKER_MEMORY_HINT, /不写 preference、不写全局\/跨项目记忆，也不写日志/)
-  // 2026-11-23（用户原话「权限/环境失败必须写进回报」）：「先自纠一次、仍失败就写进 summary」这一句在 W1。
+  // 2026-11-23（用户原话「权限/环境失败必须写进回报」）：「先自纠一次、仍失败就写结构化 failure」这一句在 W1。
   assert.ok(plain.includes(WORKER_PERMISSION_HINT), 'W1 应有权限/环境失败的回报要求')
   assert.equal(WORKER_POLICY_LINES.permission, WORKER_PERMISSION_HINT)
   assert.match(WORKER_PERMISSION_HINT, /权限\/沙箱\/审批拒绝或环境失败/)
   assert.match(WORKER_PERMISSION_HINT, /sandbox_permissions \+ justification 重试一次/)
-  assert.match(WORKER_PERMISSION_HINT, /task_report 的 summary/)
-  assert.match(WORKER_PERMISSION_HINT, /交付 done 时同样必须写/)
+  assert.match(WORKER_PERMISSION_HINT, /task_report 的 failure/)
+  assert.match(WORKER_PERMISSION_HINT, /summary 只写一句后果/)
+  assert.match(WORKER_PERMISSION_HINT, /交付 done 时同样必须带/)
   // 条件句只在真隔离（requested / created / reused）出现。
   for (const worktreeState of ['requested', 'created', 'reused']) {
     assert.ok(renderWorkerPolicy({ worktreeState }).includes(WORKER_POLICY_LINES.worktree), `${worktreeState} 应给装依赖授权`)

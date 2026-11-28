@@ -96,6 +96,7 @@ test('schema 快照：五个 task_* + plan_save 的入参结构冻结（仍是 t
       question: { type: 'string' },
       options: { type: 'array', items: 'string' },
       artifacts: { type: 'array', items: 'object' },
+      failure: { type: 'object' },
     },
     plan_save: { task_id: { type: 'string' }, content: { type: 'string' } },
     artifact_save: { task_id: { type: 'string' }, name: { type: 'string' }, content: { type: 'string' } },

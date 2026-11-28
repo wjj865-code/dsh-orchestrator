@@ -8,6 +8,7 @@ import { PLAN_FIRST_DETAIL, UNAPPROVED_PLAN_STATES, isPlanTask, planStateOf, PLA
 import { ACCESS_FULL, PLAN_PHASE_HINT } from './copy.js'
 import { acceptanceDetailBlock, checksOf } from './acceptance.js'
 import { worktreeDetailLines, worktreeHasCap } from './worktree-request.js'
+import { failureRecordLines } from './failure-record.js'
 
 const text = value => typeof value === 'string' ? value.trim() : ''
 const single = value => text(value).replace(/[\r\n]+/g, ' ')
@@ -109,6 +110,10 @@ export function renderTaskDetail(task = {}, { dependencies = '', experience, art
     `状态：${statusLabel(task.status)}${readOnly ? '｜只读' : (fullAccess ? '｜完整访问' : '')}`,
     `目标：${text(brief.goal ?? task.goal)}`,
   ]
+  // 子会话自己的上次工具失败：只读快照，避免它把同一条被拒命令再试一遍。
+  if (task.last_failure !== null && task.last_failure !== undefined) {
+    lines.push(...failureRecordLines(task.last_failure))
+  }
   if (task.artifact_dir) lines.push(`产物目录：${task.artifact_dir}（不是工作目录；阶段文档用 artifact_save，计划用 plan_save）`)
   if (task.artifact_store_dir) lines.push(`产物真源：${task.artifact_store_dir}（宿主私有存储；主会话目录仅暂存与引用）`)
   if (task.delivery_pending) lines.push('交付：等待回合结束后的产物收集，不能继续修改')

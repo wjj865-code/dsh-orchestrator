@@ -12,7 +12,7 @@
 |---|---|
 | `task_create` | 建任务并派发。`dependsOn` / `chain`（`'auto'`：交付时还有下游在等就自动确认完成，没有下游仍返回「已交付待确认」）/ `group` / `writeScopes` / `priority` / `readOnly` / `planFirst` / `access`（`'full'`）/ `worktree*` / `allowConcurrent` / `checks`（交付前机器验收）/ `goalRounds`（续跑预算，默认 0 不续跑）/ `teamTaskId`（关联官方 Team 板，确认时按 CAS 反写 `complete`） |
 | `task_list` | 活跃/历史任务（`active` / `group` 过滤）；`view:'inbox'` 是收件箱：待决、待确认、失败/丢失、长时间没动静 |
-| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条检查的退出码/耗时）、交接、目标状态与轮次（`x/y`）、官方 Team 关联、最近消息；`include:'full'` 从宿主会话日志冷读最新回复全文（读不到给摘要 + 原因） |
+| `task_status` | 单任务详情：依赖、写域、分组、优先级、问题、交付/关闭时间、验收（每条检查的退出码/耗时）、交接、目标状态与轮次（`x/y`）、官方 Team 关联、最近消息、最近一次结构化工具失败（工具/category/可重试性/证据首行）；`include:'full'` 从宿主会话日志冷读最新回复全文（读不到给摘要 + 原因） |
 | `task_message` | 子任务动作统一入口：`action:'message'`（默认，续派/追问，复用原会话；计划任务上只记讨论或转修订，**不批准**）/ `'approve'` 显式批准计划（前置：已交回 blocked 报告 + 计划文档已落盘 + 子会话停在等你确认；成功切回可写 + 落审批审计，之后再用 message 续派）/ `'resume'` 续跑失败·丢失（或超时完成）任务的原会话 / `'stop'` 停止 / `'retry'` 重派 failed·orphaned（新任务新会话）/ `'close'` 把「已交付待确认」确认成 `done` |
 | `context` | 只读读上下文（协调者与子会话都能调）：`mode:'history'`（默认，记忆/历史任务/历史会话；首行【检索范围】，查项目记忆要传 `project`）/ `'project'`（项目白名单文件含 `docs/ARCHITECTURE.md`、结构、最近任务、相关记忆）/ `'workspaces'`（已登记工作区与仓库采样索引） |
 | `memory_note` | 记一条跨任务有效的决策/经验，或一条偏好。协调者（主会话）可写任意项目与全局偏好；任务子会话只能写**自己任务 `target_dir`** 的项目记忆（`note`/`lesson`/`decision`，单任务最多 3 条、同 `kind`+`text` 幂等），写 `preference` 与全局/跨项目记忆会被拒并给替代路径；`kind:'preference'` 不传 `project` 时写进协调者偏好（每回合注入、立即生效） |
@@ -23,8 +23,8 @@
 
 | 工具 | 作用 |
 |---|---|
-| `task_report` | `progress` / `done` / `blocked` / `needs_auth`，可带 `question` / `options` / `artifacts`；`done` 落「已交付待确认」，配了 `checks` 的先跑验收、失败拒绝交付；`progress` 会作为进度信号送达（合并 + 同任务水位，追问后的第一条必达） |
-| `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收标准、可执行检查、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物 |
+| `task_report` | `progress` / `done` / `blocked` / `needs_auth`，可带 `question` / `options` / `artifacts`；失败时用可选 `failure`（tool/code/category/message/exit_code/retryable/action）结构化上报，summary 留一句后果；`done` 落「已交付待确认」，配了 `checks` 的先跑验收、失败拒绝交付；`progress` 会作为进度信号送达（合并 + 同任务水位，追问后的第一条必达） |
+| `task_detail` | 读自己任务的创建详情（只读）：目标全文、验收标准、可执行检查、约束、背景、用户原话、工作目录与权限、前置任务、经验文件、已有产物、最近一次工具失败 |
 | `plan_save` | 计划模式专用：计划正文写入任务产物目录 `docs/<任务名>-<版本>.md`，保留旧版本并更新最新计划路径 |
 | `artifact_save` | 执行者专用：`task_id/name/content` 保存自己的 Markdown 阶段文档；固定目录、版本化、调用重放幂等；只读任务也可保存文档但不能修改工作区 |
 
@@ -41,9 +41,9 @@
 
 ### 只读工具与技能
 
-- **`read`**（协调者预设只挂 `tool-fs` 的 `read`）：核对子会话说的改动、看 target 里的某个文件、读插件安装目录里的技能与文档都可以，不必为此新派任务。`tool-fs` 只开 `read`（`write` / `edit` / `apply_patch` / `read_image` 全关），所以协调者工具表里**没有任何写工具**。**`glob`/`grep` 已移除**：主会话一有搜索能力就会自行检索、绕过派发（`tool-fs-search` 没有「只关 grep」的开关，`preset-tools` 的 `deny` 又遮不到预设自有行，只能整行移除）；**要批量检索/枚举目录就派一条只读任务**（`readOnly:true`），让子会话把结果带回来。`read` **没有产物边界、能读到全盘**——凭据类文件一律不读、不转述，风险见 [LIMITATIONS](LIMITATIONS.md#协调者读文件read)。
+- **`read` + `glob`/`grep`**（协调者预设挂 `tool-fs` 的 `read` 与 `tool-fs-search`）：核对子会话说的改动、看 target 里的某个文件、读插件安装目录里的技能与文档都可以，不必为此新派任务。`tool-fs` 只开 `read`（`write` / `edit` / `apply_patch` / `read_image` 全关），`tool-fs-search` 只注册只读的 `glob`/`grep`（grep 由随包 ripgrep 执行），所以协调者工具表里**没有任何写或命令工具**。先用 `glob` 找路径、`grep` 找命中行，再用 `read` 看命中附近的小范围；**搜索只用于定位，不替代 `task_create`**。`read`/`grep` **没有产物边界、能读到全盘**——凭据类文件一律不搜索、不读取、不转述，风险见 [LIMITATIONS](LIMITATIONS.md#协调者读文件read)。
 - **`skill` + grill-me 技能**：插件随包发 `skills/grill-me/SKILL.md`，注册模块 `@wjj865-code/dsh-orchestrator/skill-grill-me` 在**协调者预设作用域**里调 `ctx.skills.register`，所以只有协调者看得到。技能内容是多轮**前沿提问**的澄清协议：一次只问一个决定性问题、每问带推荐、事实自己查、决策归用户、最多 **2 轮 8 问**、最后给一张「决策点｜你定的｜影响」三栏决策记录。**grill ≠ 批准**：澄清完仍要按闸门确认，计划批准只能由用户拍板。目录里除了随包的 `grill-me`，还有**用户本地全局技能**与项目技能根——0.35.0 起协调者预设补挂 `skill-filesystem`（宿主把本地技能发现下放给预设），否则主会话只看得见宿主内置技能（详见 [ARCHITECTURE](ARCHITECTURE.md#协调者只读工具与-grill-me-技能0260t-48e8ce06)）。
-- **不挂 `working_directory`**：这个宿主全局工具会把**协调者会话的 cwd** 改掉，而 cwd 是指挥锚（`task_create` 不给 `target` 时子会话继承它、工作区/写域判定与记忆项目键推断都以它为准），会话内切目录会让锚点静默漂移。协调者看文件用 `read` 的绝对路径，不需要切目录。
+- **不挂 `working_directory`**：这个宿主全局工具会把**协调者会话的 cwd** 改掉，而 cwd 是指挥锚（`task_create` 不给 `target` 时子会话继承它、工作区/写域判定与项目记忆键推断都以它为准），会话内切目录会让锚点静默漂移。协调者看文件用 `read` 的绝对路径、检索用 `glob`/`grep`，不需要切目录。
 - `present` 与 `schedule_*` 是协调者预设自带的宿主原生工具，不计入上面 11 个。
 
 ### 原生自动化工具

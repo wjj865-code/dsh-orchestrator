@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { addMessage, createTask, getTask, openLedger, setTaskArtifacts, transition } from '../src/ledger.js'
+import { addMessage, createTask, getTask, openLedger, setTaskArtifacts, setTaskLastFailure, transition } from '../src/ledger.js'
 import { renderTaskDetail } from '../src/task-detail.js'
 import { createTools } from '../src/tools.js'
 import { tempDir, markDone } from './helpers.js'
@@ -121,6 +121,29 @@ test('renderTaskDetail：只读/计划阶段压过 access:full（运行期事实
   const text = renderTaskDetail(readOnlyTask)
   assert.match(text, /权限：只读/)
   assert.equal(text.includes('访问级别：完整'), false)
+})
+
+test('结构化失败：task_status 与 task_detail 都展示最近一次工具失败（含建议动作）', async () => {
+  const { db, tools } = await setup()
+  const task = seed(db)
+  setTaskLastFailure(db, task.id, {
+    tool: 'pwsh',
+    code: 'COMMAND_PERMISSION_DENIED',
+    category: 'git_index_write_denied',
+    retryable: false,
+    action: 'inspect_acl_or_sandbox',
+    head: "git : fatal: Unable to create 'C:/Users/72489/x/.git/index.lock': Permission denied",
+    exitCode: 0,
+  })
+  const status = await tools.task_status.execute({ task_id: task.id }, { agent: { id: 'm-1' } })
+  assert.match(status, /上次工具失败：pwsh｜git_index_write_denied（COMMAND_PERMISSION_DENIED）｜不可重试｜检查 ACL\/沙箱/)
+  assert.match(status, /证据：git : fatal: Unable to create '~\/x\/\.git\/index\.lock': Permission denied/)
+  assert.equal(status.includes('72489'), false)
+
+  const detail = await tools.task_detail.execute({ task_id: task.id }, { agent: { id: task.session_id } })
+  assert.match(detail, /上次工具失败：pwsh｜git_index_write_denied/)
+  assert.match(detail, /不可重试｜检查 ACL\/沙箱/)
+  db.close()
 })
 
 test('renderTaskDetail：前置任务块原样接入，经验文件区分「可读」与「已丢失」', () => {  const dir = tempDir()
