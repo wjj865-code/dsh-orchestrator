@@ -46,7 +46,7 @@ test('六层清单完整：L1/W1/L2/L3/L4/NOTIFY 各有载体、受众与独占�
 
 test('L1 承担全部协调者规则（每回合重渲染的那一层）', () => {
   const policy = renderCoordinatorPolicy({})
-  for (const fragment of ['wait_agent', 'task_close', 'task_message', 'present', 'read_workspace', 'ask_user_question', 'schedule_create', 'grill-me']) {
+  for (const fragment of ['wait_agent', "task_message({ action: 'close' })", 'task_message', 'present', 'read_workspace', 'ask_user_question', 'schedule_create', 'grill-me']) {
     assert.ok(policy.includes(fragment), `L1 缺 ${fragment}`)
   }
   // 0.26.0：grill-me 的调用形状在 L1。

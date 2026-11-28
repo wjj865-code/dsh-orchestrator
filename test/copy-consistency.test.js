@@ -70,7 +70,7 @@ test('协调者 policy：不主动问「任务能否关闭」，交付后保持�
   assert.match(policy, /ask_user_question/)
   // 0.22.1：从「必须主动问用户」改成「不主动问关闭」——催关闭比超时自动完成更打扰。
   assert.match(policy, /不要问「任务能不能关闭」/)
-  assert.match(policy, /不要\*\*用 ask_user_question 追问「确认 \/ 要改？」/)
+  assert.match(policy, /不要用 ask_user_question 追问「确认 \/ 要改？」/)
   assert.match(policy, /等超时自动完成/)
   // 提问不是禁用，而是收窄到真需要拍板的场合。
   assert.match(policy, /只在真正需要拍板时提问/)

@@ -264,10 +264,10 @@ test('P8 计划交付链路：详情/创建提示/协调者 policy 都写明落�
   // 协调者 policy：汇报用任务名 + 引用；plan_save 是子会话工具，协调者调不到。
   const policy = renderCoordinatorPolicy({})
   assert.match(policy, /只用任务名 \+ 任务引用/)
-  assert.match(policy, /不要出现 t-xxxx/)
+  assert.match(policy, /不要只写 tk-xxxxxx/)
   // R2：再提到同一个任务只写名称、不要只写 tk-xxxxxx（用户认不出是哪条）。
-  assert.match(policy, /\*\*再次提到同一个任务只写名称\*\*/)
-  assert.match(policy, /\*\*不要只写 tk-xxxxxx\*\*/)
+  assert.match(policy, /\*\*只用任务名 \+ 任务引用（tk-xxxxxx）\*\*/)
+  assert.match(policy, /再次提到只写名称/)
   assert.match(policy, /plan_save/)
   // 0.26.0：角色专属工具改在预设层遮（执行层名单只留编排正确性项），工具表里仍然看不到 plan_save。
   assert.equal(COORDINATOR_DENY.includes('plan_save'), false, 'plan_save 不再进执行层名单')

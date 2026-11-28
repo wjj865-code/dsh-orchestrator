@@ -23,10 +23,10 @@ import {
 /** 码点计长（与 policyMaxChars 同口径）。 */
 const chars = text => [...text].length
 
-/** ① 默认配置下的总量上限（计划 C3 的验收口径）。 */
-const TOTAL_MAX = 8000
+/** ① 默认配置下的总量上限（结构收敛后的新基线，留少量回涨余量）。 */
+const TOTAL_MAX = 6500
 /** ② minimal 档上限。 */
-const MINIMAL_MAX = 4400
+const MINIMAL_MAX = 3100
 
 /**
  * ④ 八段逐段上限（C3 落地时的实测值 + 少量余量，只防回涨、不逼着继续压）。
@@ -35,7 +35,7 @@ const MINIMAL_MAX = 4400
  * 真正要守的是「每一段都别再长回去」。
  */
 const SEGMENT_CAPS = Object.freeze({
-  hard: 3400,
+  hard: 2200,
   gates: 1800,
   decision: 1000,
   advance: 1000,
@@ -61,6 +61,17 @@ test('① 默认配置：协调者 policy 总量不超预算上限', () => {
   resetPolicyDropWarnings()
   const policy = renderCoordinatorPolicy({})
   assert.ok(chars(policy) <= TOTAL_MAX, `L1 policy 实测 ${chars(policy)} 字符，超出上限 ${TOTAL_MAX}`)
+})
+
+test('①b 硬规则段只放工具边界与派发/交付，不再承载分级与拍板细则', () => {
+  assert.match(COORDINATOR_POLICY, /### 工具边界/)
+  assert.match(COORDINATOR_POLICY, /### 派发与交付/)
+  // 工具数量/旧工具迁移表属于工具面文档，不再常驻每回合提示词。
+  assert.doesNotMatch(COORDINATOR_POLICY, /12 个工具|旧 task_/)
+  // 判级表与计划批准细则各有唯一所有者，硬规则段只留短指针。
+  assert.equal(COORDINATOR_POLICY.includes('| T0 直答 |'), false)
+  assert.equal(COORDINATOR_POLICY.includes('options 固定四项'), false)
+  assert.equal(COORDINATOR_POLICY.includes('renderDecisionSummary'), false)
 })
 
 test('② minimal 档：只留硬规则 + 拍板流程，且体量显著更小', () => {

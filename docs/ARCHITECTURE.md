@@ -262,7 +262,7 @@
 
 | 层 | 载体 | 生命周期 | 唯一职责 |
 |---|---|---|---|
-| **L1** | `ctx.systemPrompt.context().text`（`index.js`，order 130） | 每回合重渲染 | 协调者行为规则：**能直接答就不委派**、工具可用/禁用（原生只读 `read` 与 `skill`；**不挂 `glob`/`grep`**）、交付与确认口径（**不主动问「能否关闭」**，只在真歧义/不可逆/远端写授权时提问）、`present` 与两条读路径（`read`/`read_workspace`）的用法、**复杂需求先 `skill({name:'grill-me'})` 拷问**、**交互三闸门（T0–T3 判级、堵塞项四类、追加调整 R0–R2）**、**推进循环（回报后必须落到推进/提问/问新任务之一，不许只汇报）**、任务链、并行策略、worktree 与写域策略、**用户偏好（第 4 段）**、能力诊断 |
+| **L1** | `ctx.systemPrompt.context().text`（`index.js`，order 130） | 每回合重渲染 | 协调者行为规则：硬规则段只保留**工具边界**与**派发/交付**；能力判级、提问与批准放交互三闸门/拍板流程，回报后的动作放推进循环。含 **能直接答就不委派**、工具可用/禁用（原生只读 `read` 与 `skill`；**不挂 `glob`/`grep`**）、交付与确认口径（**不主动问「能否关闭」**）、`present`/`read_workspace`、**`grill-me` 澄清**、任务链/并行/worktree/写域、**用户偏好**与能力诊断 |
 | **W1** | 同一个 `ctx.systemPrompt.context`（`index.js`，order 131，**只命中 `tasks.session_id` 属于任务的子会话**） | 每回合重渲染 | 任务子会话的回报与确认：开工先读 `task_detail`（`WORKER_DETAIL_HINT`）、执行中 `blocked` 上报（`BLOCKED_HINT`）、交付 `task_report` 四状态 + summary + 两段式终态（`CONFIRM_HINT`）、隔离任务装依赖授权（`WORKTREE_INSTALL_HINT`，条件渲染）、主动调 `context`（`WORKER_CONTEXT_HINT`）；句子真源 `src/copy.js` 的 `WORKER_POLICY_LINES`，渲染入口 `renderWorkerPolicy` |
 | **L2** | 派发消息（`src/brief.js`）＋ worker 预设 persona（`cordis.patch.yml`） | 每次派发/续派；persona 出生即带 | 只留**一次性参数**：任务编号、访问级别（`access:'full'`）、一行 `task_detail` 指针；persona 只说身份 |
 | **L3** | 子会话按需调用（`src/task-detail.js`） | 按需 | 任务创建详情（目标/验收/约束/背景/原话/目录与权限/前置/经验/产物/计划/隔离说明） |
@@ -270,6 +270,7 @@
 | 旁路 | 通知（`src/notify.js`） | 每次通知 | 只讲「现在要你做什么」的动作指令 |
 
 - **W1 是 t-4f7ce108 新增的层**（用户原话：「协调者预设有 policy，但任务执行者却没有……将静态提示词内容都统一移入任务执行者的 policy」）：brief 与 persona 只在出生那一刻到达子会话，续派/多轮之后容易被上下文挤掉；per-turn policy 每回合重渲染。注入判定：`subagent.spawn.accepted` 事件先记「子会话 id → 任务 id」，台账 `tasks.session_id`（`transition(..., 'running', { sessionId })` 写入）是唯一真相，两者都查；协调者、无关会话、孙会话一律拿到空串。两条 context 用不同 `order`（130 / 131）分开注册，互不覆盖。
+- **L1 结构收敛**：硬规则段不再复述 T0–T3 判级、计划批准五步、交付后推进三类动作；这些分别归交互三闸门、拍板流程、推进循环。工具数量 / 旧工具迁移等工具面文档也从每回合 policy 移出。`test/policy-budget.test.js` 同时锁总量、minimal 档与逐段上限，防止规则重新摊回硬规则段。
 - **偏好归 L1 末尾**（`src/preferences.js`）：存 `settings.orchestrator_preferences` 单键 JSON，每回合现渲染；字数 1200 为主约束、条数 12 为安全阀；超限**显式告知**被截条数；全局偏好只写 settings（不双写 memories），项目偏好只写 memories。偏好只是提示词文本，不进 config、不改 dispatch、不碰沙箱。
 
 ## 交互三闸门（T0–T3 / 堵塞项 / 调整评估）

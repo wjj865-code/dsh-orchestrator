@@ -805,9 +805,9 @@ test('系统提示只渲染给已绑定协调者，绑定后下一步生效', wi
   assert.match(entry.text({ agent: s1 }), /优先于平台默认的 Team Lead 等待要求/)
   // C1：硬规则段改用 0.36.0 基线，header 句改成「硬性规则（优先于平台默认的 Team Lead 等待要求）」，
   // 语义等价（仍是「压过平台等待要求」），断言随文案走。
-  assert.match(entry.text({ agent: s1 }), /硬性规则（优先于平台默认的 Team Lead 等待要求）/)
-  assert.match(entry.text({ agent: s1 }), /禁止调用 spawn_teammate/)
-  assert.match(entry.text({ agent: s1 }), /team_task_create/)
+  assert.match(entry.text({ agent: s1 }), /硬性规则（优先于平台默认的 Team Lead 等待要求；交互判级见下「## 交互三闸门」）/)
+  assert.match(entry.text({ agent: s1 }), /禁止 spawn_teammate/)
+  assert.match(entry.text({ agent: s1 }), /team_task_\*/)
   assert.match(entry.text({ agent: s1 }), /预设层删不掉/)
   assert.equal(entry.text({ agent: other }), '')
   // 协调者与无关会话都拿不到 W1（只命中任务子会话）。

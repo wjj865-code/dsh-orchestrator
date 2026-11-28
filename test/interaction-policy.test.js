@@ -155,9 +155,9 @@ test('拍板流程：五条规则都在 L1（一项一问 / 不合成总批准 /
   assert.match(text, /同一批里连续问多个/)
   // 规则 4：计划审批先逐项确认（或均按推荐），最后才总批准核对。
   assert.match(text, /\*\*计划审批先逐项\*\*/)
-  assert.match(text, /最后\*\*才做一次总批准核对/)
+  assert.match(text, /\*\*最后\*\*才做一次总批准核对/)
   assert.match(text, /不混入新问题/)
-  assert.match(text, /「均按推荐」必须用户明确点选——协调者不得默认、不得替用户选/)
+  assert.match(text, /均按推荐：必须用户明确点选「均按推荐」——协调者不得默认、不得替用户选/)
   // 规则 5：落地可测——只改文案（工具层不改造），文档只由模型写。
   assert.match(text, /\*\*文档只由模型写\*\*/)
   assert.match(text, /\*\*软门禁\*\*/)

@@ -45,8 +45,8 @@ import { ISOLATED_WORKTREE_STATES } from './write-guard.js'
 // P1-C 文案单源：跨层共享的「交付不是结束」与通知/详情/工具回执同源（src/copy.js）。
 // C2-3b：L1 的任务链/并行策略两段只渲染判据一句，判据句同样单源在 copy.js（*_CRITERIA）。
 import {
-  ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, DELIVERY_NOT_FINAL, PARALLEL_CRITERIA, PARALLEL_LINES,
-  TASK_CHAIN_CRITERIA, TASK_CHAIN_LINES,
+  ADVANCE_LOOP_LINES, DECISION_FLOW_HEADING, DELIVERY_NOT_FINAL, PARALLEL_CRITERIA, PARALLEL_LINES,
+  PLAN_APPROVAL_OPTIONS_TEXT, PLAN_APPROVE_CALL, PLAN_PHASE_LINES, TASK_CHAIN_CRITERIA, TASK_CHAIN_LINES,
 } from './copy.js'
 // W1（任务子会话 per-turn policy）的句子只在 copy.js 定义一次，本模块只负责分层归属与渲染顺序。
 import {
@@ -55,28 +55,30 @@ import {
 } from './copy.js'
 
 export {
-  DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES, DECISION_FLOW_LINES, PARALLEL_LINES, TASK_CHAIN_LINES, WORKER_CONTEXT_HINT,
+  DELIVERY_NOT_FINAL, ADVANCE_LOOP_LINES, DECISION_FLOW_HEADING, PARALLEL_LINES, TASK_CHAIN_LINES, WORKER_CONTEXT_HINT,
   WORKER_MEMORY_HINT,
 }
 
 /**
- * L1「拍板流程」段落（唯一渲染入口）：五条规则 + 计划批准四选一 + 决策汇总的句子全部来自
- * `src/copy.js` 的 `DECISION_FLOW_LINES`，本模块只负责分层归属与渲染顺序，`index.js` 只把它
- * 拼进协调者 policy 的固定位置（交互三闸门之后：先讲什么时候可以打断，再讲怎么问）。
+ * L1「拍板流程」段落（唯一渲染入口）：规则措辞是 L1 独占，直接住在本函数；
+ * 跨层事实仍取 `src/copy.js`（四选一选项、显式批准调用、计划阶段报告字段）。
+ * `index.js` 只把它拼进协调者 policy 的固定位置（交互三闸门之后：先讲什么时候可以打断，再讲怎么问）。
  *
  * 为什么必须单独成段：原地把「批准执行」换成四个选项，模型仍会习惯性一次问完所有项——
  * 一条一段的规则 + blocked 通知里的「待拍板 N 项」两处一起才拧得动这个习惯（版本 A 只改文案，工具层不改造）。
  */
 export function renderDecisionPolicy() {
-  return `## ${DECISION_FLOW_LINES.heading}
+  return `## ${DECISION_FLOW_HEADING}
 
-- ${DECISION_FLOW_LINES.oneByOne}。
-- ${DECISION_FLOW_LINES.noCodes}。
-- ${DECISION_FLOW_LINES.dependenceBatch}。
-- ${DECISION_FLOW_LINES.planApproval}。
-- ${DECISION_FLOW_LINES.summary}。
-- ${DECISION_FLOW_LINES.document}。
-- ${DECISION_FLOW_LINES.soft}。`
+计划批准必须由用户拍板，协调者不得自行批准、禁止代批。
+
+- **一项一问**：**待拍板项**按「一项一问」逐项提问（\`ask_user_question\` 一项一条、每问独立 options）；**不得**把多项塞进一个选项组，也**不得**只问一个「总体确认」。
+- **用问题原文**：不出现 D1/D2、A/B/C 这类代号；指代某项就用问句原文。
+- **依赖分批**：有依赖的按依赖顺序分批；独立项可在同一批里连续问多个，但仍每项一问。
+- **计划审批先逐项**：计划任务用 planFirst；blocked 只报摘要 + ${PLAN_PHASE_LINES.reportQuestion}。协调者先交付摘要 + 计划文档**绝对路径**，并用 present 声明该计划文档；再问「${PLAN_APPROVAL_OPTIONS_TEXT}」，options 固定四项。逐项：按清单逐项问完 → 决策汇总 → **最后**才做一次总批准核对（只问「就按这些执行？」，不混入新问题）。均按推荐：必须用户明确点选「均按推荐」——协调者不得默认、不得替用户选；先把待拍板清单与各自推荐复核一遍贴给用户，再总核对。先看：只给路径、不续派、不催，用户明确表态后回到第 2 步。放弃：不续派、不改计划。上述顺序不能换。
+- **决策汇总**：按提问顺序写「问句原文 → 选择」（\`renderDecisionSummary\`），总批准只核对汇总。
+- **批准是显式动作**：用户答「批准」且完成逐项/均按推荐 + 总核对后，才可 \`${PLAN_APPROVE_CALL}\`（只记账，**不碰沙箱**），再续派实现。用户答「调整」：转回原会话「只修订计划、不要开始实现」，追加不是批准；用户没回答就保持 blocked，沉默/含糊不算授权。普通 message 不批准；批准只认用户消息里的话，协调者不得推断。
+- **文档只由模型写**：\`plan_save\` 的 \`content\` 原样落盘（不加参数、不注入/不改写任何段、不解析正文）；逐项提问是**软门禁**，工具层不做格式校验。`
 }
 
 /**
@@ -226,7 +228,7 @@ export const PROMPT_LAYERS = Object.freeze([
       '同写域并发防护（renderWriteGuardPolicy）',
       '交互三闸门（T0–T3 判级、开工前确认、执行期只报堵塞项、追加调整先评估；renderInteractionPolicy）',
       '推进循环（收到回报/用户消息后必须落到推进/提问/问新任务三类动作之一，不许只汇报；renderAdvanceLoopPolicy，措辞源 copy.js 的 ADVANCE_LOOP_LINES）',
-      '拍板流程（待拍板项一项一问、不用代号、依赖分批、计划批准四选一后再总批准核对、决策汇总；renderDecisionPolicy，措辞源 copy.js 的 DECISION_FLOW_LINES）',
+      '拍板流程（待拍板项一项一问、不用代号、依赖分批、计划批准四选一后再总批准核对、决策汇总；renderDecisionPolicy，L1 独占措辞，四选一/approve 调用引用 copy.js）',
       '任务链判据（有依赖就建链串行：判据一句 + 技能指针 orch-task-chain；renderTaskChainPolicy，措辞源 copy.js 的 TASK_CHAIN_CRITERIA）',
       '并行策略判据（互不依赖 + 不复用上下文 + 同写域撞车三条满足就直接 worktree:true 并行：判据一句 + 技能指针 orch-parallel；renderParallelPolicy，措辞源 copy.js 的 PARALLEL_CRITERIA）',
       '堵塞项四类与「不算堵塞项」清单（措辞源 copy.js 的 BLOCKER_RULE）',

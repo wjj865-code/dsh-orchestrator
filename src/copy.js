@@ -37,30 +37,10 @@ export const PLAN_APPROVE_CALL = 'task_message({ action: "approve" })'
 export const PLAN_APPROVAL_OPTIONS_TEXT = PLAN_APPROVAL_OPTIONS.join(' / ')
 
 /**
- * L1「拍板流程」段的原子句：五条规则 + 计划批准 + 汇总口径。
- *
- * 与用户原话一一对应（《拍板流程优化》版本 A，最终收缩版）：
- *   1. 一项一问；2. 不用代号；3. 依赖分批、独立项可同批连续问（每问独立 options）；
- *   4. 计划审批先逐项确认 / 均按推荐，最后才总批准核对；5. 落地可测（文案 + 汇总函数）。
+ * L1「拍板流程」段标题。具体规则已内聚到 `src/prompt-layers.js` 的
+ * `renderDecisionPolicy`（L1 独占措辞）；跨层仍只共享四选一选项与显式批准调用。
  */
-export const DECISION_FLOW_LINES = Object.freeze({
-  heading: '拍板流程（逐项确认，再总批准）',
-  oneByOne: '**一项一问**：一个待拍板项一次提问——`ask_user_question` 的 `questions` 里一项一条、每问独立 options；'
-    + '**不得**把多项塞进一个选项组，也**不得**只问一个「总体确认」让用户一把批',
-  noCodes: '**用问题原文**：直接写待拍板问句本身，不出现 D1/D2、A/B/C 这类代号（代号增加理解成本，用户还得回头对表）；'
-    + '需要指代某一项时就用问句原文',
-  dependenceBatch: '**依赖分批**：有依赖的按依赖顺序分批问（前一项的答案决定后一项问什么）；彼此独立的可以在同一批里连续问多个——'
-    + '仍是每项一问，不是合成一个总体确认',
-  planApproval: `**计划审批先逐项**：计划 blocked 后先把摘要 + 计划文档绝对路径交给用户并 present，再用 ask_user_question 问「${PLAN_APPROVAL_OPTIONS_TEXT}」；`
-    + '选「逐项确认」就按 blocked 的 question 里列出的待拍板项顺序逐项问完、先给决策汇总，**最后**才做一次总批准核对（只问「就按这些执行？」，不混入新问题）；'
-    + '「均按推荐」必须用户明确点选——协调者不得默认、不得替用户选；'
-    + `用户明确批准后走两步：先 \`${PLAN_APPROVE_CALL}\`（只记账：plan_state=approved + 审批审计 + 清问题，**不碰沙箱**），再 task_message 续派实现（写权限在续派投递时授予）`,
-  summary: '**决策汇总**：每项按提问顺序写「问句原文 → 选择」贴给用户（`renderDecisionSummary`），总批准只核对这份汇总',
-  document: '**文档只由模型写**：`plan_save` 的 `content` 原样落盘（工具不加参数、不注入/不改写任何段、不解析正文）；'
-    + '用户确认后由模型自己把决策写进新正文，再调一次 `plan_save` 保存新版本即可',
-  soft: `**软门禁**：逐项提问是提示词约束，不是执行层拦截；工具层不做格式校验，也不存待拍板元数据；`
-    + `批准是**显式动作**——普通 task_message 只记讨论/修订、不会批准计划（见 \`${PLAN_APPROVE_CALL}\`）`,
-})
+export const DECISION_FLOW_HEADING = '拍板流程（逐项确认，再总批准）'
 
 /**
  * blocked 通知的待拍板提示（`src/notify.js` 在 question 里数到「待拍板：」清单时贴一句）。
