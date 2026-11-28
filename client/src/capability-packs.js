@@ -27,6 +27,19 @@ const STATUS_LABEL = {
   unknown: '未知',
 }
 
+// 健康状态按「硬失败 / 软待处理 / 全通过」三档收口，和 src/pack/health.js 的 healthLine 同口径。
+// 面板只展示结论；完整检查文案仍放在 title 里，避免长句把卡头撑成一条横幅。
+const healthOfPack = health => {
+  if (health === undefined || health === null || Array.isArray(health.checks) !== true) {
+    return { tone: 'muted', label: '未检查' }
+  }
+  if (health.checks.some(check => check.ok !== true && check.soft !== true)) return { tone: 'bad', label: '异常' }
+  if (health.checks.some(check => check.ok !== true && check.soft === true)) return { tone: 'warn', label: '待处理' }
+  return { tone: 'good', label: '正常' }
+}
+
+const CLI_TONE = { installed: 'good', outdated: 'warn', failed: 'bad', broken: 'bad' }
+
 const fmtMiB = size => (size === undefined || size === null ? '' : `${size} MiB`)
 const secondsText = seconds => {
   if (!Number.isFinite(seconds)) return ''
@@ -68,7 +81,7 @@ export function createCapabilityPacksPanel({
       }
     }
     return (
-      <div className="orch-pack-confirm" role="group" aria-label="安装确认">
+      <div className="orch-pack-panel orch-pack-confirm" role="group" aria-label="安装确认">
         <div className="orch-pack-confirm-title">{`安装 ${plan.package}@${plan.version}`}</div>
         <div className="orch-pack-kv"><span>管理器</span><b>{`${plan.manager}（${plan.scope}）`}</b></div>
         <div className="orch-pack-kv"><span>registry</span><b>{plan.registry}</b></div>
@@ -101,6 +114,7 @@ export function createCapabilityPacksPanel({
     const [value, setValue] = useState('')
     const [busy, setBusy] = useState(false)
     const [message, setMessage] = useState(null)
+    const env = Array.isArray(pack.env) ? pack.env : []
     const copy = async ref => {
       try {
         const body = await copyPackEnvCommand(pack.id, ref)
@@ -126,10 +140,13 @@ export function createCapabilityPacksPanel({
       }
     }
     return (
-      <div className="orch-pack-env">
-        <div className="orch-pack-confirm-title">{'环境变量（只显示是否设置，永不显示值）'}</div>
-        {pack.env.length === 0 ? <div className="orch-pack-muted">{'本包没有声明环境变量。'}</div> : null}
-        {pack.env.map(item => (
+      <div className="orch-pack-panel orch-pack-env">
+        <div className="orch-pack-sectionhead">
+          <span className="orch-pack-sectiontitle">{'环境变量'}</span>
+          <span className="orch-pack-muted">{'只显示是否设置，永不显示值'}</span>
+        </div>
+        {env.length === 0 ? <div className="orch-pack-muted">{'本包没有声明环境变量。'}</div> : null}
+        {env.map(item => (
           <div key={item.ref} className="orch-pack-env-row">
             <div className="orch-pack-env-head">
               <b className="orch-pack-mono">{item.ref}</b>
@@ -137,9 +154,9 @@ export function createCapabilityPacksPanel({
               <span className="orch-pack-muted">{`${item.kind}${item.required ? '｜必填' : ''}｜${item.purpose}`}</span>
             </div>
             <div className="orch-card-actions">
-              <button type="button" className="orch-btn orch-btn--sm" onClick={() => copy(item.ref)}>{copied?.ref === item.ref && copied.ok ? '已复制' : '复制设置命令'}</button>
+              <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={() => copy(item.ref)}>{copied?.ref === item.ref && copied.ok ? '已复制' : '复制设置命令'}</button>
               {item.set ? null : (
-                <button type="button" className="orch-btn orch-btn--sm" onClick={() => { setEditing(item.ref); setValue('') }}>
+                <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={() => { setEditing(item.ref); setValue('') }}>
                   {'由插件设置'}
                 </button>
               )}
@@ -152,7 +169,7 @@ export function createCapabilityPacksPanel({
                   placeholder="粘贴值（不会显示、不会回传）" onChange={event => setValue(event.target.value)}
                 />
                 <div className="orch-card-actions">
-                  <button type="button" className="orch-btn orch-btn--sm" onClick={() => { setEditing(null); setValue('') }} disabled={busy}>取消</button>
+                  <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={() => { setEditing(null); setValue('') }} disabled={busy}>取消</button>
                   <button type="button" className="orch-btn orch-btn--primary orch-btn--sm" onClick={() => submit(item.ref)} disabled={busy || value === ''}>
                     {busy ? '写入中…' : '确认写入'}
                   </button>
@@ -220,53 +237,117 @@ export function createCapabilityPacksPanel({
         setBusy(false)
       }
     }
+    const health = healthOfPack(pack.health)
+    const skills = Array.isArray(pack.skills) ? pack.skills : []
+    const env = Array.isArray(pack.env) ? pack.env : []
+    const readyText = pack.presetRegistered !== true
+      ? '预设未注册，暂不能开包会话'
+      : health.tone === 'good'
+        ? '已就绪，可直接开新会话'
+        : health.tone === 'warn'
+          ? '有检查待处理，相关能力可能不可用'
+          : health.tone === 'bad'
+            ? '检查未通过，建议先修复再开包会话'
+            : '尚未检查，建议先刷新'
     return (
       <section className="orch-card orch-pack" aria-label={pack.name}>
-        <div className="orch-card-top">
-          <div>
-            <div className="orch-card-title">
-              {pack.name}
-              {' '}
+        <header className="orch-pack-head">
+          <span className="orch-pack-mark" aria-hidden="true"><Icon name="sparkle" size={15} /></span>
+          <div className="orch-pack-ident">
+            <div className="orch-pack-titleline">
+              <span className="orch-pack-name">{pack.name}</span>
               <Badge tone={pack.kind === 'builtin' ? 'info' : 'muted'}>{pack.kind === 'builtin' ? '内置' : '用户包'}</Badge>
-              {' '}
-              <span className="orch-pack-muted">{`v${pack.version}`}</span>
+              <span className="orch-pack-version">{`v${pack.version}`}</span>
             </div>
-            <div className="orch-card-meta">{`${pack.publisher}｜技能 ${pack.skills.length}｜${pack.presetRegistered ? '预设已注册' : '预设未注册'}`}</div>
+            {typeof pack.description === 'string' && pack.description !== ''
+              ? <p className="orch-pack-desc">{pack.description}</p>
+              : null}
+            <div className="orch-pack-meta">
+              <span>{pack.publisher}</span>
+              <span className="orch-pack-sep" aria-hidden="true">{'·'}</span>
+              <span>{`${skills.length} 个技能`}</span>
+              <span className="orch-pack-sep" aria-hidden="true">{'·'}</span>
+              <span data-ready={pack.presetRegistered === true}>{pack.presetRegistered ? '预设已注册' : '预设未注册'}</span>
+            </div>
           </div>
-          <Chip tone={pack.health.ok === true ? 'good' : 'warn'}>{pack.healthLine}</Chip>
-        </div>
-        <div className="orch-pack-rows">
+          <span className="orch-pack-health">
+            <Badge tone={health.tone} title={pack.healthLine}>
+              <span className="orch-pack-health-dot" aria-hidden="true" />
+              {health.label}
+            </Badge>
+          </span>
+        </header>
+        <div className="orch-pack-spec">
           <div className="orch-pack-kv">
             <span>CLI</span>
-            <b>{cli === null ? '本包不依赖 CLI' : `${cli.package}@${cli.version}｜${STATUS_LABEL[cli.status] ?? cli.status}`}</b>
+            {cli === null
+              ? <b className="orch-pack-none">{'本包不依赖 CLI'}</b>
+              : (
+                  <b className="orch-pack-cli">
+                    <span className="orch-pack-mono">{`${cli.package}@${cli.version}`}</span>
+                    <Badge tone={CLI_TONE[cli.status] ?? 'muted'}>{STATUS_LABEL[cli.status] ?? cli.status}</Badge>
+                  </b>
+                )}
           </div>
-          <div className="orch-pack-kv"><span>目录</span><b className="orch-pack-mono">{pack.dir}</b></div>
+          <div className="orch-pack-kv">
+            <span>技能</span>
+            <b className="orch-pack-chips">
+              {skills.length === 0
+                ? <span className="orch-pack-none">{'无'}</span>
+                : skills.map(skill => (
+                    <Chip key={skill.name} title={skill.description}>{skill.name}</Chip>
+                  ))}
+            </b>
+          </div>
+          <div className="orch-pack-kv">
+            <span>目录</span>
+            <b className="orch-pack-mono orch-pack-path" title={pack.dir}>{pack.dir}</b>
+          </div>
           <div className="orch-pack-kv">
             <span>环境变量</span>
-            <b>{pack.env.length === 0 ? '无' : pack.env.map(item => `${item.ref}=${item.set ? '已设置' : '未设置'}`).join('，')}</b>
+            <b className="orch-pack-chips">
+              {env.length === 0
+                ? <span className="orch-pack-none">{'无'}</span>
+                : env.map(item => (
+                    <Chip
+                      key={item.ref}
+                      tone={item.set ? 'good' : (item.required ? 'warn' : undefined)}
+                      title={`${item.kind}${item.required ? '｜必填' : ''}｜${item.purpose}`}
+                    >{`${item.ref} ${item.set ? '已设置' : '未设置'}`}</Chip>
+                  ))}
+            </b>
           </div>
         </div>
-        <div className="orch-card-actions">
-          <button type="button" className="orch-btn orch-btn--primary orch-btn--sm" onClick={open} disabled={busy || pack.presetRegistered !== true}>
-            {'用这个包开新会话'}
-          </button>
-          {cli === null ? null : (cli.status === 'installed' || cli.status === 'outdated'
-            ? (
-              <button type="button" className="orch-btn orch-btn--sm" onClick={uninstall} disabled={busy}>{'卸载 CLI'}</button>
-            )
-            : (
-              <button type="button" className="orch-btn orch-btn--sm" onClick={() => setConfirming(cli.plan)} disabled={busy || cli.plan === undefined}>
-                {cli.status === 'failed' ? '重试安装 CLI' : '安装 CLI'}
-              </button>
-            ))}
-          <button type="button" className="orch-btn orch-btn--sm" onClick={() => setEnvOpen(value => !value)}>{envOpen ? '收起环境变量' : '环境变量'}</button>
-          {pack.deletable ? (
-            <button type="button" className="orch-btn orch-btn--danger orch-btn--sm" onClick={() => setDeleteOpen(true)} disabled={busy}>{'删除'}</button>
-          ) : null}
-        </div>
+        <footer className="orch-pack-foot">
+          <span className="orch-pack-footnote" data-tone={health.tone}>{readyText}</span>
+          <div className="orch-card-actions orch-pack-actions">
+            {pack.deletable ? (
+              <button type="button" className="orch-btn orch-btn--danger orch-btn--quiet" onClick={() => setDeleteOpen(true)} disabled={busy}>{'删除'}</button>
+            ) : null}
+            {cli === null ? null : (cli.status === 'installed' || cli.status === 'outdated'
+              ? (
+                  <button type="button" className="orch-btn orch-btn--ghost" onClick={uninstall} disabled={busy}>{'卸载 CLI'}</button>
+                )
+              : (
+                  <button type="button" className="orch-btn orch-btn--ghost" onClick={() => setConfirming(cli.plan)} disabled={busy || cli.plan === undefined}>
+                    {cli.status === 'failed' ? '重试安装 CLI' : '安装 CLI'}
+                  </button>
+                ))}
+            <button type="button" className="orch-btn orch-btn--ghost" onClick={() => setEnvOpen(value => !value)}>{envOpen ? '收起环境变量' : '环境变量'}</button>
+            <button
+              type="button" className="orch-btn orch-btn--primary"
+              onClick={open}
+              disabled={busy || pack.presetRegistered !== true}
+              title="用这个能力包开一个新会话"
+            >
+              <Icon name="plus" size={12} />
+              <span>{'开新会话'}</span>
+            </button>
+          </div>
+        </footer>
         {message === null ? null : <div className={message.tone === 'good' ? 'orch-pack-ok' : 'orch-pack-err'}>{message.text}</div>}
         {deleteOpen ? (
-          <div className="orch-pack-confirm">
+          <div className="orch-pack-panel orch-pack-confirm">
             <div className="orch-pack-confirm-title">{`删除「${pack.name}」？`}</div>
             <ul className="orch-pack-notes">
               <li>{'撤销预设（已开着的会话按平台语义保旧 revision，结束后失效）'}</li>
@@ -322,11 +403,15 @@ export function createCapabilityPacksPanel({
       <div className="orch-body orch-body--packs">
         <main className="orch-main orch-packs-shell">
           <header className="orch-packs-head">
-            <div className="orch-card-title">
-              <Icon name="sparkle" size={14} />
-              {'能力包'}
+            <span className="orch-packs-mark" aria-hidden="true"><Icon name="navPacks" size={16} /></span>
+            <div className="orch-packs-headtext">
+              <div className="orch-packs-title">{'能力包'}</div>
+              <div className="orch-packs-subtitle">{'随会话加载的技能包；健康、CLI 与环境变量在这里管理。'}</div>
             </div>
-            <button type="button" className="orch-btn orch-btn--sm" onClick={load}>{'刷新'}</button>
+            <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm orch-packs-refresh" onClick={load} title="重新拉取能力包列表">
+              <Icon name="refresh" size={12} />
+              <span>{'刷新'}</span>
+            </button>
           </header>
           {state.error === null ? null : <Banner tone="error">{state.error}</Banner>}
           {data !== null && data.usable !== true ? (

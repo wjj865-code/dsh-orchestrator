@@ -266,10 +266,10 @@ test('createWorkbench.groups：并集组键 + 未分组计数（不需要组表�
   assert.equal(ghost.groupId, 'other')
   assert.equal(ghost.groupName, 'other', '没有组元数据时回落组键')
   assert.equal(withGraph.graph.truncated, false)
-  // 关系图卡片第三层（G5）的两个只读字段：毫秒时间戳 + 进度回报次数（不是消息总数）。
+  // 关系图数据仍保留毫秒时间戳与进度回报次数；progressCount 不是主会话交互轮次，客户端关系图已不展示。
   const g5Fields = withGraph.tasks.find(task => task.id === downstream.id)
   assert.ok(Number.isFinite(g5Fields.createdAt), 'createdAt 应是毫秒时间戳')
-  assert.equal(g5Fields.progressCount, 0, 'progress_count 台账默认 0，客户端只读展示')
+  assert.equal(g5Fields.progressCount, 0, 'progress_count 台账默认 0，不再显示为「步数」')
   makeTask(db, { group: 'gzh', title: '丁', dependsOn: ['t-gone'] })
   assert.equal(bench.group('gzh').graph.external.length, 1, '已删除的前置不产生组外节点')
   assert.equal(bench.group('nope').code, 'GROUP_NOT_FOUND')

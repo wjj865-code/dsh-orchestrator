@@ -434,7 +434,8 @@ test('产物页：调用 artifacts 端点、按项目/日期分组、预览/复�
   assert.match(source, /复制路径/)
   assert.match(source, /打开子会话/)
   // 空态和失败态。
-  assert.match(source, /共 \$\{artifactItems\.length\} 个产物/)
+  assert.match(source, /<b>\{artifactItems\.length\}<\/b>/, '产物总数仍要显示（新工具栏用加粗数字）')
+  assert.match(source, /个产物/)
   assert.match(source, /产物加载失败/)
   assert.match(source, /还没有产物。任务 done 时会自动收集改动文件/)
   assert.match(source, /kind === 'text'/)

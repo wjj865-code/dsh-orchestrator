@@ -69,6 +69,7 @@ import { isDesktopHost } from './src/pack/platform.js'
 import { createInstaller } from './src/pack/install.js'
 import { createPackService } from './src/pack/service.js'
 import { createPackPanel } from './src/pack/panel.js'
+import { persistedEnvPresence } from './src/pack/env.js'
 
 export const name = 'dsh-orchestrator'
 export const inject = ['tools', 'agents', 'systemPrompt', 'subagents']
@@ -1122,6 +1123,8 @@ export async function apply(ctx, rawConfig = {}) {
     workspaces: () => service('workspaceRegistry'),
     workspaceDir: () => resolveCoordinator()?.session?.header?.cwd ?? join(dir, 'workspace'),
     env: process.env,
+    // 用户级变量可能早于本宿主进程写入：面板按「已配置」显示，避免把重启后可见误报成未设置。
+    persistedEnv: ref => persistedEnvPresence(ref),
     log: (event, fields) => logger.log(event, fields),
     onWarn: warnings,
   })

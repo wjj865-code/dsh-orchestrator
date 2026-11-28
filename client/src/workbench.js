@@ -511,7 +511,7 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
                   <span className="orch-wb-gfact">{facts}</span>
                 </span>
                 <span className="orch-wb-gmeta">
-                  <span>{external ? '' : `${elapsedTextOf(task)} · ${task.progressCount ?? 0} 步`}</span>
+                  <span>{external ? '' : elapsedTextOf(task)}</span>
                   <span>{external || !task.updatedAt ? '' : `更新 ${planWhenLabel(task.updatedAt)}`}</span>
                 </span>
               </button>
@@ -606,7 +606,10 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
     if (state.data === null) {
       return (
         <div className="orch-wb-page">
-          <button type="button" className="orch-btn orch-btn--ghost" onClick={onBack}>{'← 返回任务组'}</button>
+          <button type="button" className="orch-btn orch-btn--ghost orch-wb-back" onClick={onBack}>
+            <Icon name="chevron" size={14} />
+            <span>{'返回任务组'}</span>
+          </button>
           {state.error !== null
             ? <Banner tone="error" icon="alert" action={<button type="button" className="orch-btn orch-btn--sm" onClick={onReload}>{'重试'}</button>}>{`组读取失败：${state.error}`}</Banner>
             : <SkeletonList rows={4} />}
@@ -628,7 +631,10 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
       <div className="orch-wb-page orch-wb-grouppage">
         <header className="orch-wb-grouphead">
           <div className="orch-wb-grouphead-main">
-            <button type="button" className="orch-btn orch-btn--ghost" onClick={onBack}>{'← 返回任务组'}</button>
+            <button type="button" className="orch-btn orch-btn--ghost orch-wb-back" onClick={onBack}>
+              <Icon name="chevron" size={14} />
+              <span>{'返回任务组'}</span>
+            </button>
             <span className="orch-wb-gname orch-wb-gname--big">{group.name}</span>
             {group.archived ? <Chip>{'已归档'}</Chip> : null}
             <span className="orch-wb-grow" />
@@ -761,14 +767,14 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
           <button
             type="button" className="orch-btn orch-btn--quiet orch-btn--sm"
             onClick={() => onAnchor(startOfMonth(new Date(grid.year, grid.month - 1, 1).getTime()))}
-            aria-label="上个月"
-          ><Icon name="chevron" size={14} style={{ transform: 'rotate(90deg)' }} /></button>
+            aria-label="上个月" title="上个月"
+          ><Icon name="chevronLeft" size={14} /></button>
           <span className="orch-wb-calmonth">{grid.label}</span>
           <button
             type="button" className="orch-btn orch-btn--quiet orch-btn--sm"
             onClick={() => onAnchor(startOfMonth(new Date(grid.year, grid.month + 1, 1).getTime()))}
-            aria-label="下个月"
-          ><Icon name="chevron" size={14} style={{ transform: 'rotate(-90deg)' }} /></button>
+            aria-label="下个月" title="下个月"
+          ><Icon name="chevronRight" size={14} /></button>
           <button type="button" className="orch-btn orch-btn--quiet orch-btn--sm" onClick={() => onAnchor(startOfMonth(Date.now()))}>{'今天'}</button>
           <span className="orch-wb-grow" />
           <span className="orch-muted">{`本月排期 ${monthTaskCount} 条 · 自动化触发 ${monthAutomationCount} 次`}</span>
@@ -896,7 +902,7 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
   // 到点做什么/授权勾选）整块删除：现在只有「全部任务（收件箱巡检）」一种范围语义，写在提示词里。
   // 列表仍只读本插件的镜像表（宿主任务请去官方「自动化任务」页看，入口在卡尾）。
   // 0.37.0：卡头只留主操作（创建）；行压到 56 高两段；删除走 ConfirmDialog（不再一点就删）。
-  const AutomationsPage = ({ state, busy, onReload, onCreate, onOpenSchedules, onToggle, onDelete }) => {
+  const AutomationsPage = ({ state, busy, onReload, onCreate, onOpenSchedules, onOpenSession, onToggle, onDelete }) => {
     const [deleteId, setDeleteId] = useState(null)
     if (state.data === null) {
       return <SkeletonList rows={3} />
@@ -922,6 +928,26 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
             <span className="orch-wb-cardtitle">{'已配置'}</span>
             <span className="orch-muted">{`${rows.length} 条`}</span>
             <span className="orch-wb-grow" />
+            <button
+              type="button" className="orch-btn orch-btn--ghost orch-btn--sm orch-wb-refresh"
+              onClick={onReload}
+              title="重新拉取自动化列表"
+            >
+              <Icon name="refresh" size={12} />
+              <span>{'刷新'}</span>
+            </button>
+            {typeof onOpenSchedules === 'function'
+              ? (
+                  <button
+                    type="button" className="orch-btn orch-btn--ghost orch-btn--sm orch-wb-official"
+                    onClick={onOpenSchedules}
+                    title="官方「自动化任务」页：会话里创建的自动化都在这里（可手动创建、暂停、删除）"
+                  >
+                    <Icon name="external" size={12} />
+                    <span>{'官方自动化任务页'}</span>
+                  </button>
+                )
+              : null}
             <button
               type="button" className="orch-btn orch-btn--primary orch-btn--lg"
               data-orch-create-automation=""
@@ -953,11 +979,27 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
                           {row.lastDeliveryAt ? <span>{`最近投递 ${planWhenLabel(row.lastDeliveryAt)}`}</span> : null}
                         </div>
                         <details className="orch-wb-details">
-                          <summary>{'看到期话术'}</summary>
-                          <pre className="orch-pre">{row.prompt}</pre>
+                          <summary className="orch-btn orch-btn--ghost orch-btn--sm orch-wb-details-summary">
+                            <Icon name="chevron" size={12} className="orch-wb-details-caret" />
+                            <span className="orch-wb-details-label orch-wb-details-label--closed">{'查看到期话术'}</span>
+                            <span className="orch-wb-details-label orch-wb-details-label--open">{'收起到期话术'}</span>
+                          </summary>
+                          <pre className="orch-pre orch-wb-prompt">{row.prompt}</pre>
                         </details>
                       </div>
                       <div className="orch-wb-autoactions">
+                        {typeof onOpenSession === 'function' && typeof row.targetSession === 'string' && row.targetSession !== ''
+                          ? (
+                              <button
+                                type="button" className="orch-btn orch-btn--quiet orch-btn--sm"
+                                onClick={() => onOpenSession(row.targetSession)}
+                                title="打开这条自动化绑定的会话"
+                              >
+                                <Icon name="external" size={12} />
+                                <span>{'打开'}</span>
+                              </button>
+                            )
+                          : null}
                         <button
                           type="button" className="orch-btn orch-btn--quiet orch-btn--sm"
                           disabled={data.available !== true || busy}
@@ -975,13 +1017,6 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
                   ))}
                 </ul>
               )}
-          <footer className="orch-wb-cardfoot">
-            {typeof onOpenSchedules === 'function'
-              ? <button type="button" className="orch-btn orch-btn--quiet orch-btn--sm" onClick={onOpenSchedules} title="官方「自动化任务」页：会话里创建的自动化都在这里（可手动创建、暂停、删除）">{'官方自动化任务页'}</button>
-              : null}
-            <span className="orch-wb-grow" />
-            <button type="button" className="orch-btn orch-btn--quiet orch-btn--sm" onClick={onReload}>{'刷新'}</button>
-          </footer>
         </section>
         {deleteId === null
           ? null

@@ -8,7 +8,7 @@
 //   4. **只允许 manifest 声明过的变量**：未声明的 ref 直接拒绝（防「顺手设置一个我不知道的变量」）；
 //   5. **只管 Windows**：非 Windows v1 只生成 export/launchctl 说明，不执行。
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 
 /** 环境变量名语法（与 manifest 校验同源；这里再守一次，防绕过 tool 直接调路由）。 */
 export const ENV_REF = /^[A-Z_][A-Z0-9_]*$/
@@ -16,15 +16,34 @@ export const ENV_REF = /^[A-Z_][A-Z0-9_]*$/
 /** `setx` 的值上限（Windows 文档：1024 字符）。 */
 export const SETX_MAX_CHARS = 1024
 
-/** 只回答存在性，绝不读值。 */
-export function envPresence(ref, env = process.env) {
+/**
+ * Windows 用户级持久环境变量里是否已有该键（`setx`/系统设置写入 HKCU\Environment）。
+ * 只看 `reg query` 的退出码：不解析、不返回、不记录值——和 envPresence 同一安全边界。
+ * 用途：宿主进程比变量更早启动时（常见于从旧终端拉起 DSH），面板不该把
+ * 「用户已配置、重启后可见」误报成「未设置」。
+ */
+export function persistedEnvPresence(ref, { platform = process.platform, execFile = execFileSync } = {}) {
+  if (platform !== 'win32') return false
+  if (typeof ref !== 'string' || !ENV_REF.test(ref)) return false
+  try {
+    execFile('reg', ['query', 'HKCU\\Environment', '/v', ref], { stdio: 'ignore', windowsHide: true, timeout: 2000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 只回答存在性，绝不读值。persistedEnv 可选：进程环境没有时再问用户级持久变量。 */
+export function envPresence(ref, env = process.env, { persistedEnv } = {}) {
   if (typeof ref !== 'string' || !ENV_REF.test(ref)) return { ref, set: false, valid: false }
   const value = env[ref]
-  return { ref, set: typeof value === 'string' && value !== '', valid: true }
+  if (typeof value === 'string' && value !== '') return { ref, set: true, valid: true }
+  const stored = typeof persistedEnv === 'function' && persistedEnv(ref) === true
+  return { ref, set: stored, valid: true }
 }
 
 /** 按 manifest 汇总环境变量状态（面板/健康检查共用；顺序与声明一致）。 */
-export function envSummary(manifest, env = process.env) {
+export function envSummary(manifest, env = process.env, options = {}) {
   return manifest.env.map(item => ({
     ref: item.ref,
     kind: item.kind,
@@ -32,7 +51,7 @@ export function envSummary(manifest, env = process.env) {
     purpose: item.purpose,
     consumers: Array.isArray(item.consumers) ? item.consumers : [],
     ...(item.docs === undefined ? {} : { docs: item.docs }),
-    ...envPresence(item.ref, env),
+    ...envPresence(item.ref, env, options),
   }))
 }
 

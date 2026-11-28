@@ -19,10 +19,13 @@ import { defaultHealth } from './manifest.js'
  * @param {string} options.id
  * @param {{ statusOf: (manifest: object, cliId: string) => object }} [options.installer]
  * @param {Record<string, string | undefined>} [options.env]
+ * @param {(ref: string) => boolean} [options.persistedEnv]
  * @param {(path: string) => boolean} [options.exists]
  * @param {() => number} [options.now]
  */
-export function checkPackHealth({ manifest, packRoot, id, installer, env = process.env, exists = existsSync, now = Date.now }) {
+export function checkPackHealth({
+  manifest, packRoot, id, installer, env = process.env, persistedEnv, exists = existsSync, now = Date.now,
+}) {
   const declared = Array.isArray(manifest.health) && manifest.health.length > 0 ? manifest.health : defaultHealth(manifest)
   const checks = []
   for (const item of declared) {
@@ -33,7 +36,7 @@ export function checkPackHealth({ manifest, packRoot, id, installer, env = proce
       checks.push({ id: item.id, kind: item.kind, soft: item.soft === true, ok: missing.length === 0, ...(missing.length === 0 ? {} : { missing }) })
     } else if (item.kind === 'env') {
       const refs = Array.isArray(spec.refs) ? spec.refs : []
-      const missing = refs.filter(ref => !envPresence(ref, env).set)
+      const missing = refs.filter(ref => !envPresence(ref, env, { persistedEnv }).set)
       checks.push({ id: item.id, kind: item.kind, soft: item.soft !== false, ok: missing.length === 0, ...(missing.length === 0 ? {} : { missing }) })
     } else if (item.kind === 'command') {
       const cli = manifest.cli[0]

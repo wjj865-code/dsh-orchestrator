@@ -247,9 +247,39 @@
 .orch-artifact-open:disabled { cursor: not-allowed; opacity: 0.6; text-decoration: none; }
 .orch-artifact-open:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, #4d6bfe); outline-offset: 2px; }
 .orch-preview { display: flex; flex-direction: column; gap: 4px; flex-basis: 100%; padding-top: 6px; border-top: 1px dashed var(--orch-line-strong); }
-.orch-group { display: flex; flex-direction: column; gap: 6px; }
-.orch-group-head { display: flex; align-items: baseline; gap: 6px; }
+
+/* 产物库（0.37.1）：从「一行塞下路径+标签+4 个按钮」改成两行三列。
+ * 文件名/目录/来源/时间/动作各归其位，长路径不再被 anywhere 折成竖条；
+ * 每个分组是一张卡，行之间只用发丝线分隔，168 条也不会散成一片灰块。 */
+.orch-artifact-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 28px; }
+.orch-artifact-count { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary, #4a4f57); font-variant-numeric: tabular-nums; }
+.orch-artifact-count b { font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-artifact-toolbar .orch-seg { margin-left: auto; }
+.orch-artifact-rows { display: flex; flex-direction: column; }
+.orch-artifact-row { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 2px 10px; align-items: start; padding: 9px 12px; border-top: 1px solid var(--orch-line); transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
+.orch-artifact-rows .orch-artifact-row:first-child { border-top: 0; }
+.orch-artifact-row:hover { background: var(--dsw-alias-bg-layer-2, #f2f3f5); }
+.orch-artifact-row[data-missing='true'] .orch-artifact-name { color: var(--dsw-alias-state-error-primary, #ec1313); }
+.orch-artifact-dot { margin-top: 6px; }
+.orch-artifact-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.orch-artifact-titleline { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.orch-artifact-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 18px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-artifact-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ds-font-family-code, 'SF Mono', Consolas, monospace); font-size: 10.5px; line-height: 16px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-artifact-subline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; font-size: 11px; line-height: 16px; }
+.orch-artifact-label { min-width: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-secondary, #4a4f57); }
+.orch-artifact-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; flex-wrap: wrap; padding-top: 1px; }
+.orch-artifact-row .orch-preview { grid-column: 2 / -1; }
+
+.orch-group { display: flex; flex-direction: column; border: 1px solid var(--orch-line); border-radius: var(--dsw-radius-md, 12px); background: var(--orch-surface-1); overflow: hidden; }
+.orch-group-head { display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; background: var(--orch-surface-card); border-bottom: 1px solid var(--orch-line); }
 .orch-group-title { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-group-head .orch-muted { margin-left: auto; }
+
+@media (max-width: 900px) {
+  .orch-artifact-row { grid-template-columns: 8px minmax(0, 1fr); }
+  .orch-artifact-actions { grid-column: 2; justify-content: flex-start; padding-top: 4px; }
+  .orch-artifact-row .orch-preview { grid-column: 2; }
+}
 .orch-seg { display: inline-flex; gap: 4px; padding: 2px; border-radius: var(--dsw-radius-sm, 8px); background: var(--orch-surface-3); }
 .orch-seg-item { padding: 0 8px; height: 22px; border: 0; border-radius: var(--dsw-radius-xs, 4px); background: transparent; color: var(--dsw-alias-label-secondary, #55585f); font: inherit; font-size: 11px; cursor: pointer; transition: background-color var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
 .orch-seg-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(38, 49, 72, 0.06)); }
@@ -325,7 +355,9 @@
 
 /* ---------- 工作台 v1（P11）：紧凑版（只留结构/对齐/语义色，装饰一律减省） ---------- */
 .orch-body--workbench { flex-direction: column; }
-.orch-wb-shell { gap: 0; }
+/* 一级导航与当前页面根之间的块间距：页面自己的 gap 只作用于页内，不能替这两层补空。
+ * 0.37.0 写成 0，任务组导航直接贴住首排组卡；恢复为与页内块间距相同的 12。 */
+.orch-wb-shell { gap: var(--orch-gap-4); }
 .orch-wb, .orch-wb-page, .orch-wb-overview, .orch-wb-grouppage, .orch-wb-schedule, .orch-wb-automations { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 /* 一级导航：页面级胶囊（与筛选轨的文字行靠形态区分；这一层仍是 pill）。 */
 .orch-wb-nav { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 2px; border: 1px solid var(--orch-line); border-radius: var(--dsw-radius-sm, 8px); background: var(--orch-surface-3); overflow-x: auto; }
@@ -341,10 +373,15 @@
 .orch-wb-card, .orch-wb-dock { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--orch-line); border-radius: var(--dsw-radius-md, 12px); }
 .orch-wb-card { background: var(--orch-surface-1); }
 .orch-wb-dock { flex: 0 0 260px; background: var(--orch-surface-card); }
-.orch-wb-cardhead, .orch-wb-dockhead, .orch-wb-ghead, .orch-wb-tmeta, .orch-wb-tfoot, .orch-wb-gstats, .orch-wb-gfoot, .orch-wb-grouphead, .orch-wb-grouphead-main, .orch-wb-grouphead-sub, .orch-wb-calhead, .orch-wb-dayhead, .orch-wb-colidx, .orch-wb-autotitle, .orch-wb-autometa, .orch-wb-aactions, .orch-wb-inline, .orch-wb-plan, .orch-wb-planform, .orch-wb-gform, .orch-wb-gactbar, .orch-wb-cardfoot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.orch-wb-cardhead, .orch-wb-dockhead, .orch-wb-ghead, .orch-wb-tmeta, .orch-wb-tfoot, .orch-wb-gstats, .orch-wb-gfoot, .orch-wb-grouphead, .orch-wb-grouphead-main, .orch-wb-grouphead-sub, .orch-wb-calhead, .orch-wb-dayhead, .orch-wb-colidx, .orch-wb-autotitle, .orch-wb-autometa, .orch-wb-aactions, .orch-wb-inline, .orch-wb-plan, .orch-wb-planform, .orch-wb-gform, .orch-wb-gactbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 /* 组页头两级：第一行「返回 + 组名 15/22 + 状态 tag + 主操作」，第二行「目标 + 计数 + 重命名/归档」。 */
 .orch-wb-grouphead { flex-direction: column; align-items: stretch; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--orch-line); }
 .orch-wb-grouphead-sub { font-size: 11px; line-height: 16px; gap: 8px; }
+/* 组页返回是导航，不是与重命名/归档同权的动作：柔和底 + 细描边 + 统一 chevron。
+ * 仍复用 .orch-btn 的 26 高、按压与焦点环，只把视觉层级降一档。 */
+.orch-wb-back { gap: 4px; padding: 0 8px 0 6px; border-color: var(--orch-line); background: var(--orch-surface-card); font-weight: 500; }
+.orch-wb-back:hover { border-color: var(--orch-line-strong); background: var(--orch-surface-2); }
+.orch-wb-back .orch-icon { transform: rotate(90deg); }
 /* 组页头两行的动作区间距：两行原来都吃共享规则的 6，四个按钮挨在一起；统一 8（≥8 的下一档是 12，留给块间距）。
  * 次级按钮仍留在这两行里（返回在左、主操作在右、重命名/归档在副行），只改间距与按钮档位。 */
 .orch-wb-grouphead-main { gap: 8px; }
@@ -353,8 +390,9 @@
  * 24 的收尾留白写在页面自己身上：滚动容器的 padding-bottom（.orch-main 的 24）在内容溢出时浏览器
  * 不计入滚动区（实测滚到底后卡底到面板底 = 0），所以由最后一块内容补出来（与 .orch-main 的 24 同档）。 */
 .orch-wb-grouppage { flex: 0 0 auto; padding-bottom: 24px; }
-/* 自动化卡尾：官方页入口与刷新下沉成 22 高文字按钮（卡头只留一个主操作）。 */
-.orch-wb-cardfoot { padding-top: 8px; border-top: 1px solid var(--orch-line); }
+/* 自动化页头的辅助动作：刷新与官方页并排，同用浅底 + 描边 + 图标；主操作单独留在最右。 */
+.orch-wb-official { gap: 4px; border-color: var(--orch-line-strong); background: var(--orch-surface-2); font-weight: 500; }
+.orch-wb-refresh { gap: 4px; border-color: var(--orch-line-strong); background: var(--orch-surface-2); font-weight: 500; }
 /* 卡头：高 32、标题 13/600、右侧动作 22 高。 */
 .orch-wb-cardhead { min-height: 32px; }
 .orch-wb-cardtitle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; line-height: 20px; font-weight: 600; }
@@ -481,7 +519,18 @@ textarea.orch-input { height: auto; padding: 6px 8px; resize: vertical; }
 .orch-wb-automain { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
 .orch-wb-autotitle { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; line-height: 18px; font-weight: 600; }
 .orch-wb-autometa { display: flex; gap: 8px; flex-wrap: nowrap; }
+/* 到期话术折叠：复用 22 高 ghost 按钮，默认三角换成统一 chevron，展开后旋转并换成「收起」。 */
 .orch-wb-details { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary, #55585f); }
+.orch-wb-details-summary { width: fit-content; gap: 4px; list-style: none; user-select: none; color: var(--dsw-alias-label-secondary, #55585f); }
+.orch-wb-details-summary::-webkit-details-marker { display: none; }
+.orch-wb-details-summary::marker { content: ''; }
+.orch-wb-details-caret { color: var(--dsw-alias-label-tertiary, #8a8f99); transition: transform var(--ds-transition-duration-fast, 0.1s) var(--ds-ease-in-out, ease); }
+.orch-wb-details[open] .orch-wb-details-caret { transform: rotate(180deg); }
+.orch-wb-details[open] .orch-wb-details-summary { border-color: var(--orch-line-strong); background: var(--orch-surface-2); color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-wb-details-label--open { display: none; }
+.orch-wb-details[open] .orch-wb-details-label--closed { display: none; }
+.orch-wb-details[open] .orch-wb-details-label--open { display: inline; }
+.orch-wb-prompt { margin-top: 6px; }
 .orch-wb-autoactions { display: flex; gap: 4px; flex: 0 0 auto; }
 /* 复盘页（P11 阶段 3）：数字排 + 横向条 + 排行行；不引图表库，宽度用百分比内联。 */
 .orch-wb-rstats { display: flex; align-items: stretch; border-top: 1px solid var(--orch-line); border-bottom: 1px solid var(--orch-line); }
@@ -632,22 +681,88 @@ textarea.orch-input { height: auto; padding: 6px 8px; resize: vertical; }
 .orch-cfg-switch--on .orch-cfg-switch-knob { transform: translateX(14px); }
 .orch-cfg-actions { display: flex; align-items: center; gap: 8px; padding-top: 2px; }
 
-/* ── 能力包面板（0.32.0 / P4）：范围外，样式保持原样 ─────────────────────── */
-.orch-packs-shell { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; overflow-y: auto; }
-.orch-packs-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.orch-pack { display: flex; flex-direction: column; gap: 8px; }
-.orch-pack-rows { display: flex; flex-direction: column; gap: 4px; }
-.orch-pack-kv { display: flex; gap: 8px; font-size: 11px; line-height: 1.5; min-width: 0; }
-.orch-pack-kv > span { flex: 0 0 68px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
-.orch-pack-kv > b { flex: 1 1 auto; min-width: 0; font-weight: 500; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary, #4a4f57); }
-.orch-pack-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; }
+/* ── 能力包面板（0.32.0 / P4；0.37.1 视觉收敛）─────────────────────────────
+ * 这一页原来只借了 .orch-card 的骨架：标题、健康、详情、动作全挤在一张“透明卡”里，
+ * 长健康文案顶在标题右侧，主操作孤零零挂在卡片右下角。这里把卡拆成三段：
+ * 卡头（身份 + 状态）/ 规格（CLI、技能、目录、环境变量）/ 底部动作（说明 + 操作组）。
+ * 页面本身收成 1040 的阅读宽度，避免单包时内容横跨整个窗口。 */
+.orch-packs-shell { width: 100%; max-width: 1040px; margin: 0 auto; padding: var(--orch-page-pad, 12px) 16px 24px; gap: var(--orch-gap-4, 12px); overflow-y: auto; }
+.orch-packs-head { display: flex; align-items: center; gap: 10px; min-width: 0; padding-bottom: 10px; border-bottom: 1px solid var(--orch-line); }
+.orch-packs-mark { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 auto; border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-specific-bubble, #eef2ff); color: var(--dsw-alias-state-business-primary, #4d6bfe); }
+.orch-packs-headtext { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.orch-packs-title { font-size: var(--orch-fs-5, 15px); line-height: var(--orch-lh-5, 22px); font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-packs-subtitle { font-size: var(--orch-fs-2, 11px); line-height: var(--orch-lh-2, 16px); color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-packs-refresh { margin-left: auto; flex: 0 0 auto; gap: 4px; }
+
+/* 卡片外观不能依赖宿主的 card-fill：部分主题里它就是白色，和页面同色会直接“消失”。
+ * 这里用文字色的低比例混合出明确的卡底、描边和一层轻阴影，深浅主题都成立。 */
+.orch-pack {
+  gap: 10px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, #1f1f1f) 4%, var(--orch-surface));
+  border-color: color-mix(in srgb, var(--dsw-alias-label-primary, #1f1f1f) 12%, transparent);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--dsw-alias-label-primary, #1f1f1f) 8%, transparent);
+  cursor: default;
+}
+/* 包卡没有“点整卡打开”的交互，不能继承 .orch-card 的 hover 抬升，否则像可点列表行。 */
+.orch-pack:hover {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, #1f1f1f) 5%, var(--orch-surface));
+  border-color: color-mix(in srgb, var(--dsw-alias-label-primary, #1f1f1f) 16%, transparent);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--dsw-alias-label-primary, #1f1f1f) 8%, transparent);
+}
+.orch-pack-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.orch-pack-mark { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 auto; border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-specific-bubble, #eef2ff); color: var(--dsw-alias-state-business-primary, #4d6bfe); }
+.orch-pack-ident { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.orch-pack-titleline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.orch-pack-name { font-size: var(--orch-fs-5, 15px); line-height: var(--orch-lh-5, 22px); font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-pack-version { font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary, #8a8f99); font-variant-numeric: tabular-nums; }
+.orch-pack-desc { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary, #4a4f57); }
+.orch-pack-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-pack-meta [data-ready='false'] { color: var(--dsw-alias-state-warn-label, #b45309); }
+.orch-pack-sep { color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12)); }
+.orch-pack-health { flex: 0 0 auto; padding-top: 2px; }
+.orch-pack-health .orch-badge { gap: 5px; font-weight: 500; }
+.orch-pack-health-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: currentColor; }
+
+.orch-pack-spec { display: flex; flex-direction: column; border: 1px solid color-mix(in srgb, var(--dsw-alias-label-primary, #1f1f1f) 8%, transparent); border-radius: var(--dsw-radius-sm, 8px); background: var(--orch-surface-1); overflow: hidden; }
+.orch-pack-kv { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; align-items: start; min-width: 0; padding: 6px 10px; font-size: 11px; line-height: 18px; }
+.orch-pack-spec .orch-pack-kv + .orch-pack-kv { border-top: 1px solid var(--orch-line); }
+.orch-pack-kv > span { color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-pack-kv > b { min-width: 0; font-size: 12px; line-height: 18px; font-weight: 500; color: var(--dsw-alias-label-secondary, #4a4f57); overflow-wrap: anywhere; }
+.orch-pack-kv > .orch-pack-path { font-size: 11px; }
+.orch-pack-cli, .orch-pack-chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.orch-pack-none { font-weight: 400; color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-pack-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
 .orch-pack-muted { color: var(--dsw-alias-label-tertiary, #8a8f99); font-size: 11px; }
-.orch-pack-env-row { display: flex; flex-direction: column; gap: 4px; }
+
+.orch-pack-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--orch-line); }
+.orch-pack-footnote { min-width: 0; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-tertiary, #8a8f99); }
+.orch-pack-footnote[data-tone='warn'] { color: var(--dsw-alias-state-warn-label, #b45309); }
+.orch-pack-footnote[data-tone='bad'] { color: var(--dsw-alias-state-error-primary, #ec1313); }
+.orch-pack-actions { margin-left: auto; gap: 6px; }
+
+/* 展开态：环境变量 / 安装确认 / 删除确认共用一块内嵌面板，和卡头拉开层级。 */
+.orch-pack-panel { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid color-mix(in srgb, var(--dsw-alias-label-primary, #1f1f1f) 8%, transparent); border-radius: var(--dsw-radius-sm, 8px); background: var(--orch-surface-1); }
+.orch-pack-sectionhead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.orch-pack-sectiontitle { font-size: 12px; line-height: 18px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-pack-confirm { font-size: 11px; }
+.orch-pack-confirm .orch-pack-kv { grid-template-columns: 64px minmax(0, 1fr); gap: 8px; padding: 2px 0; border: 0; }
+.orch-pack-confirm-title { font-size: 12px; line-height: 18px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); }
+.orch-pack-notes { margin: 2px 0; padding-left: 18px; font-size: 11px; line-height: 17px; color: var(--dsw-alias-label-secondary, #4a4f57); }
+.orch-pack-env-row { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--orch-line); }
+.orch-pack-env-row:first-of-type { padding-top: 0; border-top: 0; }
 .orch-pack-env-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
-.orch-pack-ok, .orch-pack-err { font-size: 11px; overflow-wrap: anywhere; }
+.orch-pack-env-edit { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary, #f59f0a) 18%, transparent); border-radius: var(--dsw-radius-sm, 8px); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #f59f0a) 6%, transparent); }
+.orch-pack-ok, .orch-pack-err { font-size: 11px; line-height: 16px; overflow-wrap: anywhere; }
 .orch-pack-ok { color: var(--dsw-alias-state-success-primary, #01a241); }
 .orch-pack-err { color: var(--dsw-alias-state-error-primary, #ec1313); }
-.orch-body--packs { display: flex; min-height: 0; }
-.orch-pack-confirm, .orch-pack-confirm-title, .orch-pack-notes, .orch-pack-env-edit { font-size: 11px; }
-.orch-pack-confirm, .orch-pack-env-edit { display: flex; flex-direction: column; gap: 6px; }
-.orch-pack-notes { margin: 2px 0; padding-left: 18px; }
+.orch-body--packs { display: flex; min-height: 0; background: var(--orch-surface); }
+
+@media (max-width: 600px) {
+  .orch-packs-shell { padding: var(--orch-page-pad, 12px) 12px 24px; }
+  .orch-packs-subtitle { display: none; }
+  .orch-pack-head { flex-wrap: wrap; }
+  .orch-pack-health { margin-left: 38px; padding-top: 0; }
+  .orch-pack-kv { grid-template-columns: 64px minmax(0, 1fr); gap: 8px; }
+  .orch-pack-actions { width: 100%; margin-left: 0; justify-content: flex-end; }
+}

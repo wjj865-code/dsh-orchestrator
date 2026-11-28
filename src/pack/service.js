@@ -60,6 +60,7 @@ export function createPackService({
   workspaces = () => undefined,
   workspaceDir = () => undefined,
   env = process.env,
+  persistedEnv,
   now = Date.now,
   log = () => {},
   onWarn = () => {},
@@ -129,6 +130,7 @@ export function createPackService({
       id: entry.id,
       installer,
       env,
+      persistedEnv,
       now,
     })
     if (persist === true && entry.kind === 'factory') {
@@ -165,7 +167,7 @@ export function createPackService({
       presetRegistered: presets.isRegistered(presetId),
       skills: manifest.skills,
       cli: installStatus,
-      env: envSummary(manifest, env),
+      env: envSummary(manifest, env, { persistedEnv }),
       health,
       healthLine: healthLine(health),
       dir: entry.packRoot,
@@ -463,7 +465,7 @@ export function createPackService({
     const entry = findEntry(id)
     if (entry === undefined) return { ok: false, code: 'PACK_NOT_FOUND', error: `没有能力包 ${JSON.stringify(id)}` }
     if (entry.manifest === undefined) return { ok: false, code: 'PACK_BROKEN', error: entry.error ?? '包不可读' }
-    return { ok: true, id, env: envSummary(entry.manifest, env), platform: process.platform }
+    return { ok: true, id, env: envSummary(entry.manifest, env, { persistedEnv }), platform: process.platform }
   }
 
   const envCopy = (id, ref) => {

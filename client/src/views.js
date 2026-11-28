@@ -1420,40 +1420,64 @@ export function createViews({
     }
     const previewBlock = () => preview === null ? null : <div className="orch-preview">{previewBody()}</div>
 
+    // 路径拆成「文件名 + 目录」两行：长绝对路径整段塞进 flex 会被 anywhere 折成竖条，
+    // 文件名又是扫列表时最需要先看到的部分。目录只显示一行省略，完整路径留在 title。
+    const artifactPathParts = value => {
+      const text = typeof value === 'string' ? value : ''
+      const trimmed = text.length > 1 ? text.replace(/[\\/]+$/, '') : text
+      const at = Math.max(trimmed.lastIndexOf('\\'), trimmed.lastIndexOf('/'))
+      if (at <= 0 || at >= trimmed.length - 1) return { name: text, dir: '' }
+      return { name: trimmed.slice(at + 1), dir: trimmed.slice(0, at) }
+    }
+
     const artifactRow = item => {
       const key = `${item.taskId}:${item.path}`
+      const parts = artifactPathParts(item.path)
       return (
-        <DotRow key={key} tone={item.exists === false ? 'bad' : 'good'}>
-          <span className="orch-artifact-path" title={item.path}>{item.path}</span>
-          {item.label ? <span className="orch-muted">{item.label}</span> : null}
-          {item.exists === false ? <Chip tone="bad">{'（未找到）'}</Chip> : null}
-          <Chip title="来源任务">{`${item.title || item.taskId}${item.status ? ` · ${labelOf(STATUS_LABEL, item.status)}` : ''}`}</Chip>
-          <span className="orch-msg-at">{timeLabel(item.at)}</span>
-          {/* 产物库这一行本身能渲染行内预览，所以右侧栏不可用时退到这里（inlineFallback）。 */}
-          <button
-            type="button" className="orch-btn orch-btn--sm"
-            disabled={item.exists === false}
-            onClick={() => void previewInSidebar(item.taskId, item.path, true)}
-          >{'预览'}</button>
-          <button
-            type="button" className="orch-btn orch-btn--sm"
-            onClick={() => void copyPath(item.path)}
-          >{'复制路径'}</button>
-          {item.childSessionId
-            ? (
-                <button
-                  type="button" className="orch-btn orch-btn--sm"
-                  onClick={() => open(item.childSessionId)}
-                >{'打开子会话'}</button>
-              )
-            : null}
-          <button
-            type="button" className="orch-btn orch-btn--sm"
-            onClick={() => void openDetail(item.taskId)}
-          >{'详情'}</button>
+        <article key={key} className="orch-artifact-row" data-missing={item.exists === false ? 'true' : 'false'}>
+          <span
+            className="orch-dot orch-artifact-dot"
+            style={{ background: TONE_COLOR[item.exists === false ? 'bad' : 'good'], color: TONE_COLOR[item.exists === false ? 'bad' : 'good'] }}
+          />
+          <div className="orch-artifact-main">
+            <div className="orch-artifact-titleline">
+              <span className="orch-artifact-name" title={item.path}>{parts.name}</span>
+              {item.exists === false ? <Chip tone="bad">{'未找到'}</Chip> : null}
+            </div>
+            {parts.dir === '' ? null : <div className="orch-artifact-dir" title={item.path}>{parts.dir}</div>}
+            <div className="orch-artifact-subline">
+              <Chip title="来源任务">{`${item.title || item.taskId}${item.status ? ` · ${labelOf(STATUS_LABEL, item.status)}` : ''}`}</Chip>
+              {item.label ? <span className="orch-artifact-label" title={item.label}>{item.label}</span> : null}
+              <span className="orch-msg-at">{timeLabel(item.at)}</span>
+            </div>
+          </div>
+          <div className="orch-artifact-actions">
+            {/* 产物库这一行本身能渲染行内预览，所以右侧栏不可用时退到这里（inlineFallback）。 */}
+            <button
+              type="button" className="orch-btn orch-btn--ghost orch-btn--sm"
+              disabled={item.exists === false}
+              onClick={() => void previewInSidebar(item.taskId, item.path, true)}
+            >{'预览'}</button>
+            <button
+              type="button" className="orch-btn orch-btn--quiet orch-btn--sm"
+              onClick={() => void copyPath(item.path)}
+            >{'复制路径'}</button>
+            {item.childSessionId
+              ? (
+                  <button
+                    type="button" className="orch-btn orch-btn--quiet orch-btn--sm"
+                    onClick={() => open(item.childSessionId)}
+                  >{'打开子会话'}</button>
+                )
+              : null}
+            <button
+              type="button" className="orch-btn orch-btn--quiet orch-btn--sm"
+              onClick={() => void openDetail(item.taskId)}
+            >{'详情'}</button>
+          </div>
           {/* 回退：右侧栏不可用时 previewInSidebar 会退到行内预览，这里渲染它的内容。 */}
           {preview !== null && preview.key === key ? previewBlock() : null}
-        </DotRow>
+        </article>
       )
     }
 
@@ -1478,8 +1502,12 @@ export function createViews({
       }
       return (
         <div className="orch-stack orch-stack--md">
-          <div className="orch-card-meta">
-            <span className="orch-muted">{`共 ${artifactItems.length} 个产物${artifactError !== null ? '（刷新失败，显示上次结果）' : ''}`}</span>
+          <div className="orch-artifact-toolbar">
+            <span className="orch-artifact-count">
+              <Icon name="folder" size={13} />
+              <b>{artifactItems.length}</b>
+              {` 个产物${artifactError !== null ? '（刷新失败，显示上次结果）' : ''}`}
+            </span>
             <div className="orch-seg">
               <button
                 type="button" className="orch-seg-item"
@@ -1510,7 +1538,7 @@ export function createViews({
                         <span className="orch-group-title">{name}</span>
                         <span className="orch-muted">{`${rows.length} 个`}</span>
                       </div>
-                      <div className="orch-stack orch-stack--xs">{rows.map(artifactRow)}</div>
+                      <div className="orch-artifact-rows">{rows.map(artifactRow)}</div>
                     </section>
                   ))}
                 </div>
@@ -2109,6 +2137,7 @@ export function createViews({
           onReload={() => { void loadAutomations() }}
           onCreate={createAutomationEntry}
           onOpenSchedules={openSchedules}
+          onOpenSession={open}
           onToggle={switchAutomation}
           onDelete={removeAutomation}
         />

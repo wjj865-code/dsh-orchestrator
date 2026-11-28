@@ -284,6 +284,9 @@ test('dependencyGraph：DFS 长路径分层、边朝前置、层内换行、只�
   assert.equal(chain.width, GRAPH_METRICS.nodeW + 2 * GRAPH_METRICS.pad)
   assert.equal(chain.height, 3 * GRAPH_METRICS.nodeH + 2 * GRAPH_METRICS.layerGap + 2 * GRAPH_METRICS.pad)
   assert.deepEqual([GRAPH_METRICS.nodeH, GRAPH_METRICS.layerGap], [76, 48], '卡高 76 + 层距 48：5 层单行 = 604px，仍在一屏')
+  assert.ok(GRAPH_METRICS.nodeW >= 240, '卡宽至少 240：meta 行要同时放下耗时与更新时间')
+  assert.ok(GRAPH_METRICS.maxWidth >= 4 * GRAPH_METRICS.nodeW + 3 * GRAPH_METRICS.gapX + 2 * GRAPH_METRICS.pad,
+    '画布上限至少要容得下 4 张新宽度卡，别一加宽就退化成 3 列')
   const at = Object.fromEntries(chain.nodes.map(node => [node.id, node]))
   assert.deepEqual([at.A.x, at.A.y], [16, 16])
   assert.deepEqual([at.B.x, at.B.y], [16, 140])
@@ -419,15 +422,17 @@ test('impactOf · 扇入：前置看全部分支，分支只看自己那条', ()
 test('G3 布局：扇出父卡落在三个子卡的中点列', () => {
   const fan = dependencyGraph([{ id: 'p' }, { id: 'c1', dependsOn: ['p'] }, { id: 'c2', dependsOn: ['p'] }, { id: 'c3', dependsOn: ['p'] }])
   const x = Object.fromEntries(fan.nodes.map(node => [node.id, node.x]))
-  assert.deepEqual([x.p, x.c1, x.c2, x.c3], [216, 16, 216, 416], '父 = 子群中间那列，子三等分')
+  const col = GRAPH_METRICS.nodeW + GRAPH_METRICS.gapX
+  assert.deepEqual([x.p, x.c1, x.c2, x.c3], [GRAPH_METRICS.pad + col, GRAPH_METRICS.pad, GRAPH_METRICS.pad + col, GRAPH_METRICS.pad + 2 * col], '父 = 子群中间那列，子三等分')
   assert.equal(x.p + GRAPH_METRICS.nodeW / 2, (x.c1 + x.c3 + GRAPH_METRICS.nodeW) / 2, '父中心 = 首子与末子的中点')
 })
 
 test('G3 布局：扇入子卡落在父群中点（多父取均值）', () => {
   const fanIn = dependencyGraph([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd', dependsOn: ['a', 'b', 'c'] }])
   const x = Object.fromEntries(fanIn.nodes.map(node => [node.id, node.x]))
-  assert.deepEqual([x.a, x.b, x.c], [16, 216, 416])
-  assert.equal(x.d, 216, '唯一子卡落在三个父卡的中点列')
+  const col = GRAPH_METRICS.nodeW + GRAPH_METRICS.gapX
+  assert.deepEqual([x.a, x.b, x.c], [GRAPH_METRICS.pad, GRAPH_METRICS.pad + col, GRAPH_METRICS.pad + 2 * col])
+  assert.equal(x.d, GRAPH_METRICS.pad + col, '唯一子卡落在三个父卡的中点列')
 })
 
 test('G3 布局：三点链仍是一列（干道不散开）', () => {
@@ -463,10 +468,16 @@ test('elapsedTextOf：耗时按 创建→交付/终态更新时间/当下 取，
   assert.equal(elapsedTextOf({ status: 'running' }), '耗时 —', '组外前置没有 createdAt，不猜')
 })
 
-test('服务端字段口径：卡片第三层用 createdAt(ms) + progressCount（进度回报次数）', () => {
+test('服务端字段口径：关系图耗时用 createdAt(ms)，不再把 progressCount 当交互步数', () => {
   const server = readFileSync(new URL('../src/workbench.js', import.meta.url), 'utf8')
   assert.match(server, /createdAt: Number\.isFinite\(task\.created_at\)/)
   assert.match(server, /progressCount: Number\.isFinite\(task\.progress_count\)/)
+  const wb = source('workbench.js')
+  const start = wb.indexOf('const GraphView = (')
+  const view = wb.slice(start, wb.indexOf('const GroupPage = (', start))
+  assert.equal(view.includes('progressCount'), false, '关系图不应再展示 progressCount')
+  assert.equal(view.includes(' 步'), false, '关系图不应再展示步数')
+  assert.match(view, /\{external \? '' : elapsedTextOf\(task\)\}/, '关系图 meta 只保留耗时')
 })
 
 // 组件层：第三个只读 tab（源码是 JSX，测试进程不能 import，用源码断言 + 纯函数断言互补）。
