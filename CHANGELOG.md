@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.37.2（2026-11-28）—— 协调者检索回挂 + 子会话失败结构化 + 提示词跨层去重
+
+**一句话**：协调者重新拿到只读 `glob`/`grep`（随包 ripgrep，保守返回上限），先定位再用 `read` 看局部；子会话的权限/环境失败落成结构化快照（`category`/`retryable`/`action`），`git index.lock` 区分并发锁与 ACL 拒绝；同时按「schema 管契约、policy 管判断、skill 管细节」收敛提示词的跨层重复。
+
+**为什么**：主会话只有 `read` 时，批量检索只能整文件载入，上下文膨胀快；权限拒绝只在 summary 里留一句后果，协调者无法判断该等锁、查 ACL 还是改环境；同一套规则又分散在 L1 硬规则、闸门、推进循环、W1 和工具描述里，改一处容易漏另一处。
+
+**改了什么**
+- **协调者检索**：协调者预设回挂 `tool-fs-search`（`glob`/`grep` 一起注册；`globMaxResults=60`、`grepMaxMatches=120`、`grepMaxLineBytes=400`）。提示词改为先 `glob` 找路径、`grep` 找命中、再 `read` 小范围；搜索只用于定位，不替代 `task_create`，不扩大写权限。
+- **失败结构化**：`tools/result` 命中 denied/env 时写 `tasks.last_failure_json`（不改状态/活跃时间），`task_status`/`task_detail` 展示最近一次快照；`task_report.failure` 支持自报 `tool/code/category/message/exit_code/retryable/action`。`git index.lock` 有 `File exists`/共享冲突归 `git_index_locked`（可等待/确认后清理），`Permission denied` 归 `git_index_write_denied`（ACL/受限令牌，不盲删重试）；W1 同步为结构化上报口径。
+- **跨层去重**：L1 只保留协调者判断、硬闸门与拍板/推进动作，worktree/写域/任务链/并行的细则归 skill；W1 只保留每回合动作，字段清单归 `task_detail`/`task_report` schema；工具描述不再重抄策略。推进循环合并 `askNewTask`/`allDone` 同义句，计划审批去掉 blocked 报告内容的重复复述。
+- **实测（码点计长）**：L1 `6326 → 4581`（-27.6%）、W1 `1678 → 989`（-41.1%）、`task_create` schema `4527 → 3190`（-29.5%），三者合计 `12531 → 8760`（-30.1%）。
+- **预算锁**：`test/policy-budget.test.js` 改为 full ≤5400、minimal ≤2520、硬规则段 ≤1600、W1 ≤1350，并保留八段逐段上限与 minimal 不可降级探针。
+
+**边界**：不新增或删除插件工具（`createTools` 仍 12 个），不改派发、队列、状态机、权限、配置 schema 或默认预算。宿主 provider 不接受 JSON Schema 的 `minimum`/`maximum`，所以数值范围仍留在字段描述里，未强行迁入 schema。全量测试 1,579 项（1,574 pass / 5 skip / 0 fail），客户端构建与体积、文档行数、版本口径均通过。
+
 ## 0.37.1（2026-11-28）—— 协调者提示词结构瘦身（硬规则段 -40.8%，行为不变）
 
 **一句话**：把 L1 协调者 policy 的硬规则段按职责重排为「工具边界」「派发与交付」，把判级表、计划批准五步、回报后的三类动作分别留给交互三闸门 / 拍板流程 / 推进循环；删掉重复长段与仅一处使用的 `DECISION_FLOW_LINES`，不改派发、队列、状态机、权限、配置 schema 或默认预算。

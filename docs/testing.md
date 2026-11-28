@@ -34,7 +34,7 @@
 | G2 | 提交干净 | `git show --stat <sha>`、`git status --porcelain` | 只含本次改动；无 `node_modules/`、`*.sqlite`、临时脚本、`.env`、任务产物 |
 | G3 | **JSON 绝不进子会话** | 捕获派发收到的 prompt 文本，用含 `{}`、引号、换行、超长的 brief 渲染 | prompt 是渲染文字；无 `"title":`/`"acceptance":` 键名；整体不是可 `JSON.parse` 的对象 |
 | G4 | **台账/日志只写 `$DSH_HOME/state/orchestrator`** | 临时 `DSH_HOME` 跑「建任务→回报→停止」，审计整个临时 home 与仓库 | 除 `state/orchestrator/` 外零新增；仓库内无 sqlite/wal/shm；真实 `~/.dsh` 不被写 |
-| G5 | 工具 schema 契约 | 逐个工具体检 | `parameters.type === 'object'`、根上无 `minimum`/`maximum`；`output.schema` 与 `output.render` 都在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
+| G5 | 工具 schema 契约 | 逐个工具体检 | `parameters.type === 'object'`、schema 不出现 `minimum`/`maximum`（含嵌套；宿主 provider 不接受数值边界）；`output.schema` 与 `output.render` 都在；`render(args, value)` 返回 `[{type:'text', text:string}]` |
 | G6 | 错误全转可读中文 | 每个失败路径：不存在 id、非法参数、底层抛错 | 中文可读；无 `SQLITE_`、`TypeError`、`at …` 堆栈、`undefined` 字面 |
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
 | G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 25 键；全局工具 12 个（协调者可见 8 + worker 专属 4）；协调者另有预设自有的只读 `read`/`glob`/`grep` 与 `skill`；**协调者必须挂 `tool-fs-search` 且上限受控**；deny/keep 名单与工具表一致 |
@@ -68,7 +68,7 @@
 - `test/tool-migrations.test.js`：旧工具名 → 新调用的映射表是唯一真源，README「工具迁移映射」必须与它逐条一致。
 - **兼容声明（0.32.x）**：`test/engines-compat.test.js` 锁 `package.json:engines.dsh` 与 `HOST_BASELINE` 逐字一致、区间语义矩阵（rc.2–rc.5 放行；`0.2.1`、`0.2.2-rc.1`、`0.3.0-rc.1`、`0.3.0-rc.2`、`0.3.0` 拒绝——上界必须是 `<0.3.0-0`，写 `<0.3.0` 会被 `0.3.0-rc.1 < 0.3.0` 钻过去）、README / docs/compat.md 同口径，以及「不许再写区间外只 warn」。改区间 = 声明 + 常量 + 文档三处同改，少一处就红。
 - 交互三闸门（0.26.0）：判级表 / 堵塞项四类 / 评估三行只许在 L1——`test/interaction-policy.test.js` 锁结构与同源（`BLOCKER_RULE` / `CHANGE_REVIEW_FIELDS` 都在 `src/copy.js`），`layerViolations` 的 L2/L3 探针挡住子会话把分级与评估抄回去。
-- 拍板流程（版本 A，0.32.x 同版，**只改提示词/文案**）：`test/interaction-policy.test.js` 锁 L1 五条规则与批准四选一（旧「批准执行 / 先看计划文档 / 调整计划」组合必须消失、均按推荐必须用户点选）与「批准是显式动作」；`test/decision-flow.test.js` 锁决策汇总顺序（3 项样例）、blocked 通知「待拍板 N 项」措辞、`plan_save` **参数面未变**（仍只有 `task_id` / `content`，无结构化参数/文档 lint）、回执「子会话」保留会话 id；P0-4 的显式批准（`test/plan-mode.test.js`）锁「普通 message 不批准 / approve 前置 / 审计落库 / 四态收口」；L1 结构预算由 `test/policy-budget.test.js` 锁 full ≤6500、minimal ≤3100、硬规则段 ≤2200，并断言硬规则段不再承载判级表、计划批准细则、工具数量/旧工具迁移表。
+- 拍板流程（版本 A，0.32.x 同版，**只改提示词/文案**）：`test/interaction-policy.test.js` 锁 L1 五条规则与批准四选一（旧「批准执行 / 先看计划文档 / 调整计划」组合必须消失、均按推荐必须用户点选）与「批准是显式动作」；`test/decision-flow.test.js` 锁决策汇总顺序（3 项样例）、blocked 通知「待拍板 N 项」措辞、`plan_save` **参数面未变**（仍只有 `task_id` / `content`，无结构化参数/文档 lint）、回执「子会话」保留会话 id；P0-4 的显式批准（`test/plan-mode.test.js`）锁「普通 message 不批准 / approve 前置 / 审计落库 / 四态收口」；L1 结构预算由 `test/policy-budget.test.js` 锁 full ≤5400、minimal ≤2520、硬规则段 ≤1600、W1 ≤1350，并断言硬规则段不再承载判级表、计划批准细则、工具数量/旧工具迁移表。
 - grill-me 技能（0.26.0）：`test/skill-grill-me.test.js` 锁两件事——`skills/grill-me/SKILL.md` 的 frontmatter（name=kebab / description / whenToUse）与协议要点（前沿提问、每问带推荐、事实自己查、2 轮 8 问、三栏决策记录、T2/T3 衔接、grill≠批准），以及注册模块「读包内文件 → 预设作用域 `ctx.skills.register`」、frontmatter 坏格式给可读报错、文件缺失/注册失败只 warn 不阻断预设挂载；`test/config.test.js` 锁协调者预设挂 `skill-grill-me` + `tool-skill` 而 worker 不挂；0.35.0 P0 追加锁 `skill-filesystem`（本地技能发现：协调者一行、纯行无 `config`/`disabled`、排在 `tool-skill` 之前，整份补丁恰好协调者+worker 两行），并锁「技能发现不是工具面变更」（协调者仍不挂 `tool-bash`/`tool-pwsh`/`tool-web`/`tool-todo`；只读检索由 `tool-fs-search` 提供）。
 
 ### 3.3 文档一致性（`test/copy-consistency.test.js` 静态部分）

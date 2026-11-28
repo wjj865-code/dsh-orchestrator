@@ -1,6 +1,6 @@
 {
   "name": "@wjj865-code/dsh-orchestrator",
-  "version": "0.37.1",
+  "version": "0.37.2",
   "description": "给 DeepSeek Harness 加一位协调者：主会话拆活派子会话，进度与结论落进持久台账，带任务台、能力包、跨项目记忆与自动化。",
   "type": "module",
   "license": "MIT",
