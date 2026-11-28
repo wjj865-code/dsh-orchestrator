@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.37.0（未发布）—— 工作台界面系统重做（五页 + 控件审计 + 二次确认收敛）＋关系图三轮
+## 0.37.0（2026-11-28）—— 工作台界面系统重做（五页 + 控件审计 + 二次确认收敛）＋关系图三轮＋协调者满员自动腾位
 
-**口径**：本版本把三批改动并成**一个**未发布版本（用户 2026-11-28 拍板「版本号回退到 0.36.2 攒批」）：
+**口径**：本版本把三批界面/关系图改动并成**一个**版本（用户 2026-11-28 拍板「版本号回退到 0.36.2 攒批」），并补入协调者满员自动腾位修复：
 ① 0.37.0 界面系统重做（公共设计系统 + 五页重排 + 控件审计 + 二次确认弹层收敛）；
 ② 原 0.36.3 关系图首版；③ 原 0.36.4 关系图 v2 交互重设计。下面按主题组织，不再按轮次。
 
@@ -45,20 +45,26 @@
   `.orch-wb-docknote`、未用的 `GroupPage.groupId` prop、`.orch-confirm` 与 `ConfirmBar`、重复的「右侧栏」按钮、
   重复的「详情」按钮。
 - **关系图三轮（原 0.36.3 + 0.36.4 + G 轮）**：见下面三段原样保留（首版 / v2 交互重设计 / G1-G2-G3-G5）。
+- **协调者满员自动腾位**：`adoptSession` 与压力代建共用同一条 `promoteCoordinator`（`src/main-session.js`）——
+  名单已满 4 个时把最早加入的成员移出名单（会话保留、不改名不归档），新会话前插为主；压力代建不再被满员错误卡住，
+  浏览器自动跳转到新主会话；`host-route` 回传 `evicted`，删除 `ADOPT_LIMIT` 文案。用户不再需要先手动退出一个协调者。
 
 **体积与闸门**：预算 176 KiB → **200 KiB（204,800 B）**（用户拍板；基线 179,149 B，可用增量 25,651 B，
 按页分配：公共 1,170 / 总览 3,005 / 任务组 3,595 / 关系图 1,760 / 排期 3,490 / 自动化 2,440 / 复盘 2,710 = 18,170，
 余量 7,481）。文档闸门不抬（`DOC_LINE_BUDGET` 1,800 行，`docs/ARCHITECTURE.md` / `docs/testing.md` /
 `docs/CONTRIBUTING.md` / `docs/LIMITATIONS.md` 等长改写，净增 0 行）。
 
-**验证**：`pnpm test` exit 0（1,551 项 / 1,546 pass / 5 skip / 0 fail，含 pretest 的 build + 体积 + 文档三项闸门）；
+**验证**：`pnpm test` exit 0（1,571 项 / 1,566 pass / 5 skip / 0 fail，含 pretest 的 build + 体积 + 文档三项闸门）；
 `node scripts/check-client-size.mjs`；`node scripts/check-docs.mjs`；`node scripts/check-version.mjs`；
 `reports/ui-preview/harness/source-audit.mjs`（源码级控件审计：89 个按钮都有 handler 与可读名字、
 0 个孤儿类、`role="alertdialog"` 恰好 1 次、六条文案合规）；`reports/ui-preview/harness/verify.mjs`
 （隔离宿主 + 无头 Chrome：5 页 × 4 宽 × 深浅出图、死点击扫描、ConfirmDialog 键盘级、宿主一致性三项量化、
-文案禁用词扫描）。证据目录 `reports/ui-preview/evidence/S8/`（gitignored）。
+文案禁用词扫描）。协调者压力换新另做无头浏览器回归：填满 4 个真实协调者、阈值调至 0.1、点压力卡创建新会话，
+验证新会话成为主协调者、最早成员被腾位、浏览器自动跳转，共 15/15 通过
+（证据 `C:\Users\72489\AppData\Local\orch-pressure-verify\run-1795857322038\evidence\results.json`，gitignored）。
+主证据目录 `reports/ui-preview/evidence/S8/`（gitignored）。
 
-**边界**：不 publish / 不 push / 不 commit / 不回 issue；不改既有测试断言（改的是镜像预算常量与关系图色板这两处
+**边界**：本版不改既有测试断言（只有镜像预算常量与关系图色板这两处
 **规格升级**，见下）；不新增依赖；`sidebar.workspaces` 与任何槽位注册未动。
 
 **规格升级的两处测试**（**不是放宽守卫**：两处都是口径跟着用户拍板走，且都留痕「为什么改 / 改前 / 改后 / 谁拍板」）：
