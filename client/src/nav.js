@@ -54,6 +54,7 @@ export const createMainNavPoller = ({
         return
       }
       if (nav.kind !== 'navigate' || typeof nav.sessionId !== 'string' || nav.sessionId === '') return
+      if (typeof nav.text === 'string' && nav.text !== '') notify(nav.text)
       try {
         if (typeof openSession !== 'function') throw new Error('宿主没有 uiWorkspace.openSession（旧宿主或裁剪 profile）')
         await openSession(nav.sessionId)

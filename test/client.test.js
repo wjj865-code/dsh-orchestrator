@@ -2305,6 +2305,28 @@ test('主会话导航待办：navigate → uiWorkspace.openSession + ack 成功�
   await idle.run()
 })
 
+test('主会话导航待办：满员腾位提示随 navigate 一起显示，不挡跳转', async () => {
+  const { loaded } = load()
+  const opened = []
+  const notices = []
+  const poller = loaded.__test.createMainNavPoller({
+    readNav: async () => ({
+      ok: true,
+      nav: {
+        id: 'nav-evict', kind: 'navigate', sessionId: 's-new',
+        text: '协调者名单已满，已让最早加入的协调者退出（会话保留，可随时再设为协调者）。',
+      },
+    }),
+    ackNav: async () => ({ ok: true }),
+    openSession: id => { opened.push(id) },
+    onNotice: text => notices.push(text),
+  })
+  await poller.run()
+  assert.deepEqual(opened, ['s-new'], '仍然要跳到新会话')
+  assert.equal(notices.length, 1)
+  assert.match(notices[0], /名单已满/)
+})
+
 test('主会话导航待办：宿主拒绝 openSession → 最多重试 3 次后 ack 失败 + 可读提示（指针不动）', async () => {
   const { loaded } = load()
   const acked = []

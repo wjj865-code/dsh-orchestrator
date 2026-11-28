@@ -19,6 +19,11 @@ test('planCoordinatorNav：成功 → 跳转待办；create 失败 / 指针失�
   assert.deepEqual(planCoordinatorNav({ ok: true, sessionId: 's-new', created: true }), {
     kind: 'navigate', sessionId: 's-new',
   })
+  const evicted = planCoordinatorNav({ ok: true, sessionId: 's-new', created: true, evicted: 's-old' })
+  assert.equal(evicted.kind, 'navigate')
+  assert.equal(evicted.sessionId, 's-new')
+  assert.match(evicted.text, /名单已满/)
+  assert.match(evicted.text, /会话保留/)
   const pointer = planCoordinatorNav({ ok: false, code: 'ADOPT_FAILED', params: { reason: '磁盘只读', sessionId: 's-new' } })
   assert.equal(pointer.kind, 'notice')
   assert.equal(pointer.code, 'ADOPT_FAILED')

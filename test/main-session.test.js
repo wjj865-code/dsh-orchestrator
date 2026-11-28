@@ -673,6 +673,26 @@ test('代建：create → 切指针 → onboarding=sent → 改名 → 审计，
   db.close()
 })
 
+test('代建：名单已满 4 个 → 淘汰最早成员腾位，新会话仍成为主协调者', async () => {
+  const db = await ledger()
+  const f = adoptFake({ live: ['s-1'] })
+  setCoordinatorIds(db, ['s-1', 's-2', 's-3', 's-4'])
+  const logs = []
+  const main = adoptMain(db, f, { log: (event, detail) => logs.push([event, detail]) })
+  const result = await main.createCoordinatorSession({ source: 'pressure-reminder' })
+  assert.equal(result.ok, true, '压力换新不能被 ADOPT_LIMIT 卡住')
+  assert.equal(result.sessionId, 'session-new')
+  assert.equal(result.evicted, 's-4')
+  assert.deepEqual(getCoordinatorIds(db), ['session-new', 's-1', 's-2', 's-3'],
+    '新会话前插，最早的成员退出名单，其余成员保留')
+  assert.equal(getMainSessionId(db), 'session-new')
+  assert.equal(f.created.length, 1)
+  assert.deepEqual(f.renamed, [{ sessionId: 'session-new', title: '主会话' }])
+  const created = logs.find(([event]) => event === 'main.adopt.created')
+  assert.equal(created?.[1]?.evicted, 's-4', '审计要写明腾位淘汰了谁')
+  db.close()
+})
+
 test('代建：create 失败 → 零处置（不写指针、不建第二个）', async () => {
   const db = await ledger()
   const f = adoptFake({ live: ['session-old'] })

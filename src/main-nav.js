@@ -30,6 +30,7 @@ export const MAIN_NAV_TEXT = Object.freeze({
   pointerFailed: reason => `新建的协调者会话已建好，但主会话指针没切成功（旧主会话保持不动）：${reason}。可稍后重试，或在会话列表里手动打开它。`,
   createFailed: reason => `新建协调者会话失败（旧主会话保持不动）：${reason}。可稍后重试。`,
   busy: () => '另一次协调者切换正在进行，本次没有新建（旧主会话保持不动）。可稍后再试。',
+  evicted: () => '协调者名单已满，已让最早加入的协调者退出（会话保留，可随时再设为协调者）。',
 })
 
 const text = value => (typeof value === 'string' ? value.trim() : '')
@@ -37,7 +38,8 @@ const text = value => (typeof value === 'string' ? value.trim() : '')
 /**
  * 把「代建结果」翻译成一条导航待办（纯函数，index.js 与单测共用）。
  *
- * - `ok === true` → `{ kind:'navigate', sessionId }`（指针已经切好，只差客户端跳过去）；
+ * - `ok === true` → `{ kind:'navigate', sessionId }`（指针已经切好，只差客户端跳过去；
+ *   满员腾位时额外带一条 `text`，客户端跳转前先提示）；
  * - `ADOPT_BUSY` → notice：另一次切换进行中，本次什么都没做；
  * - 其余失败 → notice：create 失败 / 指针失败各一句可读原因（`params.reason` 优先）。
  * @param {{ok?:boolean, code?:string, sessionId?:string, params?:{reason?:string}}} outcome
@@ -45,7 +47,13 @@ const text = value => (typeof value === 'string' ? value.trim() : '')
  */
 export function planCoordinatorNav(outcome) {
   const sessionId = text(outcome?.sessionId)
-  if (outcome?.ok === true && sessionId !== '') return { kind: 'navigate', sessionId }
+  if (outcome?.ok === true && sessionId !== '') {
+    return {
+      kind: 'navigate',
+      sessionId,
+      ...(text(outcome.evicted) === '' ? {} : { text: MAIN_NAV_TEXT.evicted() }),
+    }
+  }
   const code = text(outcome?.code)
   if (code === '') return null
   const reason = text(outcome?.params?.reason) || code

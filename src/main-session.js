@@ -12,7 +12,7 @@
 //   - adopt = **加入名单并提升为主**（前插），旧协调者留在名单里（仍有任务入口/工具/权限）；
 //   - `dropSession` = 退出名单（删首位则下一位升主；删光等价「尚未打开主会话」，下次 open 重建）；
 //   - `open()` 只开/重建**主协调者**；首位失效重建时**原位替换**首位，名单长度不增长；
-//   - 名单上限 4（`MAX_COORDINATORS` 常量，不进配置面），满员再 adopt → `ADOPT_LIMIT`。
+//   - 名单上限 4（`MAX_COORDINATORS` 常量，不进配置面），满员再 adopt → `ADOPT_LIMIT`；压力代建则淘汰最早成员腾位。
 //
 // C（2026-11-21，权限徽标一致性）：见 `MAIN_PERMISSION_PRESET`。协调者会话在三条路上钉只读——
 // 新建（`open` 与 `createCoordinatorSession`）、adopt、以及每次「打开主会话」复用已有会话时把
@@ -69,7 +69,8 @@ export function createMainSession({
   let mutating = false
   const liveAgent = id => resolveAgents()?.get?.(id)
   // 名单：配置 `coordinatorSession`（运维兜底）覆盖成单元素；否则读台账名单（首位 = 主协调者）。
-  const currentIds = () => (config?.coordinatorSession ?? getCoordinatorIds(db))
+  // 统一走 getCoordinatorIds，保证这里永远是数组（配置通道是字符串，直接拿会漏掉 .filter/.length 语义）。
+  const currentIds = () => getCoordinatorIds(db, config?.coordinatorSession)
   const currentId = () => currentIds()[0]
   // worker 预设只认 spawn provider（fork 不满足 capabilities.agentPreset）；不静默降级、不改用户配置。
   const spawnProvider = config?.spawnProvider ?? 'spawn'
@@ -289,21 +290,20 @@ export function createMainSession({
   /**
    * 代建一个空白协调者会话并**加入名单、提升为主**（压力提醒卡里「新建协调者会话」那一项）。
    *
-   * 顺序：查上限 → 建工作区 → create → 加入名单（前插）→ preset 标记 → onboarding=sent（跳过首次介绍/索引任务）
+   * 顺序：建工作区 → create → 写名单（前插；满 4 个时淘汰最早成员腾位）→ preset 标记 → onboarding=sent（跳过首次介绍/索引任务）
    * → 改名「主会话」→ 审计。**旧会话零处置**（留在名单里，不改名不归档）。
+   * 名单已满时**让最早加入的成员退出协调者腾位**（会话保留、不改名不归档），保证压力换新不会被
+   * `ADOPT_LIMIT` 卡住；旧主协调者仍留在名单里。
    * 失败处置：
-   *   - 名单已满：`ADOPT_LIMIT`，一个会话都不建；
    *   - create 失败：什么都没发生（不写名单），`ADOPT_CREATE_FAILED`；
    *   - 写名单失败：**新会话留着待重用**（不归档不删除——归档会把一个刚建好的空白会话藏进历史，
    *     而且平台归档对用户是「不可见」的副作用；留着它用户可以直接点开用它）。`ADOPT_FAILED`。
-   * @returns {Promise<{ok:true, sessionId:string, previous:string|null, ids:string[], primary:string, created:true}
+   * @returns {Promise<{ok:true, sessionId:string, previous:string|null, ids:string[], primary:string, created:true,
+   *   evicted:string|null}
    *   | {ok:false, code:string, params?:object}>}
    */
   const createCoordinatorSession = async ({ source = 'pressure-reminder' } = {}) => {
     if (mutating) return { ok: false, code: 'ADOPT_BUSY' }
-    if (currentIds().length >= MAX_COORDINATORS) {
-      return { ok: false, code: 'ADOPT_LIMIT', params: { max: MAX_COORDINATORS } }
-    }
     mutating = true
     const previous = currentId() ?? null
     try {
@@ -328,13 +328,14 @@ export function createMainSession({
         return { ok: false, code: 'ADOPT_CREATE_FAILED', params: { reason: '创建协作者会话没有返回 sessionId' } }
       }
       let outcome
+      let evicted
       try {
-        outcome = addCoordinatorId(db, sessionId)
-        if (outcome.limitReached === true) {
-          // 竞态兜底：查上限与真正写名单之间被别的入口塞满了 → 名单不动，新会话留着待用。
-          log('main.adopt.pointer-failed', { previous, newId: sessionId, reason: 'limit', source })
-          return { ok: false, code: 'ADOPT_LIMIT', params: { max: MAX_COORDINATORS, sessionId } }
-        }
+        // 压力换新必须成功：名单满 4 个时让最早加入的成员退出（会话保留，不改名不归档），
+        // 而不是把用户卡在 ADOPT_LIMIT。旧主协调者仍留在名单里。
+        const current = currentIds().filter(id => id !== sessionId)
+        evicted = current.length >= MAX_COORDINATORS ? current[current.length - 1] : undefined
+        const ids = setCoordinatorIds(db, [sessionId, ...current].slice(0, MAX_COORDINATORS))
+        outcome = { ids, added: true, promoted: false, unchanged: false, limitReached: false }
         setMainSessionPreset(db, createdPreset(created))
       } catch (error) {
         // 名单没写成功：新会话留着（可见、可点开），不归档；旧协调者原样可用。
@@ -353,8 +354,12 @@ export function createMainSession({
         log('main.adopt.rename.failed', { newId: sessionId, error: `${error?.message ?? error}` })
       }
       freshMain = { sessionId, at: now() }
-      log('main.adopt.created', { previous, newId: sessionId, source, permission, ids: outcome.ids })
-      return { ok: true, sessionId, previous, ids: outcome.ids, primary: outcome.ids[0], created: true }
+      log('main.adopt.created', {
+        previous, newId: sessionId, source, permission, ids: outcome.ids, evicted: evicted ?? null,
+      })
+      return {
+        ok: true, sessionId, previous, ids: outcome.ids, primary: outcome.ids[0], created: true, evicted: evicted ?? null,
+      }
     } finally {
       mutating = false
     }
