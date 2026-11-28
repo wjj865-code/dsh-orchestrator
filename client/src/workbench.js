@@ -150,13 +150,13 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
   // ---- 任务组（组卡网格）----
   // 组卡只留「头部 / 目标 / 进度 / 统计 / 下次排期」五行；重命名与归档收进卡底操作条
   // （展开时卡高 +32），不再把表单塞进卡片中间。归档要二次确认（唯一实现 ConfirmDialog）。
-  const GroupCard = ({ group, onOpen, onRename, onArchive }) => {
+  // 0.37.1：确认弹层挂在**页面层**（GroupsPage），不再挂在卡里——卡是 role=button 且已归档卡带
+  // opacity 0.6，弹层挂在卡里会被整块调暗、且点弹窗正文会冒泡成「打开这个组」（层级与交互双错）。
+  const GroupCard = ({ group, onOpen, onRename, onAskArchive }) => {
     const [menu, setMenu] = useState(false)
     const [draft, setDraft] = useState(group.name)
-    const [archiveConfirm, setArchiveConfirm] = useState(false)
     const counts = group.counts || {}
     const donePercent = percent(counts.done || 0, counts.total || 0)
-    const copy = confirmCopy.archive
     return (
       <div
         className="orch-wb-gcard"
@@ -207,21 +207,10 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
                 <button type="submit" className="orch-btn orch-btn--primary orch-btn--sm">{'保存'}</button>
                 <button type="button" className="orch-btn orch-btn--quiet orch-btn--sm" onClick={() => { setDraft(group.name); setMenu(false) }}>{'取消'}</button>
                 <span className="orch-wb-grow" />
-                <button type="button" className="orch-btn orch-btn--quiet orch-btn--sm" onClick={() => setArchiveConfirm(true)}>
+                <button type="button" className="orch-btn orch-btn--quiet orch-btn--sm" onClick={() => { setMenu(false); onAskArchive(group) }}>
                   {group.archived ? '取消归档…' : '归档…'}
                 </button>
               </form>
-            )
-          : null}
-        {archiveConfirm
-          ? (
-              <ConfirmDialog
-                title={group.archived ? '取消归档这个组？' : copy[0]}
-                note={copy[1]}
-                confirmLabel={group.archived ? '确认取消归档' : '确认归档'}
-                onConfirm={() => { setArchiveConfirm(false); setMenu(false); onArchive(group.id, !group.archived) }}
-                onCancel={() => setArchiveConfirm(false)}
-              />
             )
           : null}
       </div>
@@ -229,6 +218,8 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
   }
 
   const GroupsPage = ({ state, onReload, onOpen, onRename, onArchive, ungrouped }) => {
+    // 归档确认的待办组（null = 没有弹层）。状态挂在页面层，弹层才能渲染在页面根上（不进卡、不吃卡的 opacity）。
+    const [pendingArchive, setPendingArchive] = useState(null)
     if (state.data === null) {
       return state.error !== null
         ? <Banner tone="error" icon="alert" action={<button type="button" className="orch-btn orch-btn--sm" onClick={onReload}>{'重试'}</button>}>{`组读取失败：${state.error}`}</Banner>
@@ -249,33 +240,46 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
       )
     }
     return (
-      <div className="orch-wb-groups">
-        {groups.map(group => (
-          <GroupCard key={group.id} group={group} onOpen={onOpen} onRename={onRename} onArchive={onArchive} />
-        ))}
-        {ungrouped !== null && ungrouped.total > 0
-          ? (
-              <div
-                className="orch-wb-gcard" data-virtual="true" role="button" tabIndex={0}
-                onClick={() => onOpen(null)}
-                onKeyDown={event => { if (event.key === 'Enter') onOpen(null) }}
-              >
-                <div className="orch-wb-ghead">
-                  <span className="orch-wb-gdot" style={{ background: TONE_COLOR.muted }} />
-                  <span className="orch-wb-gname">{'未分组'}</span>
-                  <span className="orch-wb-grow" />
+      <>
+        <div className="orch-wb-groups">
+          {groups.map(group => (
+            <GroupCard key={group.id} group={group} onOpen={onOpen} onRename={onRename} onAskArchive={setPendingArchive} />
+          ))}
+          {ungrouped !== null && ungrouped.total > 0
+            ? (
+                <div
+                  className="orch-wb-gcard" data-virtual="true" role="button" tabIndex={0}
+                  onClick={() => onOpen(null)}
+                  onKeyDown={event => { if (event.key === 'Enter') onOpen(null) }}
+                >
+                  <div className="orch-wb-ghead">
+                    <span className="orch-wb-gdot" style={{ background: TONE_COLOR.muted }} />
+                    <span className="orch-wb-gname">{'未分组'}</span>
+                    <span className="orch-wb-grow" />
+                  </div>
+                  <div className="orch-wb-gmeta">{'没有 group 的任务（不落库、不可改名）'}</div>
+                  <div className="orch-wb-gstats">
+                    <span>{`共 ${ungrouped.total}`}</span>
+                    {ungrouped.delivered > 0 ? <Badge tone="warn">{`待确认 ${ungrouped.delivered}`}</Badge> : null}
+                    {ungrouped.active > 0 ? <Badge tone="info">{`在跑 ${ungrouped.active}`}</Badge> : null}
+                    {ungrouped.failed > 0 ? <Badge tone="bad">{`失败 ${ungrouped.failed}`}</Badge> : null}
+                  </div>
                 </div>
-                <div className="orch-wb-gmeta">{'没有 group 的任务（不落库、不可改名）'}</div>
-                <div className="orch-wb-gstats">
-                  <span>{`共 ${ungrouped.total}`}</span>
-                  {ungrouped.delivered > 0 ? <Badge tone="warn">{`待确认 ${ungrouped.delivered}`}</Badge> : null}
-                  {ungrouped.active > 0 ? <Badge tone="info">{`在跑 ${ungrouped.active}`}</Badge> : null}
-                  {ungrouped.failed > 0 ? <Badge tone="bad">{`失败 ${ungrouped.failed}`}</Badge> : null}
-                </div>
-              </div>
-            )
-          : null}
-      </div>
+              )
+            : null}
+        </div>
+        {pendingArchive === null
+          ? null
+          : (
+              <ConfirmDialog
+                title={pendingArchive.archived ? '取消归档这个组？' : confirmCopy.archive[0]}
+                note={confirmCopy.archive[1]}
+                confirmLabel={pendingArchive.archived ? '确认取消归档' : '确认归档'}
+                onConfirm={() => { const target = pendingArchive; setPendingArchive(null); onArchive(target.id, !target.archived) }}
+                onCancel={() => setPendingArchive(null)}
+              />
+            )}
+      </>
     )
   }
 
@@ -602,7 +606,7 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
     if (state.data === null) {
       return (
         <div className="orch-wb-page">
-          <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={onBack}>{'← 返回任务组'}</button>
+          <button type="button" className="orch-btn orch-btn--ghost" onClick={onBack}>{'← 返回任务组'}</button>
           {state.error !== null
             ? <Banner tone="error" icon="alert" action={<button type="button" className="orch-btn orch-btn--sm" onClick={onReload}>{'重试'}</button>}>{`组读取失败：${state.error}`}</Banner>
             : <SkeletonList rows={4} />}
@@ -624,11 +628,11 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
       <div className="orch-wb-page orch-wb-grouppage">
         <header className="orch-wb-grouphead">
           <div className="orch-wb-grouphead-main">
-            <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={onBack}>{'← 返回任务组'}</button>
+            <button type="button" className="orch-btn orch-btn--ghost" onClick={onBack}>{'← 返回任务组'}</button>
             <span className="orch-wb-gname orch-wb-gname--big">{group.name}</span>
             {group.archived ? <Chip>{'已归档'}</Chip> : null}
             <span className="orch-wb-grow" />
-            <button type="button" className="orch-btn orch-btn--ghost orch-btn--sm" onClick={onOpenMain}>{'打开主会话'}</button>
+            <button type="button" className="orch-btn orch-btn--primary" onClick={onOpenMain}>{'打开主会话'}</button>
           </div>
           <div className="orch-wb-grouphead-sub">
             <span className="orch-muted">{group.goal || `组键 ${group.id}`}</span>
@@ -643,16 +647,16 @@ export function createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banne
                           onChange={event => setDraftName(event.target.value)}
                           onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); onRename(group.id, draftName); setRenaming(false) } }}
                         />
-                        <button type="button" className="orch-btn orch-btn--primary orch-btn--sm" onClick={() => { onRename(group.id, draftName); setRenaming(false) }}>{'保存'}</button>
-                        <button type="button" className="orch-btn orch-btn--quiet orch-btn--sm" onClick={() => setRenaming(false)}>{'取消'}</button>
+                        <button type="button" className="orch-btn orch-btn--primary" onClick={() => { onRename(group.id, draftName); setRenaming(false) }}>{'保存'}</button>
+                        <button type="button" className="orch-btn orch-btn--ghost" onClick={() => setRenaming(false)}>{'取消'}</button>
                       </span>
                     )
                   : (
-                      <button type="button" className="orch-btn orch-btn--quiet orch-btn--sm" onClick={() => { setDraftName(group.name); setRenaming(true) }}>{'重命名'}</button>
+                      <button type="button" className="orch-btn orch-btn--ghost" onClick={() => { setDraftName(group.name); setRenaming(true) }}>{'重命名'}</button>
                     ))
               : null}
             {group.canArchive
-              ? <button type="button" className="orch-btn orch-btn--quiet orch-btn--sm" onClick={() => setArchiveStep(1)}>{group.archived ? '取消归档' : '归档'}</button>
+              ? <button type="button" className="orch-btn orch-btn--ghost" onClick={() => setArchiveStep(1)}>{group.archived ? '取消归档' : '归档'}</button>
               : null}
           </div>
           {group.canArchive && archiveStep === 1

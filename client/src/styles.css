@@ -38,6 +38,10 @@
   /* 间距六档：只有这六个值，别写 2/3/5/10/14。 */
   --orch-gap-1: 4px; --orch-gap-2: 6px; --orch-gap-3: 8px;
   --orch-gap-4: 12px; --orch-gap-5: 16px; --orch-gap-6: 24px;
+  /* 内容区上内边距：滚动容器（.orch-main）与吸顶列头（.orch-wb-colidx）共用这一个值——
+   * 吸顶元素要跟容器的上内边距对齐（`top: calc(-1 * var(--orch-page-pad))`），否则滚动时
+   * 列头上方会漏出一条 12px 的内容带。两处必须同源，不许各写一个数。 */
+  --orch-page-pad: 12px;
   /* 层次与线：卡底走 card-fill（宿主原生卡片观感），外框 1px line-l2。 */
   --orch-surface: var(--dsw-alias-bg-base, #fff);
   --orch-surface-1: var(--dsw-alias-bg-layer-1, #fff);
@@ -124,7 +128,7 @@
 .orch-rail-count { flex: 0 0 auto; min-width: 18px; padding: 0 5px; border-radius: 999px; font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; text-align: center; background: var(--orch-surface-3); color: var(--dsw-alias-label-tertiary, #8a8f99); }
 .orch-rail-item[data-active='true'] .orch-rail-count { background: var(--dsw-specific-sidebar-nav-item-active-accent, #dce6ff); color: var(--dsw-alias-label-primary, #1f1f1f); }
 /* 只保留一层纵向节奏：页与页之间 12。 */
-.orch-main { display: flex; flex-direction: column; gap: 12px; flex: 1 1 auto; min-width: 0; padding: 12px 16px 24px; overflow: auto; }
+.orch-main { display: flex; flex-direction: column; gap: 12px; flex: 1 1 auto; min-width: 0; padding: var(--orch-page-pad) 16px 24px; overflow: auto; }
 
 /* 提示条：error / notice / info 共用骨架，颜色取 --orch-tone；一页最多 3 条（错误 1 / 通知 1 / 信息 1）。 */
 .orch-banner { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--orch-tone) 22%, transparent); border-radius: var(--dsw-radius-sm, 8px); background: color-mix(in srgb, var(--orch-tone) 8%, transparent); color: var(--dsw-alias-label-primary, #1f1f1f); font-size: 12px; line-height: 18px; }
@@ -259,7 +263,11 @@
  * 内边距 16；标题 13/600 一行；说明 13/400 label-secondary 一行（≤40 字，超了改短句）；
  * 按钮行右对齐 gap 8，次按钮 ghost 在左、主按钮 primary/danger-solid 30 高在右。 */
 .orch-dialog-layer { position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center; padding: 12px; }
-.orch-dialog { box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; width: min(360px, 100%); padding: 16px; border: 1px solid var(--orch-line-strong); border-radius: var(--dsw-radius-md, 12px); background: var(--orch-surface-card); box-shadow: var(--dsw-elevation-prominent, 0 3px 8px rgba(0, 0, 0, 0.04)); }
+/* 层叠：scrim 是定位元素（absolute），弹窗**自己也必须定位**才画在它上面——
+ * 否则 static 的弹窗会被后画的蒙层压住（0.37.0 的 bug：整块弹窗发灰、对比度像被调暗）。
+ * 同一层容器里比 z-index：scrim 0、dialog 1；祖先链上不许有 opacity/filter/transform 合成层。 */
+.orch-dialog-layer .orch-scrim { z-index: 0; }
+.orch-dialog { position: relative; z-index: 1; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; width: min(360px, 100%); padding: 16px; border: 1px solid var(--orch-line-strong); border-radius: var(--dsw-radius-md, 12px); background: var(--orch-surface-card); box-shadow: var(--dsw-elevation-prominent, 0 3px 8px rgba(0, 0, 0, 0.04)); }
 .orch-dialog-title { margin: 0; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f1f1f); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .orch-dialog-note { margin: 0 0 12px; font-size: 13px; line-height: 20px; font-weight: 400; color: var(--dsw-alias-label-secondary, #55585f); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .orch-dialog-error { margin: 0 0 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-error-primary, #ec1313); }
@@ -336,7 +344,15 @@
 .orch-wb-cardhead, .orch-wb-dockhead, .orch-wb-ghead, .orch-wb-tmeta, .orch-wb-tfoot, .orch-wb-gstats, .orch-wb-gfoot, .orch-wb-grouphead, .orch-wb-grouphead-main, .orch-wb-grouphead-sub, .orch-wb-calhead, .orch-wb-dayhead, .orch-wb-colidx, .orch-wb-autotitle, .orch-wb-autometa, .orch-wb-aactions, .orch-wb-inline, .orch-wb-plan, .orch-wb-planform, .orch-wb-gform, .orch-wb-gactbar, .orch-wb-cardfoot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 /* 组页头两级：第一行「返回 + 组名 15/22 + 状态 tag + 主操作」，第二行「目标 + 计数 + 重命名/归档」。 */
 .orch-wb-grouphead { flex-direction: column; align-items: stretch; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--orch-line); }
-.orch-wb-grouphead-sub { font-size: 11px; line-height: 16px; }
+.orch-wb-grouphead-sub { font-size: 11px; line-height: 16px; gap: 8px; }
+/* 组页头两行的动作区间距：两行原来都吃共享规则的 6，四个按钮挨在一起；统一 8（≥8 的下一档是 12，留给块间距）。
+ * 次级按钮仍留在这两行里（返回在左、主操作在右、重命名/归档在副行），只改间距与按钮档位。 */
+.orch-wb-grouphead-main { gap: 8px; }
+.orch-wb-grouphead-sub .orch-wb-inline { gap: 8px; }
+/* 组页不参与 flex 收缩：收缩会让看板溢出页面盒，滚到底时最后一行贴死面板底边（底部留白实测 = 0）。
+ * 24 的收尾留白写在页面自己身上：滚动容器的 padding-bottom（.orch-main 的 24）在内容溢出时浏览器
+ * 不计入滚动区（实测滚到底后卡底到面板底 = 0），所以由最后一块内容补出来（与 .orch-main 的 24 同档）。 */
+.orch-wb-grouppage { flex: 0 0 auto; padding-bottom: 24px; }
 /* 自动化卡尾：官方页入口与刷新下沉成 22 高文字按钮（卡头只留一个主操作）。 */
 .orch-wb-cardfoot { padding-top: 8px; border-top: 1px solid var(--orch-line); }
 /* 卡头：高 32、标题 13/600、右侧动作 22 高。 */
@@ -379,10 +395,14 @@ textarea.orch-input { height: auto; padding: 6px 8px; resize: vertical; }
 .orch-wb-tab:hover { color: var(--dsw-alias-label-primary, #1f1f1f); }
 .orch-wb-tab:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, #4d6bfe); outline-offset: -2px; }
 .orch-wb-tab.is-on { border-bottom-color: var(--dsw-alias-state-business-primary, #4d6bfe); color: var(--dsw-alias-label-primary, #1f1f1f); font-weight: 600; }
-/* 看板：宽屏 6 列等分不横滚；≤1199 三列两行；≤863 单列按状态分段（段头吸顶）。 */
-.orch-wb-board { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
-.orch-wb-column { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.orch-wb-colidx { position: sticky; top: 0; z-index: 1; min-height: 28px; padding: 0 2px; font-size: 12px; line-height: 18px; font-weight: 600; color: var(--dsw-alias-label-secondary, #55585f); background: var(--orch-surface); }
+/* 看板：宽屏 6 列等分不横滚；≤1199 三列两行；≤863 单列按状态分段（段头吸顶）。
+ * 间距（0.37.1 修「贴死」）：列间 8 → 12、列头↔卡 6 → 8、卡间 6 → 8（12 与 .orch-wb-cols / .orch-wb-split 同档）。 */
+.orch-wb-board { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.orch-wb-column { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.orch-wb-column .orch-wb-colbody { gap: 8px; }
+/* 吸顶列头：`top` 必须与滚动容器的上内边距同源（`calc(-1 * var(--orch-page-pad))`）。只写 `top: 0` 时
+ * 列头会钉在内容盒上沿（比可视上沿低 12px），滚动时上方漏出一条 12px 的内容带（任务卡的 chip 露出来）。 */
+.orch-wb-colidx { position: sticky; top: calc(-1 * var(--orch-page-pad)); z-index: 1; min-height: 28px; padding: 0 2px; font-size: 12px; line-height: 18px; font-weight: 600; color: var(--dsw-alias-label-secondary, #55585f); background: var(--orch-surface); }
 .orch-wb-colempty { padding: 6px 2px; font-size: 11px; line-height: 16px; text-align: left; }
 .orch-wb-tcard, .orch-wb-traycard { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--orch-line); border-radius: var(--dsw-radius-sm, 8px); background: var(--orch-surface-1); }
 .orch-wb-tcard { border-left: 2px solid var(--orch-line-strong); }
@@ -494,7 +514,7 @@ textarea.orch-input { height: auto; padding: 6px 8px; resize: vertical; }
   .orch-rail-item { width: auto; white-space: nowrap; }
   .orch-metrics { margin: 12px 12px 0; overflow-x: auto; }
   .orch-metric { flex: 0 0 auto; min-width: 92px; }
-  .orch-main { padding: 12px 12px 24px; }
+  .orch-main { padding: var(--orch-page-pad) 12px 24px; }
   .orch-wb-split { flex-direction: column; }
   .orch-wb-rail, .orch-wb-dock { flex: 1 1 auto; }
   .orch-wb-board { grid-template-columns: minmax(0, 1fr); }
