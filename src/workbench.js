@@ -34,6 +34,8 @@ export const WORKBENCH_LIMITS = Object.freeze({
   reviewGroups: 10,
   reviewReasons: 5,
   reviewArtifacts: 8,
+  // 关系图（未发布）：一层组外前置的条数上限（跨组多跳不展开）。
+  graphExternalDeps: 60,
 })
 
 /** 组名 / 自动化标题 / 话术的长度上限（标题跟宿主 `title ≤ 120` 对齐）。 */
@@ -393,6 +395,40 @@ export function reviewStats({ tasks = [], groups = [], messages = 0, days = 7, n
 }
 
 /**
+ * 关系图（未发布）的只读辅助数据：本组任务依赖里**不在本组**的 id，解析成一层组外前置节点。
+ *
+ * 为什么在服务端补：客户端合并 2s 快照会受全局历史窗口（host-route `limit=200`）截断，组内早已完成
+ * 的老节点会被挤出窗口、链直接断；组投影是「本组最多 300 条」的同源视图，与看板同频（15s）。
+ * 只展开一层（组外前置自己的 depends_on 不再展开）；条数硬上限见 `WORKBENCH_LIMITS.graphExternalDeps`。
+ */
+const graphOf = (db, tasks) => {
+  const rows = tasks.slice(0, WORKBENCH_LIMITS.groupTasks)
+  const memberIds = new Set(rows.map(task => task.id))
+  const external = new Map()
+  for (const task of rows) {
+    for (const id of Array.isArray(task.depends_on) ? task.depends_on : []) {
+      if (memberIds.has(id) || external.has(id)) continue
+      const dep = getTask(db, id)
+      if (dep === undefined) continue
+      const groupId = dep.group_id ?? null
+      external.set(id, {
+        id: dep.id,
+        ref: dep.ref ?? null,
+        title: dep.title,
+        status: dep.status,
+        groupId,
+        groupName: groupId === null || groupId === '' ? '未分组' : (getGroupMeta(db, groupId)?.name ?? groupId),
+      })
+    }
+  }
+  const limit = WORKBENCH_LIMITS.graphExternalDeps
+  return {
+    external: [...external.values()].slice(0, limit),
+    truncated: tasks.length > rows.length || external.size > limit,
+  }
+}
+
+/**
  * 工作台动作/投影工厂。
  * @param {object} deps
  * @param {object} deps.db 台账
@@ -587,10 +623,20 @@ export function createWorkbench({ db, schedule, mainSessionId, coordinatorIds, l
           updatedAt: task.updated_at,
           artifactCount: Array.isArray(task.artifacts) ? task.artifacts.length : 0,
           dependencies: Array.isArray(task.depends_on) ? task.depends_on.length : 0,
+          // 关系图（未发布）：只读下发依赖 id（台账 id，界面不渲染），建图用。
+          dependsOn: Array.isArray(task.depends_on) ? task.depends_on.slice(0, 20) : [],
+          // 关系图卡片第三层（G5）：两个只读字段，口径与其它时间戳一致。
+          // - createdAt：台账 `tasks.created_at`，**毫秒**时间戳（与 updatedAt/plannedAt 同口径），「耗时」的起点；
+          //   终态（done/failed/…) 的终点取 updated_at，其余取当下（进行中是墙钟耗时，不是累计运行时长）。
+          // - progressCount：台账 `tasks.progress_count`，**进度回报次数**（`recordProgress` 每收一条
+          //   `task_report progress` 加一，见 src/ledger.js），卡片上写「N 步」；不是消息总数、不是回合数。
+          createdAt: Number.isFinite(task.created_at) ? task.created_at : null,
+          progressCount: Number.isFinite(task.progress_count) ? task.progress_count : 0,
           question: task.question,
           options: task.options,
           canPlan: planSetGate(task).ok,
         })),
+        graph: graphOf(db, tasks),
         artifacts,
         automations: listAutomations(db)
           .filter(row => row.kind === 'group' && row.ref_id === id && row.deleted_at === null)

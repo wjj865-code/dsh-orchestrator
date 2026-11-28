@@ -521,6 +521,297 @@ export const groupBoard = (tasks, columns) => {
   })
 }
 
+// ---------------------------------------------------------------------------
+// 关系图（未发布，原 0.36.3/0.36.4 两轮 + G1/G2/G3/G5）：组内任务链的只读 DAG 布局
+// 节点尺寸与 `client/src/styles.css` 的 `.orch-wb-gnode` 同源（改一处必须改另一处）；
+// 纯函数、只读：布局只算坐标与边，不写状态、不动入参（单测直接 import）。
+// 几何口径：层距/列距 = 48/16（3:1，让「上下」比「左右」重）；卡高 76（标题 / 事实行 / meta 三层）；
+// 5 层单行 = 5×76 + 4×48 + 32 = 604px，仍在 70vh 视口里（原层距 56 会到 636px，超出一屏）。
+// ---------------------------------------------------------------------------
+export const GRAPH_METRICS = Object.freeze({
+  nodeW: 184, nodeH: 76, // 节点尺寸
+  gapX: 16, rowGap: 10, // 层内列间距 / 同层换行行距
+  layerGap: 48, // 相邻层间距（前置在上、下游在下）
+  pad: 16, // 画布内边距
+  maxWidth: 900, // 画布宽度上限 → 决定每层最多几列（超过就换行）
+})
+
+/**
+ * 分支色板 A（0.37.0）：6 → **4 色**，只用宿主已有的 4 个状态色（business / success / warn / tertiary），
+ * 第 5 条分支起按 4 轮转。去掉了原来的黄金角硬编码 hsl（205° 起点 + 137.508° 散布）——那套色板
+ * 里有紫色（259°）与品红（343°），是「另一个产品」的观感，深色下也不随宿主翻。
+ *
+ * 只用于「卡片顶边 + 对应连线 + 两端接点」，不扩散到文字/背景；颜色本身是对宿主 token 的引用
+ * （`var(--dsw-…)`），深浅色由宿主切换 token 自动跟随。
+ */
+export const BRANCH_COLORS = Object.freeze([
+  'var(--dsw-alias-state-business-primary, #4d6bfe)',
+  'var(--dsw-alias-state-success-primary, #01a241)',
+  'var(--dsw-alias-state-warn-primary, #f59f0a)',
+  'var(--dsw-alias-label-tertiary, #8a8f99)',
+])
+
+/**
+ * 任务依赖图布局：DFS 最长路径分层（自上而下）+ 层内重心排序 + 层内换行打包 +
+ * **父卡悬于子卡群中点**（G3，等价于 tidy tree 的「父 = 首子槽与末子槽中点」，但我们保留分层 DAG）。
+ *
+ * 降级（都不抛错）：自环丢弃并计入 `cycleIds`；环上回边丢弃（不贡献层级）并计入 `cycleIds`，
+ * 该边仍返回但标 `cycle:true`；指向不存在 id 的依赖进 `missingIds`，不画边。
+ *
+ * @param {Array<{id:string, dependsOn?:string[]}>} nodes 组内任务 + 一层组外前置
+ * @param {Partial<typeof GRAPH_METRICS>} [options]
+ * @returns {{nodes:Array<{id:string,x:number,y:number,w:number,h:number,depth:number,branch:number}>,
+ *   edges:Array<{from:string,to:string,cycle:boolean}>, width:number, height:number,
+ *   layerCount:number, cols:number, cycleIds:string[], missingIds:string[], orphanIds:string[],
+ *   mainIds:string[]}}
+ */
+export const dependencyGraph = (nodes, options) => {
+  const metrics = { ...GRAPH_METRICS, ...(options ?? {}) }
+  const list = (Array.isArray(nodes) ? nodes : [])
+    .filter(node => node !== null && typeof node === 'object' && typeof node.id === 'string' && node.id !== '')
+  const byId = new Map(list.map(node => [node.id, node]))
+  // 依赖归整：去空/去重；自环与缺失单独记账（都不进 edges）。
+  const deps = new Map()
+  const cycleIds = new Set()
+  const missingIds = new Set()
+  for (const node of list) {
+    const kept = []
+    for (const raw of (Array.isArray(node.dependsOn) ? node.dependsOn : [])) {
+      if (typeof raw !== 'string' || raw === '') continue
+      if (raw === node.id) { cycleIds.add(node.id); continue }
+      if (!byId.has(raw)) { missingIds.add(raw); continue }
+      if (!kept.includes(raw)) kept.push(raw)
+    }
+    deps.set(node.id, kept)
+  }
+  // DFS 最长路径：rank(v) = 1 + max(rank(前置))；栈上的前置＝回边。
+  const depth = new Map()
+  const onStack = new Set()
+  const stack = []
+  const cycleEdges = new Set()
+  const rank = id => {
+    const known = depth.get(id)
+    if (known !== undefined) return known
+    onStack.add(id)
+    stack.push(id)
+    let level = 0
+    for (const dep of deps.get(id) ?? []) {
+      if (onStack.has(dep)) {
+        cycleEdges.add(`${id}>${dep}`)
+        for (const onCycle of stack.slice(stack.indexOf(dep))) cycleIds.add(onCycle)
+        continue
+      }
+      level = Math.max(level, rank(dep) + 1)
+    }
+    stack.pop()
+    onStack.delete(id)
+    depth.set(id, level)
+    return level
+  }
+  for (const node of list) rank(node.id)
+  // 分层（同层保持入参顺序）→ 自第 1 层起按前置序号均值稳定排序。
+  const layerCount = depth.size === 0 ? 0 : Math.max(...depth.values()) + 1
+  const layers = Array.from({ length: layerCount }, () => [])
+  for (const node of list) layers[depth.get(node.id)].push(node)
+  const orderOf = new Map()
+  layers.forEach((layer, level) => {
+    if (level > 0) {
+      const keyed = layer.map((node, index) => {
+        const parents = (deps.get(node.id) ?? []).filter(id => orderOf.has(id)).map(id => orderOf.get(id))
+        const key = parents.length === 0 ? index : parents.reduce((sum, value) => sum + value, 0) / parents.length
+        return { node, key, index }
+      })
+      keyed.sort((left, right) => left.key - right.key || left.index - right.index)
+      layers[level] = keyed.map(item => item.node)
+    }
+    layers[level].forEach((node, index) => orderOf.set(node.id, index))
+  })
+  // 换行打包：先算每层宽高（画布宽度取最宽那层），再按「行」求每行的水平偏移。
+  const cols = Math.max(1, Math.floor((metrics.maxWidth - 2 * metrics.pad + metrics.gapX) / (metrics.nodeW + metrics.gapX)))
+  const boxes = layers.map(layer => {
+    const used = Math.min(cols, Math.max(1, layer.length))
+    const rows = Math.max(1, Math.ceil(layer.length / cols))
+    return {
+      used,
+      rows,
+      width: used * metrics.nodeW + (used - 1) * metrics.gapX,
+      height: rows * metrics.nodeH + (rows - 1) * metrics.rowGap,
+    }
+  })
+  const width = boxes.reduce((max, box) => Math.max(max, box.width), 0) + 2 * metrics.pad
+  // G3：父卡悬于子卡群中点。子 = 依赖它的节点（回边不算），子永远在更深的层，所以自底向上求解；
+  // 再自上而下补一遍（同时参考已定位的父群），扇入的子卡才会落在父群中点上。
+  // 换行后「槽位」按行切分：每行是一个整体块，块偏移 = round(邻居列均值 - 行内序号均值)，
+  // 再夹到 [0, cols - 行内张数]。行内保序、行间互不影响，所以多行层里父卡只在自己那一行内左右移动，
+  // 不会越出画布；单行层（常见情况）里父卡就精确落在子群中点的列上。
+  const kidsOf = new Map()
+  for (const node of list) {
+    for (const dep of deps.get(node.id) ?? []) {
+      if (cycleEdges.has(`${node.id}>${dep}`)) continue
+      const kids = kidsOf.get(dep)
+      if (kids === undefined) kidsOf.set(dep, [node.id])
+      else kids.push(node.id)
+    }
+  }
+  const parentsOf = new Map(list.map(node => [
+    node.id,
+    (deps.get(node.id) ?? []).filter(dep => !cycleEdges.has(`${node.id}>${dep}`)),
+  ]))
+  const column = new Map()
+  const levels = Array.from({ length: layerCount }, (_, index) => index)
+  for (const sweep of [levels.slice().reverse(), levels]) {
+    for (const level of sweep) {
+      const layer = layers[level]
+      for (let start = 0; start < layer.length; start += cols) {
+        const row = layer.slice(start, start + cols)
+        const wanted = row.map((node, index) => {
+          const known = [...(parentsOf.get(node.id) ?? []), ...(kidsOf.get(node.id) ?? [])]
+            .filter(id => column.has(id)).map(id => column.get(id))
+          return known.length === 0 ? index : known.reduce((sum, value) => sum + value, 0) / known.length
+        })
+        const mean = wanted.reduce((sum, value) => sum + value, 0) / row.length
+        const shift = Math.max(0, Math.min(cols - row.length, Math.round(mean - (row.length - 1) / 2)))
+        row.forEach((node, index) => column.set(node.id, shift + index))
+      }
+    }
+  }
+  let y = metrics.pad
+  const placed = []
+  layers.forEach((layer, level) => {
+    const box = boxes[level]
+    layer.forEach((node, index) => placed.push({
+      id: node.id,
+      x: metrics.pad + column.get(node.id) * (metrics.nodeW + metrics.gapX),
+      y: y + Math.floor(index / cols) * (metrics.nodeH + metrics.rowGap),
+      w: metrics.nodeW,
+      h: metrics.nodeH,
+      depth: level,
+    }))
+    y += box.height + metrics.layerGap
+  })
+  const height = Math.max(0, y - metrics.layerGap + metrics.pad)
+  const edges = []
+  const hasDependent = new Set()
+  for (const node of list) {
+    for (const dep of deps.get(node.id) ?? []) {
+      hasDependent.add(dep)
+      edges.push({ from: node.id, to: dep, cycle: cycleEdges.has(`${node.id}>${dep}`) })
+    }
+  }
+  // 干道（最长链）：在「去掉回边」的 DAG 上取最长路径——每个节点只跟自己最长的前置走；
+  // 同长取**入参先出现者**（首轮扫描用严格大于，回溯时依赖顺序也按 dependsOn 原序）。
+  // 结果按层序给（前置在前），界面只需「哪几个节点/边算干道」。
+  const chain = new Map()
+  const chainOf = id => {
+    let row = chain.get(id)
+    if (row !== undefined) return row
+    row = { len: 1, next: null }
+    for (const dep of deps.get(id) ?? []) {
+      if (cycleEdges.has(`${id}>${dep}`)) continue
+      const sub = chainOf(dep)
+      if (sub.len + 1 > row.len) row = { len: sub.len + 1, next: dep }
+    }
+    chain.set(id, row)
+    return row
+  }
+  let root = null
+  for (const node of list) {
+    chainOf(node.id)
+    if (root === null || chain.get(node.id).len > chain.get(root).len) root = node.id
+  }
+  const mainIds = []
+  for (let cursor = root; cursor !== null; cursor = chain.get(cursor).next) mainIds.push(cursor)
+  mainIds.reverse()
+  // 分支（family）= 无向连通分量：把依赖边当无向边做并查集，按入参首次出现顺序编号。
+  // 只给界面取色板用（`BRANCH_COLORS` 轮转），不是台账语义、不新增服务端字段。
+  const rootOf = new Map(list.map(node => [node.id, node.id]))
+  const find = id => {
+    let cursor = id
+    while (rootOf.get(cursor) !== cursor) cursor = rootOf.get(cursor)
+    while (rootOf.get(id) !== cursor) { const next = rootOf.get(id); rootOf.set(id, cursor); id = next }
+    return cursor
+  }
+  for (const edge of edges) {
+    const left = find(edge.from)
+    const right = find(edge.to)
+    if (left !== right) rootOf.set(left, right)
+  }
+  const branchOf = new Map()
+  for (const node of placed) {
+    const key = find(node.id)
+    if (!branchOf.has(key)) branchOf.set(key, branchOf.size)
+    node.branch = branchOf.get(key)
+  }
+  return {
+    nodes: placed,
+    edges,
+    width,
+    height,
+    layerCount,
+    cols,
+    cycleIds: [...cycleIds],
+    missingIds: [...missingIds],
+    orphanIds: list.filter(node => (deps.get(node.id) ?? []).length === 0 && !hasDependent.has(node.id)).map(node => node.id),
+    mainIds,
+  }
+}
+
+/**
+ * 影响面：从某个节点出发，沿 `edges`（from=下游、to=前置）取**上游闭包**与**下游闭包**。
+ *
+ * 一个状态服务两个诉求：`up` = 它卡在哪（追前置），`down` = 它卡住会拖垮谁（影响面）。
+ * 环上不设防会无限走，所以两边都用 visited 收敛；`id` 自己不进两个集合（它由界面单独点亮）。
+ *
+ * @param {{edges?:Array<{from:string,to:string}>}} layout `dependencyGraph` 的返回（任何带 edges 的对象）
+ * @param {string} id 焦点任务 id
+ * @returns {{up:Set<string>, down:Set<string>}}
+ */
+export const impactOf = (layout, id) => {
+  const parents = new Map()
+  const children = new Map()
+  for (const edge of Array.isArray(layout?.edges) ? layout.edges : []) {
+    const parent = parents.get(edge.from)
+    if (parent === undefined) parents.set(edge.from, [edge.to])
+    else parent.push(edge.to)
+    const child = children.get(edge.to)
+    if (child === undefined) children.set(edge.to, [edge.from])
+    else child.push(edge.from)
+  }
+  const closure = (map, start) => {
+    const seen = new Set()
+    const queue = [...(map.get(start) ?? [])]
+    while (queue.length > 0) {
+      const next = queue.pop()
+      if (next === id || seen.has(next)) continue
+      seen.add(next)
+      queue.push(...(map.get(next) ?? []))
+    }
+    return seen
+  }
+  return { up: closure(parents, id), down: closure(children, id) }
+}
+
+/** 终态：这些状态的「耗时」算到 updated_at（不再增长），其余算到当下。 */
+const TERMINAL_STATUS = ['done', 'failed', 'cancelled', 'orphaned', 'missing']
+
+/**
+ * 卡片第三层左半边的「耗时」（G5）：
+ * 起 = `createdAt`（服务端 group 投影新增的只读字段，台账 `tasks.created_at`，毫秒）；
+ * 止 = `deliveredAt` → 终态用 `updatedAt` → 其余用 `now`（进行中按墙钟算，文档里写清是墙钟不是累计运行时间）。
+ * 没有 createdAt（老投影/组外前置）返回 `耗时 —`，不猜。
+ */
+export const elapsedTextOf = (task, now = Date.now()) => {
+  const from = Number.isFinite(task?.createdAt) ? task.createdAt : null
+  if (from === null) return '耗时 —'
+  const to = Number.isFinite(task?.deliveredAt)
+    ? task.deliveredAt
+    : TERMINAL_STATUS.includes(task?.status) && Number.isFinite(task?.updatedAt) ? task.updatedAt : now
+  const minutes = Math.max(0, Math.round((to - from) / 60000))
+  if (minutes < 60) return `耗时 ${minutes}m`
+  if (minutes < 1440) return `耗时 ${Math.round(minutes / 60)}h`
+  return `耗时 ${Math.round(minutes / 1440)}d`
+}
+
 /** 某个组的任务（`groupId` 为空/undefined 视为未分组）。 */
 export const groupTasksOf = (tasks, groupId) => (Array.isArray(tasks) ? tasks : [])
   .filter(task => (task.groupId ?? null) === (groupId ?? null))

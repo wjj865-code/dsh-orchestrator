@@ -211,7 +211,7 @@
 - 会话内卡片仍只提供数据（`taskCard`），不渲染 UI；可见入口是侧栏「主会话」和会话头「任务」面板。
 - **任务入口依赖宿主身份信号**：显示条件 = 当前会话 id ∈ 台账 `settings.main_session_ids`（名单成员一视同仁，主/副协调者都显示「任务」）。id 取不到或 `session-role` 请求失败时按「不是协调者」处理，入口**默认隐藏**；会话切换立即重判，另有 5 秒兜底轮询——刚设为协调者 1 秒内可能短暂看不到入口。
 - 入口隐藏只是 UI 层：`main` 面板仍注册，`/api/orchestrator` 的动作端点也没有会话身份校验（owner-only 由平台 connection 负责）；真正的主会话权限仍由 `task_*` 工具的调用方校验兜底。
-- 面板是 2s 轮询、没有 SSE；任务很多时快照会变大。面板产物 ≤160 KiB 由 `check:client-size` 守着（工作台 v1 由 95 KiB 抬到 148 KiB，0.32.0 能力包面板抬到 160 KiB——子预算见脚本头部与 `docs/testing.md` G10；minify 后排查用 `CLIENT_MINIFY=0`）。
+- 面板是 2s 轮询、没有 SSE；任务很多时快照会变大。面板产物 ≤200 KiB 由 `check:client-size` 守着（工作台 v1 由 95 KiB 抬到 148 KiB，0.32.0 能力包面板抬到 160 KiB，0.35.0 引用 chip 抬到 164 KiB，关系图两轮（原 0.36.3 首轮 / 原 0.36.4 v2）抬到 176 KiB，0.37.0 界面系统重做抬到 200 KiB——子预算见脚本头部与 `docs/testing.md` G10；minify 后排查用 `CLIENT_MINIFY=0`）。
 - **删除只删台账，不删盘**：级联清 `tasks`/`messages`/`notifications`，产物文件、`memories` 都保留；平台侧子会话历史（含 P1 起作为正文真源的会话日志）也没有删除 API。删除不可恢复。
 - **删除不给活跃任务**：活跃状态先「停止」；终态任务若还有活跃下游依赖也不让删（`DELETE_HAS_ACTIVE_DEPENDENTS`）。
 - 日报默认关闭；开启后每个主会话一条 schedule，主会话重建会重建 schedule。

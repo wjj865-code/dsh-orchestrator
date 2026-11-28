@@ -31,7 +31,7 @@ src/                 宿主侧逻辑（每个模块一个职责，见 docs/ARCHI
   plan-mode.js       计划模式状态与文案
   worktree.js        git worktree 隔离（宿主侧 git）
   host-route.js      /api/orchestrator（面板只读 + 动作）
-client/src/**        面板/入口/抽屉/工作台（vite 构建成 dist/client.js，≤160 KiB）
+client/src/**        面板/入口/抽屉/工作台（vite 构建成 dist/client.js，≤200 KiB）
 scripts/             文档预算、客户端体积、版本口径、镜像同步
 tools/debug-preset/ orch-debug 预设生成器（维护者工具，不随 npm 包发货）
 cordis.patch.yml     随包预设：协调者 + worker
@@ -46,7 +46,7 @@ pnpm install             # 装依赖（按 pnpm-lock.yaml；CI 用 pnpm install 
 pnpm test                # pretest = build + check:client-size + check:docs，再跑 node --test
 pnpm run build           # client/src/** --vite--> dist/client.js（+ .map，默认 esbuild minify）
 pnpm run check:client    # node --check dist/client.js
-pnpm run check:client-size  # dist/client.js ≤ 160 KiB 闸门
+pnpm run check:client-size  # dist/client.js ≤ 200 KiB 闸门
 pnpm run check:docs      # 文档行数预算（1,800）+ docs/CONFIG.md 配置表与 docs/TOOLS.md 工具表同源 + README 入口 + 内链
 pnpm run check:version   # package.json / README / CHANGELOG 版本口径
 node tools/debug-preset/cli.mjs            # 把随包「创造模式」组合复制成可安装的 orch-debug 预设

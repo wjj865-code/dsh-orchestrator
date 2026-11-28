@@ -13,11 +13,12 @@ import { tempDir, sampleBrief } from './helpers.js'
 
 const HOUR = 60 * 60 * 1000
 
-const makeTask = (db, { group = null, title = 't', status = 'pending' } = {}) => {
+const makeTask = (db, { group = null, title = 't', status = 'pending', dependsOn = [] } = {}) => {
   const task = createTask(db, {
     brief: sampleBrief({ title }),
     coordinatorSession: 's-1',
     groupId: group,
+    dependsOn,
     status: 'pending',
   })
   if (status === 'running') transition(db, task.id, 'running', { sessionId: `c-${task.id}`, target: `c-${task.id}` })
@@ -249,6 +250,28 @@ test('createWorkbench.groups：并集组键 + 未分组计数（不需要组表�
   assert.equal(detail.tasks.length, 2)
   assert.equal(detail.tasks[0].canPlan, true)
   assert.equal(detail.group.id, 'gzh')
+  // 关系图（未发布）：本组任务带只读 dependsOn（台账 id 数组），跨组前置解析成一层「幽灵节点」；
+  // 已删除的前置不产生节点（客户端按 missingIds 降级），既有 dependencies 计数语义不变。
+  const upstream = makeTask(db, { group: 'other', title: '跨组前置', status: 'running' })
+  const downstream = makeTask(db, { group: 'gzh', title: '丙', dependsOn: [upstream.id] })
+  const withGraph = bench.group('gzh')
+  const row = withGraph.tasks.find(task => task.id === downstream.id)
+  assert.deepEqual(row.dependsOn, [upstream.id])
+  assert.equal(row.dependencies, 1, '依赖计数仍与 dependsOn 同源')
+  assert.equal(withGraph.graph.external.length, 1)
+  const ghost = withGraph.graph.external[0]
+  assert.equal(ghost.id, upstream.id)
+  assert.equal(ghost.title, '跨组前置')
+  assert.equal(ghost.status, 'running')
+  assert.equal(ghost.groupId, 'other')
+  assert.equal(ghost.groupName, 'other', '没有组元数据时回落组键')
+  assert.equal(withGraph.graph.truncated, false)
+  // 关系图卡片第三层（G5）的两个只读字段：毫秒时间戳 + 进度回报次数（不是消息总数）。
+  const g5Fields = withGraph.tasks.find(task => task.id === downstream.id)
+  assert.ok(Number.isFinite(g5Fields.createdAt), 'createdAt 应是毫秒时间戳')
+  assert.equal(g5Fields.progressCount, 0, 'progress_count 台账默认 0，客户端只读展示')
+  makeTask(db, { group: 'gzh', title: '丁', dependsOn: ['t-gone'] })
+  assert.equal(bench.group('gzh').graph.external.length, 1, '已删除的前置不产生组外节点')
   assert.equal(bench.group('nope').code, 'GROUP_NOT_FOUND')
   db.close()
 })

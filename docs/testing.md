@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | `pnpm test` | `pretest` = `pnpm run build` + `check:client-size` + `check:docs`，然后 `node --test … "test/*.test.js"` | 0 fail；pass 数与用例数一致；无未说明的 skip；进程正常退出不挂起 |
 | `pnpm run check:client` | `node --check dist/client.js`（构建产物语法） | exit 0 |
-| `pnpm run check:client-size` | `dist/client.js` 字节数 ≤ **160 KiB**（`scripts/check-client-size.mjs`） | exit 0 |
+| `pnpm run check:client-size` | `dist/client.js` 字节数 ≤ **200 KiB**（`scripts/check-client-size.mjs`） | exit 0 |
 | `pnpm run check:version` | `package.json` / README / CHANGELOG 三处版本口径 | exit 0 |
 | `pnpm run check:docs` | 文档行数预算（**1,800**）+ README 首屏结构 + 参考表（`docs/CONFIG.md` / `docs/TOOLS.md`）与代码同源 + 文档链接与内链可达 | exit 0（详见 §3.4） |
 | `npm pack --dry-run` | 包内容与 `package.json.files` | 含 `README`/`CHANGELOG`/`docs/testing.md`，不含被删文档与调试预设 |
@@ -39,7 +39,7 @@
 | G7 | 依赖收窄 | 源码扫描 `ctx.` / `agentTeams.` | 派活只走 `startActivation`（+ 子会话 `task_report` 链路），不偷用未声明的服务 |
 | G8 | 工具面 / 配置面 | `Object.keys(loadConfig({}))`、`createTools({}).length`、`cordis.patch.yml` 的 `preset-tools` deny/keep 与预设行 | 配置 25 键；全局工具 12 个（协调者可见 8 + worker 专属 4）；协调者另有预设自有的只读 `read` 与 `skill`；**协调者预设不得出现 `tool-fs-search`**；deny/keep 名单与工具表一致 |
 | G9 | 文档面 | `pnpm run check:docs` | 见 §3.4（总行数 ≤1,800、README 首屏四要素、参考表同源、内链可达） |
-| G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **164 KiB**；164 KiB 之下按子预算表（脚本头部，合计 = 164）逐块核算，某一页超了先删重复渲染/收敛样式，再谈抬预算。**为什么从 95 调到 148**：工作台 v1 要新增总览/任务组/组工作台/排期/自动化五页与常驻只读 dock，平台只 serve 一个 `client.js`（无代码分割），全功能实测 143–146 KiB；先定 128 KiB 实测不够（差 12–16 KiB），用户拍板保留全功能 → 148 KiB。**0.32.0 能力包面板**（独立 main panel + 侧栏入口 + 安装确认卡 + EnvVarsCard）没有代码分割，只能加进同一个产物 → 用户拍板抬到 **160 KiB**。**0.33.0 自动化创建入口**（删自定义表单、加「创建自动化」按钮 + 主会话预填 + 会话头角色判定）是**净减**，不抬预算。**0.35.0 引用 chip**（正文 `tk-xxxxxx` 渲染成任务名 chip）无代码分割 → 用户拍板抬到 **164 KiB** |
+| G10 | **面板体积闸门** | `pnpm run check:client-size`（`pretest` / `prepublishOnly` 已跑） | `dist/client.js` ≤ **200 KiB**；200 KiB 之下按子预算表（脚本头部，合计 = 200）逐块核算，某一页超了先删重复渲染/收敛样式，再谈抬预算。**为什么从 95 调到 148**：工作台 v1 要新增总览/任务组/组工作台/排期/自动化五页与常驻只读 dock，平台只 serve 一个 `client.js`（无代码分割），全功能实测 143–146 KiB；先定 128 KiB 实测不够（差 12–16 KiB），用户拍板保留全功能 → 148 KiB。**0.32.0 能力包面板**（独立 main panel + 侧栏入口 + 安装确认卡 + EnvVarsCard）没有代码分割，只能加进同一个产物 → 用户拍板抬到 **160 KiB**。**0.33.0 自动化创建入口**（删自定义表单、加「创建自动化」按钮 + 主会话预填 + 会话头角色判定）是**净减**，不抬预算。**0.35.0 引用 chip**（正文 `tk-xxxxxx` 渲染成任务名 chip）无代码分割 → 用户拍板抬到 **164 KiB**。**首轮（原 0.36.3）关系图视图**（`dependencyGraph` 布局 + `GraphView` SVG 边，无代码分割）实测 173,475 B 超 168 KiB 1,443 B、删尽新增样式仍超 504 B → 用户拍板 168 → **172 KiB**。**v2（原 0.36.4）关系图交互重设计**（干道 `mainIds` + `impactOf` 影响面高亮 + 层带 + 跨层绕行 + 图例 + 卡片事实行，不是换皮）实测 177,298 B 超 172 KiB 1,170 B → 用户拍板 172 → **176 KiB**。**0.37.0 界面系统重做**（公共设计系统 + 五页重排 + 看板三档 + ConfirmDialog 收敛，无代码分割）基线 179,149 B → 用户拍板 176 → **200 KiB**（可用增量 25,651 B，按页分配；实测见 CHANGELOG 0.37.0 段） |
 
 ## 3. 断言口径（测试怎么写）
 

@@ -53,9 +53,9 @@ test('构建脚本：vite 是 pin 住的 devDependency，build/pretest/check:cli
   assert.match(pkg.scripts.prepublishOnly, /check:client-size/)
 })
 
-test('P2-5 体积预算：dist/client.js ≤ 164 KiB（工作台 v1 148 KiB，0.32.0 能力包 160 KiB，0.35.0 引用 chip 抬到 164 KiB），闸门脚本可单独执行且给可读结论', () => {
-  // 机器可判定：164 KiB 预算写死在脚本里，产物超了 CI 直接红（不是「看着差不多」）。
-  assert.equal(CLIENT_SIZE_LIMIT, 164 * 1024)
+test('P2-5 体积预算：dist/client.js ≤ 200 KiB（工作台 v1 148 KiB，0.32.0 能力包 160 KiB，0.35.0 引用 chip 164 KiB，关系图两轮 168 → 172 → 176 KiB，0.37.0 界面系统重做 200 KiB），闸门脚本可单独执行且给可读结论', () => {
+  // 机器可判定：200 KiB 预算写死在脚本里，产物超了 CI 直接红（不是「看着差不多」）。
+  assert.equal(CLIENT_SIZE_LIMIT, 200 * 1024)
   const size = statSync(distPath).size
   assert.ok(size <= CLIENT_SIZE_LIMIT, `dist/client.js ${formatSize(size)} 超出预算 ${formatSize(CLIENT_SIZE_LIMIT)}`)
   // 纯函数口径：预算内空数组、超预算给两条（超了多少 + 怎么回去）、产物缺失也算问题。

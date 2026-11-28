@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs'
 import {
   monthGrid, dateKeyOf, startOfMonth, planStampOnDay, planWhenLabel, clockOf,
   groupBoard, groupTasksOf, scheduleBucketOf, scheduleGroups, SCHEDULE_GROUP_LIMIT,
-  plannedOnDay, nextPlannedTask, automationStateLabel,
+  plannedOnDay, nextPlannedTask, automationStateLabel, dependencyGraph, impactOf, GRAPH_METRICS,
+  BRANCH_COLORS, elapsedTextOf,
 } from '../client/src/logic.js'
 import { BOARD_COLUMNS, WORKBENCH_PAGES, WORKBENCH_POLL_MS, DEFAULT_PLAN_HOUR, REVIEW_DAYS } from '../client/src/constants.js'
 
@@ -263,4 +264,236 @@ test('自动化创建入口（0.33.0）：面板只剩一个按钮，提示词�
   assert.match(client, /whenDraftExists: 'append'/)
   assert.match(client, /prefillDraft: prefillMainDraft/)
   assert.match(client, /openSchedules: \(\) =>/)
+})
+
+// 关系图（未发布，issue #2）：布局是纯函数，单测直接断言几何与降级，不依赖浏览器。
+test('dependencyGraph：DFS 长路径分层、边朝前置、层内换行、只读（不改入参）', () => {
+  // 三点链：B 等 A、C 等 B（输入顺序故意打乱，验证按依赖分层而不是按入参顺序）。
+  const chain = dependencyGraph([
+    { id: 'A' },
+    { id: 'C', dependsOn: ['B'] },
+    { id: 'B', dependsOn: ['A'] },
+  ])
+  assert.deepEqual(Object.fromEntries(chain.nodes.map(node => [node.id, node.depth])), { A: 0, C: 2, B: 1 })
+  // 边方向：from=下游、to=前置（箭头画在 to 端），按任务输入顺序产出。
+  assert.deepEqual(chain.edges, [
+    { from: 'C', to: 'B', cycle: false },
+    { from: 'B', to: 'A', cycle: false },
+  ])
+  // 单列：宽 = nodeW + 2*pad；高 = pad*2 + 3*nodeH + 2*layerGap（G5 起 nodeH 76、layerGap 48）。
+  assert.equal(chain.width, GRAPH_METRICS.nodeW + 2 * GRAPH_METRICS.pad)
+  assert.equal(chain.height, 3 * GRAPH_METRICS.nodeH + 2 * GRAPH_METRICS.layerGap + 2 * GRAPH_METRICS.pad)
+  assert.deepEqual([GRAPH_METRICS.nodeH, GRAPH_METRICS.layerGap], [76, 48], '卡高 76 + 层距 48：5 层单行 = 604px，仍在一屏')
+  const at = Object.fromEntries(chain.nodes.map(node => [node.id, node]))
+  assert.deepEqual([at.A.x, at.A.y], [16, 16])
+  assert.deepEqual([at.B.x, at.B.y], [16, 140])
+  assert.deepEqual([at.C.x, at.C.y], [16, 264])
+  // 森林多根 + 孤立节点：三个根都在第 0 层；孤立 = 无前置也无下游。
+  const forest = dependencyGraph([
+    { id: 'a1' }, { id: 'a2', dependsOn: ['a1'] }, { id: 'b1' }, { id: 'solo' },
+  ])
+  assert.deepEqual(Object.fromEntries(forest.nodes.map(node => [node.id, node.depth])), { a1: 0, a2: 1, b1: 0, solo: 0 })
+  assert.deepEqual(forest.orphanIds.sort(), ['b1', 'solo'])
+  assert.equal(forest.edges.length, 1)
+  // 只读：布局不往入参写坐标/层级。
+  const input = [{ id: 'r1' }, { id: 'r2', dependsOn: ['r1'] }]
+  const before = JSON.stringify(input)
+  dependencyGraph(input)
+  assert.equal(JSON.stringify(input), before)
+})
+
+test('dependencyGraph 降级：环 / 自环 / 缺前置 / 组外节点 / 层内换行都不崩', () => {
+  // 环：X↔Y，回边忽略但保留成 cycle 边，层级有限。
+  const cycle = dependencyGraph([{ id: 'X', dependsOn: ['Y'] }, { id: 'Y', dependsOn: ['X'] }])
+  assert.deepEqual(cycle.cycleIds.sort(), ['X', 'Y'])
+  assert.ok(cycle.layerCount <= 2)
+  assert.equal(cycle.edges.filter(edge => edge.cycle === true).length, 1)
+  assert.equal(cycle.edges.length, 2)
+  // 自环 + 重复 id：不画自环线，计入循环。
+  const self = dependencyGraph([{ id: 'S', dependsOn: ['S', 'S'] }])
+  assert.deepEqual(self.cycleIds, ['S'])
+  assert.deepEqual(self.edges, [])
+  assert.equal(self.nodes[0].depth, 0)
+  // 缺失前置：不画边、不进节点，落第 0 层。
+  const missing = dependencyGraph([{ id: 'M', dependsOn: ['t-gone'] }])
+  assert.deepEqual(missing.missingIds, ['t-gone'])
+  assert.deepEqual(missing.edges, [])
+  assert.equal(missing.nodes[0].depth, 0)
+  // 组外前置（一层）：照常参与分层与连线，有下游就不算孤立。
+  const outside = dependencyGraph([{ id: 'in', dependsOn: ['out'] }, { id: 'out', external: true }])
+  assert.deepEqual(outside.edges, [{ from: 'in', to: 'out', cycle: false }])
+  assert.equal(outside.nodes.find(node => node.id === 'in').depth, 1)
+  assert.equal(outside.orphanIds.includes('out'), false)
+  // 层内换行：25 个孤立节点 → 画布不超上限、行数 = ceil(25/cols)、坐标互不重叠。
+  const many = dependencyGraph(Array.from({ length: 25 }, (_, index) => ({ id: `p${index}` })))
+  assert.equal(many.layerCount, 1)
+  assert.ok(many.width <= GRAPH_METRICS.maxWidth, `画布宽 ${many.width} 超上限`)
+  assert.ok(GRAPH_METRICS.maxWidth - many.width < GRAPH_METRICS.nodeW + GRAPH_METRICS.gapX, '换行后的画布应该贴住上限而不是被拉宽')
+  const rows = new Set(many.nodes.map(node => node.y)).size
+  assert.equal(rows, Math.ceil(25 / many.cols))
+  assert.equal(new Set(many.nodes.map(node => `${node.x}:${node.y}`)).size, 25)
+  // 脏数据：null / 无 id / dependsOn 非数组都当空处理。
+  assert.equal(dependencyGraph(null).nodes.length, 0)
+  assert.equal(dependencyGraph([null, { id: '' }, { id: 'ok', dependsOn: 'nope' }]).nodes.length, 1)
+})
+
+// 关系图 v2（未发布）：干道 = 最长链（`mainIds`），影响面 = 上游闭包 + 下游闭包（`impactOf`）。
+// 两条纯函数各 5 条：三点链 / 分叉取最长 / 环 / 孤立点 / 扇入——都是这张图读法的必要事实。
+test('mainIds · 三点链：干道按层序给（前置在前），不是入参顺序', () => {
+  const chain = dependencyGraph([{ id: 'A' }, { id: 'C', dependsOn: ['B'] }, { id: 'B', dependsOn: ['A'] }])
+  assert.deepEqual(chain.mainIds, ['A', 'B', 'C'])
+})
+
+test('mainIds · 分叉取最长：干道走最长路径，同长取入参先出现者', () => {
+  // A→C 只有 2 层，A→B→D→E 有 4 层：干道必须选长的那条。
+  const fork = dependencyGraph([
+    { id: 'A' }, { id: 'C', dependsOn: ['A'] }, { id: 'B', dependsOn: ['A'] },
+    { id: 'D', dependsOn: ['B'] }, { id: 'E', dependsOn: ['D'] },
+  ])
+  assert.deepEqual(fork.mainIds, ['A', 'B', 'D', 'E'])
+  // 两条等长链：取入参里先出现的那条（a 链在 b 链前面）。
+  const tie = dependencyGraph([{ id: 'a1' }, { id: 'a2', dependsOn: ['a1'] }, { id: 'b1' }, { id: 'b2', dependsOn: ['b1'] }])
+  assert.deepEqual(tie.mainIds, ['a1', 'a2'])
+})
+
+test('mainIds · 环：回边不参与取链，不死循环（自环只留自己）', () => {
+  assert.deepEqual(dependencyGraph([{ id: 'X', dependsOn: ['Y'] }, { id: 'Y', dependsOn: ['X'] }]).mainIds, ['Y', 'X'])
+  assert.deepEqual(dependencyGraph([{ id: 'S', dependsOn: ['S'] }]).mainIds, ['S'])
+})
+
+test('mainIds · 孤立点：取入参第一个；没有节点就是空', () => {
+  assert.deepEqual(dependencyGraph([{ id: 'i1' }, { id: 'i2' }]).mainIds, ['i1'])
+  assert.deepEqual(dependencyGraph(null).mainIds, [])
+})
+
+test('mainIds · 扇入：三个等长前置按 dependsOn 顺序取第一个', () => {
+  const fan = dependencyGraph([{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }, { id: 'f4', dependsOn: ['f1', 'f2', 'f3'] }])
+  assert.deepEqual(fan.mainIds, ['f1', 'f4'])
+  assert.equal(new Set(fan.mainIds).size, fan.mainIds.length)
+})
+
+test('impactOf · 三点链：中段的上游 1 个、下游 1 个', () => {
+  const chain = dependencyGraph([{ id: 'A' }, { id: 'B', dependsOn: ['A'] }, { id: 'C', dependsOn: ['B'] }])
+  const mid = impactOf(chain, 'B')
+  assert.deepEqual([...mid.up], ['A'])
+  assert.deepEqual([...mid.down], ['C'])
+  // 端点只亮一个方向。
+  assert.deepEqual([...impactOf(chain, 'A').up], [])
+  assert.deepEqual([...impactOf(chain, 'A').down].sort(), ['B', 'C'])
+  assert.deepEqual([...impactOf(chain, 'C').down], [])
+})
+
+test('impactOf · 分叉：下游是整个分支合集，上游是整条祖先链', () => {
+  const layout = dependencyGraph([
+    { id: 'A' }, { id: 'B', dependsOn: ['A'] }, { id: 'C', dependsOn: ['A'] }, { id: 'D', dependsOn: ['B'] },
+  ])
+  assert.deepEqual([...impactOf(layout, 'A').down].sort(), ['B', 'C', 'D'])
+  assert.deepEqual([...impactOf(layout, 'D').up].sort(), ['A', 'B'])
+})
+
+test('impactOf · 环：两个方向都只走一圈，自己不在集合里', () => {
+  const cycle = dependencyGraph([{ id: 'X', dependsOn: ['Y'] }, { id: 'Y', dependsOn: ['X'] }])
+  const spot = impactOf(cycle, 'X')
+  assert.deepEqual([...spot.up], ['Y'])
+  assert.deepEqual([...spot.down], ['Y'])
+  assert.equal(spot.up.has('X'), false)
+  assert.equal(spot.down.has('X'), false)
+})
+
+test('impactOf · 孤立点：两边都空；不存在的 id / 没有 edges 也不崩', () => {
+  const solo = dependencyGraph([{ id: 'solo' }])
+  assert.deepEqual([...impactOf(solo, 'solo').up], [])
+  assert.deepEqual([...impactOf(solo, 'solo').down], [])
+  assert.deepEqual([...impactOf(solo, 't-none').up], [])
+  assert.deepEqual([...impactOf({}, 'x').down], [])
+})
+
+test('impactOf · 扇入：前置看全部分支，分支只看自己那条', () => {
+  const fan = dependencyGraph([{ id: 'f1' }, { id: 'f2' }, { id: 'f3' }, { id: 'f4', dependsOn: ['f1', 'f2', 'f3'] }])
+  assert.deepEqual([...impactOf(fan, 'f4').up].sort(), ['f1', 'f2', 'f3'])
+  assert.deepEqual([...impactOf(fan, 'f1').down], ['f4'])
+  assert.deepEqual([...impactOf(fan, 'f1').up], [])
+})
+
+// G3（未发布）：父卡悬于子卡群中点 —— 扇出对称、扇入落在父群中点、链仍是一列。
+test('G3 布局：扇出父卡落在三个子卡的中点列', () => {
+  const fan = dependencyGraph([{ id: 'p' }, { id: 'c1', dependsOn: ['p'] }, { id: 'c2', dependsOn: ['p'] }, { id: 'c3', dependsOn: ['p'] }])
+  const x = Object.fromEntries(fan.nodes.map(node => [node.id, node.x]))
+  assert.deepEqual([x.p, x.c1, x.c2, x.c3], [216, 16, 216, 416], '父 = 子群中间那列，子三等分')
+  assert.equal(x.p + GRAPH_METRICS.nodeW / 2, (x.c1 + x.c3 + GRAPH_METRICS.nodeW) / 2, '父中心 = 首子与末子的中点')
+})
+
+test('G3 布局：扇入子卡落在父群中点（多父取均值）', () => {
+  const fanIn = dependencyGraph([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd', dependsOn: ['a', 'b', 'c'] }])
+  const x = Object.fromEntries(fanIn.nodes.map(node => [node.id, node.x]))
+  assert.deepEqual([x.a, x.b, x.c], [16, 216, 416])
+  assert.equal(x.d, 216, '唯一子卡落在三个父卡的中点列')
+})
+
+test('G3 布局：三点链仍是一列（干道不散开）', () => {
+  const chain = dependencyGraph([{ id: 'A' }, { id: 'B', dependsOn: ['A'] }, { id: 'C', dependsOn: ['B'] }])
+  assert.deepEqual([...new Set(chain.nodes.map(node => node.x))], [16])
+})
+
+test('分支（连通分量）：同一条链同色、互不相连的节点不同组、色板 4 色且只用宿主状态色（色板 A）', () => {
+  // 0.37.0 色板 A：6 → 4 色，去紫、删黄金角硬编码 hsl，只用宿主 4 个语义色（引用 --dsw-* token）。
+  assert.equal(BRANCH_COLORS.length, 4)
+  for (const color of BRANCH_COLORS) assert.match(color, /^var\(--dsw-alias-(state-business-primary|state-success-primary|state-warn-primary|label-tertiary), #[0-9a-f]{6}\)$/)
+  // 去紫：色板里不能再出现 hsl 硬编码（黄金角散布那套已删）。
+  for (const color of BRANCH_COLORS) assert.doesNotMatch(color, /hsl\(/)
+  const layout = dependencyGraph([
+    { id: 'a1' }, { id: 'a2', dependsOn: ['a1'] }, { id: 'b1' }, { id: 'b2', dependsOn: ['b1'] }, { id: 'solo' },
+  ])
+  const branch = Object.fromEntries(layout.nodes.map(node => [node.id, node.branch]))
+  assert.equal(branch.a1, branch.a2, '链上的节点属于同一分支')
+  assert.equal(branch.b1, branch.b2)
+  assert.notEqual(branch.a1, branch.b1, '两条互不相连的链是两个分支')
+  assert.notEqual(branch.solo, branch.a1, '孤立点自成分支')
+  assert.ok(Object.values(branch).every(index => Number.isInteger(index) && index >= 0))
+  // 超过 4 条分支时按 4 轮转（>4 复用前 4 色，信息损失可接受；与补丁 §2「>4 轮转」同口径）。
+  const many = dependencyGraph(Array.from({ length: 6 }, (_, index) => ({ id: `n${index}` })))
+  assert.ok(many.nodes.every(node => node.branch >= 0 && node.branch < 6))
+  assert.equal(BRANCH_COLORS[many.nodes[4].branch % BRANCH_COLORS.length], BRANCH_COLORS[0], '第 5 条分支回到第 1 色')
+})
+
+test('elapsedTextOf：耗时按 创建→交付/终态更新时间/当下 取，缺 createdAt 不猜', () => {
+  assert.equal(elapsedTextOf({ createdAt: 0, updatedAt: 30 * 60000, status: 'done' }), '耗时 30m')
+  assert.equal(elapsedTextOf({ createdAt: 0, updatedAt: 90 * 60000, status: 'running' }, 90 * 60000), '耗时 2h')
+  assert.equal(elapsedTextOf({ createdAt: 0, deliveredAt: 3 * 1440 * 60000, status: 'delivered' }, 9e12), '耗时 3d')
+  assert.equal(elapsedTextOf({ status: 'running' }), '耗时 —', '组外前置没有 createdAt，不猜')
+})
+
+test('服务端字段口径：卡片第三层用 createdAt(ms) + progressCount（进度回报次数）', () => {
+  const server = readFileSync(new URL('../src/workbench.js', import.meta.url), 'utf8')
+  assert.match(server, /createdAt: Number\.isFinite\(task\.created_at\)/)
+  assert.match(server, /progressCount: Number\.isFinite\(task\.progress_count\)/)
+})
+
+// 组件层：第三个只读 tab（源码是 JSX，测试进程不能 import，用源码断言 + 纯函数断言互补）。
+test('关系图 tab（未发布）：第三个只读视图，节点/边只用 dependencyGraph，不引图表库、不发写请求', () => {
+  const wb = source('workbench.js')
+  for (const marker of ["'看板'", '产物 ${artifacts.length}', "'关系图'", 'dependencyGraph(', 'aria-label="组关系图"', '<svg']) {
+    assert.ok(wb.includes(marker), `关系图缺少 ${marker}`)
+  }
+  // 关系图组件边界：从 GraphView 到 GroupPage，必须只读（不拖拽、不写动作、无输入框）。
+  const start = wb.indexOf('const GraphView = (')
+  assert.ok(start > 0, '找不到 GraphView 组件')
+  const view = wb.slice(start, wb.indexOf('const GroupPage = (', start))
+  for (const forbidden of ['draggable', 'onDragStart', 'workbenchAction', 'clientRequestId', 'confirm: true', '<input', '<form', 'onSubmit']) {
+    assert.equal(view.includes(forbidden), false, `关系图里不该出现 ${forbidden}`)
+  }
+  // G2：不再用箭头 marker，改两端 circle 接点（方向靠「上=前置、下=下游」）。
+  for (const marker of ['markerEnd', 'marker-end', '<marker']) {
+    assert.equal(view.includes(marker), false, `关系图不应用 ${marker}（已改圆点接点）`)
+  }
+  assert.ok(view.includes('orch-wb-gjoint'), '关系图应有接点 circle')
+  // 点击节点只打开详情（既有只读通道），不做别的。
+  assert.match(view, /onClick=\{\(\) => onOpenDetail\(task\.id\)\}/)
+  // 不引第三方图表库（纯 SVG + React）。
+  for (const file of ['workbench.js', 'logic.js', 'views.js']) {
+    assert.doesNotMatch(source(file), /echarts|recharts|\bd3\b/i, `${file} 不该引图表库`)
+  }
+  // 数据来自 group 投影的只读字段（客户端不合并快照、不加端点）。
+  assert.match(wb, /state\.data\.graph\?\.external/)
+  assert.equal(source('api.js').includes("endpoint: 'graph'"), false, '不新增 graph 端点')
 })

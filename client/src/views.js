@@ -43,8 +43,61 @@ export function createViews({
   workbenchApi, startOfMonth, plannedOnDay, planStampOnDay, groupTasksOf, nextPlannedTask, automationStateLabel,
   monthGrid, dateKeyOf, AUTOMATION_CREATE_PROMPT,
 }) {
+  // 唯一确认弹层（0.37.0 收敛）：照宿主弹层形态——card-fill + 圆角 12 + elevation-prominent，
+  // 标题 13/600 一行、说明 13/400 label-secondary 一行、按钮右对齐（次 ghost 左、主 primary 30 高）。
+  // 键盘：打开后焦点落「取消」；Tab / Shift+Tab 在两个按钮间循环；Esc = 取消；关闭后焦点归还触发按钮。
+  const ConfirmDialog = ({ title, note, confirmLabel, danger, busy, onConfirm, onCancel }) => {
+    const cancelRef = React.useRef(null)
+    const confirmRef = React.useRef(null)
+    React.useEffect(() => {
+      const previous = typeof document === 'undefined' ? null : document.activeElement
+      const node = cancelRef.current
+      if (node !== null && typeof node.focus === 'function') node.focus()
+      return () => { if (previous !== null && typeof previous.focus === 'function') previous.focus() }
+    }, [])
+    // Tab / Shift+Tab 在两个按钮之间循环（只有两个按钮，用 ref 就够，不必扫 DOM）。
+    const onKeyDown = event => {
+      if (event.key === 'Escape') { event.preventDefault(); onCancel(); return }
+      if (event.key !== 'Tab') return
+      const first = cancelRef.current
+      const last = confirmRef.current
+      const active = typeof document === 'undefined' ? null : document.activeElement
+      if (event.shiftKey === true && active === first) { event.preventDefault(); last.focus() }
+      else if (event.shiftKey !== true && active === last) { event.preventDefault(); first.focus() }
+    }
+    return (
+      <div className="orch-dialog-layer">
+        <div className="orch-scrim" data-open="true" aria-hidden="true" onClick={onCancel} />
+        <section className="orch-dialog" role="alertdialog" aria-modal="true" aria-label={title} onKeyDown={onKeyDown}>
+          <h2 className="orch-dialog-title">{title}</h2>
+          <p className="orch-dialog-note">{note}</p>
+          <div className="orch-dialog-actions">
+            <button ref={cancelRef} type="button" className="orch-btn orch-btn--ghost orch-btn--lg" onClick={onCancel} disabled={busy}>{'取消'}</button>
+            <button
+              type="button"
+              ref={confirmRef}
+              className={danger === true ? 'orch-btn orch-btn--lg orch-btn--danger-solid' : 'orch-btn orch-btn--lg orch-btn--primary'}
+              onClick={onConfirm}
+              disabled={busy}
+            >{confirmLabel}</button>
+          </div>
+        </section>
+      </div>
+    )
+  }
+  // 六个场景的人话文案（标题 ≤20 字、说明 ≤40 字单句；不用「台账/幂等/门控」这类黑话）。
+  // 旧写法是行内确认条上的一串问句——「确认停止？」「确认交付完成？」「确认删除？」「确认退出协调者？」，
+  // 与按钮挤在同一排、没有「会怎样/能不能撤销」；现在统一成弹层标题 + 一句说明（口径见补丁 §7.11.2）。
+  const CONFIRM_COPY = {
+    stop: ['停止这个任务？', '会立刻结束子会话；记录保留，可重派。'],
+    close: ['确认这条已交付？', '确认后立即完成，不能撤回。'],
+    delete: ['删除这条任务？', '会清掉任务和消息，不能恢复。'],
+    leave: ['退出协调者？', '不再当协调者，任务记录都保留。'],
+    archive: ['归档这个组？', '只是从列表隐藏，随时可取消。'],
+    automation: ['删除这条自动化？', '不再定时触发，已派任务不受影响。'],
+  }
   // 工作台页面组件（只吃 props，自己不发请求；数据与节流在下面的 TasksPanel 里统一管）。
-  const Wb = createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banner, SkeletonList, STATUS_LABEL })
+  const Wb = createWorkbench({ React, h, Icon, Badge, Chip, EmptyState, Banner, SkeletonList, ConfirmDialog, confirmCopy: CONFIRM_COPY, STATUS_LABEL })
   // P0-4 计划四态：批准前的三态（运行期只读）才占视觉；approved 正常执行、rejected 已结束都不加小标。
   const PLAN_OPEN_STATES = ['planning', 'waiting_user', 'revising']
   const PLAN_OPEN_BADGE = { planning: '计划中', waiting_user: '计划待批', revising: '修订中' }
@@ -98,19 +151,6 @@ export function createViews({
     <span key={`${key}:k`} className="orch-kv-key">{key}</span>,
     <span key={`${key}:v`} className="orch-kv-val">{String(value ?? '')}</span>,
   ])
-  // 破坏性动作的二次确认条（停止 / 确认交付 / 删除共用）：danger 时按钮走危险色。
-  const ConfirmBar = ({ question, label, disabled, danger, onConfirm, onCancel }) => (
-    <span className="orch-confirm">
-      <span>{question}</span>
-      <button
-        type="button"
-        className={`orch-btn orch-btn--sm${danger === true ? ' orch-btn--danger' : ''}`}
-        disabled={disabled}
-        onClick={onConfirm}
-      >{label}</button>
-      <button type="button" className="orch-btn orch-btn--sm" onClick={onCancel}>{'取消'}</button>
-    </span>
-  )
 
   // 会话头入口（0.25.0，2026-11-22 收敛为三种角色）：
   //   - 主会话 → 「任务」按钮（打开任务面板）；
@@ -674,7 +714,7 @@ export function createViews({
     }
 
     // 0.36.0：本会话退出协调者名单（面板「主会话」行的两步确认按钮）。
-    // 只改名单：台账/任务/历史都不动；删首位时服务端会让下一位升主。
+    // 只改名单：任务记录/任务/历史都不动；删首位时服务端会让下一位升主。
     const leaveCoordinator = async () => {
       const sessionId = sessionIdNow()
       if (typeof sessionId !== 'string' || sessionId === '') return setActionError('读不到当前会话：刷新后重试。')
@@ -682,11 +722,27 @@ export function createViews({
         await dropCoordinator(sessionId)
         setConfirmLeave(false)
         setActionError(null)
-        setActionNotice('本会话已退出协调者名单（任务与台账不受影响）')
+        setActionNotice('本会话已退出协调者名单（任务与记录不受影响）')
         await refresh()
       } catch (failure) {
         setActionError(`退出协调者失败：${String((failure && failure.message) || failure)}`)
       }
+    }
+
+    // 官方「自动化任务」页：宿主可能没有 schedules 面板（精简宿主/老版本）。
+    // 不再静默吞掉（client.js 里那个空 catch 已删）——失败给一条可读 Banner。
+    const openSchedulesPage = () => {
+      let result = { ok: false, reason: '当前宿主没有这个面板' }
+      try {
+        const value = typeof openSchedules === 'function' ? openSchedules() : result
+        if (value !== null && typeof value === 'object') result = value
+        else if (value === true) result = { ok: true }
+      } catch (failure) {
+        result = { ok: false, reason: String((failure && failure.message) || failure) }
+      }
+      if (result.ok === true) { setActionError(null); return }
+      setActionNotice(null)
+      setActionError(`打不开官方自动化任务页：${result.reason || '当前宿主没有这个面板'}`)
     }
 
     const toggleArtifacts = id => {
@@ -944,21 +1000,9 @@ export function createViews({
     ))
 
     // props 键序/键名与迁移前一致（快照按 props 序列化顺序比对）。
-    // 停止：先转成「确认停止 / 取消」，二次确认后才发请求。
+    // 停止：按钮只负责「打开确认弹层」，真正发请求在弹层的确认回调里（唯一实现见 ConfirmDialog）。
     const stopControl = task => {
       if (task.status === 'done' || task.status === 'cancelled' || task.status === 'orphaned') return null
-      if (confirmStop === task.id) {
-        return (
-          <ConfirmBar
-            key="stop-confirm"
-            question={'确认停止？'}
-            label={'确认停止'} danger
-            disabled={busy === `stop:${task.id}`}
-            onConfirm={act(() => void runPanel('stop', task.id))}
-            onCancel={act(() => setConfirmStop(null))}
-          />
-        )
-      }
       return (
         <button
           key="stop" type="button" className="orch-btn orch-btn--sm orch-btn--danger"
@@ -987,22 +1031,10 @@ export function createViews({
       : null
 
     // 确认交付（delivered → done）：与工具 task_message action:close 同源，服务端 closeGate 下发 canClose。
-    // done 不可逆，所以与停止/删除同一套两步确认。
+    // done 不可逆，所以与停止/删除同一套确认弹层。
     const closeControl = task => {
       if (task === null || task === undefined || task.canClose !== true) return null
       if (task.status === 'done') return null
-      if (confirmClose === task.id) {
-        return (
-          <ConfirmBar
-            key="close-confirm"
-            question={'确认交付完成？'}
-            label={busy === `close:${task.id}` ? '确认中…' : '确认'}
-            disabled={busy === `close:${task.id}`}
-            onConfirm={act(() => void runPanel('close', task.id))}
-            onCancel={act(() => setConfirmClose(null))}
-          />
-        )
-      }
       return (
         <button
           key="close" type="button" className="orch-btn orch-btn--sm"
@@ -1017,26 +1049,14 @@ export function createViews({
     }
 
     // 删除任务（连同 messages/notifications 级联清理）：只有终态任务显示（canDelete 由服务端判定）。
-    // 两步：先点「删除」→ 内联「确认删除？/ 取消」，与停止同一套确认条，避免误删。
+    // 删除不可恢复，二次确认走同一个弹层。
     const deleteControl = task => {
       const deletable = task !== null && task !== undefined && task.canDelete === true
       if (!deletable) return null
-      if (confirmDelete === task.id) {
-        return (
-          <ConfirmBar
-            key="delete-confirm"
-            question={'确认删除？'}
-            label={busy === `delete:${task.id}` ? '删除中…' : '确认删除'} danger
-            disabled={busy === `delete:${task.id}`}
-            onConfirm={act(() => void runPanel('delete', task.id))}
-            onCancel={act(() => setConfirmDelete(null))}
-          />
-        )
-      }
       return (
         <button
           key="delete" type="button" className="orch-btn orch-btn--sm orch-btn--danger"
-          title="从台账删除这条任务与它的消息/通知（需要二次确认）"
+          title="从任务记录里删除这条任务与它的消息/通知（需要二次确认）"
           disabled={busy === `delete:${task.id}`}
           onClick={act(() => setConfirmDelete(task.id))}
         >
@@ -1070,26 +1090,17 @@ export function createViews({
           ><span className="orch-status-dot" />{mainState}</span>
         </div>
         <div className="orch-topbar-actions">
-          {/* 0.36.0：本会话在协调者名单里、且名单 > 1 时给「退出协调者」（两步确认）；
+          {/* 0.36.0：本会话在协调者名单里、且名单 > 1 时给「退出协调者」（二次确认走统一弹层）；
               只剩一个成员时不给——一键把名单清空只会让用户找不到协调者。 */}
           {coordinators.canLeave && typeof dropCoordinator === 'function'
-            ? (confirmLeave
-              ? (
-                <ConfirmBar
-                  question={'确认退出协调者？'}
-                  label={'确认退出'}
-                  onConfirm={act(() => void leaveCoordinator())}
-                  onCancel={act(() => setConfirmLeave(false))}
-                />
-              )
-              : (
-                <button
-                  type="button"
-                  className="orch-btn orch-btn--ghost orch-btn--sm"
-                  title="从协调者名单移除本会话（不影响台账；删首位则下一位升主）"
-                  onClick={act(() => setConfirmLeave(true))}
-                >{'退出协调者'}</button>
-              ))
+            ? (
+              <button
+                type="button"
+                className="orch-btn orch-btn--ghost orch-btn--sm"
+                title="从协调者名单移除本会话（不影响任务记录；删首位则下一位升主）"
+                onClick={act(() => setConfirmLeave(true))}
+              >{'退出协调者'}</button>
+            )
             : null}
           <label className="orch-search" title="按标题 / 引用 / 目录搜索">
             <Icon name="search" size={13} />
@@ -1168,61 +1179,67 @@ export function createViews({
       </nav>
     )
 
-    const alerts = () => (
-      <div className="orch-stack orch-stack--sm">
-        {snapshotError !== null
-          ? (
-              <Banner
-                tone="error"
-                icon="alert"
-                action={<button type="button" className="orch-btn orch-btn--sm" onClick={refresh}>{'重试'}</button>}
-              >{`台账暂不可用：${snapshotError}`}</Banner>
-            )
-          : null}
-        {actionError !== null
-          ? (
-              <Banner
-                tone="error"
-                icon="alert"
-                action={(
-                  <button
-                    type="button"
-                    className="orch-btn orch-btn--sm"
-                    onClick={() => setActionError(null)}
-                  >{'关闭'}</button>
-                )}
-              >{actionError}</Banner>
-            )
-          : null}
-        {actionNotice !== null
-          ? <Banner tone="notice" icon="check">{actionNotice}</Banner>
-          : null}
-        {copyNotice !== null
-          ? <Banner tone="info" icon="copy">{copyNotice}</Banner>
-          : null}
-        {inboxCount > 0
-          ? (
-              <Banner
-                tone="notice"
-                icon="inbox"
-                action={(
-                  <button
-                    type="button"
-                    className="orch-btn orch-btn--sm"
-                    onClick={() => setFilter('waiting')}
-                  >{'查看'}</button>
-                )}
-              >{`有 ${inboxCount} 个任务等你决定，切到「待你决定」查看。`}</Banner>
-            )
-          : null}
-        {openedMain
-          ? <Banner tone="info" icon="check">{'主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」。'}</Banner>
-          : null}
-        {snapshot !== null && mainSession.id === null
-          ? <Banner tone="notice" icon="alert">{'尚未打开主会话：点右上角「打开主会话」，在指挥舱里创建。'}</Banner>
-          : null}
-      </div>
-    )
+    // 提示条（0.37.0 收敛）：同类合并、一页最多 3 条（错误 1 / 通知 1 / 信息 1）。
+    // 多条同义提示并成语义并集（用「；」连接），动作留在各自那一档的第一个可做动作上。
+    // 快照错误与动作错误分开记（动作失败不能被写成「任务数据暂不可用」——旧的「台账暂不可用：${snapshotError}」口径不变，只把词换成人话）。
+    const alerts = () => {
+      const errors = [
+        snapshotError === null ? null : `任务数据暂不可用：${snapshotError}`,
+        actionError,
+      ].filter(item => item !== null && item !== undefined)
+      const notices = [
+        actionNotice,
+        inboxCount > 0 ? `有 ${inboxCount} 个任务等你决定，切到「待你决定」查看。` : null,
+        snapshot !== null && mainSession.id === null ? '还没有主会话：点右上角「打开主会话」。' : null,
+      ].filter(item => item !== null && item !== undefined)
+      const infos = [
+        copyNotice,
+        openedMain ? '主会话已就绪；若仍停在 Bot 会话里，请从左侧会话列表打开「主会话」。' : null,
+      ].filter(item => item !== null && item !== undefined)
+      const rows = []
+      if (errors.length > 0) {
+        rows.push(<Banner key="error" tone="error" icon="alert" action={<button type="button" className="orch-btn orch-btn--sm" onClick={refresh}>{'重试'}</button>}>{errors.join('；')}</Banner>)
+      }
+      if (notices.length > 0) {
+        rows.push(
+          <Banner
+            key="notice" tone="notice" icon="inbox"
+            action={inboxCount > 0
+              ? <button type="button" className="orch-btn orch-btn--sm" onClick={() => setFilter('waiting')}>{'查看'}</button>
+              : <button type="button" className="orch-btn orch-btn--sm" onClick={() => setActionNotice(null)}>{'知道了'}</button>}
+          >{notices.join('；')}</Banner>,
+        )
+      }
+      if (infos.length > 0) {
+        rows.push(<Banner key="info" tone="info" icon="copy" action={<button type="button" className="orch-btn orch-btn--sm" onClick={() => setCopyNotice(null)}>{'知道了'}</button>}>{infos.join('；')}</Banner>)
+      }
+      return rows.length === 0 ? null : <div className="orch-stack orch-stack--sm">{rows}</div>
+    }
+
+    // 统一确认弹层：状态在面板这一层（四类任务动作），渲染在 shell 根上（居中、盖住抽屉与列表）。
+    const confirmDialog = () => {
+      const pick = (open, kind, label, actionId, done) => {
+        if (open === null || open === false) return null
+        const [title, note] = CONFIRM_COPY[kind]
+        const id = typeof open === 'string' ? open : null
+        const busyNow = id !== null && busy === `${actionId}:${id}`
+        return (
+          <ConfirmDialog
+            title={title}
+            note={note}
+            confirmLabel={busyNow ? '处理中…' : label}
+            danger={kind !== 'leave' && kind !== 'close'}
+            busy={busyNow}
+            onConfirm={() => { if (done !== undefined) done() }}
+            onCancel={() => { if (kind === 'leave') setConfirmLeave(false); else if (kind === 'stop') setConfirmStop(null); else if (kind === 'close') setConfirmClose(null); else setConfirmDelete(null) }}
+          />
+        )
+      }
+      return pick(confirmStop, 'stop', '确认停止', 'stop', () => void runPanel('stop', confirmStop))
+        ?? pick(confirmClose, 'close', '确认交付', 'close', () => void runPanel('close', confirmClose))
+        ?? pick(confirmDelete, 'delete', '确认删除', 'delete', () => void runPanel('delete', confirmDelete))
+        ?? pick(confirmLeave, 'leave', '确认退出', 'leave', () => void leaveCoordinator())
+    }
 
     // 卡片小标：一个清单（顺序/文案与迁移前一致），数组化后比原来的十来个三元嵌套好读。
     // 数据全部来自快照下发的只读字段；P2-1 验收小标与 P2-3 交接徽标按字段出现，没有就整块不渲染。
@@ -1300,7 +1317,14 @@ export function createViews({
         >
           <div className="orch-card-top">
             <span className="orch-dot" style={{ background: tone, color: tone }} />
-            <span className="orch-card-title" title={displayName}>{displayName}</span>
+            {/* 标题就是可聚焦的打开入口（原生 button 自带 Enter/Space + :focus-visible），
+                所以原来那个重复的「详情」按钮删掉了——顺序不能颠倒，否则键盘用户没有入口。 */}
+            <button
+              type="button"
+              className="orch-card-title orch-card-open"
+              title={displayName}
+              onClick={act(() => void openDetail(task.id))}
+            >{displayName}</button>
             {statusBadge(task.status)}
             {/* P8/P0-4：计划阶段小标（只在批准前的三态出现；批准后正常执行、不占视觉）。 */}
             {planOpen(task)
@@ -1322,19 +1346,13 @@ export function createViews({
           </div>
           <div className="orch-card-meta">
             {metaChips(task, artifacts.length, isExpanded)}
-          </div>
-          <div className="orch-card-actions">
-            <button
-              key="detail"
-              type="button"
-              className="orch-btn orch-btn--sm"
-              onClick={act(() => void openDetail(task.id))}
-            ><Icon name="chevron" />{'详情'}</button>
-            {stopControl(task)}
-            {closeControl(task)}
-            {retryControl(task)}
-            {openControl(task.childSessionId)}
-            {deleteControl(task)}
+            <div className="orch-card-actions">
+              {stopControl(task)}
+              {closeControl(task)}
+              {retryControl(task)}
+              {openControl(task.childSessionId)}
+              {deleteControl(task)}
+            </div>
           </div>
           {artifacts.length > 0
             ? (
@@ -1348,7 +1366,7 @@ export function createViews({
                             {/* 点路径 = 在会话右侧栏打开预览（与产物库同一个入口）；缺失的文件不给点。 */}
                             <button
                               type="button"
-                              className="orch-artifact-path orch-artifact-open"
+                              className="orch-btn orch-btn--quiet orch-artifact-path orch-artifact-open"
                               title={item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`}
                               disabled={item.exists === false}
                               onClick={act(() => void previewInSidebar(task.id, item.path))}
@@ -1542,7 +1560,7 @@ export function createViews({
         return (
           <EmptyState
             icon="alert"
-            title="台账还没就绪"
+            title="任务数据还没就绪"
             hint="快照请求失败，点上面的「重试」重新拉取；也可以直接「打开主会话」进去看看。"
           />
         )
@@ -1881,7 +1899,7 @@ export function createViews({
               <DotRow key={`${item.path}:${index}`} tone={item.exists === false ? 'bad' : 'good'}>
                 <button
                   type="button"
-                  className="orch-artifact-path orch-artifact-open"
+                  className="orch-btn orch-btn--quiet orch-artifact-path orch-artifact-open"
                   title={item.exists === false ? `${item.path}（未找到）` : `在右侧栏预览 ${item.path}`}
                   disabled={item.exists === false}
                   onClick={act(() => void previewInSidebar(task.id, item.path))}
@@ -1975,7 +1993,7 @@ export function createViews({
             <span className="orch-drawer-title" title={drawerTitle}>{drawerTitle}</span>
             {detailTask === null ? null : statusBadge(detailTask.status)}
             <button
-              type="button" className="orch-icon-btn" title="关闭（Esc）" onClick={closeDetail}
+              type="button" className="orch-icon-btn" title="关闭（Esc）" aria-label="关闭" onClick={closeDetail}
             ><Icon name="close" /></button>
           </div>
           <div className="orch-drawer-sub">
@@ -2040,11 +2058,11 @@ export function createViews({
       </div>
     )
 
+    // dock 是只读镜像（没有输入框/发送按钮/批准入口）；notices 那条永远为空的死分支已删。
     const dock = () => (
       <Wb.Dock
         detail={detail}
         group={groupState.data?.group ?? null}
-        notices={[]}
         onOpenSession={open}
         onJumpMain={handleOpenMain}
       />
@@ -2054,12 +2072,11 @@ export function createViews({
       <div className="orch-wb" data-page="group">
         <Wb.GroupPage
           state={groupState}
-          groupId={groupId}
           onBack={() => setPage('groups')}
           onReload={() => { void loadGroup(groupId) }}
           onOpenDetail={openDetail}
           onPlan={planTask}
-          onPreview={(taskId, path, inline) => { void previewInSidebar(taskId, path, inline === true) }}
+          onPreview={(taskId, path) => { void previewInSidebar(taskId, path, false) }}
           onCopy={path => { void copyPath(path) }}
           dock={dock()}
           onOpenMain={handleOpenMain}
@@ -2155,6 +2172,8 @@ export function createViews({
             aria-label="任务详情"
           >{drawerOpen ? drawerContent() : null}</aside>
         </div>
+        {/* 唯一确认弹层挂在这一层：盖住抽屉与列表，居中、铺满面板。 */}
+        {confirmDialog()}
       </div>
     )
   }

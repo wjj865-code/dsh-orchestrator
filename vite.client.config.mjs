@@ -11,7 +11,7 @@ import { defineConfig } from 'vite'
 // 因此：lib mode + iife + `entryFileNames: 'client.js'`，`name` 必填（rollup iife 要求），
 // 顶层不许出现 import/export。
 //
-// P2-5（S9′）：体积是交付预算（`dist/client.js` ≤ 95 KiB，闸门 scripts/check-client-size.mjs），
+// P2-5（S9′）：体积是交付预算（`dist/client.js` ≤ 172 KiB，闸门 scripts/check-client-size.mjs），
 // 默认开 esbuild minify；sourcemap 保留，线上排查按 map 还原。
 // 需要读可读产物时：`CLIENT_MINIFY=0 pnpm run build`（只影响本次构建，不入库）。
 export default defineConfig({

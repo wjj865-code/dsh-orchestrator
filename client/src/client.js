@@ -325,7 +325,12 @@ export const createClient = (req) => {
         notice: navNotice,
         // 0.33.0 自动化创建：写进主会话输入框 + 跳官方「自动化任务」页（main 面板 key 'schedules'）。
         prefillDraft: prefillMainDraft,
-        openSchedules: () => { try { ctx.layout.selectPanel('schedules') } catch { /* 官方页不可达时静默：按钮仍渲染，点了没反应好过整页报错 */ } },
+        // 0.37.0：不再静默吞掉失败——返回 { ok, reason }，面板据此给一条可读 Banner（控件审计 F1）。
+        openSchedules: () => {
+          try { ctx.layout.selectPanel('schedules'); return { ok: true } } catch (failure) {
+            return { ok: false, reason: String((failure && failure.message) || failure) }
+          }
+        },
         // 0.36.0：面板「主会话」行的协调者名单需要知道「当前是哪个会话」（本会话退出）与退出动作。
         readSessionId,
         dropCoordinator,
