@@ -12,7 +12,7 @@
 //   - adopt = **加入名单并提升为主**（前插），旧协调者留在名单里（仍有任务入口/工具/权限）；
 //   - `dropSession` = 退出名单（删首位则下一位升主；删光等价「尚未打开主会话」，下次 open 重建）；
 //   - `open()` 只开/重建**主协调者**；首位失效重建时**原位替换**首位，名单长度不增长；
-//   - 名单上限 4（`MAX_COORDINATORS` 常量，不进配置面），满员再 adopt → `ADOPT_LIMIT`；压力代建则淘汰最早成员腾位。
+//   - 名单上限 4（`MAX_COORDINATORS` 常量，不进配置面）；满员再 adopt / 压力代建都淘汰最早成员腾位。
 //
 // C（2026-11-21，权限徽标一致性）：见 `MAIN_PERMISSION_PRESET`。协调者会话在三条路上钉只读——
 // 新建（`open` 与 `createCoordinatorSession`）、adopt、以及每次「打开主会话」复用已有会话时把
@@ -21,7 +21,7 @@
 import { mkdir } from 'node:fs/promises'
 import { resolve as resolvePath } from 'node:path'
 import {
-  addCoordinatorId, getCoordinatorIds, getMainSessionPreset, removeCoordinatorId,
+  getCoordinatorIds, getMainSessionPreset, removeCoordinatorId,
   setCoordinatorIds, setMainSessionPreset, setSetting,
 } from './ledger.js'
 import { MAX_COORDINATORS } from './coordinator-set.js'
@@ -72,6 +72,15 @@ export function createMainSession({
   // 统一走 getCoordinatorIds，保证这里永远是数组（配置通道是字符串，直接拿会漏掉 .filter/.length 语义）。
   const currentIds = () => getCoordinatorIds(db, config?.coordinatorSession)
   const currentId = () => currentIds()[0]
+  // 加入名单并提升为主；满 4 个时让最早加入的成员退出腾位（会话保留，不改名不归档）。
+  const promoteCoordinator = sessionId => {
+    const before = currentIds()
+    const existing = before.includes(sessionId)
+    const current = before.filter(id => id !== sessionId)
+    const evicted = current.length >= MAX_COORDINATORS ? current[current.length - 1] : undefined
+    const ids = setCoordinatorIds(db, [sessionId, ...current].slice(0, MAX_COORDINATORS))
+    return { ids, added: !existing, promoted: existing, evicted }
+  }
   // worker 预设只认 spawn provider（fork 不满足 capabilities.agentPreset）；不静默降级、不改用户配置。
   const spawnProvider = config?.spawnProvider ?? 'spawn'
 
@@ -176,11 +185,11 @@ export function createMainSession({
    *   `ADOPT_NOT_COCKPIT` 不在「指挥舱」工作区；
    *   `ADOPT_NOT_LIVE` agent 还没起（先在该会话里发一条消息再试）；
    *   `ADOPT_PRESET_LOCKED` 已用其他预设开始（宿主拒绝中途换预设：请新建空白会话并选「协调者」）；
-   *   `ADOPT_LIMIT` 名单已满（4 个），先让某个会话「退出协调者」；
    *   `ADOPT_BUSY` 另一次切换正在进行。
+   *   名单已满（4 个）时让最早加入的成员退出腾位（会话保留），不要求用户先手动退出。
    *
    * @returns {Promise<{ok:true, sessionId:string, previous:string|null, ids:string[], primary:string,
-   *   added:boolean, promoted:boolean, unchanged?:boolean} | {ok:false, code:string, params?:object}>}
+   *   added:boolean, promoted:boolean, evicted:string|null, unchanged?:boolean} | {ok:false, code:string, params?:object}>}
    */
   const adoptSession = async ({ sessionId, source = 'panel' } = {}) => {
     if (typeof sessionId !== 'string' || sessionId === '') return { ok: false, code: 'ADOPT_NO_SESSION' }
@@ -214,10 +223,7 @@ export function createMainSession({
       }
       let outcome
       try {
-        outcome = addCoordinatorId(db, sessionId)
-        if (outcome.limitReached === true) {
-          return { ok: false, code: 'ADOPT_LIMIT', params: { max: MAX_COORDINATORS } }
-        }
+        outcome = promoteCoordinator(sessionId)
         setMainSessionPreset(db, PRESET_ID)
       } catch (error) {
         return { ok: false, code: 'ADOPT_FAILED', params: { reason: `${error?.message ?? error}` } }
@@ -233,6 +239,7 @@ export function createMainSession({
         ids: outcome.ids,
         added: outcome.added,
         promoted: outcome.promoted,
+        evicted: outcome.evicted ?? null,
       })
       return {
         ok: true,
@@ -242,6 +249,7 @@ export function createMainSession({
         primary: outcome.ids[0],
         added: outcome.added,
         promoted: outcome.promoted,
+        evicted: outcome.evicted ?? null,
       }
     } finally {
       mutating = false
@@ -293,7 +301,7 @@ export function createMainSession({
    * 顺序：建工作区 → create → 写名单（前插；满 4 个时淘汰最早成员腾位）→ preset 标记 → onboarding=sent（跳过首次介绍/索引任务）
    * → 改名「主会话」→ 审计。**旧会话零处置**（留在名单里，不改名不归档）。
    * 名单已满时**让最早加入的成员退出协调者腾位**（会话保留、不改名不归档），保证压力换新不会被
-   * `ADOPT_LIMIT` 卡住；旧主协调者仍留在名单里。
+   * 满员错误卡住；旧主协调者仍留在名单里。
    * 失败处置：
    *   - create 失败：什么都没发生（不写名单），`ADOPT_CREATE_FAILED`；
    *   - 写名单失败：**新会话留着待重用**（不归档不删除——归档会把一个刚建好的空白会话藏进历史，
@@ -328,14 +336,10 @@ export function createMainSession({
         return { ok: false, code: 'ADOPT_CREATE_FAILED', params: { reason: '创建协作者会话没有返回 sessionId' } }
       }
       let outcome
-      let evicted
       try {
         // 压力换新必须成功：名单满 4 个时让最早加入的成员退出（会话保留，不改名不归档），
-        // 而不是把用户卡在 ADOPT_LIMIT。旧主协调者仍留在名单里。
-        const current = currentIds().filter(id => id !== sessionId)
-        evicted = current.length >= MAX_COORDINATORS ? current[current.length - 1] : undefined
-        const ids = setCoordinatorIds(db, [sessionId, ...current].slice(0, MAX_COORDINATORS))
-        outcome = { ids, added: true, promoted: false, unchanged: false, limitReached: false }
+        // 而不是把用户卡在满员错误。旧主协调者仍留在名单里。
+        outcome = promoteCoordinator(sessionId)
         setMainSessionPreset(db, createdPreset(created))
       } catch (error) {
         // 名单没写成功：新会话留着（可见、可点开），不归档；旧协调者原样可用。
@@ -355,10 +359,11 @@ export function createMainSession({
       }
       freshMain = { sessionId, at: now() }
       log('main.adopt.created', {
-        previous, newId: sessionId, source, permission, ids: outcome.ids, evicted: evicted ?? null,
+        previous, newId: sessionId, source, permission, ids: outcome.ids, evicted: outcome.evicted ?? null,
       })
       return {
-        ok: true, sessionId, previous, ids: outcome.ids, primary: outcome.ids[0], created: true, evicted: evicted ?? null,
+        ok: true, sessionId, previous, ids: outcome.ids, primary: outcome.ids[0], created: true,
+        evicted: outcome.evicted ?? null,
       }
     } finally {
       mutating = false

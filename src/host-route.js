@@ -247,6 +247,7 @@ export function createHostRoute({ db, coordinatorStatus, openMain, adoptSession,
           unchanged: result.unchanged === true,
           added: result.added === true,
           promoted: result.promoted === true,
+          evicted: result.evicted ?? null,
           ids: Array.isArray(result.ids) ? result.ids : [],
           primary: result.primary ?? null,
         }, 200)

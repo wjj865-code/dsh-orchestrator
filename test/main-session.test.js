@@ -482,6 +482,7 @@ test('adopt：加入名单并提升为主（旧会话留在名单）+ 记审计 
     primary: 'session-new-target',
     added: true,
     promoted: false,
+    evicted: null,
   })
   assert.equal(getMainSessionId(db), 'session-new-target')
   assert.deepEqual(getCoordinatorIds(db), ['session-new-target', 'session-old'], '旧协调者留在名单里')
@@ -497,29 +498,32 @@ test('adopt：加入名单并提升为主（旧会话留在名单）+ 记审计 
 
 test('adopt：已在名单里的会话再设一次只提升为主，不重复占名额', async () => {
   const db = await ledger()
-  const f = adoptFake({ live: ['s-a', 's-b'] })
-  setCoordinatorIds(db, ['s-a', 's-b'])
+  const f = adoptFake({ live: ['s-a', 's-b', 's-c', 's-d'] })
+  setCoordinatorIds(db, ['s-a', 's-b', 's-c', 's-d'])
   const main = adoptMain(db, f)
   const result = await main.adoptSession({ sessionId: 's-b' })
   assert.equal(result.ok, true)
   assert.equal(result.added, false)
   assert.equal(result.promoted, true)
-  assert.deepEqual(result.ids, ['s-b', 's-a'])
+  assert.equal(result.evicted, null, '提升已有成员不腾位')
+  assert.deepEqual(result.ids, ['s-b', 's-a', 's-c', 's-d'])
   assert.equal(getMainSessionId(db), 's-b')
   db.close()
 })
 
-test('adopt：名单已满 4 个 → ADOPT_LIMIT，名单与指针都不动', async () => {
+test('adopt：名单已满 4 个 → 淘汰最早成员腾位，新会话成为主协调者', async () => {
   const db = await ledger()
   setCoordinatorIds(db, ['s-1', 's-2', 's-3', 's-4'])
   const f = adoptFake({ live: ['s-1', 's-9'] })
-  const main = adoptMain(db, f)
+  const logs = []
+  const main = adoptMain(db, f, { log: (event, detail) => logs.push([event, detail]) })
   const result = await main.adoptSession({ sessionId: 's-9' })
-  assert.equal(result.ok, false)
-  assert.equal(result.code, 'ADOPT_LIMIT')
-  assert.equal(result.params.max, 4)
-  assert.deepEqual(getCoordinatorIds(db), ['s-1', 's-2', 's-3', 's-4'])
-  assert.equal(getMainSessionId(db), 's-1')
+  assert.equal(result.ok, true, '满员不能再要求用户先手动退出')
+  assert.equal(result.evicted, 's-4')
+  assert.deepEqual(getCoordinatorIds(db), ['s-9', 's-1', 's-2', 's-3'])
+  assert.equal(getMainSessionId(db), 's-9')
+  const adopted = logs.find(([event]) => event === 'main.session.adopted')
+  assert.equal(adopted?.[1]?.evicted, 's-4', '审计要写明腾位淘汰了谁')
   db.close()
 })
 
@@ -680,7 +684,7 @@ test('代建：名单已满 4 个 → 淘汰最早成员腾位，新会话仍成
   const logs = []
   const main = adoptMain(db, f, { log: (event, detail) => logs.push([event, detail]) })
   const result = await main.createCoordinatorSession({ source: 'pressure-reminder' })
-  assert.equal(result.ok, true, '压力换新不能被 ADOPT_LIMIT 卡住')
+  assert.equal(result.ok, true, '压力换新不能被满员错误卡住')
   assert.equal(result.sessionId, 'session-new')
   assert.equal(result.evicted, 's-4')
   assert.deepEqual(getCoordinatorIds(db), ['session-new', 's-1', 's-2', 's-3'],

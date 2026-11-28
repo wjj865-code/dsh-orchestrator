@@ -953,7 +953,7 @@ export function setCoordinatorIds(db, ids) {
 }
 
 /**
- * 加入名单并提升为主（前插）。名单满且不是成员时**不写库**，原样返回（调用方给 ADOPT_LIMIT）。
+ * 加入名单并提升为主（前插）。名单满且不是成员时**不写库**，原样返回（调用方决定拒绝或腾位）。
  * @returns {{ids: string[], added: boolean, promoted: boolean, unchanged: boolean, limitReached: boolean}}
  */
 export function addCoordinatorId(db, sessionId) {

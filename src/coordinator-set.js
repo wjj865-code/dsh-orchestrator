@@ -83,7 +83,7 @@ export function isCoordinatorId(ids, id) {
  *   - `added:true`            新成员，已成为主协调者；
  *   - `added:false, promoted:true`  本来就在名单里，这次只提升为主（幂等重设）；
  *   - `added:false, promoted:false, unchanged:true`  已经是主协调者，什么都没变；
- *   - `limitReached:true`     名单已满且不是成员 → **名单原样返回**，调用方给 `ADOPT_LIMIT`。
+ *   - `limitReached:true`     名单已满且不是成员 → **名单原样返回**，调用方决定拒绝或腾位。
  * @param {string[]} ids 当前名单
  * @param {unknown} id 目标会话 id
  */

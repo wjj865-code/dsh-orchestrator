@@ -318,6 +318,7 @@ test('adopt-session：回传 ids/primary/added（多协调者加入语义）；�
     unchanged: false,
     added: true,
     promoted: false,
+    evicted: null,
     ids: ['s-side', 's-main'],
     primary: 's-side',
   })
@@ -328,18 +329,22 @@ test('adopt-session：回传 ids/primary/added（多协调者加入语义）；�
   db.close()
 })
 
-test('adopt-session：名单已满 → 409 ADOPT_LIMIT（可读文案带 max）', async () => {
+test('adopt-session：满员腾位成功时回传 evicted', async () => {
   const db = await openLedger(tempDir())
   const handler = createHostRoute({
     db,
     coordinatorStatus: () => ({ id: 's-1', ids: ['s-1', 's-2', 's-3', 's-4'], live: true }),
-    adoptSession: async () => ({ ok: false, code: 'ADOPT_LIMIT', params: { max: 4 } }),
+    adoptSession: async ({ sessionId }) => ({
+      ok: true, sessionId, previous: 's-1', ids: [sessionId, 's-1', 's-2', 's-3'],
+      primary: sessionId, added: true, promoted: false, evicted: 's-4',
+    }),
   })
   const response = await handler(request({ endpoint: 'adopt-session', sessionId: 's-9' }))
-  assert.equal(response.status, 409)
+  assert.equal(response.status, 200)
   const body = await response.json()
-  assert.equal(body.code, 'ADOPT_LIMIT')
-  assert.match(body.error, /最多 4 个/)
+  assert.equal(body.ok, true)
+  assert.equal(body.evicted, 's-4')
+  assert.deepEqual(body.ids, ['s-9', 's-1', 's-2', 's-3'])
   db.close()
 })
 
